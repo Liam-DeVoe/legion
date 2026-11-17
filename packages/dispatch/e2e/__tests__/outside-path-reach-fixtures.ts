@@ -92,7 +92,7 @@ interface Seen {
   credential: string | null;
 }
 
-/** A fake Dispatch: `/healthz` answers `health`, and `/api/v1/projects` answers 200 to a request
+/** A fake Dispatch: `/healthz` answers `health`, and `/api/v2/projects` answers 200 to a request
  *  carrying a credential (an `Authorization` or a `Cookie`), as Dispatch would, and `projects` to
  *  one carrying none, with Dispatch's own refusal body unless `refusal` names another. `seen` lists
  *  every request it answered. */
@@ -110,10 +110,11 @@ export function fakeDispatch(
       const credential = request.headers.get("authorization") ?? request.headers.get("cookie");
       seen.push({ method: request.method, path: pathname, credential });
       if (pathname === "/healthz") return Response.json({ ok: health === 200 }, { status: health });
-      if (pathname === "/api/v1/projects") {
+      if (pathname === "/api/v2/projects") {
         const status = credential === null ? projects : 200;
         if (status === 302) return Response.redirect("https://accounts.example/signin", 302);
-        return Response.json(status === 200 ? [] : refusal, { status });
+        const page = { items: [], limit: 50, offset: 0, total: 0 };
+        return Response.json(status === 200 ? page : refusal, { status });
       }
       return Response.json({ code: "NOT_FOUND" }, { status: 404 });
     },

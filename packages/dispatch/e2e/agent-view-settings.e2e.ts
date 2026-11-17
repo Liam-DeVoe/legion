@@ -212,10 +212,10 @@ async function storedSwitch(
   await expect
     .poll(async () => {
       const frame = (await getSentMessages()).find((sent) => sent.message === body);
-      const read = (await listAgentMessages(sessionID)).find((row) => row.message.body === body);
+      const read = (await listAgentMessages(sessionID)).find((row) => row.body === body);
       if (frame === undefined || read === undefined) return false;
       const { delivery } = JSON.parse(String(frame.payload)) as { delivery: { attempt: number } };
-      found = { attempt: delivery.attempt, author: read.message.author, id: read.message.id };
+      found = { attempt: delivery.attempt, author: read.author, id: read.id };
       return true;
     }, PROBE)
     .toBe(true);
@@ -625,7 +625,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
   const agentSession = "e2e-switch-agent";
   expect(await getSentMessages()).toEqual([]);
 
-  const messagesPath = `/api/v1/agents/${encodeURIComponent(id)}/messages`;
+  const messagesPath = `/api/v2/agents/${encodeURIComponent(id)}/messages`;
   const switchBody = { body: "/model anthropic/model-b", delivery: "steer" };
   // The shared token holds no scope, so the gate refuses it before the body is read: the actor
   // it names changes nothing.
@@ -651,7 +651,7 @@ test("a person's own token sends a switch recorded as them with the agent beside
   const stored = await storedSwitch(id, "/model anthropic/model-b");
   const read = await listAgentMessages(id);
   expect(read).toHaveLength(1);
-  expect(read[0]?.message.author).toMatchObject({
+  expect(read[0]?.author).toMatchObject({
     act: { session: agentSession },
     id: "alice",
     kind: "user",
@@ -663,11 +663,11 @@ test("a person's own token sends a switch recorded as them with the agent beside
   // The session may not take it as its own turn: the act is what refuses it, and the person
   // typed nothing.
   const accept = await fetch(
-    new URL(`/api/v1/messages/${stored.id}/deliveries/${stored.attempt}/accept`, baseUrl),
+    new URL(`/api/v2/messages/${stored.id}/deliveries/${stored.attempt}/state`, baseUrl),
     {
-      body: JSON.stringify({ actor: { id, kind: "session" } }),
+      body: JSON.stringify({ actor: { id, kind: "session" }, state: "accepted" }),
       headers: { Authorization: `Bearer ${e2eAgentToken}`, "Content-Type": "application/json" },
-      method: "POST",
+      method: "PUT",
     }
   );
   expect(accept.status).toBe(409);

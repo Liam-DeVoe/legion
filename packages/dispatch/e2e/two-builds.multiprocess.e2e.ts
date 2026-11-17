@@ -1,7 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ArtifactUploadResponse } from "../web/src/api/types";
+import type { ArtifactUploadV2 } from "../web/src/api/types";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -180,14 +180,14 @@ async function uploadAgentPicture(sessionID: string): Promise<string> {
   form.append("name", "shot.png");
   form.append("file", new Blob([Buffer.from(tinyPng, "base64")], { type: "image/png" }));
   const response = await fetch(
-    new URL(`/api/v1/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
+    new URL(`/api/v2/agents/${encodeURIComponent(sessionID)}/artifacts`, baseUrl),
     { body: form, headers: await userHeaders("alice"), method: "POST" }
   );
   if (!response.ok) {
     throw new Error(`agent picture upload: ${response.status} ${await response.text()}`);
   }
   // The server's own upload answer, as e2e/api.ts reads every JSON answer.
-  const uploaded = (await response.json()) as ArtifactUploadResponse;
+  const uploaded = (await response.json()) as ArtifactUploadV2;
   return uploaded.artifact.slug;
 }
 
@@ -710,7 +710,7 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the
  *  pin cookie), so the tab runs that process's build, and focuses it, which makes it ask
- *  GET /api/v1/dashboard/builds (`deploymentChanged`). Returns the tab and that answer once the page
+ *  GET /api/v2/dashboard-builds (`deploymentChanged`). Returns the tab and that answer once the page
  *  has read it and had three frames to show what it decided. The wait for the answer starts before
  *  the page loads: a browser that focuses the new page itself has the check run then, and the
  *  focus sent here, within the minute, asks nothing more. */
@@ -723,7 +723,7 @@ async function focusedTab(
   await signIn(context, "alice");
   const page = await context.newPage();
   const answered = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/v1/dashboard/builds"
+    (response) => new URL(response.url()).pathname === "/api/v2/dashboard-builds"
   );
   await page.goto("/");
   await expect(page.locator("#root")).not.toBeEmpty();
@@ -743,15 +743,17 @@ async function focusedTab(
 }
 
 // While a release overlaps two builds, a reload could land on either, so no tab is told to reload:
-// the route names both builds, from whichever process answers, and the notice stays away.
+// the route names both builds, sorted, from whichever process answers, and the notice stays away.
 test("a tab of build A focused while A and B are both live shows no new-version notice", async ({
   browser,
 }) => {
   const { builds: answer, page } = await focusedTab(browser, "a");
   try {
-    expect(answer).toEqual({
-      live: [builds.a.entry, builds.b.entry].sort(),
-      serving: builds.a.entry,
+    expect(answer).toMatchObject({
+      items: [builds.a.entry, builds.b.entry]
+        .sort()
+        .map((entry) => ({ entry, serving: entry === builds.a.entry })),
+      total: 2,
     });
     expect(await page.getByRole("status", { name: "A new version is available" }).count()).toBe(0);
   } finally {
@@ -784,7 +786,10 @@ test("a tab of build B focused once only build A is live shows the new-version n
     expect(moved, "B's registry row").not.toEqual([]);
     const tab = await focusedTab(browser, "b");
     page = tab.page;
-    expect(tab.builds).toEqual({ live: [builds.a.entry], serving: builds.b.entry });
+    expect(tab.builds).toMatchObject({
+      items: [{ entry: builds.a.entry, serving: false }],
+      total: 1,
+    });
     expect(await page.getByRole("status", { name: "A new version is available" }).isVisible()).toBe(
       true
     );

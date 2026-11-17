@@ -136,7 +136,7 @@ test("on a phone, a docked send keeps its composer through a thread and back, wh
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("First message");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -172,7 +172,7 @@ test("on a phone, Expand thread while a send is out keeps the draft and its refu
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -181,7 +181,7 @@ test("on a phone, Expand thread while a send is out keeps the draft and its refu
     const refused = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith(`/api/v1/issues/${issue.key}/comments`) &&
+        response.url().endsWith(`/api/v2/issues/${issue.key}/comments`) &&
         response.status() === WRITE_REFUSED.status
     );
     refuse();
@@ -216,7 +216,7 @@ test("on a phone, a thread reply keeps its composer through Back, and reopening 
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     await expect(form.getByRole("button", { name: "Cancel reply" })).toBeVisible();
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Thread reply");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -268,7 +268,7 @@ test("on a phone, a thread reply leaves the docked composer's own reply and draf
     const thread = threadView(page);
     const threadForm = thread.getByRole("form", { name: "Comment composer" });
     await expect(threadForm.getByText(/^Replying to .+ — Earlier comment$/)).toBeVisible();
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await threadForm.getByLabel("Comment").fill("Thread reply");
     await threadForm.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(threadForm.getByLabel("Comment")).toBeDisabled();
@@ -307,7 +307,7 @@ test("on a phone, a thread's own reply holds the thread's Reply while it is out 
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
     const rootReply = thread.getByRole("button", { exact: true, name: "Reply" });
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Inline reply");
     const replyButton = await rootReply.elementHandle();
     await form.evaluate((node, reply) => {
@@ -350,7 +350,7 @@ test("on a phone, a thread's own reply holds Back and Escape while it is out, an
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
     const back = thread.getByRole("button", { name: "Back" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Inline reply");
     const backButton = await back.elementHandle();
     await form.evaluate((node, backControl) => {
@@ -396,7 +396,7 @@ test("on a phone, a thread's Reply over its card's refused reply keeps that draf
     const thread = await openThread(page, earlier.id);
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Card reply");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -436,7 +436,7 @@ test("on a phone, Back and Escape from a thread reply's refusal drop its draft a
     const threadForm = thread.getByRole("form", { name: "Comment composer" });
     const field = threadForm.getByRole("textbox", { name: "Comment" });
     const refusal = thread.getByText(WRITE_REFUSED_TEXT);
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     refuse();
     const sendRefused = async (draft: string) => {
       await expect(field).toHaveValue("");
@@ -498,7 +498,7 @@ test("on a phone, the reader's own Resolve keeps a thread reply's refusal and it
       .getByRole("form", { name: "Comment composer" })
       .getByRole("textbox", { name: "Comment" });
     const refusal = thread.getByText(WRITE_REFUSED_TEXT);
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     refuse();
     await commentTurn(page, earlier.id).getByRole("button", { exact: true, name: "Reply" }).click();
     await field.fill("Refused, then resolved");
@@ -536,7 +536,7 @@ test("on a phone, a thread reply refused after Back comes back in its own thread
     const field = thread
       .getByRole("form", { name: "Comment composer" })
       .getByRole("textbox", { name: "Comment" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await commentTurn(page, first.id).getByRole("button", { exact: true, name: "Reply" }).click();
     await field.fill("Meant for the first");
     await thread.getByRole("button", { exact: true, name: "Send" }).click();
@@ -544,7 +544,7 @@ test("on a phone, a thread reply refused after Back comes back in its own thread
     await leaveThread(page);
     const refused = answeredPost(
       page,
-      `/api/v1/issues/${issue.key}/comments`,
+      `/api/v2/issues/${issue.key}/comments`,
       WRITE_REFUSED.status
     );
     refuse();
@@ -579,7 +579,7 @@ test("on a phone, a thread's own reply out when the viewport widens keeps its th
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
     const back = thread.getByRole("button", { name: "Back" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply through a widening");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -617,7 +617,7 @@ test("on a phone, a thread resolved while its own reply is out stays open with t
     const thread = await openThread(page, earlier.id);
     const form = thread.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply under a resolve");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -659,7 +659,7 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
     const field = form.getByRole("textbox", { name: "Reply" });
     const back = thread.getByRole("button", { name: "Back" });
     // Held for good: the server never answers this one.
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply into the void");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -679,7 +679,7 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
     await back.click();
     await expect(threadView(page)).toHaveCount(0);
 
-    const landed = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
+    const landed = answeredPost(page, `/api/v2/issues/${issue.key}/comments`, 201);
     send.release();
     await landed;
     await send.settled();
@@ -714,7 +714,7 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     const jump = page.getByTestId("jump-to-latest");
-    const comments = `**/api/v1/issues/${issue.key}/comments`;
+    const comments = `**/api/v2/issues/${issue.key}/comments`;
     const refuse = await refusePosts(page, comments);
     await field.fill("Kept through every refusal");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
@@ -734,7 +734,7 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
     await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
-    const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
+    const posted = answeredPost(page, `/api/v2/issues/${issue.key}/comments`, 201);
     send.release();
     await posted;
     await expect(form.getByText("Couldn't send — the server is down")).toHaveCount(0);
@@ -844,7 +844,7 @@ test("on a phone, Jump to latest covers none of the docked composer while the st
 
     // The other order: the corner is on the page before the composer grows under it, and the
     // refusal's row raises the composer by its own height.
-    const comments = `**/api/v1/issues/${issue.key}/comments`;
+    const comments = `**/api/v2/issues/${issue.key}/comments`;
     const refuse = await refusePosts(page, comments);
     await form.getByLabel("Comment").fill("Kept through every refusal");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
@@ -879,7 +879,7 @@ test("on a phone, the connection pill covers none of the docked composer @phone"
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const pill = page.getByTestId("connection-pill");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await form.getByLabel("Comment").fill("A draft\nover\nfour lines\nof text");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     refuse();
@@ -925,7 +925,7 @@ test("on a phone, the stuck live-updates pill covers none of the docked composer
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const pill = page.getByTestId("connection-pill");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await form.getByLabel("Comment").fill("A draft\nover\nfour lines\nof text");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     refuse();
@@ -971,7 +971,7 @@ test("on a phone, the connection pill covers none of a thread's composers @phone
     await page.goto(`/issues/${issue.key}/conversation`);
     const thread = await openThread(page, root.id);
     const pill = page.getByTestId("connection-pill");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
 
     await thread.getByRole("button", { exact: true, name: "Reply" }).click();
     const threadForm = thread
@@ -1046,8 +1046,8 @@ test("on a phone, Jump to latest stays off a thread opened over the Conversation
 // gives the dwell back, so no issue is left unread for good. A thread over the newest
 // conversation is that conversation read and writes the mark from its own card, which is the
 // row below. The mark is nothing the Conversation draws, so this row reads it where it is
-// kept - the reader's own state on the server, `GET /api/v1/me/state` - and watches the page's
-// writes of it.
+// kept - the reader's own state on the server, `GET /api/v2/me/marks?kind=issue` - and watches
+// the page's writes of it.
 test("on a phone, a thread over an older conversation holds the issue's read mark until Back @phone", async ({
   browser,
 }) => {
@@ -1075,8 +1075,8 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
     const marks: string[] = [];
     page.on("request", (request) => {
       if (
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
       ) {
         marks.push(request.postData() ?? "");
       }
@@ -1087,10 +1087,10 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
 
     await openThread(page, earlier.id);
     // Several dwells' worth of the page's clock behind the thread, and then two round trips: the
-    // page's own, which answers only once a `PUT` the dwell started had left the page, and the
+    // page's own, which answers only once a `PATCH` the dwell started had left the page, and the
     // read of the mark itself.
     await page.clock.runFor(DWELL_MS * 3);
-    await page.evaluate(() => fetch("/api/v1/me/state").then(({ status }) => status));
+    await page.evaluate(() => fetch("/api/v2/me/marks?kind=issue").then(({ status }) => status));
     expect(await mark()).toBe(0);
     expect(marks).toEqual([]);
 
@@ -1141,8 +1141,8 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     const marks: string[] = [];
     page.on("request", (request) => {
       if (
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
       ) {
         marks.push(request.postData() ?? "");
       }
@@ -1167,8 +1167,8 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     // screen; the write is awaited here so the back below cannot cut it off.
     const written = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
     );
     await expect
       .poll(async () => {
@@ -1210,8 +1210,8 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
     await page.setViewportSize(phone);
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     let sent = false;
-    await page.route(`**/api/v1/me/issues/${issue.key}/state`, async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
+    await page.route(`**/api/v2/me/marks/issue/${issue.key}`, async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
       sent = true;
       await held;
       return route.fallback();
@@ -1234,8 +1234,8 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
     // would take.
     const written = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
     );
     release();
     await written;

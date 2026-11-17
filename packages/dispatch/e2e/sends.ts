@@ -18,13 +18,19 @@ export function answeredPost(page: Page, path: string, status: number) {
   );
 }
 
-/** Holds every `POST` to `pattern` until `release`, as a slow server would, and counts them, with
- *  the `Idempotency-Key` each carried. `settled` resolves once every POST held so far has ended:
- *  answered, or cut off by the page, which a held request the page gave up on never outlives -
- *  so a row reads what Dispatch made only after every attempt that could reach it has. */
+/** The methods a page's write goes out as: a create is a `POST`, and a change of marks or of a
+ *  state a `PATCH` or a `PUT`. */
+export type WriteMethod = "PATCH" | "POST" | "PUT";
+
+/** Holds every write of `method` (`POST` by default) to `pattern` until `release`, as a slow
+ *  server would, and counts them, with the `Idempotency-Key` each carried. `settled` resolves once
+ *  every write held so far has ended: answered, or cut off by the page, which a held request the
+ *  page gave up on never outlives - so a row reads what Dispatch made only after every attempt
+ *  that could reach it has. */
 export async function holdPosts(
   page: Page,
-  pattern: string
+  pattern: string,
+  method: WriteMethod = "POST"
 ): Promise<{
   keys: () => (string | null)[];
   posts: () => number;
@@ -36,7 +42,7 @@ export async function holdPosts(
   const ends: Promise<void>[] = [];
   await page.route(pattern, async (route) => {
     const request = route.request();
-    if (request.method() !== "POST") return route.fallback();
+    if (request.method() !== method) return route.fallback();
     const { promise: ended, resolve: end } = Promise.withResolvers<void>();
     const onEnd = (settled: Request) => {
       if (settled !== request) return;
@@ -61,7 +67,7 @@ export async function holdPosts(
   };
 }
 
-/** What a route answers a `POST` it refuses: the status, and the code and reason the composer
+/** What a route answers a write it refuses: the status, and the code and reason the composer
  *  shows. */
 export interface Refusal {
   readonly code: string;
@@ -88,14 +94,15 @@ export const MESSAGE_REFUSED: Refusal = {
   status: 400,
 };
 
-/** Holds every `POST` to `pattern` until the returned call, then refuses it with `refusal`,
- *  `WRITE_REFUSED` by default. A 5xx or a 429 is no refusal: the page tries it again under the
- *  write's key, so a row that would refuse with one is refused here, naming `WRITE_REFUSED`,
- *  rather than left waiting on a write that never gives up. */
+/** Holds every write of `method` (`POST` by default) to `pattern` until the returned call, then
+ *  refuses it with `refusal`, `WRITE_REFUSED` by default. A 5xx or a 429 is no refusal: the page
+ *  tries it again under the write's key, so a row that would refuse with one is refused here,
+ *  naming `WRITE_REFUSED`, rather than left waiting on a write that never gives up. */
 export async function refusePosts(
   page: Page,
   pattern: string,
-  refusal: Refusal = WRITE_REFUSED
+  refusal: Refusal = WRITE_REFUSED,
+  method: WriteMethod = "POST"
 ): Promise<() => void> {
   if (refusal.status >= 500 || refusal.status === 429) {
     throw new Error(
@@ -104,7 +111,7 @@ export async function refusePosts(
   }
   const { promise: held, resolve: refuse } = Promise.withResolvers<void>();
   await page.route(pattern, async (route) => {
-    if (route.request().method() !== "POST") return route.fallback();
+    if (route.request().method() !== method) return route.fallback();
     await held;
     return route.fulfill({
       body: JSON.stringify({ code: refusal.code, error: refusal.error }),

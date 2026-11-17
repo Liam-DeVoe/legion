@@ -15,7 +15,7 @@ import { asUser } from "./users";
  */
 
 // It is no stubbed row: it opens the Inbox and then navigates to another page while the shell's
-// `GET /api/v1/agents` is still in flight, so a recording of it holds that read cancelled, with
+// `GET /api/v2/agents` is still in flight, so a recording of it holds that read cancelled, with
 // no body. `routeFromHAR` serves the first entry that matches a URL, so every replay is given
 // the empty one and the Agents page draws "Could not load agents" instead of its heading.
 test("the drawer's own bar filters the drawer alone, and the Inbox page keeps its list", async ({

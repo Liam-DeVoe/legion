@@ -291,11 +291,7 @@ test("a resolved decision block is read-only", async ({ browser }) => {
     { as: "agent" }
   );
   const blockAsk = await indexedBlockAsk(issue.key, "resolved-decision");
-  await resolveAsk(
-    blockAsk.id,
-    { kind: "resolved", reason: "The decision is no longer needed." },
-    { as: "agent" }
-  );
+  await resolveAsk(blockAsk.id, { reason: "The decision is no longer needed." }, { as: "agent" });
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -334,7 +330,7 @@ test("a failed in-document decision answer reports inside the failed block and c
   try {
     const page = await alice.newPage();
     // Dispatch's verdict: a 5xx would be tried again under the answer's key, not refused.
-    await page.route("**/api/v1/asks/*/answer", async (route) => {
+    await page.route("**/api/v2/asks/*/state", async (route) => {
       await route.fulfill({
         body: JSON.stringify({ code: "ASK_INPUT", error: "Dispatch refused the answer" }),
         contentType: "application/json",
@@ -739,7 +735,7 @@ test("a copy of an answered decision pasted above it leaves the answer on the or
       copy?.block_id,
       "decision",
     ]);
-    const held = (await getAsk(blockAsk.id)).ask;
+    const held = await getAsk(blockAsk.id);
     expect({ block: held.block_id, question: held.question, state: held.state }).toEqual({
       block: "decision",
       question: "Which one?",

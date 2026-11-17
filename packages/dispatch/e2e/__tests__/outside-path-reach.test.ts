@@ -53,7 +53,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(run.code).toBe(0);
         expect(origin.seen).toEqual([
           { method: "GET", path: "/healthz", credential: null },
-          { method: "GET", path: "/api/v1/projects", credential: null },
+          { method: "GET", path: "/api/v2/projects", credential: null },
         ]);
       } finally {
         origin.stop(true);
@@ -710,7 +710,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       const path = pathWithCurl(
         'case "$*" in\n' +
           "  */healthz*) printf 200; exit 0 ;;\n" +
-          `  */api/v1/projects*) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
+          `  */api/v2/projects*) printf '%s401' '{"code":"NO_IDENTITY"}'; exit 0 ;;\n` +
           "  *'telnet://dispatch-outside.example:443'* | *'telnet://[fd00::1]:443'* | *'telnet://[fd00::1]:8443'*)\n" +
           "    printf '0.000010 0.000100'; exit 28 ;;\n" +
           "  *'telnet://[::1]:4222'*) printf '0.000010 0.000000'; exit 7 ;;\n" +

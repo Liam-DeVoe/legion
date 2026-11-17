@@ -188,8 +188,8 @@ async function main(): Promise<void> {
 
   const readOnly = podCredential(brokerUrl, join(brokerDir, "read-token"), readSession);
   const named = podCredential(brokerUrl, join(brokerDir, "exchange-token"), namedSession);
-  const architecture = `/api/v1/projects/${project}/architecture`;
-  const comments = `/api/v1/issues/${issue.key}/comments`;
+  const architecture = `/api/v2/projects/${project}/architecture`;
+  const comments = `/api/v2/issues/${issue.key}/comments`;
   // One key for both POSTs, as one client sending the same write twice would. A key belongs to its
   // caller (requestKeyLogin, internal/dispatch/api), so the named token's write runs under it
   // whatever the refused request did.
@@ -214,8 +214,8 @@ async function main(): Promise<void> {
     "0"
   );
   answered(
-    `GET /api/v1/issues/${issue.key} [read-only token]`,
-    await present(readOnly, "GET", `/api/v1/issues/${issue.key}`),
+    `GET /api/v2/issues/${issue.key} [read-only token]`,
+    await present(readOnly, "GET", `/api/v2/issues/${issue.key}`),
     refused
   );
   answered(

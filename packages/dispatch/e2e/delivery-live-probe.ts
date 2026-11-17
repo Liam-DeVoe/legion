@@ -783,7 +783,7 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isTimeline(body)) throw new Error("the timeline view's snapshot is not a timeline body");
       const params = query(view.query, body.window);
       return [
-        read<DeliveryTimelineWithMeasures>(`/api/v1/delivery/timeline?${params}`, (answer) => ({
+        read<DeliveryTimelineWithMeasures>(`/api/v2/delivery/timeline?${params}`, (answer) => ({
           measures: compareFields(body.measures, answer.measures, MEASURE_FIELDS),
           prs: compareIds(
             (body.prs ?? []).map((pr) => pr.id),
@@ -794,7 +794,7 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
             (answer.runs ?? []).map((run) => run.id)
           ),
         })),
-        read<DeliveryMeasuresResponse>(`/api/v1/delivery/measures?${params}`, (answer) => ({
+        read<DeliveryMeasuresResponse>(`/api/v2/delivery/measures?${params}`, (answer) => ({
           measures: compareFields(body.measures, answer, MEASURE_FIELDS),
           prs: null,
           runs: null,
@@ -805,7 +805,7 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isMeasures(body)) throw new Error("the measures view's snapshot is not a measures body");
       return [
         read<DeliveryMeasuresResponse>(
-          `/api/v1/delivery/measures?${query(view.query, body.window)}`,
+          `/api/v2/delivery/measures?${query(view.query, body.window)}`,
           (answer) => ({
             measures: compareFields(body, answer, MEASURE_FIELDS),
             prs: null,
@@ -818,8 +818,8 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
       if (!isPipeline(body)) throw new Error("the pipeline view's snapshot is not a pipeline body");
       const route =
         view.at === undefined
-          ? "/api/v1/delivery/pipeline"
-          : `/api/v1/delivery/pipeline?${new URLSearchParams({ at: view.at })}`;
+          ? "/api/v2/delivery/pipeline"
+          : `/api/v2/delivery/pipeline?${new URLSearchParams({ at: view.at })}`;
       return [
         read<DeliveryPipelineResponse>(route, (answer) => ({
           measures: compareFields(body, answer, PIPELINE_FIELDS),

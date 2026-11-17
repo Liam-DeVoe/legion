@@ -1,12 +1,13 @@
-import {
-  AGENT_STREAM_LIMITS,
-  type DispatchEvent,
-  type InboxThreadKind,
-  type paths,
-} from "@legion/contracts";
+import { AGENT_STREAM_LIMITS } from "@legion/contracts";
+import type {
+  paths,
+  ResolveAskStateInput,
+  RetractResultStateInput,
+} from "@legion/contracts/dispatch-api-v2";
 import type { Cookie } from "@playwright/test";
 import {
   type Body,
+  type Json200,
   type Op,
   type PathParams,
   type PathsOf,
@@ -17,7 +18,19 @@ import {
   repoParams,
   routeUrl,
 } from "../web/src/api/paths";
-import type { Actor, GatedStep } from "../web/src/api/types";
+import type {
+  Actor,
+  AgentMarkV2Input,
+  AnswerAskStateInput,
+  ArtifactText,
+  AskWithThread,
+  DispatchEvent,
+  GatedStep,
+  InboxRow,
+  IssueDetails,
+  IssueMarkV2Input,
+  MarkV2,
+} from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 import { type DispatchProcess, pinnedTo } from "./harness-processes";
 
@@ -320,17 +333,6 @@ function get<P extends PathsOf<"get">>(
   return send(pattern, "GET", args, options);
 }
 
-/** A read the document cannot type, taken under the type `@legion/contracts` holds for it. Its
- *  path pattern, path parameters and query parameters are still the document's, and only the
- *  answer is the caller's, which has to name both type arguments. */
-function getAnswering<T, P extends PathsOf<"get">>(
-  pattern: P,
-  args: CallArgs<P, "get">,
-  options: ApiOptions = {}
-): Promise<T> {
-  return send(pattern, "GET", args, options);
-}
-
 function post<P extends PathsOf<"post">>(
   pattern: P,
   args: CallArgs<P, "post">,
@@ -363,24 +365,70 @@ function del<P extends PathsOf<"delete">>(
   return send(pattern, "DELETE", args, options);
 }
 
-export function createProject(input: Body<"/api/v1/projects", "post">, options: ApiOptions = {}) {
-  return post("/api/v1/projects", { body: input }, options);
+/** Every GET route whose answer is a page of a list: `{items, total, limit, offset}`, with what
+ *  stands beside them. */
+type ListPattern = {
+  [P in PathsOf<"get">]: Json200<Op<P, "get">> extends { items: unknown; limit: number }
+    ? P
+    : never;
+}[PathsOf<"get">];
+
+/** One row of a list route's page. */
+type ItemOf<P extends ListPattern> =
+  Json200<Op<P, "get">> extends { items: readonly (infer T)[] | null } ? T : never;
+
+/** A list route's answer read whole: the first page's members with every row of every page. */
+type WholeList<P extends ListPattern> = Omit<Json200<Op<P, "get">>, "items"> & {
+  items: ItemOf<P>[];
+};
+
+/** Every row of a list route, read as the dashboard reads one (`readWholeList`,
+ *  web/src/api/client.ts): each page asks for no `limit`, so it is the route's own default, and
+ *  the next starts where the rows read so far end (`offset`), until the rows read are the
+ *  `total` the route counts or a page comes back short of its limit. Answers the first page's
+ *  members beside the rows, with every page's rows in the route's own order. */
+async function getWholeList<P extends ListPattern>(
+  pattern: P,
+  args: CallArgs<P, "get">,
+  options: ApiOptions = {}
+): Promise<WholeList<P>> {
+  const items: ItemOf<P>[] = [];
+  let first: object | undefined;
+  for (;;) {
+    const offset = items.length === 0 ? {} : { offset: items.length };
+    const page = await send<{ items: ItemOf<P>[] | null; limit: number; total: number | null }>(
+      pattern,
+      "GET",
+      { ...args, query: { ...args.query, ...offset } },
+      options
+    );
+    first ??= page;
+    const rows = page.items ?? [];
+    items.push(...rows);
+    const short = rows.length === 0 || rows.length < page.limit;
+    if (short || (page.total !== null && items.length >= page.total)) {
+      return { ...first, items } as WholeList<P>;
+    }
+  }
 }
 
-/** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
- *  serves `project` gates, in the order it gates them, published as that deployment's daemon
+export function createProject(input: Body<"/api/v2/projects", "post">, options: ApiOptions = {}) {
+  return post("/api/v2/projects", { body: input }, options);
+}
+
+/** `PATCH /api/v2/projects/{key}` with `gated_steps`: the design-gate steps the Legion deployment
+ *  that serves `project` gates, in the order it gates them, published as that deployment's daemon
  *  publishes them - over the agent bearer, naming its session in `actor`, since the list is the
  *  daemon's own configuration rather than a choice a person makes. The empty list is a
- *  deployment that gates nothing. */
+ *  deployment that gates nothing. Answers the project as the write left it. */
 export function setGatedSteps(
   project: string,
   steps: GatedStep[],
   options: ApiOptions = { as: "agent" }
-): Promise<{ project: string; steps: GatedStep[] }> {
-  return request<{ project: string; steps: GatedStep[] }>(
-    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
-    "PUT",
-    { steps },
+) {
+  return patch(
+    "/api/v2/projects/{key}",
+    { body: { gated_steps: steps }, params: { key: project } },
     options
   );
 }
@@ -389,11 +437,11 @@ export function setGatedSteps(
  *  project's default repository. */
 export function putRepoProject(
   repo: string,
-  input: Body<"/api/v1/settings/repo-projects/{owner}/{repo}", "put">,
+  input: Body<"/api/v2/repositories/{owner}/{repo}", "put">,
   login = "alice"
 ) {
   return put(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
+    "/api/v2/repositories/{owner}/{repo}",
     { body: input, params: repoParams(repo) },
     { login }
   );
@@ -402,7 +450,7 @@ export function putRepoProject(
 /** Removes `repo`'s mapping, as the Settings page's Delete does. */
 export function deleteRepoProject(repo: string, login = "alice") {
   return del(
-    "/api/v1/settings/repo-projects/{owner}/{repo}",
+    "/api/v2/repositories/{owner}/{repo}",
     { body: {}, params: repoParams(repo) },
     { login }
   );
@@ -410,100 +458,113 @@ export function deleteRepoProject(repo: string, login = "alice") {
 
 /** Mints a personal agent token for `login`; the returned bearer acts for that human. */
 export async function mintAgentToken(name: string, login: string): Promise<string> {
-  const minted = await post("/api/v1/me/agent-tokens", { body: { name } }, { login });
+  const minted = await post("/api/v2/me/agent-tokens", { body: { name } }, { login });
   return minted.token;
 }
 
-export function getIssue(key: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}", { params: { key } }, options);
+/** Every member the issue's read can include, which the issue page asks for (`api.getIssue`,
+ *  web/src/api/client.ts). */
+const issueDetails = [
+  "open_asks",
+  "children",
+  "progress",
+  "design_gates",
+  "reach",
+  "referenced_by_count",
+] satisfies Query<"/api/v2/issues/{key}", "get">["include"];
+
+/** One issue with every member its read can include - its open asks, its children, its
+ *  progress, its design gates, where its route reaches and how many items cite it - as the issue
+ *  page reads it. The route answers each only as `include` asks for it, so this read names the
+ *  answer they make present (`IssueDetails`). */
+export async function getIssue(key: string, options: ApiOptions = {}): Promise<IssueDetails> {
+  return (await get(
+    "/api/v2/issues/{key}",
+    { params: { key }, query: { include: issueDetails } },
+    options
+  )) as IssueDetails;
 }
 
-/** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
+/** `GET /api/v2/issues/{key}/events`: the issue's events in the server's order, every page of
+ *  them; a query that names a `limit` or an `offset` reads that one page.
  *
- *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
+ *  The rows are typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
  *  is bytes, so the document carries `payload` as `unknown` and cannot say which payload each
  *  `type` brings, while `DispatchEvent` is exactly that union. The route, its path parameter and
  *  its query parameters are still the document's. */
-export function getIssueEvents(
+export async function getIssueEvents(
   key: string,
-  page: Query<"/api/v1/issues/{key}/events", "get"> = {},
+  page: Query<"/api/v2/issues/{key}/events", "get"> = {},
   options: ApiOptions = {}
 ): Promise<DispatchEvent[]> {
-  return getAnswering<DispatchEvent[], "/api/v1/issues/{key}/events">(
-    "/api/v1/issues/{key}/events",
-    { params: { key }, query: page },
-    options
-  );
+  const args = { params: { key }, query: page };
+  const read =
+    page.limit === undefined && page.offset === undefined
+      ? await getWholeList("/api/v2/issues/{key}/events", args, options)
+      : await get("/api/v2/issues/{key}/events", args, options);
+  return (read.items ?? []) as unknown as DispatchEvent[];
 }
 
 export function patchIssue(
   key: string,
-  input: Body<"/api/v1/issues/{key}", "patch">,
+  input: Body<"/api/v2/issues/{key}", "patch">,
   options: ApiOptions = {}
 ) {
-  return patch("/api/v1/issues/{key}", { body: input, params: { key } }, options);
+  return patch("/api/v2/issues/{key}", { body: input, params: { key } }, options);
 }
 
-/** `POST /api/v1/issues/{key}/results`: one result of one check, recorded on `issue`, which
+/** `POST /api/v2/issues/{key}/results`: one result of one check, recorded on `issue`, which
  *  need not be the issue whose Verification document holds the check. The answer carries the
  *  stored result and the pull-request body line it implies. */
 export function recordCheckResult(
   issue: string,
-  input: Body<"/api/v1/issues/{key}/results", "post">,
+  input: Body<"/api/v2/issues/{key}/results", "post">,
   options: ApiOptions = { as: "agent" }
 ) {
-  return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
+  return post("/api/v2/issues/{key}/results", { body: input, params: { key: issue } }, options);
 }
 
-/** `POST /api/v1/results/{id}/retract`: one recorded result marked wrong, with the reason it
- *  is wrong. The result is neither updated nor deleted, and the retraction is a record of its
- *  own. The seeded agent is the session that recorded the result, which is one of the three
- *  callers the route admits. */
+/** `PUT /api/v2/results/{id}/state` to `retracted`: one recorded result marked wrong, with the
+ *  reason it is wrong. The result is neither updated nor deleted, and the retraction is a record
+ *  of its own. The seeded agent is the session that recorded the result, which is one of the
+ *  three callers the route admits. */
 export function retractCheckResult(
   id: string,
-  input: Body<"/api/v1/results/{id}/retract", "post">,
+  input: Omit<RetractResultStateInput, "state">,
   options: ApiOptions = { as: "agent" }
 ) {
-  return post("/api/v1/results/{id}/retract", { body: input, params: { id } }, options);
-}
-
-/** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
- *  document order, each with the results recorded against it. */
-export function getIssueResults(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/results", { params: { key: issue } }, options);
-}
-
-/** `POST /api/v1/settings/new-issue/_test`: what the bar files a person's unmatched typed words
- *  as, in place of what the server's environment set. Test-only endpoint (mounted when
- *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
- *  deployment setting can change while it runs. */
-export function setNewIssueSettings(
-  input: { label: string; session: string },
-  options: ApiOptions = {}
-): Promise<{ label: string; session: string }> {
-  return request<{ label: string; session: string }>(
-    "/api/v1/settings/new-issue/_test",
-    "POST",
-    input,
+  return put(
+    "/api/v2/results/{id}/state",
+    { body: { ...input, state: "retracted" }, params: { id } },
     options
   );
 }
 
-/** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
-export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/coverage", { params: { key: issue } }, options);
+/** `GET /api/v2/issues/{key}/checks`, every page: the checks of the issue's Verification
+ *  document in document order, each with the results recorded against it. */
+export function getIssueResults(issue: string, options: ApiOptions = {}) {
+  return getWholeList("/api/v2/issues/{key}/checks", { params: { key: issue } }, options);
 }
 
-/** The project list in the server's order: lifecycle status, then rank.
- *
- *  The route answers the page object where the call asks for one with `limit` or `offset`, and
- *  the whole list otherwise; this read asks for neither. */
+/** `POST /api/v2/_test/settings/new-issue`: what the bar files a person's unmatched typed words
+ *  as, in place of what the server's environment set. Test-only endpoint (mounted when
+ *  DISPATCH_TEST_HOOKS=1, see run-server.sh); the server starts with both unset, and no
+ *  deployment setting can change while it runs. */
+export function setNewIssueSettings(
+  input: Body<"/api/v2/_test/settings/new-issue", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v2/_test/settings/new-issue", { body: input }, options);
+}
+
+/** `GET /api/v2/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
+export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
+  return get("/api/v2/issues/{key}/coverage", { params: { key: issue } }, options);
+}
+
+/** The project's issues in the server's order, lifecycle status then rank, every page of them. */
 export async function listIssues(project: string, options: ApiOptions = {}) {
-  const answered = await get("/api/v1/issues", { query: { project } }, options);
-  if (!Array.isArray(answered)) {
-    throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
-  }
-  return answered;
+  return (await getWholeList("/api/v2/issues", { query: { project: [project] } }, options)).items;
 }
 
 // The five priority routes. A priority belongs to no project, so each of these reads or writes
@@ -511,153 +572,150 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
 // agent bearer (the default `as`), because a priority's margin draws who made each act and a
 // bearer would name a session there.
 
-/** `GET /api/v1/priorities`: every live priority in rank order with the work under each, and
- *  the two faults the same read answers. */
+/** `GET /api/v2/priorities`, every page: every live priority in rank order with the work under
+ *  each, and the two faults the same read answers. */
 export function listPriorities(
-  query: Query<"/api/v1/priorities", "get"> = {},
+  query: Omit<Query<"/api/v2/priorities", "get">, "limit" | "offset"> = {},
   options: ApiOptions = {}
 ) {
-  return get("/api/v1/priorities", { query }, options);
+  return getWholeList("/api/v2/priorities", { query }, options);
 }
 
-/** `POST /api/v1/priorities`: writes one, last in the order; the server derives its id from the
+/** `POST /api/v2/priorities`: writes one, last in the order; the server derives its id from the
  *  title and refuses a second write of that id with 409 PRIORITY_EXISTS. */
 export function createPriority(
-  input: Body<"/api/v1/priorities", "post">,
+  input: Body<"/api/v2/priorities", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/priorities", { body: input }, options);
+  return post("/api/v2/priorities", { body: input }, options);
 }
 
-/** `PATCH /api/v1/priorities/{id}`: writes the attributes the body names, and nothing else. */
+/** `PATCH /api/v2/priorities/{id}`: writes the attributes the body names, and nothing else. */
 export function patchPriority(
   id: string,
-  input: Body<"/api/v1/priorities/{id}", "patch">,
+  input: Body<"/api/v2/priorities/{id}", "patch">,
   options: ApiOptions = {}
 ) {
-  return patch("/api/v1/priorities/{id}", { body: input, params: { id } }, options);
+  return patch("/api/v2/priorities/{id}", { body: input, params: { id } }, options);
 }
 
-/** `DELETE /api/v1/priorities/{id}`: retires one by writing the state `gone`, which removes no
+/** `DELETE /api/v2/priorities/{id}`: retires one by writing the state `gone`, which removes no
  *  row, so the priority still answers its history. */
 export function endPriority(id: string, options: ApiOptions = {}) {
-  return del("/api/v1/priorities/{id}", { body: {}, params: { id } }, options);
+  return del("/api/v2/priorities/{id}", { body: {}, params: { id } }, options);
 }
 
-/** `GET /api/v1/priorities/{id}/history`: the priority's own acts, newest first - every write
- *  of its attributes and every relation an issue stated or retracted on it - which the margin
- *  of its page draws. */
-export function getPriorityHistory(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/priorities/{id}/history", { params: { id } }, options);
+/** `GET /api/v2/priorities/{id}/acts`, every page: the priority's own acts, newest first - every
+ *  write of its attributes and every relation an issue stated or retracted on it - which the
+ *  margin of its page draws. */
+export async function getPriorityHistory(id: string, options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/priorities/{id}/acts", { params: { id } }, options)).items;
 }
 
-/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them. */
-export function getInbox(options: ApiOptions = {}) {
-  return get("/api/v1/inbox", {}, options);
+/** The viewer's Inbox rows, as the SPA's own `["inbox"]` query reads them: every open ask they
+ *  can see, each with its thread and their own mark of it (`GET /api/v2/asks`, every page,
+ *  `include=thread,mark`). */
+export async function getInbox(options: ApiOptions = {}): Promise<InboxRow[]> {
+  const asks = await getWholeList(
+    "/api/v2/asks",
+    { query: { include: ["thread", "mark"] } },
+    options
+  );
+  return asks.items as InboxRow[];
 }
 
-/** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader
- *  lands on by clicking that hit. */
+/** `GET /api/v2/search-results`: the palette's own read, so a row's `href` here is the path a
+ *  reader lands on by clicking that hit. */
 export function search(query: string, options: ApiOptions = {}) {
-  return get("/api/v1/search", { query: { q: query } }, options);
+  return get("/api/v2/search-results", { query: { q: query } }, options);
 }
 
-/** `GET /api/v1/me/answers`: the caller's own answers and ask replies, newest first, one page. */
+/** `GET /api/v2/me/answers`: the caller's own answers and ask replies, newest first, one page. */
 export function listMyAnswers(
-  page: Query<"/api/v1/me/answers", "get"> = {},
+  page: Query<"/api/v2/me/answers", "get"> = {},
   options: ApiOptions = {}
 ) {
-  return get("/api/v1/me/answers", { query: page }, options);
+  return get("/api/v2/me/answers", { query: page }, options);
 }
 
-/** `GET /api/v1/me/replies`: the Inbox's thread rows - the threads the caller wrote in where
+/** `GET /api/v2/me/threads`: the Inbox's thread rows - the threads the caller wrote in where
  *  someone else has written since they last read it, and, with `kind` naming it, their one-off
- *  messages to an agent session holding a reply - newest reply first. An absent `kind` is the
- *  route's own default, `reply` alone; an absent `state` is `unread`; an absent `limit` is every
- *  row, which is what the Inbox itself reads. `inbox` is every row of the caller's Inbox, read or
- *  not, less what they have dismissed, and `dismissed` is what they dismissed out of it, newest
- *  dismissal first and `INBOX_DISMISSED_PAGE` rows at a time, `cursor` reading the next page from
- *  the `next_cursor` of the page before it. Under `dismissed` the answer's `total` is the page it
- *  holds rather than the whole pile, which nothing counts, so a caller that wants the pile pages
- *  through `next_cursor`. */
-export function listMyReplies(
-  page: Omit<Query<"/api/v1/me/replies", "get">, "kind"> & {
-    kind?: readonly InboxThreadKind[];
-  } = {},
+ *  messages to an agent session holding a reply - newest reply first, every page of them; a query
+ *  that names a `limit` or an `offset` reads that one page. An absent `kind` is the route's own
+ *  default, `reply` alone; an absent `state` is `unread`. `inbox` is every row of the caller's
+ *  Inbox, read or not, less what they have dismissed, and `dismissed` is what they dismissed out
+ *  of it, newest dismissal first. */
+export async function listMyReplies(
+  page: Query<"/api/v2/me/threads", "get"> = {},
   options: ApiOptions = {}
 ) {
-  // `kind` is one comma list on the wire, as the SPA's own client folds it (`listMyReplies`,
-  // web/src/api/client.ts); every other key is the document's own.
-  return get("/api/v1/me/replies", { query: { ...page, kind: page.kind?.join(",") } }, options);
+  return page.limit === undefined && page.offset === undefined
+    ? await getWholeList("/api/v2/me/threads", { query: page }, options)
+    : await get("/api/v2/me/threads", { query: page }, options);
 }
 
-/** `PUT /api/v1/me/threads/{id}/read`: move the caller's read mark on one thread forward. */
+/** `PATCH /api/v2/me/marks/thread/{id}`: move the caller's read mark on one thread forward. */
 export function markThreadRead(threadId: string, readThrough: string, options: ApiOptions = {}) {
-  return put(
-    "/api/v1/me/threads/{id}/read",
-    { body: { read_through: readThrough }, params: { id: threadId } },
+  return patch(
+    "/api/v2/me/marks/{kind}/{id}",
+    { body: { read_through: readThrough }, params: { id: threadId, kind: "thread" } },
     options
   );
 }
 
-/** `POST /api/v1/me/inbox/read`: the Inbox's **Mark all read** - mark every unread thread the
- *  list route answers under the same narrowing whose newest write is at or before
- *  `body.read_through`. Answers how many threads it marked. */
-export function markInboxRead(
-  body: Body<"/api/v1/me/inbox/read", "post">,
-  options: ApiOptions = {}
-) {
-  return post("/api/v1/me/inbox/read", { body }, options);
-}
-
-/** `PUT /api/v1/me/asks/{id}/snooze`: the caller's own snooze on an Inbox row, until
+/** `PATCH /api/v2/me/marks/ask/{id}`: the caller's own snooze on an Inbox row, until
  *  `snoozedUntil` (RFC 3339, in the future). */
 export function snoozeAsk(id: string, snoozedUntil: string, options: ApiOptions = {}) {
-  return put(
-    "/api/v1/me/asks/{id}/snooze",
-    { body: { snoozed_until: snoozedUntil }, params: { id } },
+  return patch(
+    "/api/v2/me/marks/{kind}/{id}",
+    { body: { snoozed_until: snoozedUntil }, params: { id, kind: "ask" } },
     options
   );
 }
 
-/** The Agents page's rows: every live Envoy session merged with its Dispatch activity. */
-export function listAgents(options: ApiOptions = {}) {
-  return get("/api/v1/agents", {}, options);
+/** The Agents page's rows: every live Envoy session merged with its Dispatch activity, every
+ *  page of them. */
+export async function listAgents(options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/agents", {}, options)).items;
 }
 
-/** A session's conversation as the Agents page reads it: its exchanges in the server's order. */
-export function listAgentMessages(sessionID: string, options: ApiOptions = {}) {
-  return get(
-    "/api/v1/agents/{session_id}/messages",
-    { params: { session_id: sessionID } },
-    options
-  );
+/** A session's conversation as the Agents page reads it: its exchanges in the server's order,
+ *  every page of them. */
+export async function listAgentMessages(sessionID: string, options: ApiOptions = {}) {
+  return (
+    await getWholeList(
+      "/api/v2/agents/{session_id}/messages",
+      { params: { session_id: sessionID } },
+      options
+    )
+  ).items;
 }
 
-export function createIssue(input: Body<"/api/v1/issues", "post">, options: ApiOptions = {}) {
-  return post("/api/v1/issues", { body: input }, options);
+export function createIssue(input: Body<"/api/v2/issues", "post">, options: ApiOptions = {}) {
+  return post("/api/v2/issues", { body: input }, options);
 }
 
 export function createAsk(
   issue: string,
-  input: Body<"/api/v1/issues/{key}/asks", "post">,
+  input: Body<"/api/v2/issues/{key}/asks", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/issues/{key}/asks", { body: input, params: { key: issue } }, options);
+  return post("/api/v2/issues/{key}/asks", { body: input, params: { key: issue } }, options);
 }
 
-/** Every ask on the issue, whatever its state (the route's default `state=all`). */
-export function listIssueAsks(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+/** Every ask on the issue, whatever its state (the route's default `state=all`), every page. */
+export async function listIssueAsks(issue: string, options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/issues/{key}/asks", { params: { key: issue } }, options))
+    .items;
 }
 
 export function createProjectDocument(
   project: string,
-  input: Body<"/api/v1/projects/{key}/artifacts", "post">,
+  input: Body<"/api/v2/projects/{key}/artifacts", "post">,
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/projects/{key}/artifacts",
+    "/api/v2/projects/{key}/artifacts",
     { body: input, params: { key: project } },
     options
   );
@@ -665,123 +723,182 @@ export function createProjectDocument(
 
 export function createIssueArtifact(
   issue: string,
-  input: Body<"/api/v1/issues/{key}/artifacts", "post">,
+  input: Body<"/api/v2/issues/{key}/artifacts", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
+  return post("/api/v2/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
- *  own `["artifacts", key]` read lists them, each with its role and its versions. */
-export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
+/** `GET /api/v2/issues/{key}/artifacts`, every page: every artifact the issue holds, as the
+ *  Documents tab's own `["artifacts", key]` read lists them, each with its role and its latest
+ *  version. */
+export async function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/issues/{key}/artifacts", { params: { key: issue } }, options))
+    .items;
 }
 
-export function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
-  return get(
-    "/api/v1/projects/{key}/artifacts/{slug}",
-    { params: { key: project, slug } },
-    options
+/** The one document `query` names out of a list of documents, which a slug names at most one of;
+ *  a read that names none is the 404 the slug's own route answered. */
+function theDocument<T>(answered: { items: T[] | null }, named: string): T {
+  const [document] = answered.items ?? [];
+  if (document === undefined) throw new Error(`${named} names no document`);
+  return document;
+}
+
+/** The project document at `slug` (`GET /api/v2/projects/{key}/artifacts?issue=none&slug=`). */
+export async function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
+  return theDocument(
+    await get(
+      "/api/v2/projects/{key}/artifacts",
+      { params: { key: project }, query: { issue: "none", slug } },
+      options
+    ),
+    `project ${project}'s slug ${slug}`
   );
 }
 
 export function createArtifactAsk(
   artifactID: string,
-  input: Body<"/api/v1/artifacts/{id}/asks", "post">,
+  input: Body<"/api/v2/artifacts/{id}/asks", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/artifacts/{id}/asks", { body: input, params: { id: artifactID } }, options);
+  return post("/api/v2/artifacts/{id}/asks", { body: input, params: { id: artifactID } }, options);
 }
 
 export function createArtifactComment(
   artifactID: string,
-  input: Body<"/api/v1/artifacts/{id}/comments", "post">,
+  input: Body<"/api/v2/artifacts/{id}/comments", "post">,
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/artifacts/{id}/comments",
+    "/api/v2/artifacts/{id}/comments",
     { body: input, params: { id: artifactID } },
     options
   );
 }
 
-export function listArtifactComments(artifactID: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}/comments", { params: { id: artifactID } }, options);
+export async function listArtifactComments(artifactID: string, options: ApiOptions = {}) {
+  return (
+    await getWholeList("/api/v2/artifacts/{id}/comments", { params: { id: artifactID } }, options)
+  ).items;
 }
 
 export function editAsk(
   id: string,
-  input: Body<"/api/v1/asks/{id}", "patch">,
+  input: Body<"/api/v2/asks/{id}", "patch">,
   options: ApiOptions = {}
 ) {
-  return patch("/api/v1/asks/{id}", { body: input, params: { id } }, options);
+  return patch("/api/v2/asks/{id}", { body: input, params: { id } }, options);
 }
 
+/** `PUT /api/v2/asks/{id}/state` to `answered`: the options picked and the text. */
 export function answerAsk(
   id: string,
-  input: Body<"/api/v1/asks/{id}/answer", "post">,
+  input: Omit<AnswerAskStateInput, "state">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/asks/{id}/answer", { body: input, params: { id } }, options);
-}
-
-export function resolveAsk(
-  id: string,
-  input: Body<"/api/v1/asks/{id}/resolve", "post">,
-  options: ApiOptions = {}
-) {
-  return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
-}
-
-export function createComment(
-  issue: string,
-  input: Body<"/api/v1/issues/{key}/comments", "post">,
-  options: ApiOptions = {}
-) {
-  return post("/api/v1/issues/{key}/comments", { body: input, params: { key: issue } }, options);
-}
-
-export function acceptSuggestion(id: string, options: ApiOptions = {}) {
-  return post("/api/v1/comments/{id}/accept", { body: {}, params: { id } }, options);
-}
-
-export function rejectSuggestion(id: string, options: ApiOptions = {}) {
-  return post("/api/v1/comments/{id}/reject", { body: {}, params: { id } }, options);
-}
-
-export function resolveComment(id: string, options: ApiOptions = {}) {
-  return post("/api/v1/comments/{id}/resolve", { body: {}, params: { id } }, options);
-}
-
-export function editComment(
-  id: string,
-  input: Body<"/api/v1/comments/{id}", "patch">,
-  options: ApiOptions = {}
-) {
-  return patch("/api/v1/comments/{id}", { body: input, params: { id } }, options);
-}
-
-export function listComments(
-  issue: string,
-  artifact: string | undefined = undefined,
-  options: ApiOptions = {}
-) {
-  return get(
-    "/api/v1/issues/{key}/comments",
-    { params: { key: issue }, query: { artifact } },
+  return put(
+    "/api/v2/asks/{id}/state",
+    { body: { ...input, state: "answered" }, params: { id } },
     options
   );
 }
 
-/** One comment and its reply chain, as the server holds them now: its anchor's quote included. */
-export function getComment(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/comments/{id}", { params: { id } }, options);
+/** `PUT /api/v2/asks/{id}/state` to `resolved`: the ask closed with the reason it needs no
+ *  answer. */
+export function resolveAsk(
+  id: string,
+  input: Omit<ResolveAskStateInput, "state">,
+  options: ApiOptions = {}
+) {
+  return put(
+    "/api/v2/asks/{id}/state",
+    { body: { ...input, state: "resolved" }, params: { id } },
+    options
+  );
 }
 
-/** `GET /api/v1/comments/{id}/blocks`: the comment's current blocks in body order, each with its
- *  span in the stored body, its revision, and whether the blocks are indexed from that body. */
+/** `PUT /api/v2/asks/{id}/state` to `retracted`: the asker takes the question back, with the
+ *  reason. */
+export function retractAsk(
+  id: string,
+  input: Omit<ResolveAskStateInput, "state">,
+  options: ApiOptions = {}
+) {
+  return put(
+    "/api/v2/asks/{id}/state",
+    { body: { ...input, state: "retracted" }, params: { id } },
+    options
+  );
+}
+
+export function createComment(
+  issue: string,
+  input: Body<"/api/v2/issues/{key}/comments", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v2/issues/{key}/comments", { body: input, params: { key: issue } }, options);
+}
+
+/** `PUT /api/v2/comments/{id}/state` to `accepted`: the suggestion applied to its document. */
+export function acceptSuggestion(id: string, options: ApiOptions = {}) {
+  return put(
+    "/api/v2/comments/{id}/state",
+    { body: { state: "accepted" }, params: { id } },
+    options
+  );
+}
+
+/** `PUT /api/v2/comments/{id}/state` to `rejected`: the suggestion closed unapplied. */
+export function rejectSuggestion(id: string, options: ApiOptions = {}) {
+  return put(
+    "/api/v2/comments/{id}/state",
+    { body: { state: "rejected" }, params: { id } },
+    options
+  );
+}
+
+/** `PUT /api/v2/comments/{id}/state` to `resolved`. */
+export function resolveComment(id: string, options: ApiOptions = {}) {
+  return put(
+    "/api/v2/comments/{id}/state",
+    { body: { state: "resolved" }, params: { id } },
+    options
+  );
+}
+
+export function editComment(
+  id: string,
+  input: Body<"/api/v2/comments/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v2/comments/{id}", { body: input, params: { id } }, options);
+}
+
+/** Every comment of the issue, or of one of its documents, every page. */
+export async function listComments(
+  issue: string,
+  artifact: string | undefined = undefined,
+  options: ApiOptions = {}
+) {
+  return (
+    await getWholeList(
+      "/api/v2/issues/{key}/comments",
+      { params: { key: issue }, query: artifact === undefined ? {} : { artifact } },
+      options
+    )
+  ).items;
+}
+
+/** One comment and its reply chain, as the server holds them now: its anchor's quote included. */
+export function getComment(id: string, options: ApiOptions = {}) {
+  return get("/api/v2/comments/{id}", { params: { id } }, options);
+}
+
+/** `GET /api/v2/comments/{id}?include=blocks`: the comment with its current blocks in body order,
+ *  each with its span in the stored body and its revision. */
 export function getCommentBlocks(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/comments/{id}/blocks", { params: { id } }, options);
+  return get("/api/v2/comments/{id}", { params: { id }, query: { include: ["blocks"] } }, options);
 }
 
 /** A reply to comment `comment` of `issue` that answers its block `block` (`b2`): `reply_to`
@@ -790,54 +907,85 @@ export function replyToCommentBlock(
   issue: string,
   comment: string,
   block: string,
-  input: Omit<Body<"/api/v1/issues/{key}/comments", "post">, "reply_to" | "reply_to_block">,
+  input: Omit<Body<"/api/v2/issues/{key}/comments", "post">, "reply_to" | "reply_to_block">,
   options: ApiOptions = {}
 ) {
   return createComment(issue, { ...input, reply_to: comment, reply_to_block: block }, options);
 }
 
-export function getAsk(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/asks/{id}", { params: { id } }, options);
+/** One ask with its thread - replies, rewordings, answers, followers, claimant and route
+ *  (`include=thread`). */
+export async function getAsk(id: string, options: ApiOptions = {}): Promise<AskWithThread> {
+  return (await get(
+    "/api/v2/asks/{id}",
+    { params: { id }, query: { include: ["thread"] } },
+    options
+  )) as AskWithThread;
 }
 
-export function listAskFollowers(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/asks/{id}/followers", { params: { id } }, options);
+/** The sessions following an ask, as its thread names them. */
+export async function listAskFollowers(id: string, options: ApiOptions = {}) {
+  return (await getAsk(id, options)).thread.followers ?? [];
 }
 
 /** A session follows an ask: the bearer body names the session, which must equal the path. */
 export function followAsk(id: string, sessionID: string, actor: Actor) {
   return put(
-    "/api/v1/asks/{id}/followers/{session_id}",
+    "/api/v2/asks/{id}/followers/{session_id}",
     { body: {}, params: { id, session_id: sessionID } },
     { actor, as: "agent" }
   );
 }
 
-/** The document's current canonical markdown, as the server's live room holds it. */
-export function getArtifactText(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}/text", { params: { id } }, options);
+/** The document's current canonical markdown, as the server's live room holds it
+ *  (`include=text`). */
+export async function getArtifactText(id: string, options: ApiOptions = {}): Promise<ArtifactText> {
+  return (await get(
+    "/api/v2/artifacts/{id}",
+    { params: { id }, query: { include: ["text"] } },
+    options
+  )) as ArtifactText;
 }
 
-/** The blocks of the document's current version, each with the span of markdown it covers. */
-export function getArtifactBlocks(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}/blocks", { params: { id } }, options);
-}
-
-/** The same markdown by the slug route, `GET /api/v1/issues/{key}/artifacts/{slug}/text`. */
-export function getIssueArtifactText(issue: string, slug: string, options: ApiOptions = {}) {
-  return get(
-    "/api/v1/issues/{key}/artifacts/{slug}/text",
-    { params: { key: issue, slug } },
+/** The blocks of the document's current version, each with the span of markdown it covers
+ *  (`include=blocks`). */
+export async function getArtifactBlocks(id: string, options: ApiOptions = {}) {
+  const document = await get(
+    "/api/v2/artifacts/{id}",
+    { params: { id }, query: { include: ["blocks"] } },
     options
   );
+  return document.blocks ?? [];
+}
+
+/** The same markdown by the issue's slug,
+ *  `GET /api/v2/issues/{key}/artifacts?slug=&include=text`. */
+export async function getIssueArtifactText(
+  issue: string,
+  slug: string,
+  options: ApiOptions = {}
+): Promise<ArtifactText> {
+  return theDocument(
+    await get(
+      "/api/v2/issues/{key}/artifacts",
+      { params: { key: issue }, query: { include: ["text"], slug } },
+      options
+    ),
+    `issue ${issue}'s slug ${slug}`
+  ) as ArtifactText;
 }
 
 export function getArtifact(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/artifacts/{id}", { params: { id } }, options);
+  return get("/api/v2/artifacts/{id}", { params: { id } }, options);
+}
+
+/** The document's versions, oldest first, every page (`GET /api/v2/artifacts/{id}/versions`). */
+export async function listArtifactVersions(id: string, options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/artifacts/{id}/versions", { params: { id } }, options)).items;
 }
 
 /**
- * `POST /api/v1/artifacts/{id}/approval-requests`: the request that asks a person to approve the
+ * `POST /api/v2/artifacts/{id}/approval-requests`: the request that asks a person to approve the
  * document's latest settled version, with an optional summary of what they are approving.
  *
  * `include_verification` asks for the issue's Verification document beside that document, each at
@@ -848,14 +996,14 @@ export function getArtifact(id: string, options: ApiOptions = {}) {
  */
 export function requestApproval(
   id: string,
-  input: Body<"/api/v1/artifacts/{id}/approval-requests", "post"> = {},
+  input: Body<"/api/v2/artifacts/{id}/approval-requests", "post"> = {},
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/artifacts/{id}/approval-requests", { body: input, params: { id } }, options);
+  return post("/api/v2/artifacts/{id}/approval-requests", { body: input, params: { id } }, options);
 }
 
-/** What `POST /api/v1/artifacts/{id}/approval-requests` answers. */
-export type ApprovalRequested = Result<"/api/v1/artifacts/{id}/approval-requests", "post">;
+/** What `POST /api/v2/artifacts/{id}/approval-requests` answers. */
+export type ApprovalRequested = Result<"/api/v2/artifacts/{id}/approval-requests", "post">;
 
 /** That answer with the ask the request opened, for a row that reads the ask: the route answers
  *  `ask: null` where the version it names is already approved, so it opened none, and a row that
@@ -872,7 +1020,7 @@ export function withOpenedAsk(
   return { ...requested, ask };
 }
 
-/** `POST /api/v1/artifacts/{id}/plan-reviews`: the plan review's approval of one plan version,
+/** `POST /api/v2/artifacts/{id}/plan-reviews`: the plan review's approval of one plan version,
  *  which is the only way a plan is approved. */
 export function createPlanReview(
   id: string,
@@ -880,7 +1028,7 @@ export function createPlanReview(
   options: ApiOptions = { as: "agent" }
 ) {
   return post(
-    "/api/v1/artifacts/{id}/plan-reviews",
+    "/api/v2/artifacts/{id}/plan-reviews",
     { body: { version }, params: { id } },
     options
   );
@@ -890,19 +1038,19 @@ export function createPlanReview(
  *  approval request needed: Approve, or Request changes with a reason. */
 export function reviewArtifact(
   id: string,
-  input: Body<"/api/v1/artifacts/{id}/reviews", "post">,
+  input: Body<"/api/v2/artifacts/{id}/reviews", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/artifacts/{id}/reviews", { body: input, params: { id } }, options);
+  return post("/api/v2/artifacts/{id}/reviews", { body: input, params: { id } }, options);
 }
 
 export function createNamedVersion(id: string, summary: string, options: ApiOptions = {}) {
-  return post("/api/v1/artifacts/{id}/versions", { body: { summary }, params: { id } }, options);
+  return post("/api/v2/artifacts/{id}/versions", { body: { summary }, params: { id } }, options);
 }
 
 export function getArtifactVersion(id: string, version: number, options: ApiOptions = {}) {
   return get(
-    "/api/v1/artifacts/{id}/versions/{number}",
+    "/api/v2/artifacts/{id}/versions/{number}",
     { params: { id, number: String(version) } },
     options
   );
@@ -910,40 +1058,40 @@ export function getArtifactVersion(id: string, version: number, options: ApiOpti
 
 export function editArtifact(
   id: string,
-  input: Body<"/api/v1/artifacts/{id}/edits", "post">,
+  input: Body<"/api/v2/artifacts/{id}/edits", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/artifacts/{id}/edits", { body: input, params: { id } }, options);
+  return post("/api/v2/artifacts/{id}/edits", { body: input, params: { id } }, options);
 }
 
-/** `POST /api/v1/issues/{key}/claim`: the claimant is the caller itself, so `options.actor`
+/** `PUT /api/v2/issues/{key}/claim`: the claimant is the caller itself, so `options.actor`
  *  (the session a bearer names, as on every other write) is the holder recorded. */
 export function claimIssue(issue: string, options: ApiOptions = {}) {
-  return post("/api/v1/issues/{key}/claim", { body: {}, params: { key: issue } }, options);
+  return put("/api/v2/issues/{key}/claim", { body: {}, params: { key: issue } }, options);
 }
 
-/** `DELETE /api/v1/issues/{key}/claim`: the holder, `options.actor` with the agent bearer, gives
+/** `DELETE /api/v2/issues/{key}/claim`: the holder, `options.actor` with the agent bearer, gives
  *  the issue up. */
 export function releaseClaim(issue: string, options: ApiOptions = {}) {
-  return del("/api/v1/issues/{key}/claim", { body: {}, params: { key: issue } }, options);
+  return del("/api/v2/issues/{key}/claim", { body: {}, params: { key: issue } }, options);
 }
 
 export function createMessage(
   issue: string,
-  input: Body<"/api/v1/issues/{key}/messages", "post">,
+  input: Body<"/api/v2/issues/{key}/messages", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/issues/{key}/messages", { body: input, params: { key: issue } }, options);
+  return post("/api/v2/issues/{key}/messages", { body: input, params: { key: issue } }, options);
 }
 
 /** Sends one message to a session as a human; `options.idempotencyKey` keys it. */
 export function createAgentMessage(
   sessionID: string,
-  input: Body<"/api/v1/agents/{session_id}/messages", "post">,
+  input: Body<"/api/v2/agents/{session_id}/messages", "post">,
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/agents/{session_id}/messages",
+    "/api/v2/agents/{session_id}/messages",
     { body: input, params: { session_id: sessionID } },
     options
   );
@@ -952,38 +1100,36 @@ export function createAgentMessage(
 /** Sends one broadcast as a human; `options.idempotencyKey` keys it, as a row that repeats a
  *  request the page made does. */
 export function createBroadcast(
-  input: Body<"/api/v1/broadcasts", "post">,
+  input: Body<"/api/v2/broadcasts", "post">,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/broadcasts", { body: input }, options);
+  return post("/api/v2/broadcasts", { body: input }, options);
 }
 
-export function listBroadcasts(options: ApiOptions = {}) {
-  return get("/api/v1/broadcasts", {}, options);
+export async function listBroadcasts(options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/broadcasts", {}, options)).items;
 }
 
 export function getBroadcast(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/broadcasts/{id}", { params: { id } }, options);
+  return get("/api/v2/broadcasts/{id}", { params: { id } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each with
- *  its replies, as the Conversation reads them. */
-export function listIssueMessages(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+/** `GET /api/v2/issues/{key}/messages`, every page: every root message of the issue, oldest
+ *  first, each with its replies, as the Conversation reads them. */
+export async function listIssueMessages(issue: string, options: ApiOptions = {}) {
+  return (await getWholeList("/api/v2/issues/{key}/messages", { params: { key: issue } }, options))
+    .items;
 }
 
-export function getMessage(issue: string, messageID: string, options: ApiOptions = {}) {
-  return get(
-    "/api/v1/issues/{key}/messages/{id}",
-    { params: { id: messageID, key: issue } },
-    options
-  );
+/** One message with its replies and its deliveries. */
+export function getMessage(messageID: string, options: ApiOptions = {}) {
+  return get("/api/v2/messages/{id}", { params: { id: messageID } }, options);
 }
 
-/** `GET /api/v1/messages/{id}/blocks`: the message's blocks in body order, each with its span in
- *  the stored body, and whether they are indexed from that body. */
+/** `GET /api/v2/messages/{id}?include=blocks`: the message with its blocks in body order, each
+ *  with its span in the stored body. */
 export function getMessageBlocks(id: string, options: ApiOptions = {}) {
-  return get("/api/v1/messages/{id}/blocks", { params: { id } }, options);
+  return get("/api/v2/messages/{id}", { params: { id }, query: { include: ["blocks"] } }, options);
 }
 
 /** A reply to message `message` of `issue` that answers its block `block` (`b2`): `in_reply_to`
@@ -992,7 +1138,7 @@ export function replyToMessageBlock(
   issue: string,
   message: string,
   block: string,
-  input: Omit<Body<"/api/v1/issues/{key}/messages", "post">, "in_reply_to" | "in_reply_to_block">,
+  input: Omit<Body<"/api/v2/issues/{key}/messages", "post">, "in_reply_to" | "in_reply_to_block">,
   options: ApiOptions = {}
 ) {
   return createMessage(
@@ -1007,24 +1153,24 @@ export function replyToMessageBlock(
  *  handing back the stored reply. */
 export function replyToMessageDelivery(
   messageID: string,
-  input: Body<"/api/v1/messages/{id}/reply", "post">,
+  input: Body<"/api/v2/messages/{id}/replies", "post">,
   actor: Actor,
   { followUp = false }: { followUp?: boolean } = {}
 ) {
   return post(
-    "/api/v1/messages/{id}/reply",
+    "/api/v2/messages/{id}/replies",
     { body: input, params: { id: messageID }, query: followUp ? { follow_up: true } : {} },
     { actor, as: "agent" }
   );
 }
 
-/** `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`: the session an attempt went to
- *  records that it took the message as a turn of its own live conversation. The Inbox lists no
- *  Agent row for such a message, however the session replies to it (`myAgentRows`). */
+/** `PUT /api/v2/messages/{id}/deliveries/{attempt}/state` to `accepted`: the session an attempt
+ *  went to records that it took the message as a turn of its own live conversation. The Inbox
+ *  lists no Agent row for such a message, however the session replies to it (`myAgentRows`). */
 export function acceptAgentDelivery(messageID: string, attempt: number, actor: Actor) {
-  return post(
-    "/api/v1/messages/{id}/deliveries/{attempt}/accept",
-    { body: {}, params: { attempt: String(attempt), id: messageID } },
+  return put(
+    "/api/v2/messages/{id}/deliveries/{attempt}/state",
+    { body: { state: "accepted" }, params: { attempt: String(attempt), id: messageID } },
     { actor, as: "agent" }
   );
 }
@@ -1032,11 +1178,11 @@ export function acceptAgentDelivery(messageID: string, attempt: number, actor: A
 /** A session answers a mention delivered to it, the way the callback path does. */
 export function replyToCommentDelivery(
   commentID: string,
-  input: Body<"/api/v1/comments/{id}/reply", "post">,
+  input: Body<"/api/v2/comments/{id}/replies", "post">,
   actor: Actor
 ) {
   return post(
-    "/api/v1/comments/{id}/reply",
+    "/api/v2/comments/{id}/replies",
     { body: input, params: { id: commentID } },
     { actor, as: "agent" }
   );
@@ -1052,42 +1198,56 @@ export function createHandoff(
   actor: Actor = seedActor
 ) {
   return post(
-    "/api/v1/issues/{key}/handoffs/{phase}",
-    { body: { body: JSON.stringify(body) }, params: { key: issue, phase } },
+    "/api/v2/issues/{key}/handoffs",
+    { body: { body: JSON.stringify(body), phase }, params: { key: issue } },
     { actor, as: "agent" }
   );
 }
 
-/** The signed-in human's own per-agent conversation state, as another of their devices sets it. */
+/** The person's marks of one kind, every page of them, by the id each names: an issue's key, a
+ *  session's id. */
+async function marksOf(
+  kind: MarkV2["kind"],
+  options: ApiOptions
+): Promise<Readonly<Record<string, MarkV2>>> {
+  const marks = await getWholeList("/api/v2/me/marks", { query: { kind } }, options);
+  return Object.fromEntries(marks.items.map((mark) => [mark.id, mark]));
+}
+
+/** The signed-in human's own per-agent conversation state, as another of their devices sets it
+ *  (`PATCH /api/v2/me/marks/agent/{session_id}`). */
 export function putAgentState(
   sessionID: string,
-  input: Body<"/api/v1/me/agents/{session_id}/state", "put">,
+  input: AgentMarkV2Input,
   options: ApiOptions = {}
 ) {
-  return put(
-    "/api/v1/me/agents/{session_id}/state",
-    { body: input, params: { session_id: sessionID } },
+  return patch(
+    "/api/v2/me/marks/{kind}/{id}",
+    { body: input, params: { id: sessionID, kind: "agent" } },
     options
   );
 }
 
-/** The signed-in human's own conversation state with every session, unread counts included. */
+/** The signed-in human's own conversation state with every session, unread counts included
+ *  (`GET /api/v2/me/marks?kind=agent`), by session id. */
 export function getAgentStates(options: ApiOptions = {}) {
-  return get("/api/v1/me/agents/state", {}, options);
+  return marksOf("agent", options);
 }
 
-export function putIssueState(
-  key: string,
-  input: Body<"/api/v1/me/issues/{key}/state", "put">,
-  options: ApiOptions = {}
-) {
-  return put("/api/v1/me/issues/{key}/state", { body: input, params: { key } }, options);
+/** The signed-in human's own state of one issue (`PATCH /api/v2/me/marks/issue/{key}`): its pin,
+ *  its read mark and its pinned items. */
+export function putIssueState(key: string, input: IssueMarkV2Input, options: ApiOptions = {}) {
+  return patch(
+    "/api/v2/me/marks/{kind}/{id}",
+    { body: input, params: { id: key, kind: "issue" } },
+    options
+  );
 }
 
-/** `login`'s own state on every issue, `GET /api/v1/me/state`: each issue's pin and its pinned
- *  items (`dismissed`), as the page reads them. */
+/** `login`'s own state on every issue (`GET /api/v2/me/marks?kind=issue`), by issue key: each
+ *  issue's pin, its read mark and its pinned items, as the page reads them. */
 export function getMyState(login = "alice") {
-  return get("/api/v1/me/state", {}, { login });
+  return marksOf("issue", { login });
 }
 
 /**
@@ -1096,12 +1256,12 @@ export function getMyState(login = "alice") {
  * proves the page resumes every subscription after an unplanned gap, on demand.
  */
 export function disconnectLiveSockets(options: ApiOptions = {}) {
-  return post("/api/v1/live/_test/disconnect", {}, { as: "agent", ...options });
+  return post("/api/v2/_test/live/disconnect", {}, { as: "agent", ...options });
 }
 
 /** Forces every open live socket closed with 4001, as its bounded age does. */
 export function rotateLiveSockets(options: ApiOptions = {}) {
-  return post("/api/v1/live/_test/rotate", {}, { as: "agent", ...options });
+  return post("/api/v2/_test/live/rotate", {}, { as: "agent", ...options });
 }
 
 /**
@@ -1111,7 +1271,7 @@ export function rotateLiveSockets(options: ApiOptions = {}) {
  * settlement still running from the scenario before it.
  */
 export function quiesceDocuments(options: ApiOptions = {}) {
-  return post("/api/v1/artifacts/_test/quiesce", {}, { as: "agent", ...options });
+  return post("/api/v2/_test/artifacts/quiesce", {}, { as: "agent", ...options });
 }
 
 /**
@@ -1129,7 +1289,7 @@ export function slowWrites(
   delayMs: number,
   options: ApiOptions = {}
 ) {
-  return post("/api/v1/writes/_test/slow", { body: { delay_ms: delayMs, method, path } }, options);
+  return post("/api/v2/_test/writes/slow", { body: { delay_ms: delayMs, method, path } }, options);
 }
 
 /** Adds `repo`'s `.dispatch/architecture` on `branch` as one of `project`'s sources, or moves that
@@ -1140,55 +1300,67 @@ export function putArchitectureSource(
   options: ApiOptions = {}
 ) {
   return put(
-    "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
+    "/api/v2/projects/{key}/architecture-sources/{owner}/{repo}",
     { body: { branch: input.branch }, params: { key: project, ...repoParams(input.repo) } },
     options
   );
 }
 
 /** Moves the person a project's unowned new issues fall to, and whom a question on an issue
- *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
- *  blank is refused `400 INVALID_PROJECT`, so nothing here clears a default. */
+ *  nobody holds reaches (`PATCH /api/v2/projects/{key}` with `default_assignee`). A project
+ *  always names somebody: an assignee that is blank is refused `400 INVALID_PROJECT`, so nothing
+ *  here clears a default. */
 export function putProjectDefaultAssignee(
   project: string,
-  input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
+  assignee: string,
   options: ApiOptions = {}
 ) {
-  return put(
-    "/api/v1/projects/{key}/default-assignee",
-    { body: input, params: { key: project } },
+  return patch(
+    "/api/v2/projects/{key}",
+    { body: { default_assignee: assignee }, params: { key: project } },
     options
   );
 }
 
-/** Every project with the person it defaults to, as the Settings page reads them: each project
- *  names somebody, so none is left out. */
-export function listProjectDefaultAssignees(options: ApiOptions = {}) {
-  return get("/api/v1/settings/project-default-assignees", {}, options);
+/** Every project with the person it defaults to, as the Settings page reads them
+ *  (`GET /api/v2/projects?include=default_assignee`, every page): each project names somebody,
+ *  so none is left out. */
+export async function listProjectDefaultAssignees(options: ApiOptions = {}) {
+  return (
+    await getWholeList("/api/v2/projects", { query: { include: ["default_assignee"] } }, options)
+  ).items;
 }
 
-/** Imports `project`'s source `repo` now; a rejected model answers 200 with the reason in
- *  `last_error`. */
-export function syncArchitectureSource(project: string, repo: string, options: ApiOptions = {}) {
-  return post(
-    "/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
-    { params: { key: project, ...repoParams(repo) } },
+/** Imports `project`'s source `repo` now (`POST /api/v2/projects/{key}/architecture-syncs`
+ *  naming that one repository), answering the source as the sync left it: a rejected model
+ *  answers 200 with the reason in `last_error`. */
+export async function syncArchitectureSource(
+  project: string,
+  repo: string,
+  options: ApiOptions = {}
+) {
+  const synced = await post(
+    "/api/v2/projects/{key}/architecture-syncs",
+    { body: { repos: [repo] }, params: { key: project } },
     options
   );
+  const source = synced.items?.find((item) => item.repo === repo);
+  if (source === undefined) throw new Error(`the sync of ${project} answered no source ${repo}`);
+  return source;
 }
 
 export function getArchitecture(project: string, options: ApiOptions = {}) {
-  return get("/api/v1/projects/{key}/architecture", { params: { key: project } }, options);
+  return get("/api/v2/projects/{key}/architecture", { params: { key: project } }, options);
 }
 
 /** Retry one comment mention's delivery, the endpoint the "Mention deliveries" Retry posts to. */
 export function retryCommentDelivery(
   comment: string,
-  input: Body<"/api/v1/comments/{id}/deliveries", "post">,
+  input: Body<"/api/v2/comments/{id}/deliveries", "post">,
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/comments/{id}/deliveries",
+    "/api/v2/comments/{id}/deliveries",
     { body: input, params: { id: comment } },
     options
   );
@@ -1210,7 +1382,7 @@ export function setAgentStreamResponder(
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/agents/{session_id}/stream/_test/publish",
+    "/api/v2/_test/agents/{session_id}/stream/publish",
     { body: { responding }, params: { session_id: sessionID }, query: { as: "responder" } },
     options
   );
@@ -1223,7 +1395,7 @@ export function publishAgentStreamFrame(
   options: ApiOptions = {}
 ) {
   return post(
-    "/api/v1/agents/{session_id}/stream/_test/publish",
+    "/api/v2/_test/agents/{session_id}/stream/publish",
     { body: frame, params: { session_id: sessionID }, query: as === "frame" ? {} : { as } },
     options
   );

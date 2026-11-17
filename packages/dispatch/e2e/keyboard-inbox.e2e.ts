@@ -39,11 +39,12 @@ import { asUser } from "./users";
  * `keyboard-inbox.stub.e2e.ts`.
  */
 
+/** The next write of `askId`'s snooze: its mark's `PATCH /api/v2/me/marks/ask/{id}`. */
 function snoozeRequest(page: Page, askId: string) {
   return page.waitForRequest(
     (request) =>
-      request.method() === "PUT" &&
-      new URL(request.url()).pathname === `/api/v1/me/asks/${askId}/snooze`
+      request.method() === "PATCH" &&
+      new URL(request.url()).pathname === `/api/v2/me/marks/ask/${askId}`
   );
 }
 
@@ -130,7 +131,7 @@ test.describe("inbox selection", () => {
       const rows = page.locator("[data-inbox-row]");
       const first = await askIdOf(page, 0);
 
-      await page.route(`**/api/v1/me/asks/${first}/snooze`, (route) =>
+      await page.route(`**/api/v2/me/marks/ask/${first}`, (route) =>
         route.fulfill({
           body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
           contentType: "application/json",
@@ -176,7 +177,7 @@ test.describe("inbox selection", () => {
       const takenAsk = await askIdOf(page, 1);
       const held = Promise.withResolvers<void>();
       const requested = Promise.withResolvers<void>();
-      await page.route(`**/api/v1/me/asks/${refusedAsk}/snooze`, async (route) => {
+      await page.route(`**/api/v2/me/marks/ask/${refusedAsk}`, async (route) => {
         requested.resolve();
         await held.promise;
         return route.fulfill({
@@ -229,7 +230,7 @@ test.describe("inbox selection", () => {
       const page = await context.newPage();
       const held = Promise.withResolvers<void>();
       const requested = Promise.withResolvers<void>();
-      await page.route(`**/api/v1/me/asks/${refusedAsk.id}/snooze`, async (route) => {
+      await page.route(`**/api/v2/me/marks/ask/${refusedAsk.id}`, async (route) => {
         requested.resolve();
         await held.promise;
         return route.fulfill({
@@ -313,7 +314,7 @@ test.describe("inbox selection", () => {
       const held = new Promise<void>((resolve) => {
         refuse = resolve;
       });
-      await page.route(`**/api/v1/me/asks/${refusedAsk.id}/snooze`, async (route) => {
+      await page.route(`**/api/v2/me/marks/ask/${refusedAsk.id}`, async (route) => {
         await held;
         return route.fulfill({
           body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
@@ -391,7 +392,7 @@ test.describe("inbox selection", () => {
       await expect(bar).toContainText("1 selected");
 
       // A pick the server refuses leaves the row where it was, marked, with the reason up.
-      await page.route("**/api/v1/me/asks/*/snooze", (route) =>
+      await page.route("**/api/v2/me/marks/ask/*", (route) =>
         route.fulfill({
           body: JSON.stringify({ code: "INVALID_SNOOZE", error: "snoozed_until must be a moment" }),
           contentType: "application/json",
@@ -432,7 +433,7 @@ test.describe("inbox selection", () => {
     const second = await createIssue({ project: "CORE", title: "Still open" });
     const live = await createAsk(second.key, { question: "Ship it?" }, session);
     const moment = async (askId: string) =>
-      (await getInbox()).find((row) => row.id === askId)?.snoozed_until ?? null;
+      (await getInbox()).find((row) => row.id === askId)?.mark.snoozed_until ?? null;
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -440,8 +441,10 @@ test.describe("inbox selection", () => {
       const rows = page.locator("[data-inbox-row]");
       const bar = page.getByRole("group", { name: "Selected rows" });
       const writes: string[] = [];
-      await page.route("**/api/v1/me/asks/*/snooze", (route) => {
-        writes.push(new URL(route.request().url()).pathname);
+      await page.route("**/api/v2/me/marks/ask/*", (route) => {
+        if (route.request().method() === "PATCH") {
+          writes.push(new URL(route.request().url()).pathname);
+        }
         return route.fallback();
       });
 
@@ -483,7 +486,7 @@ test.describe("inbox selection", () => {
       const held = new Promise<void>((resolve) => {
         release = resolve;
       });
-      await page.route("**/api/v1/me/asks/*/snooze", async (route) => {
+      await page.route("**/api/v2/me/marks/ask/*", async (route) => {
         await held;
         return route.fallback();
       });
@@ -495,7 +498,12 @@ test.describe("inbox selection", () => {
       await expect(picker).toBeFocused();
       const writes: string[] = [];
       page.on("request", (request) => {
-        if (request.method() === "PUT") writes.push(request.url());
+        if (
+          request.method() === "PATCH" &&
+          new URL(request.url()).pathname.startsWith("/api/v2/me/marks/ask/")
+        ) {
+          writes.push(request.url());
+        }
       });
       await picker.selectOption("tomorrow");
 

@@ -49,7 +49,10 @@ interface HeldRead {
   release(): Promise<void>;
 }
 
-async function holdNextRead(page: Page, pattern: RegExp): Promise<HeldRead> {
+async function holdNextRead(
+  page: Page,
+  pattern: RegExp | ((url: URL) => boolean)
+): Promise<HeldRead> {
   let armed = true;
   const arrived = Promise.withResolvers<{ route: Route; response: APIResponse }>();
   await page.route(pattern, async (route) => {
@@ -121,7 +124,7 @@ test("reference: a title written while the reference's read is in flight shows a
     // The refresh v2 owes is composed at once and held for a moment, as a busy server holds it;
     // v3 lands while it is in flight, so the page owes one more fetch once it settles. The page
     // is left as soon as the held read settles, inside the second the scheduler waits.
-    const held = await holdNextRead(page, new RegExp(`/api/v1/issues/${target.key}/summary$`));
+    const held = await holdNextRead(page, new RegExp(`/api/v2/issues/${target.key}$`));
     await patchIssue(target.key, { title: "Target v2" }, bob);
     await held.arrived;
     await patchIssue(target.key, { title: "Target v3" }, bob);
@@ -163,11 +166,15 @@ test("inbox: an issue closed while the Inbox read is in flight drops its ask fro
 
     // The Inbox read the new ask owes is composed with the ask and held; the close lands while it
     // is in flight.
-    const held = await holdNextRead(page, /\/api\/v1\/inbox(\?|$)/);
+    const held = await holdNextRead(
+      page,
+      (url) =>
+        url.pathname === "/api/v2/asks" && url.searchParams.getAll("include").includes("thread")
+    );
     const ask = await createAsk(closing.key, { question: "An ask whose issue closes" }, bob);
     await held.arrived;
     const projectsRead = page.waitForRequest(
-      (request) => new URL(request.url()).pathname === "/api/v1/projects"
+      (request) => new URL(request.url()).pathname === "/api/v2/projects"
     );
     await patchIssue(closing.key, { status: "done" }, bob);
     // A close refreshes the sidebar's project list: the page has handled the close's event.
@@ -335,12 +342,12 @@ test("budget: a document in another project citing 25 documents reads no issue d
     // The batch window and the refresh deferral below are page timers: the page's clock fires
     // them rather than the wall clock.
     await page.clock.install();
-    const gets: string[] = [];
+    const gets: URL[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
       // The live socket is `/ws/live`, outside `/api/`, so no read below is the event feed.
       if (request.method() === "GET" && url.pathname.startsWith("/api/")) {
-        gets.push(url.pathname);
+        gets.push(url);
       }
     });
     await openLive(page, `/issues/${issue.key}/conversation`);
@@ -373,14 +380,20 @@ test("budget: a document in another project citing 25 documents reads no issue d
     // above, and this window in Node is for it to reach Playwright's counter, which the page's
     // own clock cannot do. A read that is never made marks nothing else to wait on.
     await sleep(200);
-    console.log(`REFETCH-INDEX [${testInfo.project.name}] GETs: ${gets.join(", ")}`);
+    const read = (url: URL) => `${url.pathname}${url.search}`;
+    console.log(`REFETCH-INDEX [${testInfo.project.name}] GETs: ${gets.map(read).join(", ")}`);
+    // The issue's own detail is its read with members included (a summary includes none), and
+    // the Inbox is the ask list read with each ask's thread.
     const unrelated = gets.filter(
-      (path) =>
-        path === `/api/v1/issues/${issue.key}` ||
-        path === "/api/v1/inbox" ||
-        /^\/api\/v1\/issues\/[^/]+\/(asks|comments|messages)$/.test(path)
+      ({ pathname, searchParams }) =>
+        (pathname === `/api/v2/issues/${issue.key}` && searchParams.has("include")) ||
+        (pathname === "/api/v2/asks" && searchParams.getAll("include").includes("thread")) ||
+        /^\/api\/v2\/issues\/[^/]+\/(asks|comments|messages)$/.test(pathname)
     );
-    expect(unrelated, "reads of what a citation in another project cannot change").toEqual([]);
+    expect(
+      unrelated.map(read),
+      "reads of what a citation in another project cannot change"
+    ).toEqual([]);
   } finally {
     await alice.close();
   }

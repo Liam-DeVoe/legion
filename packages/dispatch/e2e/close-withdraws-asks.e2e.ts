@@ -36,8 +36,7 @@ const resolvedDecision = ':::ask{#decision urgency="high" multiple="false" state
 
 /** The number of the newest version the document has saved. */
 async function newestVersion(artifactId: string): Promise<number> {
-  const { versions } = await getArtifact(artifactId, { login: "alice" });
-  return Math.max(...(versions ?? []).map((version) => version.number));
+  return (await getArtifact(artifactId, { login: "alice" })).latest_version ?? 0;
 }
 
 interface Seeded {

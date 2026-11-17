@@ -115,7 +115,7 @@ test("a comment written in a closed issue's Conversation posts @pr", async ({ br
     await expect(form.getByRole("button", { name: "Suggest" })).toHaveCount(0);
     await expect(form.getByRole("button", { exact: true, name: "Ask" })).toHaveCount(0);
     await field.fill("Posted after the close");
-    await send(page, `/api/v1/issues/${issueKey}/comments`);
+    await send(page, `/api/v2/issues/${issueKey}/comments`);
     expect((await listComments(issueKey)).map((comment) => comment.body)).toEqual([
       "Posted after the close",
     ]);
@@ -147,11 +147,11 @@ test("a message to an agent written on a closed issue posts and reaches the agen
       .getByRole("form", { name: "Comment composer" })
       .getByLabel("Comment")
       .fill("Message after the close");
-    await send(page, `/api/v1/issues/${issueKey}/messages`);
+    await send(page, `/api/v2/issues/${issueKey}/messages`);
     await expect
       .poll(async () =>
         (await listIssueMessages(issueKey))
-          .find((thread) => thread.message.id === plannerMessageId)
+          .find((thread) => thread.id === plannerMessageId)
           ?.replies?.map((message) => [message.body, message.target])
       )
       .toEqual([["Message after the close", `session:${planner.session_id}`]]);
@@ -183,11 +183,11 @@ test("Reply on a closed issue's message thread posts", async ({ browser }) => {
       .getByRole("form", { name: "Comment composer" })
       .getByLabel("Comment")
       .fill("Replied after the close");
-    await send(page, `/api/v1/issues/${issueKey}/messages`);
+    await send(page, `/api/v2/issues/${issueKey}/messages`);
     await expect
       .poll(async () =>
         (await listIssueMessages(issueKey))
-          .find((thread) => thread.message.id === questionId)
+          .find((thread) => thread.id === questionId)
           ?.replies?.map((message) => message.body)
       )
       .toEqual(["Replied after the close"]);
@@ -210,13 +210,13 @@ test("Retry of a failed delivery on a closed issue posts a new attempt", async (
     const posted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        new URL(response.url()).pathname === `/api/v1/messages/${testerMessageId}/deliveries`
+        new URL(response.url()).pathname === `/api/v2/messages/${testerMessageId}/deliveries`
     );
     await retry.click();
     expect((await posted).ok()).toBe(true);
     await expect
       .poll(async () =>
-        ((await getMessage(issueKey, testerMessageId)).message.deliveries ?? []).map((delivery) => [
+        ((await getMessage(testerMessageId)).deliveries ?? []).map((delivery) => [
           delivery.attempt,
           delivery.state,
         ])

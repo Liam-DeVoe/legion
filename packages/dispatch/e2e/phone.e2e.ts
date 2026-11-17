@@ -217,7 +217,7 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v2/issues/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();
@@ -278,7 +278,7 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
     const sheet = page.getByTestId("margin-sheet");
     const form = sheet.getByRole("form", { name: "Comment composer" });
     const body = form.getByLabel("Comment");
-    const refuse = await refusePosts(page, "**/api/v1/issues/*/comments");
+    const refuse = await refusePosts(page, "**/api/v2/issues/*/comments");
     await body.fill("Keep this draft");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(body).toBeDisabled();

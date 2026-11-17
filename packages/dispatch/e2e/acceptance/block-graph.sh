@@ -31,7 +31,7 @@
 # /auth/_dev/signin, signs in: the local harness has it, a deployed server does not). Editing a
 # comment needs the `person` scope, which this script's bearer does not hold, so the A13 and A15
 # comment sections sign a person in with a cookie jar and edit the comments that person wrote;
-# with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … PATCH /api/v1/comments/{id} needs the
+# with DEV_SIGNIN_LOGIN unset each prints one `SKIP: … PATCH /api/v2/comments/{id} needs the
 # person scope …` line and every other section runs; the same holds for the answer part of A6's
 # section, whose answer needs that scope too. It writes two issues in PROJECT, the second a child
 # of the first, and four asks, three on the child and one on the first; it resolves every ask it
@@ -214,22 +214,30 @@ upload() {
   [[ "$(<"$work/out")" =~ (dispatch://[^\);[:space:]]+)\) ]] ||
     fail "$1" "upload $2" "no reference in: $(<"$work/out")"
   doc_ref="${BASH_REMATCH[1]}"
-  get "/api/v1/references?to=$(q "$doc_ref")"
+  get "/api/v2/references?to=$(q "$doc_ref")&limit=1"
   want_status 200 "$1" "read $doc_ref"
   doc_id="$(jq -er '.node.id' "$work/body")" || fail "$1" "read $doc_ref" "no node id: $(body)"
 }
 
+# one_document SECTION WHAT SLUG INCLUDE [ISSUE]: reads the document list of ISSUE (default $key)
+# narrowed to SLUG, with INCLUDE's members, into $work/body. The slug filter also keeps the
+# document whose file name it is, so the read fails unless exactly one row answers.
+one_document() {
+  get "/api/v2/issues/${5:-$key}/artifacts?slug=$(q "$3")&include=$4"
+  want_status 200 "$1" "$2"
+  jq -e '.total == 1' "$work/body" >/dev/null ||
+    fail "$1" "$2" "slug $3 names no single document: $(body)"
+}
+
 # block_ids SECTION SLUG: writes {block's markdown text: block id} for the issue document SLUG to
-# $work/ids.json. GET …/blocks gives each block's markdown range; the fixtures are ASCII, so jq's
-# character offsets are the server's byte offsets.
+# $work/ids.json. The document's row with include=blocks gives each block's markdown range; the
+# fixtures are ASCII, so jq's character offsets are the server's byte offsets.
 block_ids() {
-  get "/api/v1/issues/$key/artifacts/$2/text"
-  want_status 200 "$1" "read $2's text"
+  one_document "$1" "read $2's text" "$2" text
   cp "$work/body" "$work/text.json"
-  get "/api/v1/issues/$key/artifacts/$2/blocks"
-  want_status 200 "$1" "read $2's blocks"
+  one_document "$1" "read $2's blocks" "$2" blocks
   jq --slurpfile text "$work/text.json" \
-    '$text[0].markdown as $md | map({key: $md[.from:.to], value: .id}) | from_entries' \
+    '$text[0].items[0].markdown as $md | .items[0].blocks | map({key: $md[.from:.to], value: .id}) | from_entries' \
     "$work/body" >"$work/ids.json" || fail "$1" "read $2's blocks" "unreadable: $(body)"
 }
 
@@ -243,9 +251,9 @@ id_for() {
 # changed_versions SECTION DOCUMENT: writes {block id: changed_version} of every block part of
 # DOCUMENT to $work/body.
 changed_versions() {
-  get "/api/v1/references?to=$(q "$2")&kind=part_of"
+  get "/api/v2/references?to=$(q "$2")&kind=part_of&limit=200"
   want_status 200 "$1" "read the blocks part of $2"
-  jq -cS '[.edges[] | {key: .node.block_id, value: .node.changed_version}] | from_entries' \
+  jq -cS '[.items[] | {key: .node.block_id, value: .node.changed_version}] | from_entries' \
     "$work/body" >"$work/versions.json" || fail "$1" "read the blocks part of $2" "$(body)"
   mv "$work/versions.json" "$work/body"
 }
@@ -278,7 +286,7 @@ run A1 "comment citing the spec" comment --issue "$key" --body "See $spec"
   fail A1 "comment citing the spec" "no comment id in: $(<"$work/out")"
 spec_comment="${BASH_REMATCH[1]}"
 
-get "/api/v1/references?to=$(q "$x")"
+get "/api/v2/references?to=$(q "$x")&limit=200"
 want_status 200 A1 "?to=X answers"
 expect A1 "?to=X names block ship_it by its encoded reference" \
   "$(jq -cn --arg r "$x" '["block","ship_it",$r]')" '[.node.kind, .node.block_id, .node.ref]'
@@ -286,24 +294,24 @@ expect A1 "?to=X names block ship_it by its encoded reference" \
 # kind block, id comment/<uuid>#b<n>, whose parent is the comment.
 expect A1 "?to=X lists block b1 of the comment citing X alone, part of the comment" \
   "$(jq -cn --arg c "$comment" '[["block", "comment/\($c)#b1", $c]]')" \
-  '[.edges[] | select(.kind == "mentions") | [.node.kind, .node.id, .node.parent.id]]'
+  '[.items[] | select(.kind == "mentions") | [.node.kind, .node.id, .node.parent.id]]'
 
-get "/api/v1/references?from=$(q "$comment_ref")"
+get "/api/v2/references?from=$(q "$comment_ref")&limit=200"
 want_status 200 A1 "?from=<comment> answers"
 expect A1 "?from=<comment> has exactly one mentions edge, to block X" \
   "$(jq -cn --arg r "$x" '[["block",$r]]')" \
-  '[.edges[] | select(.kind == "mentions") | [.node.kind, .node.ref]]'
+  '[.items[] | select(.kind == "mentions") | [.node.kind, .node.ref]]'
 expect A1 "?from=<comment> has no edge to the whole document" 0 \
-  '[.edges[] | select(.node.kind == "artifact")] | length'
+  '[.items[] | select(.node.kind == "artifact")] | length'
 
-get "/api/v1/references?to=$(q "$spec")"
+get "/api/v2/references?to=$(q "$spec")&limit=200"
 want_status 200 A1 "?to=<spec> answers"
 expect A1 "?to=<spec> lists the comment citing X, from its block b1, with .block.block_id ship_it" \
   '[["block","ship_it"]]' \
-  --arg c "$comment" '[.edges[] | select(.node.parent.id == $c) | [.node.kind, .block.block_id]]'
+  --arg c "$comment" '[.items[] | select(.node.parent.id == $c) | [.node.kind, .block.block_id]]'
 expect A1 "?to=<spec> lists the comment citing the spec, from its block b1, with no block" \
   "$(jq -cn --arg c "$spec_comment" '[["comment/\($c)#b1", null]]')" \
-  --arg c "$spec_comment" '[.edges[] | select(.node.parent.id == $c) | [.node.id, .block]]'
+  --arg c "$spec_comment" '[.items[] | select(.node.parent.id == $c) | [.node.id, .block]]'
 spec_id="$(jq -er '.node.id' "$work/body")" || fail A1 "?to=<spec> names the spec" "$(body)"
 
 run A1 "dispatch read --ref X" read --ref "$x"
@@ -320,51 +328,50 @@ printf 'This document cites %s\n' "$x" >"$work/cites.md"
 upload A2 cites.md "$work/cites.md"
 cites="$doc_ref"
 cites_id="$doc_id"
-get "/api/v1/block-links?from=$(q "$cites")&to=$(q "$spec")"
+get "/api/v2/block-links?from=$(q "$cites")&to=$(q "$spec")&limit=200"
 want_status 200 A2 "block-links cites.md -> spec answers"
-expect A2 "block-links cites.md -> spec holds the link to X" '["ship_it"]' '[.links[].to.block_id]'
+expect A2 "block-links cites.md -> spec holds the link to X" '["ship_it"]' '[.items[].to.block_id]'
 # A comment's block is named by its kind, its id and its comment, a block node of cites.md by its
 # document's reference.
 x_sources="$(jq -cn --arg c "$comment" --arg d "$cites" '["block comment/\($c)#b1 of \($c)", $d] | sort')"
 readonly source_of='.node.document // "\(.node.kind) \(.node.id) of \(.node.parent.id)"'
-get "/api/v1/references?to=$(q "$x")"
+get "/api/v2/references?to=$(q "$x")&limit=200"
 want_status 200 A2 "?to=X answers"
 expect A2 "?to=X lists the comment's block and cites.md's block" "$x_sources" \
-  "[.edges[] | select(.kind == \"mentions\") | $source_of] | sort"
+  "[.items[] | select(.kind == \"mentions\") | $source_of] | sort"
 
 doc_edit A2 "delete X" spec '[{"op":"delete","block":"ship_it"}]'
-get "/api/v1/references?to=$(q "$x")"
+get "/api/v2/references?to=$(q "$x")&limit=200"
 want_status 404 A2 "?to=X of the deleted block"
 pass A2 "?to=X of the deleted block is 404"
-get "/api/v1/references?from=$(q "$comment_ref")"
+get "/api/v2/references?from=$(q "$comment_ref")&limit=200"
 want_status 200 A2 "?from=<comment> answers"
-expect A2 "?from=<comment> has no edge after the delete" 0 '.edges | length'
-get "/api/v1/block-links?from=$(q "$cites")&to=$(q "$spec")"
+expect A2 "?from=<comment> has no edge after the delete" 0 '.items | length'
+get "/api/v2/block-links?from=$(q "$cites")&to=$(q "$spec")&limit=200"
 want_status 200 A2 "block-links answers"
-expect A2 "block-links cites.md -> spec has no link after the delete" 0 '.links | length'
+expect A2 "block-links cites.md -> spec has no link after the delete" 0 '.items | length'
 
 doc_edit A2 "restore X with its id" spec \
   "$(jq -cn --arg m "$(callout ship_it 'Ship the block graph.')" \
     '[{op: "insert", before: "block:hold_line", markdown: $m}]')"
-get "/api/v1/references?to=$(q "$x")"
+get "/api/v2/references?to=$(q "$x")&limit=200"
 want_status 200 A2 "?to=X of the restored block"
 expect A2 "?to=X lists the comment's block and cites.md's block again" "$x_sources" \
-  "[.edges[] | select(.kind == \"mentions\") | $source_of] | sort"
-get "/api/v1/references?from=$(q "$comment_ref")"
+  "[.items[] | select(.kind == \"mentions\") | $source_of] | sort"
+get "/api/v2/references?from=$(q "$comment_ref")&limit=200"
 want_status 200 A2 "?from=<comment> answers"
 expect A2 "?from=<comment> lists its edge to X again" "$(jq -cn --arg r "$x" '[["mentions",$r]]')" \
-  '[.edges[] | [.kind, .node.ref]]'
-get "/api/v1/block-links?from=$(q "$cites")&to=$(q "$spec")"
+  '[.items[] | [.kind, .node.ref]]'
+get "/api/v2/block-links?from=$(q "$cites")&to=$(q "$spec")&limit=200"
 want_status 200 A2 "block-links answers"
 expect A2 "block-links cites.md -> spec lists the link to X again" '["ship_it"]' \
-  '[.links[].to.block_id]'
+  '[.items[].to.block_id]'
 
 # Pinned A2 and A15: X pinned at version N reads as changed after a reword, then as removed.
-get "/api/v1/issues/$key/artifacts/spec/text"
-want_status 200 A2/A15 "read the spec's version"
-pinned_version="$(jq -er '.version' "$work/body")" || fail A2/A15 "read the spec's version" "$(body)"
+one_document A2/A15 "read the spec's version" spec text
+pinned_version="$(jq -er '.items[0].version' "$work/body")" || fail A2/A15 "read the spec's version" "$(body)"
 pin="$x@v$pinned_version"
-get "/api/v1/references?to=$(q "$x")"
+get "/api/v2/references?to=$(q "$x")&limit=200"
 want_status 200 A2/A15 "?to=X answers"
 old_text="$(jq -er '.node.text' "$work/body")" || fail A2/A15 "read X's text" "$(body)"
 [[ "$old_text" == *"Ship the block graph."* ]] || fail A2/A15 "read X's text" "got $old_text"
@@ -372,7 +379,7 @@ new_text="${old_text/Ship the block graph./Ship the block graph today.}"
 
 doc_edit A2/A15 "reword X" spec \
   '[{"op":"replace","find":"Ship the block graph.","with":"Ship the block graph today."}]'
-get "/api/v1/references?to=$(q "$pin")"
+get "/api/v2/references?to=$(q "$pin")&limit=200"
 want_status 200 A2/A15 "?to=X@vN answers after the reword"
 expect A2/A15 "?to=X@vN has pin.state changed at version N" \
   "$(jq -cn --argjson n "$pinned_version" '["changed",$n]')" '[.node.pin.state, .node.pin.version]'
@@ -383,11 +390,11 @@ expect A2/A15 "?to=X@vN has the unpinned text the new text" "$(jq -cn --arg t "$
 
 doc_edit A2/A15 "delete X" spec '[{"op":"delete","block":"ship_it"}]'
 removed_in="$version"
-get "/api/v1/references?to=$(q "$pin")"
+get "/api/v2/references?to=$(q "$pin")&limit=200"
 want_status 200 A2/A15 "?to=X@vN answers after the delete"
 expect A2/A15 "?to=X@vN has pin.state removed with removed_version $removed_in" \
   "[\"removed\",$removed_in]" '[.node.pin.state, .node.pin.removed_version]'
-expect A2/A15 "?to=X@vN lists no edge for the removed block" 0 '.edges | length'
+expect A2/A15 "?to=X@vN lists no edge for the removed block" 0 '.items | length'
 run A2/A15 "dispatch read --ref X@vN exits 0" read --ref "$pin"
 pass A2/A15 "dispatch read --ref X@vN exits 0"
 grep -q "^Removed in version $removed_in" "$work/out" ||
@@ -418,16 +425,16 @@ block_ids A4 spec
 id_for A4 "A third way stays open: $(block_ref "$decisions" first_call)"
 back_from="$block_id"
 
-get "/api/v1/block-links?from=$(q "$decisions")&to=$(q "$spec")"
+get "/api/v2/block-links?from=$(q "$decisions")&to=$(q "$spec")&limit=200"
 want_status 200 A4 "block-links decisions.md -> spec answers"
 expect A4 "block-links decisions.md -> spec has exactly the two links" \
   "$(jq -cn --arg a "$hold_from" --arg b "$third_from" '[[$a,"hold_line"],[$b,"third_way"]] | sort')" \
-  '[.links[] | [.from.block_id, .to.block_id]] | sort'
-get "/api/v1/block-links?from=$(q "$spec")&to=$(q "$decisions")"
+  '[.items[] | [.from.block_id, .to.block_id]] | sort'
+get "/api/v2/block-links?from=$(q "$spec")&to=$(q "$decisions")&limit=200"
 want_status 200 A4 "block-links spec -> decisions.md answers"
 expect A4 "block-links spec -> decisions.md has exactly the one link" \
   "$(jq -cn --arg a "$back_from" '[[$a,"first_call"]]')" \
-  '[.links[] | [.from.block_id, .to.block_id]] | sort'
+  '[.items[] | [.from.block_id, .to.block_id]] | sort'
 
 # A5: an edit to the paragraph in the callout moves that paragraph and the callout alone; an edit
 # to Q moves Q alone. Every block's changed version is compared, not one.
@@ -443,9 +450,8 @@ id_for A5 "Paragraph Q stands alone."
 q_id="$block_id"
 id_for A5 "Paragraph R stands last."
 r="$block_id"
-get "/api/v1/issues/$key/artifacts/changes-md/text"
-want_status 200 A5 "read changes.md's version"
-first="$(jq -er '.version' "$work/body")" || fail A5 "read changes.md's version" "$(body)"
+one_document A5 "read changes.md's version" changes-md text
+first="$(jq -er '.items[0].version' "$work/body")" || fail A5 "read changes.md's version" "$(body)"
 versions() {
   jq -cSn --arg p "$p" --arg q "$q_id" --arg r "$r" \
     --argjson c "$1" --argjson pv "$2" --argjson qv "$3" --argjson rv "$4" \
@@ -473,14 +479,14 @@ expect A5 "after Q's edit Q alone moves to $q_version" \
 for document in "spec $spec $spec_id" "cites.md $cites $cites_id" \
   "decisions.md $decisions $decisions_id" "changes.md $changes $changes_id"; do
   read -r name ref id <<<"$document"
-  get "/api/v1/artifacts/$id/blocks"
+  get "/api/v2/artifacts/$id?include=blocks"
   want_status 200 R6/A10 "read $name's blocks"
-  jq -c '[.[].id] | sort' "$work/body" >"$work/listed.json" || fail R6/A10 "read $name's blocks" "$(body)"
-  [[ "$(<"$work/listed.json")" != "[]" ]] || fail R6/A10 "$name has blocks" "GET …/blocks is []"
-  get "/api/v1/references?to=$(q "$ref")&kind=part_of"
+  jq -c '[.blocks[].id] | sort' "$work/body" >"$work/listed.json" || fail R6/A10 "read $name's blocks" "$(body)"
+  [[ "$(<"$work/listed.json")" != "[]" ]] || fail R6/A10 "$name has blocks" "its blocks are []"
+  get "/api/v2/references?to=$(q "$ref")&kind=part_of&limit=200"
   want_status 200 R6/A10 "?to=$name&kind=part_of answers"
-  expect R6/A10 "$name's part_of set equals its /blocks ids" "$(<"$work/listed.json")" \
-    '[.edges[] | select(.kind == "part_of") | .node.block_id] | sort'
+  expect R6/A10 "$name's part_of set equals its block ids" "$(<"$work/listed.json")" \
+    '[.items[] | select(.kind == "part_of") | .node.block_id] | sort'
 done
 
 # R7: a mention in a list item starts at the item's paragraph, not at the list.
@@ -490,15 +496,14 @@ list="$doc_ref"
 block_ids R7 list-md
 id_for R7 "The second item cites $spec"
 item_paragraph="$block_id"
-get "/api/v1/issues/$key/artifacts/list-md/blocks"
-want_status 200 R7 "read list.md's blocks"
+one_document R7 "read list.md's blocks" list-md blocks
 expect R7 "the second item's text is a paragraph block" '["paragraph"]' \
-  --arg id "$item_paragraph" '[.[] | select(.id == $id) | .type]'
-get "/api/v1/references?from=$(q "$list")"
+  --arg id "$item_paragraph" '[.items[0].blocks[] | select(.id == $id) | .type]'
+get "/api/v2/references?from=$(q "$list")&limit=200"
 want_status 200 R7 "?from=list.md answers"
 expect R7 "the mention in the second item starts at the item's paragraph" \
   "$(jq -cn --arg id "$item_paragraph" '[$id]')" \
-  --arg spec "$spec" '[.edges[] | select(.kind == "mentions" and .node.ref == $spec) | .block.block_id]'
+  --arg spec "$spec" '[.items[] | select(.kind == "mentions" and .node.ref == $spec) | .block.block_id]'
 
 # R12/A11: every node of every kind carries who made it and when, who last changed it and when,
 # its parent and the version of the parent it belongs to: read by its own reference, as the other
@@ -535,7 +540,7 @@ wanted() {
 # $work/body. SECTION names the checks, R12 when absent.
 node_facts() {
   local section="${4:-R12}"
-  get "/api/v1/references?to=$(q "$2")"
+  get "/api/v2/references?to=$(q "$2")&limit=200"
   want_status 200 "$section" "?to=$1 answers"
   expect "$section" "$1 carries its facts" "$3" "$defs .node | facts"
 }
@@ -548,7 +553,7 @@ changed_later() {
 
 # node_of SECTION REF: sets $node to the `same` projection of ?to=REF's node.
 node_of() {
-  get "/api/v1/references?to=$(q "$2")"
+  get "/api/v2/references?to=$(q "$2")&limit=200"
   want_status 200 "$1" "?to=$2 answers"
   node="$(jq -cS "$defs .node | same" "$work/body")" || fail "$1" "read ?to=$2's node" "$(body)"
 }
@@ -586,9 +591,8 @@ ask_ref="$child_ref/ask/$ask"
 run R12 "reword the ask" edit-ask --ask "$ask" \
   --question "The block graph check reads this ask's facts, reworded. $recommendation"
 
-get "/api/v1/issues/$child/artifacts/spec/text"
-want_status 200 R12 "read $child's spec version"
-anchored_version="$(jq -er '.version' "$work/body")" ||
+one_document R12 "read $child's spec version" spec text "$child"
+anchored_version="$(jq -er '.items[0].version' "$work/body")" ||
   fail R12 "read $child's spec version" "$(body)"
 run R12 "comment on a quote of $child's spec" comment --issue "$child" --artifact spec \
   --quote "Child spec paragraph" --body "Why this paragraph?"
@@ -652,39 +656,60 @@ node_facts "the removed pin $pin" "$pin" \
 
 # The other end of an edge carries the node's own facts.
 node_of R12 "$head_ref"
-get "/api/v1/references?from=$(q "$reply_ref")"
+get "/api/v2/references?from=$(q "$reply_ref")&limit=200"
 want_status 200 R12 "?from=<reply> answers"
 expect R12 "?from=<reply>'s replies_to node is the comment as its own reference reads it" \
-  "[$node]" "$defs"'[.edges[] | select(.kind == "replies_to") | .node | same]'
-get "/api/v1/references?from=$(q "$ask_ref")&kind=followed_by"
+  "[$node]" "$defs"'[.items[] | select(.kind == "replies_to") | .node | same]'
+get "/api/v2/references?from=$(q "$ask_ref")&kind=followed_by&limit=200"
 want_status 200 R12 "?from=<ask>&kind=followed_by answers"
 expect R12 "the session following the ask has no recorded facts" \
   "$(jq -cnS --arg s "$session" '[{kind: "session", id: $s, made_by: [], made_at: null,
     changed_by: [], changed_at: null, parent: null, parent_version: null}]')" \
-  "$defs"'[.edges[] | select(.kind == "followed_by") | .node | same]'
+  "$defs"'[.items[] | select(.kind == "followed_by") | .node | same]'
 node_of R12 "$(block_ref "$list" "$item_paragraph")"
-get "/api/v1/references?from=$(q "$list")"
+get "/api/v2/references?from=$(q "$list")&limit=200"
 want_status 200 R12 "?from=list.md answers"
 expect R12 "R7's mention starts at a block carrying the block's own facts" "[$node]" \
   --arg spec "$spec" \
-  "$defs"'[.edges[] | select(.kind == "mentions" and .node.ref == $spec) | .block | same]'
+  "$defs"'[.items[] | select(.kind == "mentions" and .node.ref == $spec) | .block | same]'
 node_of R12 "$decisions"
 decisions_node="$node"
 node_of R12 "$spec"
 spec_node="$node"
 node_of R12 "$(block_ref "$spec" hold_line)"
 hold_node="$node"
-get "/api/v1/block-links?from=$(q "$decisions")&to=$(q "$spec")"
+get "/api/v2/block-links?from=$(q "$decisions")&to=$(q "$spec")&limit=200"
 want_status 200 R12 "block-links decisions.md -> spec answers"
 expect R12 "block-links' from is decisions.md as its own reference reads it" "$decisions_node" \
   "$defs .from | same"
 expect R12 "block-links' to is the spec as its own reference reads it" "$spec_node" \
   "$defs .to | same"
 expect R12 "every link's two ends carry all six facts" true \
-  '[.links[] | .from, .to | has("made_by") and has("made_at") and has("changed_by")
+  '[.items[] | .from, .to | has("made_by") and has("made_at") and has("changed_by")
     and has("changed_at") and has("parent") and has("parent_version")] | length == 4 and all'
 expect R12 "the link to hold_line ends at the block as its own reference reads it" "[$hold_node]" \
-  "$defs"'[.links[] | select(.to.block_id == "hold_line") | .to | same]'
+  "$defs"'[.items[] | select(.to.block_id == "hold_line") | .to | same]'
+
+# sourced_projects: writes to $work/sourced the key of every project that holds an architecture
+# source, one per line: the projects a page of 200 at a time, and the sources of each one.
+sourced_projects() {
+  local offset=0 count total project
+  : >"$work/sourced"
+  while :; do
+    get "/api/v2/projects?limit=200&offset=$offset"
+    want_status 200 R12 "list the projects"
+    jq -r '.items[].key' "$work/body" >"$work/project-keys"
+    count="$(jq '.items | length' "$work/body")"
+    total="$(jq '.total' "$work/body")"
+    while read -r project; do
+      get "/api/v2/projects/$(q "$project")/architecture-sources?limit=1"
+      want_status 200 R12 "list $project's architecture sources"
+      [[ "$(jq '.total' "$work/body")" == 0 ]] || printf '%s\n' "$project" >>"$work/sourced"
+    done <"$work/project-keys"
+    offset=$((offset + count))
+    ((count > 0 && offset < total)) || return 0
+  done
+}
 
 # component_node TIMES: reads component $component of $component_project and its part_of edge to
 # its parent $component_parent. TIMES is `recorded` when the import that projected it recorded its
@@ -696,7 +721,7 @@ component_node() {
   node_of R12 "$component_parent_ref"
   component_parent_node="$node"
   of_parent="$(parent_of component "$component_project/$component_parent" "$component_parent_ref")"
-  get "/api/v1/references?to=$(q "$component_ref")"
+  get "/api/v2/references?to=$(q "$component_ref")&limit=200"
   want_status 200 R12 "?to=$component_ref answers"
   if [[ "$1" == recorded ]]; then
     expect R12 "component $component carries its facts, its times recorded at the import" \
@@ -709,10 +734,10 @@ component_node() {
       '.node | {made_by, changed_by, parent, parent_version,
         times: [has("made_at"), has("changed_at")]}'
   fi
-  get "/api/v1/references?from=$(q "$component_ref")&kind=part_of"
+  get "/api/v2/references?from=$(q "$component_ref")&kind=part_of&limit=200"
   want_status 200 R12 "?from=$component_ref&kind=part_of answers"
   expect R12 "component $component is part of $component_parent as its own reference reads it" \
-    "[$component_parent_node]" "$defs"'[.edges[] | select(.kind == "part_of") | .node | same]'
+    "[$component_parent_node]" "$defs"'[.items[] | select(.kind == "part_of") | .node | same]'
 }
 
 # Components, from the source COMPONENT_SOURCE names.
@@ -728,30 +753,29 @@ case "$component_source" in
       "http://127.0.0.1:$FAKE_GITHUB_PORT/__fixture/repos" 2>"$work/curl")" ||
       status="curl failed: $(<"$work/curl")"
     want_status 200 R12 "seed the fake GitHub with $arch_repo"
-    source_path="/api/v1/projects/$project/architecture-sources/$arch_repo"
+    source_path="/api/v2/projects/$project/architecture-sources/$arch_repo"
     send PUT "$source_path" \
       "$(jq -cn --arg s "$session" '{branch: "main", actor: {kind: "session", id: $s}}')"
     want_status 200 R12 "add $arch_repo as an architecture source of $project"
-    send POST "$source_path/sync"
+    send POST "/api/v2/projects/$project/architecture-syncs" \
+      "$(jq -cn --arg repo "$arch_repo" '{repos: [$repo]}')"
     want_status 200 R12 "sync $arch_repo"
     expect R12 "the sync of $arch_repo imports its two components" '[null,2]' \
-      '[.last_error, .components]'
+      --arg repo "$arch_repo" '.items[] | select(.repo == $repo) | [.last_error, .components]'
     component_project="$project"
     component=web
     component_parent=platform
     component_node recorded
     ;;
   existing)
-    get "/api/v1/settings/architecture-sources"
-    want_status 200 R12 "list the architecture sources"
-    projects="$(jq -r '[.[].project] | unique | .[]' "$work/body")" ||
-      fail R12 "list the architecture sources" "$(body)"
+    sourced_projects
+    projects="$(<"$work/sourced")"
     [[ -n "$projects" ]] || fail R12 component \
       "this server has no architecture source: COMPONENT_SOURCE=existing needs one"
     mapfile -t source_projects <<<"$projects"
     pick=""
     for component_project in "${source_projects[@]}"; do
-      get "/api/v1/projects/$component_project/architecture"
+      get "/api/v2/projects/$component_project/architecture"
       want_status 200 R12 "read $component_project's architecture"
       pick="$(jq -r '[.components[].id] as $ids
         | first(.components[] | select(.parent != null and (.parent | IN($ids[])))
@@ -765,10 +789,9 @@ component with a parent: COMPONENT_SOURCE=existing needs one"
     component_node unrecorded
     ;;
   none)
-    get "/api/v1/settings/architecture-sources"
-    want_status 200 R12 "list the architecture sources"
-    jq -e 'length == 0' "$work/body" >/dev/null || fail R12 component \
-      "this server has architecture sources, so run with COMPONENT_SOURCE=existing: $(body)"
+    sourced_projects
+    [[ ! -s "$work/sourced" ]] || fail R12 component \
+      "this server has architecture sources, so run with COMPONENT_SOURCE=existing: $(<"$work/sourced")"
     pass R12 "component: this server has no architecture source, so it holds no component node"
     ;;
   "")
@@ -792,11 +815,12 @@ node_line R12 "dispatch read --issue $child prints its facts" \
   "Node: issue $child_ref · made by session $session" " · changed by session $session" \
   " · part of dispatch://$key"
 
-# The older references route keeps decisions.md, which cites only blocks of the spec, as a source.
-get "/api/v1/artifacts/$spec_id/references"
+# The document references route keeps decisions.md, which cites only blocks of the spec, as a
+# source: the items that cite the spec (direction=in, the route's default).
+get "/api/v2/artifacts/$spec_id/references?limit=200"
 want_status 200 older-route "GET /artifacts/<spec>/references answers"
-expect older-route "referenced_by keeps decisions.md" 1 \
-  --arg d "$decisions_id" '[.referenced_by[] | select(.kind == "artifact" and .id == $d)] | length'
+expect older-route "the citing items keep decisions.md" 1 \
+  --arg d "$decisions_id" '[.items[] | select(.kind == "artifact" and .id == $d)] | length'
 
 # A7: a reply names the block it answers. A comment reply through `--reply-to <comment>#b-b2` is a
 # replies_to edge to block b2, listed once, under b2, on ?to=<comment>, and `dispatch read` quotes
@@ -817,28 +841,28 @@ posted A7 "reply to the whole of X" comment
 plain_reply="$posted"
 plain_reply_ref="dispatch://$key/comment/$plain_reply"
 
-get "/api/v1/references?to=$(q "$cx_b2")&kind=replies_to"
+get "/api/v2/references?to=$(q "$cx_b2")&kind=replies_to&limit=200"
 want_status 200 A7 "?to=X#b-b2&kind=replies_to answers"
 expect A7 "?to=X#b-b2&kind=replies_to is the one reply naming b2" "[\"$block_reply\"]" \
-  '[.edges[].node.id]'
-get "/api/v1/references?to=$(q "$cx_ref")&kind=replies_to"
+  '[.items[].node.id]'
+get "/api/v2/references?to=$(q "$cx_ref")&kind=replies_to&limit=200"
 want_status 200 A7 "?to=X&kind=replies_to answers"
 expect A7 "?to=X&kind=replies_to lists the reply naming b2 once, under b2, and the plain reply" \
   "$(jq -cn --arg b "$block_reply" --arg p "$plain_reply" '[[$b, "b2"], [$p, null]] | sort')" \
-  '[.edges[] | [.node.id, .block.block_id]] | sort'
-get "/api/v1/references?from=$(q "$plain_reply_ref")&kind=replies_to"
+  '[.items[] | [.node.id, .block.block_id]] | sort'
+get "/api/v2/references?from=$(q "$plain_reply_ref")&kind=replies_to&limit=200"
 want_status 200 A7 "?from=<plain reply>&kind=replies_to answers"
 expect A7 "the plain reply's replies_to edge goes to X itself" "[[\"comment\",\"$cx\"]]" \
-  '[.edges[] | [.node.kind, .node.id]]'
-get "/api/v1/comments/$block_reply"
+  '[.items[] | [.node.kind, .node.id]]'
+get "/api/v2/comments/$block_reply"
 want_status 200 A7 "read the reply naming b2"
 expect A7 "the reply naming b2 carries reply_block b2 with its text" \
   "$(jq -cn --arg r "$cx_b2" '["b2", $r, "Beta.", false]')" \
-  '.comment.reply_block | [.block_id, .ref, .text, .removed]'
-get "/api/v1/comments/$plain_reply"
+  '.reply_block | [.block_id, .ref, .text, .removed]'
+get "/api/v2/comments/$plain_reply"
 want_status 200 A7 "read the plain reply"
 expect A7 "the plain reply's reply_block is null" "[\"$cx\",null]" \
-  '[.comment.reply_to, .comment.reply_block]'
+  '[.reply_to, .reply_block]'
 run A7 "dispatch read --ref <reply naming b2>" read --ref "$block_reply_ref"
 grep -qxF 'Re: block b2: Beta.' "$work/out" ||
   fail A7 "dispatch read --ref <reply naming b2> prints Re: block b2: Beta." "$(<"$work/out")"
@@ -864,17 +888,17 @@ run A7 "message reply to the whole of M" message --issue "$key" --in-reply-to "$
 posted A7 "message reply to the whole of M" message
 message_plain_reply="$posted"
 
-get "/api/v1/references?to=$(q "$mx_b2")&kind=replies_to"
+get "/api/v2/references?to=$(q "$mx_b2")&kind=replies_to&limit=200"
 want_status 200 A7 "?to=M#b-b2&kind=replies_to answers"
 expect A7 "?to=M#b-b2&kind=replies_to is the one message reply naming b2" \
-  "[\"$message_block_reply\"]" '[.edges[].node.id]'
-get "/api/v1/references?to=$(q "$mx_ref")&kind=replies_to"
+  "[\"$message_block_reply\"]" '[.items[].node.id]'
+get "/api/v2/references?to=$(q "$mx_ref")&kind=replies_to&limit=200"
 want_status 200 A7 "?to=M&kind=replies_to answers"
 expect A7 "?to=M&kind=replies_to lists the reply naming b2 once, under b2, and the plain reply" \
   "$(jq -cn --arg b "$message_block_reply" --arg p "$message_plain_reply" \
     '[[$b, "b2", "block"], [$p, null, "message"]] | sort')" \
-  '[.edges[] | [.node.id, .block.block_id, .node.parent.kind]] | sort'
-get "/api/v1/messages/$mx"
+  '[.items[] | [.node.id, .block.block_id, .node.parent.kind]] | sort'
+get "/api/v2/messages/$mx"
 want_status 200 A7 "read M's thread"
 expect A7 "the message reply naming b2 carries reply_block b2, the plain one none" \
   "$(jq -cn --arg r "$mx_b2" '[["b2", $r, "Delta.", false], null]')" \
@@ -888,12 +912,12 @@ grep -qxF 'Re: block b2: Delta.' "$work/out" ||
 pass A7 "dispatch read --ref <message reply naming b2> prints Re: block b2: Delta."
 
 # Negative controls: a block the item does not hold is refused, by name.
-send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg x "$cx" --argjson a "$agent_actor" \
+send POST "/api/v2/issues/$key/comments" "$(jq -cn --arg x "$cx" --argjson a "$agent_actor" \
   '{body: "On a block X lacks.", reply_to: $x, reply_to_block: "b9", actor: $a}')"
 want_status 400 A7 "a reply_to_block of b9"
 expect A7 "a reply_to_block of b9 answers 400 INVALID_COMMENT naming b9" true \
   '.code == "INVALID_COMMENT" and (.error | contains("reply_to_block b9 "))'
-send POST "/api/v1/issues/$key/messages" "$(jq -cn --arg m "$mx" --argjson a "$agent_actor" \
+send POST "/api/v2/issues/$key/messages" "$(jq -cn --arg m "$mx" --argjson a "$agent_actor" \
   '{body: "On a block M lacks.", in_reply_to: $m, in_reply_to_block: "b9", actor: $a}')"
 want_status 400 A7 "an in_reply_to_block of b9"
 expect A7 "an in_reply_to_block of b9 answers 400 INVALID_MESSAGE naming b9" true \
@@ -904,17 +928,17 @@ run "A10 comment" "comment citing the spec from its second paragraph" comment --
   --body "$(printf 'This paragraph cites nothing.\n\nThis one cites %s' "$spec")"
 posted "A10 comment" "comment citing the spec from its second paragraph" comment
 citing="$posted"
-get "/api/v1/references?from=$(q "dispatch://$key/comment/$citing")"
+get "/api/v2/references?from=$(q "dispatch://$key/comment/$citing")&limit=200"
 want_status 200 "A10 comment" "?from=<comment> answers"
 expect "A10 comment" "?from=<comment> lists its mention of the spec, starting at block b2" \
   "$(jq -cn --arg s "$spec" --arg c "$citing" '[[$s, "b2", $c]]')" \
-  '[.edges[] | select(.kind == "mentions") | [.node.ref, .block.block_id, .block.parent.id]]'
-get "/api/v1/references?to=$(q "$spec")"
+  '[.items[] | select(.kind == "mentions") | [.node.ref, .block.block_id, .block.parent.id]]'
+get "/api/v2/references?to=$(q "$spec")&limit=200"
 want_status 200 "A10 comment" "?to=<spec> answers"
 expect "A10 comment" "?to=<spec> lists block b2 of the comment, part of the comment" \
   "$(jq -cn --arg c "$citing" '[["mentions", "block", "comment/\($c)#b2", "b2"]]')" \
   --arg c "$citing" \
-  '[.edges[] | select(.node.parent.id == $c) | [.kind, .node.kind, .node.id, .node.block_id]]'
+  '[.items[] | select(.node.parent.id == $c) | [.kind, .node.kind, .node.id, .node.block_id]]'
 
 # A11, comment and message blocks: a block of a comment and of a message carries R12's facts, read
 # by its own reference, as an edge's other end and on the `Node:` line. A comment's block is part
@@ -932,19 +956,19 @@ node_facts "the message reply naming b2 of M" "$message_block_reply_ref" \
   "$(wanted "$me" "$me" "$(parent_of block "message/$mx#b2" "$mx_b2")" null)" A11
 
 node_of A11 "$cx_b2"
-get "/api/v1/references?from=$(q "$block_reply_ref")&kind=replies_to"
+get "/api/v2/references?from=$(q "$block_reply_ref")&kind=replies_to&limit=200"
 want_status 200 A11 "?from=<reply naming b2>&kind=replies_to answers"
 expect A11 "?from=<reply naming b2>'s block end is b2 as its own reference reads it" "[$node]" \
-  "$defs"'[.edges[] | select(.node.kind == "block") | .node | same]'
-get "/api/v1/references?to=$(q "$cx_ref")&kind=part_of"
+  "$defs"'[.items[] | select(.node.kind == "block") | .node | same]'
+get "/api/v2/references?to=$(q "$cx_ref")&kind=part_of&limit=200"
 want_status 200 A11 "?to=X&kind=part_of answers"
 expect A11 "?to=X&kind=part_of lists b2 as its own reference reads it" "[$node]" \
-  "$defs"'[.edges[] | select(.node.block_id == "b2") | .node | same]'
+  "$defs"'[.items[] | select(.node.block_id == "b2") | .node | same]'
 node_of A11 "$mx_ref#b-b1"
-get "/api/v1/references?to=$(q "$mx_ref")&kind=part_of"
+get "/api/v2/references?to=$(q "$mx_ref")&kind=part_of&limit=200"
 want_status 200 A11 "?to=M&kind=part_of answers"
 expect A11 "?to=M&kind=part_of lists b1 as its own reference reads it" "[$node]" \
-  "$defs"'[.edges[] | select(.node.block_id == "b1") | .node | same]'
+  "$defs"'[.items[] | select(.node.block_id == "b1") | .node | same]'
 
 run A11 "dispatch read --ref <X#b-b2>" read --ref "$cx_b2"
 grep -qxF "Block b2 of comment $cx (changed in revision 1):" "$work/out" ||
@@ -956,7 +980,7 @@ run A11 "dispatch read --ref <M#b-b1>" read --ref "$mx_ref#b-b1"
 node_line A11 "dispatch read --ref <M#b-b1> prints its facts" \
   "Node: block $mx_ref#b-b1 · made by session $session" " at " " · part of $mx_ref"
 
-# A13 and A15 edit comments a person wrote: PATCH /api/v1/comments/{id} is a person's write, by its
+# A13 and A15 edit comments a person wrote: PATCH /api/v2/comments/{id} is a person's write, by its
 # author alone. DEV_SIGNIN_LOGIN signs the person in once, the session cookie kept in $work/jar.
 if [[ -n "$dev_login" ]]; then
   status="$(curl -sS -o "$work/body" -w '%{http_code}' -c "$work/jar" \
@@ -971,7 +995,7 @@ fi
 # person_comment SECTION WHAT BODY: the person writes a comment of BODY on $key; sets $posted to
 # its id.
 person_comment() {
-  person_send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg b "$3" '{body: $b}')"
+  person_send POST "/api/v2/issues/$key/comments" "$(jq -cn --arg b "$3" '{body: $b}')"
   want_status 201 "$1" "$2"
   expect "$1" "$2, as $dev_login" "$(jq -cn --arg l "$dev_login" '["user", $l]')" \
     '[.author.kind, .author.id]'
@@ -979,38 +1003,39 @@ person_comment() {
 }
 
 # edit_comment SECTION WHAT COMMENT BODY STARTS: the person edits COMMENT to BODY as the dashboard's
-# editor saves an edit: GET …/blocks gives the comment's revision, sent as base_revision, and each
-# block's text, and every block id the JSON object STARTS names is carried to where that block
-# starts in BODY, the first place BODY holds the text STARTS gives it or, given null, the block's
-# text as GET …/blocks read it. The fixtures are ASCII, so jq's offsets are UTF-16 offsets. Leaves
-# GET …/blocks after the edit in $work/body and the comment's new revision in $revision.
+# editor saves an edit: the comment's blocks (its read with include=blocks) give its revision, sent
+# as base_revision, and each block's text, and every block id the JSON object STARTS names is
+# carried to where that block starts in BODY, the first place BODY holds the text STARTS gives it
+# or, given null, the block's text as the blocks read it. The fixtures are ASCII, so jq's offsets
+# are UTF-16 offsets. Leaves the comment's read with its blocks after the edit in $work/body and
+# its new revision in $revision.
 edit_comment() {
-  get "/api/v1/comments/$3/blocks"
+  get "/api/v2/comments/$3?include=blocks"
   want_status 200 "$1" "read comment $3's blocks before: $2"
   jq -ce --arg body "$4" --argjson starts "$5" '
-    select(.indexed) | (.blocks | map({key: .id, value: .text}) | from_entries) as $texts
+    .blocks | select(.indexed) | (.blocks | map({key: .id, value: .text}) | from_entries) as $texts
     | {body: $body, base_revision: .revision,
        blocks: ([$starts | to_entries[] | (.value // $texts[.key]) as $start
          | {id: .key, from: ($body | index($start))}] | sort_by(.from))}
     | select(all(.blocks[]; .from != null))' "$work/body" >"$work/edit.json" ||
     fail "$1" "$2" "cannot carry $5 into the new body from: $(body)"
-  person_send PATCH "/api/v1/comments/$3" "$(<"$work/edit.json")"
+  person_send PATCH "/api/v2/comments/$3" "$(<"$work/edit.json")"
   want_status 200 "$1" "$2"
   expect "$1" "$2: the comment holds the new body" "$(jq -cn --arg b "$4" '$b')" '.body'
-  get "/api/v1/comments/$3/blocks"
+  get "/api/v2/comments/$3?include=blocks"
   want_status 200 "$1" "read comment $3's blocks after: $2"
-  revision="$(jq -er 'select(.indexed) | .revision' "$work/body")" ||
+  revision="$(jq -er '.blocks | select(.indexed) | .revision' "$work/body")" ||
     fail "$1" "read comment $3's blocks after: $2" "not indexed: $(body)"
 }
 
 # reply_block_is WHAT TEXT REMOVED: the agent's A13 reply names block b2 of the person's comment,
 # whose text is TEXT, and REMOVED (true or false) says whether no current revision holds it.
 reply_block_is() {
-  get "/api/v1/comments/$a13_reply"
+  get "/api/v2/comments/$a13_reply"
   want_status 200 A13 "read the reply after $1"
   expect A13 "after $1 the reply names b2: \"$2\", removed $3" \
     "$(jq -cn --arg t "$2" --argjson r "$3" '["b2", $t, $r]')" \
-    '.comment.reply_block | [.block_id, .text, .removed]'
+    '.reply_block | [.block_id, .text, .removed]'
 }
 
 # A13: the person's edits keep a cited paragraph's id. An agent's reply names b2 of the person's
@@ -1019,17 +1044,17 @@ reply_block_is() {
 # names b2 with its current text, or its last text and removed. A body holding block HTML is stored
 # byte for byte, and block HTML added elsewhere leaves b2's changed revision where it was.
 if [[ -z "$dev_login" ]]; then
-  printf 'SKIP: A13 PATCH /api/v1/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to run A13\n'
+  printf 'SKIP: A13 PATCH /api/v2/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to run A13\n'
 else
   person_comment A13 "the person writes a comment of three paragraphs" \
     $'First.\n\nSecond.\n\nThird.'
   person_cited="$posted"
-  get "/api/v1/comments/$person_cited/blocks"
+  get "/api/v2/comments/$person_cited?include=blocks"
   want_status 200 A13 "read the comment's blocks"
-  expect A13 "GET …/blocks gives revision 1 and each block's id, UTF-16 range and text" \
+  expect A13 "the comment's blocks give revision 1 and each block's id, UTF-16 range and text" \
     '[1,[["b1",0,6,"First."],["b2",8,15,"Second."],["b3",17,23,"Third."]]]' \
-    '[.revision, [.blocks[] | [.id, .from, .to, .text]]]'
-  send POST "/api/v1/issues/$key/comments" \
+    '.blocks | [.revision, [.blocks[] | [.id, .from, .to, .text]]]'
+  send POST "/api/v2/issues/$key/comments" \
     "$(jq -cn --arg c "$person_cited" --argjson a "$agent_actor" \
       '{body: "On the second paragraph.", reply_to: $c, reply_to_block: "b2", actor: $a}')"
   want_status 201 A13 "an agent replies to block b2 of the person's comment"
@@ -1040,13 +1065,13 @@ else
   edit_comment A13 "move b2 first" "$person_cited" $'Second.\n\nFirst.\n\nThird.' \
     '{"b1": null, "b2": null, "b3": null}'
   expect A13 "the move keeps b2's text and its changed revision 1" '[["b2","Second.",1]]' \
-    '[.blocks[] | select(.id == "b2") | [.id, .text, .changed_revision]]'
+    '[.blocks.blocks[] | select(.id == "b2") | [.id, .text, .changed_revision]]'
   reply_block_is "the move" "Second." false
 
   edit_comment A13 "reword b2" "$person_cited" $'Second, reworded.\n\nFirst.\n\nThird.' \
     '{"b1": null, "b2": "Second, reworded.", "b3": null}'
   expect A13 "the reword changes b2 in revision $revision" "[$revision]" \
-    '[.blocks[] | select(.id == "b2") | .changed_revision]'
+    '[.blocks.blocks[] | select(.id == "b2") | .changed_revision]'
   reply_block_is "the reword" "Second, reworded." false
 
   # The split's carried from for b2 is its start, which stays in the first part.
@@ -1054,12 +1079,12 @@ else
     '{"b1": null, "b2": "Second,", "b3": null}'
   expect A13 "the split keeps b2 on its first part and gives the second a new id" \
     '[["b2","Second,"],["b4","reworded."],["b1","First."],["b3","Third."]]' \
-    '[.blocks[] | [.id, .text]]'
+    '[.blocks.blocks[] | [.id, .text]]'
   reply_block_is "the split" "Second," false
 
   edit_comment A13 "delete b2" "$person_cited" $'reworded.\n\nFirst.\n\nThird.' \
     '{"b1": null, "b3": null, "b4": null}'
-  expect A13 "the deletion leaves no block b2" '[]' '[.blocks[] | select(.id == "b2")]'
+  expect A13 "the deletion leaves no block b2" '[]' '[.blocks.blocks[] | select(.id == "b2")]'
   reply_block_is "the deletion" "Second," true
 
   # Written back uncarried, b2's last text takes its id back.
@@ -1067,8 +1092,8 @@ else
     $'Second,\n\nreworded.\n\nFirst.\n\nThird.' '{"b1": null, "b3": null, "b4": null}'
   expect A13 "writing the text back restores b2" \
     '[["b2","Second,"],["b4","reworded."],["b1","First."],["b3","Third."]]' \
-    '[.blocks[] | [.id, .text]]'
-  b2_changed="$(jq -er '.blocks[] | select(.id == "b2") | .changed_revision' "$work/body")" ||
+    '[.blocks.blocks[] | [.id, .text]]'
+  b2_changed="$(jq -er '.blocks.blocks[] | select(.id == "b2") | .changed_revision' "$work/body")" ||
     fail A13 "read b2's changed revision" "$(body)"
   reply_block_is "the restore" "Second," false
 
@@ -1076,85 +1101,85 @@ else
   edit_comment A13 "add block HTML after the last paragraph" "$person_cited" "$html_body" \
     '{"b1": null, "b2": null, "b3": null, "b4": null}'
   expect A13 "block HTML added elsewhere keeps b2's changed revision $b2_changed" \
-    "[$b2_changed]" '[.blocks[] | select(.id == "b2") | .changed_revision]'
-  get "/api/v1/comments/$person_cited"
+    "[$b2_changed]" '[.blocks.blocks[] | select(.id == "b2") | .changed_revision]'
+  get "/api/v2/comments/$person_cited"
   want_status 200 A13 "read the comment holding block HTML"
   expect A13 "the edited body holding block HTML reads back byte for byte" \
-    "$(jq -cn --arg b "$html_body" '$b')" '.comment.body'
+    "$(jq -cn --arg b "$html_body" '$b')" '.body'
   reply_block_is "block HTML was added" "Second," false
 
   html_comment_body=$'Above.\n\n<div>\nx\n</div>\n\nBelow.'
   person_comment A13 "the person writes a comment holding block HTML" "$html_comment_body"
   html_comment="$posted"
-  get "/api/v1/comments/$html_comment"
+  get "/api/v2/comments/$html_comment"
   want_status 200 A13 "read the comment holding block HTML"
   expect A13 "a body holding block HTML reads back byte for byte" \
-    "$(jq -cn --arg b "$html_comment_body" '$b')" '.comment.body'
-  get "/api/v1/comments/$html_comment/blocks"
+    "$(jq -cn --arg b "$html_comment_body" '$b')" '.body'
+  get "/api/v2/comments/$html_comment?include=blocks"
   want_status 200 A13 "read the blocks of the comment holding block HTML"
   expect A13 "a body holding block HTML splits at blank lines into text blocks" \
     "$(jq -cn '[["text", "Above."], ["text", "<div>\nx\n</div>"], ["text", "Below."]]')" \
-    '[.blocks[] | [.type, .text]]'
+    '[.blocks.blocks[] | [.type, .text]]'
 
   # Negative control: a carried id the comment never had is refused, and the body stays.
-  get "/api/v1/comments/$person_cited/blocks"
+  get "/api/v2/comments/$person_cited?include=blocks"
   want_status 200 A13 "read the comment's revision"
-  person_send PATCH "/api/v1/comments/$person_cited" \
-    "$(jq -c '{body: "Unknown.", base_revision: .revision, blocks: [{id: "b9", from: 0}]}' \
+  person_send PATCH "/api/v2/comments/$person_cited" \
+    "$(jq -c '{body: "Unknown.", base_revision: .blocks.revision, blocks: [{id: "b9", from: 0}]}' \
       "$work/body")"
   want_status 400 A13 "a blocks entry with an unknown id"
   expect A13 "a blocks entry with an unknown id answers 400 INVALID_COMMENT naming b9" true \
     '.code == "INVALID_COMMENT" and (.error | contains("\"b9\""))'
-  get "/api/v1/comments/$person_cited"
+  get "/api/v2/comments/$person_cited"
   want_status 200 A13 "read the comment after the refused edit"
   expect A13 "the refused edit leaves the body" "$(jq -cn --arg b "$html_body" '$b')" \
-    '.comment.body'
+    '.body'
 fi
 
 # A15, the comment half: a link pinned to a revision of a comment's block reads the block as that
 # revision held it, and says it changed after the person rewords it and was removed after the
 # person deletes it. A message never changes, so a pinned message block is no reference.
-get "/api/v1/references?to=$(q "$mx_ref#b-b1@v1")"
+get "/api/v2/references?to=$(q "$mx_ref#b-b1@v1")"
 want_status 400 "A15 comment" "?to=<message block>@v1"
 expect "A15 comment" "a pinned message block on ?to= answers 400 INVALID_REFERENCE" \
   '"INVALID_REFERENCE"' '.code'
 if [[ -z "$dev_login" ]]; then
-  printf 'SKIP: A15 comment PATCH /api/v1/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to run A15 comment\n'
+  printf 'SKIP: A15 comment PATCH /api/v2/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to run A15 comment\n'
 else
   person_comment "A15 comment" "the person writes comment Y of two paragraphs" $'Alpha.\n\nBeta.'
   y="$posted"
   y_b2="dispatch://$key/comment/$y#b-b2"
-  get "/api/v1/comments/$y/blocks"
+  get "/api/v2/comments/$y?include=blocks"
   want_status 200 "A15 comment" "read Y's revision"
-  y_version="$(jq -er '.revision' "$work/body")" || fail "A15 comment" "read Y's revision" "$(body)"
+  y_version="$(jq -er '.blocks.revision' "$work/body")" || fail "A15 comment" "read Y's revision" "$(body)"
   y_pin="$y_b2@v$y_version"
   run "A15 comment" "an agent's comment links Y's b2 unpinned and pinned" comment --issue "$key" \
     --body "Unpinned $y_b2, pinned $y_pin."
-  get "/api/v1/references?to=$(q "$y_pin")"
+  get "/api/v2/references?to=$(q "$y_pin")&limit=200"
   want_status 200 "A15 comment" "?to=Y#b-b2@vN answers"
   expect "A15 comment" "?to=Y#b-b2@vN has pin.state unchanged at revision $y_version" \
     "$(jq -cn --argjson n "$y_version" '["unchanged", $n, "Beta."]')" \
     '[.node.pin.state, .node.pin.version, .node.pin.text]'
   expect "A15 comment" "?to=Y#b-b2@vN lists the agent's one mention" 1 \
-    '[.edges[] | select(.kind == "mentions")] | length'
+    '[.items[] | select(.kind == "mentions")] | length'
 
   edit_comment "A15 comment" "reword Y's b2" "$y" $'Alpha.\n\nBeta, reworded.' \
     '{"b1": null, "b2": "Beta, reworded."}'
-  get "/api/v1/references?to=$(q "$y_pin")"
+  get "/api/v2/references?to=$(q "$y_pin")&limit=200"
   want_status 200 "A15 comment" "?to=Y#b-b2@vN answers after the reword"
   expect "A15 comment" "?to=Y#b-b2@vN has pin.state changed with revision $y_version's text" \
     "$(jq -cn --argjson n "$y_version" '["changed", $n, "Beta."]')" \
     '[.node.pin.state, .node.pin.version, .node.pin.text]'
   expect "A15 comment" "?to=Y#b-b2@vN has the unpinned text the new text" '"Beta, reworded."' \
     '.node.text'
-  get "/api/v1/references?to=$(q "$y_b2")"
+  get "/api/v2/references?to=$(q "$y_b2")&limit=200"
   want_status 200 "A15 comment" "?to=Y#b-b2 answers after the reword"
   expect "A15 comment" "?to=Y#b-b2 reads the new text and no pin" '["Beta, reworded.",null]' \
     '[.node.text, .node.pin]'
 
   edit_comment "A15 comment" "delete Y's b2" "$y" 'Alpha.' '{"b1": null}'
   y_removed_in="$revision"
-  get "/api/v1/references?to=$(q "$y_pin")"
+  get "/api/v2/references?to=$(q "$y_pin")&limit=200"
   want_status 200 "A15 comment" "?to=Y#b-b2@vN answers after the deletion"
   expect "A15 comment" "?to=Y#b-b2@vN has pin.state removed with removed_version $y_removed_in" \
     "[\"removed\",$y_removed_in]" '[.node.pin.state, .node.pin.removed_version]'
@@ -1163,7 +1188,7 @@ else
     fail "A15 comment" "dispatch read --ref Y#b-b2@vN prints Removed in revision" \
       "$(<"$work/out")"
   pass "A15 comment" "dispatch read --ref Y#b-b2@vN prints Removed in revision $y_removed_in"
-  get "/api/v1/references?to=$(q "$y_b2")"
+  get "/api/v2/references?to=$(q "$y_b2")&limit=200"
   want_status 404 "A15 comment" "?to=Y#b-b2 of the deleted block"
   pass "A15 comment" "?to=Y#b-b2 of the deleted block is 404"
 fi
@@ -1177,21 +1202,21 @@ fi
 # part, and the target counts each written link once (R7); a part no revision of the ask holds is
 # refused by name (R10); and a reply that answers the ask names the part it answers (R11). No part id
 # is guessed: every one of them comes from the ask's own read or from its part_of edges. Answering
-# needs the person scope (POST /api/v1/asks/{id}/answer), which this script's bearer does not
-# hold, so the answer part and R7's third link run under DEV_SIGNIN_LOGIN; every other check runs
-# on any server.
+# needs the person scope (PUT /api/v2/asks/{id}/state to answered), which this script's bearer
+# does not hold, so the answer part and R7's third link run under DEV_SIGNIN_LOGIN; every other
+# check runs on any server.
 
 # ask_parts SECTION WHAT ASK: reads the ask; sets $parts_revision to the revision of its parts,
 # $option_parts to its options' part ids in the ask's order, and $answer_part to its answer's part
 # id ("" while it holds no answer).
 ask_parts() {
   local part
-  get "/api/v1/asks/$3"
+  get "/api/v2/asks/$3"
   want_status 200 "$1" "$2"
-  parts_revision="$(jq -er '.ask.revision' "$work/body")" ||
+  parts_revision="$(jq -er '.revision' "$work/body")" ||
     fail "$1" "$2" "no revision of the ask's parts: $(body)"
-  mapfile -t option_parts < <(jq -r '.ask.options[] | .id // ""' "$work/body")
-  answer_part="$(jq -r '.ask.answer.id // ""' "$work/body")"
+  mapfile -t option_parts < <(jq -r '.options[] | .id // ""' "$work/body")
+  answer_part="$(jq -r '.answer.id // ""' "$work/body")"
   for part in ${option_parts[@]+"${option_parts[@]}"}; do
     [[ -n "$part" ]] || fail "$1" "$2" "an option carries no part id: $(body)"
   done
@@ -1200,7 +1225,7 @@ ask_parts() {
 # part_node SECTION WHAT ASK REF ID TEXT: ?to=REF reads part ID of ASK, a block node of the ask
 # carrying TEXT and the revision its text last changed in; the answer stays in $work/body.
 part_node() {
-  get "/api/v1/references?to=$(q "$4")"
+  get "/api/v2/references?to=$(q "$4")&limit=200"
   want_status 200 "$1" "$2"
   expect "$1" "$2" \
     "$(jq -cn --arg a "$3" --arg b "$5" --arg r "$4" --arg t "$6" --argjson v "$parts_revision" \
@@ -1247,17 +1272,17 @@ tuesday_ref="$(block_ref "$parts_ref" "$tuesday_part")"
 
 # Every part of the ask is part_of it, the question among them, and the question's part id is read
 # from that list: no read of an ask carries it.
-get "/api/v1/references?to=$(q "$parts_ref")&kind=part_of"
+get "/api/v2/references?to=$(q "$parts_ref")&kind=part_of&limit=200"
 want_status 200 A6 "?to=<ask>&kind=part_of answers"
 expect A6 "?to=<ask>&kind=part_of lists its two options and one part more, its question" \
   "$(jq -cnS --arg m "$monday_part" --arg t "$tuesday_part" '{parts: 3, options: [$m, $t] | sort}')" \
   --arg m "$monday_part" --arg t "$tuesday_part" \
-  '[.edges[] | select(.kind == "part_of") | .node.block_id] as $ids
+  '[.items[] | select(.kind == "part_of") | .node.block_id] as $ids
    | {parts: ($ids | length), options: ($ids | map(select(. == $m or . == $t)) | sort)}'
 # No read of an ask names its question's part, so the question is the part its options and its
 # answer do not name; the read below is what proves that part holds the question.
 question_part="$(jq -er --arg m "$monday_part" --arg t "$tuesday_part" \
-  'first(.edges[] | select(.kind == "part_of") | .node.block_id | select(. != $m and . != $t))' \
+  'first(.items[] | select(.kind == "part_of") | .node.block_id | select(. != $m and . != $t))' \
   "$work/body")" ||
   fail A6 "the question is a part of the ask" "the parts are $(body)"
 question_ref="$(block_ref "$parts_ref" "$question_part")"
@@ -1278,11 +1303,11 @@ run A6 "a comment citing the first option" comment --issue "$child" \
 posted A6 "a comment citing the first option" comment
 citing="$posted"
 citing_ref="$child_ref/comment/$citing"
-get "/api/v1/references?to=$(q "$monday_ref")"
+get "/api/v2/references?to=$(q "$monday_ref")&limit=200"
 want_status 200 A6 "?to=<first option> answers"
 expect A6 "?to=<first option> lists the comment's block, part of the comment" \
   "$(jq -cn --arg c "$citing" '[["mentions", "block", "comment/\($c)#b1", $c]]')" \
-  '[.edges[] | [.kind, .node.kind, .node.id, .node.parent.id]]'
+  '[.items[] | [.kind, .node.kind, .node.id, .node.parent.id]]'
 
 run A6 "dispatch read --ref <ask>" read --ref "$parts_ref"
 grep -qxF -- "- $monday ($monday_ref)" "$work/out" ||
@@ -1321,13 +1346,13 @@ asked_facts="$(wanted "$me" "$me" "$of_parts_ask" 1)"
 node_facts "the first option" "$monday_ref" "$asked_facts" A11
 node_facts "the question" "$question_ref" "$asked_facts" A11
 node_of A11 "$monday_ref"
-get "/api/v1/references?from=$(q "$citing_ref")&kind=mentions"
+get "/api/v2/references?from=$(q "$citing_ref")&kind=mentions&limit=200"
 want_status 200 A11 "?from=<citing comment>&kind=mentions answers"
 expect A11 "the mention's other end is the option as its own reference reads it" "[$node]" \
-  "$defs"'[.edges[] | select(.kind == "mentions") | .node | same]'
+  "$defs"'[.items[] | select(.kind == "mentions") | .node | same]'
 
 # R10: a part no revision of the ask holds is refused, naming the part and the ask.
-get "/api/v1/references?to=$(q "$(block_ref "$parts_ref" b9)")"
+get "/api/v2/references?to=$(q "$(block_ref "$parts_ref" b9)")"
 want_status 404 R10 "?to=<ask>#b-b9"
 expect R10 "?to=<ask>#b-b9 is 404 NOT_FOUND naming the part and the ask" true \
   --arg a "$parts_ask" '.code == "NOT_FOUND" and (.error | contains("no part \"b9\" in ask \($a)"))'
@@ -1340,17 +1365,17 @@ run R11 "a reply naming the first option" comment --issue "$child" --reply-to-as
 [[ "$(<"$work/out")" =~ Replied\ on\ ask\ $parts_ask\ \(comment\ ([0-9a-f-]{36}) ]] ||
   fail R11 "a reply naming the first option" "no reply id in: $(<"$work/out")"
 part_reply="${BASH_REMATCH[1]}"
-get "/api/v1/comments/$part_reply"
+get "/api/v2/comments/$part_reply"
 want_status 200 R11 "read the reply naming the option"
 expect R11 "the reply is under the ask and names the option, with the option's text" \
   "$(jq -cn --arg a "$parts_ask" --arg b "$monday_part" --arg r "$monday_ref" --arg t "$monday" \
     '[$a, $b, $r, $t, false]')" \
-  '[.comment.ask_id, .comment.reply_block.block_id, .comment.reply_block.ref,
-    .comment.reply_block.text, .comment.reply_block.removed]'
-get "/api/v1/references?to=$(q "$monday_ref")&kind=replies_to"
+  '[.ask_id, .reply_block.block_id, .reply_block.ref,
+    .reply_block.text, .reply_block.removed]'
+get "/api/v2/references?to=$(q "$monday_ref")&kind=replies_to&limit=200"
 want_status 200 R11 "?to=<first option>&kind=replies_to answers"
 expect R11 "?to=<first option>&kind=replies_to is the one reply naming it" \
-  "[[\"comment\",\"$part_reply\"]]" '[.edges[] | [.node.kind, .node.id]]'
+  "[[\"comment\",\"$part_reply\"]]" '[.items[] | [.node.kind, .node.id]]'
 run R11 "dispatch read --ref <reply naming the option>" read --ref "$child_ref/comment/$part_reply"
 grep -qxF "Re: block $monday_part: $monday" "$work/out" ||
   fail R11 "dispatch read --ref <reply> quotes the part it answers" "$(<"$work/out")"
@@ -1370,28 +1395,28 @@ check, which reads how often one link counts." \
 r7_ask="${BASH_REMATCH[1]}"
 r7_ref="$child_ref/ask/$r7_ask"
 ask_parts "R7 ask" "read the parts of the ask naming the target" "$r7_ask"
-get "/api/v1/references?from=$(q "$r7_ref")&kind=mentions"
+get "/api/v2/references?from=$(q "$r7_ref")&kind=mentions&limit=200"
 want_status 200 "R7 ask" "?from=<ask>&kind=mentions answers"
 expect "R7 ask" "the ask's two links start at its question and at the option holding one" \
   "$(jq -cn --arg a "$r7_ask" --arg o "${option_parts[0]}" --arg n "$named_ask" \
     '[["block", "ask/\($a)#b1", "b1", "ask", $n], ["block", "ask/\($a)#\($o)", $o, "ask", $n]]
       | sort')" \
-  '[.edges[] | select(.kind == "mentions")
+  '[.items[] | select(.kind == "mentions")
     | [.block.kind, .block.id, .block.block_id, .node.kind, .node.id]] | sort'
-get "/api/v1/asks/$named_ask"
+get "/api/v2/asks/$named_ask"
 want_status 200 "R7 ask" "read the named ask"
 expect "R7 ask" "the named ask counts the question's link and the option's once each" 2 \
-  '.ask.referenced_by_count'
+  '.referenced_by_count'
 
 if [[ -z "$dev_login" ]]; then
-  printf 'SKIP: R7 ask POST /api/v1/asks/{id}/answer needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to read the answer part and the third link\n'
+  printf 'SKIP: R7 ask PUT /api/v2/asks/{id}/state to answered needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; on a server with /auth/_dev/signin, set it to a login to read the answer part and the third link\n'
   run "R7 ask" "resolve the unanswered ask naming the target" resolve-ask --ask "$r7_ask" \
     --kind resolved --reason "block-graph.sh read this ask's parts; nothing waits on a person."
 else
   answer_text="Close with the check, since $named_ref closes when the check ends."
-  person_send POST "/api/v1/asks/$r7_ask/answer" \
+  person_send PUT "/api/v2/asks/$r7_ask/state" \
     "$(jq -cn --arg t "$answer_text" \
-      '{selected: ["Close with the check"], text: $t, expected_edited_at: null}')"
+      '{state: "answered", selected: ["Close with the check"], text: $t, expected_edited_at: null}')"
   want_status 200 "R7 ask" "answer the ask as $dev_login"
   ask_parts "R7 ask" "read the answered ask's parts" "$r7_ask"
   [[ -n "$answer_part" ]] ||
@@ -1406,17 +1431,17 @@ else
     "$(wanted "$(jq -cn --arg l "$dev_login" '[{kind: "user", id: $l}]')" \
       "$(jq -cn --arg l "$dev_login" '[{kind: "user", id: $l}]')" \
       "$(parent_of ask "$r7_ask" "$r7_ref")" "$parts_revision")" A11
-  get "/api/v1/references?from=$(q "$r7_ref")&kind=mentions"
+  get "/api/v2/references?from=$(q "$r7_ref")&kind=mentions&limit=200"
   want_status 200 "R7 ask" "?from=<answered ask>&kind=mentions answers"
   expect "R7 ask" "the three links start at the question, the option and the answer" \
     "$(jq -cn --arg a "$r7_ask" --arg o "${option_parts[0]}" --arg w "$answer_part" --arg n "$named_ask" \
       '[["ask/\($a)#b1", "b1", $n], ["ask/\($a)#\($o)", $o, $n], ["ask/\($a)#\($w)", $w, $n]]
         | sort')" \
-    '[.edges[] | select(.kind == "mentions") | [.block.id, .block.block_id, .node.id]] | sort'
-  get "/api/v1/asks/$named_ask"
+    '[.items[] | select(.kind == "mentions") | [.block.id, .block.block_id, .node.id]] | sort'
+  get "/api/v2/asks/$named_ask"
   want_status 200 "R7 ask" "read the named ask after the answer"
   expect "R7 ask" "the named ask counts the three written links once each" 3 \
-    '.ask.referenced_by_count'
+    '.referenced_by_count'
 fi
 
 # A15, the ask clause: a comment links the second option bare and pinned to the revision it stands
@@ -1425,13 +1450,13 @@ fi
 tuesday_pin="$tuesday_ref@v1"
 run "A15 ask" "a comment linking the second option bare and pinned" comment --issue "$child" \
   --body "Unpinned $tuesday_ref, pinned $tuesday_pin."
-get "/api/v1/references?to=$(q "$tuesday_pin")"
+get "/api/v2/references?to=$(q "$tuesday_pin")&limit=200"
 want_status 200 "A15 ask" "?to=<second option>@v1 answers"
 expect "A15 ask" "?to=<second option>@v1 has pin.state unchanged at revision 1 with its text" \
   "$(jq -cn --arg t "$tuesday" '["unchanged", 1, $t]')" \
   '[.node.pin.state, .node.pin.version, .node.pin.text]'
 expect "A15 ask" "?to=<second option>@v1 lists the one mention: the two forms are one target" 1 \
-  '[.edges[] | select(.kind == "mentions")] | length'
+  '[.items[] | select(.kind == "mentions")] | length'
 
 run "A15 ask" "reword the second option" edit-ask --ask "$parts_ask" \
   --option "Monday: Ship at the start of the week." \
@@ -1443,11 +1468,11 @@ ask_parts "A15 ask" "read the ask after the reword" "$parts_ask"
   fail "A15 ask" "the reworded option keeps its part id" \
     "it is now ${option_parts[1]-none}, was $tuesday_part"
 pass "A15 ask" "the reworded option keeps its part id at revision 2"
-get "/api/v1/references?to=$(q "$tuesday_ref")"
+get "/api/v2/references?to=$(q "$tuesday_ref")&limit=200"
 want_status 200 "A15 ask" "?to=<second option> answers after the reword"
 expect "A15 ask" "?to=<second option> reads the new text and no pin" \
   "$(jq -cn --arg t "$reworded_tuesday" '[$t, null]')" '[.node.text, .node.pin]'
-get "/api/v1/references?to=$(q "$tuesday_pin")"
+get "/api/v2/references?to=$(q "$tuesday_pin")&limit=200"
 want_status 200 "A15 ask" "?to=<second option>@v1 answers after the reword"
 expect "A15 ask" "?to=<second option>@v1 has pin.state changed with revision 1's text" \
   "$(jq -cn --arg t "$tuesday" '["changed", 1, $t]')" \
@@ -1461,12 +1486,12 @@ ask_parts "A15 ask" "read the ask after the drop" "$parts_ask"
 dropped_in="$parts_revision"
 [[ "${#option_parts[@]}" == 1 && "${option_parts[0]}" == "$monday_part" ]] ||
   fail "A15 ask" "the drop leaves the first option alone" "its options are ${option_parts[*]-none}"
-get "/api/v1/references?to=$(q "$tuesday_pin")"
+get "/api/v2/references?to=$(q "$tuesday_pin")&limit=200"
 want_status 200 "A15 ask" "?to=<second option>@v1 answers after the drop"
 expect "A15 ask" "?to=<second option>@v1 has pin.state removed with removed_version $dropped_in" \
   "[\"removed\",$dropped_in]" '[.node.pin.state, .node.pin.removed_version]'
-expect "A15 ask" "?to=<second option>@v1 lists no edge for the dropped part" 0 '.edges | length'
-get "/api/v1/references?to=$(q "$tuesday_ref")"
+expect "A15 ask" "?to=<second option>@v1 lists no edge for the dropped part" 0 '.items | length'
+get "/api/v2/references?to=$(q "$tuesday_ref")&limit=200"
 want_status 404 "A15 ask" "?to=<second option> of the dropped option"
 pass "A15 ask" "?to=<second option> of the dropped option is 404"
 run "A15 ask" "dispatch read --ref <second option>@v1" read --ref "$tuesday_pin"
@@ -1507,18 +1532,18 @@ printf '%s' "$a8_body" >"$work/a8-body.md"
 run A8 "a comment of 48,000 characters" comment --issue "$key" --body-file "$work/a8-body.md"
 posted A8 "a comment of 48,000 characters" comment
 a8_comment="$posted"
-get "/api/v1/comments/$a8_comment"
+get "/api/v2/comments/$a8_comment"
 want_status 200 A8 "read the 48,000-character comment back"
 expect A8 "the comment reads back whole, every one of its 48,000 characters" '[48000,true]' \
-  --rawfile want "$work/a8-body.md" '[(.comment.body | length), (.comment.body == $want)]'
+  --rawfile want "$work/a8-body.md" '[(.body | length), (.body == $want)]'
 
 run A8 "a message of 48,000 characters" message --issue "$key" --body-file "$work/a8-body.md"
 posted A8 "a message of 48,000 characters" message
 a8_message="$posted"
-get "/api/v1/messages/$a8_message"
+get "/api/v2/messages/$a8_message"
 want_status 200 A8 "read the 48,000-character message back"
 expect A8 "the message reads back whole, every one of its 48,000 characters" '[48000,true]' \
-  --rawfile want "$work/a8-body.md" '[(.message.body | length), (.message.body == $want)]'
+  --rawfile want "$work/a8-body.md" '[(.body | length), (.body == $want)]'
 
 # The command sends the over-long paragraph: nothing on this side refuses it, and the words the
 # agent reads are the server's, naming the block and its length.
@@ -1568,11 +1593,11 @@ wait_until() {
 # block's filler is a multiple of the window's 1,200 characters, so that last window is the
 # window's 200-character overlap and the passage, and the passage is most of what it embeds.
 # A one-line ask option is the second half: a search for its text names that option's part.
-get "/api/v1/search/coverage"
+get "/api/v2/search-coverage"
 want_status 200 A9 "read meaning search's coverage"
 a9_identity="$(jq -r '.identity // ""' "$work/body")"
 if [[ -z "$a9_identity" ]]; then
-  printf 'SKIP: A9 this server has no embedder (GET /api/v1/search/coverage answers identity null), so no window is embedded and neither the passage at the end of a long block nor an ask option can be found by meaning; run against a server with an embedder configured, or the local harness, which sets DISPATCH_DEV_EMBEDDER=1\n'
+  printf 'SKIP: A9 this server has no embedder (GET /api/v2/search-coverage answers identity null), so no window is embedded and neither the passage at the end of a long block nor an ask option can be found by meaning; run against a server with an embedder configured, or the local harness, which sets DISPATCH_DEV_EMBEDDER=1\n'
 else
   # Words no two alike, so the 200 characters of filler the last window carries weigh little
   # beside the passage; 27 windows of 1,200 characters, the passage alone in the twenty-eighth.
@@ -1587,35 +1612,36 @@ pelicans hum beneath a frosted chapel."
   printf '# Shift notes\n\n%s %s\n' "$a9_filler" "$a9_passage" >"$work/long.md"
   upload A9 long.md "$work/long.md"
   a9_doc_id="$doc_id"
-  get "/api/v1/artifacts/$a9_doc_id/blocks"
+  get "/api/v2/artifacts/$a9_doc_id?include=blocks"
   want_status 200 A9 "read the long document's blocks"
-  a9_block_id="$(jq -er 'max_by(.to - .from) | .id' "$work/body")" ||
+  a9_block_id="$(jq -er '.blocks | max_by(.to - .from) | .id' "$work/body")" ||
     fail A9 "the long document holds one block longer than the rest" "$(body)"
   expect A9 "the document's longest block is longer than 32,000 characters" true \
-    --arg b "$a9_block_id" '[.[] | select(.id == $b) | .to - .from][0] > 32000'
+    --arg b "$a9_block_id" '[.blocks[] | select(.id == $b) | .to - .from][0] > 32000'
 
   a9_block_embedded() {
-    get "/api/v1/artifacts/$a9_doc_id/blocks"
+    get "/api/v2/artifacts/$a9_doc_id?include=blocks"
     [[ "$status" == 200 ]] || return 1
-    [[ "$(jq -r --arg b "$a9_block_id" '.[] | select(.id == $b) | .embedding // ""' \
+    [[ "$(jq -r --arg b "$a9_block_id" '.blocks[] | select(.id == $b) | .embedding // ""' \
       "$work/body")" == embedded ]]
   }
   wait_until A9 "every window covering the long block carries a vector of its current text" \
     180 a9_block_embedded
 
   a9_query="vermilion kestrel lanterns winching gantry marmalade pelicans hum frosted chapel"
+  # The search's largest page is 50 hits.
   a9_passage_found() {
-    get "/api/v1/search?q=$(q "$a9_query")&project=$(q "$project")"
+    get "/api/v2/search-results?q=$(q "$a9_query")&project=$(q "$project")&limit=50"
     [[ "$status" == 200 ]] || return 1
     [[ "$(jq -r --arg d "$a9_doc_id" --arg b "$a9_block_id" \
-      '[.results[] | select(.kind == "document" and .id == $d and .block_id == $b)] | length' \
+      '[.items[] | select(.kind == "document" and .id == $d and .block_id == $b)] | length' \
       "$work/body")" != 0 ]]
   }
   wait_until A9 "a search by meaning finds the passage at the end of the long block" \
     180 a9_passage_found
   expect A9 "the hit names that block, which only the meaning list sets" \
     "$(jq -cn --arg b "$a9_block_id" '[$b]')" \
-    --arg d "$a9_doc_id" '[.results[] | select(.kind == "document" and .id == $d) | .block_id]'
+    --arg d "$a9_doc_id" '[.items[] | select(.kind == "document" and .id == $d) | .block_id]'
 
   a9_option="Hoist the beacon over the winching gantry at dawn"
   run A9 "an ask whose option is one line" ask --issue "$child" \
@@ -1628,10 +1654,10 @@ pelicans hum beneath a frosted chapel."
   ask_parts A9 "read the parts of the ask the search reads" "$a9_ask"
   a9_option_part="${option_parts[0]}"
   a9_option_found() {
-    get "/api/v1/search?q=$(q "$a9_option")&project=$(q "$project")"
+    get "/api/v2/search-results?q=$(q "$a9_option")&project=$(q "$project")&limit=50"
     [[ "$status" == 200 ]] || return 1
     [[ "$(jq -r --arg a "$a9_ask" --arg b "$a9_option_part" \
-      '[.results[] | select(.kind == "ask" and .id == $a and .block_id == $b)] | length' \
+      '[.items[] | select(.kind == "ask" and .id == $a and .block_id == $b)] | length' \
       "$work/body")" != 0 ]]
   }
   wait_until A9 "a search for the option's text names that option ($a9_option_part)" \
@@ -1658,10 +1684,10 @@ run A14 "an ask whose question is 2,001 characters" ask --issue "$child" \
 [[ "$(<"$work/out")" =~ Asked\ ([0-9a-f-]{36}) ]] ||
   fail A14 "an ask whose question is 2,001 characters" "no ask id in: $(<"$work/out")"
 a14_ask="${BASH_REMATCH[1]}"
-get "/api/v1/asks/$a14_ask"
+get "/api/v2/asks/$a14_ask"
 want_status 200 A14 "read the 2,001-character question back"
 expect A14 "the ask holds the question whole" '[2001,true]' \
-  --arg want "$a14_question" '[(.ask.question | length), (.ask.question == $want)]'
+  --arg want "$a14_question" '[(.question | length), (.question == $want)]'
 
 doc_edit A14 "a decision block whose question is 2,001 characters" changes.md \
   "$(jq -cn --arg q "$a14_question" \
@@ -1669,10 +1695,10 @@ doc_edit A14 "a decision block whose question is 2,001 characters" changes.md \
       "\n\n- Option one: what it costs.\n- Option two: what it costs.\n:::\n")}]')"
 a14_block_ask=""
 a14_block_ask_written() {
-  get "/api/v1/issues/$key/asks?state=open"
+  get "/api/v2/issues/$key/asks?state=open&limit=200"
   [[ "$status" == 200 ]] || return 1
   a14_block_ask="$(jq -r --arg q "$a14_question" \
-    'first((.asks? // .)[] | select(.question == $q) | .id) // ""' "$work/body")"
+    'first(.items[] | select(.question == $q) | .id) // ""' "$work/body")"
   [[ -n "$a14_block_ask" ]]
 }
 wait_until A14 "the decision block becomes an ask holding the 2,001-character question" \

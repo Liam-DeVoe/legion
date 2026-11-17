@@ -292,7 +292,7 @@ describe("round-robin proxy", () => {
     expect(await answeredBy("/index.html", split)).toBe("b");
     expect(await answeredBy("/assets/index-abc.js", split)).toBe("b");
     // Everything else: the API, sign-in (a navigation included), a websocket.
-    expect(await answeredBy("/api/v1/issues", split)).toBe("a");
+    expect(await answeredBy("/api/v2/issues", split)).toBe("a");
     expect(
       await answeredBy("/auth/_dev/signin?login=alice", { ...split, "Sec-Fetch-Mode": "navigate" })
     ).toBe("a");
@@ -305,8 +305,8 @@ describe("round-robin proxy", () => {
     // header beats both.
     const both = "dispatch-e2e-process=a; dispatch-e2e-page=b";
     expect(await answeredBy("/assets/index-abc.js", { Cookie: both })).toBe("b");
-    expect(await answeredBy("/api/v1/issues", { Cookie: both })).toBe("a");
-    expect(await answeredBy("/api/v1/issues", { Cookie: "dispatch-e2e-api=b" })).toBe("b");
+    expect(await answeredBy("/api/v2/issues", { Cookie: both })).toBe("a");
+    expect(await answeredBy("/api/v2/issues", { Cookie: "dispatch-e2e-api=b" })).toBe("b");
     expect(
       await answeredBy("/assets/index-abc.js", { ...split, "X-Dispatch-E2E-Process": "a" })
     ).toBe("a");
@@ -317,7 +317,7 @@ describe("round-robin proxy", () => {
 
   test("a /_test/ request goes to both processes and answers A's, or a non-2xx of either", async () => {
     const hook = (headers: Record<string, string> = {}) =>
-      Bun.fetch(`${origin}/api/v1/live/_test/disconnect`, {
+      Bun.fetch(`${origin}/api/v2/_test/live/disconnect`, {
         body: "payload",
         headers,
         method: "POST",
@@ -326,7 +326,7 @@ describe("round-robin proxy", () => {
     expect([pinned.status, await pinned.text()]).toEqual([200, "hook on a"]);
     for (const upstream of [a, b]) {
       expect(upstream.seen.map((seen) => [seen.method, seen.path, seen.body])).toEqual([
-        ["POST", "/api/v1/live/_test/disconnect", "payload"],
+        ["POST", "/api/v2/_test/live/disconnect", "payload"],
       ]);
     }
     expect((await proxyRequests()).map((entry) => entry.upstream)).toEqual(["a", "b"]);
@@ -348,7 +348,7 @@ describe("round-robin proxy", () => {
   test("a /_proxy/ path is answered by the proxy and never forwarded", async () => {
     expect(await answeredBy("/who")).toBe("a");
     expect((await get("/_proxy/elsewhere")).status).toBe(404);
-    expect((await get("/api/v1/_proxy/requests")).status).toBe(404);
+    expect((await get("/api/v2/_proxy/requests")).status).toBe(404);
     expect((await Bun.fetch(`${origin}/_proxy/requests`, { method: "DELETE" })).status).toBe(405);
     expect((await get("/_proxy/reset")).status).toBe(405);
     expect(await proxyRequests()).toEqual([{ method: "GET", path: "/who", upstream: "a" }]);

@@ -17,7 +17,7 @@ import {
   THREAD_SESSION,
   unreadThreadRows,
 } from "./inbox-threads";
-import { holdPosts, refusePosts } from "./sends";
+import { holdPosts, refusePosts, WRITE_REFUSED } from "./sends";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -40,8 +40,9 @@ const AGENT_THREADS = 20;
 /** Two open asks waiting on the reader, so the Inbox count has something left after the click. */
 const ASKS = 2;
 
-/** The route one press of **Mark all read** posts to. */
-const MARK_ALL = "**/api/v1/me/inbox/read";
+/** The route one press of **Mark all read** patches: the person's marks, under the list's
+ *  narrowing (`marksRequest`). */
+const MARK_ALL = "**/api/v2/me/marks";
 
 interface Seeded {
   readonly issueKey: string;
@@ -94,7 +95,7 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
 
     // One click, with the request held open: every row is drawn as read where it stands, the
     // Type filter still counts all of them, and the reader's Inbox number is already at zero.
-    const held = await holdPosts(page, MARK_ALL);
+    const held = await holdPosts(page, MARK_ALL, "PATCH");
     await inbox.locator("[data-inbox-mark-all]").click();
     await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
     await expect(unreadMarks).toHaveCount(0);
@@ -164,7 +165,7 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
     await expect(drawer.locator("[data-inbox-row]").first()).toBeVisible();
     await expect(drawer.locator("[data-inbox-row]")).toHaveCount(GROUP_PAGE);
 
-    const held = await holdPosts(page, MARK_ALL);
+    const held = await holdPosts(page, MARK_ALL, "PATCH");
     await drawer.locator("[data-inbox-mark-all]").click();
     await expect(drawer.locator("[data-inbox-mark-all]")).toHaveCount(0);
     const bar = drawer.locator("[data-inbox-bar]");
@@ -204,7 +205,7 @@ test("a refused Mark all read brings the marks and the counts back and says noth
     const unreadBefore = await page.locator("[data-inbox-row] [aria-label='Unread']").count();
     expect(unreadBefore).toBeGreaterThan(0);
 
-    const refuse = await refusePosts(page, MARK_ALL);
+    const refuse = await refusePosts(page, MARK_ALL, WRITE_REFUSED, "PATCH");
     const unreadMarks = page.locator("[data-inbox-row] [aria-label='Unread']");
     await page.locator("[data-inbox-mark-all]").click();
     // The press takes the marks and the Inbox number, never a row: a read thread stays in the

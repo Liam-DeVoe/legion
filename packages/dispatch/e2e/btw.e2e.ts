@@ -17,7 +17,7 @@ async function post(page: Page): Promise<Record<string, unknown>> {
   const response = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
-      /\/api\/v1\/issues\/[^/]+\/comments$/.test(candidate.url())
+      /\/api\/v2\/issues\/[^/]+\/comments$/.test(candidate.url())
   );
   await page
     .getByRole("form", { name: "Comment composer" })
@@ -128,7 +128,7 @@ test("/btw with nothing after it keeps an agent's direct composer from sending, 
     const page = await alice.newPage();
     const posts: string[] = [];
     page.on("request", (request) => {
-      if (request.method() === "POST" && request.url().includes("/api/v1/agents/")) {
+      if (request.method() === "POST" && request.url().includes("/api/v2/agents/")) {
         posts.push(request.url());
       }
     });

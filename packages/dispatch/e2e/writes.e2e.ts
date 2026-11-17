@@ -24,15 +24,15 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  let putAttempts = 0;
+  let patchAttempts = 0;
   let retryRequests = 0;
-  await page.route("**/api/v1/me/issues/*/state", async (route) => {
-    if (route.request().method() !== "PUT") {
+  await page.route("**/api/v2/me/marks/issue/*", async (route) => {
+    if (route.request().method() !== "PATCH") {
       await route.continue();
       return;
     }
-    putAttempts += 1;
-    if (putAttempts === 1) {
+    patchAttempts += 1;
+    if (patchAttempts === 1) {
       // Dispatch's own verdict: a dropped request, a 5xx or a 429 is tried again under the
       // write's key rather than handed back as a refusal, so only this ends the write.
       await route.fulfill({
@@ -63,8 +63,8 @@ test("a failed pin shows a retryable error, never lies to the sidebar, and recov
   // the button disabled.
   const retryResponse = page.waitForResponse(
     (response) =>
-      response.request().method() === "PUT" &&
-      response.url().includes(`/api/v1/me/issues/${issue.key}/state`) &&
+      response.request().method() === "PATCH" &&
+      response.url().includes(`/api/v2/me/marks/issue/${issue.key}`) &&
       response.ok()
   );
   await retry.evaluate((button: HTMLButtonElement) => {
@@ -153,7 +153,7 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
   if (lifecycle === undefined) {
     throw new Error("The resolved comment lifecycle event was not recorded.");
   }
-  await putIssueState(issue.key, { dismissed: [`pinned_items:event:${lifecycle.id}`] });
+  await putIssueState(issue.key, { pinned_items: [`pinned_items:event:${lifecycle.id}`] });
 
   await page.goto(`/issues/${issue.key}`);
   await page.getByRole("tab", { name: "Pinned" }).click();

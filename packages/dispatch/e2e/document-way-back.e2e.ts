@@ -98,9 +98,7 @@ test("a document's title is corrected and a document made by mistake is removed,
   await page.keyboard.type("A line nobody is to lose.");
   const kept = await issueDocument(issue.key, "kept-notes");
   // The writing is the server's to see, so the row waits for the settlement that versions it.
-  await expect
-    .poll(async () => (await getArtifact(kept.id)).versions?.length ?? 0)
-    .toBeGreaterThan(1);
+  await expect.poll(async () => (await getArtifact(kept.id)).version_count).toBeGreaterThan(1);
   await header.getByRole("button", { name: "Remove" }).click();
   await expect(header.getByRole("alert")).toHaveText(
     "artifact kept-notes (Kept notes) is not untouched: it holds writing; a document is removed " +

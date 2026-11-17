@@ -142,7 +142,7 @@ async function waitForReads(pending: Map<Request, number>): Promise<void> {
 
 /** What a recorded read path carries in place of the issue's key, so that two pages, each
  *  reading an issue of its own, compare as lists. */
-const ISSUE_PATH = "/api/v1/issues/<issue>";
+const ISSUE_PATH = "/api/v2/issues/<issue>";
 
 /** The reads an issue's activity tab makes for itself at its first load. A window that counts
  *  what an event costs a page opens only after these have gone out, since they are the page's
@@ -158,7 +158,7 @@ const FIRST_ISSUE_READS = [`${ISSUE_PATH}/comments`, `${ISSUE_PATH}/asks`, `${IS
  *  between two pages by construction and would read as different reads. */
 function trackIssueReads(page: Page, key: string): string[] {
   const reads: string[] = [];
-  const prefix = `/api/v1/issues/${key}`;
+  const prefix = `/api/v2/issues/${key}`;
   page.on("request", (request) => {
     const { pathname } = new URL(request.url());
     if (pathname === prefix || pathname.startsWith(`${prefix}/`)) {
@@ -321,7 +321,7 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
 // Each window counts that page's reads of its own issue, by path, because a count of every
 // `/api/` request counted two different things: in CI job 127925489549 the control's window held
 // its tab's lazy first reads of `/comments` and `/asks?state=all` and a periodic
-// `/api/v1/agents`, which no comment event invalidates, while the rotating page had made those
+// `/api/v2/agents`, which no comment event invalidates, while the rotating page had made those
 // reads long before its own window opened - 5 reads against 4, and job 127873213156 counted 6
 // against 4 the same way. So both windows now open only once that page's own first reads have
 // gone out and settled, and the two lists are compared read for read.

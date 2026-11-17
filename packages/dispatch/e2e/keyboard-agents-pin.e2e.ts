@@ -9,7 +9,7 @@ import {
   setLiveSessions,
   shownAgentRows,
 } from "./agents";
-import { createAgentMessage, createMessage, replyToMessageDelivery } from "./api";
+import { createAgentMessage, createMessage, getAgentStates, replyToMessageDelivery } from "./api";
 import { holdPosts, MESSAGE_REFUSED, pasteFile, refusePosts } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -207,7 +207,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/comments");
+      expect(new URL(request.url()).pathname).toBe("/api/v2/issues/CORE-1/comments");
       expect(request.postDataJSON()).toMatchObject({
         body: "@Silent can you take this",
         mentions: [{ target: "session:silent-session" }],
@@ -255,7 +255,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/agents/silent-session/messages");
+      expect(new URL(request.url()).pathname).toBe("/api/v2/agents/silent-session/messages");
       expect(request.postDataJSON()).toMatchObject({
         body: "Yes, go ahead",
         in_reply_to: asked.id,
@@ -305,7 +305,7 @@ test.describe("agents page pins", () => {
       await field.click();
       await page.keyboard.press("Control+Enter");
       const request = await posted;
-      expect(new URL(request.url()).pathname).toBe("/api/v1/issues/CORE-1/messages");
+      expect(new URL(request.url()).pathname).toBe("/api/v2/issues/CORE-1/messages");
       expect(request.postDataJSON()).toMatchObject({
         body: "Yes, go ahead",
         in_reply_to: root.id,
@@ -328,7 +328,7 @@ test.describe("agents page pins", () => {
       const page = await context.newPage();
       await openAgents(page);
       const rows = shownAgentRows(page);
-      const send = await holdPosts(page, "**/api/v1/agents/*/messages");
+      const send = await holdPosts(page, "**/api/v2/agents/*/messages");
       const silentRow = await roveToSilent(page);
       const field = silentRow.getByRole("textbox", { name: "Comment" });
 
@@ -366,7 +366,7 @@ test.describe("agents page pins", () => {
     try {
       const page = await context.newPage();
       await openAgents(page);
-      const upload = await holdPosts(page, "**/api/v1/issues/*/artifacts");
+      const upload = await holdPosts(page, "**/api/v2/issues/*/artifacts");
       const silentRow = await roveToSilent(page);
       const field = silentRow.getByRole("textbox", { name: "Comment" });
 
@@ -435,7 +435,7 @@ test.describe("agents page pins", () => {
       const sent = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          new URL(response.url()).pathname === `/api/v1/agents/${stale.session_id}/messages`
+          new URL(response.url()).pathname === `/api/v2/agents/${stale.session_id}/messages`
       );
       await field.fill("Third question");
       await field.press("Control+Enter");
@@ -489,7 +489,7 @@ test.describe("agents page pins", () => {
       const readMarks: string[] = [];
       page.on("request", (request) => {
         const path = new URL(request.url()).pathname;
-        if (request.method() === "PUT" && path === `/api/v1/me/agents/${stale.session_id}/state`) {
+        if (request.method() === "PATCH" && path === `/api/v2/me/marks/agent/${stale.session_id}`) {
           readMarks.push(request.postData() ?? "");
         }
       });
@@ -502,9 +502,7 @@ test.describe("agents page pins", () => {
       // The row is under `Needs you` while a reply is unread, and `Active` once reading it
       // makes Dispatch activity of its own.
       // What the navigation's badge shows, read from the server.
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => (await getAgentStates())[stale.session_id]?.unread_replies ?? 0;
 
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
       await expect(conversation).toContainText("First answer");
@@ -524,16 +522,16 @@ test.describe("agents page pins", () => {
       const refetched = page.waitForResponse(
         (response) =>
           response.request().method() === "GET" &&
-          new URL(response.url()).pathname === `/api/v1/agents/${stale.session_id}/messages`
+          new URL(response.url()).pathname === `/api/v2/agents/${stale.session_id}/messages`
       );
       await replyToMessageDelivery(second.id, { attempt: 1, body: "Second answer" }, actor);
       await refetched;
       await expect.poll(unread).toBe(1);
       // Nothing may mark it read from here. The write a visible list would make waits out the
       // reader's dwell (`DWELL_MS`), a page timer the jump fires; the round trip after it is
-      // answered only once any `PUT` that jump started had left the page.
+      // answered only once any mark write that jump started had left the page.
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() => fetch("/api/v2/me/marks?kind=agent").then(({ status }) => status));
       expect(readMarks).toHaveLength(marked);
       expect(await unread()).toBe(1);
 
@@ -577,9 +575,7 @@ test.describe("agents page pins", () => {
       await page.clock.install();
       await openAgents(page);
       const staleRow = agentRow(page, stale.session_id);
-      const unread = async () =>
-        (await (await page.request.get("/api/v1/me/agents/state")).json())[stale.session_id]
-          ?.unread_replies ?? 0;
+      const unread = async () => (await getAgentStates())[stale.session_id]?.unread_replies ?? 0;
 
       // Open, then hidden by a role filter it does not match.
       await staleRow.getByRole("button", { exact: true, name: "Stale" }).click();
@@ -590,7 +586,10 @@ test.describe("agents page pins", () => {
 
       const marks: string[] = [];
       page.on("request", (request) => {
-        if (request.method() === "PUT" && request.url().endsWith("/stale-session/state")) {
+        if (
+          request.method() === "PATCH" &&
+          new URL(request.url()).pathname === "/api/v2/me/marks/agent/stale-session"
+        ) {
           marks.push(request.postData() ?? "");
         }
       });
@@ -606,7 +605,7 @@ test.describe("agents page pins", () => {
       // The hidden row's list has the reply: a row reading it would mark it now.
       await expect(staleRow.getByText("Yes, here")).toBeAttached();
       await page.clock.runFor(DWELL_MS * 2);
-      await page.evaluate(() => fetch("/api/v1/me/agents/state").then(({ status }) => status));
+      await page.evaluate(() => fetch("/api/v2/me/marks?kind=agent").then(({ status }) => status));
       expect(marks).toEqual([]);
       expect(await unread()).toBe(1);
 
@@ -633,7 +632,7 @@ test.describe("agents page pins", () => {
       const row = agentRow(page, plannerSession.session_id);
       const field = row.getByRole("textbox", { name: "Comment" });
       const notice = row.getByText("Couldn't send — Dispatch refused the message");
-      const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
+      const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
 
       await page.keyboard.press("j");
       await page.keyboard.press("Enter");

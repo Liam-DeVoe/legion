@@ -37,8 +37,8 @@ function componentRow(page: Page, title: string): Locator {
   return page.getByRole("article", { name: new RegExp(`^${title},`) });
 }
 
-/** Saves `repo` on `main` as a CORE source through the Settings form. The response predicate
- *  matches the one-source route and the per-repository one alike. */
+/** Saves `repo` on `main` as a CORE source through the Settings form, waiting for the save of
+ *  that repository's source. */
 async function addSource(page: Page, repo: string): Promise<void> {
   await page.getByLabel("Source project").selectOption("CORE");
   await page.getByLabel("Source repository").fill(repo);
@@ -46,7 +46,7 @@ async function addSource(page: Page, repo: string): Promise<void> {
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "PUT" &&
-      new URL(response.url()).pathname.startsWith("/api/v1/projects/CORE/architecture-source") &&
+      new URL(response.url()).pathname === `/api/v2/projects/CORE/architecture-sources/${repo}` &&
       response.ok()
   );
   await page.getByRole("button", { name: "Add source" }).click();
@@ -92,7 +92,8 @@ test("a project with two architecture sources shows both in Settings, on its Arc
       const synced = page.waitForResponse(
         (response) =>
           response.request().method() === "POST" &&
-          response.url().endsWith(`/api/v1/projects/CORE/architecture-sources/${repo}/sync`) &&
+          new URL(response.url()).pathname === "/api/v2/projects/CORE/architecture-syncs" &&
+          response.request().postData() === JSON.stringify({ repos: [repo] }) &&
           response.ok()
       );
       await sourceRow(repo)

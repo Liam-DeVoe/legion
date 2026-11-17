@@ -269,7 +269,7 @@ test("the reader's own Ask back leaves the view still and holds the row only whe
     await expect(
       card.getByTestId(`thread-${target.ask.id}`).getByText("Ship what, exactly?")
     ).toBeVisible();
-    await expect.poll(() => getAsk(target.ask.id)).toMatchObject({ ask: { waiting_on: "agent" } });
+    await expect.poll(() => getAsk(target.ask.id)).toMatchObject({ waiting_on: "agent" });
     await expect(page.getByTestId(`turn-${target.ask.id}`)).toHaveText(
       "Waiting on e2e-session-title"
     );
@@ -562,14 +562,20 @@ async function stopTravelling(page: Page): Promise<{ arrived: number; dispatched
   });
 }
 
-/** How many answers to `GET /api/v1/inbox` the page has finished reading: the arrival's own
- *  answer is in the page from the moment this grows, whether or not the list has adopted it. */
+/** The Inbox's read of its asks: the open asks with each one's thread (`getInbox`), every page
+ *  of them. */
+const INBOX_READ = /\/api\/v2\/asks\?(.*&)?include=thread(&|$)/;
+
+/** How many answers to the Inbox's asks read (`INBOX_READ`) the page has finished reading: the
+ *  arrival's own answer is in the page from the moment this grows, whether or not the list has
+ *  adopted it. */
 async function inboxAnswersRead(page: Page): Promise<number> {
   return page.evaluate(
-    () =>
+    (source) =>
       performance
         .getEntriesByType("resource")
-        .filter((entry) => new URL(entry.name).pathname === "/api/v1/inbox").length
+        .filter((entry) => new RegExp(source).test(entry.name)).length,
+    INBOX_READ.source
   );
 }
 
@@ -657,10 +663,13 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   const release = Promise.withResolvers<void>();
   const delivered = Promise.withResolvers<void>();
   let hold = true;
-  await page.route("**/api/v1/inbox", async (route) => {
+  await page.route(INBOX_READ, async (route) => {
     const response = await route.fetch();
-    const listed = (await response.json()) as Array<{ question?: string }>;
-    if (!hold || !listed.some((row) => row.question === "Travelling pointer arrival")) {
+    const listed = (await response.json()) as { items: Array<{ question?: string }> | null };
+    if (
+      !hold ||
+      !(listed.items ?? []).some((row) => row.question === "Travelling pointer arrival")
+    ) {
       await route.fulfill({ json: listed, response });
       return;
     }
@@ -719,7 +728,7 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   } finally {
     await stopTravelling(page);
     release.resolve();
-    await page.unroute("**/api/v1/inbox");
+    await page.unroute(INBOX_READ);
   }
 }
 

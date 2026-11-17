@@ -73,8 +73,8 @@ const DECISION_BLOCK_ROW = ":::ask{#q2}\nWhich region first?\n:::";
  *  A row's `refs` is a property of the body string, which a comment, an ask and a message store
  *  verbatim. A document stores a tree, and the parse that makes that tree reads both spellings
  *  of an escaped `#` as a plain `#` (`pmdoc.Parse`), so the escape is gone before anything
- *  renders the document or reads it: `GET /api/v1/artifacts/{id}/text` for a document uploaded
- *  with `See &#35;q2 here.` answers `See #q2 here.`, the line the table itself reads as a
+ *  renders the document or reads it: `GET /api/v2/artifacts/{id}?include=text` for a document
+ *  uploaded with `See &#35;q2 here.` answers `See #q2 here.`, the line the table itself reads as a
  *  citation of q2 (the row `See #q2 for the rollout.`). No writer can put the escape back,
  *  since a text `#q2` the author wrote bare, which cites q2, and one they escaped are the same
  *  characters by then. The two rows below are true of a body stored as written, untestable on a
@@ -242,9 +242,9 @@ function standaloneKeys(body: string): string[] {
   return keys;
 }
 
-/** What `GET /api/v1/issues/{key}` answers alice. */
+/** What `GET /api/v2/issues/{key}` answers alice. */
 async function issueStatus(key: string): Promise<number> {
-  const response = await fetch(new URL(`/api/v1/issues/${encodeURIComponent(key)}`, baseUrl), {
+  const response = await fetch(new URL(`/api/v2/issues/${encodeURIComponent(key)}`, baseUrl), {
     headers: await userHeaders(),
   });
   return response.status;
@@ -450,7 +450,7 @@ test("the one-line preview shows each reference the shared table links as its ta
   const questions = new Map<string, string>();
   for (let offset = 0; ; ) {
     const listed = await listMyAnswers({ limit: 50, offset });
-    const rows = listed.rows ?? [];
+    const rows = listed.items ?? [];
     for (const row of rows) {
       questions.set(row.ask_id, row.question);
     }

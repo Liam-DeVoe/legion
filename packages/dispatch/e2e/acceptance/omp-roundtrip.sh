@@ -129,10 +129,11 @@ await_steer() {
   return 1
 }
 
+# The issue with its open asks, which its read answers only as `include` asks for them.
 human_get_issue() {
   curl --fail-with-body --silent --show-error \
     -H 'X-Dispatch-User: sjawhar' \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY"
+    "$DISPATCH_URL/api/v2/issues/$ISSUE_KEY?include=open_asks"
 }
 
 await_new_ask() {
@@ -189,7 +190,7 @@ else
     -H 'Content-Type: application/json' \
     -H 'X-Dispatch-User: sjawhar' \
     --data "{\"route\":\"role:$role\"}" \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY" >/dev/null
+    "$DISPATCH_URL/api/v2/issues/$ISSUE_KEY" >/dev/null
   prompt="Call envoy_role_set with role $role, then wait."
 fi
 readonly previous_ask_ids
@@ -213,11 +214,11 @@ readonly transcript="$(await_session_file)"
 if [[ "$mode" == E4 ]]; then
   readonly ask_id="$(await_new_ask "$previous_ask_ids")"
   curl --fail-with-body --silent --show-error \
-    -X POST \
+    -X PUT \
     -H 'Content-Type: application/json' \
     -H 'X-Dispatch-User: sjawhar' \
-    --data "{\"selected\":[\"$answer_option\"],\"expected_edited_at\":null}" \
-    "$DISPATCH_URL/api/v1/asks/$ask_id/answer" >/dev/null
+    --data "{\"state\":\"answered\",\"selected\":[\"$answer_option\"],\"expected_edited_at\":null}" \
+    "$DISPATCH_URL/api/v2/asks/$ask_id/state" >/dev/null
   await_steer 'ask.answered'
   printf 'E4 passed: ask %s answered as %s; transcript %s\n' "$ask_id" "$answer_option" "$transcript"
 else
@@ -231,7 +232,7 @@ else
     -H 'Content-Type: application/json' \
     -H 'X-Dispatch-User: sjawhar' \
     --data "{\"body\":\"$message\"}" \
-    "$DISPATCH_URL/api/v1/issues/$ISSUE_KEY/messages" >/dev/null
+    "$DISPATCH_URL/api/v2/issues/$ISSUE_KEY/messages" >/dev/null
   await_steer "$message"
   printf 'E5 passed: role %s received message; transcript %s\n' "$role" "$transcript"
 fi

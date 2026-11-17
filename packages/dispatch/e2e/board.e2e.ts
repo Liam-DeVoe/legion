@@ -16,7 +16,7 @@ function patchOf(page: Page, key: string) {
   return page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
-      new URL(response.url()).pathname === `/api/v1/issues/${key}`
+      new URL(response.url()).pathname === `/api/v2/issues/${key}`
   );
 }
 
@@ -495,7 +495,7 @@ test("project list rows and board cards set an issue's priority in place", async
     const listPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
     );
     await listControl.selectOption("3");
     expect((await listPatch).postDataJSON()).toEqual({ priority: 3 });
@@ -510,7 +510,7 @@ test("project list rows and board cards set an issue's priority in place", async
     const cardPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
     );
     await cardControl.selectOption("2");
     expect((await cardPatch).postDataJSON()).toEqual({ priority: 2 });
@@ -529,7 +529,7 @@ test("project list rows and board cards set an issue's priority in place", async
     const unsetPatch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${unset.key}`
+        new URL(request.url()).pathname === `/api/v2/issues/${unset.key}`
     );
     await unsetCard.getByLabel(`Priority of ${unset.key}`).selectOption("0");
     expect((await unsetPatch).postDataJSON()).toEqual({ priority: 0 });

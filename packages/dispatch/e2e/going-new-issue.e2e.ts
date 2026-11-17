@@ -105,7 +105,7 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
     // The words are the issue's first verification criterion, word for word, and Dispatch wrote
     // nothing else into it: no spec text, and no document beside the two.
     const results = await getIssueResults(key);
-    expect((results.checks ?? []).map((check) => check.text)).toEqual([words]);
+    expect(results.items.map((check) => check.text)).toEqual([words]);
     expect((await getIssueArtifactText(key, "spec")).markdown.trim()).toBe("");
     const issue = await getIssue(key);
     expect((issue.artifacts ?? []).map((artifact) => artifact.name).sort()).toEqual([
@@ -121,13 +121,13 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
       .poll(async () => (await getSentMessages()).map((message) => message.target_session))
       .toEqual([session]);
     const messages = await listIssueMessages(key);
-    expect(messages.map((message) => message.message.body)).toEqual([words]);
+    expect(messages.map((message) => message.body)).toEqual([words]);
     const first = messages[0];
     if (first === undefined) {
       throw new Error("the issue holds no message to answer");
     }
     await replyToMessageDelivery(
-      first.message.id,
+      first.id,
       { attempt: 1, body: "Taking the rota now." },
       { id: session, kind: "session" }
     );
@@ -158,7 +158,7 @@ test("with the session cleared the issue is still made and the bar says no conve
     expect(made).toHaveLength(1);
     const key = made[0]?.key ?? "";
     expect((await getIssue(key)).labels).toEqual([label]);
-    expect(((await getIssueResults(key)).checks ?? []).map((check) => check.text)).toEqual([words]);
+    expect((await getIssueResults(key)).items.map((check) => check.text)).toEqual([words]);
 
     // Nothing was started on it: no message on the issue, and nothing sent to any session.
     expect(await listIssueMessages(key)).toHaveLength(0);

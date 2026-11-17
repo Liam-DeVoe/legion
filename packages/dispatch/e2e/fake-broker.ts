@@ -1,13 +1,18 @@
+// The broker's own answers, which `@legion/contracts` holds beside the Dispatch routes that once
+// relayed them whole; the rows inside them are the shapes `/api/v2` answers too.
 import type {
-  ApproverGrantResp,
   ApproverGrantsResponse,
   CredentialPendingResponse,
-  CredentialPendingRow,
   DecisionResponse,
-  PersonSignInResp,
   PersonSignInsResponse,
-  RecordResponse,
   StateResponse,
+} from "@legion/contracts";
+
+import type {
+  ApproverGrantResp,
+  CredentialPendingRow,
+  PersonSignInResp,
+  RecordResponse,
 } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 

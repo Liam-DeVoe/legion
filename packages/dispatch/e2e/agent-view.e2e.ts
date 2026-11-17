@@ -1364,7 +1364,7 @@ test("sending a message from the live view while scrolled back takes the reader 
     await scrollThreadTo(page, 1_200);
     const refuse = await refusePosts(
       page,
-      `**/api/v1/agents/${sender.session_id}/messages`,
+      `**/api/v2/agents/${sender.session_id}/messages`,
       MESSAGE_REFUSED
     );
     await input.fill("and this one is refused");

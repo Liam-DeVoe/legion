@@ -14,7 +14,7 @@ import {
   patchIssue,
   replyToCommentDelivery,
   replyToMessageDelivery,
-  resolveAsk,
+  retractAsk,
   snoozeAsk,
 } from "./api";
 import type { SeededInboxRow } from "./local-instance-support";
@@ -242,11 +242,7 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     ),
     snoozeAsk(snoozed.id, new Date(Date.now() + 24 * 3_600_000).toISOString(), alice),
     answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, alice),
-    resolveAsk(
-      withdrawn.id,
-      { kind: "retracted", reason: "Answered live." },
-      as(sessionIds.planner)
-    ),
+    retractAsk(withdrawn.id, { reason: "Answered live." }, as(sessionIds.planner)),
   ]);
 
   const review = await createComment(

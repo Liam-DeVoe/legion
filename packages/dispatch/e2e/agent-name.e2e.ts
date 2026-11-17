@@ -142,9 +142,9 @@ test("the page reads the agent list once, asks nothing per agent, and shows a re
     const perAgentReads: string[] = [];
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
-      if (path === "/api/v1/agents") {
+      if (path === "/api/v2/agents") {
         registryReads.push(path);
-      } else if (path.startsWith("/api/v1/agents/")) {
+      } else if (path.startsWith("/api/v2/agents/")) {
         perAgentReads.push(path);
       }
     });

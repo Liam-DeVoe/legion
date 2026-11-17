@@ -30,12 +30,12 @@ async function seed(title: string) {
     anchor: { artifact: "spec", quote: "quick" },
     body: "On quick",
   });
-  return { comments: `**/api/v1/issues/${issue.key}/comments`, first, issueKey: issue.key, second };
+  return { comments: `**/api/v2/issues/${issue.key}/comments`, first, issueKey: issue.key, second };
 }
 
 /** The refusal `refusePosts` hands the reply, once the page has it. */
 function refusal(page: Page, issueKey: string) {
-  return answeredPost(page, `/api/v1/issues/${issueKey}/comments`, WRITE_REFUSED.status);
+  return answeredPost(page, `/api/v2/issues/${issueKey}/comments`, WRITE_REFUSED.status);
 }
 
 /** Opens a margin thread, expanded beside the document. */

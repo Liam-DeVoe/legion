@@ -1,7 +1,7 @@
 /** What the machine pages draw from one fixed answer: the servers, strips and pane boxes of a
  *  seeded tmux layout, the lines the page writes when it has nothing to draw, the addresses a
  *  window pick writes, and the reads the page makes. Every row here asserts the drawing and
- *  nothing the server decides, so each runs against a recording of `GET /api/v1/agents` rather
+ *  nothing the server decides, so each runs against a recording of `GET /api/v2/agents` rather
  *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
  *
  *  What is not here is what the clock decides: a pane's state and a drawing's age are read from
@@ -382,7 +382,7 @@ test.describe("@machines-readonly", () => {
         ...new Set(made.filter((r) => r.path.startsWith("/api/")).map((r) => r.path)),
       ].sort();
       // The agents list is the one read the drawing itself needs, and it is the shell's own.
-      expect(read).toContain("/api/v1/agents");
+      expect(read).toContain("/api/v2/agents");
       expect(
         read.filter((path) => OWN_ROUTE.test(path)),
         "the page asked for a route of its own"

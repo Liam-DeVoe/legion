@@ -31,7 +31,7 @@ project_status="$(
   curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg key "$project" --arg name "$project documents" '{key: $key, name: $name}')" \
-    "$DISPATCH_URL/api/v1/projects"
+    "$DISPATCH_URL/api/v2/projects"
 )"
 case "$project_status" in
   201 | 409) ;;
@@ -45,7 +45,7 @@ artifact="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg name "$name" --arg content $'# Runbook\n\nStep one.\n' '{name: $name, content: $content}')" \
-    "$DISPATCH_URL/api/v1/projects/$project/artifacts"
+    "$DISPATCH_URL/api/v2/projects/$project/artifacts"
 )"
 readonly artifact
 readonly artifact_id="$(jq --exit-status --raw-output '.artifact.id' <<<"$artifact")"
@@ -55,18 +55,19 @@ comment="$(
   curl --fail-with-body --silent --show-error \
     --request POST "${headers[@]}" \
     --data "$(jq --null-input --arg body "Review dispatch://$project/artifact/$slug" '{body: $body}')" \
-    "$DISPATCH_URL/api/v1/artifacts/$artifact_id/comments"
+    "$DISPATCH_URL/api/v2/artifacts/$artifact_id/comments"
 )"
 readonly comment
 readonly comment_id="$(jq --exit-status --raw-output '.id' <<<"$comment")"
 
+# The items that cite the document (direction=in, the route's default), one row per citing item.
 references="$(
   curl --fail-with-body --silent --show-error "${headers[@]}" \
-    "$DISPATCH_URL/api/v1/artifacts/$artifact_id/references"
+    "$DISPATCH_URL/api/v2/artifacts/$artifact_id/references?limit=200"
 )"
 readonly references
 jq --exit-status --arg comment_id "$comment_id" \
-  '.referenced_by[] | select(.kind == "comment" and .id == $comment_id)' \
+  '.items[] | select(.kind == "comment" and .id == $comment_id)' \
   <<<"$references" >/dev/null
 
 printf 'document roundtrip passed: %s/%s created; comment %s appears in references\n' \

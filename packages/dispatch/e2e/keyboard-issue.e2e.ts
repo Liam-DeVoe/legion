@@ -17,10 +17,11 @@ const session = {
 };
 
 /** Whether a request is a pin or unpin write. The Conversation tab marks the issue read through
- *  the same `PUT /me/issues/<key>/state` (`{ last_read_seq }`), and that write can land at any
- *  moment after the page opens, so a row counting pins counts only the bodies that set `pinned`. */
+ *  the same `PATCH /api/v2/me/marks/issue/{key}` (`{ last_read_seq }`), and that write can land
+ *  at any moment after the page opens, so a row counting pins counts only the bodies that set
+ *  `pinned`. */
 function isPinWrite(request: Request): boolean {
-  return request.method() === "PUT" && "pinned" in (request.postDataJSON() ?? {});
+  return request.method() === "PATCH" && "pinned" in (request.postDataJSON() ?? {});
 }
 
 test("the issue scope reaches the header controls and the tab chords, and ? lists them under Issue", async ({
@@ -51,7 +52,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     const patch = page.waitForRequest(
       (request) =>
         request.method() === "PATCH" &&
-        new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
+        new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
     );
     await page.keyboard.press("2");
     expect((await patch).postDataJSON()).toEqual({ priority: 2 });
@@ -61,8 +62,8 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
 
     const pinned = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
     );
     await page.keyboard.press("Shift+P");
     await expect(header.getByRole("button", { name: "Unpin issue" })).toBeVisible();
@@ -183,7 +184,7 @@ test("a priority the server refuses shows the header's own failure, whether the 
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Refused priority");
     const header = page.getByTestId("issue-header");
-    await page.route(`**/api/v1/issues/${issue.key}`, async (route) => {
+    await page.route(`**/api/v2/issues/${issue.key}`, async (route) => {
       if (route.request().method() !== "PATCH") {
         await route.continue();
         return;
@@ -230,12 +231,15 @@ test("Escape leaves a focused header select, so the next chord is a chord and no
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, issue.key, "Type-ahead");
-    // Every PATCH this page sends, so a status the select's own type-ahead picked is caught
-    // even though the pill would show it for only as long as the reader stayed.
+    // Every write of the issue this page sends, so a status the select's own type-ahead picked is
+    // caught even though the pill would show it for only as long as the reader stayed. The
+    // reader's marks are writes of their own (`/api/v2/me/marks/...`), which the Conversation
+    // tab makes when it reads the issue, so they are not counted.
     const patched: string[] = [];
     page.on("request", (request) => {
-      if (request.method() === "PATCH") {
-        patched.push(new URL(request.url()).pathname);
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "PATCH" && path.startsWith("/api/v2/issues/")) {
+        patched.push(path);
       }
     });
 
@@ -298,7 +302,7 @@ test.describe("issue page", () => {
       ).toBeVisible();
 
       let patched = 0;
-      await page.route(`**/api/v1/issues/${issue.key}`, (route) => {
+      await page.route(`**/api/v2/issues/${issue.key}`, (route) => {
         if (route.request().method() === "PATCH") patched += 1;
         return route.fallback();
       });
@@ -310,7 +314,7 @@ test.describe("issue page", () => {
       await page.keyboard.press("2");
       // The handler is synchronous, so a write it let through had left before a request the page
       // issues next could be answered: that answer is the barrier, not a wall-clock wait.
-      await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
+      await page.evaluate(() => fetch("/api/v2/me").then(({ status }) => status));
       expect(patched).toBe(0);
       await expect.poll(() => getIssue(issue.key)).toMatchObject({ priority: null });
 
@@ -320,7 +324,7 @@ test.describe("issue page", () => {
       const patch = page.waitForRequest(
         (request) =>
           request.method() === "PATCH" &&
-          new URL(request.url()).pathname === `/api/v1/issues/${issue.key}`
+          new URL(request.url()).pathname === `/api/v2/issues/${issue.key}`
       );
       await page.keyboard.press("2");
       expect((await patch).postDataJSON()).toEqual({ priority: 2 });
@@ -329,21 +333,21 @@ test.describe("issue page", () => {
       // `Shift+P` writes without focusing anything either, so it needs the same guard, and the
       // same two halves prove it: nothing from the card, the pin itself from the page.
       let pinned = 0;
-      await page.route(`**/api/v1/me/issues/${issue.key}/state`, (route) => {
+      await page.route(`**/api/v2/me/marks/issue/${issue.key}`, (route) => {
         if (isPinWrite(route.request())) pinned += 1;
         return route.fallback();
       });
       await hold.click();
       await expect(hold).toBeFocused();
       await page.keyboard.press("Shift+P");
-      await page.evaluate(() => fetch("/api/v1/auth/whoami").then(({ status }) => status));
+      await page.evaluate(() => fetch("/api/v2/me").then(({ status }) => status));
       expect(pinned).toBe(0);
       await expect(page.getByRole("button", { name: "Pin issue" })).toBeVisible();
 
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.keyboard.press("Shift+P");
       await expect(page.getByRole("button", { name: "Unpin issue" })).toBeVisible();
-      // The header shows the pin optimistically, before its `PUT` leaves the page, so the write
+      // The header shows the pin optimistically, before its write leaves the page, so the write
       // is waited for rather than read the moment the button flips.
       await expect.poll(() => pinned).toBe(1);
     } finally {
@@ -377,12 +381,12 @@ test.describe("issue page", () => {
       await expect(multiple).toBeVisible();
 
       let patched = 0;
-      await page.route(`**/api/v1/issues/${issue.key}`, (route) => {
+      await page.route(`**/api/v2/issues/${issue.key}`, (route) => {
         if (route.request().method() === "PATCH") patched += 1;
         return route.fallback();
       });
       let pinned = 0;
-      await page.route(`**/api/v1/me/issues/${issue.key}/state`, (route) => {
+      await page.route(`**/api/v2/me/marks/issue/${issue.key}`, (route) => {
         if (isPinWrite(route.request())) pinned += 1;
         return route.fallback();
       });

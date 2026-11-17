@@ -49,7 +49,7 @@ async function issueCommentPayload(page: Page, issueKey: string): Promise<Record
   const response = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
-      candidate.url().endsWith(`/api/v1/issues/${issueKey}/comments`) &&
+      candidate.url().endsWith(`/api/v2/issues/${issueKey}/comments`) &&
       candidate.status() === 201
   );
   await page
@@ -67,11 +67,11 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
   const form = page.getByRole("form", { name: "Comment composer" });
   const field = form.getByLabel("Comment");
   const cancelReply = form.getByRole("button", { name: "Cancel reply" });
-  const refuse = await refusePosts(page, `**/api/v1/issues/${issueKey}/{comments,messages}`);
+  const refuse = await refusePosts(page, `**/api/v2/issues/${issueKey}/{comments,messages}`);
   const sent = page.waitForRequest(
     (request) =>
       request.method() === "POST" &&
-      /^\/api\/v1\/issues\/[^/]+\/(comments|messages)$/.test(new URL(request.url()).pathname)
+      /^\/api\/v2\/issues\/[^/]+\/(comments|messages)$/.test(new URL(request.url()).pathname)
   );
   const reply = await page
     .getByRole("list", { name: "Conversation turns" })
@@ -89,7 +89,7 @@ async function sendBesideReply(page: Page, issueKey: string, parent: string): Pr
   }, reply);
 
   const request = await sent;
-  expect(new URL(request.url()).pathname).toBe(`/api/v1/issues/${issueKey}/comments`);
+  expect(new URL(request.url()).pathname).toBe(`/api/v2/issues/${issueKey}/comments`);
   expect(request.postDataJSON()).toEqual({ body: "Status please" });
   await expect(field).toHaveValue("Status please");
   await expect(cancelReply).toHaveCount(0);
@@ -149,7 +149,7 @@ test("E2b: a project-document comment preserves the canonical mention and strips
     const response = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
-        /\/api\/v1\/artifacts\/[^/]+\/comments$/.test(candidate.url()) &&
+        /\/api\/v2\/artifacts\/[^/]+\/comments$/.test(candidate.url()) &&
         candidate.status() === 201
     );
     await composer.getByRole("button", { name: "Send" }).click();
@@ -177,7 +177,7 @@ test("a conversation send holds Reply and refuses Ctrl+K from the same task", as
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     const reply = page.getByRole("button", { name: "Reply" }).first();
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Status please");
     await form.evaluate((node) => {
       const sendButton = node.querySelector<HTMLButtonElement>('button[type="submit"]');
@@ -258,7 +258,7 @@ test("a conversation thread's own reply holds Collapse thread while it is out", 
     const form = turn.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
     const collapse = turn.getByRole("button", { name: "Collapse thread" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Thread reply");
     const collapseButton = await collapse.elementHandle();
     await form.evaluate((node, collapseControl) => {
@@ -294,7 +294,7 @@ test("a docked send out when its issue closes posts", async ({ browser }) => {
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Before the close");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -307,7 +307,7 @@ test("a docked send out when its issue closes posts", async ({ browser }) => {
     const posted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
+        response.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
     );
     send.release();
     expect((await posted).status()).toBe(201);
@@ -341,7 +341,7 @@ test("a docked send the server answers at 35 s is one keyed write and shows once
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    const send = await holdPosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const send = await holdPosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Slow but sure");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -390,7 +390,7 @@ test("a docked send refused while its issue closes offers Retry, which posts on 
     await page.goto(`/issues/${issue.key}/conversation`);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
-    const pattern = `**/api/v1/issues/${issue.key}/comments`;
+    const pattern = `**/api/v2/issues/${issue.key}/comments`;
     const refuse = await refusePosts(page, pattern);
     await field.fill("Through the close");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
@@ -411,7 +411,7 @@ test("a docked send refused while its issue closes offers Retry, which posts on 
     const posted = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
+        response.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
     );
     await form.getByRole("button", { name: "Retry" }).click();
     expect((await posted).status()).toBe(201);
@@ -441,7 +441,7 @@ test("a thread resolved while its own reply is out stays open with the reply and
     await turn.getByRole("button", { name: "Expand thread" }).click();
     const form = turn.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply under a resolve");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -476,7 +476,7 @@ test("a thread's own reply out when the viewport narrows to a phone keeps its dr
     await turn.getByRole("button", { name: "Expand thread" }).click();
     const form = turn.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply through a narrowing");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -530,7 +530,7 @@ test("E7b and Retry: removing a prefilled mention creates a plain reply, and ret
     const retry = page.waitForResponse(
       (candidate) =>
         candidate.request().method() === "POST" &&
-        candidate.url().endsWith(`/api/v1/comments/${parent.id}/deliveries`)
+        candidate.url().endsWith(`/api/v2/comments/${parent.id}/deliveries`)
     );
     await card.getByRole("button", { name: "Retry" }).click();
     expect((await retry).request().postDataJSON()).toEqual({

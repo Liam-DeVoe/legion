@@ -12,7 +12,7 @@ import { sql } from "./psql";
 // two-process mode each answers the other build's chunks from there. A reset between scenarios
 // must not delete what both processes published when they started. The registry of live server
 // processes (server_processes, migration 0135) stays off it too: a process registers once, at
-// boot, and GET /api/v1/dashboard/builds reads the builds the live ones serve from it.
+// boot, and GET /api/v2/dashboard-builds reads the builds the live ones serve from it.
 const tables = [
   "agent_tokens",
   "repo_projects",

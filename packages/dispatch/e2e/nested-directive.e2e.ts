@@ -60,7 +60,7 @@ async function holdUntilTheCommentDraws(browser: Browser, issueKey: string): Pro
         await page.goto(`/issues/${issueKey}/conversation`);
         await expect(card).toHaveCount(1);
       },
-      reset: new RegExp(`/api/v1/issues/${issueKey}/comments(\\?.*)?$`),
+      reset: new RegExp(`/api/v2/issues/${issueKey}/comments(\\?.*)?$`),
     });
   } finally {
     await alice.close();

@@ -5,9 +5,9 @@ import {
   createComment,
   createIssue,
   createProject,
-  getArtifact,
   getArtifactText,
   getAsk,
+  listArtifactVersions,
   listComments,
 } from "./api";
 import {
@@ -152,13 +152,13 @@ test("the selection bar comments, suggests, and asks on marks that both users se
       throw new Error("The selection-bar ask has no margin id.");
     }
     const ask = await getAsk(askId);
-    if (ask.ask.anchor === null) {
+    if (ask.anchor === null) {
       throw new Error("The selection-bar ask has no anchor.");
     }
-    expect(ask.ask.anchor.quote).toBe("fox");
+    expect(ask.anchor.quote).toBe("fox");
     await Promise.all([
-      expectMark(alicePage, ask.ask.anchor.mark_id, "fox"),
-      expectMark(bobPage, ask.ask.anchor.mark_id, "fox"),
+      expectMark(alicePage, ask.anchor.mark_id, "fox"),
+      expectMark(bobPage, ask.anchor.mark_id, "fox"),
     ]);
   } finally {
     await bob.close();
@@ -402,8 +402,8 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     ]);
     await expect
       .poll(() =>
-        getArtifact(artifactId).then(({ versions }) =>
-          (versions ?? []).some((version) => version.named)
+        listArtifactVersions(artifactId).then((versions) =>
+          versions.some((version) => version.named)
         )
       )
       .toBe(true);

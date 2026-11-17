@@ -39,7 +39,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     { session_id: asker.id, title: "Asker (e2e)" },
     { session_id: replier.id, title: "Replier (e2e)" },
   ]);
-  expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual([
+  expect((await listAskFollowers(ask.id)).map((row) => row.session_id)).toEqual([
     asker.id,
     replier.id,
   ]);
@@ -79,7 +79,7 @@ test("the ask card lists every session that wrote to the ask and a human can unf
     await expect(followers.locator(`[title='${asker.id}']`)).toHaveCount(1);
     await expect
       .poll(
-        async () => ((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id),
+        async () => (await listAskFollowers(ask.id)).map((row) => row.session_id),
         // The server answered the unfollow before the card dropped the chip above, so this is
         // true within a round trip; the default ladder would not look again until 350 ms.
         { intervals: [50, 50, 100, 200, 500] }
@@ -124,9 +124,7 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
   await setInterests([
     { session_id: watcher, topics: [`notifications.dispatch.issue.${issue.key}.>`] },
   ]);
-  expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual([
-    asker.id,
-  ]);
+  expect((await listAskFollowers(ask.id)).map((row) => row.session_id)).toEqual([asker.id]);
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
@@ -148,7 +146,7 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
     const unsubscribed = page.waitForRequest(
       (request) =>
         request.method() === "DELETE" &&
-        request.url().endsWith(`/api/v1/issues/${issue.key}/subscribers/${watcher}`)
+        request.url().endsWith(`/api/v2/issues/${issue.key}/subscribers/${watcher}`)
     );
     await viaIssue.getByRole("button", { name: "Unsubscribe" }).click();
     const dialog = page.getByRole("dialog", { name: "Unsubscribe" });
@@ -165,9 +163,7 @@ test("the ask card lists the issue's subscribers and removing one cuts the issue
       .poll(async () => (await getUnsubscribeCalls()).some((call) => call.session_id === watcher))
       .toBe(true);
     // The follower route was never touched: the asker still follows.
-    expect(((await listAskFollowers(ask.id)).followers ?? []).map((row) => row.session_id)).toEqual(
-      [asker.id]
-    );
+    expect((await listAskFollowers(ask.id)).map((row) => row.session_id)).toEqual([asker.id]);
   } finally {
     await alice.close();
   }

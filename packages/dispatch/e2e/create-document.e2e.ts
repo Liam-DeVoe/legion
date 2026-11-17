@@ -6,6 +6,7 @@ import {
   getArtifact,
   getArtifactVersion,
   getProjectArtifact,
+  listArtifactVersions,
   listIssueArtifacts,
 } from "./api";
 import { documentEditor } from "./editor";
@@ -78,9 +79,7 @@ test("a title typed on an issue's Documents tab makes an empty document and open
   await documentEditor(page).click();
   await page.keyboard.type("The first line.");
   const document = await issueDocument(issue.key, "launch-notes");
-  await expect
-    .poll(async () => (await getArtifact(document.id)).versions?.length ?? 0)
-    .toBeGreaterThan(1);
+  await expect.poll(async () => (await getArtifact(document.id)).version_count).toBeGreaterThan(1);
 
   await page.reload();
   await expect(documentEditor(page)).toBeAttached();
@@ -88,7 +87,7 @@ test("a title typed on an issue's Documents tab makes an empty document and open
 
   // What the two versions hold: the document was made holding nothing, and what the person
   // typed is the whole of what was written into it - no `# Launch notes` heading before it.
-  const versions = (await getArtifact(document.id)).versions ?? [];
+  const versions = await listArtifactVersions(document.id);
   expect(versions[0]?.number).toBe(1);
   expect((await getArtifactVersion(document.id, 1)).markdown).toBe("");
   const written = versions[versions.length - 1]?.number;
@@ -103,7 +102,7 @@ test("a title typed on an issue's Documents tab makes an empty document and open
 test("two presses of Create in one go make one document", async ({ page }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "One document from two presses" });
-  const path = `/api/v1/issues/${issue.key}/artifacts`;
+  const path = `/api/v2/issues/${issue.key}/artifacts`;
   const posts = watchWrites(page, "POST", path);
 
   await page.goto(`/issues/${issue.key}/artifacts`);
@@ -150,6 +149,6 @@ test("the project document list makes a document the same way, holding nothing",
   // `# Launch notes` heading the list used to write into it.
   const document = await getProjectArtifact("CORE", "launch-notes");
   expect(document.name).toBe("Launch notes");
-  expect(document.versions ?? []).toHaveLength(1);
+  expect(document.version_count).toBe(1);
   expect((await getArtifactVersion(document.id, 1)).markdown).toBe("");
 });

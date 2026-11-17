@@ -105,7 +105,7 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
   // is already a request, where its own 404 is still in flight and would leave the count at
   // three until after this row had passed on it.
   const retries = 2;
-  const missing = reads(page, "/api/v1/issues/CORE-999");
+  const missing = reads(page, "/api/v2/issues/CORE-999");
   await page.goto("/issues/CORE-999");
   for (let refusal = 1; refusal <= retries; refusal += 1) {
     await expect

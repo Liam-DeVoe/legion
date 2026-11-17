@@ -37,7 +37,7 @@ test("a repository mapping added in Settings assigns a new external issue to its
     const mappingSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/settings/repo-projects/owner/repo") &&
+        response.url().endsWith("/api/v2/repositories/owner/repo") &&
         response.ok()
     );
     await page.getByRole("button", { name: "Add mapping" }).click();
@@ -79,7 +79,7 @@ test("a project's default repository moves with its Default radio, and a mapping
     const saved = page.waitForRequest(
       (request) =>
         request.method() === "PUT" &&
-        new URL(request.url()).pathname === "/api/v1/settings/repo-projects/acme/gadgets"
+        new URL(request.url()).pathname === "/api/v2/repositories/acme/gadgets"
     );
     await radio("acme/gadgets").click();
     expect((await saved).postDataJSON()).toEqual({ default: true, project: "CORE" });
@@ -140,7 +140,7 @@ test("a late answer to a Default pick does not undo a default another browser se
     const savedOnServer = new Promise<void>((resolve) => {
       saved = resolve;
     });
-    await page.route("**/api/v1/settings/repo-projects/acme/gadgets", async (route) => {
+    await page.route("**/api/v2/repositories/acme/gadgets", async (route) => {
       if (route.request().method() !== "PUT") {
         await route.continue();
         return;
@@ -160,13 +160,13 @@ test("a late answer to a Default pick does not undo a default another browser se
 
     const answered = page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/v1/settings/repo-projects/acme/gadgets") &&
+        response.url().endsWith("/api/v2/repositories/acme/gadgets") &&
         response.request().method() === "PUT"
     );
     const readAgain = answered.then(() =>
       page.waitForResponse(
         (response) =>
-          new URL(response.url()).pathname === "/api/v1/settings/repo-projects" &&
+          new URL(response.url()).pathname === "/api/v2/repositories" &&
           response.request().method() === "GET"
       )
     );
@@ -238,7 +238,7 @@ test("an architecture source saves after the GitHub App access check, fails inli
     const sourceSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/Legion/Arch") &&
+        response.url().endsWith("/api/v2/projects/CORE/architecture-sources/Legion/Arch") &&
         response.ok()
     );
     await page.getByRole("button", { name: "Add source" }).click();
@@ -309,7 +309,7 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
     const sourceSaved = page.waitForResponse(
       (response) =>
         response.request().method() === "PUT" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch") &&
+        response.url().endsWith("/api/v2/projects/CORE/architecture-sources/legion/arch") &&
         response.ok()
     );
     await page.getByRole("button", { name: "Add source" }).click();
@@ -318,7 +318,7 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
     const synced = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
+        response.url().endsWith("/api/v2/projects/CORE/architecture-syncs") &&
         response.ok()
     );
     await page
@@ -344,7 +344,7 @@ test("Refresh imports the architecture model and a rejected model keeps the prev
     const rejected = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith("/api/v1/projects/CORE/architecture-sources/legion/arch/sync") &&
+        response.url().endsWith("/api/v2/projects/CORE/architecture-syncs") &&
         response.ok()
     );
     await page
@@ -421,8 +421,8 @@ test("a person sets and changes a project's default assignee, and no write clear
 
     const saved = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === "/api/v2/projects/CORE"
     );
     await core.selectOption("bob");
     expect((await saved).ok()).toBe(true);
@@ -436,8 +436,8 @@ test("a person sets and changes a project's default assignee, and no write clear
 
     const changed = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === "/api/v2/projects/CORE"
     );
     await core.focus();
     await core.selectOption("alice");
@@ -447,21 +447,21 @@ test("a person sets and changes a project's default assignee, and no write clear
     await expect(ops).toBeEnabled();
     await expect(ops).toHaveValue("bob");
 
-    // The clearing the page no longer offers is refused at the route as well: the body the old
-    // Unassigned option sent is a 400, and the project still names its person. The call is made
-    // here rather than through `putProjectDefaultAssignee`, whose body the route table now types
-    // as a person's email and which cannot express this one.
-    const refused = await fetch(new URL("/api/v1/projects/CORE/default-assignee", baseUrl), {
-      body: JSON.stringify({ assignee: null }),
+    // The clearing the page no longer offers is refused at the route as well: a blank default,
+    // the one body that could name nobody, is a 400 (a `null` one leaves the default as it
+    // stands), and the project still names its person. The call is made here rather than through
+    // `putProjectDefaultAssignee`, which throws on a refusal where this row reads its code.
+    const refused = await fetch(new URL("/api/v2/projects/CORE", baseUrl), {
+      body: JSON.stringify({ default_assignee: "" }),
       headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
-      method: "PUT",
+      method: "PATCH",
     });
     expect(refused.status).toBe(400);
     expect(await refused.json()).toMatchObject({ code: "INVALID_PROJECT" });
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual([
+    expect(defaults.map((row) => [row.key, row.default_assignee]).sort()).toEqual([
       ["CORE", "alice"],
       ["OPS", "bob"],
     ]);
@@ -480,13 +480,16 @@ test("a default assignee picked while the last pick is saving waits its turn, an
   const page = await context.newPage();
 
   try {
-    // The first PUT waits until the test lets it through, so the second pick lands while it is
-    // still on the wire. `wire` records each PUT as it reaches the network and the first's answer.
+    // The first PATCH waits until the test lets it through, so the second pick lands while it is
+    // still on the wire. `wire` records each PATCH as it reaches the network and the first's
+    // answer.
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
-      const { assignee } = route.request().postDataJSON() as { assignee: string | null };
+    await page.route("**/api/v2/projects/CORE", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      const { default_assignee: assignee } = route.request().postDataJSON() as {
+        default_assignee: string | null;
+      };
       const first = wire.length === 0;
       wire.push(`sent ${assignee}`);
       if (!first) return route.fallback();
@@ -514,9 +517,9 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 
     const second = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee" &&
-        response.request().postDataJSON()?.assignee === "alice"
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === "/api/v2/projects/CORE" &&
+        response.request().postDataJSON()?.default_assignee === "alice"
     );
     held.resolve();
     expect((await second).ok()).toBe(true);
@@ -527,9 +530,9 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     await expect(core).toHaveValue("alice");
     // Every project is listed now, so CORE's own row is the one this reads.
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
-    ]);
+    expect(defaults.filter((row) => row.key === "CORE").map((row) => row.default_assignee)).toEqual(
+      ["alice"]
+    );
   } finally {
     await context.close();
   }
@@ -550,13 +553,15 @@ test("default assignee picks made when Settings is left and reopened supersede t
   const page = await context.newPage();
 
   try {
-    // The first PUT waits until the test lets it through. `wire` records each PUT as it reaches
-    // the network and as its answer comes back.
+    // The first PATCH waits until the test lets it through. `wire` records each PATCH as it
+    // reaches the network and as its answer comes back.
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
-      const { assignee } = route.request().postDataJSON() as { assignee: string | null };
+    await page.route("**/api/v2/projects/CORE", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      const { default_assignee: assignee } = route.request().postDataJSON() as {
+        default_assignee: string | null;
+      };
       const first = wire.length === 0;
       wire.push(`sent ${assignee}`);
       if (first) await held.promise;
@@ -595,9 +600,9 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
-    ]);
+    expect(defaults.filter((row) => row.key === "CORE").map((row) => row.default_assignee)).toEqual(
+      ["alice"]
+    );
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
   } finally {
     await context.close();
@@ -622,9 +627,11 @@ test("default assignee picks made while a save is out are superseded by the newe
   try {
     const held = Promise.withResolvers<void>();
     const wire: string[] = [];
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
-      const { assignee } = route.request().postDataJSON() as { assignee: string | null };
+    await page.route("**/api/v2/projects/CORE", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      const { default_assignee: assignee } = route.request().postDataJSON() as {
+        default_assignee: string | null;
+      };
       const first = wire.length === 0;
       wire.push(`sent ${assignee}`);
       if (first) await held.promise;
@@ -646,14 +653,14 @@ test("default assignee picks made while a save is out are superseded by the newe
     }
 
     held.resolve();
-    // Wait for the newest pick's answer, then read every PUT that left the browser before it.
+    // Wait for the newest pick's answer, then read every PATCH that left the browser before it.
     await expect.poll(() => wire.includes("answered alice")).toBe(true);
     await expect(core).toHaveValue("alice");
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
-      { assignee: "alice", project: "CORE" },
-    ]);
+    expect(defaults.filter((row) => row.key === "CORE").map((row) => row.default_assignee)).toEqual(
+      ["alice"]
+    );
   } finally {
     await context.close();
   }
@@ -667,15 +674,15 @@ test("a default assignee save refused while Settings is left says so when Settin
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "OPS", name: "Ops" }, { login: "bob" });
-  await putProjectDefaultAssignee("CORE", { assignee: "alice" });
+  await putProjectDefaultAssignee("CORE", "alice");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
     const held = Promise.withResolvers<void>();
     let answered = false;
-    await page.route("**/api/v1/projects/CORE/default-assignee", async (route) => {
-      if (route.request().method() !== "PUT") return route.fallback();
+    await page.route("**/api/v2/projects/CORE", async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
       await held.promise;
       answered = true;
       // Dispatch's verdict, a 4xx: a 5xx is tried again under the save's key, not refused.
@@ -712,7 +719,7 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
-  await putProjectDefaultAssignee("CORE", { assignee: "alice" });
+  await putProjectDefaultAssignee("CORE", "alice");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
@@ -721,17 +728,22 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     // lets it go, refused, or passed through to the server.
     let read: "hold" | "fail" | "pass" = "hold";
     const held = Promise.withResolvers<void>();
-    await page.route("**/api/v1/settings/project-default-assignees", async (route) => {
-      if (read === "hold") {
-        await held.promise;
-        // The page this read was for may be gone by now.
-        return route.abort().catch(() => {});
+    await page.route(
+      (url) =>
+        url.pathname === "/api/v2/projects" &&
+        url.searchParams.getAll("include").includes("default_assignee"),
+      async (route) => {
+        if (read === "hold") {
+          await held.promise;
+          // The page this read was for may be gone by now.
+          return route.abort().catch(() => {});
+        }
+        if (read === "fail") {
+          return route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+        }
+        return route.fallback();
       }
-      if (read === "fail") {
-        return route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-      }
-      return route.fallback();
-    });
+    );
     // The refused read below is retried twice, `QUERY_RETRY_DELAY_MS` apart, before the page
     // calls it failed: page timers, which the page's own clock fires.
     await page.clock.install();

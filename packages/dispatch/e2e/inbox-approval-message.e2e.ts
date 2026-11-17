@@ -43,9 +43,9 @@ function inboxAt(askId: string): string {
 }
 
 /** The column's own read of the document, which is the read every row here holds or refuses: the
- *  document's metadata, not its text, and no other route under that id. */
+ *  document's metadata, not its text (`include=text`), and no other route under that id. */
 function documentRead(artifactId: string): RegExp {
-  return new RegExp(`/api/v1/artifacts/${artifactId}$`, "u");
+  return new RegExp(`/api/v2/artifacts/${artifactId}$`, "u");
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ test("an approval whose document cannot be read falls back to the card, which dr
     // Every attempt is refused, not the first alone: the shared client retries a 5xx twice, so a
     // route that lets the later attempts through never reaches the fallback at all.
     let refused = 0;
-    await page.route(`**/api/v1/artifacts/${seed.artifactId}`, async (route) => {
+    await page.route(`**/api/v2/artifacts/${seed.artifactId}`, async (route) => {
       refused += 1;
       await route.fulfill({
         body: JSON.stringify({

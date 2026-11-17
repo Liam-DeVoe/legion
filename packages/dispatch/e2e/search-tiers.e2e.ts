@@ -42,7 +42,7 @@ async function openBarOnFixture(page: Page, fixture: TiersFixture): Promise<void
   await expect
     .poll(
       async () =>
-        ((await searchByApi(query)).results ?? []).map((hit) =>
+        ((await searchByApi(query)).items ?? []).map((hit) =>
           hit.owner.kind === "issue" ? hit.owner.key : ""
         ),
       { timeout: 60_000 }

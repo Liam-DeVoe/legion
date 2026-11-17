@@ -9,7 +9,7 @@ import {
   createProject,
   getAsk,
   requestApproval,
-  resolveAsk,
+  retractAsk,
   withOpenedAsk,
 } from "./api";
 import { paragraphsOf } from "./bodies";
@@ -106,7 +106,7 @@ test("a question declined from the Inbox with a note leaves the list and reads d
   await expect(inboxRow(page, ask.id)).toHaveCount(0);
   await expect(page.getByText("Nothing needs you")).toBeVisible();
   await expect
-    .poll(async () => (await getAsk(ask.id)).ask.resolution, {
+    .poll(async () => (await getAsk(ask.id)).resolution, {
       intervals: [50, 50, 100, 200, 500],
     })
     .toMatchObject({ kind: "declined", reason: note });
@@ -146,7 +146,7 @@ test("the Inbox's reading pane declines a question with no note at all", async (
 
   await expect(inboxRow(page, ask.id)).toHaveCount(0);
   await expect
-    .poll(async () => (await getAsk(ask.id)).ask.resolution, {
+    .poll(async () => (await getAsk(ask.id)).resolution, {
       intervals: [50, 50, 100, 200, 500],
     })
     .toMatchObject({ kind: "declined", reason: "" });
@@ -295,11 +295,7 @@ test("the margin folds a declined ask away with a retracted one and keeps the an
   const answered = await anchored("replays the ledger", "Does a cold start replay it all?");
   await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] });
   const retracted = await anchored("retry budget", "Should the budget be three attempts?");
-  await resolveAsk(
-    retracted.id,
-    { kind: "retracted", reason: "A newer question supersedes this one." },
-    session
-  );
+  await retractAsk(retracted.id, { reason: "A newer question supersedes this one." }, session);
   const declined = await anchored("hands the lease back", "Who takes the lease back?");
 
   await page.goto("/");
@@ -396,7 +392,7 @@ test("the decline dialog counts what is left of the note's bound and takes a not
   await expect(dialog).toHaveCount(0);
   await expect(inboxRow(page, ask.id)).toHaveCount(0);
   await expect
-    .poll(async () => (await getAsk(ask.id)).ask.resolution?.reason.length, {
+    .poll(async () => (await getAsk(ask.id)).resolution?.reason.length, {
       intervals: [50, 50, 100, 200, 500],
     })
     .toBe(DISPATCH_EVENT_BODY_MAX);

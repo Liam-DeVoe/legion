@@ -31,7 +31,7 @@ test("a docked Conversation send refused while the reader is on the Inbox is the
     await page.goto(`/issues/${issue.key}/conversation`);
     const docked = page.getByRole("form", { name: "Comment composer" }).last();
     const field = docked.getByLabel("Comment");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Sent before leaving");
     await docked.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -40,7 +40,7 @@ test("a docked Conversation send refused while the reader is on the Inbox is the
     await expect(page.locator("main").getByRole("heading", { name: "Inbox" })).toBeVisible();
     const refused = answeredPost(
       page,
-      `/api/v1/issues/${issue.key}/comments`,
+      `/api/v2/issues/${issue.key}/comments`,
       WRITE_REFUSED.status
     );
     refuse();
@@ -72,7 +72,7 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
     const field = row.getByRole("textbox", { name: "Comment" });
     // A server that is down is tried again under the send's key; Dispatch's own verdict is what
     // hands a message to one session back refused.
-    const refuse = await refusePosts(page, "**/api/v1/agents/*/messages", MESSAGE_REFUSED);
+    const refuse = await refusePosts(page, "**/api/v2/agents/*/messages", MESSAGE_REFUSED);
     await page.keyboard.press("j");
     await page.keyboard.press("Enter");
     await expect(field).toBeFocused();
@@ -86,7 +86,7 @@ test("an Agents row send refused while the reader is on the Inbox is there on th
     const refused = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().includes("/api/v1/agents/") &&
+        response.url().includes("/api/v2/agents/") &&
         response.status() === MESSAGE_REFUSED.status
     );
     refuse();
@@ -120,7 +120,7 @@ test("a docked Reply on a different comment redirects onto the one whose refusal
     await page.goto(`/issues/${issue.key}/conversation`);
     const composer = page.getByRole("form", { name: "Comment composer" }).last();
     const field = composer.getByLabel("Comment");
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await page
       .locator(`[data-turn="comment:${a.id}"]`)
       .getByRole("button", { name: "Reply" })
@@ -130,7 +130,7 @@ test("a docked Reply on a different comment redirects onto the one whose refusal
     await expect(field).toBeDisabled();
     const refused = answeredPost(
       page,
-      `/api/v1/issues/${issue.key}/comments`,
+      `/api/v2/issues/${issue.key}/comments`,
       WRITE_REFUSED.status
     );
     refuse();
@@ -172,7 +172,7 @@ test("a thread's own reply refused after the reader left it past the deadline is
     await openThread();
     const form = turn.getByRole("form", { name: "Comment composer" });
     const field = form.getByRole("textbox", { name: "Reply" });
-    const refuse = await refusePosts(page, `**/api/v1/issues/${issue.key}/comments`);
+    const refuse = await refusePosts(page, `**/api/v2/issues/${issue.key}/comments`);
     await field.fill("Reply past the deadline");
     await form.getByRole("button", { exact: true, name: "Send" }).click();
     await expect(field).toBeDisabled();
@@ -184,7 +184,7 @@ test("a thread's own reply refused after the reader left it past the deadline is
     await expect(field).toHaveCount(0);
     const refused = answeredPost(
       page,
-      `/api/v1/issues/${issue.key}/comments`,
+      `/api/v2/issues/${issue.key}/comments`,
       WRITE_REFUSED.status
     );
     refuse();

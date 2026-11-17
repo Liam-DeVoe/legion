@@ -10,8 +10,8 @@ import {
   getIssueEvents,
   patchIssue,
   putIssueState,
-  resolveAsk,
   resolveComment,
+  retractAsk,
 } from "./api";
 import { setEventCreatedAt } from "./seed";
 import { expect, test } from "./test";
@@ -41,7 +41,7 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
   );
   await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] }, { login: "bob" });
   const retracted = await createAsk(issue.key, { question: "Withdrawn question?" }, agent);
-  await resolveAsk(retracted.id, { kind: "retracted", reason: "Superseded." }, agent);
+  await retractAsk(retracted.id, { reason: "Superseded." }, agent);
   const resolved = await createComment(issue.key, { body: "A resolved thread." }, agent);
   await resolveComment(resolved.id);
   await createComment(issue.key, { body: "An open thread." }, agent);
@@ -114,8 +114,8 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
     let stateWrites = 0;
     page.on("request", (request) => {
       if (
-        request.method() === "PUT" &&
-        new URL(request.url()).pathname === `/api/v1/me/issues/${issue.key}/state`
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v2/me/marks/issue/${issue.key}`
       ) {
         stateWrites += 1;
       }

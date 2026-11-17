@@ -7,7 +7,7 @@ import {
   createProject,
   getIssueEvents,
   listComments,
-  resolveAsk,
+  retractAsk,
 } from "./api";
 import { conversationFilter, threadCard } from "./editor";
 import { inboxRow } from "./inbox-pane";
@@ -162,7 +162,7 @@ test("an answered ask's thread keeps a reply typed before the card leaves Needs 
     // From here on the issue's asks read waits until the reply is typed.
     const { promise: typed, resolve: releaseAsks } = Promise.withResolvers<void>();
     await page.route(
-      (url) => url.pathname === `/api/v1/issues/${issue.key}/asks`,
+      (url) => url.pathname === `/api/v2/issues/${issue.key}/asks`,
       async (route) => {
         await typed;
         await route.fallback();
@@ -207,7 +207,7 @@ test("a Conversation reply after an agent-authored reply targets the root withou
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        request.url().endsWith(`/api/v1/issues/${issue.key}/comments`)
+        request.url().endsWith(`/api/v2/issues/${issue.key}/comments`)
       ) {
         submittedReplies.push(request.postDataJSON() as Record<string, unknown>);
       }
@@ -448,11 +448,7 @@ test("a session retraction leaves its reason on the card and removes the human's
   const margin = issuePage.getByTestId("margin-sheet");
   await expect(margin.getByTestId(`ask-${ask.id}`)).toBeVisible();
 
-  await resolveAsk(
-    ask.id,
-    { kind: "retracted", reason: "A newer question supersedes this one." },
-    bobSession
-  );
+  await retractAsk(ask.id, { reason: "A newer question supersedes this one." }, bobSession);
 
   // The retraction takes the question out of the human's Inbox, live: the "Blocked on you"
   // strip counts what the server lists, and it drops with no reload.
@@ -722,7 +718,12 @@ test("a failed queued Conversation comment action keeps its thread and reply, cl
       resolveFirst = resolve;
     });
     let requests = 0;
-    await page.route("**/api/v1/comments/*/resolve", async (route) => {
+    // A Resolve is the comment's state write to `resolved`; no other state write is counted.
+    await page.route("**/api/v2/comments/*/state", async (route) => {
+      if (route.request().postDataJSON()?.state !== "resolved") {
+        await route.fallback();
+        return;
+      }
       requests += 1;
       if (requests === 1) {
         await firstResponse;
@@ -775,7 +776,7 @@ async function seedSuggestion(
     suggestion: { replace_with: "cat" },
   });
   return {
-    comments: `**/api/v1/issues/${issue.key}/comments`,
+    comments: `**/api/v2/issues/${issue.key}/comments`,
     issueKey: issue.key,
     suggestionId: suggestion.id,
   };

@@ -68,7 +68,7 @@ function patchOf(page: Page, key: string) {
   return page.waitForResponse(
     (response) =>
       response.request().method() === "PATCH" &&
-      new URL(response.url()).pathname === `/api/v1/issues/${key}`
+      new URL(response.url()).pathname === `/api/v2/issues/${key}`
   );
 }
 
@@ -133,10 +133,14 @@ test("Shift+L/H move a focused card to the top of the adjacent status through th
     await expect(live).toHaveText(`${echo.key} → Retro, position 1 of 2`);
     await expect.poll(() => getIssue(echo.key)).toMatchObject({ closed_at: null, status: "retro" });
 
-    // Triage has no previous status: nothing is sent and focus stays put.
+    // Triage has no previous status: nothing is sent and focus stays put. A move is a `PATCH` of
+    // the issue; the reader's marks are `PATCH`es of `/api/v2/me/marks/...`, which no move makes.
     const patches: string[] = [];
     page.on("request", (request) => {
-      if (request.method() === "PATCH") {
+      if (
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname.startsWith("/api/v2/issues/")
+      ) {
         patches.push(request.url());
       }
     });

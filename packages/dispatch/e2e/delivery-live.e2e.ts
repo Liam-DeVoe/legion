@@ -20,7 +20,7 @@ interface LiveSocket {
   readonly opened: Promise<void>;
 }
 
-const deliveryGet = /\/api\/v1\/delivery\/(timeline|measures|pipeline)(?:\?|$)/;
+const deliveryGet = /\/api\/v2\/delivery\/(timeline|measures|pipeline)(?:\?|$)/;
 
 /** Stores review screenshots outside Playwright's success-cleaned output when a caller requests it. */
 function screenshotPath(testInfo: TestInfo, name: string): string {
@@ -360,7 +360,7 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
     await insertMergedPR(693, "feat: before the reconnect");
     await expect(page.getByText("feat: before the reconnect", { exact: true })).toBeVisible();
 
-    const disconnected = await context.request.post("/api/v1/live/_test/disconnect", {
+    const disconnected = await context.request.post("/api/v2/_test/live/disconnect", {
       headers: { Authorization: "Bearer e2e-token" },
     });
     expect(disconnected.status()).toBe(200);
@@ -377,7 +377,7 @@ test("after every socket is dropped, the page resumes and equals the GET answer 
 
     const body = await deliveryRequest(
       page,
-      "/api/v1/delivery/timeline?from=" +
+      "/api/v2/delivery/timeline?from=" +
         encodeURIComponent(new Date(Date.now() - 28 * 24 * 60 * 60 * 1000).toISOString()) +
         "&to=" +
         encodeURIComponent(new Date().toISOString())
@@ -411,7 +411,7 @@ test("an issue title change reaches the page", async ({ browser }) => {
   try {
     const live = await openLiveDelivery(page);
     await expect(page.getByText("ACME-690 · P1", { exact: true })).toBeVisible();
-    const response = await context.request.patch("/api/v1/issues/ACME-690", {
+    const response = await context.request.patch("/api/v2/issues/ACME-690", {
       data: { title: "Renamed live issue title" },
       headers: { Origin: new URL(page.url()).origin },
     });

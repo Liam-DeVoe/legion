@@ -221,7 +221,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
 
     // 4. The issue page still lists the question for both people, and the card names who handed
     // it on and when - the moment the server stored, not one this spec invents.
-    const handedOn = (await getAsk(moved.id, { login: "alice" })).ask;
+    const handedOn = await getAsk(moved.id, { login: "alice" });
     expect(handedOn.asked_of).toBe("bob");
     expect(handedOn.asked_of_by).toBe("alice");
     expect(handedOn.waiting_on_person).toBe("bob");
@@ -286,9 +286,9 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await handTo(paneControl, "alice");
     await handsOff(bobPage);
     await expect
-      .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
+      .poll(async () => (await getAsk(moved.id, { login: "alice" })).asked_of ?? null)
       .toBeNull();
-    expect((await getAsk(moved.id, { login: "alice" })).ask.waiting_on_person).toBe("alice");
+    expect((await getAsk(moved.id, { login: "alice" })).waiting_on_person).toBe("alice");
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(inboxRow(bobReplies, replyRowId(moved.id))).toBeVisible();
@@ -303,7 +303,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await expect(inboxRow(alicePage, moved.id)).toHaveCount(0);
     await handTo(issueControl, "alice");
     await expect
-      .poll(async () => (await getAsk(moved.id, { login: "alice" })).ask.asked_of ?? null)
+      .poll(async () => (await getAsk(moved.id, { login: "alice" })).asked_of ?? null)
       .toBeNull();
     await expect(inboxRow(alicePage, moved.id)).toBeVisible();
     await expect(inboxRow(bobPage, moved.id)).toHaveCount(0);
@@ -318,7 +318,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     await bobCard.getByRole("button", { name: "Answer", exact: true }).click();
     await handsOff(bobPage);
     await expect
-      .poll(async () => (await getAsk(moved.id, { login: "bob" })).ask.state)
+      .poll(async () => (await getAsk(moved.id, { login: "bob" })).state)
       .toBe("answered");
     await expect(aliceCard).toContainText("Answered by bob");
     await expect(handOnControl(aliceCard, moved.id)).toHaveCount(0);

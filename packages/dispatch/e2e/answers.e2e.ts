@@ -83,7 +83,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
   // The server names each issue ask by its item route, which is what Open follows.
   const listed = await listMyAnswers();
   expect(listed.total).toBe(3);
-  expect((listed.rows ?? []).map((row) => [row.kind, row.ask_id, row.ref])).toEqual([
+  expect((listed.items ?? []).map((row) => [row.kind, row.ask_id, row.ref])).toEqual([
     ["answer", changed.id, `/issues/${changedIssue.key}/asks/${changed.id}`],
     ["answer", anchored.id, `/issues/${anchoredIssue.key}/asks/${anchored.id}`],
     ["reply", replied.id, `/issues/${repliedIssue.key}/asks/${replied.id}`],
@@ -172,7 +172,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
     await expect(card).toContainText("Freeze after the run.");
 
     const read = await getAsk(changed.id);
-    expect((read.answers ?? []).map((answer) => [answer.user, answer.selected])).toEqual([
+    expect((read.thread.answers ?? []).map((answer) => [answer.user, answer.selected])).toEqual([
       ["alice", ["Ship"]],
       ["alice", ["Hold"]],
     ]);
@@ -188,7 +188,7 @@ test("the answers page lists a person's answers and replies, opens each ask, and
   }
 
   // Another person's page holds none of alice's answers.
-  expect((await listMyAnswers({}, { login: "bob" })).rows).toEqual([]);
+  expect((await listMyAnswers({}, { login: "bob" })).items ?? []).toEqual([]);
   const bob = await asUser(browser, "bob");
   try {
     const page = await bob.newPage();

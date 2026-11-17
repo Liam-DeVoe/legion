@@ -407,7 +407,7 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
     const page = await alice.newPage();
     const answers: string[] = [];
     page.on("response", (response) => {
-      if (new URL(response.url()).pathname === `/api/v1/issues/${issue.key}/results`) {
+      if (new URL(response.url()).pathname === `/api/v2/issues/${issue.key}/checks`) {
         answers.push(response.url());
       }
     });

@@ -1,7 +1,7 @@
 import { DELIVERY_CAPABILITIES, type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import type { BroadcastCreated, CreateBroadcastInput, TmuxPlace } from "../web/src/api/types";
+import type { BroadcastCreated, CreateBroadcastV2Input, TmuxPlace } from "../web/src/api/types";
 import type { AgentGroup } from "../web/src/features/agents/agent-groups";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { harnessPorts } from "./harness-ports";
@@ -16,7 +16,7 @@ export interface FakeSession {
   // The session's real machine; the real listener falls back to machine_id when the session's
   // plugin predates this field, which the fake Envoy's asSeen mirrors (fake-envoy.ts).
   host?: string;
-  /** Where this session sits in tmux, which `GET /api/v1/agents` answers unchanged and the
+  /** Where this session sits in tmux, which `GET /api/v2/agents` answers unchanged and the
    *  machine pages draw. Absent is a session in no pane, as it is on the wire. */
   tmux_place?: TmuxPlace;
   roles?: string[];
@@ -227,7 +227,7 @@ export async function getSentMessages(): Promise<Record<string, unknown>[]> {
 }
 
 /** Whether a body the page posted is a broadcast's input. */
-export function isBroadcastInput(body: unknown): body is CreateBroadcastInput {
+export function isBroadcastInput(body: unknown): body is CreateBroadcastV2Input {
   return (
     typeof body === "object" &&
     body !== null &&
@@ -243,8 +243,8 @@ export function isBroadcastInput(body: unknown): body is CreateBroadcastInput {
 
 /** Every broadcast request the page posts from here on, in order, as the body it sent and the
  *  `Idempotency-Key` it sent it under - a route that fulfils a request itself still lists it. */
-export function postedBroadcasts(page: Page): KeyedWrite<CreateBroadcastInput>[] {
-  return watchWrites(page, "POST", "/api/v1/broadcasts", isBroadcastInput);
+export function postedBroadcasts(page: Page): KeyedWrite<CreateBroadcastV2Input>[] {
+  return watchWrites(page, "POST", "/api/v2/broadcasts", isBroadcastInput);
 }
 
 /** Every broadcast the page sends from here on, in order: each press, Retry and Restore draft, as
@@ -253,11 +253,11 @@ export function postedBroadcasts(page: Page): KeyedWrite<CreateBroadcastInput>[]
  *  the page asks again under the same key (`broadcast-queue.ts`), so the POSTs of one send
  *  outnumber it. A POST under the key of an answer that left a recipient pending is that repeat,
  *  and is not listed; `postedBroadcasts` lists every POST. */
-export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastInput>[] {
-  const sends: KeyedWrite<CreateBroadcastInput>[] = [];
+export function broadcastSends(page: Page): KeyedWrite<CreateBroadcastV2Input>[] {
+  const sends: KeyedWrite<CreateBroadcastV2Input>[] = [];
   const owed = new Set<string | undefined>();
   const isBroadcastPost = (request: { method(): string; url(): string }) =>
-    request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/broadcasts";
+    request.method() === "POST" && new URL(request.url()).pathname === "/api/v2/broadcasts";
   page.on("request", (request) => {
     if (!isBroadcastPost(request)) return;
     const send = keyedWrite(request, isBroadcastInput);
@@ -285,7 +285,7 @@ export const BROADCAST_REFUSED = "no selected session can receive this message";
  *  sessions stay live, so the page's 15 s agent poll cannot empty the list mid-row. */
 export async function refuseBroadcasts(page: Page): Promise<{ allow: () => void }> {
   let refusing = true;
-  await page.route("**/api/v1/broadcasts", (route) =>
+  await page.route("**/api/v2/broadcasts", (route) =>
     refusing && route.request().method() === "POST"
       ? route.fulfill({
           body: JSON.stringify({ code: "BROADCAST_EMPTY", error: BROADCAST_REFUSED }),

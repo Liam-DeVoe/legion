@@ -48,7 +48,7 @@ const twiceTest = stubbed(async () => {
   const firstId = await blockId(source.primary_artifact_id, first);
   const secondId = await blockId(source.primary_artifact_id, second);
   const artifact = await getArtifact(source.primary_artifact_id);
-  expect(Math.max(...(artifact.versions ?? []).map((version) => version.number))).toBe(1);
+  expect(artifact.latest_version).toBe(1);
   return { first, firstId, second, secondId, source: source.key, target: target.key };
 });
 

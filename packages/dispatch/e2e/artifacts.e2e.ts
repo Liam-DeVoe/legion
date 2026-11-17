@@ -413,7 +413,7 @@ test("an out-of-schema document names its repair and uploads replacement markdow
   });
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    `/api/v2/_test/artifacts/${upload.artifact.id}/outside-schema`
   );
   expect(corrupted.status()).toBe(204);
 
@@ -456,7 +456,7 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
   await expect(row).toBeVisible();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    `/api/v2/_test/artifacts/${upload.artifact.id}/outside-schema`
   );
   expect(corrupted.status()).toBe(204);
   await openDocument();
@@ -499,7 +499,7 @@ test("a mounted editor does not reconnect into a document made unreadable while 
   await transport.sever();
   const corrupted = await postAsPage(
     page,
-    `/api/v1/artifacts/${upload.artifact.id}/_test/outside-schema`
+    `/api/v2/_test/artifacts/${upload.artifact.id}/outside-schema`
   );
   expect(corrupted.status()).toBe(204);
   await transport.release();
@@ -509,7 +509,7 @@ test("a mounted editor does not reconnect into a document made unreadable while 
 
   await expect(page.getByText("A person decides whether to replace the document")).toBeVisible();
   await expect(documentEditor(page)).toBeHidden();
-  const text = await page.request.get(`/api/v1/artifacts/${upload.artifact.id}/text`);
+  const text = await page.request.get(`/api/v2/artifacts/${upload.artifact.id}?include=text`);
   expect(text.status()).toBe(409);
   await expect(text.text()).resolves.toContain(`"code":"DOC_SCHEMA"`);
   expect(sockets()).toBe(2);
@@ -539,7 +539,10 @@ test("an edit typed while the socket was down survives a text refetch the server
   await transport.sever();
   await typeAtEnd(page, "offline edit");
   let refused = 0;
-  const textRoute = `**/api/v1/artifacts/${upload.artifact.id}/text`;
+  // The text is the document's own read with `include=text`.
+  const textRoute = (url: URL) =>
+    url.pathname === `/api/v2/artifacts/${upload.artifact.id}` &&
+    url.searchParams.get("include") === "text";
   await page.route(textRoute, async (route) => {
     refused += 1;
     await route.fulfill({
@@ -598,7 +601,7 @@ test("a live document refuses a rebuild", async ({ page }) => {
 
   await page.goto(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
   await expect(documentEditor(page)).toContainText("before");
-  const rebuilt = await postAsPage(page, `/api/v1/artifacts/${upload.artifact.id}/rebuild`, {});
+  const rebuilt = await postAsPage(page, `/api/v2/artifacts/${upload.artifact.id}/rebuilds`, {});
   expect(rebuilt.status()).toBe(409);
   await expect(rebuilt.text()).resolves.toContain(`"code":"DOCUMENT_LIVE"`);
   await expect(documentEditor(page)).toContainText("before");

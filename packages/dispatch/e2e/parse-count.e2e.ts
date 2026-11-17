@@ -50,7 +50,7 @@ const architecture = {
 /** A word no seeded text but the document's holds, so the palette's hits are its own. */
 const searchTerm = "astrolabe";
 
-/** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v1/references`
+/** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v2/references`
  *  answers for that block, and the citing link's own title is read from the same node, so the
  *  card and the link both draw it. */
 const quotedBlock = "A **quoted** paragraph of its own.";
@@ -121,7 +121,7 @@ async function seedStoredTexts(): Promise<Seeded> {
     session
   );
   // A comment whose second paragraph another comment cites by its block id: a block reference
-  // reads `GET /api/v1/references`, and both the citing link's title and its hover card are
+  // reads `GET /api/v2/references`, and both the citing link's title and its hover card are
   // drawn from the text that read's node carries.
   const quoted = await createComment(
     issue.key,
@@ -288,7 +288,7 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a block reference's card",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
-        // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
+        // A reference to a block of a comment is the surface `GET /api/v2/references` draws:
         // the link's title and the card under it are both the text that read's node carries.
         await page.getByRole("link", { name: quotedTitle }).first().hover();
         const card = page.getByRole("tooltip");
@@ -358,10 +358,10 @@ function surfaces(seeded: Seeded): Surface[] {
         // The row covers the check's one-project leg, which is the only leg this harness can
         // drive: the cross-project one is reached from the meaning stage alone
         // (`relatedMeaningStage`), which needs an embedder, and a run of this suite starts the
-        // server with none (`e2e/harness-embedder.ts`). The dashboard's own read - the GET
-        // form of `/api/v1/projects/{key}/related`, which this dialog makes - runs the
-        // one-project leg whatever the server embeds, so this is the leg the panel draws from
-        // in a browser.
+        // server with none (`e2e/harness-embedder.ts`). The dashboard's own check -
+        // `POST /api/v2/projects/{key}/related-searches` with no `include=other_projects`, which
+        // this dialog makes - runs the one-project leg whatever the server embeds, so this is the
+        // leg the panel draws from in a browser.
         await page.goto("/");
         await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
         await page.locator("body").focus();

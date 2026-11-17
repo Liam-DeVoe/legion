@@ -12,10 +12,7 @@ export async function openIssue(page: Page, issueKey: string, title: string): Pr
   await page.locator("body").focus();
 }
 
-// Both paths the palette's searches take. The keystroke tier always carries `keywords_only`, and
-// a palette opened on a project or an issue page carries `number_project`, so either request goes
-// to `/api/v1/search/results` rather than `/api/v1/search` (`everyBuildReadsSearch`,
-// `@legion/contracts`). A route matching one path alone would let the other through, and a stub
-// or a hold in either file would miss the request it is about.
-export const searchPath = (url: URL): boolean =>
-  url.pathname === "/api/v1/search" || url.pathname === "/api/v1/search/results";
+// The path every palette search takes, whatever tier asks it: `/api/v2/search-results`, with
+// the keystroke tier's `keywords_only` and a project or an issue page's `number_project` in its
+// query. A stub or a hold in either file matches the path, so no tier's request gets past it.
+export const searchPath = (url: URL): boolean => url.pathname === "/api/v2/search-results";

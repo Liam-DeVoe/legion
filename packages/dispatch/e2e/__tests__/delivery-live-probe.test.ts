@@ -298,8 +298,8 @@ test(
         }
       },
       routes: {
-        "/api/v1/delivery/measures": nextBody.measures,
-        "/api/v1/delivery/timeline": nextBody,
+        "/api/v2/delivery/measures": nextBody.measures,
+        "/api/v2/delivery/timeline": nextBody,
       },
     });
     const bodyFile = join(scratch(), "body.json");
@@ -386,8 +386,8 @@ test(
         url.searchParams.get("repo"),
       ])
     ).toEqual([
-      ["/api/v1/delivery/timeline", nextBody.window.from, nextBody.window.to, "acme/widgets"],
-      ["/api/v1/delivery/measures", nextBody.window.from, nextBody.window.to, "acme/widgets"],
+      ["/api/v2/delivery/timeline", nextBody.window.from, nextBody.window.to, "acme/widgets"],
+      ["/api/v2/delivery/measures", nextBody.window.from, nextBody.window.to, "acme/widgets"],
     ]);
     const same = { equal: true, extra: [], missing: [] };
     const allEqual = { differ: [], equal: true };
@@ -401,7 +401,7 @@ test(
         equal: true,
         measures: allEqual,
         prs: same,
-        route: "/api/v1/delivery/timeline",
+        route: "/api/v2/delivery/timeline",
         runs: same,
         status: 200,
         type: "compare",
@@ -410,7 +410,7 @@ test(
         equal: true,
         measures: allEqual,
         prs: null,
-        route: "/api/v1/delivery/measures",
+        route: "/api/v2/delivery/measures",
         runs: null,
         status: 200,
         type: "compare",
@@ -435,8 +435,8 @@ test(
         socket.send(forSub(delta, sub));
       },
       routes: {
-        "/api/v1/delivery/measures": nextBody.measures,
-        "/api/v1/delivery/timeline": {
+        "/api/v2/delivery/measures": nextBody.measures,
+        "/api/v2/delivery/timeline": {
           ...nextBody,
           measures: {
             ...nextBody.measures,
@@ -892,9 +892,9 @@ test(
     const run = runProbe(compareArgs(dispatch.url, "1"));
     await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
     expect(await exitAfter(run, "SIGINT")).toBe(1);
-    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline"]);
+    expect(dispatch.reads).toEqual(["/api/v2/delivery/timeline"]);
     const stderr = run.stderr.join("\n");
-    expect(stderr).toContain("the read of /api/v1/delivery/timeline?");
+    expect(stderr).toContain("the read of /api/v2/delivery/timeline?");
     expect(stderr).toContain("received nothing for 1 s (--read-within)");
   },
   // The wait for the snapshot line, then the wait for the exit after SIGINT.
@@ -914,7 +914,7 @@ test(
       text.slice((index * text.length) / count, ((index + 1) * text.length) / count)
     );
     const dispatch = slowDispatch((url) => {
-      if (url.pathname === "/api/v1/delivery/measures") return Response.json(heldBody.measures);
+      if (url.pathname === "/api/v2/delivery/measures") return Response.json(heldBody.measures);
       let sent = 0;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
@@ -932,10 +932,10 @@ test(
     const run = runProbe(compareArgs(dispatch.url, String(REQUEST_DEADLINE_MS / 1000)));
     await lineBy(run, "snapshot line", () => run.lines.some((line) => line.type === "snapshot"));
     expect(await exitAfter(run, "SIGINT"), run.stderr.join("\n")).toBe(0);
-    expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
+    expect(dispatch.reads).toEqual(["/api/v2/delivery/timeline", "/api/v2/delivery/measures"]);
     expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
-      ["/api/v1/delivery/timeline", true],
-      ["/api/v1/delivery/measures", true],
+      ["/api/v2/delivery/timeline", true],
+      ["/api/v2/delivery/measures", true],
     ]);
   },
   // The wait for the snapshot line, then the wait for the exit after SIGINT, which covers the

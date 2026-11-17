@@ -608,9 +608,10 @@ export interface DocumentTextRead {
   readonly serve: () => Promise<void>;
 }
 
-/** The page's read of one document's text, which a row can make fail and then succeed again. */
+/** The page's read of one document's text (the document's own read with `include=text`), which
+ *  a row can make fail and then succeed again. */
 export function documentTextRead(page: Page, artifactId: string): DocumentTextRead {
-  const read = `**/api/v1/artifacts/${artifactId}/text`;
+  const read = `**/api/v2/artifacts/${artifactId}?include=text`;
   return {
     refuse: async () => {
       await page.route(read, (route) =>
@@ -651,7 +652,7 @@ async function holdRead(page: Page, read: string): Promise<HeldRead> {
 /** Holds the read that serves a document's comment threads, so the thread under the opened
  *  block is drawn only once the row lets it be. */
 export function holdThreadReplies(page: Page, artifactId: string): Promise<HeldRead> {
-  return holdRead(page, `**/api/v1/artifacts/${artifactId}/comments`);
+  return holdRead(page, `**/api/v2/artifacts/${artifactId}/comments`);
 }
 
 // ---------------------------------------------------------------------------

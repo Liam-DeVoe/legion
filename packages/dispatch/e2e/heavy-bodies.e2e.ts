@@ -293,7 +293,7 @@ for (const row of rows) {
           await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
           await expect(card).toHaveCount(1);
         },
-        reset: new RegExp(`/api/v1/issues/${issue.key}/comments(\\?.*)?$`),
+        reset: new RegExp(`/api/v2/issues/${issue.key}/comments(\\?.*)?$`),
       });
       await expectSettled(card);
       record(measured);
@@ -325,7 +325,7 @@ test("Conversation draws a message of 8,000 list items without holding the main 
         await page.goto(`/issues/${issue.key}/conversation`);
         await expect(card).toHaveCount(1);
       },
-      reset: new RegExp(`/api/v1/issues/${issue.key}/messages(\\?.*)?$`),
+      reset: new RegExp(`/api/v2/issues/${issue.key}/messages(\\?.*)?$`),
     });
     await expectSettled(card);
     record(measured);
@@ -368,7 +368,8 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
         await page.goto("/");
         await expect(card).toBeVisible();
       },
-      reset: /\/api\/v1\/inbox(\?.*)?$/,
+      // The Inbox is the open asks read with each one's thread (`getInbox`).
+      reset: /\/api\/v2\/asks\?(.*&)?include=thread(&.*)?$/,
     });
     await expectSettled(card);
     record(measured);
@@ -408,7 +409,7 @@ test("a hover card of a comment of 8,000 list items draws without holding the ma
         await reference.hover();
         await expect(page.getByRole("tooltip")).toBeVisible();
       },
-      reset: new RegExp(`/api/v1/comments/${list.id}(\\?.*)?$`),
+      reset: new RegExp(`/api/v2/comments/${list.id}(\\?.*)?$`),
     });
     await expectSettled(page.getByRole("tooltip"));
     record(measured);

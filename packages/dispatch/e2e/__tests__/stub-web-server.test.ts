@@ -71,7 +71,7 @@ test(
     expect(
       await webServerCommand(["--project=stub", "--project=stub-phone"]),
       "A stub row has no page without `e2e/stub/static-server.ts`: the recording answers " +
-        "/api/v1/** and /auth/whoami and nothing else."
+        "/api/v2/** and /auth/whoami and nothing else."
     ).toBe("bun e2e/stub/static-server.ts");
   },
   rowLimit("short")

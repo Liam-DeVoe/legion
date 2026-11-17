@@ -1,6 +1,8 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import type { CreateBroadcastInput, Message } from "../web/src/api/types";
+import type { MessageReplyResult } from "@legion/contracts/dispatch-api-v2";
+
+import type { CreateBroadcastV2Input } from "../web/src/api/types";
 import {
   agentGroupToggle,
   agentRow,
@@ -275,7 +277,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     const sent = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
-        response.url().endsWith(`/api/v1/agents/${planner.session_id}/messages`) &&
+        response.url().endsWith(`/api/v2/agents/${planner.session_id}/messages`) &&
         response.status() === 201
     );
     const composer = plannerCard.getByRole("textbox", { name: "Comment" });
@@ -361,7 +363,7 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
     first.id,
     { attempt: 1, body: "First answer" },
     plannerActor
-  )) as Message;
+  )) as MessageReplyResult;
   await createAgentMessage(planner.session_id, { body: "Second question", delivery: "btw" });
   // Alice has read the first answer (on another device, say): an exchange holding an unread
   // reply opens unfolded, so the fold is shown over one already read.
@@ -399,8 +401,8 @@ test("Agents shows the newest exchange, folds the older ones, and lets the viewe
     const clearButton = plannerCard.getByRole("button", { name: "Clear conversation" });
     const saved = page.waitForResponse(
       (response) =>
-        response.request().method() === "PUT" &&
-        response.url().endsWith(`/api/v1/me/agents/${planner.session_id}/state`) &&
+        response.request().method() === "PATCH" &&
+        response.url().endsWith(`/api/v2/me/marks/agent/${planner.session_id}`) &&
         response.ok()
     );
     await clearButton.click();
@@ -539,7 +541,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
     askA.id,
     { attempt: 1, body: "Answer A" },
     plannerActor
-  )) as Message;
+  )) as MessageReplyResult;
   const askB = await createAgentMessage(planner.session_id, {
     body: "Question B",
     delivery: "aside",
@@ -548,7 +550,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
     askB.id,
     { attempt: 1, body: "Answer B" },
     plannerActor
-  )) as Message;
+  )) as MessageReplyResult;
   // Alice's follow-up moves exchange A above B in the server's order, so the page meets the older
   // reply first: a comparison to the millisecond would keep it.
   const followUp = await createAgentMessage(planner.session_id, {
@@ -569,7 +571,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
   // The fixture holds only if the server lists A first, with both replies unread.
   expect(
     (await listAgentMessages(planner.session_id)).map((read) => [
-      read.message.body,
+      read.body,
       (read.replies ?? [])
         .filter((reply) => reply.author.id === planner.session_id)
         .map((reply) => reply.created_at),
@@ -591,8 +593,8 @@ test("opening a row marks read the newer of two replies written in one milliseco
       .filter({ has: page.getByRole("heading", { level: 2, name: "Planner" }) });
     const marked = page.waitForRequest(
       (request) =>
-        request.method() === "PUT" &&
-        request.url().endsWith(`/api/v1/me/agents/${planner.session_id}/state`)
+        request.method() === "PATCH" &&
+        request.url().endsWith(`/api/v2/me/marks/agent/${planner.session_id}`)
     );
     await plannerCard.getByRole("button", { name: "New replies 2 from Planner" }).click();
     expect((await marked).postDataJSON()).toEqual({ read_through: replyB });
@@ -1353,8 +1355,8 @@ test("a second broadcast pressed while the first is on the wire waits its turn, 
     // a key already let through goes straight on: the page asks again while Dispatch's answer
     // shows a recipient still pending (`broadcastSends`).
     const held = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    const posted: KeyedWrite<CreateBroadcastInput>[] = [];
-    await page.route("**/api/v1/broadcasts", async (route) => {
+    const posted: KeyedWrite<CreateBroadcastV2Input>[] = [];
+    await page.route("**/api/v2/broadcasts", async (route) => {
       if (route.request().method() !== "POST") return route.fallback();
       const send = keyedWrite(route.request(), isBroadcastInput);
       if (posted.some(({ key }) => key === send.key)) {

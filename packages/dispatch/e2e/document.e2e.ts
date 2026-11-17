@@ -1,9 +1,9 @@
 import {
   createProject,
   createProjectDocument,
-  getArtifact,
   getAsk,
   getProjectArtifact,
+  listArtifactVersions,
 } from "./api";
 import {
   barAction,
@@ -69,11 +69,10 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     // compares them against each other rather than against a count read before it.
     await expect
       .poll(async () => {
-        const [current, options] = await Promise.all([
-          getArtifact(artifact.id),
+        const [versions, options] = await Promise.all([
+          listArtifactVersions(artifact.id).then((listed) => listed.length),
           alicePage.getByRole("combobox", { name: "Version" }).locator("option").count(),
         ]);
-        const versions = (current.versions ?? []).length;
         return versions > 1 && options === versions + 1
           ? "one option per settled version, and one for the live document"
           : `${options} options for ${versions} settled versions`;
@@ -102,7 +101,7 @@ test("picking a file on the Documents tab uploads it at once and lists it @pr", 
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
-        request.url().endsWith("/api/v1/projects/CORE/artifacts")
+        request.url().endsWith("/api/v2/projects/CORE/artifacts")
       ) {
         uploads += 1;
       }
@@ -178,10 +177,8 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await expect(documentEditor(alicePage)).toContainText("Accepted text");
     await expect(documentEditor(bobPage)).toContainText("Accepted text");
     await expect
-      .poll(() =>
-        getArtifact(created.artifact.id).then((artifact) =>
-          (artifact.versions ?? []).some(({ named }) => named)
-        )
+      .poll(async () =>
+        (await listArtifactVersions(created.artifact.id)).some(({ named }) => named)
       )
       .toBe(true);
 
@@ -197,10 +194,10 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
       throw new Error("Document ask did not receive a margin id.");
     }
     const ask = await getAsk(askId);
-    if (ask.ask.anchor === null) {
+    if (ask.anchor === null) {
       throw new Error("Document ask did not retain its anchor.");
     }
-    await expect(markSpan(bobPage, ask.ask.anchor.mark_id)).toContainText(ask.ask.anchor.quote);
+    await expect(markSpan(bobPage, ask.anchor.mark_id)).toContainText(ask.anchor.quote);
     // A document has no assignee, so its question reaches the default assignee of its project,
     // which is bob: his own list holds it. The short row names the document the question
     // belongs to, and the card - which from 1280 px the reading pane draws (INFRA-575) -
@@ -214,9 +211,7 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await inboxAsk.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect
       .poll(() => getAsk(askId))
-      .toMatchObject({
-        ask: { answer: { text: "Yes, publish it.", user: "bob" }, state: "answered" },
-      });
+      .toMatchObject({ answer: { text: "Yes, publish it.", user: "bob" }, state: "answered" });
     await expect(inboxDocumentRow).toHaveCount(0);
     await navigateInApp(bobPage, path);
     await expect(bobPage.getByText("Yes, publish it.")).toBeVisible();

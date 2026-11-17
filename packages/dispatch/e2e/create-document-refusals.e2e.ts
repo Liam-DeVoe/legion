@@ -63,7 +63,7 @@ test("a title the issue already holds is refused by the control, by its name and
 
   // The same title through the API, with no content: the write's own refusal names the document
   // that holds the title in the same way, and asks for no content at all.
-  const refused = await postAsPage(page, `/api/v1/issues/${issue.key}/artifacts`, {
+  const refused = await postAsPage(page, `/api/v2/issues/${issue.key}/artifacts`, {
     name: "Launch notes",
   });
   expect(refused.status()).toBe(400);
@@ -117,7 +117,7 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
 
   // The refusal is of a create that carries nothing, never of the name: the same name with
   // content is taken, and writes a version of the issue's plan document.
-  const accepted = await postAsPage(page, `/api/v1/issues/${issue.key}/artifacts`, {
+  const accepted = await postAsPage(page, `/api/v2/issues/${issue.key}/artifacts`, {
     content: "# Plan\n\nThe steps, in order, corrected.\n",
     name: "plan.md",
   });

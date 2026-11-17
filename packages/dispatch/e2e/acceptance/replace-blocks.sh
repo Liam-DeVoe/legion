@@ -399,14 +399,18 @@ if ((own_instance == 1)); then
 fi
 readonly base
 
-# version_of SECTION WHAT: sets $version to the live version of the run's spec document.
+# version_of SECTION WHAT: sets $version to the live version of the run's spec document, which
+# the issue's document list answers with its text for the slug it is asked for. That filter also
+# keeps a document whose file name is the slug, so the read fails unless exactly one row answers.
 version_of() {
   local status
   status="$(curl -sS -H "@$work/auth" -o "$work/body" -w '%{http_code}' \
-    "$base/api/v1/issues/$issue_key/artifacts/spec/text" 2>"$work/curl")" ||
+    "$base/api/v2/issues/$issue_key/artifacts?slug=spec&include=text" 2>"$work/curl")" ||
     fail "$1" "$2" "curl failed: $(<"$work/curl")"
   [[ "$status" == 200 ]] || fail "$1" "$2" "HTTP $status: $(head -c 400 "$work/body")"
-  version="$(jq -er '.version' "$work/body")" ||
+  jq -e '.total == 1' "$work/body" >/dev/null ||
+    fail "$1" "$2" "slug spec names no single document: $(head -c 400 "$work/body")"
+  version="$(jq -er '.items[0].version' "$work/body")" ||
     fail "$1" "$2" "no version in: $(head -c 400 "$work/body")"
 }
 

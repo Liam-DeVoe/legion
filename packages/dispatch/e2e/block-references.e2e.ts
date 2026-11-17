@@ -15,7 +15,7 @@ import { blockId } from "./editor";
 import { expect, type Locator, type Page, test } from "./test";
 
 // Every row seeds through the real API and reads the real server: a block's id comes from
-// `GET /api/v1/artifacts/<id>/blocks`, never from a guess. Its helpers live in this file, in
+// `GET /api/v2/artifacts/<id>?include=blocks`, never from a guess. Its helpers live in this file, in
 // `editor.ts` (`blockId`) and in `api.ts` (`getArtifactBlocks`, which `blockId` reads), so a run at
 // the base, where none of this exists, copies those three files.
 //
@@ -35,7 +35,10 @@ test.beforeEach(async () => {
 
 async function latestVersion(artifactId: string): Promise<number> {
   const artifact = await getArtifact(artifactId);
-  return Math.max(...(artifact.versions ?? []).map((version) => version.number));
+  if (artifact.latest_version === null) {
+    throw new Error(`document ${artifactId} has no version`);
+  }
+  return artifact.latest_version;
 }
 
 /** Opens the hover card of `link` from the keyboard, which every project can do (the phone
@@ -151,7 +154,7 @@ test("a block reference a person made keeps resolving after an upload that leave
     .getByRole("list", { name: "Conversation turns" })
     .getByRole("link", { name: cited });
   await expect(link).toHaveAttribute("href", `/issues/${issue.key}/spec#b-${citedId}`);
-  // The id the comment names is still the id `GET /api/v1/artifacts/{id}/blocks` gives that
+  // The id the comment names is still the id `GET /api/v2/artifacts/{id}?include=blocks` gives that
   // paragraph, not one the upload re-minted.
   expect(await blockId(specId, cited)).toBe(citedId);
 
