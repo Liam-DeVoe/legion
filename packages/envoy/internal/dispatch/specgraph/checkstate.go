@@ -158,12 +158,12 @@ const (
 //     reads unknown, and Dispatch reports a fault of CI"; R7: "silence is not a pass"), unlike a
 //     refusal of step 2. No run counts: unknown, ci_fault when a run of C's job that counts at S
 //     ended (R9), else subject_moved when C has a run, else no_result, since a run of the job that
-//     has not ended is no fault of CI. A code check, or a program check of
-//     production or the graph, with a run of its job that counts at S in a leg with no run that
-//     counts: unknown, ci_fault, Detail the leg, when that run ended (R7: "silence is not a pass";
-//     R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
-//     another"), else unknown, no_result, Detail the leg, since a leg whose run has not ended is no
-//     silent leg and no pass.
+//     has not ended is no fault of CI. A code check, or a program check of production or the graph,
+//     with a run of its job that counts at S in a leg with no run that counts: unknown, ci_fault,
+//     Detail the first such leg by name whose run ended (R7: "silence is not a pass"; R12: "Each
+//     leg of a matrix reports its own result, and no leg replaces the result of another"), else
+//     unknown, no_result, Detail the first such leg by name, since a leg whose run has not ended is
+//     no silent leg and no pass (legWithNoResult).
 //  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
 //     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
