@@ -60,7 +60,9 @@ function stepEnd(record: StepRecord): StepEnd {
     case "stopped":
       return { returnedTo: returnPlace(record.returned_to), state: record.result };
     default:
-      return { result: record.result, state: "other" };
+      // A result only a newer Dispatch sends, which this build's contract does not name, keeps its
+      // own word; a result the contract names fails to compile here until it has a case.
+      return { result: record.result satisfies never, state: "other" };
   }
 }
 
