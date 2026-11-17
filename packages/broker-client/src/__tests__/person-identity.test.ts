@@ -101,6 +101,26 @@ test("a refresh token the issuer no longer honours ends the sign-in, naming agen
   expect(refusal?.cause).toBeUndefined();
 });
 
+// An issuer, or anything at AGENT_SECRETS_SIGNIN_ISSUER, can put the refresh token and the client
+// secret it was sent in its refusal's text, so the text is withheld and the status and code name
+// the refusal (#4140, S1).
+test("an issuer's refusal prints its status and code, never the text that echoes what it was sent", async () => {
+  const record = await signedIn(PERSON);
+  const issuer = await issuerFor(() => ({
+    status: 401,
+    body: {
+      error: "invalid_client",
+      error_description: `refused ${record.refresh_token} with ${CLIENT_SECRET}`,
+    },
+  }));
+  const refusal = await refusalOf(() => personIdentity(record, flowAt(issuer.url)).read());
+  expect(refusal?.message).toBe(
+    `renew ${PERSON}'s sign-in at ${issuer.url}: HTTP 401 invalid_client: (its text is withheld)`
+  );
+  expect(Bun.inspect(refusal)).not.toContain(record.refresh_token);
+  expect(Bun.inspect(refusal)).not.toContain(CLIENT_SECRET);
+});
+
 // The issuer is named as every client names a URL (`urlForText`): one that carries user info by
 // its variable's fixed phrase alone, no part of it. No error keeps the library's as its cause:
 // openid-client's error for an issuer that is not the one asked for holds the issuer as it was

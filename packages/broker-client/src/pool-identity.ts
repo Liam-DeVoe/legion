@@ -104,6 +104,35 @@ async function answerText(answer: Response): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** A word as Google's services write their error codes: STS's OAuth `error` (`invalid_grant`)
+ *  and IAM's `error.status` (`PERMISSION_DENIED`). */
+const GOOGLE_ERROR_CODE = /^[A-Za-z_]{1,64}$/;
+
+/**
+ * ` <code>` for the error code a Google answer `text` carries (STS's `error`, IAM's
+ * `error.status`), or "" where it carries none that reads as a code. The rest of the body is
+ * never named: its text is the service's, and a service can echo the token it was sent.
+ */
+function googleErrorCode(text: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return "";
+  }
+  const error =
+    typeof parsed === "object" && parsed !== null
+      ? (parsed as { error?: unknown }).error
+      : undefined;
+  const code =
+    typeof error === "string"
+      ? error
+      : typeof error === "object" && error !== null
+        ? (error as { status?: unknown }).status
+        : undefined;
+  return typeof code === "string" && GOOGLE_ERROR_CODE.test(code) ? ` ${code}` : "";
+}
+
 /**
  * The identity of a machine with no Google service account of its own (Go's `PoolIdentity`): an
  * external credential, the subject this deployment already holds, traded at Google's security
@@ -137,8 +166,9 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
   /**
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
    * not empty, and answers the member `member` of what came back, or "" where the answer holds
-   * none. A non-2xx answer is an error naming the status and the body Google's services put their
-   * reason in, which carries no credential of this machine's; a 2xx answer that is not JSON is
+   * none. A non-2xx answer is an error naming the status and Google's error code alone
+   * (`googleErrorCode`), never the body, which a service, or anything at its URL, can fill with
+   * the token it was sent; a 2xx answer that is not JSON is
    * named without its text, since that text could be a token; and a request that got no answer is
    * named by its error's class, since the runtime's message can repeat the host it was handed.
    */
@@ -169,7 +199,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
       throw new Error(`no answer: ${errorClass(error)}`);
     }
     if (answer.status < 200 || answer.status > 299) {
-      throw new Error(`HTTP ${answer.status}: ${text.trim()}`);
+      throw new Error(`HTTP ${answer.status}${googleErrorCode(text)}`);
     }
     let parsed: unknown;
     try {

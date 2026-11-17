@@ -189,7 +189,10 @@ test("a refusal of the identity stops at once, whatever is in hand", async () =>
       ? { body: accepted("token-1", 600) }
       : {
           status: 400,
-          body: { error: "invalid_grant", error_description: "this sign-in was revoked" },
+          body: {
+            error: "invalid_grant",
+            error_description: "no entry lists the account this token names",
+          },
         }
   );
   const clock = { now: Date.now() };
@@ -202,13 +205,14 @@ test("a refusal of the identity stops at once, whatever is in hand", async () =>
       (error: unknown) => error
     );
     expect(refusal).toBeInstanceOf(BrokerRefusedError);
-    // It names what was traded and what the broker said.
+    // It names what was traded and what the broker said: a known refusal as the broker wrote it
+    // (`KNOWN_BROKER_REFUSALS`).
     expect((refusal as Error).message).toBe(
-      "the secrets broker refused a scripted identity: HTTP 400 invalid_grant: this sign-in was revoked"
+      "the secrets broker refused a scripted identity: HTTP 400 invalid_grant: no entry lists the account this token names"
     );
     // Nothing is held after a refusal: the next call asks again rather than answering a token the
     // broker has disowned.
-    expect(client.token()).rejects.toThrow("this sign-in was revoked");
+    expect(client.token()).rejects.toThrow("no entry lists the account this token names");
   } finally {
     broker.stop();
   }
@@ -223,7 +227,10 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
       ? { body: accepted("token-1", 600) }
       : {
           status: 429,
-          body: { error: "invalid_request", error_description: "too many token requests" },
+          body: {
+            error: "invalid_request",
+            error_description: "too many token requests; try again later",
+          },
         }
   );
   const clock = { now: Date.now() };
@@ -242,7 +249,7 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
     );
     expect(refusal).toBeInstanceOf(BrokerRefusedError);
     expect((refusal as BrokerRefusedError).permanent).toBe(false);
-    expect((refusal as Error).message).toContain("too many token requests");
+    expect((refusal as Error).message).toContain("too many token requests; try again later");
   } finally {
     broker.stop();
   }
@@ -328,6 +335,8 @@ test("a sign-in the issuer ended drops the token in hand, while an issuer that i
   }
 });
 
+// The refusal names the person's sign-in; the broker's text is not one of its known refusals, so
+// it is withheld (`KNOWN_BROKER_REFUSALS`).
 test("a broker's refusal of a person's trade names their sign-in", async () => {
   const broker = stubBroker(() => ({
     status: 400,
@@ -345,7 +354,7 @@ test("a broker's refusal of a person's trade names their sign-in", async () => {
   const client = await clientAt(broker.url, { now: Date.now() }, source);
   try {
     await expect(client.token()).rejects.toThrow(
-      `the secrets broker refused ${PERSON}'s sign-in on this machine: HTTP 400 invalid_grant: ${PERSON} revoked this machine's sign-in`
+      `the secrets broker refused ${PERSON}'s sign-in on this machine: HTTP 400 invalid_grant: (its text is withheld)`
     );
   } finally {
     broker.stop();

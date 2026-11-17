@@ -571,7 +571,9 @@ describe("DispatchClient's writes", () => {
     );
   });
 
-  test("a transport failure on every attempt throws the last one", async () => {
+  // The last attempt's failure is the client's own error: the URL as `urlForText` names it and the
+  // failure by its class, since the runtime's message repeats the host it dialed (#4140, B1).
+  test("a transport failure on every attempt throws the last one, named by its class", async () => {
     const { fetchImpl, sent } = scripted(
       Array.from({ length: 5 }, (_, n) => new TypeError(`fetch failed ${n + 1}`))
     );
@@ -579,8 +581,10 @@ describe("DispatchClient's writes", () => {
     const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
 
     expect(sent).toHaveLength(5);
-    expect(error).toBeInstanceOf(TypeError);
-    expect(error.message).toBe("fetch failed 5");
+    expect(error.message).toBe(
+      "Dispatch at http://dispatch.test is unreachable: TypeError (message withheld). If the " +
+        "Dispatch URL changed, restart this agent process so it picks up the new configuration."
+    );
   });
 
   test("wait a Retry-After longer than the pause, and stop rather than start past 30 s", async () => {

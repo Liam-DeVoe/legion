@@ -1,0 +1,86 @@
+import { describe, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
+import { newDpopKey } from "@legion/broker-client/dpop";
+import {
+  BrokerRefusedError,
+  BrokerTokenClient,
+  KNOWN_BROKER_REFUSALS,
+} from "@legion/broker-client/token-client";
+import { tradeFailureReason } from "../nats-credential";
+
+// What the NATS line prints of a failed trade for the session's token (`tradeFailureReason`). A
+// peer at AGENT_SECRETS_URL can put the subject token it was sent in its refusal's text, so the
+// broker's text prints only where it is one of its known refusals (#4140, S1); a trade that got
+// no answer keeps its class, which broker-client's own text already holds (#4140, S2).
+describe("tradeFailureReason", () => {
+  const token = () =>
+    `eyJ${randomBytes(18).toString("base64url")}.${randomBytes(24).toString("base64url")}`;
+
+  test("a refusal whose text is not a known refusal prints its status and code, its text withheld", () => {
+    const echoed = token();
+    const refusal = new BrokerRefusedError(400, "invalid_grant", `refused ${echoed}`, "probe");
+    const reasons = [tradeFailureReason(refusal), refusal.message, Bun.inspect(refusal)];
+    expect(reasons[0]).toBe(
+      "the secrets broker refused the identity traded: HTTP 400 invalid_grant: (its text is withheld)"
+    );
+    expect(reasons[1]).toBe(
+      "the secrets broker refused probe: HTTP 400 invalid_grant: (its text is withheld)"
+    );
+    for (const reason of reasons) expect(reason).not.toContain(echoed);
+  });
+
+  test("a code that does not read as one is withheld too", () => {
+    const echoed = token();
+    expect(tradeFailureReason(new BrokerRefusedError(400, echoed, "", "probe"))).toBe(
+      "the secrets broker refused the identity traded: HTTP 400"
+    );
+  });
+
+  test.each([
+    ...KNOWN_BROKER_REFUSALS,
+  ])("the known refusal %p prints as the broker wrote it", (text) => {
+    expect(tradeFailureReason(new BrokerRefusedError(403, "invalid_grant", text, "probe"))).toBe(
+      `the secrets broker refused the identity traded: HTTP 403 invalid_grant: ${text}`
+    );
+  });
+
+  // The broker's sentences that carry a remedy print, with only a person or a project in their
+  // slots; the same sentence with a token in the slot is withheld.
+  test("a broker sentence naming a person prints, and the same sentence with a token in it does not", () => {
+    const sentence = (person: string) =>
+      `${person} revoked this machine's sign-in, so the key this proof was signed with trades nothing. Sign in again with \`agent-secrets login\`.`;
+    const named = new BrokerRefusedError(
+      400,
+      "invalid_grant",
+      sentence("ada@example.com"),
+      "probe"
+    );
+    expect(tradeFailureReason(named)).toBe(
+      `the secrets broker refused the identity traded: HTTP 400 invalid_grant: ${sentence("ada@example.com")}`
+    );
+    const echoed = token();
+    const refusal = new BrokerRefusedError(400, "invalid_grant", sentence(echoed), "probe");
+    expect(tradeFailureReason(refusal)).toBe(
+      "the secrets broker refused the identity traded: HTTP 400 invalid_grant: (its text is withheld)"
+    );
+    expect(Bun.inspect(refusal)).not.toContain(echoed);
+  });
+
+  test("a trade that got no answer keeps the failure's class", async () => {
+    const client = new BrokerTokenClient({
+      brokerUrl: "http://127.0.0.1:1",
+      key: await newDpopKey(),
+      subject: {
+        read: async () => ({ token: token(), tokenType: "urn:ietf:params:oauth:token-type:jwt" }),
+        describe: () => "probe",
+      },
+    });
+    const failure = await client.token().then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(tradeFailureReason(failure)).toBe(
+      "trade probe at http://127.0.0.1:1/v1/oauth/token: ECONNREFUSED"
+    );
+  });
+});

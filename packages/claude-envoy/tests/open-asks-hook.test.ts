@@ -119,6 +119,32 @@ test("reports an unreachable Dispatch as unavailable, still exits 0, and still r
   }
 })
 
+// A password holding an unencoded '@' names no host, and the URL parser reads the password's tail
+// as one, which the runtime's resolver error repeats. The line reaches the model's context, so the
+// Dispatch client names the failure by its class and the URL by its fixed phrase (#4140, B1).
+test("names an unreachable Dispatch whose password holds an '@' by no part of the password", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-at-"))
+  const tail = `Tail${crypto.randomUUID().slice(0, 8)}`
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `https://user-7f2a:p@ssword${tail}.invalid`,
+      DISPATCH_TOKEN: "hook-token",
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toStartWith(
+      "Dispatch authored-ask summary unavailable: Dispatch at the configured Dispatch URL (not printed: it carries a credential or is not a plain http(s) URL) is unreachable: ",
+    )
+    for (const text of [result.stdout, result.stderr]) {
+      expect(text.toLowerCase()).not.toContain(tail.toLowerCase())
+    }
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
+}, 30_000)
+
 test("a SessionStart carrying a session title records it, and one carrying none removes it", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-title-"))
   const pluginData = join(scratch, "plugin-data")

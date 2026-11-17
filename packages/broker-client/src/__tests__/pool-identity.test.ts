@@ -177,16 +177,20 @@ test("the pool answers the token generateIdToken minted, as a machine's Google i
   });
 });
 
-test("a security token service that refuses is an error naming it, its status and its reason", async () => {
-  const reason =
-    '{"error":"invalid_grant","error_description":"the subject token is not this provider\'s"}';
+// Google's answer is named by its status and its error code alone, never its body: a service, or
+// anything at its URL, can echo the token it was sent there (#4140, P-f).
+test("a security token service that refuses is an error naming it, its status and its code", async () => {
+  const reason = JSON.stringify({
+    error: "invalid_grant",
+    error_description: `the subject token ${EXTERNAL_TOKEN} is not this provider's`,
+  });
   const sts = stubService(() => ({ status: 400, body: reason }));
   const iam = stubService(minting);
   const refusal = await refusalOf(async () => (await poolAt(sts.url, iam.url)).read());
   expect(refusal?.message).toBe(
-    `trade this machine's credential at the security token service ${sts.url}/v1/token: HTTP 400: ${reason}`
+    `trade this machine's credential at the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
-  expect(refusal?.message).not.toContain(EXTERNAL_TOKEN);
+  expect(Bun.inspect(refusal)).not.toContain(EXTERNAL_TOKEN);
   // Nothing is minted with no federated token.
   expect(iam.posted).toHaveLength(0);
 });
@@ -201,15 +205,21 @@ test("a security token service that answers no access_token is an error naming i
   expect(iam.posted).toHaveLength(0);
 });
 
-test("generateIdToken refusing is an error naming it, its status and its reason", async () => {
-  const reason =
-    '{"error":{"code":403,"message":"Permission iam.serviceAccounts.getOpenIdToken denied"}}';
+test("generateIdToken refusing is an error naming it, its status and its code", async () => {
+  const reason = JSON.stringify({
+    error: {
+      code: 403,
+      message: `Permission iam.serviceAccounts.getOpenIdToken denied for ${FEDERATED_TOKEN}`,
+      status: "PERMISSION_DENIED",
+    },
+  });
   const sts = stubService(federating);
   const iam = stubService(() => ({ status: 403, body: reason }));
   const refusal = await refusalOf(async () => (await poolAt(sts.url, iam.url)).read());
   expect(refusal?.message).toBe(
-    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: ${reason}`
+    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403 PERMISSION_DENIED`
   );
+  expect(Bun.inspect(refusal)).not.toContain(FEDERATED_TOKEN);
   expect(refusal?.message).not.toContain(FEDERATED_TOKEN);
 });
 
@@ -249,7 +259,7 @@ test("the security token service and IAM Credentials are named only where their 
   ];
   expect(refusals.map((refusal) => refusal?.message)).toEqual([
     `the security token service securityTokenServiceUrl ${URL_NOT_PRINTED} answered no access_token`,
-    `mint this machine's identity token at iamCredentialsUrl ${URL_NOT_PRINTED}: HTTP 403: {"error":{"code":403}}`,
+    `mint this machine's identity token at iamCredentialsUrl ${URL_NOT_PRINTED}: HTTP 403`,
     `generateIdToken at iamCredentialsUrl ${URL_NOT_PRINTED} answered no token`,
   ]);
   for (const refusal of refusals) expect(Bun.inspect(refusal)).not.toContain(password);
@@ -367,7 +377,7 @@ test("with the security token service refusing, a person's trade fails naming it
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
   const refusal = await refusalOf(() => client.token());
   expect(refusal?.message).toContain(
-    `the security token service ${sts.url}/v1/token: HTTP 400: {"error":"invalid_grant"}`
+    `the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
   expect(broker.trades).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
@@ -382,7 +392,7 @@ test("with generateIdToken refusing, a person's trade fails naming it and the br
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
   const refusal = await refusalOf(() => client.token());
   expect(refusal?.message).toContain(
-    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: ${reason}`
+    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403`
   );
   // The security token service answered and generateIdToken refused: no trade reaches the broker
   // without the machine token that vouches for the person.

@@ -90,7 +90,7 @@ import {
   type Sleep,
   sleep,
 } from "@legion/contracts";
-import { isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
+import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
@@ -875,6 +875,15 @@ export class DispatchClient {
    * client's life the write began.
    */
   readonly #madeAt: number;
+  /**
+   * `fetchImpl`, with a transport failure named by the Dispatch URL as `urlForText` names it and
+   * the failure's class (`errorClass`), never the runtime's message: that message repeats the host
+   * it dialed, and a URL that is not clean dials part of its credential
+   * (`https://user:p@ssword` dials `ssword`). Every request of this client goes through it, so the
+   * `dispatch` command, Claude Code's session hook, the people's-answers line and pi-envoy's
+   * notices all read the one text.
+   */
+  readonly #fetch: typeof fetch;
 
   constructor(
     baseUrl: string,
@@ -894,6 +903,24 @@ export class DispatchClient {
   ) {
     this.#credential = credential;
     this.#baseUrl = withoutTrailingSlashes(baseUrl);
+    const shown = urlForText(this.#baseUrl, DISPATCH_URL_SETTING);
+    this.#fetch = Object.assign(
+      async (...args: Parameters<typeof fetch>): Promise<Response> => {
+        try {
+          return await fetchImpl(...args);
+        } catch (error) {
+          // Bun's and undici's fetch reject a request that reached no server with a TypeError; a
+          // deadline or a caller's stop is a DOMException, which passes on unchanged.
+          if (error instanceof TypeError) {
+            throw new Error(
+              `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
+            );
+          }
+          throw error;
+        }
+      },
+      { preconnect: fetchImpl.preconnect }
+    );
     this.#signal = requestSignal(options.signal);
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;
@@ -2019,7 +2046,7 @@ export class DispatchClient {
     let presented = await this.#credential.headers(method, url);
     if (body !== undefined) headers["Content-Type"] = body.type;
     if (key === undefined) {
-      return this.fetchImpl(url, {
+      return this.#fetch(url, {
         method,
         headers: { ...headers, ...presented },
         signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
@@ -2152,7 +2179,7 @@ export class DispatchClient {
       timer = setTimeout(silent, silenceMs);
     };
     try {
-      return await this.fetchImpl(url, {
+      return await this.#fetch(url, {
         method,
         signal: AbortSignal.any([this.#signal, cut.signal]),
         ...(body === undefined ? { headers } : attemptBody(body, headers, progress)),
@@ -2228,7 +2255,7 @@ export class DispatchClient {
   async #probeKeyedLayer(): Promise<boolean> {
     try {
       const probe = `${this.#baseUrl}/healthz`;
-      const response = await this.fetchImpl(probe, {
+      const response = await this.#fetch(probe, {
         method: "GET",
         headers: { Accept: "application/json", ...(await this.#credential.headers("GET", probe)) },
         signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),

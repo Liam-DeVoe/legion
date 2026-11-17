@@ -9,7 +9,7 @@ import type {
   IssuePriority,
   Sleep,
 } from "@legion/contracts";
-import { errorClass, urlForText } from "@legion/contracts/log-text";
+import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
 import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
@@ -288,12 +288,11 @@ export interface CommandContext extends SessionContext {
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /**
- * The context every command starts from, built from the checked call. The fetch it hands the
- * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else. That message names the server only where its URL is a
- * plain http(s) URL (`urlForText`), and the transport error by its class, since the runtime's
- * message can repeat the URL (`errorClass`); every link is built on a clean base or printed as its
- * reference (`linkBaseOf`). The client's requests go to the URL as configured.
+ * The context every command starts from, built from the checked call. The client names the
+ * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
+ * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
+ * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
+ * requests go to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
@@ -301,22 +300,7 @@ export function sessionContext(
 ): SessionContext {
   const { url, credential } = input.config;
   const configUrl = urlForText(url, "the configured Dispatch URL");
-  const baseFetch = input.fetchImpl ?? fetch;
-  const fetchImpl = Object.assign(
-    async (...args: Parameters<typeof fetch>): Promise<Response> => {
-      try {
-        return await baseFetch(...args);
-      } catch (error) {
-        if (error instanceof TypeError) {
-          throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
-          );
-        }
-        throw error;
-      }
-    },
-    { preconnect: baseFetch.preconnect }
-  );
+  const fetchImpl = input.fetchImpl ?? fetch;
   return {
     input,
     args: checked.args,

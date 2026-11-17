@@ -89,26 +89,96 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
 const BROKER_URL_SETTING = "the broker URL";
 
 /**
+ * The refusal texts of the broker's this client prints as the broker wrote them: the ones the
+ * shared corpus pins (`packages/envoy/internal/brokerclient/testdata/wire.json`, which the Go
+ * client reads too), each fixed words naming no token. Any other `error_description` is a peer's
+ * free text: a broker, or anything at `AGENT_SECRETS_URL`, can put there the subject token it was
+ * sent, so it is withheld, as nats-server's text other than its fixed refusals is
+ * (`@legion/envoy-client/errors`). The status and the OAuth code still say what was refused, and
+ * the broker's own log keeps its text.
+ */
+export const KNOWN_BROKER_REFUSALS: ReadonlySet<string> = new Set([
+  "no entry lists the account this token names",
+  "too many token requests; try again later",
+  "the proof's iat is outside the broker's skew window",
+]);
+
+/** A person as the broker's sentences name one: an email address, which holds an `@` and a dotted
+ *  domain, so no JWT or opaque token reads as one. */
+const PERSON_SLOT = "[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63})+";
+/** A project key as Dispatch writes one (`DSP`, `INFRA`). */
+const PROJECT_SLOT = "[A-Z][A-Z0-9]{1,15}";
+
+/**
+ * The broker's refusal sentences that name a person or a project
+ * (`packages/envoy/internal/broker/oauth/exchange.go`), as whole-text patterns whose slots take
+ * only a person's email or a project key: these carry the remedy a person acts on (`Sign in again
+ * with agent-secrets login`, `set AGENT_SECRETS_PROJECTS`), and no slot reads as a token.
+ */
+const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
+  `${PERSON_SLOT} revoked this machine's sign-in, so the key this proof was signed with trades nothing\\. Sign in again with \`agent-secrets login\`\\.`,
+  `${PERSON_SLOT}'s sign-in on this box key was made on another machine, and a sign-in belongs to the machine it was made on\\. Sign in again with \`agent-secrets login\`\\.`,
+  "The machine login the subject token belongs to has ended\\.",
+  "The machine login has ended\\.",
+  "Another live machine login holds the key this proof was signed with\\. A (?:machine makes a key of its own|sign-in makes a box key of its own)\\.",
+  `${PERSON_SLOT} is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on\\.`,
+  `The token names a project its person cannot see: ${PROJECT_SLOT}\\.`,
+  `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
+  `The subject token was refused: its entry names no project, and its person ${PERSON_SLOT} is a restricted member, who sees only the projects that name them\\.`,
+  "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
+].map((source) => new RegExp(`^${source}$`));
+
+/** Whether `text` is one of the broker's known refusals: one the corpus pins
+ *  ({@link KNOWN_BROKER_REFUSALS}), or one of its sentences with only a person or a project in its
+ *  slots. */
+export function isKnownBrokerRefusal(text: string): boolean {
+  return (
+    KNOWN_BROKER_REFUSALS.has(text) ||
+    KNOWN_BROKER_REFUSAL_PATTERNS.some((pattern) => pattern.test(text))
+  );
+}
+
+/** What stands in for a refusal text that is not one of {@link KNOWN_BROKER_REFUSALS}. */
+export const REFUSAL_TEXT_WITHHELD = "(its text is withheld)";
+
+/** An OAuth error code as RFC 6749 writes them (`invalid_grant`), never a peer's free text. */
+const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
+
+/**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
  * The three exceptions are the broker's 429 and its two DPoP refusals (`permanent`).
  */
 export class BrokerRefusedError extends Error {
+  /** What the broker said, as a text may print it: its description where that is a known
+   *  refusal ({@link isKnownBrokerRefusal}), "" where it sent none, and {@link REFUSAL_TEXT_WITHHELD}
+   *  otherwise. The description the broker sent is kept nowhere. */
+  readonly said: string;
+  /** The OAuth code where it reads as one, else "" (a peer can send anything there too). */
+  readonly code: string;
+
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
    *  person's sign-in on it. */
   constructor(
     readonly status: number,
-    readonly code: string,
-    readonly description: string,
+    code: string,
+    description: string,
     refused: string
   ) {
-    super(
+    const shownCode = OAUTH_ERROR_CODE.test(code) ? code : "";
+    const said =
       description === ""
-        ? `the secrets broker refused ${refused}: HTTP ${status} ${code}`
-        : `the secrets broker refused ${refused}: HTTP ${status} ${code}: ${description}`
+        ? ""
+        : isKnownBrokerRefusal(description)
+          ? description
+          : REFUSAL_TEXT_WITHHELD;
+    super(
+      `the secrets broker refused ${refused}: HTTP ${status}${shownCode === "" ? "" : ` ${shownCode}`}${said === "" ? "" : `: ${said}`}`
     );
     this.name = "BrokerRefusedError";
+    this.code = shownCode;
+    this.said = said;
   }
 
   /**
@@ -137,6 +207,19 @@ export class BrokerRefusedError extends Error {
       this.code !== INVALID_DPOP_PROOF &&
       this.code !== USE_DPOP_NONCE
     );
+  }
+}
+
+/**
+ * A trade that ended other than in a refusal: the broker gave no answer, a 5xx, or an answer
+ * that is not this grant's. Its message names the identity traded, the broker as `urlForText`
+ * names it and the failure by its class (`errorClass`), and nothing a peer wrote, so a caller
+ * prints it whole; it keeps no cause, since the library's error can hold the answer it read.
+ */
+export class BrokerTradeFailedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "BrokerTradeFailedError";
   }
 }
 
@@ -443,7 +526,7 @@ export class BrokerTokenClient {
     // runtime's message can repeat the URL it was handed. No `cause`: an answer the library
     // refused hangs off its error (oauth4webapi's `cause` is the body it read), and that answer can
     // hold the minted token, which no log of this error may carry.
-    return new Error(
+    return new BrokerTradeFailedError(
       `trade ${this.#subject.describe()} at ${urlForText(endpoint, BROKER_URL_SETTING)}: ${said}`
     );
   }
@@ -504,20 +587,22 @@ export class BrokerTokenClient {
     const written =
       typeof raw === "object" && raw !== null && "token_type" in raw ? raw.token_type : undefined;
     const tokenType = typeof written === "string" ? written : "";
+    // No value the broker wrote is quoted in these refusals: a peer at AGENT_SECRETS_URL can put
+    // there the subject token it was sent (`KNOWN_BROKER_REFUSALS`).
     if (tokenType.toLowerCase() !== TOKEN_TYPE_DPOP.toLowerCase()) {
-      throw new Error(
-        `the broker at ${endpoint} answered token_type ${JSON.stringify(tokenType)}, and this grant mints DPoP-bound tokens alone`
+      throw new BrokerTradeFailedError(
+        `the broker at ${endpoint} answered a token_type that is not DPoP, and this grant mints DPoP-bound tokens alone`
       );
     }
     if (answered.refresh_token !== undefined && answered.refresh_token !== "") {
-      throw new Error(
+      throw new BrokerTradeFailedError(
         `the broker at ${endpoint} answered a refresh token, which this grant never issues; a renewal trades a fresh identity token instead`
       );
     }
     const seconds = answered.expires_in ?? 0;
     if (!(seconds > 0)) {
-      throw new Error(
-        `the broker at ${endpoint} answered no usable expires_in (${JSON.stringify(answered.expires_in)})`
+      throw new BrokerTradeFailedError(
+        `the broker at ${endpoint} answered no usable expires_in (a positive number of seconds)`
       );
     }
     const expiresAtText =
@@ -528,8 +613,8 @@ export class BrokerTokenClient {
     if (expiresAtText !== "") {
       credentialExpiresAt = new Date(expiresAtText);
       if (Number.isNaN(credentialExpiresAt.getTime())) {
-        throw new Error(
-          `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time (${JSON.stringify(expiresAtText)})`
+        throw new BrokerTradeFailedError(
+          `the broker at ${endpoint} answered a credential_expires_at that is no RFC 3339 time`
         );
       }
     }

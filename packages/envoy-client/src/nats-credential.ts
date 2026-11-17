@@ -15,7 +15,11 @@
 
 import type { BrokerEnvironment } from "@legion/broker-client/environment";
 import { SIGNIN_COMMAND } from "@legion/broker-client/signins";
-import { BrokerRefusedError, SignInEndedError } from "@legion/broker-client/token-client";
+import {
+  BrokerRefusedError,
+  BrokerTradeFailedError,
+  SignInEndedError,
+} from "@legion/broker-client/token-client";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
 import type { Auth, Events, NatsConnection, Status } from "nats";
@@ -85,24 +89,23 @@ function tradeUnanswered(source: string, deadlineMs: number): string {
   return `${source} is broker, but the secrets broker did not answer the trade for the session's token within ${deadlineMs / 1000} s`;
 }
 
-/** An OAuth error code as RFC 6749 writes them (`invalid_grant`), never a peer's free text. */
-const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
-
 /**
- * Why a trade for the session's token failed, as a log may print it. broker-client's own texts
- * name the configured identity (a token file's path, which can be a token pasted into the wrong
- * setting) and the broker's URL (which can hold user info), so neither is printed: a refusal is
- * the broker's HTTP status, OAuth error code and its own description of the refusal (which the
- * Go broker writes in fixed words, and names no token: `wire.json`), an ended sign-in its
- * remedy, and any other failure goes by `natsFailureReason`'s allowlist, since its text is the
- * runtime's or the transport's, which quotes what it was handed.
+ * Why a trade for the session's token failed, as a log may print it. A refusal is the broker's
+ * HTTP status, OAuth code and what it said where that is one of its known refusals, else "(its
+ * text is withheld)" (`BrokerRefusedError.said`: a peer at AGENT_SECRETS_URL can put the subject
+ * token it was sent in its text); a trade that got no answer, or an answer that is not the
+ * grant's, is broker-client's own text, which names the broker as `urlForText` does and the
+ * failure by its class (`BrokerTradeFailedError`); an ended sign-in is its remedy; and any other
+ * failure goes by `natsFailureReason`'s allowlist, since its text is the runtime's or the
+ * transport's, which quotes what it was handed.
  */
 export function tradeFailureReason(error: unknown): string {
   if (error instanceof BrokerRefusedError) {
-    const code = OAUTH_ERROR_CODE.test(error.code) ? ` ${error.code}` : "";
-    const said = error.description === "" ? "" : `: ${error.description}`;
+    const code = error.code === "" ? "" : ` ${error.code}`;
+    const said = error.said === "" ? "" : `: ${error.said}`;
     return `the secrets broker refused the identity traded: HTTP ${error.status}${code}${said}`;
   }
+  if (error instanceof BrokerTradeFailedError) return error.message;
   if (error instanceof SignInEndedError)
     return `the issuer no longer honours the sign-in on this machine; run: ${SIGNIN_COMMAND}`;
   return natsFailureReason(error);
