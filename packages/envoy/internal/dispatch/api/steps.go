@@ -114,7 +114,8 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 
 // rating is the rating input states as the store's one value: nil where the body names no rating,
 // which the rating route refuses, and else the rating with the reason, "" where the body names
-// none, which the store refuses, naming both, after it has checked the write's other fields.
+// none, which the store refuses as a rating_reason left out, after it has checked the write's other
+// fields and the rating.
 func (input stepRatingInput) rating() *workflowstore.StepRating {
 	if input.Rating == nil {
 		return nil

@@ -353,21 +353,18 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
 // gave the plan, and answers their two attributes, or none where the write states no rating. The
-// reason is stated (a reason "" is none), not blank and holds at most RatingReasonMost code points;
-// the rating is 1 to 5, and kind, where the write names one, is a retro (ratingOfKind).
+// rating is 1 to 5, the reason is neither left out ("") nor blank and holds at most
+// RatingReasonMost code points, and kind, where the write names one, is a retro (ratingOfKind).
 func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	if write.Rating == nil {
 		return nil, nil
 	}
 	rating, reason := write.Rating.Rating, write.Rating.Reason
-	if reason == "" {
-		return nil, inputError("rating and rating_reason are written together, and this write names rating %d and no rating_reason", rating)
-	}
 	if rating < 1 || rating > 5 {
 		return nil, inputError("rating %d is no rating: a plan is rated from 1 (the plan cost the work) to 5 (the plan fit the work)", rating)
 	}
 	if strings.TrimSpace(reason) == "" {
-		return nil, inputError("rating_reason is blank: a rating carries one sentence of why")
+		return nil, inputError("rating_reason is left out or blank: a rating carries one sentence of why")
 	}
 	if length := utf8.RuneCountInString(reason); length > RatingReasonMost {
 		return nil, inputError("rating_reason holds %d characters, more than the %d a reason holds", length, RatingReasonMost)
