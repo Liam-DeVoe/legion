@@ -976,9 +976,9 @@ test("the rating's bounds are the daemon's", () => {
 
 // A rating's rule is the daemon's, and the request schema states it again: the scale, the pair,
 // blank and the bound. Blank is Go's strings.TrimSpace on the daemon's side, so the schema reads
-// it by goBlankPattern rather than by JavaScript's trim, which keeps U+0085 and strips U+FEFF
-// (`./go-blank.ts`). Every case the daemon's golden test answered is run through the schema, and
-// the schema must take exactly the ones the daemon accepted.
+// it by goBlankPattern rather than by JavaScript's trim, and `./go-blank.ts`'s doc comment names
+// the two characters on which the two differ. Every case the daemon's golden test answered is run
+// through the schema, and the schema must take exactly the ones the daemon accepted.
 test("the request schema takes exactly the ratings the daemon takes", () => {
   const { cases } = PlanRatingCases.parse(fixture("plan-rating-cases.json"));
   expect(cases.some((c) => c.verdict === "accepted")).toBeTrue();

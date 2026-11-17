@@ -616,8 +616,10 @@ export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 export const PROJECT_KEY_RULE =
   "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE";
 
-/** The refusal of a `project` argument that is not a project key, for each tool whose key rides in
- *  the request path; a missing project is each schema's own refusal. */
+/** The refusal of a `project` argument that is not a project key, for the tools that hold their
+ *  key to the rule before it is sent: `dispatch_related` and `dispatch_plans`, which send it in the
+ *  request path, and `dispatch_search` past an empty one. A missing project is each schema's own
+ *  refusal. */
 const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => {
     const { project } = value as { readonly project?: unknown };
