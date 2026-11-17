@@ -161,28 +161,6 @@ export function closeOvertaken(
   return stampStates(root, merged, heldBy);
 }
 
-/**
- * What no count of what waits on the reader counts (dispatch://INFRA-4063 R3): for each node at
- * or under an overtaken one, its reference where it has one and, for an ask, its id, since the
- * header's count matches an open ask by its id and a decision by its reference. An ask that is
- * a block is a node by its block's id, so the ask's own id (its `source`) is in beside it.
- */
-export function overtakenRefs(root: TreeNode): ReadonlySet<string> {
-  const refs = new Set<string>();
-  const walk = (node: TreeNode): void => {
-    if (node.closed === true) {
-      if (node.reference !== undefined) refs.add(node.reference);
-      if (node.type === "ask") {
-        refs.add(node.id);
-        if (node.source?.kind === "ask") refs.add(node.source.id);
-      }
-    }
-    for (const child of node.children) walk(child);
-  };
-  walk(root);
-  return refs;
-}
-
 /** The marks of each node of `root` that has a reference and a mark, by that reference without
  *  the version it pins (`tree-keys.ts`'s `withoutVersion`): what a place naming a node by its
  *  address draws beside it (R2, R7). An address that pins a version is read through `marksAt`,

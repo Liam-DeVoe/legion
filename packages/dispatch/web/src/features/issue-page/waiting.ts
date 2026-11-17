@@ -2,6 +2,7 @@ import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import type { DecisionNode } from "./decision-nodes/decision-nodes";
 import { decisionNodeChanges, inReviewList } from "./decision-review";
+import { statesOfRead } from "./tree-read/tree-nodes";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -22,6 +23,11 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * change waits on its agent and is not counted, by the outline's one rule
  * (`decisionNodeChanges`): its Change is a comment the tree read (`tree`) hangs under its node,
  * so the count matches no quote and reads no block of a document.
+ *
+ * Nothing at or under an overtaken node of the tree read waits on anybody (dispatch://INFRA-4063
+ * R3): a later node took its place, and the tree draws none of them in the waiting tone. A node
+ * is under another where the read's `parent` chain reaches it, so an open ask or a decision
+ * there is not counted. A proposed one still is: no node took its place yet.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -43,6 +49,19 @@ export function waitingOnReader(
   isStatement: (reference: string) => boolean,
   tree: TreeAnswer | undefined
 ): WaitingOnReader {
+  // Each open ask, decision and node of the tree at or under an overtaken node taken out, and the
+  // count made of what is left: that tree holds no overtaken node, so the count is made once more
+  // and no further.
+  const closed = closedKeys(tree);
+  if (tree !== undefined && closed.size > 0) {
+    return waitingOnReader(
+      { ...issue, open_asks: (issue.open_asks ?? []).filter((ask) => !askIn(closed, ask)) },
+      viewer,
+      decisions.filter((decision) => !closed.has(nodeKey(decision.node))),
+      isStatement,
+      { ...tree, nodes: tree.nodes.filter((node) => !closed.has(nodeKey(node))) }
+    );
+  }
   const open =
     viewer === undefined
       ? []
@@ -66,6 +85,48 @@ export function waitingOnReader(
           inReviewList(decision, isStatement, changes?.has(decision.node.id) === true)
         ).length;
   return { approvals, asks, decisions: reviewing, total: asks + reviewing + approvals.length };
+}
+
+/** One key for block `blockId` of the document `documentId`. */
+function blockKey(documentId: string, blockId: string): string {
+  return `${documentId}#${blockId}`;
+}
+
+/** A node of the tree read by where it stands: a typed block by its document and its id, since
+ *  the read names a block by its id within its document, and any other node by its own id. */
+function nodeKey(node: TreeAnswer["nodes"][number]): string {
+  return node.document === undefined ? node.id : blockKey(node.document.artifact_id, node.id);
+}
+
+/**
+ * The key (`nodeKey`) of each node of `tree` at or under an overtaken one (dispatch://INFRA-4063
+ * R3): an overtaken node, and each node whose `parent` is one of these. The read answers a parent
+ * before its children (`TreeAnswer.nodes`), so one pass in its order finds them all. None while
+ * the tree read has not answered.
+ */
+function closedKeys(tree: TreeAnswer | undefined): ReadonlySet<string> {
+  const closed = new Set<string>();
+  // The read's own id of each, which is what a child's `parent` names.
+  const parents = new Set<string>();
+  for (const node of tree?.nodes ?? []) {
+    const under = node.parent !== null && parents.has(node.parent);
+    if (!under && statesOfRead(node).life !== "overtaken") continue;
+    parents.add(node.id);
+    closed.add(nodeKey(node));
+  }
+  return closed;
+}
+
+/** Whether the open `ask` is a node `closed` holds: an ask node of the conversation by the ask's
+ *  own id, or the block it was indexed from, in the document that holds that block, as the
+ *  tree read answers an ask either way (`decision-nodes.ts`' `askOf`). */
+function askIn(
+  closed: ReadonlySet<string>,
+  ask: NonNullable<IssueDetails["open_asks"]>[number]
+): boolean {
+  if (closed.has(ask.id)) return true;
+  const document = ask.block_artifact?.id ?? ask.artifact_id;
+  return document !== null && ask.block_id !== null && closed.has(blockKey(document, ask.block_id));
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

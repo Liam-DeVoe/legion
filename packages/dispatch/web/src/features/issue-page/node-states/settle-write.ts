@@ -4,22 +4,20 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { writeRequest } from "../../../api/client";
 import { primarySpec } from "../../../api/issue-cache";
-import { issueCoverageQuery, issueQuery } from "../../../api/queries";
+import { issueCoverageQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { type IssueRoute, parseNodeReference } from "../../refs/routes";
 import { useKeyedWrite } from "../../writes/useKeyedWrite";
 import { issueAddress, pathToTarget, presetPath } from "../issue-address";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { CONTROL_LABELS } from "../page-words";
 import { issueTreeQuery } from "../tree-read/tree-read";
-import { overtakenRefs } from "./node-states";
 
 /**
  * What the page writes and reads around a node's life (dispatch://INFRA-4063 R3, R4, R6): the
  * settle of a proposed node; the words filter's words, by which the outline opens each line of
  * overtaken nodes that holds a match; and what the tree read the page already holds says of the
- * overtaken nodes, for the header's count and for an address the Decisions view draws nowhere.
+ * overtaken nodes, for an address the Decisions view draws nowhere.
  */
 
 /** `POST /api/v1/issues/{key}/nodes/{id}/settle`: a person settles the proposed node `reference`
@@ -78,39 +76,19 @@ export function useFilterWords(): string {
   return search.get("q") ?? "";
 }
 
-/** No reference at all: what the count leaves out until the tree read has answered. */
-const NO_REFERENCES: ReadonlySet<string> = new Set();
-
 /**
  * The outline's tree as the reads the page already holds build it (`buildIssueTree`): T's tree
- * read (`issueTreeQuery`) of the issue `key`, with `issue` and the decisions read, so each node
- * carries its state and its reference as the outline's does. Each read is watched by an observer
- * that is never enabled, so it sends no request and holds what the page read (R1). Undefined
- * until the issue and the tree read are held, and while the caller hands no `issue`, which
- * builds nothing.
+ * read (`issueTreeQuery`) of the issue `key`, with `issue`, so each node carries its state and
+ * its reference as the outline's does. The read is watched by an observer that is never enabled,
+ * so it sends no request and holds what the page read (R1). Undefined until the tree read is
+ * held, and while the caller hands no `issue`, which builds nothing.
  */
 function useHeldTree(key: string, issue: IssueDetails | undefined): TreeNode | undefined {
   const tree = useQuery({ ...issueTreeQuery(key), enabled: false }).data;
-  const decisions = useQuery(issueDecisionsQuery(key, false)).data;
   return useMemo(
-    () =>
-      issue === undefined || tree === undefined
-        ? undefined
-        : buildIssueTree({ decisions, issue, tree }),
-    [decisions, issue, tree]
+    () => (issue === undefined || tree === undefined ? undefined : buildIssueTree({ issue, tree })),
+    [issue, tree]
   );
-}
-
-/**
- * What the header's count of what waits on the reader leaves out (R3, `overtakenRefs`): the
- * reference of each node at or under an overtaken one, and the id of each such ask, in the tree
- * the page's held reads of the issue `key` build (`useHeldTree`), so it costs no request. Empty
- * until the issue and the tree read are held.
- */
-export function useOvertakenRefs(key: string): ReadonlySet<string> {
-  const issue = useQuery({ ...issueQuery(key), enabled: false }).data;
-  const root = useHeldTree(key, issue);
-  return useMemo(() => (root === undefined ? NO_REFERENCES : overtakenRefs(root)), [root]);
 }
 
 /**

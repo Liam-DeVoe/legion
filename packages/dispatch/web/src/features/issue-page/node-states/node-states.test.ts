@@ -7,12 +7,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { api } from "../../../api/client";
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  issueQuery,
-  issueResultsQuery,
-} from "../../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -23,11 +18,10 @@ import { contentsEntries } from "../contents-entries";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
 import {
   answeredAsk,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
+  treeAnswer as decisionsAnswer,
   issueDetails as decisionsIssue,
-  decisionsRead as decisionsReadOf,
   openAsk,
   READER,
   shaped,
@@ -71,7 +65,12 @@ import { SpecFilterBody } from "../spec-filter/SpecFilterBody";
 import { coverageRead, decisionsRead, issueDetails, statement } from "../spec-filter/spec-fixtures";
 import { NOTHING_OPENED, type OpenedBranches, type OvertakenRow, pathTo } from "../tree-fold";
 import { statesOfRead } from "../tree-read/tree-nodes";
-import { issueTreeKey, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import {
+  issueTreeKey,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  viewKey,
+} from "../tree-read/tree-read";
 import { VerificationFilterBody } from "../verification-filter/VerificationFilterBody";
 import {
   check,
@@ -84,13 +83,12 @@ import {
   linesIn,
   marksAt,
   type NodeStates,
-  overtakenRefs,
   stampStates,
   statesByReference,
   withLine,
 } from "./node-states";
 import { OvertakenLine } from "./OvertakenLine";
-import { useOvertakenRefs, useOvertakenTarget } from "./settle-write";
+import { useOvertakenTarget } from "./settle-write";
 
 /**
  * A node's life and who may read it, put on a tree built by hand (dispatch://INFRA-4063 R1, R2,
@@ -332,37 +330,6 @@ test("a parent's overtaken children are one row of its held count", () => {
   expect(tree.held).toBe(3);
   expect(nodeOf(tree, "spec#b-r2")?.held).toBe(2);
   expect(stamped(root, { "spec#b-r3": { life: "overtaken" } }).held).toBe(6);
-});
-
-// R3: the header's count of what waits on the reader matches an open ask by its id and a
-// decision by its reference, so the set it leaves out holds both for every node at or under an
-// overtaken one, an ask that is a block by its own id beside its node's, and nothing else.
-test("what waits leaves out each closed node's reference and each closed ask's id", () => {
-  const decisions = `dispatch://${KEY}/artifact/decisions-md`;
-  const root = node(KEY, "issue", [
-    node(
-      "decisions-md#b-d1",
-      "decision",
-      [
-        node("ask-1", "ask", [], {
-          question: true,
-          reference: `dispatch://${KEY}/ask/ask-1`,
-          source: { id: "ask-1", kind: "ask" },
-        }),
-        node("spec#b-q2", "ask", [], { question: true, source: { id: "ask-2", kind: "ask" } }),
-      ],
-      { reference: `${decisions}#b-d1`, waiting: true }
-    ),
-    node("decisions-md#b-d2", "decision", [], { reference: `${decisions}#b-d2`, waiting: true }),
-    node("ask-3", "ask", [], { question: true, reference: `dispatch://${KEY}/ask/ask-3` }),
-  ]);
-
-  expect(
-    [...overtakenRefs(stamped(root, { "decisions-md#b-d1": { life: "overtaken" } }))].sort()
-  ).toEqual(
-    [`${decisions}#b-d1`, `dispatch://${KEY}/ask/ask-1`, "ask-1", "ask-2", "spec#b-q2"].sort()
-  );
-  expect(overtakenRefs(root).size).toBe(0);
 });
 
 // R6: an address, a chip, a Contents entry, `q` or `w` that names an overtaken node, or a node
@@ -2129,42 +2096,6 @@ test("an address naming an overtaken decision under the Decisions view is replac
   }
 });
 
-/** The references the probe's `useOvertakenRefs` answers, drawn sorted. */
-function OvertakenRefsProbe(): ReactNode {
-  return createElement("output", {
-    "data-refs": [...useOvertakenRefs(KEY)].sort().join(" "),
-  });
-}
-
-// R3: what the header's count of what waits leaves out is read from the tree read and the issue
-// the page already holds, with no request: each node at or under an overtaken one, the question
-// under the overtaken decision by its id among them, and nothing of the live decision.
-test("what waits leaves out what the held tree read closes, and reads nothing for it", async () => {
-  const fetched = spyOn(globalThis, "fetch").mockRejectedValue(new Error("no request"));
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(issueTreeKey(KEY), overtakenDecision());
-  client.setQueryData(issueQuery(KEY).queryKey, ISSUE);
-  const view = render(
-    createElement(QueryClientProvider, { client }, createElement(OvertakenRefsProbe))
-  );
-  try {
-    const expected = [
-      ...overtakenRefs(buildIssueTree({ issue: ISSUE, tree: overtakenDecision() })),
-    ].sort();
-    expect(expected).toContain("a1");
-    expect(expected.some((reference) => reference.endsWith("#b-d2"))).toBe(false);
-    await waitFor(() =>
-      expect(view.container.querySelector("[data-refs]")?.getAttribute("data-refs")).toBe(
-        expected.join(" ")
-      )
-    );
-    expect(fetched).not.toHaveBeenCalled();
-  } finally {
-    view.unmount();
-    fetched.mockRestore();
-  }
-});
-
 /** The marks drawn under `element`, by their tokens, in the order they are drawn. */
 function marksIn(element: Element | null | undefined): (string | undefined)[] {
   return [...(element?.querySelectorAll<HTMLElement>("[data-node-mark]") ?? [])].map(
@@ -2172,16 +2103,18 @@ function marksIn(element: Element | null | undefined): (string | undefined)[] {
   );
 }
 
-/** The Decisions view over `root`, with `made` as the issue's decisions read, drawn as its slot
- *  draws it (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no address and no words. */
-function drawDecisions(root: TreeNode, made: Parameters<typeof decisionsReadOf>[0]) {
+/** The Decisions view over `root`, with `made` the nodes of the decisions view the page holds on
+ *  the issue's node (`TreeNode.views`), drawn as its slot draws it
+ *  (`DecisionsFilterBody.drawn.test.tsx`'s `renderBody`): no address and no words. */
+function drawDecisions(root: TreeNode, made: readonly TreeAnswerNode[]) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["decisions", KEY], decisionsReadOf(made));
+  const held = decisionsAnswer(made);
+  client.setQueryData(issueTreeKey(KEY), held);
+  client.setQueryData(viewKey(KEY, "decisions"), held);
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["comments", KEY], []);
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
   const issue = decisionsIssue();
   return render(
     createElement(
@@ -2207,7 +2140,7 @@ function drawDecisions(root: TreeNode, made: Parameters<typeof decisionsReadOf>[
                 isClosed: false,
                 issue,
                 reader: READER,
-                root,
+                root: { ...root, views: { decisions: held } },
                 view: presetView(root, "decisions", "", new Set()).root,
               })
             )

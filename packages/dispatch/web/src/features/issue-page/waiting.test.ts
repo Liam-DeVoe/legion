@@ -606,6 +606,103 @@ test("a decision node no document holds waits on nobody", () => {
   expect(waits(tree, coverage)).toEqual([0, []]);
 });
 
+/** What the count of `about` over `tree` counts for alice, and the id of each node of the tree
+ *  that waits on her: the two read the same open asks and the same decision nodes. */
+function countedAndDrawn(tree: TreeAnswer, about: IssueDetails) {
+  return {
+    counted: waitingOnReader(about, "alice", decisionsOf(tree, about), isStatement, tree),
+    drawn: waitingIn(buildIssueTree({ coverage, issue: about, tree, viewer: "alice" })),
+  };
+}
+
+// dispatch://INFRA-4063 R3: an open question at or under an overtaken node waits on nobody, since
+// a later node took its place: the count leaves it out, as the tree draws it in no waiting tone.
+// That holds for a question that is itself overtaken, for one the read hangs under an overtaken
+// decision, and for one asked in a block of the spec that is overtaken. The approval request,
+// which is no node of the tree, still waits, and so does each question nothing overtook.
+test("an overtaken ask waits on nobody", () => {
+  const inSpec: OpenAsk = {
+    ...openAsk("in-spec", "question", "alice"),
+    block_artifact: { id: spec.id, primary: true, slug: "spec" },
+    block_id: "q1",
+  };
+  const asking: IssueDetails = { ...issue, open_asks: [...(issue.open_asks ?? []), inSpec] };
+  const askBlock = (extra: Partial<TreeAnswerNode> = {}) =>
+    treeNode("q1", "ask", {
+      document: { artifact_id: spec.id, position: 2, slug: "spec" },
+      text: inSpec.question,
+      ...extra,
+    });
+  const mine = (extra: Partial<TreeAnswerNode>) =>
+    askNodes.map((node) => (node.id === "mine" ? { ...node, ...extra } : node));
+
+  expect(countedAndDrawn(answerOf([statement, ...askNodes, askBlock()]), asking)).toEqual({
+    counted: { approvals: [spec.id], asks: 2, decisions: 0, total: 3 },
+    drawn: ["mine", "spec#b-q1"],
+  });
+  expect(
+    countedAndDrawn(answerOf([statement, ...mine({ state: "overtaken" }), askBlock()]), asking)
+  ).toEqual({
+    counted: { approvals: [spec.id], asks: 1, decisions: 0, total: 2 },
+    drawn: ["spec#b-q1"],
+  });
+  expect(
+    countedAndDrawn(
+      answerOf([
+        statement,
+        decisionNode("old", [], { state: "overtaken" }),
+        ...mine({ parent: "old" }),
+        askBlock(),
+      ]),
+      asking
+    )
+  ).toEqual({
+    counted: { approvals: [spec.id], asks: 1, decisions: 0, total: 2 },
+    drawn: ["spec#b-q1"],
+  });
+  expect(
+    countedAndDrawn(answerOf([statement, ...askNodes, askBlock({ state: "overtaken" })]), asking)
+  ).toEqual({
+    counted: { approvals: [spec.id], asks: 1, decisions: 0, total: 2 },
+    drawn: ["mine"],
+  });
+});
+
+// dispatch://INFRA-4063 R3: a decision at or under an overtaken node waits on nobody: one waiting
+// for review and tied to a statement is on no review list once it is overtaken, nor once the node
+// the read hangs it under is, in the count as in the tree. The decision nothing overtook still
+// waits.
+test("an overtaken decision waits on nobody", () => {
+  const decided = (old: Partial<TreeAnswerNode>) =>
+    answerOf([
+      statement,
+      decisionNode("old", ["r1"], old),
+      decisionNode("under", ["r1"], { parent: "old" }),
+      decisionNode("waits", ["r1"]),
+    ]);
+
+  expect(waits(decided({}), coverage)).toEqual([3, ["spec#b-old", "spec#b-under", "spec#b-waits"]]);
+  expect(waits(decided({ state: "overtaken" }), coverage)).toEqual([1, ["spec#b-waits"]]);
+});
+
+// dispatch://INFRA-4063 R3 and the plan's "What stays counted": a proposed node is no overtaken
+// one, since no node took its place yet, so a proposed question whose turn is the reader's and a
+// proposed decision waiting for review still wait on the reader, in the count as in the tree.
+test("a proposed ask and a proposed decision still wait on the reader", () => {
+  const tree = answerOf([
+    statement,
+    ...askNodes.map((node) =>
+      node.id === "mine" ? { ...node, state: "proposed" as const } : node
+    ),
+    decisionNode("listed", ["r1"], { state: "proposed" }),
+  ]);
+
+  expect(countedAndDrawn(tree, issue)).toEqual({
+    counted: { approvals: [spec.id], asks: 1, decisions: 1, total: 3 },
+    drawn: ["mine", "spec#b-listed"],
+  });
+});
+
 /** An intro of the decisions document that holds none of the quotes below. */
 const PLAIN_INTRO = "The decisions this issue made.";
 

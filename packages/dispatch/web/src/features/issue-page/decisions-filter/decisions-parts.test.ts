@@ -668,6 +668,49 @@ test("what waits is each open question of the reader's, then each decision to re
   expect(waitingOrder(partsOf([openAsk("q-agent", false)]))).toEqual([]);
 });
 
+// dispatch://INFRA-4063 R3, decision 115 of dispatch://INFRA-1196: an overtaken decision is in
+// none of the parts, though the decisions view answers it waiting for review and tied to a
+// statement, and neither is any node under it - a question whose turn is the reader's, a decision
+// the read hangs under it: a later node took their place, so the Decisions view draws them
+// nowhere and none of them waits on the reader. The live decision beside it is still on the
+// review list, and the same tree with nothing overtaken holds all of them.
+test("an overtaken decision waiting for review is in no part", () => {
+  const tied = { links: [shaped(specRef("s1"))] };
+  // The tree as the page stamps it (`node-states.ts`): the overtaken decision and each node
+  // under it closed.
+  const children = (overtaken: boolean) => {
+    const under: Partial<TreeNode> = overtaken ? { closed: true } : {};
+    return [
+      statement("s1"),
+      decisionNode("old", {
+        children: [openAsk("q-under", true, under), decisionNode("inner", under)],
+        ...(overtaken ? { closed: true, life: "overtaken" as const } : {}),
+      }),
+      decisionNode("review"),
+    ];
+  };
+  const made = [
+    decision("old", tied),
+    decision("inner", { ...tied, parent: "old" }),
+    decision("review", tied),
+  ];
+
+  const parts = partsOf(children(true), made);
+  expect(idsOf(parts)).toEqual({
+    agents: [],
+    named: [],
+    open_questions: [],
+    others: [],
+    review: [D("review")],
+    yours: [],
+  });
+  expect(waitingOrder(parts)).toEqual([D("review")]);
+
+  const live = partsOf(children(false), made);
+  expect(idsOf(live).open_questions).toEqual(["q-under"]);
+  expect(idsOf(live).review).toEqual([D("old"), D("inner"), D("review")]);
+});
+
 // The tree draws from the reads that have answered: before the decisions view and the asks
 // read are in, the model answers with what the tree holds and throws on nothing.
 test("the parts are read before every read has answered", () => {
