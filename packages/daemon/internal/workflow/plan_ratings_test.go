@@ -89,7 +89,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte("LEGION-208/1")).String(), Generation: 1, Source: "default",
-		Tasks: []record.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
 		t.Fatalf("the move out of admitted wrote the plans %+v, want the one %+v", plans, want)
 	}

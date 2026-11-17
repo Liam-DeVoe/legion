@@ -1105,16 +1105,16 @@ func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
 // version, which a plan of the source default leaves out, and each task with its steps in order.
 // Dispatch sets each field once, so a plan sent again changes nothing.
 type PlanRecord struct {
-	ID         string     `json:"id"`
-	Generation uint64     `json:"generation"`
-	Source     string     `json:"source"`
-	ArtifactID string     `json:"artifact_id,omitempty"`
-	Version    int        `json:"version,omitempty"`
-	Tasks      []PlanTask `json:"tasks"`
+	ID         string           `json:"id"`
+	Generation uint64           `json:"generation"`
+	Source     string           `json:"source"`
+	ArtifactID string           `json:"artifact_id,omitempty"`
+	Version    int              `json:"version,omitempty"`
+	Tasks      []PlanRecordTask `json:"tasks"`
 }
 
-// PlanTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
-type PlanTask struct {
+// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+type PlanRecordTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
 }

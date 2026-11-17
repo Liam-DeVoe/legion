@@ -77,7 +77,7 @@ func PlanID(issue string, generation uint64) string {
 // default, whose steps are DefaultSteps.
 func defaultPlan(issue record.Issue) record.PlanRecord {
 	return record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: "default",
-		Tasks: []record.PlanTask{{ID: defaultTask, Steps: DefaultSteps()}}}
+		Tasks: []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}}
 }
 
 // rateRetro writes the rating the retro of issue's run gave the plan onto that retro's record, in

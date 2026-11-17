@@ -74,7 +74,7 @@ func (d *recordDispatch) received() ([]planPut, []stepPut) {
 // planRecordOf is the default plan of the run 2 of the issue.
 func planRecordOf() record.PlanRecord {
 	return record.PlanRecord{ID: planRecordID, Generation: 2, Source: "default",
-		Tasks: []record.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 }
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
