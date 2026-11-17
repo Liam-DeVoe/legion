@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -272,8 +273,13 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 	}
 	good := version("1", "2026-11-10T00:00:00Z", block("a-page-shows-it", "The page shows it."))
 	for _, row := range []struct{ name, json, want string }{
-		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `unknown field "removd"`},
-		{"text after the object", `{"nodes":[]} {}`, "after the approved spec"},
+		{"an unknown field", `{"nodes":[{"id":"a-page-shows-it","removd":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removd" is not in the format`},
+		{"a field written in other letters", `{"nodes":[{"id":"a-page-shows-it","Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times, in two cases", `{"nodes":[{"id":"a-page-shows-it","removed":false,"Removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times", `{"nodes":[{"id":"a-page-shows-it","removed":false,"removed":true,"versions":[` + good + `]}]}`, `member "/nodes/0/removed" is in one object two times`},
+		{"a byte that is not UTF-8", "{\"nodes\":[{\"id\":\"a-page-shows-\xffit\",\"versions\":[" + good + "]}]}", "it is not UTF-8"},
+		{"text after the object", `{"nodes":[]} {}`, "text after the JSON value"},
+		{"no JSON value", ``, "it holds no JSON value"},
 		{"a node with no id", `{"nodes":[{"id":"","versions":[` + good + `]}]}`, "a node has no id"},
 		{"one id on two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + good + `]},{"id":"a-page-shows-it","versions":[` + good + `]}]}`, `node "a-page-shows-it" is in the approved spec two times`},
 		{"a node with no version", `{"nodes":[{"id":"a-page-shows-it","removed":true,"versions":[]}]}`, `approved node "a-page-shows-it": it has no version`},
@@ -291,6 +297,16 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			`approved node "a-page-shows-it" version 1: bad-approved-block: the block holds 2 nodes`},
 		{"a block that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `":::requirement{#a-page-shows-it  kind=\"behavior\"}\nThe page shows it.\n:::\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-block: the block is not as Print writes it`},
+		{"null", `null`, `it holds no "nodes" list`},
+		{"an empty object", `{}`, `it holds no "nodes" list`},
+		{"a null list of nodes", `{"nodes":null}`, `it holds no "nodes" list`},
+		{"the list's name in capitals", `{"NODES":[]}`, `member "/NODES" is not in the format`},
+		{"an id in capitals", `{"nodes":[{"ID":"a-page-shows-it","versions":[` + good + `]}]}`, `member "/nodes/0/ID" is not in the format`},
+		{"removed in capitals", `{"nodes":[{"id":"a-page-shows-it","REMOVED":true,"versions":[` + good + `]}]}`, `member "/nodes/0/REMOVED" is not in the format`},
+		{"removed two times, true then false", `{"nodes":[{"id":"a-page-shows-it","removed":true,"removed":false,"versions":[` + good + `]}]}`,
+			`member "/nodes/0/removed" is in one object two times`},
+		{"a time that is not RFC 3339", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10", block("a-page-shows-it", "The page shows it.")) + `]}]}`,
+			`"/nodes/0/versions/0/at"`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -362,6 +378,75 @@ func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
 	files, _ := Parse(map[string][]byte{"spec.md": []byte(broken)})
 	if got := Compare(files, approved).Problems; len(got) != 1 || got[0].Rule != "unapproved-text" {
 		t.Errorf("Compare: %+v, want one unapproved-text", got)
+	}
+}
+
+// A text that the approved spec held at two versions is the newer of them: with the history A, B,
+// then A again, the files that hold A hold version 3, the current text.
+func TestATextThatComesBackIsItsNewestVersion(t *testing.T) {
+	t.Parallel()
+	day := func(d int) time.Time { return time.Date(2026, 11, d, 0, 0, 0, 0, time.UTC) }
+	a := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
+	b := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows all.\n:::\n"
+	approved := Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{
+		{Version: 1, At: day(10), Block: a}, {Version: 2, At: day(11), Block: b}, {Version: 3, At: day(12), Block: a},
+	}}}}
+	files, problems := Parse(map[string][]byte{"spec.md": []byte(a)})
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	got := Compare(files, approved)
+	if h := got.Holds["a-page-shows-it"]; len(got.Problems) != 0 || h != (Holding{Present: true, Version: 3, Current: true}) {
+		t.Errorf("Compare: problems %+v, Holds[a-page-shows-it] = %+v; want none, and version 3, current", got.Problems, h)
+	}
+}
+
+// WriteApproved writes approved.json in the one form that ReadApproved reads (ApprovedFile): what it
+// writes for each fixture reads back as the same approved spec, and it writes the nodes in the
+// order of their ids, so two writes give the same bytes. For an approved spec that ReadApproved
+// would refuse, it writes nothing and names the fault.
+func TestWriteApprovedWritesWhatReadApprovedReads(t *testing.T) {
+	t.Parallel()
+	entries, err := os.ReadDir("testdata/compare")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		t.Run(entry.Name(), func(t *testing.T) {
+			t.Parallel()
+			approved := readApproved(t, filepath.Join("testdata/compare", entry.Name(), "approved.json"))
+			var first, second bytes.Buffer
+			if err := WriteApproved(&first, approved); err != nil {
+				t.Fatal(err)
+			}
+			if err := WriteApproved(&second, approved); err != nil || first.String() != second.String() {
+				t.Errorf("a second write gave %v and %q, want the bytes of the first, %q", err, second.String(), first.String())
+			}
+			got, err := ReadApproved(bytes.NewReader(first.Bytes()))
+			if err != nil || !reflect.DeepEqual(got, approved) {
+				t.Errorf("ReadApproved(WriteApproved(a)) = %+v, %v; want a, %+v", got, err, approved)
+			}
+		})
+	}
+	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	block := ":::requirement{#a-page-shows-it kind=\"behavior\"}\nThe page shows it.\n:::\n"
+	for _, row := range []struct {
+		name string
+		a    Approved
+		want string
+	}{
+		{"a node under another id", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-all": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, At: at, Block: block}}}}},
+			`node "a-page-shows-it" is under the id "a-page-shows-all"`},
+		{"a version with no time", Approved{Nodes: map[string]ApprovedNode{"a-page-shows-it": {ID: "a-page-shows-it", Versions: []ApprovedVersion{{Version: 1, Block: block}}}}},
+			`approved node "a-page-shows-it" version 1: it has no time`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			var written bytes.Buffer
+			if err := WriteApproved(&written, row.a); err == nil || !strings.Contains(err.Error(), row.want) || written.Len() != 0 {
+				t.Errorf("WriteApproved = %v, and wrote %q; want an error holding %q and nothing written", err, written.String(), row.want)
+			}
+		})
 	}
 }
 

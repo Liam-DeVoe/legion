@@ -32,7 +32,8 @@ var checkFields = [...]string{"Claim:", "Procedure:", "Failing example:"}
 // heading is a markdown heading line, which a spec file may hold between blocks.
 var heading = regexp.MustCompile(`^#{1,6}(\s|$)`)
 
-// The Detail of each problem Parse finds whose text does not depend on the block.
+// The Detail of each problem Parse finds whose text does not depend on the block, and the start of
+// the Detail of a heading that names code.
 const (
 	detailTextOutsideBlock = "text-outside-block: a spec file holds only blocks, headings and blank lines"
 	detailUnclosedBlock    = "unclosed-block: the block has no closing ::: line"
@@ -42,7 +43,27 @@ const (
 	detailClaimOneLine     = "bad-field: a claim is one line"
 	detailClaimOneSentence = "bad-field: a claim is one sentence"
 	detailBadEncoding      = "bad-encoding: a spec file is UTF-8 text with no NUL byte"
+	detailHeadingNamesCode = "code-in-text: heading names code: "
 )
+
+// keepsEveryNode is the start of the Detail of each problem of Parse after which the tree still
+// holds each node of the files in the text that they write: a rule of form, a heading that names
+// code or a claim of more than one line or sentence, and a byte that Dispatch cannot store, which
+// the node holds as the file writes it. Every other problem of Parse can lose a node or change one
+// (LosesNode).
+var keepsEveryNode = []string{detailBadEncoding, detailHeadingNamesCode, detailClaimOneLine, detailClaimOneSentence}
+
+// LosesNode reports whether the tree that Parse gave with p, one of its problems, can miss a node
+// that the files hold, or hold a node in another text than the files write: a block whose opening
+// line the grammar refuses or whose name is no block's, a block that a block before it swallows, a
+// line outside a block, a line that a node leaves out, or the value of an attribute that a node
+// drops. A comparison of that tree with an approved spec would not see that text, so a caller that
+// compares refuses the files. A problem of form, such as a heading that names code, leaves each
+// node as the files write it, so the comparison of the files' own text decides. A problem that
+// Parse does not give, such as one of Validate, reads as one that loses a node.
+func LosesNode(p Problem) bool {
+	return !slices.ContainsFunc(keepsEveryNode, func(start string) bool { return strings.HasPrefix(p.Detail, start) })
+}
 
 // Parse reads the spec files, keyed by their names directly in the spec directory, and gives the
 // tree they hold and each line of them that the grammar does not hold.
@@ -155,7 +176,7 @@ func (r *reader) file(name string, content []byte) {
 		case heading.MatchString(text):
 			inParagraph = false
 			if names := CodeNames(strings.TrimLeft(text, "#")); len(names) > 0 {
-				r.problem(pos, "-", "code-in-text: heading names code: "+strings.Join(names, ", "))
+				r.problem(pos, "-", detailHeadingNamesCode+strings.Join(names, ", "))
 			}
 		default:
 			if !inParagraph {

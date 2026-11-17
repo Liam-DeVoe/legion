@@ -25,6 +25,38 @@ type shortWriter struct{}
 
 func (shortWriter) Write(p []byte) (int, error) { return min(len(p), 1), nil }
 
+// failsOnceWriter fails its first write with errFull, as a disk that is full for a moment does,
+// and takes each write after it into took.
+type failsOnceWriter struct {
+	failed bool
+	took   strings.Builder
+}
+
+func (w *failsOnceWriter) Write(p []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+		return 0, errFull
+	}
+	return w.took.Write(p)
+}
+
+// A standard output that fails one write and takes the next ones gets no text after the failed
+// write, and the subcommand exits 2 with the one line that names that write: output keeps the
+// first error and takes no write after it. compare over not-in-files writes three lines. The test
+// sets GITHUB_ACTIONS to the empty value, so compare runs in a CI job too, and it does not run in
+// parallel, since it changes the environment.
+func TestAStandardOutputThatFailsOnceTakesNoLaterText(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	dir := fixture(t, "compare", "not-in-files")
+	w := &failsOnceWriter{}
+	var stderr strings.Builder
+	code := run([]string{"compare", "--dir", filepath.Join(dir, "spec"), "--approved", filepath.Join(dir, "approved.json")}, w, &stderr)
+	if want := "spec-check: compare: cannot write standard output: " + errFull.Error() + "\n"; code != 2 || stderr.String() != want || w.took.Len() != 0 {
+		t.Errorf("compare to a standard output that fails once: exit %d, stderr %q, then took %q\nwant exit 2, stderr %q, and no text after the failed write",
+			code, stderr.String(), w.took.String(), want)
+	}
+}
+
 // Standard output is the product of each subcommand: the lines that a caller reads, the JSON of
 // checks and the blocks of print, which a change copies into the files. So a subcommand whose
 // standard output takes none of its text, or a part, exits 2 with one line on standard error that
