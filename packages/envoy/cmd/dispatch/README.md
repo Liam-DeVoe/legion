@@ -4537,18 +4537,26 @@ Each item below names a path with its method and identity, then its purpose.
     Dispatch judges each covered document at the version that the request hands the person.
     With no request open, these are the documents that the request names.
     With a request open, they are the documents that the open request names.
+    Dispatch reads the blocks of a document as each other reader does, also in a block quote, a list item or a callout.
+    A block in a code block or in a table cell is no block.
+    Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
-    A hard finding of ASD-STE100 also breaks it.
+    Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
+    The reviewer of R25 reads each text for what these rules cannot refuse.
 
     - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
       A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
       So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
       A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
-      An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word, and none of its stops ends a sentence, also the last one before a space.
+      An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word.
+      None of its stops ends a sentence, also the last one before a space.
+      So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
       Nothing in code font ends a sentence.
       A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
       Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
       A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
+      `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
+      Put the quoted text in code font, or write the text again in shorter sentences.
       An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
       A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
       So write the steps with words.
@@ -4559,13 +4567,21 @@ Each item below names a path with its method and identity, then its purpose.
     - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
       `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
       A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
+      So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
       The finding of each rule lists the forms that it reads.
+      A person's name is the name of one person who signed in: the parts of that person's email, in order, each with a capital letter.
+      So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+      Parts of the emails of two people are no name.
+      A part that is a word of an approved component name or term is no part of a name.
+      An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
+      A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
+      The rules also read the name of a term (kind `term`).
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
-      Each other line under that heading breaks the form (rule `term-line`), unless it is blank or a heading.
+      Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
       So a decision block under that heading breaks the form at its question line.
       A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-      The finding names the line, and it says where a decision block goes.
+      The finding names the line by its text, and it says where a decision block goes.
 
     A request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written: `{code, error, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, excerpt}`.
     `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
