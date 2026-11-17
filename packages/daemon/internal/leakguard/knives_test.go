@@ -466,6 +466,136 @@ func TestAMemberCommitOnAnUpstreamCommitIsRefusedForItsOwnLinesAlone(t *testing.
 	}
 }
 
+// upstreamNamesAHost is a line of upstream's own that the private-name rules refuse, naming
+// theHost: the file of one of upstream's public commits that the rules refused on 2026-11-17 is
+// such a line.
+const upstreamNamesAHost = "the runner answers at " + theHost + "\n"
+
+// upstreamAhead is a branch one commit on the upstream's main, which is a commit ahead of the
+// fork's main: knivesCommit's head, which adds upstream.md with upstream as its content, is the
+// upstream's main, the fork's main holds base, and the branch's own commit adds member.md with own
+// as its content. It answers the fixture's runner, the repository, base, and the push of the branch
+// to a branch the fork does not have yet, as git hands the hook a push of a new branch.
+func upstreamAhead(t *testing.T, upstream, own string) (fixture fixturegit.Runner, repo, base string, push PushRequest) {
+	t.Helper()
+	fixture, repo, base, head := knivesCommit(t, map[string]string{"upstream.md": upstream})
+	fixture.Run(repo, "git", "push", "--quiet", knivesUpstream, head+":refs/heads/main")
+	if err := os.WriteFile(filepath.Join(repo, "member.md"), []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(repo, "git", "add", "-A")
+	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the branch's own commit")
+	branch := fixture.Run(repo, "git", "rev-parse", "HEAD")
+	const ref = "refs/heads/feature"
+	return fixture, repo, base, PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     knivesOrigin,
+		Updates: []Update{{LocalRef: ref, LocalSHA: branch, RemoteRef: ref, RemoteSHA: noSHA}},
+	}
+}
+
+// The private-name rules read no commit that a branch or a tag of the upstream of a knives
+// registry entry that names the destination reaches, as the knives pass reads none: such a commit
+// is upstream's public text, which reaches the fork with nothing leaked. On 2026-11-17 a branch on
+// can1357/oh-my-pi's newer main, pushed to the fork cybermonklabs/oh-my-pi, whose main was 195
+// commits behind, was refused by the rules for a file of one of upstream's own commits. Here a
+// branch one commit on upstream's main, a commit ahead of the fork's whose upstream.md names a
+// host, passes; the same branch whose own commit names the host is refused, for that commit's
+// file alone. Where no registry is listed, where no entry names the destination, and where the
+// entry that does names no upstream, the rules read upstream's commit, and their refusal stands.
+func TestAPrivateNameInACommitTheEntrysUpstreamHoldsIsNotReadByTheRules(t *testing.T) {
+	const clean = "a line of ordinary prose\n"
+	registry := func(file string) []knivesServed {
+		row := theKnivesRow
+		row.file = file
+		return []knivesServed{row}
+	}
+	upstreams := []string{"upstream.md: " + theClass}
+	for _, tc := range []struct {
+		name string
+		// own is the content of the file the branch's own commit adds.
+		own string
+		// registries are the rows LEGION_KNIVES_REGISTRIES lists, and nil where it is not set.
+		registries []knivesServed
+		// want is the rules' report, and nil where the push passes.
+		want []string
+	}{
+		{name: "the branch's own commit names nothing", own: clean, registries: []knivesServed{theKnivesRow}},
+		{
+			name:       "the branch's own commit names the host",
+			own:        upstreamNamesAHost,
+			registries: []knivesServed{theKnivesRow},
+			want:       []string{"member.md: " + theClass},
+		},
+		{name: "no registry is listed", own: clean, want: upstreams},
+		{
+			name:       "no entry names the destination",
+			own:        clean,
+			registries: registry(strings.ReplaceAll(theKnivesRegistry, "invented-org/invented-repo", "invented-org/another-repo")),
+			want:       upstreams,
+		},
+		{
+			name:       "the entry that names the destination names no upstream",
+			own:        clean,
+			registries: registry(strings.ReplaceAll(theKnivesRegistry, `upstream = "`+knivesUpstream+`"`+"\n", "")),
+			want:       upstreams,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, push := upstreamAhead(t, upstreamNamesAHost, tc.own)
+			var env []string
+			if tc.registries != nil {
+				path, listed, _ := servingKnives(t, tc.registries...)
+				env = []string{path, listed}
+			}
+			err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...).Push(bound(t), push)
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of a branch on the upstream's newer main: %v", err)
+				}
+				return
+			}
+			refused := refusal(t, err)
+			if refused.By != byRules || !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the push was refused by %q with %q, want the rules with %q", refused.By, refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
+// A push that the rules and the knives pass would each refuse but for the commit the entry's
+// upstream holds reads the registry once and the upstream once, for both passes: upstream's
+// commit names a host and holds a term, the branch's own commit holds a term, and the knives pass
+// refuses the branch's line alone. A stand-in git ahead of the real one writes down the URL of
+// each git ls-remote the guard runs.
+func TestTheRulesAndTheKnivesPassShareOneReadOfTheRegistryAndOfTheUpstream(t *testing.T) {
+	_, _, _, push := upstreamAhead(t, upstreamNamesAHost+"the QUILLWORTHY build\n", "the branch's bramblecote note\n")
+	path, listed, ran := servingKnives(t, theKnivesRow)
+	bin, reads := t.TempDir(), filepath.Join(t.TempDir(), "reads")
+	writeProgram(t, bin, "git", `case " $* " in
+*" ls-remote "*) for url; do :; done; echo "$url" >>`+shQuote(reads)+` ;;
+esac
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+	path = "PATH=" + bin + string(os.PathListSeparator) + strings.TrimPrefix(path, "PATH=")
+	err := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed).Push(bound(t), push)
+	want := []string{"member.md:1: forbidden term 1"}
+	if refused := knivesRefusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+	if runs := countLines(t, ran); runs != 1 {
+		t.Errorf("gh ran %d times, want one read of the one registry", runs)
+	}
+	read, err := os.ReadFile(reads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Fields(string(read)), []string{knivesOrigin, knivesUpstream}; !slices.Equal(got, want) {
+		t.Errorf("git ls-remote read %q, want the destination and then the upstream, once each", got)
+	}
+}
+
 // knivesReadAt is when the first push of each kept-list test below reads the registries: an
 // invented moment, in UTC, which a notice names.
 var knivesReadAt = time.Date(2026, 11, 17, 9, 52, 0, 0, time.UTC)
@@ -698,5 +828,62 @@ func TestAKeptKnivesListInADirectoryOthersCanReadIsNotUsed(t *testing.T) {
 	setupFailure(t, err)
 	if len(notices) != 0 {
 		t.Errorf("the guard gave the notices %q, want none", notices)
+	}
+}
+
+// Where the rules would refuse a push, the registries are read the way the knives pass reads
+// them, its kept list included. A read that fails, where no kept list is fresh, tells no entry,
+// so the rules' refusal of upstream's commit stands, which refuses the push already: with no list
+// kept, and with one kept an hour before, whose entry names the destination. A list kept a minute
+// before stands in for the read, and the push of the branch on upstream's newer main passes with
+// no registry read. No case gives a notice: a notice says a push goes on.
+func TestAKnivesRegistryThatCannotBeReadLeavesTheRulesRefusalStanding(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// keptAgo is how long before the push a read that passed kept the list, and 0 where none
+		// is kept.
+		keptAgo time.Duration
+		// reads is how many times the failing gh runs.
+		reads int
+		// want is the rules' report, and nil where the push passes.
+		want []string
+	}{
+		{name: "no list is kept", reads: 2, want: []string{"upstream.md: " + theClass}},
+		{name: "the list was kept an hour before", keptAgo: time.Hour, reads: 2, want: []string{"upstream.md: " + theClass}},
+		{name: "the list was kept a minute before", keptAgo: time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, repo, base, push := upstreamAhead(t, upstreamNamesAHost, "a line of ordinary prose\n")
+			path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
+			failing, _, failed := knivesFailing(t)
+			clock := &visibilityTestClock{now: knivesReadAt}
+			state := t.TempDir()
+			var notices []string
+			if tc.keptAgo > 0 {
+				// A push of the commit the fork's main is at, which adds no commit, reads the
+				// registries in full and keeps the list.
+				if err := knivesGuardAt(t, state, clock, &notices, path, listed).Push(bound(t), knivesPush(repo, base, base, "origin", knivesOrigin)); err != nil {
+					t.Fatalf("a push that adds no commit, its registries read in full: %v", err)
+				}
+				clock.now = knivesReadAt.Add(tc.keptAgo)
+			}
+			err := knivesGuardAt(t, state, clock, &notices, failing, listed).Push(bound(t), push)
+			if runs := countLines(t, failed); runs != tc.reads {
+				t.Errorf("the failing gh ran %d times, want %d", runs, tc.reads)
+			}
+			if len(notices) != 0 {
+				t.Errorf("the guard gave the notices %q, want none", notices)
+			}
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("the push of a branch on the upstream's newer main, the kept list fresh: %v", err)
+				}
+				return
+			}
+			refused := refusal(t, err)
+			if refused.By != byRules || !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the push was refused by %q with %q, want the rules with %q", refused.By, refused.Lines, tc.want)
+			}
+		})
 	}
 }

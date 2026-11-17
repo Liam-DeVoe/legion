@@ -81,7 +81,7 @@ It carries:
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   Where `leak_guard.knives_registries` in `legion.yaml` names a knives registry ([Operator configuration](#operator-configuration)), a push to a repository GitHub reports public, or to one the leak guard cannot name, such as a local path, has a third pass, after the shared check and the rule file (`Guard.knives`, `internal/leakguard/knives.go`).
   It reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
-  It also skips a commit that a branch or a tag of the entry's upstream reaches, read only for a push it would otherwise refuse (below).
+  It also skips a commit that a branch or a tag of the entry's upstream reaches, as the rule file's pass does, read only for a push one of the two would otherwise refuse (below).
   The role keeps the list of its last good read for 10 minutes and reads no file meanwhile, in a file under `$XDG_STATE_HOME/legion-gh/knives/` only its user can read, since it holds the terms.
   A file it cannot read, or one that is not knives' TOML, refuses as a setup error a push whose destination the kept list names, whatever the list's age, and lets any other go on with a notice on standard error; with no good read kept, it refuses every push the pass runs on.
   The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
@@ -100,6 +100,9 @@ It carries:
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/push.go`).
     Each push that adds a commit to a destination the guard scans costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The knives pass reads the upstream's refs the same way, with the same failure, naming the upstream's URL.
+    Where an entry names the destination as a fork and names an upstream, a commit a branch or a tag of that upstream reaches is held for the rule file's pass as well (`Guard.upstreamHeld`, `internal/leakguard/knives.go`): it is upstream's public text, which leaks nothing by reaching the fork.
+    The rule file's pass reads the registries and that upstream only for a push it would otherwise refuse, each read made once for both passes (`knivesRead`).
+    A registry it cannot read, with no fresh kept list, leaves its refusal standing, and an upstream it cannot read refuses the push with the same failure.
     The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).
     A push made to a URL rather than to a remote is named by that URL in every refusal and setup failure, and that name carries no user and no token either (`PushName`).
     A branch or a tag at a commit the clone does not have reaches nothing, so an upstream's line is read where the clone lacks the commit the upstream's ref is at.

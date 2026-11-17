@@ -4,9 +4,15 @@ body: |-
   is wrong from 33 parents and leaves out a line only the merge adds from 64 parents, so a wide
   merge's own lines were misread or missed. A merge's own lines are now the lines of each file that
   differs from every parent's that no parent's file holds, and its own paths those no parent has.
-  The private-name pass now takes a commit as held only where a branch or a tag of the
-  destination reaches it, as one `git ls-remote` of the destination reads them at the push, and
-  no longer where a remote-tracking ref of the clone does: git moves those for a push to whatever
+  The private-name pass now takes a commit as held where a branch or a tag of the destination
+  reaches it, as one `git ls-remote` of the destination reads them at the push, and no longer
+  where a remote-tracking ref of the clone does: git moves those for a push to whatever
   URL a remote pushes to at the time, so a commit pushed first to a local bare remote named
   `origin/rehearsal`, or to a local bare push URL of `origin`, was not read at its push to
   `origin`.
+  Where a knives registry entry names the destination as a fork, a commit that a branch or a tag
+  of the entry's upstream advertises is held for the private-name pass as well, as it is for the
+  knives push gate: it is upstream's public text. The upstream is read only when the rules would
+  refuse the push, and a read that fails refuses the push as a setup failure naming the
+  upstream's URL. A branch on upstream's newer main pushed to a fork whose main was behind was
+  refused for a private name in one of upstream's own commits.

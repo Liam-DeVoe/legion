@@ -160,8 +160,8 @@ type Record struct {
 	// commit's version of File, and 0 for a record of a path.
 	Line int
 	// Commit is the full sha of the pushed commit a record is of (pushRecords), and "" for a
-	// record of anything else: a ref name, a gh call, a text. The knives pass reads it to leave
-	// out a commit the destination's or an upstream's refs reach (Guard.knives).
+	// record of anything else: a ref name, a gh call, a text. The rule pass and the knives pass
+	// read it to leave out a commit an upstream's refs reach (Guard.upstreamHeld).
 	Commit string
 }
 

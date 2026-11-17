@@ -124,8 +124,8 @@ func PushName(remote string) string {
 // the guard cannot name, such as a local path (scanThrough), two passes read the push's records
 // (pushRecords): this repository's own private-name rules, and,
 // over the records of the files the push adds, the forbidden lists of the knives registry entries
-// that name the push's destination (Guard.knives). A refusal of the rules is the answer before any
-// registry is read.
+// that name the push's destination (Guard.knives). A refusal of the rules is the answer before the
+// knives pass runs.
 //
 // Neither pass reads a commit the destination already holds, which is a commit one of its
 // branches or tags reaches as the destination itself reports them at the push: one git ls-remote
@@ -136,6 +136,18 @@ func PushName(remote string) string {
 // bare one a role points it at for one run (`git remote set-url --push origin <bare>`) included,
 // and a ref can be written by hand, so a commit only such a ref reaches is still one the push
 // publishes (the architect's rule of 2026-11-17).
+//
+// Where a knives registry entry names the destination as a fork (knivesApplying) and names an
+// upstream, a commit that a branch or a tag the upstream advertises at the push reaches is held
+// for the rules as well as for the knives pass (Guard.upstreamHeld): it is upstream's public
+// text, which leaks nothing by reaching the fork. A tester's push of a branch on upstream's newer
+// main to cybermonklabs/oh-my-pi, whose main was 195 commits behind, had the rules read 196 of
+// upstream's own commits and refuse it for a file of one of them (measured 2026-11-17; the
+// architect's rule of 2026-11-17, 21:51Z). The registries and the upstreams are read for the
+// rules only where the rules would refuse the push, each once for both passes (knivesRead), and
+// the rules then read what is left (rulesPastUpstream). A registry that cannot be read leaves the
+// rules' refusal standing, and an upstream whose read fails refuses the push as a setup failure
+// naming its URL.
 //
 // The third pass is the check knives makes before a push to a fork, `knives audit`, which was a
 // step an agent had to remember to run: the records of the oh-my-pi fork's pushes on 2026-11-17
@@ -179,10 +191,43 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err != nil {
 		return &SetupFailure{What: what, Why: "the push's commits could not be read", Err: err}
 	}
-	if err := g.rules(ctx, what, records); err != nil {
+	// The knives registries and the upstreams of the entries that name the destination, each read
+	// once for both passes and only where a pass asks (knivesRead).
+	read := g.knivesReadOf(ctx, what, req, records)
+	if refused := g.rules(ctx, what, records); refused != nil {
+		if err := g.rulesPastUpstream(ctx, what, read, records, refused); err != nil {
+			return err
+		}
+	}
+	return g.knives(what, read, records)
+}
+
+// rulesPastUpstream is the rules' answer for a push whose records they refused, refused being
+// that answer: where an upstream of a knives registry entry that names the destination holds
+// commits of the push (read.upstreamHeld), the rules' answer over the records of the other
+// commits, ref names and every other record of no commit included, and refused otherwise. A setup
+// failure of the rules stands, and so does a refusal where the registries could not be read (a
+// failure or a notice of read.named), where no entry names the destination, where no entry that
+// does names an upstream, and where the upstreams hold none of the push's commits: each of those
+// is a refusal already, so a read that fails fails closed. An upstream whose read fails refuses
+// the push as a setup failure naming the upstream's URL (Guard.upstreamHeld).
+func (g *Guard) rulesPastUpstream(ctx context.Context, what string, read knivesRead, records []Record, refused error) error {
+	var refusal *Refusal
+	if !errors.As(refused, &refusal) {
+		return refused
+	}
+	named := read.named()
+	if named.failure != nil || len(named.applying) == 0 {
+		return refused
+	}
+	reached, err := read.upstreamHeld()
+	if err != nil {
 		return err
 	}
-	return g.knives(ctx, what, req, records)
+	if len(reached) == 0 {
+		return refused
+	}
+	return g.rules(ctx, what, unheld(records, reached))
 }
 
 // pushRecords is everything a push would publish, as records, which the second and the third of
@@ -292,8 +337,8 @@ var fetchesNothing = []string{"GIT_NO_LAZY_FETCH=1"}
 
 // advertised are the commits the repository at url holds at its branches and tags, of those the
 // repository at dir has: what a push to url, or a fork's push of url's own commits, need not
-// publish again (Guard.commits, Guard.knives). The read is of url itself, never of a ref of dir's
-// own, which says nothing reliable of what url holds (Guard.Push says why):
+// publish again (Guard.commits, Guard.upstreamHeld). The read is of url itself, never of a ref of
+// dir's own, which says nothing reliable of what url holds (Guard.Push says why):
 //
 //	git ls-remote --heads --tags -- <url>
 //

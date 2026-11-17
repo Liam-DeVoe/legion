@@ -184,10 +184,11 @@ func TestARehearsalOnTheForksPushURLIsReadAndHoldsNothingForTheRealPush(t *testi
 // A read of what the destination or the upstream holds that fails refuses the push as a setup
 // failure, naming the remote and the URL read, never a push read as one whose destination holds
 // nothing. The destination is read for every push that adds a commit, and the upstream only for a
-// push the pass would otherwise refuse, so a push that adds no term passes with its upstream
-// unread. Each URL reaches a path that does not exist (url.<base>.insteadOf): the destination is
-// the fork named without .git, which knivesCommit's bare is not reached from, and the upstream one
-// the registry names in place of theKnivesRegistry's.
+// push the rules or the knives pass would otherwise refuse, so a push that adds no term and no
+// private name passes with its upstream unread. Each URL reaches a path that does not exist
+// (url.<base>.insteadOf): the destination is the fork named without .git, which knivesCommit's
+// bare is not reached from, and the upstream one the registry names in place of
+// theKnivesRegistry's.
 func TestAReadOfWhatTheDestinationOrTheUpstreamHoldsThatFailsRefusesThePush(t *testing.T) {
 	const fork = "https://github.com/invented-org/invented-repo"
 	const upstream = "https://github.com/upstream-org/absent-repo"
@@ -208,6 +209,12 @@ func TestAReadOfWhatTheDestinationOrTheUpstreamHoldsThatFailsRefusesThePush(t *t
 		{
 			name: "the upstream cannot be read, for a push the pass would refuse",
 			line: "the QUILLWORTHY build\n",
+			url:  knivesOrigin,
+			want: "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + upstream + " exited 128: ",
+		},
+		{
+			name: "the upstream cannot be read, for a push the rules would refuse",
+			line: upstreamNamesAHost,
 			url:  knivesOrigin,
 			want: "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + upstream + " exited 128: ",
 		},

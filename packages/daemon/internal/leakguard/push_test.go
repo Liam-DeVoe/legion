@@ -711,9 +711,10 @@ func TestTheReadOfWhatTheDestinationHoldsFetchesNothing(t *testing.T) {
 // A failure that names a URL carries no credential. The URL git hands a pre-push hook, and the
 // upstream a knives registry entry names, can hold a user and a token
 // (https://user:token@host/...), and a read of either that fails names the URL and quotes git,
-// which names it too: both are written without the user and the token. A push made to a URL
-// rather than to a remote, `git push https://user:token@host/...`, hands the hook that URL as the
-// remote's name too, which every failure of the push names (PushName). The stand-in git here
+// which names it too: both are written without the user and the token. The upstream is read for
+// a push the knives pass would refuse and for one the private-name rules would. A push made to a
+// URL rather than to a remote, `git push https://user:token@host/...`, hands the hook that URL as
+// the remote's name too, which every failure of the push names (PushName). The stand-in git here
 // fails every call with a URL that holds a user, as a git that cannot reach the host does, and
 // runs the real git for every other call.
 func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
@@ -736,9 +737,10 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 	for _, tc := range []struct {
 		name string
 		// remote is the remote's name git hands the hook, "origin" where the case leaves it empty;
-		// url is the URL it hands it, and upstream the one the registry entry names.
-		remote, url, upstream string
-		want                  string
+		// url is the URL it hands it, and upstream the one the registry entry names. line is the
+		// line the pushed commit adds, one holding a knives term where the case leaves it empty.
+		remote, url, upstream, line string
+		want                        string
 	}{
 		{
 			name:     "the destination",
@@ -759,9 +761,20 @@ exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
 			upstream: credentialed(knivesUpstream),
 			want:     "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + knivesUpstream + unreachable(knivesUpstream),
 		},
+		{
+			name:     "the registry entry's upstream, for a push the private-name rules would refuse",
+			url:      knivesOrigin,
+			upstream: credentialed(knivesUpstream),
+			line:     upstreamNamesAHost,
+			want:     "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + knivesUpstream + unreachable(knivesUpstream),
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
+			line := tc.line
+			if line == "" {
+				line = "the QUILLWORTHY build\n"
+			}
+			_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": line})
 			registry := theKnivesRow
 			registry.file = strings.ReplaceAll(theKnivesRegistry, knivesUpstream, tc.upstream)
 			path, listed, _ := servingKnives(t, registry)
