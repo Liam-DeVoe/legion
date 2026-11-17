@@ -111,9 +111,10 @@ export function lensActFor(node: TreeNode, act: Pick<LensAct, "issueKey" | "outl
  *
  * A pick sends the node's address and the kind's id, nothing more (`useInvokeLens`). A refusal
  * closes the menu, gives the focus back to the row and says so after the act until the menu
- * opens again on that node. The refusal is kept with the node's invocations, not in the menu,
- * since the row losing the focus unmounts `RowActs`: a row that lost the focus while its pick was
- * out says the refusal once it is focused again.
+ * opens again on that node. The refusal, and whether the pick's write is out, are kept with the
+ * node's invocations, not in the menu, since the row losing the focus unmounts `RowActs`: a row
+ * that lost the focus while its pick was out says the refusal once it is focused again, and,
+ * while the write is still out, its menu says the pick is out and takes no other.
  */
 export function LensMenu({ node, tabStops }: { node: TreeNode; tabStops: boolean }): ReactNode {
   const act = useContext(LensActContext);
@@ -142,7 +143,12 @@ function ActAndMenu({
   const invocation = useInvokeLens(act.issueKey, on, act.standing);
   const refusal = refusalOf(invocation.refusal);
   const [open, setOpen] = useState(false);
-  const [examining, setExamining] = useState(false);
+  // Whether a pick is out, as the menu's line says it and as `pick` reads it. On the menu that
+  // made the pick, `picked` holds from the press until `invoke` answers, once the tree is read
+  // again. The node's write (`invocation.pending`) holds until it settles, on any menu: a menu
+  // drawn again after its row lost the focus starts with `picked` unset.
+  const [picked, setPicked] = useState(false);
+  const examining = picked || invocation.pending;
   const kinds = useQuery(lensKindsQuery(open));
   const listed = kinds.data;
   const control = useRef<HTMLButtonElement>(null);
@@ -203,15 +209,17 @@ function ActAndMenu({
   /** Closes the menu once an invocation is answered, giving the focus back to the row where it
    *  was still in the menu. A refusal is the invocation's to keep (`useInvokeLens`). */
   const answered = () => {
-    setExamining(false);
+    setPicked(false);
     if (menu.current?.contains(document.activeElement) === true) focusRow(control.current);
     setOpen(false);
   };
 
-  // One invocation at a time: a second pick while one is out sends nothing.
+  // One invocation on the node at a time: a pick sends nothing while the menu says one is out
+  // (`examining`). A menu drawn again after its row lost the focus says so until the write
+  // settles, not while the tree is read again after it, and takes a pick from then on.
   const pick = (kind: string) => {
     if (examining) return;
-    setExamining(true);
+    setPicked(true);
     // By the time `useInvokeLens` answers, it has read the tree again and, where Dispatch
     // answered the lens it made and the reader still stands on the outline, moved the address
     // to the new lens's row.

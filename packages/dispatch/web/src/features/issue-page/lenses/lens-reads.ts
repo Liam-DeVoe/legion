@@ -2,6 +2,7 @@ import type { LensInvoked } from "@legion/contracts";
 import {
   type QueryClient,
   queryOptions,
+  useIsMutating,
   useMutationState,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -146,6 +147,10 @@ function readTreeAgain(queryClient: QueryClient, issueKey: string): Promise<void
 export interface LensInvocation {
   /** Invokes a lens of kind `kind` on the node (`useInvokeLens`). */
   readonly invoke: (kind: string) => Promise<LensInvoked | null>;
+  /** Whether an invocation on the node is out, whichever menu made it: from the pick until its
+   *  write settles, with Dispatch's answer or once the reader stopped trying. It ends before
+   *  `invoke` answers, since `invoke` reads the tree again after the write settles. */
+  readonly pending: boolean;
   /** Why the newest invocation on the node was refused, until `forget`: Dispatch's answer
    *  (`ApiError`), or the store's own error once the reader stopped trying. */
   readonly refusal: Error | undefined;
@@ -163,7 +168,10 @@ export interface LensInvocation {
  * The node's invocations are kept in the query client under a key of the node's own, and one
  * that has its answer stays there until `forget` lets it go, so its refusal outlives the menu
  * that made it: the menu is drawn only while its row has the focus, and a row that lost the focus
- * while its pick was out says the refusal once it is focused again.
+ * while its pick was out says the refusal once it is focused again. For the same reason whether
+ * one is out is read from there too (`pending`), as `useSending` reads a send: `mutate` counts the
+ * write as out from the pick's own task, before its first await, and a menu drawn again while
+ * the write is out reads it.
  *
  * A landing reads the tree again through the app's refresh scheduler, as the page does for a
  * write it sees, so it never calls off a read already out and keeps to one start a second: the
@@ -205,6 +213,7 @@ export function useInvokeLens(
       filters: { exact: true, mutationKey },
       select: ({ state }) => (state.status === "error" ? state.error : null),
     }).at(-1) ?? undefined;
+  const pending = useIsMutating({ exact: true, mutationKey }) > 0;
   return {
     forget: () => {
       const cache = queryClient.getMutationCache();
@@ -225,6 +234,7 @@ export function useInvokeLens(
       }
       return invoked;
     },
+    pending,
     refusal,
   };
 }
