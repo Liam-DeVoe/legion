@@ -352,6 +352,9 @@ export function AgentTokensSection(): ReactNode {
         named === undefined ? { scopes } : { projects: named, scopes },
         bounds
       ),
+    // A landing whose answer was lost writes the row as the press did. An edit that names the
+    // projects names only ones the reader sees, so the row lists none they cannot see, as the
+    // server's own answer would say; a scope edit leaves the list, and what it hides, alone.
     onSuccess: (updated, input) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
@@ -359,7 +362,9 @@ export function AgentTokensSection(): ReactNode {
             ? (updated ?? {
                 ...token,
                 scopes: input.scopes,
-                projects: input.projects ?? token.projects,
+                ...(input.projects === undefined
+                  ? {}
+                  : { projects: input.projects, projects_hidden: false }),
               })
             : token
         )
