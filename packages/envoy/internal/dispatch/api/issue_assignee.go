@@ -53,7 +53,8 @@ func (s *server) allowedLogin(ctx context.Context, login string) (string, error)
 		}
 		if err := s.deps.Store.Pool.QueryRow(ctx, `select exists(select 1 from people where email = $1 and `+
 			access.PersonClause("people.email", "$2")+`)`, canonical, viewer).Scan(&known); err != nil {
-			return "", fmt.Errorf("read person %q: %w", canonical, err)
+			// The error reaches a log line, so it names no person (TestAnAssigneeReadFailureNamesNoPerson).
+			return "", fmt.Errorf("read whether the login may be assigned: %w", err)
 		}
 	}
 	if !known {
