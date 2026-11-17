@@ -4992,6 +4992,32 @@ test("j from the bottom of the drawn range reaches the next session and focuses 
   }
 });
 
+// A focus inside a row names that row as the one in hand, and a focus outside the list leaves the
+// name standing (the page's `onFocus`). `j` asking for that same row then changed no state, so
+// nothing re-rendered and nothing focused it: the reader pressed the key and stayed where they
+// were.
+test("j focuses the row it steps to when a focus inside that row named it last", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents();
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    act(() => within(planner).getByRole("button", { name: "Pin Planner" }).focus());
+    const search = within(region).getByRole("searchbox", { name: "Search agents" });
+    act(() => search.focus());
+    act(() => search.blur());
+    expect(document.activeElement).toBe(document.body);
+
+    await user.keyboard("j");
+
+    expect(document.activeElement).toBe(planner);
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // F2 item 3: the grouping, the group headings' counts and the row pills read `inbox.data ?? []`
 // and the agent state `?? {}`, so a page whose agents had answered counted every session as
 // needing nothing. A heading says how many rows it holds only once the reads that place a row

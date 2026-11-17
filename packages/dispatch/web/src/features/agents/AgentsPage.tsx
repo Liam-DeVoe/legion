@@ -1622,8 +1622,11 @@ export function AgentsPage(): ReactNode {
    *  row unmounted under the reader drops focus to the document body, which silently turns off
    *  every binding that acts on the row in hand (`keyboard.ts`). */
   const [focusedRow, setFocusedRow] = useState<string | null>(null);
-  /** A row `j` or `k` has asked for, until the render that draws it puts focus there. */
-  const focusWhenDrawn = useRef<string | null>(null);
+  /** The row `j` or `k` last asked for, until the render that draws it puts focus there: a fresh
+   *  object each ask, so the ask renders and the focus lands even when the row it names is the
+   *  one `focusedRow` already holds - a focus inside that row named it, and a focus outside the
+   *  list since left the name standing. */
+  const [focusAsked, setFocusAsked] = useState<{ readonly sessionID: string } | null>(null);
   // One list, keyed by session, with each group's heading as an item between the rows - the
   // Inbox's pattern (`Inbox.tsx`) - of which the window draws a part. A row that moves from one
   // group to another moves within the one parent, so React moves its node instead of remounting
@@ -1644,8 +1647,8 @@ export function AgentsPage(): ReactNode {
   useAgentsKeymap(
     {
       focusRow: (sessionID) => {
-        focusWhenDrawn.current = sessionID;
         setFocusedRow(sessionID);
+        setFocusAsked({ sessionID });
       },
       items: items.map((item) =>
         item.kind === "group"
@@ -1657,15 +1660,12 @@ export function AgentsPage(): ReactNode {
   );
   // A layout effect, so the frame that paints the row the keys moved to already has focus on it.
   // The row is drawn because `kept` holds it, and it stays drawn because `focusedRow` does.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `focusedRow` is the trigger, not a read
   useLayoutEffect(() => {
-    const sessionID = focusWhenDrawn.current;
-    if (sessionID === null) return;
-    focusWhenDrawn.current = null;
-    const row = rowNode(listRef.current, sessionID);
+    if (focusAsked === null) return;
+    const row = rowNode(listRef.current, focusAsked.sessionID);
     row?.scrollIntoView({ block: "nearest" });
     row?.focus();
-  }, [focusedRow]);
+  }, [focusAsked]);
   // A layout effect, so the frame the move paints already has focus where the row went.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `pinned` is the trigger, not a read
   useLayoutEffect(() => {
