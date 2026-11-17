@@ -600,7 +600,7 @@ test("the reviewer's review footer names the entry of its round", () => {
   const gaps = [
     ...[
       withEntry,
-      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it, in quotes, because a footer that is not valid JSON loses its session and its head too and is set aside.",
+      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it, in quotes, so that a placeholder left in it cannot make the footer invalid JSON: such a footer loses its session and its head too and is set aside.",
       "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
       "The task a wake gives you says which wake brought the pod back, and the reviewer's, in a review round, ends with the round's entry too, `Review entry: <n>.`, as each of its tasks there does.",
       "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
