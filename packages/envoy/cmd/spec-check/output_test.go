@@ -105,12 +105,13 @@ func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 }
 
 // The built command reports a standard output on a full device, /dev/full, as the deep review
-// found print did not: exit 2 and the line on standard error.
+// found print did not: exit 2 and the line on standard error. A system with no /dev/full skips the
+// test, and fails it in a CI job, whose runner has the device (skipOutsideCI).
 func TestTheBuiltBinaryReportsAFullStandardOutput(t *testing.T) {
 	t.Parallel()
 	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		t.Skip("this system has no /dev/full; TestEachSubcommandReportsAStandardOutputThatTakesNoText holds the rule")
+		skipOutsideCI(t, "this system has no /dev/full; TestEachSubcommandReportsAStandardOutputThatTakesNoText holds the rule")
 	}
 	if err != nil {
 		t.Fatal(err)
