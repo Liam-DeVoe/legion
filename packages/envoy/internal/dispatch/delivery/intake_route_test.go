@@ -438,10 +438,18 @@ func TestIntakeRoutesByTheSettingsInForceWhenAnEnvelopeArrives(t *testing.T) {
 	awaitRuns(t, ctx, pool, natsClient, 1)
 	publishWorkflowEnvelope(t, natsClient, "acme", "widgets", oldPath, onOldPath)
 
-	// The old-path envelope is acknowledged without being fetched.
+	// The old-path envelope is acknowledged without being fetched. A publish's ack says the stream
+	// stored it, and the server counts it toward a consumer only once the stream's signal goroutine
+	// runs, after that ack, so pending counts of 0 can be read before the consumer has it at all
+	// (nats-server v2.15.1, processJetStreamMsg and signalConsumersLoop). So the wait is for the
+	// consumer's ack floor to reach the envelope's own stream sequence.
+	oldEnvelope, err := natsClient.JS().GetLastMsg(bus.Stream, contracts.GithubWorkflowSubject("acme", "widgets", pathBaseForTest(oldPath), "in_progress"))
+	if err != nil {
+		t.Fatalf("read the old path's envelope from the stream: %v", err)
+	}
 	waitFor(t, func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
-		return err == nil && info.NumPending == 0 && info.NumAckPending == 0
+		return err == nil && info.AckFloor.Stream >= oldEnvelope.Sequence && info.NumAckPending == 0
 	}, func() string {
 		return fmt.Sprintf("the intake did not acknowledge the old path's envelope\n%s", intakeStateReport(t, natsClient))
 	})

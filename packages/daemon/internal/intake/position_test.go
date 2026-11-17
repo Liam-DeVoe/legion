@@ -198,20 +198,20 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 			github := githubConsumerName(spec.Project)
 
 			stop := startConsume(t, js, spec, pool, factMarks())
-			publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
-			waitDelivered(t, stream, github)
+			assertAcknowledgedThrough(t, stream, github, publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1)))
 			testwait.Eventually(t, "the first event applied", func() bool { return slices.Equal(writeHandlers(t, pool), []string{"pr-1"}) })
 			stop()
 
+			var last *jetstream.PubAck
 			defer reopen.open(t, js, pool, spec, func() {
 				if err := stream.DeleteConsumer(context.Background(), github); err != nil {
 					t.Fatalf("delete the GitHub consumer: %v", err)
 				}
 				for number := 2; number <= 4; number++ {
-					publish(t, js, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number))
+					last = publish(t, js, fmt.Sprintf("notifications.github.sjawhar.legion.pr.%d", number), pullRequestOpenedEnvelope(t, number))
 				}
 			})()
-			waitDelivered(t, stream, github)
+			assertAcknowledgedThrough(t, stream, github, last)
 			want := []string{"pr-1", "pr-2", "pr-3", "pr-4"}
 			testwait.Eventually(t, "the events published while the consumer was missing applied", func() bool {
 				return len(writeHandlers(t, pool)) >= len(want)
@@ -251,8 +251,7 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 
 	stop := startConsume(t, js, spec, pool, factMarks())
 	tag := strings.ReplaceAll(string(capturedGitHubEnvelope(t, "push.json")), "refs/heads/legion/LEGION-208", "refs/tags/v1.0.0")
-	publish(t, js, "notifications.github.sjawhar.legion.push.tag.v1.0.0", []byte(tag))
-	waitDelivered(t, stream, github)
+	assertAcknowledgedThrough(t, stream, github, publish(t, js, "notifications.github.sjawhar.legion.push.tag.v1.0.0", []byte(tag)))
 	stop()
 	var positions int
 	if err := pool.QueryRow(context.Background(), `select count(*) from consumer_positions`).Scan(&positions); err != nil {
@@ -270,9 +269,9 @@ func TestAMissingConsumerWithNoStoredPositionStartsAtTheNextMessage(t *testing.T
 	if pending := consumerInfo(t, stream, github).NumPending; pending != 0 {
 		t.Fatalf("the recreated consumer has %d messages pending, want none of what was published before it", pending)
 	}
-	publish(t, js, "notifications.github.sjawhar.legion.pr.2", pullRequestOpenedEnvelope(t, 2))
+	next := publish(t, js, "notifications.github.sjawhar.legion.pr.2", pullRequestOpenedEnvelope(t, 2))
 	testwait.Eventually(t, "the next event applied", func() bool { return len(writeHandlers(t, pool)) >= 1 })
-	waitDelivered(t, stream, github)
+	assertAcknowledgedThrough(t, stream, github, next)
 	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"pr-2"}) {
 		t.Fatalf("applied %q, want only the event published after the consumer was created", got)
 	}
@@ -298,10 +297,10 @@ func TestAStoredPositionOlderThanTheStreamWarnsOfEventsThatMayHaveBeenMissed(t *
 		github, time.Now().Add(-100*time.Hour)); err != nil {
 		t.Fatalf("store the old position: %v", err)
 	}
-	publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	first := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
 
 	defer startConsume(t, js, spec, pool, factMarks())()
-	waitDelivered(t, stream, github)
+	assertAcknowledgedThrough(t, stream, github, first)
 	testwait.Eventually(t, "the stream's first event applied", func() bool { return slices.Equal(writeHandlers(t, pool), []string{"pr-1"}) })
 	if line := logLine(logs.String(), "level=WARN", "consumer="+github, "older than the stream's first message", "may have been missed"); line == "" {
 		t.Fatalf("no WARN line names the events that may have been missed before the stream's first message; logs:\n%s", logs)
@@ -332,19 +331,6 @@ func pullRequestOpenedEnvelope(t *testing.T, number int) []byte {
 		`"body":"Dispatch: LEGION-208","head_ref":"legion/LEGION-208","head_sha":"head-%d","kind":"pr","merged":"false","number":"%d",`+
 		`"repo":"sjawhar/legion","title":"a pull request","updated_at":"2026-09-23T00:00:00Z","url":"https://github.com/sjawhar/legion/pull/%d"}`,
 		number, number, number))
-}
-
-// waitDelivered waits until consumer has delivered and had acknowledged every message it has.
-func waitDelivered(t *testing.T, stream jetstream.Stream, consumer string) {
-	t.Helper()
-	testwait.Eventually(t, consumer+" has every message delivered and acknowledged", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
-		if err != nil {
-			return false
-		}
-		info, err := item.Info(context.Background())
-		return err == nil && info.NumPending == 0 && info.NumAckPending == 0
-	})
 }
 
 func storedStreamSeq(t *testing.T, pool *pgxpool.Pool, consumer string) int64 {
