@@ -462,11 +462,21 @@ func OpenSessionRegistry(conn *nats.Conn, options ...SessionRegistryOption) (*Se
 		log:               opts.log,
 	}
 	r.cache = newSessionCopy(r)
-	r.watcher = kvwatch.New("session registry", kv, sessionCache{r}, append([]kvwatch.Option{kvwatch.WithLogger(opts.log)}, opts.watch...)...)
+	r.watcher = r.newWatcher(kv, opts.watch...)
 	// The watcher populates the cache asynchronously. A synchronous Keys()+per-key Get() loop
 	// blocks for seconds when the KV stream leader is on a remote node.
 	r.watcher.Start()
 	return r, nil
+}
+
+// newWatcher returns the watcher that feeds r's copy from kv. A first watch whose failure was
+// transient, as a loaded start's can be (its consumer create unanswered, its connection
+// reconnecting), is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), a WARN for
+// each attempt, rather than the ERROR that leaves the copy to the listener's self-health rebuild.
+// options follow the watcher's own.
+func (r *SessionRegistry) newWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithFirstWatchRetry()}, options...)
+	return kvwatch.New("session registry", kv, sessionCache{r}, options...)
 }
 
 // newSessionCopy is the copy of the session bucket r keeps: the one place its rows are decoded and

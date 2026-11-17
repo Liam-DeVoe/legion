@@ -294,6 +294,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 		s.armRepair()
 	} else {
 		s.startWatch(kv)
+		go s.awaitFirstRead(false)
 	}
 	go s.sweepUntilStopped()
 	return s, nil
@@ -362,7 +363,10 @@ func (s *KnownSessions) startWatch(kv bus.KeyValue) {
 		return
 	default:
 	}
-	options := append([]kvwatch.Option{kvwatch.WithLogger(s.log)}, s.watchOptions...)
+	// A first watch that fails is this store's to repair (awaitOpened arms its retry), and its to
+	// report once that repair has not come within bus.RepairGrace, so the watcher logs the failure
+	// itself at WARN (kvwatch.WithFirstWatchRepairedByOwner).
+	options := append([]kvwatch.Option{kvwatch.WithLogger(s.log), kvwatch.WithFirstWatchRepairedByOwner()}, s.watchOptions...)
 	s.watcher = kvwatch.New("known session store", kv, knownCache{s}, options...)
 	s.watcher.Start()
 }
@@ -590,7 +594,13 @@ func (s *KnownSessions) retireRepair() {
 // is the one a move installs, the reconnect's own or, once that failed, the retry's. It waits
 // until a read of the watcher completes, whichever move installed it, or until the store stops
 // (untilStopped). The bucket opens once, so a store waits here once at most.
-func (s *KnownSessions) awaitOpened() {
+func (s *KnownSessions) awaitOpened() { s.awaitFirstRead(true) }
+
+// awaitFirstRead is awaitOpened, which writes the open line when announce is set. The open at
+// OpenKnownSessions runs it with announce unset: a start announces nothing, and its first read is
+// what the listener's own WaitForCacheReady gates, but a watch of it that ends before that read is
+// this store's to repair and to report, as a later open's is.
+func (s *KnownSessions) awaitFirstRead(announce bool) {
 	watcher := s.watch()
 	if watcher == nil {
 		// The store stopped while the attempt ran, so startWatch installed nothing.
@@ -605,10 +615,35 @@ func (s *KnownSessions) awaitOpened() {
 		// so a watch that ended arms it again, and its next attempt moves the watcher that ended
 		// (attemptRepair); after a stop it arms nothing (armRepair).
 		s.armRepair()
+		if ctx.Err() == nil {
+			s.reportUnrepaired(err)
+		}
 		return
 	}
-	s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",
-		slog.String("bucket", bus.KnownSessionBucket))
+	if announce {
+		s.logger().Info("the known-session bucket is open; this listener writes and reads the 30-day records from now on",
+			slog.String("bucket", bus.KnownSessionBucket))
+	}
+}
+
+// reportUnrepaired arms the one ERROR for a watch that ended before its first read, err: the
+// watcher logged the end itself at WARN (startWatch), and the store's retry repairs it, so the
+// ERROR is written only if the store still does not answer (Opened) bus.RepairGrace later on the
+// store's clock, the minute a stopped cache watcher gives its repair before its own ERROR. A stop
+// before then writes nothing. The bucket opens once, so this is armed once at most.
+func (s *KnownSessions) reportUnrepaired(err error) {
+	s.timers.AfterFunc(bus.RepairGrace, func() {
+		select {
+		case <-s.stopped:
+			return
+		default:
+		}
+		if s.Opened() {
+			s.logger().Debug("known session store watch repaired within the grace", slog.Duration("grace", bus.RepairGrace))
+			return
+		}
+		s.logger().Error("known session store watch failed", slog.Duration("unrepaired_for", bus.RepairGrace), slog.String("error", err.Error()))
+	})
 }
 
 // untilStopped is a context that ends when the store does, for a background wait that must not

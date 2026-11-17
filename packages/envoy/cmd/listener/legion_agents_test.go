@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -422,12 +423,13 @@ func TestAListenerWithoutTheRegistryGrantServesAndAnswersItsRoutes503(t *testing
 	}
 }
 
-// A registry whose first open fails on a listener that holds the grant, a JetStream timeout or a
-// slow first create, answers its routes 503 naming the failed open and logs one registry ERROR
-// however often its retry fails (an open the server refuses for a missing grant also logs one
-// `envoy nats async error` at ERROR per open, which this open, failed by its stub, does not);
-// once an open succeeds, with no NATS connection event in between, the routes serve and one INFO
-// says the registry opened.
+// A registry whose first open fails on a listener that holds the grant, with an error it cannot tell
+// for a transient one (this stub's bare text), answers its routes 503 naming the failed open and
+// logs one registry ERROR however often its retry fails (an open the server refuses for a missing
+// grant also logs one `envoy nats async error` at ERROR per open, which this open, failed by its
+// stub, does not); once an open succeeds, with no NATS connection event in between, the routes
+// serve and one INFO says the registry opened. A transient failure's levels are
+// TestALegionAgentRegistryOpenThatFailsForNowIsAWarningUntilItOutlastsTheRepairGrace's.
 func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *testing.T) {
 	l := newLegionListener(t, setupPublishTestClient(t))
 	var failing atomic.Bool
@@ -440,7 +442,7 @@ func TestALegionAgentRegistryWhoseFirstOpenFailsServesOnceItsRetryOpensIt(t *tes
 			return nil, errors.New("nats: timeout")
 		}
 		return legionagents.Open(conn, legionagents.WithReplicas(1))
-	}, 10*time.Millisecond, 40*time.Millisecond)
+	}, 10*time.Millisecond, 40*time.Millisecond, clock.Real())
 	t.Cleanup(func() { registry.close(context.Background()) })
 	l.deps.legionAgents = registry
 
@@ -516,7 +518,7 @@ func TestALegionAgentRegistryWhoseMoveToANewConnectionFailsOpensAgainOnTheLatest
 		}
 		openedOn.Store(conn)
 		return legionagents.Open(conn, legionagents.WithReplicas(1))
-	}, 10*time.Millisecond, 40*time.Millisecond)
+	}, 10*time.Millisecond, 40*time.Millisecond, clock.Real())
 	registry.Store(started)
 	t.Cleanup(func() { started.close(context.Background()) })
 	l.deps.legionAgents = started
@@ -561,7 +563,7 @@ func TestClosingALegionAgentRegistryDoesNotWaitForAnOpenUnderWay(t *testing.T) {
 			<-release
 		}
 		return nil, errors.New("nats: timeout")
-	}, 10*time.Millisecond, 40*time.Millisecond)
+	}, 10*time.Millisecond, 40*time.Millisecond, clock.Real())
 	t.Cleanup(func() {
 		select {
 		case <-release:

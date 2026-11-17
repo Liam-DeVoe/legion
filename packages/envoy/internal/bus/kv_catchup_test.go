@@ -24,7 +24,7 @@ func stillClock() *clocktest.Fake {
 func ensuredOn(c *clocktest.Fake, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) <-chan error {
 	answered := make(chan error, 1)
 	go func() {
-		_, err := ensureKeyValue(c, conn, js, config)
+		_, err := ensureKeyValue(c, conn, js, config, RequestTimeout)
 		answered <- err
 	}()
 	return answered

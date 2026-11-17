@@ -119,19 +119,41 @@ const (
 // restored holder that loses its grace and is released a session TTL early, so an incomplete scan
 // fails the caller, and only a complete one logs. A scan that delivers nothing for idle is one.
 // ctx is the scan's own (kvwatch.ScanExistingKeys): context.Background for every open but one
-// given a wait of its own (WithRequestWait).
-func roleRevisions(ctx context.Context, kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger) (map[string]uint64, error) {
-	revisions := map[string]uint64{}
-	scan, err := kvwatch.ScanExistingKeys(ctx, c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
-		revisions[entry.Key] = entry.Revision
-		return nil
-	}, jetstream.MetaOnly())
-	if err != nil {
-		return nil, err
+// given a wait of its own (WithRequestWait), whose deadline bounds the whole scan.
+//
+// The scan's consumer create is one of the open's requests, so it waits the open's own request
+// wait, wait: on a ctx with no deadline nats.go holds each create to scanCreateWait, so a create
+// that drew no answer is sent again while the sends fit in wait (two for the 10 s of production),
+// and a scan whose consumer was never created fails naming that and the wait it spent:
+// `role revisions: create the scan's consumer: context deadline exceeded (waited 10s)`.
+func roleRevisions(ctx context.Context, kv bus.KeyValue, c clock.Clock, idle time.Duration, log *slog.Logger, wait time.Duration) (map[string]uint64, error) {
+	sends := 1
+	if _, bounded := ctx.Deadline(); !bounded {
+		sends = max(1, int(wait/scanCreateWait))
 	}
-	log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
-	return revisions, nil
+	for send := 1; ; send++ {
+		revisions := map[string]uint64{}
+		scan, err := kvwatch.ScanExistingKeys(ctx, c, kv, jetstream.AllKeys, "role revisions", idle, log, func(entry kvwatch.Entry) error {
+			revisions[entry.Key] = entry.Revision
+			return nil
+		}, jetstream.MetaOnly())
+		if errors.Is(err, kvwatch.ErrScanNotCreated) && errors.Is(err, context.DeadlineExceeded) && send < sends {
+			continue
+		}
+		if errors.Is(err, kvwatch.ErrScanNotCreated) {
+			return nil, fmt.Errorf("%w (waited %s)", err, wait)
+		}
+		if err != nil {
+			return nil, err
+		}
+		log.Info("restored role claims", slog.Int("restored", len(revisions)), slog.Int("delete_markers", scan.Markers))
+		return revisions, nil
+	}
 }
+
+// scanCreateWait is how long nats.go waits for a scan's consumer create on a context with no
+// deadline: the request wait of the bucket handle's legacy push context (bus.KeyValue.WatchKeys).
+const scanCreateWait = 5 * time.Second
 
 // scannedRoleClaim is one role claim record as a scan of the role bucket delivered it: the key it
 // is stored under, the claim decoded from its value with the entry's revision stamped on it, and

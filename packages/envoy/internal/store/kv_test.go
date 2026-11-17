@@ -3500,7 +3500,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 			}
 			done := make(chan scan, 1)
 			go func() {
-				rev, err := roleRevisions(context.Background(), handle, fake, idle, slog.Default())
+				rev, err := roleRevisions(context.Background(), handle, fake, idle, slog.Default(), 10*time.Second)
 				done <- scan{rev, err}
 			}()
 			var got scan

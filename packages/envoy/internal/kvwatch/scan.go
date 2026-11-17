@@ -75,7 +75,8 @@ func ScanExistingKeys(ctx context.Context, c clock.Clock, kv bus.KeyValue, keys,
 	defer cancel()
 	watcher, err := kv.WatchKeys(watchCtx, keys, opts...)
 	if err != nil {
-		return KeyScan{}, err
+		// Named, so a caller that ends on it (a listener's start) says which request failed.
+		return KeyScan{}, fmt.Errorf("%s: %w: %w", what, ErrScanNotCreated, err)
 	}
 	return drainScan(watchCtx, c, watcher, what, idle, log, visitLive)
 }
@@ -145,3 +146,7 @@ func drainScan(ctx context.Context, c clock.Clock, watcher jetstream.KeyWatcher,
 // ErrScanTimedOut is the error a scan that delivered no entry within its idle bound carries
 // (ScanExistingKeys).
 var ErrScanTimedOut = errors.New("the scan timed out")
+
+// ErrScanNotCreated is wrapped by the error of a scan whose watch was never created
+// (ScanExistingKeys): its consumer create failed, with the reason wrapped after it.
+var ErrScanNotCreated = errors.New("create the scan's consumer")

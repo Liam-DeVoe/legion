@@ -120,8 +120,9 @@ func WithInterestWatch(options ...kvwatch.Option) OpenOption {
 
 // WithRequestWait sets every wait the registry's own bucket calls and its open make, in place of
 // the defaults: each JetStream request (the MaxWait of the JetStream context the buckets are
-// opened through, 10 s, which every bucket call waits out: bus.Bounded), and the open's scan of the
-// role bucket (roleRevisions), whose consumer create waits 5 s and whose next entry 10 s
+// opened through, 10 s, which every bucket call waits out: bus.Bounded), each bucket's lookup and
+// create's wait for a reconnecting connection (bus.EnsureKeyValueWithin, 10 s), and the open's scan
+// of the role bucket (roleRevisions), whose consumer create waits 5 s and whose next entry 10 s
 // (kvwatch.ScanIdleTimeout); the scan as a whole then waits d. A test that writes through a
 // registry of its own passes what its test binary's deadline leaves, so that no bound of the
 // store's own ends a write the test then waits for; no deployment sets it. Open refuses a d that
@@ -175,15 +176,19 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	// Each bucket's lookup and create wait for the connection while it reconnects, within this
+	// open's own request wait (bus.EnsureKeyValueWithin): a start the connection drops under for a
+	// moment goes on once it is back, while the listener still answers /healthz "starting", since
+	// it publishes what /healthz reads only once this open and the durable's bind have returned.
+	kv, err := bus.EnsureKeyValueWithin(conn, js, &nats.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: opts.replicas, Storage: nats.FileStorage}, requestWait)
 	if err != nil {
 		return nil, err
 	}
-	roleKV, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage})
+	roleKV, err := bus.EnsureKeyValueWithin(conn, js, &nats.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: opts.replicas, Storage: nats.FileStorage}, requestWait)
 	if err != nil {
 		return nil, err
 	}
-	restoredRoleRevisions, err := roleRevisions(scanCtx, roleKV, opts.clock, scanIdle, opts.log)
+	restoredRoleRevisions, err := roleRevisions(scanCtx, roleKV, opts.clock, scanIdle, opts.log, requestWait)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +203,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	}
 	r.cache = newInterestCopy(r)
 	r.roleHolders = newRoleHolderCopy(r)
-	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, append([]kvwatch.Option{kvwatch.WithLogger(opts.log)}, opts.interestWatch...)...)
+	r.watcher = r.newInterestWatcher(kv, opts.interestWatch...)
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N
 	// individual kv.Get() calls blocks indefinitely when the KV stream leader is on a remote node.
@@ -211,11 +216,23 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 // out is read again by the watcher itself, so a view RolesHeldBy refuses becomes servable without
 // waiting for a Rewatch, and the bucket is read whole again roleClaimRepairInterval after each read
 // that completed, which repairs a copy that drifted from the bucket in either direction (roleCache
-// counts what each such read repaired). options follow the watcher's own, so one of them replaces
-// the scheduled read's interval (WithRoleClaimWatch).
+// counts what each such read repaired). A first watch whose failure was transient, as a loaded
+// start's can be, is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), a WARN for
+// each attempt, rather than the ERROR that leaves the view to the self-health rebuild. options
+// follow the watcher's own, so one of them replaces the scheduled read's interval
+// (WithRoleClaimWatch).
 func (r *Registry) newRoleWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
-	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval)}, options...)
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithFirstWatchRetry()}, options...)
 	return kvwatch.New("role claims", kv, roleCache{r}, options...)
+}
+
+// newInterestWatcher returns the watcher that feeds the interest copy from kv. A first watch whose
+// failure was transient is made again on the watcher's own clock (kvwatch.WithFirstWatchRetry), as
+// the role claim watcher's is (newRoleWatcher). options follow the watcher's own
+// (WithInterestWatch).
+func (r *Registry) newInterestWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithFirstWatchRetry()}, options...)
+	return kvwatch.New("interest registry", kv, interestCache{r}, options...)
 }
 
 // Ping verifies both KV buckets are reachable through the current NATS connection and reports
