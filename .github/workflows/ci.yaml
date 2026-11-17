@@ -3212,6 +3212,9 @@ jobs:
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
+              # The session grant cmd/listener/session_relay_reply_session_test.go renders for its
+              # session users (natsgrant.Session), which the soak's run compiles too.
+              - 'packages/envoy/natsgrant/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
@@ -3223,6 +3226,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsgrant/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3557,6 +3561,7 @@ jobs:
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/**/*_test.go'
               - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
@@ -3789,6 +3794,7 @@ jobs:
               - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
               - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/agentstream/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/copy_lock_order_test.go'
               - '!packages/envoy/internal/dispatch/api/decision_block_route_guard_test.go'
               - '!packages/envoy/internal/dispatch/api/event_insert_guard_test.go'
