@@ -20,8 +20,8 @@ missing instruction.
 ## Accepting
 
 Sign off an issue with no children once its evidence holds for its goal and every requirement of
-its spec, none unmet; a parent only on an approved head that carries its children's merges ("A
-parent's head", below).
+its spec, none unmet; a parent only on an approved head that carries the merges of every child its
+checks need ("A parent's head", below).
 
 A view's requirements are the parts of its ancestor's requirements that its `Delivers:` line
 names, at the version that line pins, so accept a view on those parts and read its empty
@@ -35,7 +35,9 @@ them before you decide:
 
 1. Read the issue's coverage with `dispatch read --issue <KEY>`. Each `Coverage:` line that reads
    `<block id> has no check` names a requirement that no check of those issues serves, and
-   `Coverage: unavailable` is a failed read: read again.
+   `Coverage: unavailable` is a failed read: read again. A read with no `Coverage:` line says that
+   every requirement has a check that serves it, and nothing of whether that check passed: the
+   steps below read that.
 2. List the issues under it with `dispatch issues --project <PROJECT> --parent <KEY> --all`, and
    again for each issue that lists.
 3. Read the checks and results of each of them with `dispatch results --issue <key>`.

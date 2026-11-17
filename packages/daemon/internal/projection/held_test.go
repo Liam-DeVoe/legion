@@ -50,14 +50,15 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
 // stands in held and in one of the other two. The fixture carries one issue for each of eleven
-// of the twelve words of the ladder — a member of a closed tree, a member of a parked tree, a root
-// whose label is off, a root whose Dispatch chain reaches another live root, a member of a tree
-// whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
-// link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
-// an issue past its review that nothing holds, which reads at_work (record.HeldAtWork), and an
-// issue none of the eleven is true of — and the rows are read from the projected state, which is
-// where a reader meets them. No issue stands for awaiting_children, a parent that holds a phase
-// start while a child of it is open (record.HeldAwaitingChildren); this fixture builds none.
+// of the twelve words of the ladder — a member of a closed tree, a member of a tree whose root is
+// on the backlog, a root whose label is off, a root whose Dispatch chain reaches another live
+// root, a member of a tree whose root waits on a person, a member under a shut design gate, a
+// child an unfinished Dispatch link holds, a parent whose own children are still open, an issue
+// beneath an accepted ancestor, an issue past its review that nothing holds, which reads at_work
+// (record.HeldAtWork), and an issue none of the eleven is true of — and the rows are read from
+// the projected state, which is where a reader meets them. No issue stands for awaiting_children,
+// a parent that holds a phase start while a child of it is open (record.HeldAwaitingChildren);
+// this fixture builds none.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and

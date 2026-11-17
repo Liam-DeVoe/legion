@@ -142,17 +142,18 @@ func (r *personHandoverRig) launches(token string) int {
 	return count
 }
 
-// readmit has the person park key, a running root, and take it back once its tree's cleanup is
-// confirmed, as A3 parks and takes back a recorded root: the daemon admits it as a new generation
-// and launches its architect again, whose session the rig registers as admit does. It answers the
-// operator's view of that claim, whose pending task is the new generation's start task (none where
-// the start names nothing), and the state the re-admission left.
+// readmit has the person move key, a running root, to the backlog and take it back once its tree's
+// cleanup is confirmed, as A3 moves a recorded root to the backlog and takes it back: the daemon
+// admits it as a new generation and launches its architect again, whose session the rig registers
+// as admit does. It answers the operator's view of that claim, whose pending task is the new
+// generation's start task (none where the start names nothing), and the state the re-admission
+// left.
 func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 	t := r.t
 	t.Helper()
 	before := r.record(key).Generation
 	r.setStatus(key, "backlog")
-	settled(t, r.d, "release the slot of "+key+" once the person parked it", func(s api.State) bool {
+	settled(t, r.d, "release the slot of "+key+" once the person moved it to the backlog", func(s api.State) bool {
 		return !slices.Contains(s.Admission.Active, key)
 	})
 	r.cleaned(key)
@@ -619,7 +620,7 @@ const (
 	ancestorLive pendingPlace = iota
 	ancestorMember
 	ancestorUnrecorded
-	ancestorParked
+	ancestorOnBacklog
 )
 
 // recorded says whether the daemon records P in a live tree, where a notice keyed by P reaches the
@@ -688,9 +689,9 @@ func (r *personHandoverRig) pendingWorld(names []string, opt pendingOptions) pen
 		})
 	case ancestorUnrecorded:
 		r.setStatus(run.parent.Key, "in_progress")
-	case ancestorParked:
-		// The approval is applied while P is in triage, so it is no person's handover of a parked
-		// root.
+	case ancestorOnBacklog:
+		// The approval is applied while P is in triage, so it is no person's handover of a root on
+		// the backlog.
 		r.applied(r.newestEvent(run.parent.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == approved.Version }))
 		r.setStatus(run.parent.Key, "backlog")
 		r.quiet(run.parent.Key)
@@ -998,7 +999,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			newer := r.editDocument(run.parent.PrimaryArtifactID, insertParagraph("The refit adds the depot."))
 			return fmt.Sprintf("Version %d of %s is newer than version %d, which the request asks a person to approve.", newer, document(run), run.basisVersion)
 		}},
-		{"a session's close of the request", []string{"Parking meter auditor", "Downtown curbside reform"}, func(run pendingRun) string {
+		{"a session's close of the request", []string{"Curb meter auditor", "Downtown curbside reform"}, func(run pendingRun) string {
 			r.resolveAsk(run.ask, asSession)
 			return fmt.Sprintf("session:%s closed approval request %s of version %d of %s", scratchSession, run.ask, run.basisVersion, document(run))
 		}},
@@ -1123,17 +1124,17 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.openedOnBasis(nested.root, nested.parent, 1, nested.basisVersion)
 
 	// P a Legion root on the backlog the daemon has not recorded.
-	parked := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorParked})
-	r.registerOn(parked.basisRun)
-	r.pendingRegistered(parked.basisRun, parked.ask, false, phase.Admitted)
-	r.approve(parked.parent.PrimaryArtifactID)
-	r.openedOnBasis(parked.root, parked.parent, 1, parked.basisVersion)
-	started := r.launchedArchitect(parked.parent.Key)
-	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", parked.parent.Key, parked.root.Key)
+	onBacklog := r.pendingWorld([]string{"Seed vault humidity", "Agricultural heritage archive"}, pendingOptions{place: ancestorOnBacklog})
+	r.registerOn(onBacklog.basisRun)
+	r.pendingRegistered(onBacklog.basisRun, onBacklog.ask, false, phase.Admitted)
+	r.approve(onBacklog.parent.PrimaryArtifactID)
+	r.openedOnBasis(onBacklog.root, onBacklog.parent, 1, onBacklog.basisVersion)
+	started := r.launchedArchitect(onBacklog.parent.Key)
+	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", onBacklog.parent.Key, onBacklog.root.Key)
 	if started.Pending == nil || !strings.Contains(started.Pending.Task, restingTask) {
-		t.Fatalf("the start task of %s, which the person's approval re-admitted, = %+v, want it naming %q", parked.parent.Key, started.Pending, restingTask)
+		t.Fatalf("the start task of %s, which the person's approval re-admitted, = %+v, want it naming %q", onBacklog.parent.Key, started.Pending, restingTask)
 	}
-	t.Logf("the person's approval of %s on the backlog opened %s and re-admitted %s, whose start task names it", parked.parent.Key, parked.root.Key, parked.parent.Key)
+	t.Logf("the person's approval of %s on the backlog opened %s and re-admitted %s, whose start task names it", onBacklog.parent.Key, onBacklog.root.Key, onBacklog.parent.Key)
 
 	// The daemon stopped after the pending seed ran; the approval while it is down, its event
 	// dropped when it starts again.

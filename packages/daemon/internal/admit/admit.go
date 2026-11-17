@@ -1694,13 +1694,13 @@ func (a *Admission) releaseSlotsForWaits(ctx context.Context, tx pgx.Tx, issues 
 //
 // Each reads an issue of this project in the workflow whose tree runs (record.RunningRoots: its
 // lifecycle open under the workflow, its root neither lingering nor waiting in the line as a
-// queued root), so a lingering, parked or unopened tree keeps every member where it stands, a
-// queued root is left alone (record.QueuedRoot), and a root handed over in awaiting_children
-// comes back once its promotion has opened its tree. A key a hold still names (held, the pass's
-// own predicate) is read on the first pass after the hold ends, as the promotion reads it. The
-// engine leaves alone a parent held, in retro or in merging, whose pull request has merged, or
-// whose phase's role stands on an entry a conflicting head raised out of retro or merging
-// (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
+// queued root), so a lingering or unopened tree, or one whose root is on the backlog, keeps every
+// member where it stands, a queued root is left alone (record.QueuedRoot), and a root handed over
+// in awaiting_children comes back once its promotion has opened its tree. A key a hold still names
+// (held, the pass's own predicate) is read on the first pass after the hold ends, as the promotion
+// reads it. The engine leaves alone a parent held, in retro or in merging, whose pull request has
+// merged, or whose phase's role stands on an entry a conflicting head raised out of retro or
+// merging (record.PhaseRow.EntryFrom), and a second pass finds a moved parent in awaiting_children
 // already, so it sends nothing again.
 //
 // It runs before the releases (promoteHolds), so the slot a stopped parent held is freed on this

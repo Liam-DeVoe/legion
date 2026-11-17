@@ -817,8 +817,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 	})
 
-	// The held list of dispatch://INFRA-2964, on main: a waiting parent in a tree a person parked
-	// reads its tree's reason, which the ladder reads before awaiting_children.
+	// The held list of dispatch://INFRA-2964, on main: a waiting parent in a tree a person moved to
+	// the backlog reads its tree's reason, which the ladder reads before awaiting_children.
 	t.Run("a waiting parent in a tree on the backlog reads its tree's reason in the held list", func(t *testing.T) {
 		const root, member, grandchild = "LEGION-420", "LEGION-421", "LEGION-422"
 		pool := migratedPool(t)

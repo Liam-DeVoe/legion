@@ -25,14 +25,14 @@ func TestStartedParentsAreTheIssuesWhosePhasesStarted(t *testing.T) {
 		issue.Hold = &Hold{From: from}
 		return issue
 	}
-	parked := at("LEGION-20", phase.Implementing)
-	parked.Status = "backlog"
+	onBacklog := at("LEGION-20", phase.Implementing)
+	onBacklog.Status = "backlog"
 	issues := []Issue{
 		at("LEGION-1", phase.Planning), at("LEGION-2", phase.Implementing), at("LEGION-3", phase.Testing),
 		at("LEGION-4", phase.Reviewing), at("LEGION-5", phase.Accepting), at("LEGION-6", phase.AwaitingChildren),
 		held("LEGION-7", phase.Implementing), held("LEGION-8", phase.Accepting),
 		at("LEGION-9", phase.Admitted), at("LEGION-10", phase.AwaitingPerson), at("LEGION-11", phase.Retro),
-		at("LEGION-12", phase.Merging), held("LEGION-13", phase.Retro), at("LEGION-14", phase.Done), parked,
+		at("LEGION-12", phase.Merging), held("LEGION-13", phase.Retro), at("LEGION-14", phase.Done), onBacklog,
 		at("LEGION-15", phase.Admitted),
 	}
 	owed := map[string]OwedStart{"LEGION-15": {Issue: "LEGION-15", Phase: phase.Planning}}

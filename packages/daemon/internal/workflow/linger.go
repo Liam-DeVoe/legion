@@ -52,8 +52,9 @@ import (
 // from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, which the
 // record's shape ties to that phase), as a held issue's hold goes with its leave, while the two
 // facts of its run that outlive the phase — the forward merge it owes and the moment it last
-// waited — stay on the record. A root a person parks while it waits on its children leaves like
-// any parked root, and a person's todo re-admits it as a new generation (admit's readmit).
+// waited — stay on the record. A root a person moves to the backlog while it waits on its
+// children leaves like any root moved to the backlog, and a person's todo re-admits it as a new
+// generation (admit's readmit).
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it

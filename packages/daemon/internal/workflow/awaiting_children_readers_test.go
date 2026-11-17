@@ -46,24 +46,24 @@ func TestASettlementOnAWaitingParentWakesNoRoleAndTellsNone(t *testing.T) {
 // as a held issue's hold goes with its leave: the record ties the held start to the phase
 // (record.Issue.ChildrenWait, the shape check of migration 20261114232555), so a leave that wrote
 // the phase done and kept the start would be refused by the database and the person's move would
-// never be recorded. A root a person parks lingers at done (it leaves the workflow like any
-// parked root), and a child a person closes stands at done. The two
+// never be recorded. A root a person moves to the backlog lingers at done (it leaves the workflow
+// like any root moved to the backlog), and a child a person closes stands at done. The two
 // facts of the run that outlive the phase — the forward merge owed and the moment of the wait —
 // stay as they were.
 func TestAWaitingParentThatLeavesTheWorkflowTakesItsHeldStartWithIt(t *testing.T) {
-	t.Run("a root a person parks lingers", func(t *testing.T) {
+	t.Run("a root a person moves to the backlog lingers", func(t *testing.T) {
 		pool := migratedPool(t)
 		waiting := cwSeedWaiting(t, pool, cwParent, phase.Implementing)
 
-		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("parked",
+		applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))("moved-to-backlog",
 			intake.DispatchIssue{Key: cwParent, Seq: 2, Type: "issue.updated", Status: "backlog", Title: "parent", Rank: "U"})
 
 		got := storedIssue(t, pool, cwParent)
 		if got.Phase != phase.Done || got.ChildrenWait != nil || got.LingerUntil == nil {
-			t.Fatalf("the parked root = phase %s, held start %+v, linger %v; want done, nothing held, lingering", got.Phase, got.ChildrenWait, got.LingerUntil)
+			t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want done, nothing held, lingering", got.Phase, got.ChildrenWait, got.LingerUntil)
 		}
 		if !got.ForwardMergeOwed || got.ChildrenWaitedAt == nil || !got.ChildrenWaitedAt.Equal(*waiting.ChildrenWaitedAt) {
-			t.Fatalf("the parked root = forward merge owed %t, waited at %v; want both kept from %v", got.ForwardMergeOwed, got.ChildrenWaitedAt, waiting.ChildrenWaitedAt)
+			t.Fatalf("the root on the backlog = forward merge owed %t, waited at %v; want both kept from %v", got.ForwardMergeOwed, got.ChildrenWaitedAt, waiting.ChildrenWaitedAt)
 		}
 	})
 

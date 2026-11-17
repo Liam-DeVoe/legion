@@ -64,10 +64,10 @@ func seedLiveAncestor(t *testing.T, pool *pgxpool.Pool) {
 	seedTreeLifecycle(t, pool, basisAncestor)
 }
 
-// seedParkedAncestor records LEGION-100 as a park leaves a root (workflow's leave, beginLinger):
-// at phase done with its tree lingering, and with the status Dispatch showed, backlog. R1 counts
-// such an ancestor as not accepted.
-func seedParkedAncestor(t *testing.T, pool *pgxpool.Pool) {
+// seedAncestorOnTheBacklog records LEGION-100 as a move to the backlog leaves a root (workflow's
+// leave, beginLinger): at phase done with its tree lingering, and with the status Dispatch showed,
+// backlog. R1 counts such an ancestor as not accepted.
+func seedAncestorOnTheBacklog(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	until := basisEngineNow.Add(time.Hour)
 	seedIssue(t, pool, record.Issue{Key: basisAncestor, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -351,16 +351,16 @@ func TestARegistrationOnABasisAnswersAWaitingRootAsItLeavesTheStep(t *testing.T)
 }
 
 // A resting-root notice is queued only where the daemon records the ancestor in a live tree: an
-// ancestor it does not record, and one parked out of the workflow, get no row, while the root's own
-// opening is told as ever. Nothing is recorded as told then, so a registration once the ancestor's
-// tree runs tells its architect.
+// ancestor it does not record, and one moved out of the workflow to the backlog, get no row, while
+// the root's own opening is told as ever. Nothing is recorded as told then, so a registration once
+// the ancestor's tree runs tells its architect.
 func TestABasisOnAnAncestorInNoLiveTreeQueuesNoRestingRoot(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		seed func(t *testing.T, pool *pgxpool.Pool)
 	}{
 		{"an ancestor the daemon does not record", func(*testing.T, *pgxpool.Pool) {}},
-		{"an ancestor parked on the backlog", seedParkedAncestor},
+		{"an ancestor on the backlog", seedAncestorOnTheBacklog},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

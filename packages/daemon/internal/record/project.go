@@ -144,11 +144,11 @@ func Accepted(issue Issue) bool {
 // does: what the daemon last read of Dispatch shows it done or retro (AcceptedStatus), in its
 // mirror of Dispatch's issues or in its record of the ancestor, or the daemon records it in its
 // retro or its merge (Accepted). Where neither the mirror nor the record knows the ancestor,
-// nothing the daemon holds says that it is accepted. A root a person parked stands at phase done
-// while its tree lingers (workflow's beginLinger), and R1 counts backlog and icebox as not
-// accepted, so the phase alone says nothing: a real close is the status Dispatch shows. The answer
-// is a sentence's subject and verb, naming the ancestor and what holds it ("Dispatch shows
-// LEGION-100 done").
+// nothing the daemon holds says that it is accepted. A root a person moved to the backlog or to
+// icebox stands at phase done while its tree lingers (workflow's beginLinger), and R1 counts
+// backlog and icebox as not accepted, so the phase alone says nothing: a real close is the status
+// Dispatch shows. The answer is a sentence's subject and verb, naming the ancestor and what holds
+// it ("Dispatch shows LEGION-100 done").
 //
 // It answers the daemon's record of the ancestor too, nil where it records none, and nil where the
 // mirror alone answered, which reads no record: a caller that reads more of the record where the

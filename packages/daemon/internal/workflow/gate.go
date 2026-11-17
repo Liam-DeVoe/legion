@@ -686,8 +686,8 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 //
 // The steps of other roots that name the document as their basis, an ancestor's approval
 // (dispatch://INFRA-3320), take the event first, apart from everything below (basisArtifact):
-// the ancestor's tree may be live, parked, re-admitted by this very approval, or none, and a step
-// of a root waiting on that ancestor's request opens or ends on it whichever it is.
+// the ancestor's tree may be live, on the backlog, re-admitted by this very approval, or none, and
+// a step of a root waiting on that ancestor's request opens or ends on it whichever it is.
 //
 // A person's approval of a parked labelled root's primary document is that person's handover of
 // the root (personHandoverQueues), and the daemon queues the root's todo itself, as admission does

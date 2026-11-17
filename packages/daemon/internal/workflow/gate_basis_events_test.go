@@ -395,15 +395,15 @@ func TestTheRootsOwnDocumentMovesAnOpenBasisStepAsAnApprovedStep(t *testing.T) {
 	}
 }
 
-// The person's approval of the version a step waits on, of an ancestor that is a labelled root
-// parked on the backlog, is that person's handover of the ancestor, and it opens the waiting step
-// as well: the ancestor's steps are read apart from the handover's branch.
-func TestAPendingBasisOpensOnTheApprovalThatReadmitsAParkedAncestor(t *testing.T) {
+// The person's approval of the version a step waits on, of an ancestor that is a labelled root on
+// the backlog, is that person's handover of the ancestor, and it opens the waiting step as well:
+// the ancestor's steps are read apart from the handover's branch.
+func TestAPendingBasisOpensOnTheApprovalThatReadmitsAnAncestorOnTheBacklog(t *testing.T) {
 	pool := migratedPool(t)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
 	seedGatedTree(t, pool)
-	seedParkedAncestor(t, pool)
+	seedAncestorOnTheBacklog(t, pool)
 	apply("register-pending", onBasis(pendingBasis(), 6))
 	approved := ancestorReview(intake.DispatchArtifactApproved, 4, 60, "")
 	approved.Issue = &dispatch.Issue{Key: basisAncestor, Status: "backlog", HandedOver: true, PrimaryArtifactID: basisDoc}
@@ -411,7 +411,7 @@ func TestAPendingBasisOpensOnTheApprovalThatReadmitsAParkedAncestor(t *testing.T
 	apply("ancestor-approved", approved)
 
 	if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; !gate.OnBasis() || !record.GateOpen(gate) || gate.Basis.Version != 4 {
-		t.Fatalf("the spec step = %#v, want it open on version 4 of the parked ancestor's document", gate)
+		t.Fatalf("the spec step = %#v, want it open on version 4 of the document of the ancestor on the backlog", gate)
 	}
 	if got := noticesOfKind(t, pool, gatedRoot, "design-approved"); len(got) != 1 {
 		t.Fatalf("design-approved notices = %#v, want one", got)

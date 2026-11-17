@@ -777,9 +777,9 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // back - and its handoff is the findings the next phase reads, which a refusal would lose. Five
 // completions are not: one from a role whose handoff already stands, which is reporting a phase it
 // finished a second time; one from a role the daemon never started on this issue, which has held
-// no phase of it to report; any while the issue stands where no role works - parked, closed,
-// held or waiting on its children - which is past recording work at all; any while it stands at
-// admitted; and one of a phase whose entry was raised before the issue last moved into
+// no phase of it to report; any while the issue stands where no role works - on the backlog,
+// closed, held or waiting on its children - which is past recording work at all; any while it
+// stands at admitted; and one of a phase whose entry was raised before the issue last moved into
 // awaiting_children (record.Issue.ChildrenWaitedAt), which outlives the wait: the wait stopped
 // that phase, and the return starts the work again on an entry of its own (dispatch://INFRA-3320
 // R10). Admitted is the architect's own phase (phase.RoleFor), which completes nothing (handoff),

@@ -22,7 +22,7 @@ import (
 // still in the workflow, apart from the decisions kept for it, which it names none of here, and
 // before the first act of the shape the record gives the ancestor (workflow.ArchitectStartTask). A
 // resting root that has left the workflow is not named. The ancestor may be one the daemon never
-// recorded, or one a person parked on the backlog and moves back to todo.
+// recorded, or one a person moved to the backlog and then moves back to todo.
 func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T) {
 	const (
 		ancestor = "LEGION-ROOT"
@@ -38,7 +38,7 @@ func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T
 			apply(t, pool, admission, "ancestor-todo", intake.DispatchIssue{Key: ancestor, ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.updated",
 				Status: "todo", Title: "ancestor", Rank: "B", HandedOver: handed}, admission.engine)
 		}},
-		{"an ancestor parked on the backlog", parkedRoot, readmitRoot},
+		{"an ancestor on the backlog", parkedRoot, readmitRoot},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

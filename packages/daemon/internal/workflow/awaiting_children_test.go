@@ -724,7 +724,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)", "holds, testing,")
 			if want := cwParent + " waits in awaiting_children on these open Dispatch children of it: " + cwChild + " (in_progress). " +
 				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; " + cwParent + " goes back to the start it holds, testing, by itself once no child under it is open. " +
-				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent; close, icebox or park one " + parkRule + ", and cite that reason in a comment on the child"; message != want {
+				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent; close one, move it to icebox or take it out with park_child " + parkRule + ", and cite that reason in a comment on the child"; message != want {
 				t.Fatalf("the refusal = %q, want %q", message, want)
 			}
 		})

@@ -222,7 +222,7 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 	reason += fmt.Sprintf(" The wait ends when no child under %[1]s is open: each one released and run until it leaves the workflow, closed, moved to icebox, taken out with park_child, or moved out from under %[1]s to an issue outside its tree or to no parent."+
 		" Then %[1]s goes back to the start it held by itself, a held testing, reviewing or accepting as implementing, and unless its pull request merged meanwhile its first implementing round merges the default branch forward and runs a full test round."+
 		" It holds no admission slot while it waits, and request_backward_move and sign_off on it are refused (%[2]s)."+
-		" Close, icebox or park a child "+parkRule+", and cite that reason in a comment on the child.",
+		" Close a child, move it to icebox or take it out with park_child "+parkRule+", and cite that reason in a comment on the child.",
 		parent, waitingOnChildren)
 	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Verdict: hold.Verdict, Reason: reason}
 }
@@ -520,6 +520,6 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 			issue.Key, held, act, act)), nil
 	}
 	return refused(waitingOnChildren, fmt.Sprintf("%[1]s waits in awaiting_children on these open Dispatch children of it: %[2]s. It stands in no phase that %[3]s acts on, so this %[3]s changed nothing; %[1]s goes back to the start it holds, %[4]s, by itself once no child under it is open. "+
-		"Act on the children: release one that should run, or move one out from under %[1]s to an issue outside its tree or to no parent; close, icebox or park one "+parkRule+", and cite that reason in a comment on the child",
+		"Act on the children: release one that should run, or move one out from under %[1]s to an issue outside its tree or to no parent; close one, move it to icebox or take it out with park_child "+parkRule+", and cite that reason in a comment on the child",
 		issue.Key, openChildNames(open), act, held)), nil
 }

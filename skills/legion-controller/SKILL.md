@@ -150,7 +150,7 @@ A free slot is no reason to park an issue, and a full cap is no reason either.
 When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
 A parent that waits on its children holds no slot, in its first phase or in `awaiting_children`,
-so that wait is no reason to park it either.
+so that wait is no reason to move it to `backlog` or `icebox` either.
 Report the free slots, or the full cap, to the person in the day's report, and move nothing for them.
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four issues at work holds four slots. An issue takes its slot when the daemon

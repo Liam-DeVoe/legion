@@ -2113,7 +2113,7 @@ The daemon runs on the devbox as the Legion daemon's restricted identity, with `
 the daemon requires a store that keeps sessions in a database, since an issue pod's disk dies with the pod).
 Tree 1 runs the whole workflow to `done`;
 while its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own, closes one as `done` and parks the other in backlog.
-Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has parked both, one at a time; it then comes back to `implementing` for a forward merge and a full test round, and the merge closes it.
+Two more children are filed while tree 1 stands in `accepting`, which moves it to `awaiting_children`, where the daemon refuses its sign-off until the proof human has moved both to the backlog, one at a time; it then comes back to `implementing` for a forward merge and a full test round, and the merge closes it.
 Its `legion.yaml` names `runtime.kubernetes.plugins` with the latest published `@sjawhar/pi-legion` and `@sjawhar/pi-envoy`, resolved at run time:
 the branch-built daemon links no release plugin pair, so without it the run would boot in the degraded mode (`plugins: none` from `--check-config`) instead of the pair a stale-plugin relaunch would install, even though this run's own claims register at the branch daemon's own contract and so never go stale enough to trigger that install.
 It sets `linger_hours: 0.5` (tree 1's linger runs from the close its merge brought on, and holds its production check's first look and suspension, the smoke main's cleanup and the check's bound;
@@ -2268,7 +2268,7 @@ Four roots run under `admission_cap: 4`, a cap of the issues the daemon has star
   While its planner holds, the driver files two children under it, each in an issue pod and on a disk of its own:
   the four issues the daemon has started fill the cap and hold tree 3 in the line, then child 1 is closed as `done` and released, child 2 parked in backlog, which deletes its Sandbox as a close does — no Sandbox, no pod and so no disk — and the slots they held go to tree 3 and, later, to child 2's re-entry.
   Children 3 and 4, filed while the root stands in `accepting` and holds no slot of its own, move it to `awaiting_children`, where they hold its sign-off:
-  the daemon refuses it `WAITING_ON_CHILDREN` naming both, the proof human parks them one at a time, the refusal after the first park names the one that remains, and the last park sends the root back to `implementing` for a forward merge and a full test round before the sign-off lands.
+  the daemon refuses it `WAITING_ON_CHILDREN` naming both, the proof human moves them to the backlog one at a time, the refusal after the first move names the one that remains, and the last move sends the root back to `implementing` for a forward merge and a full test round before the sign-off lands.
 
 - Tree 2 runs through its planner beside tree 1, in an issue pod of its own, carrying the repository-configuration fixture (the loading paths' markers, two skills, a Go, a TypeScript and a Python root, and a `.omp/config.yml`), whose tools its planner uses in its checkout (`repository-tools`), supplies the capability report every session measures at an idle tick of the 5 s interval it already runs rather than at its boot (`full-agent`, INFRA-927), and is then moved to backlog.
 
@@ -2633,8 +2633,8 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   The first admission pass that sees them moves tree 1 to `awaiting_children`, holding its acceptance, within 900 s: no slot, not in `admission.waiting`, in `admission.blocked` with both children and in `admission.held` as `awaiting_children`, Dispatch `in_progress` within 120 s, and exactly one `awaiting-children` notice on the architect naming both children and the held start of `accepting`.
   The driver then prompts the architect to accept, three times, and reads each answer in the architect's session, where the `legion` tool puts it:
   the first `sign_off` is refused `WAITING_ON_CHILDREN` naming both children, and tree 1 stays in `awaiting_children`;
-  the proof human parks child 3 (`backlog`, leaving it no Sandbox, no pod and no disk, its planner suspended), and the next `sign_off` is refused naming child 4 alone, which is what makes the wait every open child rather than any.
-  The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the forward merge carries something, and parks child 4:
+  the proof human moves child 3 to the backlog (`backlog`, leaving it no Sandbox, no pod and no disk, its planner suspended), and the next `sign_off` is refused naming child 4 alone, which is what makes the wait every open child rather than any.
+  The proof human commits a file under `docs/solutions/`, named after tree 1, to the base, so the forward merge carries something, and moves child 4 to the backlog:
   the pass takes tree 1 back to `implementing` in place of the acceptance it held (the log's `workflow: a parent's open children are finished, so it goes back to the start it held` with `held=accepting to=implementing`, once), and the implementer's task carries the line `children merged: full test round`.
   The implementer merges the base forward and posts the forward-merge comment ending with that line, read on the pull request among the implement App's own comments, at the implementer's round 2, which the return left unchanged;
   once tree 1 is in `testing`, the pull request's head contains the base commit (GitHub's compare of that commit with the head reads `ahead` or `identical`);
@@ -2872,7 +2872,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   `merging` → `done` within 900 s (the log's `workflow: phase changed … from=merging to=done trigger=pull_request_merged`), with no `workflow: a merged issue's close waits for the issues beneath it` line for tree 1 and no `pr-merged` notice on its architect;
   Dispatch reads `done` within 120 s, the production check opens on the merge commit at its first look, woken by the merge (`check_opened_on`:
   `looks: 1`, `lookOpen: true`, `lastWake.kind: merge`, `role: tester`), and the close hands the tester — the role a project that names no `production_check` gets — that look in the still-live pod.
-  No issue of tree 1 holds an admission slot at the close: the root's row went when it last reached `accepting`, its children's at their parks, and the close frees whatever is left.
+  No issue of tree 1 holds an admission slot at the close: the root's row went when it last reached `accepting`, its children's at their moves to the backlog, and the close frees whatever is left.
   The proof sends it nothing, so the fixture tells a check task to wait for no targeted message and act on the daemon's task as written
   — this proof has no production and no deploy role, so the tester leaves `Production: pending deploy of <merge commit>` on the pull request and reports `pending` (`check_look_reported`, within 600 s of the look's start:
   `looks: 1, lookOpen: false`, the check still open); `clean_smoke_main` runs while it works.

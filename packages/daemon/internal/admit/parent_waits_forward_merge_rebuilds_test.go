@@ -73,12 +73,12 @@ func TestAFreshSessionRetryOfTheReturnsImplementerStillAsksForTheForwardMerge(t 
 
 // A member of a tree waited on its own child and came back to implementing, and its start waited
 // for the slot the return's line gave it. Before that start reached the implementer, a person
-// parked the tree's root: the tree lingers, and the same fact's pass finishes the member's start
-// undelivered (finishFencedStarts). The person's todo then re-admits the tree, and its promotion
-// starts the member's implementer again on the resume task of its phase (startMidPhaseMembers,
-// workflow.Engine.StartPromotedWorker), which raises the entry the re-admission cleared the task
-// of. No implementer has merged the children's work forward yet, so the promoted task asks for
-// the merge, once, and the record still owes it.
+// moved the tree's root to the backlog: the tree lingers, and the same fact's pass finishes the
+// member's start undelivered (finishFencedStarts). The person's todo then re-admits the tree, and
+// its promotion starts the member's implementer again on the resume task of its phase
+// (startMidPhaseMembers, workflow.Engine.StartPromotedWorker), which raises the entry the
+// re-admission cleared the task of. No implementer has merged the children's work forward yet, so
+// the promoted task asks for the merge, once, and the record still owes it.
 func TestAReadmittedTreesPromotedImplementerStillAsksForTheForwardMerge(t *testing.T) {
 	const root, member, grandchild = "LEGION-208", "LEGION-209", "LEGION-210"
 	pool := migratedPool(t)
@@ -103,13 +103,13 @@ func TestAReadmittedTreesPromotedImplementerStillAsksForTheForwardMerge(t *testi
 	}
 	fmAsksOnce(t, "the return's implementer task", pnWorkerStart(t, pool, member, claim.RoleImplementer).Task)
 
-	apply(t, pool, admission, "parked", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: root, Rank: root, HandedOver: true}, pnLingering())
 	if got := issue(t, pool, root); got.Phase != phase.Done || !got.Lingers() {
-		t.Fatalf("the parked root = phase %s, linger %v; want done, lingering", got.Phase, got.LingerUntil)
+		t.Fatalf("the root on the backlog = phase %s, linger %v; want done, lingering", got.Phase, got.LingerUntil)
 	}
 	if starts := pwWorkerStarts(t, pool, member); len(starts) != 0 {
-		t.Fatalf("the starts of %s after the park = %+v, want none: the pass finishes a start of a lingering tree undelivered", member, starts)
+		t.Fatalf("the starts of %s after the move to the backlog = %+v, want none: the pass finishes a start of a lingering tree undelivered", member, starts)
 	}
 
 	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",

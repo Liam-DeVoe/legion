@@ -444,11 +444,10 @@ above are true. `register_gate` reads each condition again. It refuses a call th
 records nothing, and its code and message name what Dispatch shows.
 
 A view's Design decides how the root builds each of the ancestor's requirements. This holds also
-where it changes a Design line of a version of the root that a person approved before the root
-became a view: such a line is no requirement, and it does not go up to the ancestor. The message
-the daemon posts on the root when its step opens on the basis names the ancestor's approval that
-opened the step and says that no person approved the version the root registered, so the person
-can still ask for the root's own approval.
+where it changes a Design line that a person approved before the root became a view: such a line
+is no requirement, and it does not go up to the ancestor. The message the daemon posts on the root
+when its step opens on the basis names the ancestor's approval that opened the step and says no
+person approved the root's version, so the person can still ask for the root's own approval.
 
 ### How to write the view
 
@@ -576,7 +575,8 @@ that issue and `architect`. Three messages follow:
 
 1. The ancestor's architect adds the requirement and tells you the block's reference and version.
 2. You write the `Delivers:` line and the check of that block, pinned to that version, and tell the
-   ancestor's architect.
+   ancestor's architect. Name in that message any part the root needs that the block leaves out,
+   for the next version.
 3. The ancestor's architect requests the person's approval and tells you that the request is open.
    Then run the two fresh reviews, register on that version as a pending basis, and end your turn.
 
@@ -596,14 +596,15 @@ up, put to the person for approval. Its request's summary names the roots and th
 root that reads the request can tell it is one. Any other root under the ancestor whose
 registration finds that version waiting on the person may register on it as a pending basis too.
 While a request of the route waits on the person, a second requirement waits for that answer. It
-then goes into the next version.
+then goes into the next version, and the root registers on that version.
 
 ### For the ancestor's architect
 
 When a root's architect sends you a requirement:
 
-1. Add it to the ancestor's primary document as a `requirement` block. After its number, its text
-   starts with the root that delivers it: `Delivered by dispatch://<ROOT>.`
+1. Add it to the ancestor's primary document as a `requirement` block. After its number and any
+   title, its text starts with the root that delivers it: `Delivered by dispatch://<ROOT>.` How
+   the root builds it stays in the root's Design.
 2. Tell the root's architect the block's reference and the version.
 3. Wait until the root's architect tells you that its `Delivers:` line and its check are written.
    The ancestor's Spec tab then shows the requirement with its check when the person reads it.

@@ -6,7 +6,11 @@ body: |-
   how a requirement that the ancestor does not state goes into the ancestor's spec for one
   approval, and how an acceptance reads the checks across the issues under the ancestor. Work that
   cannot be built or tested until the ancestor's own pull request merges is not filed as a root
-  under it, since the ancestor would wait on that root, and goes into the ancestor's spec. The
+  under it, since the ancestor would wait on that root, and goes into the ancestor's spec. A
+  view's Design decides how the root builds each of the ancestor's requirements, also where it
+  changes a Design line a person approved before the root became a view, and such a line does not
+  go up to the ancestor. A class root asked to start nothing yet is filed with its `legion` label
+  and moved to the backlog. The
   controller's and the worker's filing references link an issue of an approved class, or of a
   running tree's work, to its root.
 custom:

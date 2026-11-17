@@ -120,8 +120,8 @@ class root with `--label legion`, and write in its spec that it has no code of i
 also when a request or a proposal asks for an issue that holds only a design, and say why in its
 spec and in your reply. A request for a class root whose members Legion runs asks Legion to run
 that root. Where the request also asks that nothing start yet, file the root with the label all
-the same and park it in `backlog` at once: the label starts nothing there, since a parked root
-keeps its `legion` label and a person's decision starts it
+the same and move it to `backlog` at once: the label starts nothing there, since a root on the
+backlog keeps its `legion` label and a person's decision starts it
 (`skill://legion-controller/references/parked-decisions.md`).
 
 An issue already filed that belongs to an approved root, with no `child_of` link to it, goes where
@@ -159,14 +159,15 @@ it leaves the backlog only on a request or a plan directive that names it. Where
 do as your deployment's instructions say. Where they give you no rule for this move, ask a person:
 
 1. Open a `dispatch ask` on the report issue that names the root and the member, with the options
-   `Run it now` and `Leave it parked` and your recommendation. Follow it
+   `Run it now` and `Leave it on the backlog` and your recommendation. Follow it
    (`dispatch follow --ask '<ref>' --action follow`). While an open ask on the report issue already
    asks this for the same root (`dispatch open-asks --project <PROJECT>` lists them), open no
    second one. Add the new member under that ask instead.
 2. On `Run it now`, set the root to `todo` (`set_status`), and cite the answer in a comment on the
-   root: the answer is a person's request that names it. On `Leave it parked`, move nothing.
+   root: the answer is a person's request that names it. On `Leave it on the backlog`, move
+   nothing.
 3. Reply under the ask, its first line exactly `Started dispatch://<ROOT>` or
-   `Left parked dispatch://<ROOT>`.
+   `Left on the backlog dispatch://<ROOT>`.
 
 Until the root runs, the member waits with it. A fix that must run now does not wait. File it with
 no parent, and it asks for its own approval. Its spec names the class root and says why the fix is
@@ -185,10 +186,11 @@ When `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
 
-A park ask (`Park it`, `Leave it admitted`), a deferral ask (`Defer it`, `Let it run`) and a run
-ask (`Run it now`, `Leave it parked`) take none of the four finding actions below. Act on the
-answer to a park ask as `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`
-step 4 says, on the answer to a deferral ask as
+An ask whether to move a tree to the backlog (`Park it`, `Leave it admitted`), a deferral ask
+(`Defer it`, `Let it run`) and a run ask (`Run it now`, `Leave it on the backlog`) take none of
+the four finding actions below. Act on the answer to an ask whether to move a tree to the backlog
+as `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 4 says, on the
+answer to a deferral ask as
 `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` step 4 says,
 and on the answer to a run ask as
 [A member under a root on the backlog](#a-member-under-a-root-on-the-backlog) says.
@@ -256,7 +258,7 @@ finding asks roles opened on their own issues while no controller ran:
 
    ```text
    asks=$(curl -sS --fail-with-body -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<ISSUE KEY>/asks?state=answered&thread=1") || { echo "Dispatch read failed" >&2; exit 1; }
-   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run" or .label == "Run it now" or .label == "Leave it parked")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://|Started dispatch://|Left parked dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
+   printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run" or .label == "Run it now" or .label == "Leave it on the backlog")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://|Started dispatch://|Left on the backlog dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
    Read it for the report issue, then for each issue in `needs_review`, whose architect holds its

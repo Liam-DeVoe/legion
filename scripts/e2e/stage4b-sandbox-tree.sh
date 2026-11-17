@@ -17,10 +17,10 @@
 # parks the other in backlog, which frees the slots tree 3 and the re-entry take, sets it todo
 # again so the daemon resumes its parked planner by rule, and parks it once more; two more
 # children are filed while the root stands in `accepting`, which moves it to `awaiting_children`,
-# where the daemon refuses its sign-off (`WAITING_ON_CHILDREN`) until the proof human has parked
-# both, one at a time; the root then comes back to `implementing` for a forward merge and a full
-# test round, and the merge then closes the root, since nothing of its tree is left in the
-# workflow. Its
+# where the daemon refuses its sign-off (`WAITING_ON_CHILDREN`) until the proof human has moved
+# both to the backlog, one at a time; the root then comes back to `implementing` for a forward
+# merge and a full test round, and the merge then closes the root, since nothing of its tree is
+# left in the workflow. Its
 # architect is suspended from the operator shell while its
 # implementer completes, and stays held until the operator resumes it; in merging, every one of its
 # roles uses Oh My Pi's tools and the image's toolchain as its own App (full-agent-tools). Tree 2
@@ -262,8 +262,8 @@ stream=ENVOY_NOTIFICATIONS
 # there, waits for it. The later gathering is three and not four: at children-first-acceptance
 # tree 1's root stands in accepting and then in awaiting_children, holding no slot, so tree 3 and
 # children 3 and 4 are the whole of it — tree 2 has left the workflow by then (issue-cap-moves) and
-# child 2 is parked again (child-reentered). Once both children are parked the root comes back to
-# implementing and takes a slot beside tree 3's, two of the four.
+# child 2 is on the backlog again (child-reentered). Once both children are on the backlog
+# the root comes back to implementing and takes a slot beside tree 3's, two of the four.
 # Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
 # child 1's close and child 2's park free, tree 4 the one tree 3's own backlog frees at
 # controller-walk.
@@ -271,8 +271,8 @@ admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
 # Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
-# and then in awaiting_children holding no slot at all, and are parked there; with tree 2 gone and
-# child 2 parked they raise no peak either.
+# and then in awaiting_children holding no slot at all, and are moved to the backlog there; with
+# tree 2 gone and child 2 on the backlog they raise no peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
@@ -388,8 +388,8 @@ child1=
 child2=
 # Children 3 and 4 of tree 1 (children-first-acceptance): both are open while their root stands
 # in accepting, which moves it to awaiting_children, where they hold its sign-off, and the proof
-# human parks them one at a time. Their pods are named so their disks can be read once the parks
-# took them.
+# human moves them to the backlog one at a time. Their pods are named so their disks can be read
+# once the parks took them.
 child3=
 child3_pod=
 child4=
@@ -4880,27 +4880,27 @@ begin children-first-acceptance
 # holding its acceptance (workflow's StopForChildren): Dispatch in_progress, no slot, in
 # admission.blocked with both children and in admission.held as awaiting_children, and the
 # architect told once with an awaiting-children notice. The architect's sign_off is then refused
-# WAITING_ON_CHILDREN, naming both; the proof human parks them one at a time, and the refusal after
-# the first park names the one that remains, which is what makes the wait every open child rather
-# than any. The last park ends the wait: the admission pass takes tree 1 back to implementing, since
-# a held acceptance comes back as implementing (ReturnFromChildren), and the implementing task asks
-# for the forward merge and the line `children merged: full test round`. The proof human first
-# commits a file to the base, so that forward merge carries something. The implementer, the tester
-# and the reviewer then run that round with real agents, and the architect's sign_off moves tree 1
-# to retro.
+# WAITING_ON_CHILDREN, naming both; the proof human moves them to the backlog one at a time, and
+# the refusal after the first move names the one that remains, which is what makes the wait every
+# open child rather than any. The last move ends the wait: the admission pass takes tree 1 back to
+# implementing, since a held acceptance comes back as implementing (ReturnFromChildren), and the
+# implementing task asks for the forward merge and the line `children merged: full test round`.
+# The proof human first commits a file to the base, so that forward merge carries something. The
+# implementer, the tester and the reviewer then run that round with real agents, and the
+# architect's sign_off moves tree 1 to retro.
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
 # later). The root in accepting and then in awaiting_children holds no slot of its own, so tree 3
 # and these two children are three of admission_cap 4 — tree 2 left the workflow at
-# issue-cap-moves and child 2 is parked again — and the root's pod beside their three is the four
-# pods preflight sized the pool for. And an issue
+# issue-cap-moves and child 2 is on the backlog again — and the root's pod beside their three is
+# the four pods preflight sized the pool for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
 child3=$(new_child "Stage 4b proof tree 1 child 3: open under its root while the root waits on its children ($work)" "$tree1") ||
   fail "Dispatch could not create tree 1's third child"
-child4=$(new_child "Stage 4b proof tree 1 child 4: the last open child under the root, whose park ends the wait ($work)" "$tree1") ||
+child4=$(new_child "Stage 4b proof tree 1 child 4: the last open child under the root, whose move to the backlog ends the wait ($work)" "$tree1") ||
   fail "Dispatch could not create tree 1's fourth child"
 note "[dispatch] tree 1's children $child3 and $child4: todo under $tree1, no legion label (a child of a live tree is the daemon's to enter)"
 # Each child's pod is kept by name (child3_pod, child4_pod): an issue pod's disk is read by its
@@ -4984,7 +4984,7 @@ on_tree "$tree1" until_true 900 "the daemon to refuse $tree1's sign_off again, n
   refused_naming "$child4"
 issue_phase "$tree1" awaiting_children >/dev/null ||
   fail "$tree1 left awaiting_children while $child4 was still open: $(daemon_state | jq -c --arg i "$tree1" '.issues[$i].phase')"
-note "with $child3 parked the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_waiting | paste -sd '; ' -)): the wait is for every open child, not any"
+note "with $child3 on the backlog the daemon refused the sign_off again, naming $child4 alone (every refusal of this run so far: $(refusals_waiting | paste -sd '; ' -)): the wait is for every open child, not any"
 # A file on the base, so the forward merge the return asks for brings something in. It goes under
 # docs/solutions/, which clean_smoke_main takes off the smoke main after the merge, and is named
 # after tree 1, so an earlier run that failed before that cleanup leaves no file at this run's
@@ -5001,8 +5001,8 @@ children_base_sha=$(jq -cn --arg branch "$pr_base" --arg sha "$children_base_blo
   fail "the proof human could not commit $children_base_path to $pr_base"
 note "the proof human committed $children_base_path to $pr_base as $children_base_sha while $tree1 waited on $child4"
 park_child_issue "$child4" "$child4_pod"
-# The last park ends the wait: the pass takes tree 1 back to implementing in place of the
-# acceptance it held, and the implementing task asks for the forward merge and the line.
+# The last move to the backlog ends the wait: the pass takes tree 1 back to implementing in place
+# of the acceptance it held, and the implementing task asks for the forward merge and the line.
 on_tree "$tree1" wait_for_phase "$tree1" implementing 900
 returned=$(log_lines "workflow: a parent's open children are finished, so it goes back to the start it held" |
   jq -c --arg issue "$tree1" 'select(.issue == $issue and .held == "accepting" and .to == "implementing")' | grep -c . || true)
@@ -6518,7 +6518,8 @@ merged_notices=$(notice_deliveries "$tree1" architect "$(notice_needle pr-merged
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it last
-# reached accepting, past its review, its children's at their parks, and the close frees whatever is left.
+# reached accepting, past its review, its children's at their moves to the backlog, and the close
+# frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"

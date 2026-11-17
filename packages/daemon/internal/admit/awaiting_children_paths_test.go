@@ -168,11 +168,11 @@ func TestTheMeasureReadsAWaitingParentAsAFirstPhaseChildrenWait(t *testing.T) {
 	})
 }
 
-// A root that waited in awaiting_children and that a person parked lingers at done with nothing
-// held (workflow's leave), and a person's todo then re-admits it as a new generation at admitted
-// with no held start: the start it held went with the generation
-// that held it. Its first phase waits on its still open child under the children-first rule, as
-// any re-admitted root's does.
+// A root that waited in awaiting_children and that a person moved to the backlog lingers at done
+// with nothing held (workflow's leave), and a person's todo then re-admits it as a new generation
+// at admitted with no held start: the start it held went with the generation that held it. Its
+// first phase waits on its still open child under the children-first rule, as any re-admitted
+// root's does.
 func TestARootReadmittedFromTheBacklogHoldsNoStart(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 2)
@@ -181,10 +181,10 @@ func TestARootReadmittedFromTheBacklogHoldsNoStart(t *testing.T) {
 	spWaiting(t, pool, spParent, phase.Implementing, acHeldTask, acHeldReason, func(issue *record.Issue) { issue.LastDispatchSeq = 1 })
 	seedMirrorChild(t, pool, spChild, "backlog", spParent)
 
-	apply(t, pool, admission, "parked", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+	apply(t, pool, admission, "moved-to-backlog", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
 		Status: "backlog", Title: spParent, Rank: spParent, HandedOver: true}, engine)
-	if parked := issue(t, pool, spParent); parked.Phase != phase.Done || parked.ChildrenWait != nil || parked.LingerUntil == nil {
-		t.Fatalf("the parked root = phase %s, held start %+v, linger %v; want done, nothing held, lingering", parked.Phase, parked.ChildrenWait, parked.LingerUntil)
+	if onBacklog := issue(t, pool, spParent); onBacklog.Phase != phase.Done || onBacklog.ChildrenWait != nil || onBacklog.LingerUntil == nil {
+		t.Fatalf("the root on the backlog = phase %s, held start %+v, linger %v; want done, nothing held, lingering", onBacklog.Phase, onBacklog.ChildrenWait, onBacklog.LingerUntil)
 	}
 
 	apply(t, pool, admission, "readmitted", intake.DispatchIssue{Key: spParent, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated",
