@@ -341,8 +341,9 @@ export function PlanFilterBody({
 /** The two reads, in the order the body says which of them failed. */
 const PLAN_READS: readonly PlanRead[] = ["plan", "statements"];
 
-/** The row of the view's tree that holds its one tab stop, as the stage finds it
- *  (`slots/stage.tsx`): the first bar's row under the chart. */
+/** The row of the view's tree that holds its one tab stop: the same selector as the stage's own
+ *  `TAB_STOP_ROW` (`slots/stage.tsx`), which is not exported. Under the chart it finds the first
+ *  bar's row. */
 const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** What the body says of each read that failed before it first answered, in the page's words:
@@ -660,22 +661,25 @@ function PlanChart({
     document.activeElement === null ||
     document.activeElement === document.body ||
     at(items()) !== -1;
-  /** The first bar's row of `held` past `from`, going `by` rows at a time, or -1 where there is
-   *  none: the keys that move the reader pass over a cycle's row. */
+  /** The first bar's row of `held` past `from`, going `by` rows at a time, or `from` itself
+   *  where there is none, so a move key at the chart's end stays on the row it is on, as the
+   *  outline's move keys stop at its ends: the keys that move the reader pass over a cycle's
+   *  row. */
   const barFrom = (held: readonly HTMLElement[], from: number, by: 1 | -1): number => {
     for (let index = from + by; index >= 0 && index < held.length; index += by) {
       if (held[index]?.hasAttribute("data-plan-bar-row") === true) return index;
     }
-    return -1;
+    return from;
   };
   /** Moves the focus to the `index`th of `held`, where the row's own hook then places it on
    *  screen, clear of the band that stays at the top (`useRowOnScreen`). A key that lands on the
-   *  row already holding the focus - Home on the first, End on the last - changes no focus, so
-   *  that hook does not run and a row scrolled away would stay off screen; the row is brought on
-   *  screen here instead, as the outline's move keys do. */
+   *  row the reader is already on - an arrow at the chart's end, Home on the first, End on the
+   *  last, Escape from a link inside the row - leaves that row the focused one, so its hook does
+   *  not run and a row scrolled away would stay off screen; that row is brought on screen here
+   *  instead, as the outline's move keys do (`useTreeKeymap.ts`'s `moveTo`). */
   const moveTo = (held: readonly HTMLElement[], index: number): void => {
     const target = held[index];
-    if (target !== undefined && target === document.activeElement) bringOnScreen(target);
+    if (target?.contains(document.activeElement) === true) bringOnScreen(target);
     target?.focus({ preventScroll: true });
   };
   useKeymap("issue", [
@@ -779,7 +783,7 @@ function PlanChart({
           active.blur();
           return;
         }
-        held[at(held)]?.focus({ preventScroll: true });
+        moveTo(held, at(held));
       },
       when: () => {
         const held = items();
