@@ -338,9 +338,13 @@ export function IssuePresets({
                   {PRESET_NAMES[preset]}
                 </span>
               </button>
+              {/* Its press leaves the focus where it is too, as its button's does: a label
+                  takes no focus, so its mousedown would move it to the body and out of the
+                  outline before the click presses the button. */}
               <label
                 className="cursor-pointer pt-[7px] pr-3 pb-1.5 pl-1.5"
                 htmlFor={toggleId(preset)}
+                onMouseDown={(event) => event.preventDefault()}
               >
                 <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
               </label>
