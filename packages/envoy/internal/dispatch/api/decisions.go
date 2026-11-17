@@ -207,12 +207,16 @@ type decisionEntry struct {
 	TextTree   model.DisplayTree `json:"text_tree,omitempty"`
 	TextSHA256 string            `json:"text_sha256"`
 
-	Question     *string              `json:"question"`
-	Options      []model.AskOption    `json:"options"`
-	Urgency      *string              `json:"urgency"`
-	Multiple     *bool                `json:"multiple"`
-	AnswerState  *string              `json:"answer_state"`
-	Answer       *string              `json:"answer"`
+	Question    *string           `json:"question"`
+	Options     []model.AskOption `json:"options"`
+	Urgency     *string           `json:"urgency"`
+	Multiple    *bool             `json:"multiple"`
+	AnswerState *string           `json:"answer_state"`
+	Answer      *string           `json:"answer"`
+	// AnswerTree is Answer read as the tree a reader is shown, present only for a caller that
+	// sent `Dispatch-Trees: 1` and only where the ask holds an answer's text: the Decisions tab
+	// draws a person's decision by that text.
+	AnswerTree   model.DisplayTree    `json:"answer_tree,omitempty"`
 	Selected     []string             `json:"selected"`
 	AnsweredBy   *string              `json:"answered_by"`
 	AnsweredAt   *time.Time           `json:"answered_at"`
@@ -527,6 +531,7 @@ func (s *server) decisionEntries(ctx context.Context, who model.Actor, key strin
 	}
 	for index := range entries {
 		reader.text(&entries[index].TextTree, entries[index].Text)
+		reader.textOf(&entries[index].AnswerTree, entries[index].Answer)
 	}
 	for index := range decisions {
 		reader.text(&decisions[index].TextTree, decisions[index].Text)

@@ -4250,6 +4250,12 @@ export interface components {
     DecisionEntry: {
       answer: null | string;
       answer_state: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      answer_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       answered_at: null | string;
       answered_by: null | string;
