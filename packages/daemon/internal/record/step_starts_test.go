@@ -73,15 +73,17 @@ func TestAStartKeepsTheIdentityOfItsRecord(t *testing.T) {
 func TestTheCountOfStartsOfAStepRisesByOneAndTheEndReadsItUnchanged(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
-	testing3 := StepPlace{Task: "default", Kind: "step", Place: 3}
-	first, later := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC), time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
+	const tester, implementer, merger = "legion-legion-legion-1-tester", "legion-legion-legion-1-implementer", "legion-legion-legion-1-merger"
+	testing3, merge := StepPlace{Task: "default", Kind: "step", Place: 3}, StepPlace{Task: "default", Kind: "merge", Place: 0}
+	first := time.Date(2026, 11, 17, 1, 0, 0, 0, time.UTC)
+	later, latest := first.Add(time.Hour), first.Add(2*time.Hour)
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := store.StepStarts(t.Context(), tx, "LEGION-1", testing3)
 		if err != nil || got != (StepStart{}) {
 			t.Fatalf("StepStarts before any start = %+v, %v; want the zero count, no agent and no moment", got, err)
 		}
 		for want := int64(1); want <= 2; want++ {
-			if starts := raise(t, tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", first); starts != want {
+			if starts := raise(t, tx, "LEGION-1", testing3, tester, first); starts != want {
 				t.Fatalf("RaiseStepStarts = %d; want %d", starts, want)
 			}
 		}
@@ -90,33 +92,40 @@ func TestTheCountOfStartsOfAStepRisesByOneAndTheEndReadsItUnchanged(t *testing.T
 		for _, other := range []struct {
 			issue string
 			place StepPlace
+			agent string
 		}{
-			{"LEGION-1", StepPlace{Task: "default", Kind: "step", Place: 2}},
-			{"LEGION-1", StepPlace{Task: "default", Kind: "retro", Place: 0}},
-			{"LEGION-1", StepPlace{Task: "default", Kind: "merge", Place: 0}},
-			{"LEGION-1", StepPlace{Task: "a", Kind: "step", Place: 3}},
-			{"LEGION-2", testing3},
+			{"LEGION-1", StepPlace{Task: "default", Kind: "step", Place: 2}, implementer},
+			{"LEGION-1", StepPlace{Task: "default", Kind: "retro", Place: 0}, implementer},
+			{"LEGION-1", merge, merger},
+			{"LEGION-1", StepPlace{Task: "a", Kind: "step", Place: 3}, tester},
+			{"LEGION-2", testing3, "legion-legion-legion-2-tester"},
 		} {
-			if starts := raise(t, tx, other.issue, other.place, "", first); starts != 1 {
+			if starts := raise(t, tx, other.issue, other.place, other.agent, first); starts != 1 {
 				t.Fatalf("RaiseStepStarts of %s %+v = %d; want its own first start", other.issue, other.place, starts)
 			}
 		}
-		// The merge GitHub already made starts no merger, so its start names no agent, and the
-		// count keeps the agent and the moment of the latest start.
-		raise(t, tx, "LEGION-1", testing3, "", later)
+		raise(t, tx, "LEGION-1", testing3, tester, later)
+		// The merge GitHub already made starts no merger (workflow's startAgent), so the next start
+		// of the merge names no agent, and the count keeps the agent and the moment of that latest
+		// start.
+		raise(t, tx, "LEGION-1", merge, "", later)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := store.StepStarts(t.Context(), tx, "LEGION-1", testing3)
-		if err != nil || got != (StepStart{Starts: 3, Agent: "", StartedAt: later, Run: RunOpen}) {
-			t.Fatalf("StepStarts after three starts = %+v, %v; want 3 starts and the last start's empty agent at %s, open", got, err, later)
+		got, err := store.StepStarts(t.Context(), tx, "LEGION-1", merge)
+		if err != nil || got != (StepStart{Starts: 2, Agent: "", StartedAt: later, Run: RunOpen}) {
+			t.Fatalf("StepStarts of the merge after its second start = %+v, %v; want 2 starts and the latest start's empty agent at %s, open", got, err, later)
+		}
+		got, err = store.StepStarts(t.Context(), tx, "LEGION-1", testing3)
+		if err != nil || got != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunOpen}) {
+			t.Fatalf("StepStarts after three starts = %+v, %v; want 3 starts and the last start's agent at %s, open", got, err, later)
 		}
 		ended, mark, err := store.EndStepStart(t.Context(), tx, "LEGION-1", testing3)
-		if err != nil || mark != EndedNow || ended != (StepStart{Starts: 3, Agent: "", StartedAt: later, Run: RunEnded}) {
+		if err != nil || mark != EndedNow || ended != (StepStart{Starts: 3, Agent: tester, StartedAt: later, Run: RunEnded}) {
 			t.Fatalf("EndStepStart of the open third start = %+v, %d, %v; want that start, ended now", ended, mark, err)
 		}
-		raise(t, tx, "LEGION-1", testing3, "legion-legion-legion-1-tester", first)
+		raise(t, tx, "LEGION-1", testing3, tester, latest)
 		got, err = store.StepStarts(t.Context(), tx, "LEGION-1", testing3)
-		if err != nil || got != (StepStart{Starts: 4, Agent: "legion-legion-legion-1-tester", StartedAt: first, Run: RunOpen}) {
+		if err != nil || got != (StepStart{Starts: 4, Agent: tester, StartedAt: latest, Run: RunOpen}) {
 			t.Fatalf("StepStarts after the fourth start = %+v, %v; want 4 starts with its agent and moment, open", got, err)
 		}
 	})
