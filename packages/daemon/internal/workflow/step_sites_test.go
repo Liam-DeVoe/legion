@@ -909,7 +909,9 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 // GitHub had made when the retro's completion brought the issue to merging started no merger, so
 // the entry its merger still holds is an earlier visit's, raised before that completion: that
 // merge ends with no agent and no start. One whose merger this visit started ends under that
-// merger, at its entry. Each merge waits on a child, whose departure closes the root.
+// merger, at its entry, which the move into merging raised (enter) after that completion, or at
+// its very moment where the clock gave the two one reading. Each merge waits on a child, whose
+// departure closes the root.
 func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 	retroCompleted := stepClock.Add(-2 * time.Hour)
 	for _, tc := range []struct {
@@ -918,7 +920,8 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 		merger bool
 	}{
 		{name: "the merger of an earlier visit", entry: stepClock.Add(-48 * time.Hour)},
-		{name: "the merger of this visit", entry: retroCompleted, merger: true},
+		{name: "the merger of this visit, entered at the completion's moment", entry: retroCompleted, merger: true},
+		{name: "the merger of this visit, entered after the completion", entry: retroCompleted.Add(time.Minute), merger: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
