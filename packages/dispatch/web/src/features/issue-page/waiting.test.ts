@@ -22,7 +22,7 @@ import { waitingOnReader } from "./waiting";
  * (`waitingOnReader`) and the tree's own `waiting` on each node (dispatch://INFRA-1196 R7, R13,
  * R35). The two must agree, or the count puts the focus on a node that does not wait, or counts
  * one it can never reach. Both read the tree read's answer, which each case writes as the
- * contract gives it (dispatch://INFRA-1253 R8).
+ * contract gives it.
  */
 
 const KEY = "CORE-1";
@@ -457,9 +457,10 @@ test("what waits on the reader is their open questions, the review list and thei
 // statement, so it is on no review list, and the Change is written in the second: the second
 // decision then waits on its agent, and nothing waits on the reader, in the count as in the tree.
 // A count that read the quote alone would put the Change on the first decision and count the
-// second as waiting. The Decisions filter, which reads the decisions document's blocks until
-// part U, finds the same decision by the section that holds the anchor's block, and where the
-// anchor stores no block, the quote alone decides: the first decision whose words hold it.
+// second as waiting. The Decisions filter, which reads the decisions document's blocks while
+// decisions are its sections, finds the same decision by the section that holds the anchor's
+// block, and where the anchor stores no block, the quote alone decides: the first decision whose
+// words hold it.
 test("waitingOnReader counts a Change under the decision whose block holds its anchor", () => {
   const worded = (blockId: string, shaped: readonly string[], text: string): Decision => ({
     ...waitingDecision(blockId, shaped),

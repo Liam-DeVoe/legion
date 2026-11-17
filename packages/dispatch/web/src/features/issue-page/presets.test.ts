@@ -388,8 +388,8 @@ function viewNode(
   };
 }
 
-// dispatch://INFRA-4062 R4: once the Spec view read is held on the issue's node, Spec draws the
-// nodes its query took of R2's kinds, each as the tree's node of that id. The memo callout the
+// Once the Spec view read is held on the issue's node, Spec draws the nodes its query took of
+// R2's kinds, each as the tree's node of that id. The memo callout the
 // view answers first is no row, and a decision and a constraint the view answers as context are
 // never rows: each is a line of the row its tie names, a decision by its `shaped` tuple and a
 // constraint by the row's `constrained_by` tuple. The control counts the view's own statements.

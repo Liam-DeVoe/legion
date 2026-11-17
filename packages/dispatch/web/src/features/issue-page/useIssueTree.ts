@@ -110,9 +110,9 @@ function builtTree(reads: IssueTreeReads): TreeNode {
 }
 
 /**
- * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20, dispatch://INFRA-4062 R1
- * and R5). This hook is where the reads are; `buildIssueTree` is pure and holds none of them, so
- * the model is testable without a server and the page makes no request per node.
+ * The issue's tree, from the page's reads (root R20). This hook is where the reads are;
+ * `buildIssueTree` is pure and holds none of them, so the model is testable without a server and
+ * the page makes no request per node.
  *
  * The tree is the issue's tree read (`useTreeRead`), every page of it, which places, orders and
  * words every node; no document's blocks are read. Beside it stand the reads that tell what the
@@ -218,8 +218,8 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // the asks an answer, the comments a Change moved under its decision - so asking while any is
   // still out would ask for the addresses known so far and ask again for the rest: measured on
   // this pod, that cost the first load two reads and sometimes three, where the design is "the
-  // names come last and all at once" (above) and the issue's own budget is 40 requests
-  // (dispatch://INFRA-1196 c-requests). The reader's login is one of the reads this gate waits
+  // names come last and all at once" (above) and the root issue's budget is 40 requests
+  // (its `c-requests` check). The reader's login is one of the reads this gate waits
   // on: it adds no node, but the tree is built again when it answers, since it says which
   // questions wait on the reader. Every one of these reads is always enabled, so each ends in an
   // answer or an error and none of them holds the names for good. Nothing waits on the names:

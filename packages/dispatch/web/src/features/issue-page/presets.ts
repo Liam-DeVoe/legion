@@ -39,12 +39,11 @@ import type { TreeAnswer, TreeAnswerNode, TreeFilter } from "./tree-read/tree-re
  * requirement it serves would be one step drawn several times (R26).
  *
  * Spec, Verification and Plan are each drawn from the issue's view read of that filter once the
- * page holds it (`TreeNode.views` on the issue's node, dispatch://INFRA-4062 R4,
- * `heldFilterView`): the view's query names the nodes, and each is drawn as the tree's node of
- * that id, so a row reads as it does in the outline. Until the view answers, and for Decisions
- * until its view read stands in the decisions read's place (INFRA-1253's t16c), a filter is read
- * off the tree `issue-tree.ts` builds: the kinds are R2's, and the context and the parent's line
- * are this module's.
+ * page holds it (`TreeNode.views` on the issue's node, `heldFilterView`): the view's query names
+ * the nodes, and each is drawn as the tree's node of that id, so a row reads as it does in the
+ * outline. Until the view answers, and for Decisions until its view read stands in the decisions
+ * read's place, a filter is read off the tree `issue-tree.ts` builds: the kinds are R2's, and the
+ * context and the parent's line are this module's.
  *
  * A node the address names outranks the filter: an address that names one node and then draws a
  * page without it would not have resolved at all (R20), so `named` is kept whatever the filter
@@ -117,7 +116,7 @@ export interface PresetView {
 
 /** A node of a view read drawn as a line of a row rather than as a row (R4): a decision whose
  *  `shaped` tuple names the row's node, or a constraint the row's node's `constrained_by` tuple
- *  names. Parts U and W draw them. */
+ *  names. Later parts of the page draw them. */
 export interface PresetLine {
   /** The node's id in the view read. */
   readonly id: string;

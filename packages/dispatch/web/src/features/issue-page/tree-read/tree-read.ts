@@ -21,10 +21,10 @@ import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { blocksOfRole, mergeTreePages, type TreeBlock } from "./tree-nodes";
 
 /**
- * The issue's tree read (`GET /api/v1/issues/{key}/tree`, dispatch://INFRA-1253 R8): the one
- * file of the issue page that names the route. Every other file reads the answer through the
- * names below, so the day the answer's shape moves onto the generated contract (INFRA-4062's
- * task t11) only these aliases change.
+ * The issue's tree read (`GET /api/v1/issues/{key}/tree`), which the model serves: the one file
+ * of the issue page that names the route. Every other file reads the answer through the names
+ * below, so the day the answer's shape moves onto the generated contract only these aliases
+ * change.
  */
 export type TreeAnswer = IssueTreeAnswer;
 export type TreeAnswerNode = IssueTreeNode;
@@ -96,20 +96,21 @@ async function readTree(
 
 /**
  * Window focus reads a query again only while its last answer failed, so a read that failed
- * recovers on the open page while a healthy one stays quiet: a local copy of the private
- * `refetchFailedOnFocus` of `features/refs/reference-target.ts`, until part F's export of it
- * (F's spec R12) is under T's base, when T imports F's (dispatch://INFRA-1196 decision 94).
+ * recovers on the open page while a healthy one stays quiet. It is a copy of the private
+ * `refetchFailedOnFocus` of `features/refs/reference-target.ts`, until that file exports it and
+ * this one imports it from there.
  */
 export const refetchFailedOnFocus = (query: {
   readonly state: { readonly status: QueryStatus };
 }) => (query.state.status === "error" ? "always" : false);
 
 /**
- * How the page's reads are kept fresh (dispatch://INFRA-1196 decision 180): by the events that
- * can change them, never by age, so a slot the stage mounts again past the app's 30 s
- * `staleTime` sends no read; only a read whose last answer failed is read again on focus. The
- * tree read and its views take it, and so does every read of `useIssueTree` that an event
- * refreshes.
+ * How the page's reads are kept fresh: by the events that can change them, never by age, so a
+ * slot the stage mounts again past the app's 30 s `staleTime` sends no read; only a read whose
+ * last answer failed is read again on focus. The tree read and its views take it, and so does
+ * every read of `useIssueTree` that an event refreshes. It is a copy of `EVENT_FRESH`, which a
+ * later commit of the code this branch is built on adds to `useIssueTree.ts`; the two become one
+ * export once that commit is under this branch.
  */
 export const REFRESHED_BY_EVENTS = {
   refetchOnWindowFocus: refetchFailedOnFocus,
@@ -150,8 +151,8 @@ export interface TreeRead {
   /** Whether the read holds an answer, which is what a view that draws from the blocks it holds
    *  waits on. A refetch that fails over an answer already held keeps it held - TanStack keeps a
    *  query's data through a failed refetch - so the view keeps the text it drew, which waiting
-   *  on `blocksRead` would blank, since that failure turns it false (dispatch://INFRA-1196
-   *  decision 98). Both are false before the first answer and after a first read that fails. */
+   *  on `blocksRead` would blank, since that failure turns it false. Both are false before the
+   *  first answer and after a first read that fails. */
   readonly blocksHeld: boolean;
   /** Whether the read answered every page. Until then a typed block - the spec's summary among
    *  them, which the head waits on before it says a spec has none (`IssueThreeThings.tsx`) - may
@@ -159,9 +160,9 @@ export interface TreeRead {
    *  that failed has not answered either: the page cannot say what a read it could not make
    *  holds. */
   readonly blocksRead: boolean;
-  /** The typed blocks of the document that plays `role` (`blocksOfRole`, dispatch://INFRA-4062
-   *  R5), so a view reads its blocks here and costs no request of its own; the same value for a
-   *  role until the answer or the read's state changes. */
+  /** The typed blocks of the document that plays `role` (`blocksOfRole`), so a view reads its
+   *  blocks here and costs no request of its own; the same value for a role until the answer or
+   *  the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
   /** Whether the read failed with nothing held: refused before it first answered, its retries
    *  spent. A refetch that fails over a held answer is no such failure, since the page still

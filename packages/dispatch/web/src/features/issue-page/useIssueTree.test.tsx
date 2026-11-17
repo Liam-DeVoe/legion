@@ -39,10 +39,10 @@ import { ViewReadProvider } from "./tree-read/view-read";
 import { useIssueTree } from "./useIssueTree";
 
 /**
- * The issue page's tree as the hook reads it (dispatch://INFRA-4062 R1, R4, R5): from the tree
- * read, with no document's blocks read, the filters' held view reads on its root, and the names
- * of what it holds read last and all at once. The batched name read is keyed by the set of
- * addresses the tree holds, so one comment, message, ask or block arriving is a key nobody has
+ * The issue page's tree as the hook reads it: from the tree read, with no document's blocks
+ * read, the filters' held view reads on its root, and the names of what it holds read last and
+ * all at once. The batched name read is keyed by the set of addresses the tree holds, so one
+ * comment, message, ask or block arriving is a key nobody has
  * an answer for: without the previous answer standing while the new one loads, every chip falls
  * back to its raw address, on a page that was already drawn.
  */
@@ -669,10 +669,10 @@ test("once the second read has nothing left to name, the first read's newer name
   }
 });
 
-// The tester's F17 and dispatch://INFRA-4062 R5: one block read for every document of the issue
-// was 25 of a first load's 47 requests. The tree read answers every typed block of every role
-// document, so the outline costs that one request, with no page left to ask for, and no
-// document's blocks are read.
+// As the tester measured, one block read for every document of the issue was 25 of a first
+// load's 47 requests. The tree read answers every typed block of every role document, so the
+// outline costs that one request, with no page left to ask for, and no document's blocks are
+// read.
 test("the tree is read in one request, and no document's blocks are read", async () => {
   const withDocuments: IssueDetails = {
     ...issue,
@@ -787,9 +787,9 @@ test("A published name of a typed block is never its directive line", async () =
   }
 });
 
-// dispatch://INFRA-1196 decision 98: a refetch of the tree read that fails keeps the answer the
-// first read gave - TanStack holds a query's data through a failed refetch, and the tree is still
-// built from it - so a view that draws from the blocks it holds keeps drawing them
+// A refetch of the tree read that fails keeps the answer the first read gave - TanStack holds a
+// query's data through a failed refetch, and the tree is still built from it - so a view that
+// draws from the blocks it holds keeps drawing them
 // (`blocksHeld`), while a view that needs every read to have answered stops waiting on one that
 // failed (`blocksRead`). Before any answer the tree holds no blocks and has read none.
 test("blocks a failed refetch leaves in hand stay held while they stop counting as read", async () => {
@@ -834,10 +834,10 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
   }
 });
 
-// dispatch://INFRA-4062 R6: a write that invalidates a query of the issue - here its comments,
-// as a reply sent from the page does - invalidates the tree read too, through the one
-// subscription the page holds (`subscribeTreeFreshness`, which `ViewReadProvider` mounts on the
-// page and this case mounts itself), so the tree is read again and draws the new comment.
+// A write that invalidates a query of the issue - here its comments, as a reply sent from the
+// page does - invalidates the tree read too, through the one subscription the page holds
+// (`subscribeTreeFreshness`, which `ViewReadProvider` mounts on the page and this case mounts
+// itself), so the tree is read again and draws the new comment.
 test("an invalidated comments query reads the tree again", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -865,10 +865,10 @@ test("an invalidated comments query reads the tree again", async () => {
   }
 });
 
-// dispatch://INFRA-1196 decision 181: where the decisions read's own invalidation is one of the
-// changes - a Keep that failed invalidates it, and so does an event that names it - its read is
-// already out, so the refresh reads the tree again and does not ask for the decisions a second
-// time, which cancelled the read out and sent another.
+// Where the decisions read's own invalidation is one of the changes - a Keep that failed
+// invalidates it, and so does an event that names it - its read is already out, so the refresh
+// reads the tree again and does not ask for the decisions a second time, which cancelled the
+// read out and sent another.
 test("an invalidated decisions query reads the tree again and the decisions once", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -917,9 +917,9 @@ function readsSent(): Record<string, number> {
   );
 }
 
-// dispatch://INFRA-1196 decision 180: the page's reads are refreshed by events, never by age. A
-// slot the stage mounts again past the app's 30 s `staleTime` (`main.tsx`) builds its tree from
-// what the reads hold and sends none of them again. The sign-in is the shell's read, outside it.
+// The page's reads are refreshed by events, never by age. A slot the stage mounts again past the
+// app's 30 s `staleTime` (`main.tsx`) builds its tree from what the reads hold and sends none of
+// them again. The sign-in is the shell's read, outside it.
 test("a remount after 30 s sends no read", async () => {
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
   const client = new QueryClient({
@@ -948,10 +948,10 @@ test("a remount after 30 s sends no read", async () => {
   }
 });
 
-// dispatch://INFRA-4062 R5 and decision 98: the tree read holds data once every page of it holds
-// data - the pages are read in turn and answered merged - so neither the tree nor a role's blocks
-// are drawn from the first page alone; and a refetch whose last page fails keeps every page held,
-// and the plan's task on the second page with them.
+// The tree read holds data once every page of it holds data - the pages are read in turn and
+// answered merged - so neither the tree nor a role's blocks are drawn from the first page alone;
+// and a refetch whose last page fails keeps every page held, and the plan's task on the second
+// page with them.
 test("blocksHeld holds while every page holds data", async () => {
   const secondOut = Promise.withResolvers<void>();
   const stubs = stubTreeReads(async (refs) => namedTargets(refs));
@@ -1003,10 +1003,10 @@ test("blocksHeld holds while every page holds data", async () => {
   }
 });
 
-// dispatch://INFRA-4062 R4: a filter's view read is watched and never sent here: whatever
-// `ViewReadProvider` holds for it reaches `presetView` through the tree's root (`root.views`),
-// so the Plan filter draws the view's plan tasks - the one its query took, not the second the
-// tree holds - and the root keeps its identity while neither the tree nor a held view changes.
+// A filter's view read is watched and never sent here: whatever `ViewReadProvider` holds for it
+// reaches `presetView` through the tree's root (`root.views`), so the Plan filter draws the
+// view's plan tasks - the one its query took, not the second the tree holds - and the root keeps
+// its identity while neither the tree nor a held view changes.
 test("a held view answer reaches presetView through root.views", async () => {
   const second = answerNode("t2", "plan_task", {
     document: { artifact_id: plan.id, position: 1, slug: PLAN },

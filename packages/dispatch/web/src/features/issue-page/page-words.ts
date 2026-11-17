@@ -86,9 +86,9 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
-  /** A `criterion` block, and a `reading` below: block types INFRA-1253's block schema
-   *  (version 6) declares, named here so every type the schema declares has a name. Part Y of
-   *  dispatch://INFRA-1196 draws them (decision 130). */
+  /** A `criterion` block, and a `reading` below: block types the model's block schema
+   *  (version 6) declares, named here so every type the schema declares has a name. A later part
+   *  of the page draws them. */
   criterion: "criterion",
   decision: "decision",
   document: "document",
