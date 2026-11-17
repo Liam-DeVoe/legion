@@ -117,7 +117,7 @@ func TestNoIdentityWithoutTheKey(t *testing.T) {
 			continue
 		}
 		t.Run(name, func(t *testing.T) {
-			r.agentSecrets = tc.agentSecrets
+			r.agentSecrets, r.pod.ControllerServiceAccount = tc.agentSecrets, tc.controllerAccount
 			checkGolden(t, name, manifestOf(t, r, tc.spec))
 			for _, v := range podOf(t, r, tc.spec).Volumes {
 				if v.Projected == nil {

@@ -233,10 +233,11 @@ const resumeSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smok
 // runtime before building each one's manifest, and restore nil after — every other case runs
 // unenrolled).
 // controllerAccount, set for controller alone, is the runtime's
-// runtime.kubernetes.pod.controller_service_account for that one case, applied by the same two
-// tests the same way, so the controller's golden pins the account its pod runs as when the key
-// is set, and controller-resume's the pods' own service_account (none in these settings) that it
-// keeps when the key is not.
+// runtime.kubernetes.pod.controller_service_account for that one case, applied the same way by
+// every test that compares a case with its golden (those two and TestNoIdentityWithoutTheKey), so
+// the controller's golden pins the account its pod runs as when the key is set, and
+// controller-resume's the pods' own service_account (none in these settings) that it keeps when
+// the key is not.
 func manifestCases(t *testing.T) map[string]struct {
 	spec              runtime.SpawnSpec
 	agentSecrets      *AgentSecrets
