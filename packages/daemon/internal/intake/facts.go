@@ -886,12 +886,11 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// PlanRating and PlanReason are the rating of the plan the issue ran, from 1 to 5, and why,
-	// which the completion that ends the retro carries (api.PlanRatingContract): the route took
-	// them only on that completion and held them to the scale and to coming together. 0 and ""
-	// on every other completion, and on a retro's from a plugin before that contract.
-	PlanRating int
-	PlanReason string
+	// PlanRating is the rating of the plan the issue ran, which the completion that ends the retro
+	// carries (api.PlanRatingContract): the route took it only on that completion and held it to
+	// the scale and to a reason. nil on every other completion, and on a retro's from a plugin
+	// before that contract.
+	PlanRating *PlanRating
 	// ReturnTo is the step of the issue's running task that a failed step names as the one the
 	// task returns to (R7): the place of that step in the task, 1 for its first. The route takes
 	// it only on a completion whose verdict is fail, and holds it to 1 or above; which step it may
@@ -901,6 +900,17 @@ type HandoffComplete struct {
 }
 
 func (HandoffComplete) isFact() {}
+
+// PlanRating is a retro's rating of the plan its issue ran: Score, from 1 (the plan cost the work)
+// to 5 (the plan fit the work), and Reason, why. The type holds the pair, so a fact carries the
+// rating with its reason or none; it keeps no rule of either. That Score is 1 to 5 and Reason is
+// not blank and at most api's planReasonMax code points is the completion route's rule (api's
+// planRatingOf), and that route, which builds the value only where the rule has held, is its one
+// producer.
+type PlanRating struct {
+	Score  int
+	Reason string
+}
 
 // BackwardMove asks the workflow to return to an earlier phase.
 type BackwardMove struct {
@@ -1105,16 +1115,20 @@ type SessionStoreFault struct {
 func (SessionStoreFault) isFact() {}
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
-// was near its memory limit, as the pod's launcher reported it on the connection of the role
-// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
-// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
-// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
-// report the launcher sent twice is applied once (INFRA-3557).
+// was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
+// the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
+// `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
+// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// guest watch (memoryguard.Guest).
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
 // the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why
-// (workflow's memoryGuardKill).
+// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
 	Token  claim.Token

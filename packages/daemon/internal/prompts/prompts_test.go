@@ -678,10 +678,13 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the
 // retro, and the daemon refuses that completion without the rating from a plugin whose tool takes
-// it (api's PlanRatingContract, PLAN_RATING_REQUIRED). The role the daemon starts on the retro
-// (phase.RoleFor) therefore reads, in its composed prompt, the two fields its completion carries
-// and both ends of the scale. No other phase worker ends the retro, and the daemon refuses a
-// rating on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
+// it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside 1
+// to 5, one of the two without the other, or a reason that is blank or too long (api's
+// planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
+// therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
+// worked each, never the planner's plan.md), the two fields its completion carries, both ends of
+// the scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
+// on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	composer, err := New(t.TempDir())
@@ -691,10 +694,11 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	retro := phase.RoleFor(phase.Retro)
 	text := foldWhitespace(composedText(t, composer, retro, false))
 	for _, phrase := range []string{
-		"The agent that does the retro rates",
+		"The agent that does the retro rates the plan the issue ran in that completion, the issue's steps and the role that worked each, not the planner's `plan.md`",
 		"`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
 		"`plan_reason`, one sentence of why",
 		"`PLAN_RATING_REQUIRED`",
+		"a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`)",
 	} {
 		if !strings.Contains(text, phrase) {
 			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
@@ -743,6 +747,31 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	}
 	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
 		t.Errorf("the composed reviewer prompt still says %q", retired)
+	}
+}
+
+// A claim whose launch installs no plugin (a Claude Code role in a pod) is served on the contract
+// of the plugin its image carries until the update round over its pod (docs/kubernetes.md), so the
+// retro's composed prompt can reach a `legion` tool of the release before the rating, whose strict
+// handoff_complete takes neither plan_rating nor plan_reason. The daemon refuses a retro with no
+// rating only from a plugin at PlanRatingContract or above (api's planRatingOf), so the
+// prompt says the refusal comes from a tool that takes the two, and tells an agent whose tool takes
+// neither to complete with the summary alone, rather than to send fields its tool refuses.
+// This shows the text is loaded, never that a role follows it.
+func TestTheComposedRetroCompletesUnratedWhereTheToolTakesNoRating(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	retro := phase.RoleFor(phase.Retro)
+	text := foldWhitespace(composedText(t, composer, retro, false))
+	for _, phrase := range []string{
+		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
+		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed %s prompt, the retro's, omits %q", retro, phrase)
+		}
 	}
 }
 

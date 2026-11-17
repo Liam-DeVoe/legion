@@ -1,13 +1,22 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -20,6 +29,11 @@ func pluginContractOf(t *testing.T, h *harness, token claim.Token) int {
 		t.Fatalf("no machine for %s", token)
 	}
 	return machine.Claim().PluginContract
+}
+
+// ratedAs is whether fact carries the rating score with reason.
+func ratedAs(fact intake.HandoffComplete, score int, reason string) bool {
+	return fact.PlanRating != nil && *fact.PlanRating == (intake.PlanRating{Score: score, Reason: reason})
 }
 
 // The completion that ends the retro carries the rating of the plan: the agent that does the retro
@@ -38,10 +52,10 @@ func TestTheRetrosAgentGivesTheRating(t *testing.T) {
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 
 			completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-				PlanRating: new(4), PlanReason: "The tester found the bug."}))
+				PlanRating: new(4), PlanReason: new("The tester found the bug.")}))
 			fact := lastCompletion(t, facts)
-			if fact.PlanRating != 4 || fact.PlanReason != "The tester found the bug." {
-				t.Fatalf("the retro's fact = %+v, want plan rating 4 with its reason", fact)
+			if !ratedAs(fact, 4, "The tester found the bug.") {
+				t.Fatalf("the retro's fact carries the rating %+v, want 4 with its reason", fact.PlanRating)
 			}
 		})
 	}
@@ -90,7 +104,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			request := tc.request(worker)
 
 			rating := request
-			rating.GrantID, rating.PlanRating, rating.PlanReason = worker.grant(t), new(3), "The plan fit the work."
+			rating.GrantID, rating.PlanRating, rating.PlanReason = worker.grant(t), new(3), new("The plan fit the work.")
 			message := refused(t, h.complete(rating), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
 			for _, want := range []string{"only the completion that ends the retro rates the plan", "nothing was recorded"} {
 				if !strings.Contains(message, want) {
@@ -114,7 +128,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			}
 			switch fact := got[len(got)-1].(type) {
 			case intake.HandoffComplete:
-				if fact.Claim != worker.token || fact.PlanRating != 0 || fact.PlanReason != "" {
+				if fact.Claim != worker.token || fact.PlanRating != nil {
 					t.Fatalf("the completion's fact = %+v, want %s's with no rating", fact, worker.token)
 				}
 			case intake.CheckReport:
@@ -126,6 +140,31 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The architect ends no phase: phase.Of names none for it outside admitted and accepting, and the
+// route falls back to the issue's phase only to read the handoff record. So an architect's
+// completion while its issue stands in retro is not the retro's, though the phase it falls back to
+// is: one carrying a rating is refused PLAN_RATING_UNEXPECTED before the workflow reads it, and one
+// carrying none is not asked for a rating and reaches the workflow, which refuses an architect's
+// completion of its own accord (ACCEPTANCE_IS_SIGN_OFF). The issue stays in retro either way.
+func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
+	if of := phase.Of(claim.RoleArchitect, phase.Retro); of != "" {
+		t.Fatalf("the architect's completion at retro is of %q, want none: this case proves nothing", of)
+	}
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	if got := pluginContractOf(t, h, architect.token); got < PlanRatingContract {
+		t.Fatalf("the architect's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	}
+
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee",
+		PlanRating: new(3), PlanReason: new("The plan fit the work.")}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+	assertIssuePhase(t, h, phase.Retro)
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee"}),
+		http.StatusConflict, "ACCEPTANCE_IS_SIGN_OFF")
+	assertIssuePhase(t, h, phase.Retro)
 }
 
 // A rating is a whole number from 1 to 5 and its reason says why, in one to planReasonMax
@@ -141,15 +180,15 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		rating *int
-		reason string
+		reason *string
 		says   string
 	}{
-		{name: "a rating of 0", rating: new(0), reason: "The plan fit the work.", says: "planRating 0 is outside 1 to 5"},
-		{name: "a rating of 6", rating: new(6), reason: "The plan fit the work.", says: "planRating 6 is outside 1 to 5"},
+		{name: "a rating of 0", rating: new(0), reason: new("The plan fit the work."), says: "planRating 0 is outside 1 to 5"},
+		{name: "a rating of 6", rating: new(6), reason: new("The plan fit the work."), says: "planRating 6 is outside 1 to 5"},
 		{name: "a rating with no reason", rating: new(4), says: "planRating 4 comes with no planReason"},
-		{name: "a reason with no rating", reason: "The plan fit the work.", says: "planReason comes with no planRating"},
-		{name: "a blank reason", rating: new(4), reason: " \t\n", says: "planReason is blank"},
-		{name: "a reason too long", rating: new(4), reason: strings.Repeat("é", planReasonMax+1),
+		{name: "a reason with no rating", reason: new("The plan fit the work."), says: "planReason comes with no planRating"},
+		{name: "a blank reason", rating: new(4), reason: new(" \t\n"), says: "planReason is blank"},
+		{name: "a reason too long", rating: new(4), reason: new(strings.Repeat("é", planReasonMax+1)),
 			says: "planReason is 2001 characters, and it holds at most 2000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,11 +214,116 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 		{commit: "c0ffee05", rating: 5, reason: strings.Repeat("é", planReasonMax)},
 	} {
 		completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: taken.commit,
-			PlanRating: new(taken.rating), PlanReason: taken.reason}))
-		if fact := lastCompletion(t, facts); fact.PlanRating != taken.rating || fact.PlanReason != taken.reason {
-			t.Fatalf("the retro's fact at %s = rating %d with a reason of %d bytes, want rating %d with its reason of %d bytes",
-				taken.commit, fact.PlanRating, len(fact.PlanReason), taken.rating, len(taken.reason))
+			PlanRating: new(taken.rating), PlanReason: new(taken.reason)}))
+		if fact := lastCompletion(t, facts); !ratedAs(fact, taken.rating, taken.reason) {
+			t.Fatalf("the retro's fact at %s carries no rating %d with its reason of %d bytes", taken.commit, taken.rating, len(taken.reason))
 		}
+	}
+}
+
+// A completion names a rating by its members written with a value, whatever the value:
+// `"planReason": ""` is a reason named, and empty. So a completion that does not end the retro and
+// carries it, or either member alone, is refused PLAN_RATING_UNEXPECTED; the retro's completion
+// carrying it alone is refused PLAN_RATING_INPUT for the rating it lacks, from a plugin at
+// PlanRatingContract and from one before it alike, rather than told it carries no rating or taken
+// unrated; and with a rating it is refused as blank. A member written null names nothing: it
+// decodes to nil and reads as left out, so the completion outside the retro that writes both
+// members null is taken, and its fact carries no rating. That body alone is written by hand, since
+// HandoffCompleteRequest leaves a nil member out rather than writing it null. A refusal records
+// nothing, and the completion each case corrects to is taken.
+func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
+	post := func(t *testing.T, h *harness, grant, members string) *httptest.ResponseRecorder {
+		t.Helper()
+		encoded, err := json.Marshal(grant)
+		if err != nil {
+			t.Fatalf("encode the grant: %v", err)
+		}
+		return h.request(http.MethodPost, "/legion/v1/handoff/complete",
+			fmt.Sprintf(`{"grantId":%s,"summary":"done","verdict":"","commit":"c0ffee"%s}`, encoded, members), nil)
+	}
+	type rating struct {
+		rating *int
+		reason *string
+	}
+	complete := func(h *harness, grant string, r rating) *httptest.ResponseRecorder {
+		return h.complete(HandoffCompleteRequest{GrantID: grant, Summary: "done", Commit: "c0ffee", PlanRating: r.rating, PlanReason: r.reason})
+	}
+
+	t.Run("outside the retro", func(t *testing.T) {
+		h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+		seedIssueAt(t, h, "LEGION-208", phase.Merging)
+		merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+		for _, named := range []rating{{reason: new("")}, {reason: new("fit")}, {rating: new(4)}} {
+			refused(t, complete(h, merger.grant(t), named), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+		}
+		if got := facts.recorded(); len(got) != 0 {
+			t.Fatalf("facts after the refusals = %#v, want none applied", got)
+		}
+		completion(t, post(t, h, merger.grant(t), `,"planRating":null,"planReason":null`))
+		if fact := lastCompletion(t, facts); fact.PlanRating != nil {
+			t.Fatalf("the completion writing both members null was taken rated %+v, want no rating", *fact.PlanRating)
+		}
+	})
+
+	for _, band := range []struct {
+		name     string
+		contract int
+		// taken is the rating of the completion the claim's plugin is taken with.
+		taken rating
+	}{
+		{name: "a plugin at PlanRatingContract", contract: PlanRatingContract, taken: rating{rating: new(4), reason: new("fit")}},
+		{name: "a plugin before it", contract: PlanRatingContract - 1},
+	} {
+		t.Run("the retro of "+band.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			seedIssueAt(t, h, "LEGION-208", phase.Retro)
+			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
+			if band.contract != PlanRatingContract {
+				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
+			}
+			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != band.contract {
+				t.Fatalf("the claim is %s at contract %d, want working at %d: this case proves nothing", c.State, c.PluginContract, band.contract)
+			}
+			for i, row := range []struct {
+				named rating
+				says  string
+			}{
+				{named: rating{reason: new("")}, says: "planReason comes with no planRating"},
+				{named: rating{rating: new(4), reason: new("")}, says: "planReason is blank"},
+			} {
+				message := refused(t, complete(h, grants[i], row.named), http.StatusBadRequest, "PLAN_RATING_INPUT")
+				if !strings.Contains(message, row.says) {
+					t.Fatalf("the refusal = %q, want it to say %q", message, row.says)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusals = %#v, want none applied", got)
+			}
+			completion(t, complete(h, grants[2], band.taken))
+		})
+	}
+}
+
+// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason nothing
+// can store: PostgreSQL's jsonb, where the daemon's outbox row holds the rating, and its text,
+// where Dispatch's record holds it, both refuse it, and the whole daemon answered the retro's
+// completion 500 FACT_APPLY_FAILED naming no field when the engine's transaction failed on the
+// rating row. The decoder of the body refuses it before the route reads it, as it refuses a NUL in
+// any string of any body (decodeJSON): 400 naming planReason and where in it the NUL stands, with
+// nothing recorded, so the agent sends it again corrected.
+func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+
+	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(4), PlanReason: new("The plan fit\x00 the work.")}), http.StatusBadRequest,
+		"invalid request body: planReason holds a NUL character (U+0000) at character 13, which the daemon cannot store")
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}
 }
 
@@ -206,9 +350,112 @@ func TestANewPluginMustRate(t *testing.T) {
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-		PlanRating: new(5), PlanReason: "The plan fit the work."}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != 5 || fact.PlanReason != "The plan fit the work." {
-		t.Fatalf("the retro's fact = %+v, want plan rating 5 with its reason", fact)
+		PlanRating: new(5), PlanReason: new("The plan fit the work.")}))
+	if fact := lastCompletion(t, facts); !ratedAs(fact, 5, "The plan fit the work.") {
+		t.Fatalf("the retro's fact carries the rating %+v, want 5 with its reason", fact.PlanRating)
+	}
+}
+
+// "PlanRatingContract or later" holds above the contract too, where TestANewPluginMustRate's claim
+// cannot reach: every claim the harness registers declares this daemon's own contract, which is
+// PlanRatingContract. The claim here records a later one and the daemon still serves it, a claim
+// in its turn (staleClaim), as after a later release rolled back to this daemon while its worker
+// was in the retro's turn. Its retro's completion with no rating is refused PLAN_RATING_REQUIRED
+// with nothing recorded, and the same completion with a rating is taken.
+func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	grants := []string{implementer.grant(t), implementer.grant(t)}
+	later := PlanRatingContract + 1
+	h.makeStale(t, implementer.token, implementer.session, implementer.secret, later)
+	if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.UpdateRound != "" || c.PluginContract != later {
+		t.Fatalf("the claim is %s in round %q at contract %d, want working in no round at %d: this case proves nothing",
+			c.State, c.UpdateRound, c.PluginContract, later)
+	}
+
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: grants[0], Summary: "retro done", Commit: "c0ffee"}),
+		http.StatusBadRequest, "PLAN_RATING_REQUIRED")
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusal = %#v, want none applied", got)
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: grants[1], Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(2), PlanReason: new("The plan left out a step the tester needed.")}))
+	if fact := lastCompletion(t, facts); !ratedAs(fact, 2, "The plan left out a step the tester needed.") {
+		t.Fatalf("the retro's fact carries the rating %+v, want 2 with its reason", fact.PlanRating)
+	}
+}
+
+// stepRecordPayloads is the text of every step record row key's outbox holds, in the order they
+// were written: what the workflow sends Dispatch of each run of a step, a retro's rating among it.
+func stepRecordPayloads(t *testing.T, h *harness, key string) []string {
+	t.Helper()
+	rows, err := h.store.Pool().Query(context.Background(), `select payload::text from outbox where issue = $1 and kind = $2 order by id`,
+		key, string(record.OutboxKindStepRecord))
+	if err != nil {
+		t.Fatalf("read the step records of %s: %v", key, err)
+	}
+	payloads, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the step records of %s: %v", key, err)
+	}
+	return payloads
+}
+
+// The retro's completion the workflow takes moves the issue on to merging (TriggerRetroCompleted)
+// and writes its rating on the retro's record. The same completion sent again from there is still
+// the retro's, the late retro's (phase.Of), so the workflow decides it: the implementer's retro
+// already stands, so the first retry, rated otherwise, is refused HANDOFF_NOT_CURRENT_PHASE, and
+// that refusal is recorded under the completion's key. The rating is left out of the key, as the
+// summary is, so each later retry at the same commit, with the first rating and reason, another
+// rating or another reason, is that same completion and is answered HANDOFF_ALREADY_RECORDED. The
+// retro's record keeps the first rating alone: the step records stand as the first completion
+// wrote them, its reason in one of them and no retry's reason in any.
+func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	retro := func(rating int, reason string) *httptest.ResponseRecorder {
+		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+			PlanRating: new(rating), PlanReason: new(reason)})
+	}
+	const first = "The plan left out a step the tester needed."
+	completion(t, retro(2, first))
+	assertIssuePhase(t, h, phase.Merging)
+	written := stepRecordPayloads(t, h, "LEGION-208")
+	if rated := slices.IndexFunc(written, func(p string) bool { return strings.Contains(p, first) }); rated < 0 ||
+		slices.ContainsFunc(written[rated+1:], func(p string) bool { return strings.Contains(p, first) }) {
+		t.Fatalf("the retro's completion wrote the step records %v, want its reason in exactly one", written)
+	}
+
+	const refusedFirst = "The plan fit the work."
+	refused(t, retro(5, refusedFirst), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	again := []struct {
+		name   string
+		rating int
+		reason string
+	}{
+		{name: "the first rating and reason", rating: 2, reason: first},
+		{name: "another rating", rating: 4, reason: first},
+		{name: "another reason", rating: 2, reason: "The reviewer's two rounds were the step the plan left out."},
+	}
+	for _, retry := range again {
+		t.Run(retry.name, func(t *testing.T) {
+			message := refused(t, retro(retry.rating, retry.reason), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+			if !strings.Contains(message, "was already received; this call changed nothing") {
+				t.Fatalf("the refusal = %q, want it to say the call changed nothing", message)
+			}
+		})
+	}
+	assertIssuePhase(t, h, phase.Merging)
+	if got := stepRecordPayloads(t, h, "LEGION-208"); !slices.Equal(got, written) {
+		t.Fatalf("after the retries the step records are %v, want them as the first completion wrote them: %v", got, written)
+	}
+	for _, reason := range []string{refusedFirst, again[2].reason} {
+		if slices.ContainsFunc(written, func(p string) bool { return strings.Contains(p, reason) }) {
+			t.Fatalf("the step records %v carry a retry's reason %q", written, reason)
+		}
 	}
 }
 
@@ -228,7 +475,7 @@ func TestAnOldPluginRetroStillCompletesWhereItIsServed(t *testing.T) {
 	}
 
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: grantID, Summary: "retro done", Commit: "c0ffee"}))
-	if fact := lastCompletion(t, facts); fact.PlanRating != 0 || fact.PlanReason != "" || fact.Summary != "retro done" {
+	if fact := lastCompletion(t, facts); fact.PlanRating != nil || fact.Summary != "retro done" {
 		t.Fatalf("the old plugin's retro fact = %+v, want it with no rating", fact)
 	}
 }
@@ -253,4 +500,124 @@ func TestAnOldPluginOutsideATurnIsRefusedStale(t *testing.T) {
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}
+}
+
+// The completion that ends the retro, rated, is the one request of the completion route a plugin
+// at PlanRatingContract must send: Go writes it from HandoffCompleteRequest (`-update`), and
+// `packages/contracts/src/legion-api.test.ts` parses it with LegionHandoffCompleteRequest, a strict
+// schema, so a JSON name of the rating Go writes and the contract does not read, or the reverse,
+// fails there. Every other Go test of the rating marshals this same struct, so a renamed tag moves
+// both ends of it at once. The rating and its reason are values no default and no other field of
+// the body holds.
+func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
+	golden(t, "handoff-complete-request-rated.json", HandoffCompleteRequest{
+		GrantID: "grant-for-one-command", Summary: "Retro done.", Commit: "c0ffee5a1d2b3c4d5e6f708192a3b4c5d6e7f809",
+		PlanRating: new(3), PlanReason: new("The tester found the bug the plan had left out."),
+	})
+}
+
+// The bounds of a rating of the plan, as planRatingOf holds a completion to them: the scale
+// (planRatingLeast, planRatingMost) and the most characters of the reason (planReasonMax). Go
+// writes them (`-update`), and `packages/contracts/src/legion-api.test.ts` holds the contract's own
+// bounds, which the plugin's tool reads, equal to the file.
+func TestPlanRatingGolden(t *testing.T) {
+	golden(t, "plan-rating.json", struct {
+		Least      int `json:"least"`
+		Most       int `json:"most"`
+		ReasonMost int `json:"reasonMost"`
+	}{Least: planRatingLeast, Most: planRatingMost, ReasonMost: planReasonMax})
+}
+
+// planRatingCase is one row of plan-rating-cases.json: the rating and the reason a retro's
+// completion carries, a member left out of the body where its pointer is nil, and the verdict the
+// completion route answers it with, `accepted` or the code of its refusal.
+type planRatingCase struct {
+	Name       string  `json:"name"`
+	PlanRating *int    `json:"planRating,omitempty"`
+	PlanReason *string `json:"planReason,omitempty"`
+	Verdict    string  `json:"verdict"`
+}
+
+// The daemon is the rule of a rating, and the contract's schema and the plugin's tool state it
+// again in TypeScript, where a reason is blank by JavaScript's trim: that keeps U+0085, which Go's
+// strings.TrimSpace strips, and strips U+FEFF, which Go keeps. So the cases a rule of the scale,
+// of the pair, of blank or of length can part on are a golden. Each is posted as its raw body to
+// the completion that ends a retro, from a plugin at PlanRatingContract, and the route's answer is
+// the verdict Go writes (`-update`), never one typed here; `packages/contracts` and the plugin hold
+// their own verdicts to the file. An answer that is neither a 200 nor a 400 of the rating fails
+// the test, so no trouble of the harness is written down as a verdict, and an accepted case's fact
+// carries the rating and the reason as they were sent.
+func TestPlanRatingCasesGolden(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	if got := pluginContractOf(t, h, implementer.token); got < PlanRatingContract {
+		t.Fatalf("the implementer's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	}
+
+	rated := func(name string, rating int, reason string) planRatingCase {
+		return planRatingCase{Name: name, PlanRating: new(rating), PlanReason: new(reason)}
+	}
+	cases := []planRatingCase{
+		rated("a rating of 4 with a reason", 4, "fit"),
+		rated("a rating of 0", 0, "fit"),
+		rated("a rating of 1", 1, "fit"),
+		rated("a rating of 5", 5, "fit"),
+		rated("a rating of 6", 6, "fit"),
+		{Name: "a rating with no reason", PlanRating: new(4)},
+		{Name: "a reason with no rating", PlanReason: new("fit")},
+		rated("an empty reason", 4, ""),
+	}
+	for _, blank := range []struct{ name, text string }{
+		{"three spaces", "   "}, {"U+0085", "\u0085"}, {"U+00A0", "\u00a0"}, {"U+FEFF", "\ufeff"},
+	} {
+		cases = append(cases,
+			rated("a reason of "+blank.name+" alone", 4, blank.text),
+			rated("a reason of "+blank.name+" before a word", 4, blank.text+"fit"))
+	}
+	for _, long := range []struct{ name, char string }{
+		{"U+0061 (a), one UTF-16 unit each", "a"}, {"U+1F600, two UTF-16 units each", "\U0001F600"},
+	} {
+		for _, count := range []int{planReasonMax, planReasonMax + 1} {
+			cases = append(cases, rated(fmt.Sprintf("a reason of %d characters %s", count, long.name), 4, strings.Repeat(long.char, count)))
+		}
+	}
+
+	for i := range cases {
+		c := &cases[i]
+		// Each case at a commit of its own, since the commit is in the completion's key and the
+		// rating is not: an accepted case is a completion of its own, never a retry of the last.
+		body := map[string]any{"grantId": implementer.grant(t), "summary": "retro done", "verdict": "", "commit": fmt.Sprintf("c0ffee%02d", i)}
+		if c.PlanRating != nil {
+			body["planRating"] = *c.PlanRating
+		}
+		if c.PlanReason != nil {
+			body["planReason"] = *c.PlanReason
+		}
+		before := len(facts.recorded())
+		recorder := h.request(http.MethodPost, "/legion/v1/handoff/complete", body, nil)
+		switch recorder.Code {
+		case http.StatusOK:
+			fact := lastCompletion(t, facts)
+			if len(facts.recorded()) != before+1 || c.PlanRating == nil || c.PlanReason == nil || !ratedAs(fact, *c.PlanRating, *c.PlanReason) {
+				t.Fatalf("%s was taken with the fact %+v, want one new fact carrying the rating and the reason as sent", c.Name, fact)
+			}
+			c.Verdict = "accepted"
+		case http.StatusBadRequest:
+			var failure Failure
+			decodeInto(t, recorder, &failure)
+			if !strings.HasPrefix(failure.Code, "PLAN_RATING_") {
+				t.Fatalf("%s was refused %s (%s), want a refusal of the rating", c.Name, failure.Code, failure.Error)
+			}
+			if got := len(facts.recorded()); got != before {
+				t.Fatalf("%s was refused %s with %d facts applied, want none", c.Name, failure.Code, got-before)
+			}
+			c.Verdict = failure.Code
+		default:
+			t.Fatalf("%s was answered %d: %s, want 200 or a 400 of the rating", c.Name, recorder.Code, recorder.Body)
+		}
+	}
+	golden(t, "plan-rating-cases.json", struct {
+		Cases []planRatingCase `json:"cases"`
+	}{Cases: cases})
 }

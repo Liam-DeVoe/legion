@@ -616,6 +616,16 @@ export const PROJECT_KEY_PATTERN = /^[A-Z][A-Z0-9]{1,9}$/;
 export const PROJECT_KEY_RULE =
   "an uppercase letter, then 1 to 9 uppercase letters or digits, such as CORE";
 
+/** The refusal of a `project` argument that is not a project key, for each tool whose key rides in
+ *  the request path; a missing project is each schema's own refusal. */
+const projectKeyValidation: NonNullable<DispatchToolSpec["validation"]> = {
+  check: (value) => {
+    const { project } = value as { readonly project?: unknown };
+    return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
+  },
+  message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+};
+
 /** A GitHub repository as `owner/name`, as `dispatch architecture-sync --repo` sends it in the
  *  path of `/api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync`. A name of `.` or
  *  `..` would resolve away as a path segment, so it is refused here rather than sent; the server
@@ -1935,13 +1945,14 @@ export const dispatchToolSpecs = [
         .describe("Results to skip before the page; nonnegative integer; default 0.")
         .optional(),
     }),
-    // An empty project searches every project, as the server reads it.
+    // An empty project searches every project, as the server reads it; any other value is held
+    // to the project-key rule.
     validation: {
       check: (value) => {
         const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || project === "" || PROJECT_KEY_PATTERN.test(project);
+        return project === "" || projectKeyValidation.check(value);
       },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+      message: projectKeyValidation.message,
     },
   },
   {
@@ -1984,14 +1995,7 @@ export const dispatchToolSpecs = [
         .describe("Search by keywords only, skipping meaning search.")
         .optional(),
     }),
-    // The key rides in the request path; a missing project is the schema's own refusal.
-    validation: {
-      check: (value) => {
-        const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
-      },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
-    },
+    validation: projectKeyValidation,
   },
   {
     name: "dispatch_issues",
@@ -2280,8 +2284,9 @@ export const dispatchToolSpecs = [
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on, or that Dispatch does not " +
-      `hold, prints 0 steps in 0 tasks. ${ISSUE_REFERENCE}`,
+      "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
+      "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
+      `found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),
@@ -2317,14 +2322,7 @@ export const dispatchToolSpecs = [
         .describe("Optional RFC 3339 time; only issues closed before it.")
         .optional(),
     }),
-    // The key rides in the request path; a missing project is the schema's own refusal.
-    validation: {
-      check: (value) => {
-        const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || PROJECT_KEY_PATTERN.test(project);
-      },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
-    },
+    validation: projectKeyValidation,
     strict: true,
   },
   {

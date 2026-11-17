@@ -47,14 +47,14 @@ func planHarness(t *testing.T) (*harness, *factRecorder, *statusRecorder) {
 	seedIssueAt(t, h, "LEGION-208", phase.Admitted)
 	statuses.documents = map[string]string{planDoc: "LEGION-208", childDoc: "LEGION-209"}
 	statuses.approvals = map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 9}, childDoc: {State: "none", LatestVersion: 3}}
-	statuses.plans = map[string]dispatch.PlanDocument{}
+	statuses.plans = map[string]dispatch.DocumentVersion{}
 	return h, facts, statuses
 }
 
 // givePlan makes version of the document artifactID hold blocks, on the issue the fake files the
 // document under.
 func (r *statusRecorder) givePlan(artifactID string, version int, blocks ...dispatch.DocumentBlock) {
-	r.plans[planVersion(artifactID, version)] = dispatch.PlanDocument{ArtifactID: artifactID, IssueKey: r.documents[artifactID], Version: version, Blocks: blocks}
+	r.plans[planVersion(artifactID, version)] = dispatch.DocumentVersion{ArtifactID: artifactID, IssueKey: r.documents[artifactID], Version: version, Blocks: blocks}
 }
 
 func registerPlan(h *harness, grant, issue, artifactID string, version int) *httptest.ResponseRecorder {

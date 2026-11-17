@@ -104,11 +104,11 @@ not know, and
 the state's `holdReason` taking `task-stopped` and `children` beside `escalated`, which a caller
 below 156 is served without, and `admission.held`'s `reason` taking `children_before_retro` and
 `task_stopped`, each row of which a caller below 156 is served as `unclassified` with no
-`heldBy`), after contract 155 (the completion that
+`heldBy`), after contract 161 (the completion that
 ends the retro rates the plan the issue ran: `LegionHandoffCompleteRequest` takes `planRating`, a
 whole number from 1 to 5, and `planReason`, why, the two together; the daemon refuses them on every
 other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a
-claim at 155 or later, `PLAN_RATING_REQUIRED`, while a plugin below 155 never sends them and its
+claim at 161 or later, `PLAN_RATING_REQUIRED`, while a plugin below 161 never sends them and its
 retro, where the daemon serves it, completes with no rating; no shape of the state moves), after
 contract 146's architect handshake (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries

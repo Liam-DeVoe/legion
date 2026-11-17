@@ -1768,23 +1768,27 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
-	// RaiseStepStarts counts one more start of place on issue, with the agent that start names and
-	// the moment it writes, clears the mark that the run before it ended, and answers the count
-	// with it: the start of a step's record raises it in its own transaction (workflow's
-	// startStep). ClearGeneration and ClearTreeGeneration leave the count: the generation is part
-	// of the record's id already, and the count only rises.
-	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) (int64, error)
-	// StepStarts is the count of starts of place on issue with the agent, the moment and the end
-	// mark of the latest, unchanged: the zero StepStart where no start was counted.
+	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
+	// the write of that start's record, which run builds from the count with that start in it:
+	// the start of a step's record raises it in its own transaction (workflow's startStep), and
+	// the row keeps the agent, the moment and the identity that write carries. ClearGeneration
+	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
+	// and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
+	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
+	// of the latest, unchanged: the zero StepStart where the place has no row, no start counted
+	// and no uncounted end written.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
-	// EndStepStart marks the run of the latest start of place on issue ended and answers that
-	// start and true, in the transaction that writes the run's end (workflow's endStep); false
-	// where no counted run is open there, so one run gets one end.
-	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, bool, error)
-	// EndUncountedStep writes, marked ended, the row of a place no start of this release counted,
-	// with the agent and the moment its start would have named, and answers true; false where the
-	// place has a row already, whose latest run has ended.
-	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (bool, error)
+	// EndStepStart marks the open run of place on issue ended and answers its start and EndedNow,
+	// in the transaction that writes the run's end (workflow's endStep); AlreadyEnded where that
+	// run has its end already, so one run gets one end, and NotCounted where no start of this
+	// release counted the run that ends.
+	EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, EndMark, error)
+	// EndUncountedStep writes, marked ended, the row of a run at place that no start of this
+	// release counted, with the agent and the moment its start would have named, and answers the
+	// count its record takes and true: 0 for a place with no row, the next count for one that
+	// reads RunUncounted. False where another end of that run came first.
+	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (int64, bool, error)
 	// PutPlan stores version v of the plan of v's issue at v's generation, with the tasks it
 	// gives and their steps. The same version given twice is refused, and so is a step of a task
 	// it does not give. A task the generation holds already takes the version's text and
@@ -1977,6 +1981,12 @@ type Store interface {
 	// a run of changes queues no second row, a row that already says this set is left as it is,
 	// and a replacement takes the row from a lane holding it, whose send carries the older set.
 	EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish DesignGatesPublish, nextAt time.Time) error
+	// LiveRoleHolders is the session of each live claim of issue, by role: the set a role-holder
+	// publication sends.
+	LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error)
+	// RecentClaimIssues is every issue of the Dispatch project with a live claim, or a claim that
+	// changed at or after since, in key order: the issues the boot publishes.
+	RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error)
 	Enqueue(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.

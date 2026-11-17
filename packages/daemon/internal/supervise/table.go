@@ -78,13 +78,15 @@ type StreamToolStep struct {
 }
 
 // StreamAnswered is the agent's model answering, as the stream read the frame (stream.Answered):
-// Model is `<provider>/<model>`, or the model alone when the frame named no provider. It is what
-// the claim's last answer is built from (answered, LastAnswer), and it is no part of the claim
-// the store holds: a record of a step reads it from memory, and a restarted daemon knows no model
-// until the agent answers again.
+// Model is `<provider>/<model>`, or the model alone when the frame named no provider, or empty for
+// an answer whose model no store can keep (stream.Answered). It is what the claim's last answer is
+// built from (answered, LastAnswer), and it is no part of the claim the store holds: a record of a
+// step reads it from memory, and a restarted daemon knows no model until the agent answers again.
+// Generation is the launch whose connection read the frame (stream.Answered).
 type StreamAnswered struct {
-	Claim claim.Token
-	Model string
+	Claim      claim.Token
+	Model      string
+	Generation uint64
 }
 
 // StreamPromptResult is Oh My Pi saying how one prompt's work ended (shimwire.PromptResult): the

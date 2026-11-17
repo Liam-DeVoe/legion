@@ -2,14 +2,12 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -79,9 +77,9 @@ func planRecordOf() record.PlanRecord {
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
 func ratingRecordOf() record.StepRecord {
-	rating, reason := 2, "The plan put the tests after the review."
 	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
-		Agent: "legion-legion-legion-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}
+		Agent: "legion-legion-legion-1-implementer", Generation: 2,
+		PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}
 }
 
 // recordRig is one issue's row of the record lane, drained by hand (RunOnce) on a clock the test
@@ -118,18 +116,38 @@ func (r *recordRig) run() {
 }
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
-// source and every task with its steps in order, and the row is done.
+// source, the owner's document and its version where the plan has them, and every task with its
+// steps in order, and the row is done. The owner's plan carries every field a default plan leaves
+// empty, a version that is not its run, and two tasks out of the order of their ids, so a field the
+// copy to Dispatch drops, or a sort of the tasks, changes what Dispatch receives.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
-	rig := newRecordRig(t, planRecordOf(), nil)
-	rig.run()
-	if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
-		t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
-	}
-	plans, steps := rig.client.received()
-	want := planPut{Issue: stepIssue, ID: planRecordID, Plan: dispatch.PlanWrite{Generation: 2, Source: "default",
-		Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}}
-	if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
-		t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
+	for _, tc := range []struct {
+		name string
+		plan record.PlanRecord
+		want dispatch.PlanWrite
+	}{
+		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+		{
+			name: "an owner's plan of two tasks",
+			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", PlanDocument: &record.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
+				Tasks: []record.PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+			want: dispatch.PlanWrite{Generation: 3, Source: "owner", PlanDocument: &dispatch.PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
+				Tasks: []dispatch.PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newRecordRig(t, tc.plan, nil)
+			rig.run()
+			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+				t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
+			}
+			plans, steps := rig.client.received()
+			want := planPut{Issue: stepIssue, ID: planRecordID, Plan: tc.want}
+			if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
+				t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
+			}
+		})
 	}
 }
 
@@ -143,9 +161,9 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 		t.Fatalf("rows left after Dispatch took the rating = %d, want none", left)
 	}
 	_, steps := rig.client.received()
-	rating, reason := 2, "The plan put the tests after the review."
 	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
-		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}}
+		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2,
+		PlanRating: &dispatch.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}}
 	if len(steps) != 1 || !reflect.DeepEqual(steps[0], want) {
 		t.Fatalf("Dispatch received %+v, want the one rating %+v", steps, want)
 	}
@@ -154,10 +172,10 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // A Dispatch older than the plan route or the rating route answers its router's 404 under the
 // code NOT_FOUND, which is no refusal of the write: the row retries on its backoff until the
 // upgraded Dispatch takes it, which is what lets the daemon and Dispatch deploy in either order.
-// 404 ISSUE_NOT_FOUND is Dispatch holding no such issue, which no retry changes: the code tells the
-// two apart, never the status. And nothing retries a 400 INVALID_JSON for the rating: a Dispatch
-// ignores a body member it does not declare, so no Dispatch refuses the rating by name, and such a
-// refusal is a body no Dispatch will take.
+// 404 ISSUE_NOT_FOUND, Dispatch holding no such issue, ends the row instead
+// (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and TestAStepRecordThatDispatchRefusesEndsWithAWarning
+// for the step record a rating is), and so does a 400 INVALID_JSON naming the rating
+// (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
 func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
@@ -168,25 +186,6 @@ func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 		{name: "the rating route", payload: ratingRecordOf()},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			row := mustOutboxRow(t, stepIssue, route.payload, time.Now())
-			for _, tc := range []struct {
-				name      string
-				err       *dispatch.Error
-				permanent bool
-			}{
-				{name: "404 NOT_FOUND", err: notFound, permanent: false},
-				{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}, permanent: true},
-				{name: "400 INVALID_JSON naming the rating", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON",
-					Message: `invalid JSON body: json: unknown field "rating"`}, permanent: true},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					wrapped := fmt.Errorf("write the record of %s: %w", stepIssue, tc.err)
-					if got := permanentRefusal(row, wrapped); got != tc.permanent {
-						t.Fatalf("permanentRefusal(%v) = %v, want %v", tc.err, got, tc.permanent)
-					}
-				})
-			}
-
 			rig := newRecordRig(t, route.payload, answersInTurn(notFound, notFound))
 			for attempt := 1; attempt <= 2; attempt++ {
 				rig.run()
@@ -206,6 +205,37 @@ func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 				t.Fatalf("logged %d warnings, want none for a write that landed: %s", len(warned), rig.logs.String())
 			}
 		})
+	}
+}
+
+// A 400 INVALID_JSON naming the rating ends the rating's row after its one run, as every refusal no
+// retry changes ends a step record's (TestAStepRecordThatDispatchRefusesEndsWithAWarning): a
+// Dispatch ignores a body member it does not declare, so no Dispatch refuses the rating by name,
+// and an answer that did would come again at every retry and hold the record lane behind it
+// (record.LaneRecord). The one Warn line names the issue, the record's id and Dispatch's code, and
+// the row's failure is not logged as a failed attempt besides.
+func TestARatingThatDispatchRefusesByNameEndsWithAWarning(t *testing.T) {
+	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: `invalid JSON body: json: unknown field "rating"`}
+	rig := newStepRecordRigOf(t, ratingRecordOf(), answersInTurn(refusal))
+	rig.run()
+	if left := rig.left(); left != 0 {
+		t.Fatalf("rows left after Dispatch refused the rating = %d, want none", left)
+	}
+	if puts := rig.client.received(); len(puts) != 1 {
+		t.Fatalf("PUTs of the rating = %d, want the one Dispatch refused", len(puts))
+	}
+	logs := rig.logs.String()
+	warned := loggedLines(t, logs, `"level":"WARN"`)
+	if len(warned) != 1 || warned[0]["msg"] != stepRefusedLine {
+		t.Fatalf("warnings = %v, want the one %q: %s", warned, stepRefusedLine, logs)
+	}
+	for key, want := range map[string]any{"issue": stepIssue, "step": stepRecordID, "code": refusal.Code, "status": float64(refusal.Status)} {
+		if warned[0][key] != want {
+			t.Errorf("%q names %s %v, want %v", stepRefusedLine, key, warned[0][key], want)
+		}
+	}
+	if failed := loggedLines(t, logs, "outbox row failed"); len(failed) != 0 {
+		t.Fatalf("logged %d failed attempts, want none for a refusal no retry changes: %s", len(failed), logs)
 	}
 }
 

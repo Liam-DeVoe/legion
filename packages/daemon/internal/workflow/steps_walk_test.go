@@ -59,7 +59,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, generation u
 		if isStart(w) == isEnd(w) {
 			t.Fatalf("step record write %d of %s = %+v, want a start or an end", i, key, w)
 		}
-		if id := StepID(key, generation, want[i].task, want[i].kind, want[i].step, want[i].attempt); w.ID != id {
+		if id := StepID(key, generation, record.StepPlace{Task: want[i].task, Kind: want[i].kind, Place: want[i].step}, want[i].attempt); w.ID != id {
 			t.Fatalf("step record write %d of %s (%+v) has id %s, want %s: the id of start %d of %s/%s/%d",
 				i, key, got[i], w.ID, id, want[i].attempt, want[i].task, want[i].kind, want[i].step)
 		}
@@ -176,14 +176,14 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
 		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
 		applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleImplementer,
-			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: 2, PlanReason: "The plan held no tester."})
+			Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: &intake.PlanRating{Score: 2, Reason: "The plan held no tester."}})
 		var rated []record.StepRecord
 		for _, write := range stepWrites(t, pool, root.Key) {
-			if write.Rating != nil {
+			if write.PlanRating != nil {
 				rated = append(rated, write)
 			}
 		}
-		if want := StepID(root.Key, 1, "a", record.PlaceRetro, 0, 1); len(rated) != 1 || rated[0].ID != want || rated[0].Task != "a" ||
+		if want := StepID(root.Key, 1, record.StepPlace{Task: "a", Kind: record.PlaceRetro}, 1); len(rated) != 1 || rated[0].ID != want || rated[0].Task != "a" ||
 			rated[0].Kind != record.PlaceRetro || rated[0].Role != "implementer" {
 			t.Fatalf("the ratings = %+v, want one on the record %s of the first run of task a's retro", rated, want)
 		}
@@ -301,7 +301,7 @@ func TestTheStartAndTheEndOfARunHaveOneIDAcrossABoot(t *testing.T) {
 		}
 		return start, end
 	}
-	want := StepID(key, 1, "a", record.PlaceStep, 2, 1)
+	want := StepID(key, 1, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 2}, 1)
 	start, end := run(t, func(*pgxpool.Pool) {})
 	if start.ID != want || end.ID != want || resultOf(end) != "passed" {
 		t.Fatalf("the reviewer's start has id %q and its end, after the boot, %q (%s); want both %s, the first start of a/step/2",
@@ -446,8 +446,9 @@ func assertPlanNodes(t *testing.T, pool *pgxpool.Pool, key, when string, want ..
 // ownersNode is the plan node of LEGION-208's run 1 on version of the owner's plan whose one
 // task, a, runs the implementer and the reviewer.
 func ownersNode(version int) record.PlanRecord {
-	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
-		Version: version, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
+	return record.PlanRecord{ID: PlanID("LEGION-208", 1), Generation: 1, Source: record.PlanSourceOwner,
+		PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: version},
+		Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "reviewer"}}}}
 }
 
 // The plan node of a run is the plan its walk holds (C9, B-7). An owner's plan given before the

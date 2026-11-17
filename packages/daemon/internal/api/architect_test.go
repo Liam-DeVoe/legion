@@ -99,7 +99,7 @@ type statusRecorder struct {
 	listFails error
 	// plans is each version of a plan document this fake knows, by planVersion(id, version), and
 	// planErr, when set, every such read's answer instead.
-	plans   map[string]dispatch.PlanDocument
+	plans   map[string]dispatch.DocumentVersion
 	planErr error
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
@@ -113,14 +113,14 @@ func planVersion(artifactID string, version int) string {
 
 // PlanDocument answers Dispatch's read of one version of a document with its blocks: the version
 // the case gave, or Dispatch's 404 for one it did not.
-func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, version int) (dispatch.PlanDocument, error) {
+func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, version int) (dispatch.DocumentVersion, error) {
 	r.reads = append(r.reads, "plan:"+planVersion(artifactID, version))
 	if r.planErr != nil {
-		return dispatch.PlanDocument{}, r.planErr
+		return dispatch.DocumentVersion{}, r.planErr
 	}
 	document, ok := r.plans[planVersion(artifactID, version)]
 	if !ok {
-		return dispatch.PlanDocument{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "version not found"}
+		return dispatch.DocumentVersion{}, &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "version not found"}
 	}
 	return document, nil
 }
@@ -260,14 +260,16 @@ func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under. No route
-// of this package reads or writes a document of an issue's.
+// artifacts answers none, and an upload answers the slug Dispatch files the name under. It also
+// takes every role-holder publication and keeps none. No route of this package reads or writes a
+// document of an issue's, and none publishes a role holder.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
+func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 

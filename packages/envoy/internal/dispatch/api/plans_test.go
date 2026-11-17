@@ -2,10 +2,13 @@ package api
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,7 +17,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The plan of an issue's run and the rating of its retro, as the Legion daemon writes them
@@ -106,10 +111,10 @@ func recordRuns(t *testing.T, handler http.Handler, project, issue string, runs 
 			"role": each.role, "generation": 1,
 		}
 		if each.started != nil {
-			putStepOK(t, handler, issue, ids[index], with(body, map[string]any{"started_at": *each.started}))
+			putStepOK(t, handler, issue, ids[index], withStepFields(body, map[string]any{"started_at": *each.started}))
 		}
 		if each.ended != nil {
-			end := with(body, map[string]any{"result": each.result, "ended_at": *each.ended})
+			end := withStepFields(body, map[string]any{"result": each.result, "ended_at": *each.ended})
 			if each.result == "failed" {
 				end["returned_to"] = 2
 			}
@@ -123,20 +128,43 @@ func recordRuns(t *testing.T, handler http.Handler, project, issue string, runs 
 // the retro's completion carried.
 func rateRetro(t *testing.T, handler http.Handler, project, issue, id string, generation, rating int, reason string) {
 	t.Helper()
-	putRatingOK(t, handler, issue, id, with(retroIdentity(daemonSession(project), generation),
+	putRatingOK(t, handler, issue, id, withStepFields(retroIdentity(daemonSession(project), generation),
 		map[string]any{"rating": rating, "rating_reason": reason}))
 }
 
 // The read of a project lists each of its issues that is done, newest close first, each with the
-// default plan, the rating of its retro with the reason, the time from its first start to its last
-// end, and its count of failed steps; the issue still in progress is not listed.
+// plan its run wrote, the rating of its retro with the reason, the time from its first start to its
+// last end, and its count of failed steps; the issue still in progress is not listed. The three
+// finished issues close in an order that is neither their key order nor their title order, either
+// way round, so a read sorted by key or by title is seen. The plans differ in id and in steps, so a
+// plan read onto another issue's row is seen, and the first issue's last end is 30.7 seconds past
+// a whole minute, so its time is whole seconds, cut, not minutes.
 func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
-	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 3)
-	reviewed, fitted, running := issues[0], issues[1], issues[2]
+	handler, database := newTestHandlerWithStore(t)
+	issues := createListedIssues(t, handler, "LEG", 4)
+	reviewed, fitted, hurried, running := issues[0], issues[1], issues[2], issues[3]
 	daemon := daemonSession("LEG")
+	fittedSteps := []string{"planner", "implementer", "acceptance:owner"}
+	hurriedSteps := []string{"implementer", "acceptance:owner"}
+	reviewedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: reviewed, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: defaultStepLine}}}
+	fittedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: fitted, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: fittedSteps}}}
+	hurriedPlan := model.PlanRecord{ID: uuid.NewString(), Issue: hurried, Generation: 1, Source: "default",
+		Tasks: []model.PlanTask{{ID: "default", Steps: hurriedSteps}}}
+	merged := at(50).Add(30*time.Second + 700*time.Millisecond)
+	// The closes, oldest first: fitted, hurried, reviewed. So the read lists reviewed, hurried,
+	// fitted: issues 0, 2, 1, which is neither ascending nor descending by key or by title.
+	fittedClosed, hurriedClosed, reviewedClosed := at(1000), at(2000), at(3000)
+	closeAt := func(key string, closed time.Time) {
+		t.Helper()
+		closeIssue(t, handler, key)
+		if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", key, closed); err != nil {
+			t.Fatalf("close %s at %s: %v", key, closed, err)
+		}
+	}
 
-	putPlanRecordOK(t, handler, reviewed, uuid.NewString(), defaultPlanBody(daemon, 1))
+	putPlanRecordOK(t, handler, reviewed, reviewedPlan.ID, defaultPlanBody(daemon, 1))
 	runs := recordRuns(t, handler, "LEG", reviewed,
 		run{"step", "planner", 1, new(at(0)), new(at(5)), "passed"},
 		run{"step", "implementer", 2, new(at(5)), new(at(20)), "passed"},
@@ -144,58 +172,94 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		run{"step", "implementer", 2, new(at(25)), new(at(35)), "passed"},
 		run{"step", "reviewer", 4, new(at(35)), new(at(40)), "passed"},
 		run{"retro", "implementer", 0, new(at(40)), new(at(42)), "passed"},
-		run{"merge", "merger", 0, nil, new(at(50)), "passed"},
+		run{"merge", "merger", 0, nil, &merged, "passed"},
 	)
-	rateRetro(t, handler, "LEG", reviewed, runs[5], 1, 4, "The tester found the bug.")
-	closeIssue(t, handler, reviewed)
+	reviewedRetro := runs[5]
+	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
 
-	putPlanRecordOK(t, handler, fitted, uuid.NewString(), defaultPlanBody(daemon, 1))
+	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
+		"tasks": []map[string]any{{"id": "default", "steps": fittedSteps}},
+	}))
 	runs = recordRuns(t, handler, "LEG", fitted,
 		run{"step", "planner", 1, new(at(100)), new(at(110)), "passed"},
 		run{"step", "implementer", 2, new(at(110)), new(at(130)), "passed"},
 		run{"retro", "implementer", 0, new(at(140)), new(at(141)), "passed"},
 		run{"merge", "merger", 0, nil, new(at(160)), "passed"},
 	)
-	rateRetro(t, handler, "LEG", fitted, runs[2], 1, 5, "The plan fit the work.")
-	closeIssue(t, handler, fitted)
+	fittedRetro := runs[2]
+	rateRetro(t, handler, "LEG", fitted, fittedRetro, 1, 5, "The plan fit the work.")
+
+	putPlanRecordOK(t, handler, hurried, hurriedPlan.ID, withStepFields(defaultPlanBody(daemon, 1), map[string]any{
+		"tasks": []map[string]any{{"id": "default", "steps": hurriedSteps}},
+	}))
+	runs = recordRuns(t, handler, "LEG", hurried,
+		run{"step", "implementer", 1, new(at(300)), new(at(310)), "failed"},
+		run{"step", "implementer", 1, new(at(311)), new(at(318)), "failed"},
+		run{"retro", "implementer", 0, new(at(320)), new(at(321)), "passed"},
+		run{"merge", "merger", 0, nil, new(at(330)), "passed"},
+	)
+	hurriedRetro := runs[2]
+	rateRetro(t, handler, "LEG", hurried, hurriedRetro, 1, 2, "No tester read the work.")
+
+	closeAt(fitted, fittedClosed)
+	closeAt(hurried, hurriedClosed)
+	closeAt(reviewed, reviewedClosed)
 
 	putPlanRecordOK(t, handler, running, uuid.NewString(), defaultPlanBody(daemon, 1))
 	recordRuns(t, handler, "LEG", running, run{"step", "reviewer", 4, new(at(200)), new(at(205)), "failed"})
 
 	read := readPlans(t, handler, "LEG", "")
-	if read.Project != "LEG" || len(read.Issues) != 2 || read.Issues[0].Issue != fitted || read.Issues[1].Issue != reviewed {
-		t.Fatalf("the read lists %+v, want %s then %s, the newest close first", read, fitted, reviewed)
+	listed := make([]string, len(read.Issues))
+	for index, issue := range read.Issues {
+		listed[index] = issue.Issue
+	}
+	if want := []string{reviewed, hurried, fitted}; read.Project != "LEG" || !slices.Equal(listed, want) {
+		t.Fatalf("the read of %s lists %v, want %v, the newest close first", read.Project, listed, want)
 	}
 	for _, want := range []struct {
 		issue          model.FinishedIssue
+		title          string
+		closed         time.Time
+		plan           model.PlanRecord
 		rating         int
 		reason         string
+		retro          string
+		retroEnded     time.Time
 		duration       int64
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], 5, "The plan fit the work.", 3600, 0, at(100), at(160)},
-		{read.Issues[1], 4, "The tester found the bug.", 3000, 1, at(0), at(50)},
+		{read.Issues[0], "LEG listed issue 0", reviewedClosed, reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3030, 1, at(0), merged},
+		{read.Issues[1], "LEG listed issue 2", hurriedClosed, hurriedPlan, 2, "No tester read the work.", hurriedRetro, at(321), 1800, 2, at(300), at(330)},
+		{read.Issues[2], "LEG listed issue 1", fittedClosed, fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
 	} {
 		issue := want.issue
-		if issue.Plan == nil || issue.Plan.Source != "default" || issue.Plan.ArtifactID != nil || issue.Plan.Version != nil ||
-			len(issue.Plan.Tasks) != 1 || issue.Plan.Tasks[0].ID != "default" || !slices.Equal(issue.Plan.Tasks[0].Steps, defaultStepLine) {
-			t.Fatalf("%s's plan is %+v, want the default plan of one task default with the default steps", issue.Issue, issue.Plan)
+		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
+			t.Fatalf("%s's plan is %+v, want %+v, the plan its own run wrote", issue.Issue, issue.Plan, want.plan)
 		}
-		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason ||
-			issue.Ratings[0].StepID == "" || issue.Ratings[0].EndedAt == nil {
-			t.Fatalf("%s's ratings are %+v, want one, %d %q, with its record and end", issue.Issue, issue.Ratings, want.rating, want.reason)
+		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason {
+			t.Fatalf("%s's ratings are %+v, want one, %d %q", issue.Issue, issue.Ratings, want.rating, want.reason)
+		}
+		// The retro's record and end, and the issue's title and close, each differ from a value of
+		// the same type beside it (the issue's key, its last end), so each is checked equal.
+		if rated := issue.Ratings[0]; rated.StepID != want.retro || rated.EndedAt == nil || !rated.EndedAt.Equal(want.retroEnded) {
+			t.Errorf("%s's rating is of record %s ended %v, want the retro %s ended %s", issue.Issue, rated.StepID, rated.EndedAt,
+				want.retro, want.retroEnded)
+		}
+		if issue.Title != want.title || !issue.ClosedAt.Equal(want.closed) {
+			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, want.closed)
 		}
 		if issue.DurationSeconds == nil || *issue.DurationSeconds != want.duration ||
 			issue.StartedAt == nil || !issue.StartedAt.Equal(want.started) || issue.EndedAt == nil || !issue.EndedAt.Equal(want.ended) {
-			t.Fatalf("%s's time is %v to %v, %v seconds, want %s to %s, %d seconds", issue.Issue, issue.StartedAt, issue.EndedAt,
-				issue.DurationSeconds, want.started, want.ended, want.duration)
+			seconds := "no"
+			if issue.DurationSeconds != nil {
+				seconds = fmt.Sprint(*issue.DurationSeconds)
+			}
+			t.Fatalf("%s's time is %v to %v, %s seconds, want %s to %s, %d seconds", issue.Issue, issue.StartedAt, issue.EndedAt,
+				seconds, want.started, want.ended, want.duration)
 		}
 		if issue.FailedSteps != want.failed {
 			t.Fatalf("%s counts %d failed steps, want %d", issue.Issue, issue.FailedSteps, want.failed)
-		}
-		if issue.Title == "" || issue.ClosedAt.IsZero() {
-			t.Fatalf("%s is listed with title %q closed %s, want its title and its close", issue.Issue, issue.Title, issue.ClosedAt)
 		}
 	}
 }
@@ -206,27 +270,27 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 // one is written without it.
 func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	rating := map[string]any{"rating": 3, "rating_reason": "The plan was late."}
 
-	step := putRating(t, handler, issue, uuid.NewString(), with(stepIdentity(daemon), rating))
+	step := putRating(t, handler, issue, uuid.NewString(), withStepFields(stepIdentity(daemon), rating))
 	requireStepRefusal(t, "a rating of a step", step, http.StatusBadRequest, codeStepInput, "rating")
-	merge := putRating(t, handler, issue, uuid.NewString(), with(retroIdentity(daemon, 1), with(rating, map[string]any{"kind": "merge"})))
+	merge := putRating(t, handler, issue, uuid.NewString(), withStepFields(retroIdentity(daemon, 1), withStepFields(rating, map[string]any{"kind": "merge"})))
 	requireStepRefusal(t, "a rating of a merge", merge, http.StatusBadRequest, codeStepInput, "rating")
 	held := uuid.NewString()
 	putStepOK(t, handler, issue, held, implementerStart(daemon))
-	asRetro := putRating(t, handler, issue, held, with(retroIdentity(daemon, 1), rating))
+	asRetro := putRating(t, handler, issue, held, withStepFields(retroIdentity(daemon, 1), rating))
 	requireStepRefusal(t, "a rating of a record held as a step", asRetro, http.StatusBadRequest, codeStepInput, "rating")
 
 	unrated := uuid.NewString()
-	written := putStepOK(t, handler, issue, unrated, with(retroIdentity(daemon, 1), with(rating, map[string]any{"started_at": stepStart})))
+	written := putStepOK(t, handler, issue, unrated, withStepFields(retroIdentity(daemon, 1), withStepFields(rating, map[string]any{"started_at": stepStart})))
 	if written.Rating != nil || written.RatingReason != nil {
 		t.Fatalf("the step write answers rating %v %v, want none: a rating has a route of its own", written.Rating, written.RatingReason)
 	}
 
 	retro := uuid.NewString()
-	rated := putRatingOK(t, handler, issue, retro, with(retroIdentity(daemon, 1), rating))
+	rated := putRatingOK(t, handler, issue, retro, withStepFields(retroIdentity(daemon, 1), rating))
 	if rated.Kind != "retro" || rated.Rating == nil || *rated.Rating != 3 || rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
 		t.Fatalf("the rating answers %s, want the retro rated 3 with its reason", stepJSON(t, rated))
 	}
@@ -244,38 +308,242 @@ func TestARatingBelongsToARetroRecordAlone(t *testing.T) {
 	}
 }
 
-// Each rating outside its form is refused 400 STEP_INPUT naming its field, and writes nothing: the
-// rating 1 to 5 and the reason not blank and at most 2,000 code points, both named. A reason of
-// exactly 2,000 code points is taken, which is the control of the bound.
+// Only the daemon of the issue's project rates a retro, as only it writes the retro's record: a
+// person, an agent's session and the daemon of another project, each sending the rating the
+// daemon's own write lands with, are refused 403 STEP_WRITER, whether the retro's record exists or
+// not, and the retro the daemon recorded stays unrated; the daemon's rating of it lands, which is
+// the control.
+func TestARatingIsTheDaemonsAlone(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	retro := uuid.NewString()
+	putStepOK(t, handler, issue, retro, withStepFields(retroIdentity(daemonSession("LEG"), 1), map[string]any{"started_at": stepStart}))
+	rating := map[string]any{"rating": 4, "rating_reason": "The plan fit the work."}
+
+	for _, id := range []string{retro, uuid.NewString()} {
+		path := "/api/v1/issues/" + issue + "/steps/" + id + "/rating"
+		person := dispatchRequest(t, handler, http.MethodPut, path, withStepFields(retroIdentity(nil, 1), rating), "alice")
+		requireStepRefusal(t, "a person's rating of "+id, person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
+			refused := putRating(t, handler, issue, id, withStepFields(retroIdentity(map[string]any{"kind": "session", "id": session}, 1), rating))
+			requireStepRefusal(t, "a rating of "+id+" as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		}
+	}
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != retro || steps[0].Rating != nil || steps[0].RatingReason != nil {
+		t.Fatalf("the refused ratings left %+v, want the one retro %s, unrated", steps, retro)
+	}
+
+	rated := putRatingOK(t, handler, issue, retro, withStepFields(retroIdentity(daemonSession("LEG"), 1), rating))
+	if rated.Rating == nil || *rated.Rating != 4 || rated.RatingReason == nil || *rated.RatingReason != "The plan fit the work." {
+		t.Fatalf("the daemon's rating answers %s, want the retro rated 4 with its reason", stepJSON(t, rated))
+	}
+}
+
+// exactLogin is a sign-in that takes the person the X-Dispatch-User header names as written, where
+// the package's header identity lowercases it: so a person can carry a session's id, here the
+// daemon's, which no sign-in a deployment configures gives.
+type exactLogin struct{}
+
+func (exactLogin) Login(r *http.Request) (string, error) {
+	if login := r.Header.Get("X-Dispatch-User"); login != "" {
+		return login, nil
+	}
+	return "", identity.ErrNoIdentity
+}
+
+// The writer of an issue's records is the daemon's session, kind and id both: a signed-in person
+// whose login is legion-daemon:LEG is refused the plan write and the rating write 403 STEP_WRITER
+// with nothing written, where the session of that id writes both, which is the control.
+func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
+	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	writer := legionDaemonSessionPrefix + "LEG"
+	plan, retro := uuid.NewString(), uuid.NewString()
+	rating := withStepFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
+
+	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
+	requireStepRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
+	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
+	requireStepRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
+		t.Fatalf("the refused writes left %d records, want none", len(steps))
+	}
+	if plans := readPlansOf(t, handler, issue); plans != 0 {
+		t.Fatalf("the refused writes left %d plan nodes, want none", plans)
+	}
+
+	putPlanRecordOK(t, handler, issue, plan, defaultPlanBody(daemonSession("LEG"), 1))
+	putRatingOK(t, handler, issue, retro, withStepFields(rating, map[string]any{"actor": daemonSession("LEG")}))
+}
+
+// workflowRows counts the rows of the workflow store's two tables, which every plan write and
+// every step write adds to.
+func workflowRows(t *testing.T, database *store.Store) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select (select count(*) from workflow_nodes) + (select count(*) from workflow_tuples)`).Scan(&rows); err != nil {
+		t.Fatalf("count the workflow rows: %v", err)
+	}
+	return rows
+}
+
+// A credential scoped to one project writes no plan and no rating of another project's issue,
+// though it proves the session of that issue's daemon and the body names that session, so the
+// project check alone stands between them: 403 PROJECT_SCOPE with nothing written. The same writes
+// over a credential scoped to the issue's project land, which is the control.
+func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
+	rig := newBrokerTokenRig(t)
+	caller := newBrokerCaller(t)
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": "OTH", "name": "OTH"}); created.Code != http.StatusCreated {
+		t.Fatalf("create project OTH: status=%d body=%s", created.Code, created.Body.String())
+	}
+	created := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": "OTH", "title": "Plans of OTH"})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create an issue in OTH: status=%d body=%s", created.Code, created.Body.String())
+	}
+	issue := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created).Key
+	const elsewhere, own = "a-daemon-token-scoped-to-another-project", "a-daemon-token-scoped-to-the-issues-project"
+	for token, projects := range map[string][]string{elsewhere: {brokerTestProject}, own: {"OTH"}} {
+		answer := liveNamedToken(caller.jkt)
+		answer.Session, answer.Projects = legionDaemonSessionPrefix+"OTH", projects
+		rig.broker.Says(token, answer)
+	}
+	daemon := daemonSession("OTH")
+
+	for _, write := range []struct {
+		name, path string
+		body       map[string]any
+	}{
+		{"plan", "/api/v1/issues/" + issue + "/plans/" + uuid.NewString(), defaultPlanBody(daemon, 1)},
+		{"rating", "/api/v1/issues/" + issue + "/steps/" + uuid.NewString() + "/rating",
+			withStepFields(retroIdentity(daemon, 1), map[string]any{"rating": 3, "rating_reason": "The plan was late."})},
+	} {
+		before := workflowRows(t, rig.database)
+		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
+		requireStepRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
+			codeProjectScope, brokerTestProject, "OTH")
+		if after := workflowRows(t, rig.database); after != before {
+			t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
+		}
+		if answered := rig.serve(caller.presenting(t, http.MethodPut, write.path, own, write.body)); answered.Code != http.StatusOK {
+			t.Fatalf("the same %s over a credential of OTH: status=%d body=%s, want 200", write.name, answered.Code, answered.Body.String())
+		}
+	}
+}
+
+// Each rating outside its form is refused 400 STEP_INPUT in the words of the check that refuses it,
+// and writes nothing: the rating 1 to 5 and the reason not blank and at most 2,000 code points,
+// each the store's refusal. A body naming no rating is the rating route's own refusal, since the
+// store takes a step write with no rating; the same body on the step route lands, which is its
+// control. Every row names its refusal's words, since the route's own refusal names both rating
+// and rating_reason, so a value the route dropped on its way to the store is seen. A rating with no
+// reason reaches the store only after the issue's lookup: the same body for an issue Dispatch does
+// not hold is 404 ISSUE_NOT_FOUND. A reason of exactly 2,000 code points is taken, which is the
+// control of the bound.
 func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	retro := retroIdentity(daemonSession("LEG"), 1)
-	noReason := with(retro, map[string]any{"rating": 3})
-	noRating := with(retro, map[string]any{"rating_reason": "Why."})
+	noReason := withStepFields(retro, map[string]any{"rating": 3})
+	noRating := withStepFields(retro, map[string]any{"rating_reason": "Why."})
+	const routesOwn = "rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason"
 
 	for _, row := range []struct {
-		name  string
-		body  map[string]any
-		field string
+		name    string
+		body    map[string]any
+		refusal string
 	}{
-		{"a rating of 0", with(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating"},
-		{"a rating of 6", with(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating"},
-		{"no rating", noRating, "rating"},
-		{"no reason", noReason, "rating_reason"},
-		{"a blank reason", with(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason"},
-		{"a reason of 2,001 code points", with(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason"},
+		{"a rating of 0", withStepFields(retro, map[string]any{"rating": 0, "rating_reason": "Why."}), "rating 0 is no rating"},
+		{"a rating of 6", withStepFields(retro, map[string]any{"rating": 6, "rating_reason": "Why."}), "rating 6 is no rating"},
+		{"no rating", noRating, routesOwn},
+		{"neither a rating nor a reason", retro, routesOwn},
+		{"no reason", noReason, "rating_reason is left out or blank: a rating carries one sentence of why"},
+		{"a blank reason", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": " \n "}), "rating_reason is left out or blank: a rating carries one sentence of why"},
+		{"a reason of 2,001 code points", withStepFields(retro, map[string]any{"rating": 3, "rating_reason": strings.Repeat("é", 2001)}), "rating_reason holds 2001 characters"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.field)
+			requireStepRefusal(t, row.name, putRating(t, handler, issue, uuid.NewString(), row.body), http.StatusBadRequest, codeStepInput, row.refusal)
 		})
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused ratings left %d records, want none", len(steps))
 	}
-	longest := putRatingOK(t, handler, issue, uuid.NewString(), with(retro, map[string]any{"rating": 1, "rating_reason": strings.Repeat("é", 2000)}))
+	missing := putRating(t, handler, "LEG-999", uuid.NewString(), noReason)
+	requireStepRefusal(t, "a rating with no reason of LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
+	if written := putStepOK(t, handler, issue, uuid.NewString(), retro); written.Kind != "retro" || written.Rating != nil {
+		t.Fatalf("the step route answers %s for the retro's identity alone, want the retro with no rating", stepJSON(t, written))
+	}
+	longest := putRatingOK(t, handler, issue, uuid.NewString(), withStepFields(retro, map[string]any{"rating": 1, "rating_reason": strings.Repeat("é", 2000)}))
 	if longest.RatingReason == nil || len([]rune(*longest.RatingReason)) != 2000 {
 		t.Fatalf("a reason of 2,000 code points answers %s, want it whole", stepJSON(t, longest))
+	}
+}
+
+// A rating reason holding a NUL character (U+0000), which PostgreSQL's text cannot hold, is refused
+// by the body's decoder before the route reads it (decodeJSON, unstorableJSON): 400 NUL_CHARACTER
+// naming rating_reason and where in it the NUL stands, with nothing written. The same rating with
+// the NUL taken out lands, which is the control.
+func TestARatingReasonHoldingANulIsRefused(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	retro := retroIdentity(daemonSession("LEG"), 1)
+	id := uuid.NewString()
+
+	refused := putRating(t, handler, issue, id, withStepFields(retro, map[string]any{"rating": 3, "rating_reason": "The plan\x00 was late."}))
+	requireStepRefusal(t, "a reason holding a NUL", refused, http.StatusBadRequest, "NUL_CHARACTER",
+		"rating_reason holds a NUL character (U+0000) at character 9, which Dispatch cannot store")
+	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
+		t.Fatalf("the refused rating left %d records, want none", len(steps))
+	}
+	if rated := putRatingOK(t, handler, issue, id, withStepFields(retro, map[string]any{"rating": 3, "rating_reason": "The plan was late."})); rated.RatingReason == nil || *rated.RatingReason != "The plan was late." {
+		t.Fatalf("the rating with no NUL answers %s, want its reason", stepJSON(t, rated))
+	}
+}
+
+// A body that repeats a member is read for a NUL character (U+0000) in every copy of the member,
+// as the route's typed decode keeps each: it merges a repeated object into its first copy, so a
+// later actor that leaves the origin out keeps the first copy's, and a null in place of a string
+// leaves that string as the first copy set it. Each body below is refused 400 NUL_CHARACTER naming
+// actor.origin.cwd, on the plan write and on the rating write, with nothing written; the same body
+// with the NUL taken out lands, which is the control.
+func TestARepeatedMemberHidesNoNulFromAPlanOrARating(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	awaitBackgroundWrites(t, served)
+	daemon := `{"kind":"session","id":"legion-daemon:LEG"`
+	for _, route := range []struct {
+		name, target, fields string
+	}{
+		{"plan", "/api/v1/issues/" + issue + "/plans/%s",
+			`"generation":1,"source":"default","tasks":[{"id":"default","steps":["planner"]}]`},
+		{"rating", "/api/v1/issues/" + issue + "/steps/%s/rating",
+			`"task":"default","step":0,"kind":"retro","role":"implementer","generation":1,"rating":3,"rating_reason":"The plan fit."`},
+	} {
+		for _, actor := range []struct {
+			name string
+			// actor is the body's actor with %s where its cwd stands.
+			actor string
+		}{
+			{"a repeated actor", daemon + `,"origin":{"cwd":"%s"}},"actor":` + daemon + `}`},
+			{"a repeated cwd set to null", daemon + `,"origin":{"cwd":"%s","cwd":null}}`},
+		} {
+			t.Run(route.name+": "+actor.name, func(t *testing.T) {
+				body := func(cwd string) json.RawMessage {
+					return json.RawMessage(`{"actor":` + fmt.Sprintf(actor.actor, cwd) + `,` + route.fields + `}`)
+				}
+				target := fmt.Sprintf(route.target, uuid.NewString())
+				before := databaseFingerprint(t, database)
+				refused := sessionRequest(t, handler, http.MethodPut, target, body(`a\u0000b`))
+				assertRefusal(t, "PUT "+target, refused.Code, refused.Body.Bytes(), "NUL_CHARACTER", "actor.origin.cwd")
+				assertUnchanged(t, "PUT "+target, before, databaseFingerprint(t, database))
+				if clean := sessionRequest(t, handler, http.MethodPut, target, body("ab")); clean.Code != http.StatusOK {
+					t.Fatalf("the body with no NUL: status=%d body=%s, want 200", clean.Code, clean.Body.String())
+				}
+			})
+		}
 	}
 }
 
@@ -283,36 +551,54 @@ func TestARatingWriteRefusesItsBadValues(t *testing.T) {
 // for one retro land in either order.
 func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
 	id := uuid.NewString()
 
 	rateRetro(t, handler, "LEG", issue, id, 1, 2, "The plan skipped the tests.")
-	again := putRatingOK(t, handler, issue, id, with(retroIdentity(daemon, 1), map[string]any{"rating": 5, "rating_reason": "Changed my mind."}))
+	again := putRatingOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, 1), map[string]any{"rating": 5, "rating_reason": "Changed my mind."}))
 	if again.Rating == nil || *again.Rating != 2 || *again.RatingReason != "The plan skipped the tests." {
 		t.Fatalf("a second rating answers %s, want the first, 2", stepJSON(t, again))
 	}
-	ended := putStepOK(t, handler, issue, id, with(retroIdentity(daemon, 1), map[string]any{"result": "passed", "ended_at": at(3)}))
+	ended := putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, 1), map[string]any{"result": "passed", "ended_at": at(3)}))
 	if ended.Result != "passed" || ended.Rating == nil || *ended.Rating != 2 {
 		t.Fatalf("the retro's end after its rating answers %s, want the end beside the rating", stepJSON(t, ended))
 	}
 }
 
-// An issue that ran twice has two retros, and the read lists both ratings, in the order they ran.
+// An issue that ran twice has two plans and two retros. The second run's plan is its owner's, with
+// the document, the version and two tasks in the order the owner gave them, not by id; the plan write
+// answers it whole. The read lists that plan, the highest generation, though the first run's plan
+// was written after it, and both ratings whole, in the order the retros ran: each its own score,
+// reason, record and end, the two scores different, so a score read onto the other retro is seen.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
+	document, version := uuid.NewString(), 3
+	owners := model.PlanRecord{ID: uuid.NewString(), Issue: issue, Generation: 2, Source: "owner", ArtifactID: &document, Version: &version,
+		Tasks: []model.PlanTask{{ID: "web", Steps: []string{"planner", "implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer:security"}}}}
+	written := putPlanRecordOK(t, handler, issue, owners.ID, map[string]any{
+		"actor": daemon, "generation": 2, "source": "owner", "artifact_id": document, "version": version,
+		"tasks": []map[string]any{
+			{"id": "web", "steps": []string{"planner", "implementer"}}, {"id": "api", "steps": []string{"implementer", "reviewer:security"}},
+		},
+	})
+	if !reflect.DeepEqual(written, owners) {
+		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
+	}
 	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 1))
-	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 2))
-	for generation, retro := range map[int]struct {
+	retros := map[int]struct {
 		started time.Time
 		rating  int
 		reason  string
-	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}} {
+	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}}
+	ids := map[int]string{}
+	for generation, retro := range retros {
 		id := uuid.NewString()
-		putStepOK(t, handler, issue, id, with(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
-		putStepOK(t, handler, issue, id, with(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
+		ids[generation] = id
+		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
+		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
 		rateRetro(t, handler, "LEG", issue, id, generation, retro.rating, retro.reason)
 	}
 	closeIssue(t, handler, issue)
@@ -321,20 +607,38 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	if len(read.Issues) != 1 {
 		t.Fatalf("the read lists %d issues, want %s", len(read.Issues), issue)
 	}
-	var got []string
-	for _, rating := range read.Issues[0].Ratings {
-		got = append(got, rating.Reason)
+	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, owners) {
+		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 2, %+v", plan, owners)
 	}
-	if want := []string{"The plan was late.", "The second plan fit."}; !slices.Equal(got, want) {
-		t.Fatalf("the ratings are %v, want %v", got, want)
+	want := []model.PlanRating{
+		{Rating: 3, Reason: "The plan was late.", StepID: ids[1], EndedAt: new(at(11))},
+		{Rating: 4, Reason: "The second plan fit.", StepID: ids[2], EndedAt: new(at(101))},
 	}
+	if got := planRatingsText(read.Issues[0].Ratings); !slices.Equal(got, planRatingsText(want)) {
+		t.Fatalf("the ratings are\n%s\nwant each retro's own, in the order they ran\n%s",
+			strings.Join(got, "\n"), strings.Join(planRatingsText(want), "\n"))
+	}
+}
+
+// planRatingsText is each rating of a read as one line, its score, reason, record and end, so two
+// lists compare whole and a difference prints whole.
+func planRatingsText(ratings []model.PlanRating) []string {
+	lines := make([]string, len(ratings))
+	for index, rating := range ratings {
+		ended := "no end"
+		if rating.EndedAt != nil {
+			ended = rating.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+		lines[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, ended)
+	}
+	return lines
 }
 
 // A record whose start Dispatch never got (a step that started before the release) counts no time:
 // the issue's time starts at the earliest start the records hold.
 func TestAnUnknownStartCountsNoTime(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	recordRuns(t, handler, "LEG", issue,
 		run{"step", "planner", 1, nil, new(at(5)), "passed"},
 		run{"step", "implementer", 2, new(at(10)), new(at(30)), "passed"},
@@ -356,11 +660,64 @@ func TestAnUnknownStartCountsNoTime(t *testing.T) {
 	}
 }
 
+// An issue whose only known start comes after its last end holds no time Dispatch can count: a run
+// whose start Dispatch never got (one that started before the release) ended before a later run
+// started, and the later run's end has not reached Dispatch. The read answers no duration, where
+// the difference would be negative, and the start and the end as the records hold them.
+func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	recordRuns(t, handler, "LEG", issue,
+		run{"step", "planner", 1, nil, new(at(5)), "passed"},
+		run{"step", "implementer", 2, new(at(10)), nil, ""},
+	)
+	closeIssue(t, handler, issue)
+
+	finished := readPlans(t, handler, "LEG", "").Issues
+	if len(finished) != 1 {
+		t.Fatalf("the read lists %d issues, want %s", len(finished), issue)
+	}
+	read := finished[0]
+	if read.DurationSeconds != nil {
+		t.Fatalf("the issue's time is %d seconds, want no duration: its last end, %s, is before its first start, %s",
+			*read.DurationSeconds, at(5), at(10))
+	}
+	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(5)) {
+		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(5))
+	}
+}
+
+// An issue whose last end is the moment of its first start holds a time of 0 seconds, which the
+// read answers as 0 and not as no duration: a run whose start Dispatch never got ended at the
+// moment a later run started, whose end has not reached Dispatch. The start and the end are the
+// moment the records hold.
+func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	recordRuns(t, handler, "LEG", issue,
+		run{"step", "planner", 1, nil, new(at(10)), "passed"},
+		run{"step", "implementer", 2, new(at(10)), nil, ""},
+	)
+	closeIssue(t, handler, issue)
+
+	finished := readPlans(t, handler, "LEG", "").Issues
+	if len(finished) != 1 {
+		t.Fatalf("the read lists %d issues, want %s", len(finished), issue)
+	}
+	read := finished[0]
+	if read.DurationSeconds == nil || *read.DurationSeconds != 0 {
+		t.Fatalf("the issue's time is %v seconds, want 0: its last end and its first start are both %s", read.DurationSeconds, at(10))
+	}
+	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(10)) {
+		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(10))
+	}
+}
+
 // A finished issue Legion never ran is listed with no plan, no rating, no time and no failed step,
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	closeIssue(t, handler, issue)
 
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans", nil, "alice")
@@ -373,15 +730,19 @@ func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
 }
 
 // The plans read refuses a project Dispatch does not hold 404 PROJECT_NOT_FOUND, and a since or
-// until that is no RFC 3339 time, or a since not before its until, 400 INVALID_QUERY; a project
-// with no finished issue answers an empty list.
+// until that is no RFC 3339 time, or a since not before its until, an equal one too, since
+// [since, until) then holds no moment, 400 INVALID_QUERY; a project with no finished issue answers
+// an empty list.
 func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 	handler := newTestHandler(t)
-	stepIssues(t, handler, "LEG", 1)
+	createTestIssue(t, handler, "LEG", "A run of steps")
 
 	missing := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/NOPE/plans", nil, "alice")
 	requireStepRefusal(t, "the plans of NOPE", missing, http.StatusNotFound, "PROJECT_NOT_FOUND")
-	for _, query := range []string{"?since=yesterday", "?until=2026-13-01", "?since=2026-11-17T00:00:00Z&until=2026-11-16T00:00:00Z"} {
+	for _, query := range []string{
+		"?since=yesterday", "?until=2026-13-01", "?since=2026-11-17T00:00:00Z&until=2026-11-16T00:00:00Z",
+		"?since=2026-11-17T00:00:00Z&until=2026-11-17T00:00:00Z",
+	} {
 		refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/LEG/plans"+query, nil, "alice")
 		requireStepRefusal(t, "the plans of LEG"+query, refused, http.StatusBadRequest, "INVALID_QUERY")
 	}
@@ -390,12 +751,59 @@ func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 	}
 }
 
+// readPlanKeys is the keys of the finished issues the plans read of project lists with query, in
+// the read's order.
+func readPlanKeys(t *testing.T, handler http.Handler, project, query string) []string {
+	t.Helper()
+	keys := []string{}
+	for _, finished := range readPlans(t, handler, project, query).Issues {
+		keys = append(keys, finished.Issue)
+	}
+	return keys
+}
+
+// A window bound finer than the microsecond PostgreSQL stores keeps its meaning: an issue closed at
+// …00.123456 is before …00.123456001, so a since at that bound leaves it out and an until at it keeps
+// it. pgx encodes a timestamptz by truncating it to the microsecond, which would move each
+// comparison onto the close itself.
+func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	closeIssue(t, handler, issue)
+	closed := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", issue, closed); err != nil {
+		t.Fatalf("close %s at %s: %v", issue, closed, err)
+	}
+	const (
+		stored = "2026-11-03T00:00:00.123456Z"
+		after  = "2026-11-03T00:00:00.123456001Z"
+		later  = "2026-11-03T00:00:00.123456999Z"
+		before = "2026-11-03T00:00:00.123455999Z"
+	)
+	for _, window := range []struct {
+		query string
+		want  []string
+	}{
+		{"since=" + stored, []string{issue}},
+		{"since=" + after, []string{}},
+		{"until=" + stored, []string{}},
+		{"until=" + after, []string{issue}},
+		{"since=" + before + "&until=" + after, []string{issue}},
+		{"since=" + after + "&until=" + later, []string{}},
+	} {
+		query := "?" + strings.ReplaceAll(window.query, ":", "%3A")
+		if got := readPlanKeys(t, handler, "LEG", query); !slices.Equal(got, window.want) {
+			t.Errorf("%s lists %v, want %v", query, got, window.want)
+		}
+	}
+}
+
 // Only the daemon of the issue's project writes its plan, as it writes its steps (403 STEP_WRITER);
 // an issue Dispatch does not hold is 404 ISSUE_NOT_FOUND; a closed issue takes it; the write
 // appends no event and answers the plan as it stands.
 func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := createListedIssues(t, handler, "LEG", 2)
 	issue, closed := issues[0], issues[1]
 	path := "/api/v1/issues/" + issue + "/plans/"
 
@@ -427,7 +835,7 @@ func TestAPlanWriteIsTheDaemonsAlone(t *testing.T) {
 // write that arrives late, is answered 200 with the plan as it stands and changes nothing.
 func TestALaterVersionOfAnOwnersPlanReplacesThePlanOfItsRun(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := stepIssues(t, handler, "LEG", 1)[0]
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, document := uuid.NewString(), uuid.NewString()
 	owner := func(version int, tasks []model.PlanTask) map[string]any {
 		return map[string]any{
@@ -477,11 +885,13 @@ func planRecordLine(plan *model.PlanRecord) string {
 }
 
 // Each plan outside its form is refused 400 PLAN_INPUT naming the field, and a tasks that is no
-// list at all the package's own 400 INVALID_JSON; none writes a plan. An id another issue's plan
-// holds is 409 PLAN_OTHER_ISSUE.
+// list at all the package's own 400 INVALID_JSON; none writes a plan. A lone half of a document
+// reaches the store, which names it or the half left out: a default plan naming either half, and
+// an owner's plan naming its document and no version. An id another issue's plan holds is 409
+// PLAN_OTHER_ISSUE.
 func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
-	issues := stepIssues(t, handler, "LEG", 2)
+	issues := createListedIssues(t, handler, "LEG", 2)
 	daemon := daemonSession("LEG")
 	plan := defaultPlanBody(daemon, 1)
 	noSource := maps.Clone(plan)
@@ -492,14 +902,17 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 		body  map[string]any
 		field string
 	}{
-		{"a source that is no source", with(plan, map[string]any{"source": "mine"}), "source"},
+		{"a source that is no source", withStepFields(plan, map[string]any{"source": "mine"}), "source"},
 		{"no source", noSource, "source"},
-		{"no task", with(plan, map[string]any{"tasks": []any{}}), "tasks"},
-		{"a task with no steps", with(plan, map[string]any{"tasks": []map[string]any{{"id": "default"}}}), "steps"},
-		{"a task id that is no task id", with(plan, map[string]any{"tasks": []map[string]any{{"id": "Default", "steps": []string{"planner"}}}}), "task"},
-		{"a step that is no step", with(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
-		{"a generation of 0", with(plan, map[string]any{"generation": 0}), "generation"},
-		{"an owner's plan with no document", with(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
+		{"no task", withStepFields(plan, map[string]any{"tasks": []any{}}), "tasks"},
+		{"a task with no steps", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default"}}}), "steps"},
+		{"a task id that is no task id", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "Default", "steps": []string{"planner"}}}}), "task"},
+		{"a step that is no step", withStepFields(plan, map[string]any{"tasks": []map[string]any{{"id": "default", "steps": []string{"Planner"}}}}), "steps"},
+		{"a generation of 0", withStepFields(plan, map[string]any{"generation": 0}), "generation"},
+		{"an owner's plan with no document", withStepFields(plan, map[string]any{"source": "owner", "version": 2}), "artifact_id"},
+		{"an owner's plan with a document and no version", withStepFields(plan, map[string]any{"source": "owner", "artifact_id": uuid.NewString()}), "version is required"},
+		{"a default plan naming a version alone", withStepFields(plan, map[string]any{"version": 2}), "version names"},
+		{"a default plan naming a document alone", withStepFields(plan, map[string]any{"artifact_id": uuid.NewString()}), "artifact_id names"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			response := putPlanRecord(t, handler, issues[0], uuid.NewString(), row.body)
@@ -521,6 +934,29 @@ func TestAPlanWriteRefusesItsBadValues(t *testing.T) {
 	putPlanRecordOK(t, handler, issues[0], id, plan)
 	other := putPlanRecord(t, handler, issues[1], id, plan)
 	requireStepRefusal(t, "the plan id of "+issues[0]+" on "+issues[1], other, http.StatusConflict, codePlanOtherIssue, issues[0], issues[1])
+}
+
+// A plan's source is one of the store's sources, which two enum tags restate for the schema: the
+// request's (planRecordInput.Source) and the answer's (model.PlanRecord.Source). The store's own list
+// is read from its refusal of a source it does not take, which names every source it takes, so a
+// source the store gains and a tag lacks fails here rather than in a client the schema refuses it to.
+func TestThePlanSourceTagsNameTheStoresSources(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	response := putPlanRecord(t, handler, issue, uuid.NewString(),
+		withStepFields(defaultPlanBody(daemonSession("LEG"), 1), map[string]any{"source": "no-such-source"}))
+	refusal := decodeBody[refusalAnswer](t, response)
+	_, listed, named := strings.Cut(refusal.Error, "one of ")
+	if response.Code != http.StatusBadRequest || refusal.Code != codePlanInput || !named {
+		t.Fatalf("an unknown source: status=%d body=%s, want 400 %s naming the sources", response.Code, response.Body.String(), codePlanInput)
+	}
+	sources := strings.Split(listed, ", ")
+	for _, shape := range []reflect.Type{reflect.TypeFor[planRecordInput](), reflect.TypeFor[model.PlanRecord]()} {
+		field, _ := shape.FieldByName("Source")
+		if tagged := strings.Split(field.Tag.Get("enum"), ","); !slices.Equal(tagged, sources) {
+			t.Errorf("%s.Source is tagged enum %v, want the store's sources %v", shape, tagged, sources)
+		}
+	}
 }
 
 // readPlansOf counts the plan nodes of issue, read from the read of its finished project: the issue

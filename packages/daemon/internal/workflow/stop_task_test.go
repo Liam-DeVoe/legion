@@ -20,7 +20,7 @@ import (
 // the route hands it to the workflow (api's stopTask).
 func ownersStop(t *testing.T, key, task string) intake.TaskStopped {
 	t.Helper()
-	return intake.TaskStopped{Issue: key, Task: task, By: claim.Token(token(t, "LEGION-208", claim.RoleArchitect))}
+	return intake.TaskStopped{Issue: key, Task: task, By: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))}
 }
 
 // stopsBy is the reason a task stopped by its owner keeps, and the reason its step's process is
@@ -103,7 +103,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			by       supervise.SuspendSource
 			stranded int
 		}{{supervise.SuspendedByDaemon, 0}, {supervise.SuspendedByOperator, 1}} {
-			tester := supervise.Claim{Token: claim.Token(token(t, root.Key, claim.RoleTester)), Project: "legion", Tree: root.Key, Issue: root.Key,
+			tester := supervise.Claim{Token: claim.Token(treeRoleToken(t, root.Key, claim.RoleTester)), Project: "legion", Tree: root.Key, Issue: root.Key,
 				Role: claim.RoleTester, Generation: root.Generation, State: supervise.StateSuspended, SuspendedBy: tc.by, Session: "ses-tester"}
 			var got []supervise.Claim
 			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {

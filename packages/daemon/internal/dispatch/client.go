@@ -199,6 +199,24 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 	}, nil)
 }
 
+// PutRoleHolders publishes the session of each Legion role of the issue through PUT
+// /api/v1/issues/{key}/role-holders, as the daemon's own session, which is the one caller that
+// route takes. The write replaces the issue's whole set, appends no event and notifies nobody.
+// The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
+// body that names no list, and the empty list is the publication that removes every holder.
+// Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
+// an issue it does not know; a Dispatch older than the route answers its router's 404 under the
+// code NOT_FOUND, which the caller retries until the server release that has it.
+func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
+	if holders == nil {
+		holders = []RoleHolder{}
+	}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/role-holders", roleHoldersWrite{
+		Holders: holders,
+		Actor:   daemonActor(key),
+	}, nil)
+}
+
 // PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
 // through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
 // route takes a record of the issue from. A write naming a rating is the rating a retro gave the
@@ -212,7 +230,7 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // release that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/steps/" + url.PathEscape(id)
-	if write.Rating != nil {
+	if write.PlanRating != nil {
 		path += "/rating"
 	}
 	return c.request(ctx, http.MethodPut, path, stepWrite{
@@ -472,31 +490,31 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 // its opening line and its closing fence. A Dispatch that answers no blocks key predates that read
 // and gives ErrNoBlocks. An answer for another version, or a block whose range is not a fenced
 // block of its markdown, is an error naming it; a refusal of Dispatch's passes through (Missing).
-func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (PlanDocument, error) {
+func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, version int) (DocumentVersion, error) {
 	if version < 1 {
-		return PlanDocument{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: a version is 1 or more", artifactID, version)
 	}
 	var response versionBlocksResponse
 	path := "/api/v1/artifacts/" + url.PathEscape(artifactID) + "/versions/" + strconv.Itoa(version) + "?blocks=true"
 	if err := c.request(ctx, http.MethodGet, path, nil, &response); err != nil {
-		return PlanDocument{}, err
+		return DocumentVersion{}, err
 	}
 	if response.Blocks == nil {
-		return PlanDocument{}, ErrNoBlocks
+		return DocumentVersion{}, ErrNoBlocks
 	}
 	if response.Number != version {
-		return PlanDocument{}, fmt.Errorf("read Dispatch document %s at version %d: Dispatch answered version %d", artifactID, version, response.Number)
+		return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: Dispatch answered version %d", artifactID, version, response.Number)
 	}
-	document := PlanDocument{ArtifactID: artifactID, Version: version, Blocks: make([]DocumentBlock, 0, len(*response.Blocks))}
+	document := DocumentVersion{ArtifactID: artifactID, Version: version, Blocks: make([]DocumentBlock, 0, len(*response.Blocks))}
 	for _, block := range *response.Blocks {
 		if block.From < 0 || block.To < block.From || block.To > len(response.Markdown) {
-			return PlanDocument{}, fmt.Errorf("read Dispatch document %s at version %d: block %s spans %d to %d of %d bytes", artifactID, version, block.ID, block.From, block.To, len(response.Markdown))
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s spans %d to %d of %d bytes", artifactID, version, block.ID, block.From, block.To, len(response.Markdown))
 		}
 		rendering := response.Markdown[block.From:block.To]
 		_, rest, opened := strings.Cut(rendering, "\n")
 		closing := strings.LastIndexByte(rest, '\n')
 		if !opened || closing < 0 {
-			return PlanDocument{}, fmt.Errorf("read Dispatch document %s at version %d: block %s is %q, not a fenced block", artifactID, version, block.ID, rendering)
+			return DocumentVersion{}, fmt.Errorf("read Dispatch document %s at version %d: block %s is %q, not a fenced block", artifactID, version, block.ID, rendering)
 		}
 		attributes := make(map[string]string, len(block.Attributes))
 		for _, attribute := range block.Attributes {
@@ -506,7 +524,7 @@ func (c *HTTPClient) PlanDocument(ctx context.Context, artifactID string, versio
 	}
 	var artifact artifactResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &artifact); err != nil {
-		return PlanDocument{}, err
+		return DocumentVersion{}, err
 	}
 	if artifact.IssueKey != nil {
 		document.IssueKey = *artifact.IssueKey
@@ -799,6 +817,13 @@ type gatedStepsWrite struct {
 type designGatesWrite struct {
 	Gates []DesignGateDocument `json:"gates"`
 	Actor actor                `json:"actor"`
+}
+
+// roleHoldersWrite is the body of the role-holder publication: the issue's whole set and the
+// daemon's actor.
+type roleHoldersWrite struct {
+	Holders []RoleHolder `json:"holders"`
+	Actor   actor        `json:"actor"`
 }
 
 // stepWrite is the body of a step record's write: the record's fields and the daemon's actor.

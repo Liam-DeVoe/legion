@@ -83,7 +83,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 		return err
 	}
 	status := PhaseStatus(phase.Retro)
-	if err := e.status(ctx, tx, parent, status); err != nil {
+	if err := e.status(ctx, tx, parent, status, ""); err != nil {
 		return err
 	}
 	parent.Phase, parent.Hold = phase.Retro, nil

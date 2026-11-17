@@ -789,6 +789,41 @@ test("a retro learning cites a symbol or quoted text at the committed head, neve
   expect(carried).toEqual([]);
 });
 
+// The completion that ends the retro rates the plan, and the daemon refuses each rating it cannot
+// take (planRatingOf in packages/daemon/internal/api/handoff.go): none at all
+// (PLAN_RATING_REQUIRED), and a rating outside 1 to 5, one of the two without the other, or a
+// reason that is blank or too long (PLAN_RATING_INPUT), recording nothing either way. The step that
+// gives the two fields says both refusals, so an agent that sends one field alone knows what the
+// daemon does with it; prompts_test.go pins the implementer prompt's copy. This shows the text
+// ships, never that a role follows it.
+test("the retro skill says which ratings of the plan the daemon refuses", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`) and records nothing, so complete again with both."
+  );
+  expect(retro).toContain(
+    "The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing."
+  );
+});
+
+// What the completion rates is the plan the issue ran, its steps and the role that worked each,
+// never the planner's plan.md, and the rating is the scale's whole number with a reason from the
+// evidence step 1 read. The refusal sentences above hold whatever plan the text names, so a step
+// that sends the agent to rate the planner's document fails here instead; prompts_test.go pins the
+// implementer prompt's copy. This shows the text ships, never that a role follows it.
+test("the retro skill rates the plan the issue ran, not the planner's plan.md", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "In the same call, the agent that does the retro rates the plan the issue ran."
+  );
+  expect(retro).toContain(
+    "The plan is the issue's steps and the role that worked each, not the planner's `plan.md`."
+  );
+  expect(retro).toContain(
+    "`plan_rating` is a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and `plan_reason` is one sentence of why, from the evidence step 1 read."
+  );
+});
+
 // dispatch://INFRA-3116's rule, beside the rules above: where a tree builds or changes a surface a
 // person opens, the architect shows that person the surface and gets their answer before it asks
 // them to approve the root spec. The rule is one bullet of section 1 and the section of the

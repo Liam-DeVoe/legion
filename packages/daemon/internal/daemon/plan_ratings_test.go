@@ -11,15 +11,21 @@
 package daemon
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // todaysSteps is the default steps of a project that names no default_steps
@@ -59,11 +65,56 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 	})
 }
 
-// ratedWant is what the read by project must list of one issue: its rating and reason (none for
-// a rating of 0), its count of failed steps, and its records as GET steps read them once its walk
-// was done, from which its time and the id of its retro come.
+// A plugin of the release before PlanRatingContract completes its retro with no rating, and the
+// daemon takes it and writes no rating. The case is the one a deploy meets: the implementer is in
+// its retro's turn when the daemon of the release before stops, and the daemon of this release
+// boots on the store it left, where the claim records the contract its plugin registered,
+// PlanRatingContract-1. This daemon relaunches a stale claim onto its own plugin, but it holds the
+// relaunch of a claim in a turn for that turn's end and serves the turn until then
+// (refreshStalePlugins, supervise's holdStaleRelaunch, api's staleClaim). So the old plugin's
+// completion of the retro, which carries no rating, is taken: the issue moves to merging, the
+// relaunch comes at the turn's end, the walk ends at done, and the read by project lists the issue
+// with no rating. The merge's record ends after the retro's completion, and a lane runs an issue's
+// records one at a time in the order they are due (outbox_lanes.go), so a rating row the
+// completion had written would have run before the read holds the seven records.
+//
+// Before the deploy, the same completion from the same claim at this release's contract is
+// refused PLAN_RATING_REQUIRED, so the contract the claim records is what decides, and the
+// daemon's own view of the claim after the boot must read the old contract.
+func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
+	r := newStepRecordsRig(t)
+	r.walkToRetro()
+	implementer := r.worker(claim.RoleImplementer)
+	implementer.take()
+	r.unratedRetroRefused(implementer)
+
+	old := api.PlanRatingContract - 1
+	r.restartWith(func() {
+		tag, err := r.st.Pool().Exec(context.Background(), "update claims set plugin_contract = $1 where token = $2", old, string(implementer.token))
+		if err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("record %s at plugin contract %d, as the daemon of the release before left it: %d rows, %v", implementer.token, old, tag.RowsAffected(), err)
+		}
+	})
+	implementer.waitState(supervise.StateWorking)
+	if got := r.d.claim(implementer.token).PluginContract; got != old {
+		t.Fatalf("the booted daemon reads %s at plugin contract %d, want %d: this case proves nothing", implementer.token, got, old)
+	}
+
+	r.finish(implementer, "", r.retroCompletion(0, ""), phase.Merging)
+	// The stale claim's relaunch, which the boot held for the turn's end.
+	r.awaitLaunch(implementer.token)
+	r.merge()
+	var steps stepRecordsRead
+	r.waitSteps("the seven records of the walk whose retro gave no rating", func(got stepRecordsRead) error { steps = got; return stepsHold(got, stepRecordsSeven) })
+	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{issue: r.key, title: r.issues[0].title, steps: steps}})
+}
+
+// ratedWant is what the read by project must list of one issue: its title, its rating and reason
+// (none for a rating of 0), its count of failed steps, and its records as GET steps read them once
+// its walk was done, from which its time, its run's plan and the id of its retro come.
 type ratedWant struct {
 	issue  string
+	title  string
 	rating int
 	reason string
 	failed int
@@ -72,14 +123,20 @@ type ratedWant struct {
 
 // walkThreeRated walks the rig's three issues to done side by side, one step of each issue in
 // turn, so no pane the daemon launches waits on the other issues' whole walks to register: the
-// first issue's first review requests changes, and the retros rate the plan 3, 4 and 5. It answers
-// what the read by project must list of each, its records read back once its walk is done.
+// first issue's first review requests changes, and the retros of the first, second and third
+// issues rate the plan 3, 4 and 5. It answers what the read by project must list of each, newest
+// close first, its records read back once its walk is done. That order is neither the issues' key
+// order nor its reverse: the second issue closes first, then the third, then the first, each once
+// the one before has closed on Dispatch, so a read that ordered the issues by key lists them
+// otherwise.
 func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 	r.t.Helper()
 	want := []ratedWant{
-		{issue: r.issues[0].key, rating: 3, reason: "The plan fit the work; the review sent it back once.", failed: 1},
-		{issue: r.issues[1].key, rating: 4, reason: "The plan fit the work.", failed: 0},
-		{issue: r.issues[2].key, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
+		// The first reason holds `<` and `&`, which Go's JSON encoder escapes and the CLI prints as
+		// they are, so the live driver's check of the read script's PASS line meets them.
+		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task.", failed: 1},
+		{issue: r.issues[2].key, title: r.issues[2].title, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
+		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work as written.", failed: 0},
 	}
 	each := func(step func()) {
 		for _, w := range want {
@@ -100,7 +157,11 @@ func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 		r.on(w.issue)
 		r.rate(w.rating, w.reason)
 	}
-	each(r.merge)
+	for place := len(want) - 1; place >= 0; place-- {
+		r.on(want[place].issue)
+		r.merge()
+		r.waitClosed()
+	}
 	for place, w := range want {
 		records := stepRecordsSeven
 		if w.failed != 0 {
@@ -127,6 +188,9 @@ type finishedIssueRead struct {
 	Title    string    `json:"title"`
 	ClosedAt time.Time `json:"closed_at"`
 	Plan     *struct {
+		ID         string  `json:"id"`
+		Issue      string  `json:"issue"`
+		Generation uint64  `json:"generation"`
 		Source     string  `json:"source"`
 		ArtifactID *string `json:"artifact_id"`
 		Version    *int    `json:"version"`
@@ -152,10 +216,13 @@ func failedStepsSay(issue string, got, want int) string {
 	return fmt.Sprintf("%s lists failed_steps %d, want %d", issue, got, want)
 }
 
-// plansHold says whether read lists exactly the issues of want, newest close first, each closed,
-// with the default plan, its rating with its reason on its retro's record (or none), its count of
-// failed steps, and its time: the earliest start and the latest end of the records of its steps,
-// and their difference in whole seconds. The error names the first issue that is missing or wrong.
+// plansHold says whether read lists exactly the issues of want, in want's order, which is newest
+// close first, each closed, with the title Dispatch was given for it, the default plan of its own
+// run (the plan node the daemon wrote for that issue and the generation of its records,
+// workflow.PlanID, so no two issues list one plan), its rating with its reason on its retro's
+// record (or none), its count of failed steps, and its time: the earliest start and the latest end
+// of the records of its steps, and their difference in whole seconds. The error names the first
+// issue that is missing or wrong.
 func plansHold(read projectPlansRead, want []ratedWant) error {
 	if len(read.Issues) != len(want) {
 		return fmt.Errorf("the read lists %d finished issues, want %d", len(read.Issues), len(want))
@@ -165,22 +232,26 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s closed at %s is listed after %s closed at %s, want the newest close first", after.Issue, after.ClosedAt, before.Issue, before.ClosedAt)
 		}
 	}
-	for _, w := range want {
-		at := slices.IndexFunc(read.Issues, func(listed finishedIssueRead) bool { return listed.Issue == w.issue })
-		if at < 0 {
-			return fmt.Errorf("the read lists no %s", w.issue)
+	for place, w := range want {
+		got := read.Issues[place]
+		if got.Issue != w.issue {
+			return fmt.Errorf("the read lists %s in place %d, want %s: want's order is newest close first", got.Issue, place+1, w.issue)
 		}
-		got := read.Issues[at]
+		retro := w.steps.find("retro", 0, 1)
 		switch plan := got.Plan; {
 		case got.ClosedAt.IsZero():
 			return fmt.Errorf("%s is listed with no close", w.issue)
+		case got.Title != w.title:
+			return fmt.Errorf("%s is listed with the title %q, want %q", w.issue, got.Title, w.title)
 		case plan == nil:
 			return fmt.Errorf("%s lists no plan, want the default plan", w.issue)
+		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
+			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
+				w.issue, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.issue, retro.Generation), w.issue, retro.Generation)
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
 			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, todaysSteps()):
 			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, todaysSteps())
 		}
-		retro := w.steps.find("retro", 0, 1)
 		switch {
 		case w.rating == 0 && len(got.Ratings) != 0:
 			return fmt.Errorf("%s lists the ratings %+v, want none", w.issue, got.Ratings)
@@ -193,7 +264,7 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 			return fmt.Errorf("%s lists its rating on the record %s ended %v, want the retro's record %s ended %v", w.issue,
 				got.Ratings[0].StepID, got.Ratings[0].EndedAt, retro.ID, retro.EndedAt)
 		case got.FailedSteps != w.failed:
-			return fmt.Errorf("%s", failedStepsSay(w.issue, got.FailedSteps, w.failed))
+			return errors.New(failedStepsSay(w.issue, got.FailedSteps, w.failed))
 		}
 		started, ended := w.steps.span()
 		seconds := int64(ended.Sub(started) / time.Second)
@@ -231,19 +302,38 @@ func (r *stepRecordsRig) readPlans() (projectPlansRead, error) {
 	return read, nil
 }
 
-// waitPlans waits for the read by project to hold want, and fails with plansHold's last answer.
-func (r *stepRecordsRig) waitPlans(what string, want []ratedWant) {
+// waitPlansRead waits for the read by project to satisfy hold, and fails with hold's last answer.
+func (r *stepRecordsRig) waitPlansRead(what string, hold func(projectPlansRead) error) {
 	r.t.Helper()
 	var last error
-	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
+	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
 		read, err := r.readPlans()
 		if err != nil {
 			last = err
 			return false
 		}
-		last = plansHold(read, want)
+		last = hold(read)
 		return last == nil
 	}) {
 		r.t.Fatalf("%s never reached the read of %s: %v", what, r.cfg.Project, last)
 	}
+}
+
+// waitPlans waits for the read by project to hold want, and fails with plansHold's last answer.
+func (r *stepRecordsRig) waitPlans(what string, want []ratedWant) {
+	r.t.Helper()
+	r.waitPlansRead(what, func(read projectPlansRead) error { return plansHold(read, want) })
+}
+
+// waitClosed waits for the read by project to list the issue the walk is on, which it does once
+// the daemon's write of the issue's close has reached Dispatch, so a close that follows is a later
+// one there too.
+func (r *stepRecordsRig) waitClosed() {
+	r.t.Helper()
+	r.waitPlansRead("the close of "+r.key, func(read projectPlansRead) error {
+		if slices.ContainsFunc(read.Issues, func(listed finishedIssueRead) bool { return listed.Issue == r.key }) {
+			return nil
+		}
+		return fmt.Errorf("the read lists %d finished issues and not %s", len(read.Issues), r.key)
+	})
 }

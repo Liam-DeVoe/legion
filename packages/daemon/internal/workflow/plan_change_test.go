@@ -42,7 +42,7 @@ func givenTask(t *testing.T, text string, words ...string) plan.Task {
 // tasks, given by the architect of LEGION-208, the tree's root, as the route records it.
 func ownersPlan(t *testing.T, key string, generation uint64, version int, tasks ...plan.Task) intake.PlanGiven {
 	t.Helper()
-	return intake.PlanGiven{Issue: key, Generation: generation, GivenBy: claim.Token(token(t, "LEGION-208", claim.RoleArchitect)),
+	return intake.PlanGiven{Issue: key, Generation: generation, GivenBy: claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect)),
 		Plan: plan.Plan{ArtifactID: planArtifact, Version: version, Tasks: tasks}}
 }
 
@@ -149,7 +149,7 @@ func assertPlanRefusal(t *testing.T, pool *pgxpool.Pool, engine *Engine, key str
 
 // architectOf is the claim of the architect of LEGION-208, which gives every plan of these tests.
 func architectOf(t *testing.T) claim.Token {
-	return claim.Token(token(t, "LEGION-208", claim.RoleArchitect))
+	return claim.Token(treeRoleToken(t, "LEGION-208", claim.RoleArchitect))
 }
 
 // The owner's plan is stored where its task has not started (R5; C2-2): for a root the daemon
@@ -280,8 +280,9 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		if !reflect.DeepEqual(after.issue, running.issue) || after.outbox != running.outbox+1 {
 			t.Fatalf("the same block given again moved %s or queued %d outbox rows, want no move and one row, the plan node", root.Key, after.outbox-running.outbox)
 		}
-		node := record.PlanRecord{ID: PlanID(root.Key, root.Generation), Generation: root.Generation, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
-			Version: 2, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		node := record.PlanRecord{ID: PlanID(root.Key, root.Generation), Generation: root.Generation, Source: record.PlanSourceOwner,
+			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 2},
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 		if nodes := planWrites(t, pool, root.Key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 2 = %+v, want the newest %+v", root.Key, nodes, node)
 		}
@@ -390,8 +391,9 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		if !reflect.DeepEqual(kept.issue, before.issue) || kept.outbox != before.outbox+1 {
 			t.Fatalf("version 4 moved %s or queued %d outbox rows, want no move and one row, the plan node", key, kept.outbox-before.outbox)
 		}
-		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner, ArtifactID: planArtifact,
-			Version: 4, Tasks: []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}}}}
+		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner,
+			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 4},
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}}}}
 		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 4 = %+v, want the newest %+v", key, nodes, node)
 		}
@@ -645,7 +647,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 			}
 		}
 		if len(startsOfA) != 1 || startsOfA[0].Kind != record.PlaceStep || startsOfA[0].Step != 1 || startsOfA[0].Role != "implementer" ||
-			startsOfA[0].Type != "implementation" || startsOfA[0].ID != StepID(key, gen, "a", record.PlaceStep, 1, 1) {
+			startsOfA[0].Type != "implementation" || startsOfA[0].ID != StepID(key, gen, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 1}, 1) {
 			t.Fatalf("the start records of task a = %+v, want one, of step 1 (implementer, implementation) at attempt 1", startsOfA)
 		}
 		// The version taken writes the run's plan node again, as the plan of task a (C9).
@@ -837,7 +839,7 @@ func planRowsOf(t *testing.T, pool *pgxpool.Pool, key string) [3]int {
 // notice and no log line.
 func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 	const notTaken = "workflow: a plan of an earlier owner is not taken"
-	earlier, owner := architectOf(t), claim.Token(token(t, "LEGION-209", claim.RoleArchitect))
+	earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 	give := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64, version int, by claim.Token, words ...string) {
 		t.Helper()
 		fact := ownersPlan(t, key, generation, version, givenTask(t, "Build the widget.", words...))

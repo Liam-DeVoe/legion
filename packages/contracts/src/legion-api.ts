@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { goBlankPattern } from "./go-blank";
 import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
@@ -1625,17 +1626,27 @@ export const LegionControllerGrantRequest = z.strictObject({
   secret: nonEmptyString,
 });
 
-/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
- * daemon counts them (api's planReasonMax): Dispatch's record of the retro takes one to 2,000. */
-const PLAN_REASON_MAX = 2000;
+/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
+ * to 5 (the plan fit the work), as the daemon holds it (api's planRatingLeast and planRatingMost).
+ * The plugin's `plan_rating` reads these, and the contract test holds them to the daemon's own,
+ * which its golden test writes to `fixtures/daemon-api/plan-rating.json`. */
+export const LEGION_PLAN_RATING_LEAST = 1;
+export const LEGION_PLAN_RATING_MOST = 5;
 
-/** `planReason`: why the retro rated the plan as it did, one to `PLAN_REASON_MAX` characters that
- * are not all blank. A string's `length` counts UTF-16 units, so the bound counts code points. */
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon counts them (api's planReasonMax, held to it the same way): Dispatch's record of the
+ * retro takes one to 2,000. */
+export const LEGION_PLAN_REASON_MAX = 2000;
+
+/** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
+ * characters that are not all blank, blank as the daemon's strings.TrimSpace reads it
+ * (`goBlankPattern`), which is not JavaScript's trim. A string's `length` counts UTF-16 units, so
+ * the bound counts code points. */
 const legionPlanReason = z
   .string()
-  .refine((reason) => reason.trim() !== "", { message: "planReason says why" })
-  .refine((reason) => [...reason].length <= PLAN_REASON_MAX, {
-    message: `planReason holds at most ${PLAN_REASON_MAX} characters`,
+  .refine((reason) => !goBlankPattern.test(reason), { message: "planReason says why" })
+  .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
+    message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
   });
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
@@ -1664,10 +1675,10 @@ const legionPlanReason = z
  * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
  * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
  * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 155), which the completion that
+ * `planReason` are the rating of the plan the issue ran (contract 161), which the completion that
  * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
  * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 155 or later must send both on its retro
+ * (`PLAN_RATING_INPUT`). A plugin at contract 161 or later must send both on its retro
  * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 156) is the step a step that failed names for its
  * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
  * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
@@ -1682,7 +1693,12 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
-    planRating: z.number().int().min(1).max(5).optional(),
+    planRating: z
+      .number()
+      .int()
+      .min(LEGION_PLAN_RATING_LEAST)
+      .max(LEGION_PLAN_RATING_MOST)
+      .optional(),
     planReason: legionPlanReason.optional(),
     returnTo: z.number().int().positive().optional(),
   })

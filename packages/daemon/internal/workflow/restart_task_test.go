@@ -108,7 +108,7 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		// The implementer's step of the plan `implementer tester` is step 1 of task a, which the
 		// gate's opening started once: the restart is that place's second run.
 		added := stepWrites(t, pool, root.Key)[writes:]
-		if len(added) != 1 || !isStart(added[0]) || added[0].Role != "implementer" || added[0].ID != StepID(root.Key, root.Generation, "a", record.PlaceStep, 1, 2) {
+		if len(added) != 1 || !isStart(added[0]) || added[0].Role != "implementer" || added[0].ID != StepID(root.Key, root.Generation, record.StepPlace{Task: "a", Kind: record.PlaceStep, Place: 1}, 2) {
 			t.Fatalf("the todo wrote the step records %+v, want only the start of the second run of task a's step 1", added)
 		}
 		var ends []string

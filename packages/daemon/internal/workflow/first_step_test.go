@@ -205,7 +205,7 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 	t.Run("a plan passed over at the child's generation names the carried plan it runs", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
-		earlier, owner := architectOf(t), claim.Token(token(t, "LEGION-209", claim.RoleArchitect))
+		earlier, owner := architectOf(t), claim.Token(treeRoleToken(t, "LEGION-209", claim.RoleArchitect))
 		recordedAt(t, pool, "LEGION-209", "LEGION-208")
 		mustTake(t, "the earlier owner's version 1", applyFacts(t, pool, engine)(planID("LEGION-209", 1, 1),
 			ownersPlan(t, "LEGION-209", 1, 1, givenTask(t, "Build the widget.", "implementer", "tester"))))

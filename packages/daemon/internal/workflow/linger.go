@@ -364,7 +364,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		// The linger stops every member's step, the root's being leave's. A member that awaits its
 		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
 		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
-		// readmit, startMidPhaseMembers), so Dispatch never holds a stopped merge that landed.
+		// readmit, startMidPhaseMembers), the linger's close stops one it hands over to nobody whose
+		// pull request is not open (lingerExpired), and the unmerged close of a pull request after
+		// the linger's close stops one that close left open (closed), so Dispatch never holds a
+		// stopped merge that landed, nor an open one.
 		if member.Key != root.Key && !awaitsMerge(member) {
 			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
 				return err
@@ -535,6 +538,29 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	handed, err := e.unfinishedHandOvers(ctx, tx, *issue, members)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	// The close retires every member. One that still awaits its merge and is not handed over
+	// (unfinishedHandOvers: under a parked root, a member held from merging, or one whose pull
+	// request is not open) has its merge step open still, which the linger left open for the
+	// merge to end (beginLinger). Its step ends here, stopped, where its pull request is not open:
+	// that merge can no longer land. Where it is open, the merge can still land, and its close in
+	// the lingering tree ends the step passed (closeMerged), or the pull request closes unmerged
+	// and that close ends it, stopped (closed's endMergeOfAClosedTree). A member handed over keeps
+	// the step open for its readmit to end (admit's readmit).
+	for _, member := range members {
+		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
+			continue
+		}
+		pr, err := e.store.PullRequest(ctx, tx, member.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if pr != nil && pr.State == record.PullRequestOpen {
+			continue
+		}
+		if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if err := e.warnKeptDecisionsOfAClosedTree(ctx, tx, *issue, handed); err != nil {
 		return intake.Result{}, err

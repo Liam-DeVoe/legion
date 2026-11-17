@@ -135,6 +135,8 @@ Dispatch message (step 5) is for a finished retro only.
    `plan_reason` is one sentence of why, from the evidence step 1 read.
    Send the two together: the daemon refuses this completion without them (`PLAN_RATING_REQUIRED`)
    and records nothing, so complete again with both.
+   The daemon also refuses a rating outside 1 to 5, one of the two without the other, or a reason
+   that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`), again recording nothing.
 
 ## Before you complete
 

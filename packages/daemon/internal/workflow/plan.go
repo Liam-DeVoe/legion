@@ -19,7 +19,7 @@ import (
 
 // stepWork is the role whose step works phase p, as a step of a plan names it (the part before a
 // step's `:key`), and the type of that work; ok is false for a phase no step of a plan works.
-func stepWork(p phase.Phase) (role, typ string, ok bool) {
+func stepWork(p phase.Phase) (role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Planning:
 		return "planner", "planning", true
@@ -36,29 +36,29 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 }
 
 // stepIn is the step phase p runs as a step of the task default whose steps are steps: the place
-// its count of starts is kept under, its place in the task (from 1 for a step, 0 for a retro or a
-// merge, which no plan names, so the kind tells those two apart), its role and its type ("" for a
-// retro or a merge, whose role stepOfWalk names for every task). A working phase's step is the
-// first step of steps whose role works it, at one plus its index. A phase no step of steps works,
-// and a phase that runs no step — admitted, awaiting a person, held, done — answers ok false.
-func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
+// its count of starts is kept under, whose Place is its place in the task (from 1 for a step, 0 for
+// a retro or a merge, which no plan names, so the kind tells those two apart), its role and its
+// type ("" for a retro or a merge, whose role stepOfWalk names for every task). A working phase's
+// step is the first step of steps whose role works it, at one plus its index. A phase no step of
+// steps works, and a phase that runs no step — admitted, awaiting a person, held, done — answers
+// ok false.
+func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Retro, phase.Merging:
 		act, _ := Walk{}.PlaceOf(p)
-		var kind string
-		step, kind, role, typ, ok = stepOfWalk(Walk{}, act)
-		return record.StepPlace{Task: defaultTask, Kind: kind}, step, role, typ, ok
+		role, typ, ok = stepOfWalk(Walk{}, act)
+		return record.StepPlace{Task: defaultTask, Kind: act.Kind}, role, typ, ok
 	}
 	role, typ, ok = stepWork(p)
 	if !ok {
-		return record.StepPlace{}, 0, "", "", false
+		return record.StepPlace{}, "", "", false
 	}
 	for i, named := range steps {
-		if named.Role == role {
-			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, i + 1, role, typ, true
+		if stepRole(named.Role) == role {
+			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
 		}
 	}
-	return record.StepPlace{}, 0, "", "", false
+	return record.StepPlace{}, "", "", false
 }
 
 // planRecordNamespace is the namespace of every plan record's id.
@@ -86,7 +86,7 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 		return node
 	}
 	if w.Version.Source == record.PlanSourceOwner {
-		node.Source, node.ArtifactID, node.Version = record.PlanSourceOwner, w.Version.ArtifactID, w.Version.Version
+		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
 	steps := make([]plan.Step, len(w.Steps))
 	for i, step := range w.Steps {
@@ -235,7 +235,7 @@ func describeVersion(version record.PlanVersion) string {
 // landed yet, and the rating and its reason. It carries no moment and no result, which are the
 // end's. Dispatch sets each field once, so the end and the rating merge in either order. A record
 // key that is no issue key writes nothing (recordsSteps).
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating int, reason string) error {
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating intake.PlanRating) error {
 	if !recordsSteps(issue) {
 		return nil
 	}
@@ -243,13 +243,13 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	if err != nil {
 		return err
 	}
-	place, step, role, typ, _ := stepAt(w, phase.Retro)
+	place, role, typ, _ := stepAt(w, phase.Retro)
 	start, err := e.store.StepStarts(ctx, tx, issue.Key, place)
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, step, role, typ, start.Agent, start.Starts)
-	write.Rating, write.RatingReason = new(rating), new(reason)
+	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
+	write.PlanRating = &record.PlanRating{Rating: rating.Score, Reason: rating.Reason}
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 
