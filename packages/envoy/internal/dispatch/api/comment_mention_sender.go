@@ -60,6 +60,11 @@ type mentionSend struct {
 	// resolution and the send share one window; a send a keyed repeat queues starts a window of
 	// its own, as its resolution is the sender's own (replayComment).
 	takeover takeoverRetry
+	// reader is the reader the comment was written under, which enqueue takes from the request's
+	// context: the send resolves a role's holder under it (mentionSendContext), as the request
+	// itself would have, so a mention reaches no session its author may not see. nil is a send
+	// queued with no reader in its context, which resolves as one does (resolveDeliveryTarget).
+	reader *model.Actor
 }
 
 // mentionKey names one attempt: its comment, its target and its number.
@@ -203,6 +208,9 @@ func (m *mentionSender) stoppedLocked() bool {
 // stopped, or the queue is full - gives its attempt's claim back, so the attempt is pending with
 // no claim, as it is when no sender ever held it.
 func (m *mentionSender) enqueue(ctx context.Context, item mentionSend) {
+	if reader, ok := readerFromContext(ctx); ok && item.reader == nil {
+		item.reader = &reader
+	}
 	m.mu.Lock()
 	queued, full := m.queueLocked(item)
 	m.mu.Unlock()
@@ -409,12 +417,21 @@ func (m *mentionSender) wait() {
 // sweep once the claim it took lapses.
 func (s *server) sendCommentMention(ctx context.Context, item mentionSend) {
 	if _, err := s.deliverResolvedCommentMention(
-		store.WithTransactionTracking(ctx), item.comment, item.created, item.mention, item.actor,
+		store.WithTransactionTracking(mentionSendContext(ctx, item)), item.comment, item.created, item.mention, item.actor,
 		attemptClaim{attempt: item.attempt, claimedAt: item.claimed}, item.takeover,
 	); err != nil {
 		slog.Error("dispatch: comment mention delivery",
 			"comment", item.comment.ID, "target", item.mention.Target, "error", err)
 	}
+}
+
+// mentionSendContext is ctx, the sender's own, holding the reader item's comment was written under
+// (mentionSend.reader) where it carries one, so every resolve the send makes reads as its author.
+func mentionSendContext(ctx context.Context, item mentionSend) context.Context {
+	if item.reader == nil {
+		return ctx
+	}
+	return withReader(ctx, *item.reader)
 }
 
 // mentionClaimArrays is claims as the four arrays the sender's statements match a comment_deliveries

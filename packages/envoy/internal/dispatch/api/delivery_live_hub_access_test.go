@@ -1,0 +1,106 @@
+package api
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange: an access change announces itself on
+// access.ChangedChannel as it commits, and the hub resolves every subscriber's reader again before
+// its next recompute. dave, a full member PRIV's list names, holds a timeline. He is taken off the
+// list in a write that appends no event, so the live event feed carries nothing that could move
+// what he sees; only the announcement does. A pull request of acme/secret, PRIV's repository, then
+// reaches dave's page in no frame.
+//
+// Control: the hub does not listen on access.ChangedChannel. dave's page is sent acme/secret#7
+// with the next delta, read for the reader he had before, and the test fails naming it.
+func TestADeliveryViewIsReadAgainForItsReaderOnAnAccessChange(t *testing.T) {
+	const dave = "dave@example.com"
+	seed := seedPrivateProject(t)
+	seedPeople(t, seed.database, dave)
+	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
+	seedHubSettings(t, seed.database)
+	if _, err := seed.database.Pool.Exec(t.Context(), `
+		insert into repo_projects (repo, project, created_by) values
+			('acme/widgets', 'PUB', '{"kind":"user","id":"operator"}'),
+			('acme/secret', 'PRIV', '{"kind":"user","id":"operator"}')
+	`); err != nil {
+		t.Fatalf("map the two repositories: %v", err)
+	}
+	clock := newNoonHubClock()
+	now := clock.Now()
+	rig := hubOn(t, seed.handler, seed.database, seed.deps, clock, nil)
+	resolve := func(ctx context.Context) (model.Actor, error) {
+		return seed.server.readerFor(ctx, model.BrowserActor(dave))
+	}
+	conn := newFakeLiveConn()
+	rig.hub.Subscribe(conn, deliverySubscription{Sub: "t", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
+	conn.snapshot(t, 5*time.Second, "t")
+	rig.waitListening(t)
+	// The connection's own re-check (a notification may have gone by unheard while it was down)
+	// runs before the change below, so only the change's announcement can read dave again.
+	rig.waitFor(t, 0, 5*time.Second, "the re-check after the listener connected", func(note deliveryHubNote) bool {
+		return note.what == "readers rechecked"
+	})
+
+	tx, err := seed.database.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatalf("begin taking dave off PRIV's list: %v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `delete from project_access where project_key = 'PRIV' and principal_kind = 'person' and principal = $1`, dave); err != nil {
+		t.Fatalf("take dave off PRIV's list: %v", err)
+	}
+	if _, err := tx.Exec(t.Context(), `select pg_notify($1, '')`, access.ChangedChannel); err != nil {
+		t.Fatalf("announce the change: %v", err)
+	}
+	if err := tx.Commit(t.Context()); err != nil {
+		t.Fatalf("commit taking dave off PRIV's list: %v", err)
+	}
+	secret := hubPR(7, now.Add(-time.Hour))
+	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/7"
+	upsertPR(t, seed.database, secret)
+
+	// Every frame dave's page is sent in the next three seconds, snapshot or delta, names no pull
+	// request of acme/secret.
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case frame := <-conn.frames:
+			raw, _ := json.Marshal(frame)
+			var answer struct {
+				Body  json.RawMessage `json:"body"`
+				Items map[string]struct {
+					Upsert []struct {
+						ID string `json:"id"`
+					} `json:"upsert"`
+				} `json:"items"`
+			}
+			_ = json.Unmarshal(raw, &answer)
+			var timeline struct {
+				PRs []struct {
+					ID string `json:"id"`
+				} `json:"prs"`
+			}
+			_ = json.Unmarshal(answer.Body, &timeline)
+			ids := []string{}
+			for _, pr := range timeline.PRs {
+				ids = append(ids, pr.ID)
+			}
+			for _, pr := range answer.Items["prs"].Upsert {
+				ids = append(ids, pr.ID)
+			}
+			if slices.Contains(ids, "acme/secret#7") {
+				t.Fatalf("dave, no longer on PRIV's list, was sent acme/secret#7, a pull request of PRIV: %.300s", raw)
+			}
+		case <-deadline:
+			return
+		}
+	}
+}

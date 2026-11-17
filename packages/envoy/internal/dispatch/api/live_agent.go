@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The agent view is one live session's own conversation on a page's live socket: its turns, tool
@@ -38,17 +37,17 @@ const (
 	agentEventFrame     = "frame"
 )
 
-// startAgentView checks an agent view, then starts the view's subscription. Only a credential
-// acting as its person may watch a session's conversation — the person scope, which /ws/live
-// cannot take from the route table because it is one socket serving every view — and the view
-// names its kind and a session uuid alone; a deployment with no relay (no NATS) has nothing to
-// watch. The refusal is the route gate's code (codeScopeRequired); a frame carries no HTTP
-// header, so it carries no WWW-Authenticate challenge beside it.
+// startAgentView checks an agent view, then starts the view's subscription. The view keeps the
+// rule of GET /api/v1/agents/{session_id}/messages (liveViewReads): only a credential acting as
+// its person may watch a session's conversation — the person scope, which /ws/live cannot take
+// from the route table's gate because it is one socket serving every view, so it is refused here
+// with the gate's code (liveReadRefusal) — and the conversation of a session the caller may not
+// see answers as one nobody answers for (relayAgentConversation). The view names its kind and a
+// session uuid alone; a deployment with no relay (no NATS) has nothing to watch. A frame carries
+// no HTTP header, so a refusal carries no WWW-Authenticate challenge beside it.
 func (s *server) startAgentView(ctx context.Context, stream liveStreamer, sub string, view LiveView, _ *EventsLiveResume) (liveSubscription, *LiveError) {
-	if !stream.Holds(model.ScopePerson) {
-		refusal := liveRefusal(sub, codeScopeRequired, "this socket's credential does not hold the "+
-			model.ScopePerson+" scope, which watching an agent's conversation requires")
-		return nil, &refusal
+	if refusal := liveReadRefusal(ctx, sub, liveAgentView, stream.Holds, s.liveReader(stream)); refusal != nil {
+		return nil, refusal
 	}
 	if view.Window != nil || view.Query != nil || view.At != nil {
 		refusal := liveRefusal(sub, "INVALID_FRAME", "an agent view names its kind and its session_id and nothing else")
@@ -81,7 +80,30 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 
 // relayAgentConversation is one agent subscription's whole life: it returns once the subscription
 // has ended, on its own or because ctx did.
+//
+// A session the caller may not see (sessionHiddenFrom) is answered as one nobody answers for, as
+// GET /api/v1/agents/{session_id}/messages answers its list as the empty list of a session nobody
+// knows: the no-responder verdict and nothing after it, and the relay never subscribes to the
+// session, tells it a viewer is attached or asks for its replay. Each re-arm asks again, and a
+// view whose session the caller no longer sees ends (dropped), so its page subscribes again and is
+// answered as above.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
+	reader, err := s.readerFor(ctx, stream.Caller())
+	if err != nil {
+		endAgentAfterFailure(ctx, stream, sub, "resolve what the caller sees", err)
+		return
+	}
+	hidden, err := s.sessionHiddenFrom(ctx, reader, sessionID)
+	if err != nil {
+		endAgentAfterFailure(ctx, stream, sub, "read whether the caller sees the session", err)
+		return
+	}
+	if hidden {
+		if stream.SendWait(ctx, liveAgentFrame(sub, agentEventResponder, responderEvent(false))) == nil {
+			<-ctx.Done()
+		}
+		return
+	}
 	source := s.deps.AgentStream
 	queue := newAgentStreamQueue()
 	// queue.overflow closes once a frame would take the view past its budget; dropped once the
@@ -111,7 +133,6 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		endAgentAfterFailure(ctx, stream, sub, "tell the session a viewer is attached", err)
 		return
 	}
-
 	skipped := 0
 	defer func() {
 		if skipped > 0 {
@@ -172,6 +193,21 @@ func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer
 		case <-queue.wake:
 			frames, size = queue.take()
 		case <-rearm.C:
+			// What the caller sees is read again before the session hears from this viewer: a
+			// session it no longer sees is told nothing more, and the view ends.
+			reader, err := s.readerFor(ctx, stream.Caller())
+			if err == nil {
+				hidden, err = s.sessionHiddenFrom(ctx, reader, sessionID)
+			}
+			if err != nil || hidden {
+				stopRelay()
+				if err != nil {
+					endAgentAfterFailure(ctx, stream, sub, "read whether the caller still sees the session", err)
+					return
+				}
+				_ = stream.SendWait(ctx, liveEnded(sub, liveEndedDropped))
+				return
+			}
 			if err := source.Watch(sessionID); err != nil {
 				stopRelay()
 				endAgentAfterFailure(ctx, stream, sub, "re-arm the session", err)

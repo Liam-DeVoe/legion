@@ -284,16 +284,18 @@ func nullable(value string) any {
 }
 
 // TestTheClausesOverTheSeededCallers: the clauses a read binds answer each seeded viewer as the
-// rule says. A project row passes ProjectClause when the viewer sees it. A person, a session, a
-// role and a direct conversation pass for an open viewer; for a restricted viewer or one that
-// lists projects, a person passes when it sees a project the viewer sees or is the viewer, a
-// session when it acted in such a project or is the viewer's own, a role when its holder session
-// passes, and a conversation when the viewer is one of its parties.
+// rule says. A project row passes ProjectClause when the viewer sees it. A person, a role and a
+// direct conversation of no session pass for an open viewer; a session passes for an open viewer
+// unless it acted in a project the viewer does not see (ses_priv, to alice), so neither it nor a
+// conversation it is a party to reaches her; for a restricted viewer or one that lists projects, a
+// person passes when it sees a project the viewer sees or is the viewer, a session when it acted in
+// such a project or is the viewer's own, a role when its holder session passes, and a conversation
+// when the viewer is one of its parties.
 func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB');
+		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV');
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'priv-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
 			('role', 'pub-architect', 'held_by', 'session', 'ses_priv', now() - interval '1 hour', '{}', 0);
@@ -318,12 +320,13 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"PersonClause carol", PersonClause("$2", "$1"), carol, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
 		{"PersonClause alice", PersonClause("$2", "$1"), alice, map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
 		{"PersonClause bob himself", PersonClause("$2", "$1"), bob, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
-		{"SessionClause ses_priv", SessionClause("$2", "$1"), "ses_priv", map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
+		{"SessionClause ses_priv", SessionClause("$2", "$1"), "ses_priv", map[string]bool{"alice": false, "bob": true, "carol's token naming PRIV": true}},
 		{"SessionClause ses_pub", SessionClause("$2", "$1"), "ses_pub", map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
+		{"SessionClause ses_both", SessionClause("$2", "$1"), "ses_both", map[string]bool{"alice": false, "bob": true, "carol's token naming PRIV": true}},
 		{"RoleClause priv-architect", RoleClause("$2", "$1"), "priv-architect", map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
 		{"RoleClause pub-architect", RoleClause("$2", "$1"), "pub-architect", map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
 		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": false}},
-		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": true}},
+		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, map[string]bool{"alice": false, "bob": false, "carol's token naming PRIV": true}},
 	}
 	for name, actor := range callers {
 		viewer, err := Resolve(ctx, database.Pool, actor)

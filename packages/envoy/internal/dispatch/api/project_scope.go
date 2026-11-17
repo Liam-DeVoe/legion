@@ -249,21 +249,16 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 }
 
 // sessionHiddenFromReader reports whether the request's reader - the one a check put in ctx
-// (withReader) - may not see session id (access.SessionClause): a restricted member's or a
-// listing credential's, for a session that is neither its own nor has acted in a project it sees.
-// An open reader sees every session and costs no read, and so does work with no reader in ctx,
-// which the server does for itself; a server with no database sees none, failing closed.
+// (withReader) - may not see session id (sessionHiddenFrom, access.SessionClause): a session that
+// is not its own and has acted in a project it does not see, or, for a restricted member's or a
+// listing credential's reader, in none it sees. Work with no reader in ctx, which the server does
+// for itself, sees every session.
 func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
-	if !ok || reader.Viewer == nil || reader.Viewer.Open {
+	if !ok {
 		return false, nil
 	}
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
-		return true, nil
-	}
-	var sees bool
-	err := s.deps.Store.Pool.QueryRow(ctx, `select `+access.SessionClause("$1::text", "$2"), id, refs.VisibilityArg(reader)).Scan(&sees)
-	return !sees, err
+	return s.sessionHiddenFrom(ctx, reader, id)
 }
 
 // personHiddenFromReader reports, through q, whether the request's reader may not see the person

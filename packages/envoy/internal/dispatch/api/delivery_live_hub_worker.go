@@ -52,8 +52,11 @@ func (h *deliveryHub) work(g *hubGeneration) {
 	}
 }
 
-// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due.
+// runDue recomputes, or narrows, the view that is due earliest, and is false when none is due. An
+// access change announced since the last pass is read first (recheckStaleReaders), so the view is
+// recomputed for the readers it left.
 func (h *deliveryHub) runDue(g *hubGeneration) bool {
+	h.recheckStaleReaders(g)
 	now := h.clock.Now()
 	h.mu.Lock()
 	var due *deliveryView

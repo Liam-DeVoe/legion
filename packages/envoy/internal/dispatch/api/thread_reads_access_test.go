@@ -15,7 +15,8 @@ import (
 // threadSeed is verification v16's seed (seedPrivateProject) holding the threads this file reads:
 // in each project, carol's comment, ask and message on its issue; a session s1 that has acted in
 // PRIV, so a member of PRIV sees it (access.SessionClause); and a direct message each of alice and
-// bob sent to s1, two conversations that belong to no project.
+// bob sent to s1, two conversations that belong to no project. alice sends hers before s1 acts in
+// PRIV, while she may still see s1, and bob his after, once PRIV's list lets him see it.
 type threadSeed struct {
 	privateSeed
 	comment, ask, message  map[string]string
@@ -41,10 +42,10 @@ func seedThreads(t *testing.T) threadSeed {
 		threads.message[project] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+key+"/messages",
 			map[string]any{"body": "The message of " + project + "."}))
 	}
-	createdID(t, seed.asSession(t, "s1", seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
-		map[string]any{"body": "s1 works on PRIV."}, http.StatusCreated))
 	threads.aliceDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "alice asks s1 something.", "delivery": "aside"}, seedAlice))
+	createdID(t, seed.asSession(t, "s1", seedPrivate, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPrivate]+"/comments",
+		map[string]any{"body": "s1 works on PRIV."}, http.StatusCreated))
 	threads.bobDirect = createdID(t, postAgentMessage(t, seed.handler, "s1",
 		map[string]any{"body": "bob asks s1 something.", "delivery": "aside"}, seedBob))
 	return threads

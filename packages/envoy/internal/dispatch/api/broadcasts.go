@@ -644,9 +644,10 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 // broadcastVisibleSQL is which broadcasts a viewer reads, over the broadcasts row aliased
 // broadcast and the visibility argument at viewerParam (refs.VisibilityArg): the person who sent
 // it reads it, and so does a viewer that may see every session it was sent to
-// (access.SessionClause, which passes every session for an open viewer). To any other viewer it is
-// a broadcast nobody sent. The clause is negated under a coalesce because it answers null rather
-// than false for a viewer that names no session, and `not null` would let a hidden recipient pass.
+// (access.SessionClause: an open viewer sees every session but one that acted in a project it does
+// not see). To any other viewer it is a broadcast nobody sent. The clause is negated under a
+// coalesce because it answers null rather than false for a viewer that names no session, and `not
+// null` would let a hidden recipient pass.
 func broadcastVisibleSQL(broadcast, viewerParam string) string {
 	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + viewerParam + `::jsonb->>'person')
 		or not exists (
@@ -657,15 +658,13 @@ func broadcastVisibleSQL(broadcast, viewerParam string) string {
 }
 
 // broadcastReplyVisibleSQL is whether a viewer reads the message whose id idExpr names, a reply
-// under one of a broadcast's copies: such a thread belongs to no project, so a reply is read by
-// the parties its node names or by an open viewer that may see every session among them
-// (access.PartyClause). A reply with no node is read by nobody.
+// under one of a broadcast's copies: such a thread belongs to no project, so a reply is read under
+// the rule of every message on no issue (access.MessageClause's arm), by the parties its node
+// names or by an open viewer that may see every session among them (access.PartyClause). A reply
+// whose node is not written yet states no party, and reaches an open viewer alone, as every reply
+// did before a project could be private (R9).
 func broadcastReplyVisibleSQL(idExpr, viewerParam string) string {
-	return `exists (
-			select 1 from graph_nodes reply_node
-			where reply_node.kind = '` + graphstore.KindMessage + `' and reply_node.id = ` + idExpr + `
-				and ` + access.PartyClause("reply_node.parties", viewerParam) + `
-			offset 0)`
+	return access.PartyClause(access.MessagePartiesSQL(idExpr), viewerParam)
 }
 
 // GET /api/v1/broadcasts: the broadcasts the caller reads (broadcastVisibleSQL), each counting the

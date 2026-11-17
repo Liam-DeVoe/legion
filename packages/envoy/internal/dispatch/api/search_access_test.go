@@ -308,11 +308,9 @@ func TestSearchCoverageCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 						searchCoverageCount(got, kind), searchCoverageCount(want, kind), caller.sees())
 				}
 			}
-			// An open viewer sees every session; any other sees those that acted in a project it sees.
+			// One session acted in each project, and a session is seen by a caller that sees a
+			// project it acted in; an open viewer sees no session of a project it does not see.
 			sessions := len(caller.sees())
-			if open := caller != callerBob && caller != callerCarolPrivToken && caller != callerAlicePrivToken; open {
-				sessions = 2
-			}
 			if got := searchCoverageNotIndexed(got, "session"); got != int64(sessions) {
 				t.Errorf("%s: counts %d sessions, want %d", caller, got, sessions)
 			}

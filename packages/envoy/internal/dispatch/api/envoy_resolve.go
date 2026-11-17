@@ -130,6 +130,11 @@ func resolveThenLock[R, T any](
 // restricted member or a credential that lists projects reaches no session outside what it sees
 // and learns nothing of whether one is live. A role whose holder that reader may not see is
 // answered as a role no session claims (dispatchenvoy.NoRoleHolder), in the listener's words.
+// A role resolved with no reader at all - the delivery sweep's resume of an attempt nothing
+// resolved before a crash, which cannot tell whose mention it is - is answered so too while the
+// deployment holds a private project (roleResolvesWithoutAReader): its holder is chosen now, and
+// could be a session the author may not see. A session route was held to its author's reader
+// when it was written.
 func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, delivery string) (string, string, string) {
 	if s.deps.Envoy == nil {
 		return "", "", listenerNotConfiguredText
@@ -140,6 +145,9 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 		target, err = s.deps.Envoy.Role(ctx, route.ID)
 		if err == nil {
 			hidden, hiddenErr := s.sessionHiddenFromReader(ctx, target.SessionID)
+			if hiddenErr == nil && !hidden {
+				hidden, hiddenErr = s.roleResolvesWithoutAReader(ctx)
+			}
 			if hiddenErr != nil {
 				return "", "", hiddenErr.Error()
 			}
@@ -171,6 +179,19 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 			fmt.Sprintf("session %s (%s) does not advertise %s", target.SessionID, target.Title, delivery)
 	}
 	return target.SessionID, target.Title, ""
+}
+
+// roleResolvesWithoutAReader reports whether a role resolved with no reader in ctx must answer as
+// one no session holds: the deployment holds a private project, so the holder could be a session
+// the mention's author may not see. A resolve with a reader, and every resolve of a deployment that
+// holds no private project, answers false at the cost of no read (R9).
+func (s *server) roleResolvesWithoutAReader(ctx context.Context) (bool, error) {
+	if _, ok := readerFromContext(ctx); ok || s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return false, nil
+	}
+	var private bool
+	err := s.deps.Store.Pool.QueryRow(ctx, `select exists (select 1 from projects where visibility = 'private')`).Scan(&private)
+	return private, err
 }
 
 // advertisesDelivery reports whether target takes this delivery mode, by the rule the listener

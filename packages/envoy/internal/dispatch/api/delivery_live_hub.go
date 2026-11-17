@@ -7,10 +7,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -34,13 +36,15 @@ type deliveryLiveConn interface {
 // its resume decoded as a delivery view's, with the reader whose view it is: Resolve, when set,
 // resolves that reader afresh (readerFor over the socket's caller), as the subscribe and again on
 // each event that can move what the caller sees (recheckReaders); Reader is read only when Resolve
-// is nil, for the subscription's whole life.
+// is nil, for the subscription's whole life. Holds says which OAuth scopes the socket's credential
+// holds, which the view's GET row may require (liveReadRefusal); nil holds none.
 type deliverySubscription struct {
 	Sub     string
 	View    DeliveryLiveView
 	Resume  *DeliveryLiveResume
 	Reader  model.Actor
 	Resolve func(ctx context.Context) (model.Actor, error)
+	Holds   func(scope string) bool
 }
 
 // Subscribe answers one subscribe frame on conn, and reports whether conn's sub now follows the
@@ -83,6 +87,14 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		}
 		reader = resolved
 	}
+	// The view keeps its GET row's rule (liveViewReads): a caller the row refuses, a restricted
+	// member or a credential that lists projects reading a row of the deployment, is refused here
+	// with the row's code, and holds no view.
+	if refusal := liveReadRefusal(store.WithTransactionTracking(h.lifetime), frame.Sub, spec.kind, frame.Holds,
+		func(context.Context) (model.Actor, error) { return reader, nil }); refusal != nil {
+		conn.Send(*refusal)
+		return false
+	}
 	spec.reader, spec.viewer = reader, deliveryReaderKey(reader)
 	spec.key += "|" + spec.viewer
 	var held *DeliveryLiveRevs
@@ -123,7 +135,7 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		// conn keeps a sub, so the generation runs on.
 		g.leaveLocked(replaced)
 	}
-	h.joinLocked(g, conn, frame.Sub, spec, held, frame.Resolve, now)
+	h.joinLocked(g, conn, frame.Sub, spec, held, frame.Resolve, frame.Holds, now)
 	if checks != h.readerChecks && frame.Resolve != nil {
 		// A re-check began after this subscribe resolved its reader, and walked the subs before
 		// this one was among them, so another re-check reads it again.
@@ -136,13 +148,13 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 // answers it as a new subscription is answered: at once from a body the view holds, else by the
 // recompute under way or one it is marked for.
 func (h *deliveryHub) joinLocked(g *hubGeneration, conn deliveryLiveConn, id string, spec deliveryLiveSpec, held *DeliveryLiveRevs,
-	resolve func(context.Context) (model.Actor, error), now time.Time) {
+	resolve func(context.Context) (model.Actor, error), holds func(string) bool, now time.Time) {
 	view := g.views[spec.key]
 	if view == nil {
 		view = &deliveryView{spec: spec, subs: map[*deliverySub]struct{}{}}
 		g.views[spec.key] = view
 	}
-	sub := &deliverySub{id: id, conn: conn, view: view, needsSnapshot: held == nil, needsVerdict: true, resolve: resolve}
+	sub := &deliverySub{id: id, conn: conn, view: view, needsSnapshot: held == nil, needsVerdict: true, resolve: resolve, holds: holds}
 	if held != nil {
 		sub.revs = *held
 	}
@@ -174,8 +186,9 @@ func (h *deliveryHub) recheckReadersAfter(g *hubGeneration) {
 // recheckReaders resolves the reader of each sub that resolves one (deliverySub.resolve) again,
 // and moves each sub whose reader now reads other rows (deliveryReaderKey) to the view of its new
 // reader, which answers it with a snapshot: the page drops the rows of a project its caller no
-// longer sees and reads one it now sees. A sub replaced or dropped meanwhile is left as it is; a
-// reader that does not resolve keeps its view until the next re-check.
+// longer sees and reads one it now sees. A sub whose new reader its view's GET row refuses
+// (liveReadRefusal) is dropped and sent that refusal instead. A sub replaced or dropped meanwhile
+// is left as it is; a reader that does not resolve keeps its view until the next re-check.
 func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 	h.mu.Lock()
 	var subs []*deliverySub
@@ -195,14 +208,21 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 			}
 			continue
 		}
+		refusal := liveReadRefusal(g.readContext(), sub.id, sub.view.spec.kind, sub.holds,
+			func(context.Context) (model.Actor, error) { return reader, nil })
 		viewer := deliveryReaderKey(reader)
 		h.mu.Lock()
-		if h.generation == g && g.conns[sub.conn][sub.id] == sub && sub.view.spec.viewer != viewer {
+		switch {
+		case h.generation != g || g.conns[sub.conn][sub.id] != sub:
+		case refusal != nil:
+			h.dropLocked(sub.conn, sub.id)
+			sub.conn.Send(*refusal)
+		case sub.view.spec.viewer != viewer:
 			spec := sub.view.spec
 			spec.key = strings.TrimSuffix(spec.key, "|"+spec.viewer) + "|" + viewer
 			spec.reader, spec.viewer = reader, viewer
 			g.leaveLocked(sub)
-			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, h.clock.Now())
+			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
 		}
 		h.mu.Unlock()
 	}
@@ -332,6 +352,10 @@ type hubGeneration struct {
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
+	// readersStale is set when an access change may have moved what a subscriber sees: one was
+	// announced on access.ChangedChannel, or the listener (re)connected and may have missed one. The
+	// worker resolves every sub's reader again before its next recompute (recheckStaleReaders).
+	readersStale atomic.Bool
 	// feeds hands the intake the relay subscription seedEvents took; one slot, as one runs at a
 	// time.
 	feeds chan hubEventFeed
@@ -440,7 +464,9 @@ type deliverySub struct {
 	needsVerdict  bool
 	told          bool
 	// resolve resolves the sub's reader again (deliverySubscription.Resolve); nil keeps its view's.
+	// holds is the socket's scopes (deliverySubscription.Holds), which the re-check reads again.
 	resolve func(context.Context) (model.Actor, error)
+	holds   func(string) bool
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
@@ -541,11 +567,11 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 	listener := &pglisten.Listener{
 		Owner:       "dispatch",
 		Dial:        h.dial,
-		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel},
+		Channels:    []string{deliveryChangesChannel, deliveryFreshnessChannel, access.ChangedChannel},
 		ListenIdle:  h.listenIdle,
 		PingTimeout: h.pingTimeout,
 		Backoff:     h.backoff,
-		OnConnected: func() { signal(g.connected) },
+		OnConnected: func() { g.readersStale.Store(true); signal(g.connected); signal(g.wakeWork) },
 		OnNotify:    func(channel, payload string) { h.onNotify(g, channel, payload) },
 	}
 	h.running.Add(3)
@@ -587,14 +613,36 @@ func (h *deliveryHub) note(n deliveryHubNote) {
 }
 
 // onNotify routes one notification to g, on the listener's goroutine: a change wakes the intake's
-// catch-up of the change log, and a freshness row is applied at once, reading nothing.
+// catch-up of the change log, a freshness row is applied at once, reading nothing, and an access
+// change marks every subscriber's reader stale and wakes the worker, which reads them again before
+// it recomputes anything (recheckStaleReaders). One connection hears all three, in commit order, so
+// a delivery change committed after an access change is recomputed for the readers it left.
 func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 	switch channel {
 	case deliveryChangesChannel:
 		signal(g.wakeChanges)
 	case deliveryFreshnessChannel:
 		h.applyFreshness(g, payload)
+	case access.ChangedChannel:
+		g.readersStale.Store(true)
+		signal(g.wakeWork)
 	}
+}
+
+// recheckStaleReaders resolves every sub's reader again (recheckReaders), on the worker's goroutine,
+// when an access change may have moved one since the last time (hubGeneration.readersStale), so no
+// recompute after the change reads for a reader it moved.
+func (h *deliveryHub) recheckStaleReaders(g *hubGeneration) {
+	if !g.readersStale.Swap(false) {
+		return
+	}
+	h.mu.Lock()
+	h.readerChecks++
+	h.mu.Unlock()
+	h.recheckMu.Lock()
+	defer h.recheckMu.Unlock()
+	h.recheckReaders(g)
+	h.note(deliveryHubNote{what: "readers rechecked"})
 }
 
 // catchUpNow catches the change log up and returns once it has, or once the running generation

@@ -215,11 +215,10 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 
 	// Who sees what, by the caller names seededCallers gives. The server sees every node.
 	var (
-		seesPrivate  = []string{"bob", "carol", "carol's token that lists PRIV"}
-		seesPublic   = []string{"alice", "carol", "carol's token that lists no project", "the shared token"}
-		open         = seesPublic
-		privateAgent = append(slices.Clone(open), "bob", "carol's token that lists PRIV")
-		everyone     = []string{"alice", "bob", "carol", "carol's token that lists PRIV", "alice's token that lists PRIV",
+		seesPrivate = []string{"bob", "carol", "carol's token that lists PRIV"}
+		seesPublic  = []string{"alice", "carol", "carol's token that lists no project", "the shared token"}
+		open        = seesPublic
+		everyone    = []string{"alice", "bob", "carol", "carol's token that lists PRIV", "alice's token that lists PRIV",
 			"carol's token that lists no project", "the shared token", "the closed viewer"}
 	)
 	scoped := []scopedNode{
@@ -254,12 +253,15 @@ func TestTheProjectClauseHidesAPrivateNode(t *testing.T) {
 		// person sees.
 		{kind: graphstore.KindPerson, id: seededBob, held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
 		{kind: graphstore.KindPerson, id: seededAlice, held: true, sees: append(slices.Clone(open), "alice's token that lists PRIV")},
-		// A session, a role it holds, and the page of each: an open viewer, and a viewer that
-		// sees a project the session acted in.
-		{kind: graphstore.KindSession, id: "ses_priv", held: true, sees: privateAgent},
-		{kind: graphstore.KindRole, id: "r_priv", held: true, sees: privateAgent},
-		{kind: graphstore.KindPage, id: graphstore.SessionPageID("ses_priv"), held: true, sees: privateAgent},
-		{kind: graphstore.KindPage, id: graphstore.RolePageID("r_priv"), held: true, sees: privateAgent},
+		// A session and its page: a viewer that sees a project the session acted in, and an open
+		// viewer unless the session acted in a project it does not see (access.SessionClause), so
+		// a session of PRIV reaches only those that see PRIV. A role the session holds, and its
+		// page: an open viewer, and a viewer that sees a project its holder acted in
+		// (access.RoleClause).
+		{kind: graphstore.KindSession, id: "ses_priv", held: true, sees: seesPrivate},
+		{kind: graphstore.KindRole, id: "r_priv", held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
+		{kind: graphstore.KindPage, id: graphstore.SessionPageID("ses_priv"), held: true, sees: seesPrivate},
+		{kind: graphstore.KindPage, id: graphstore.RolePageID("r_priv"), held: true, sees: append(slices.Clone(open), "bob", "carol's token that lists PRIV")},
 		{kind: graphstore.KindSession, id: "ses_pub", held: true, sees: open},
 		{kind: graphstore.KindRole, id: "r_pub", held: true, sees: open},
 		{kind: graphstore.KindPage, id: graphstore.SessionPageID("ses_pub"), held: true, sees: open},

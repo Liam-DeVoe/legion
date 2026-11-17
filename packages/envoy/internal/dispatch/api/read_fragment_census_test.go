@@ -326,7 +326,7 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 	interests := func(w http.ResponseWriter, r *http.Request) bool {
 		switch r.URL.Path {
 		case "/v1/interests/":
-			_, _ = w.Write([]byte(`[{"session_id":"` + sessionOfBoth + `","topics":["notifications.dispatch.>"],"updated_at":1}]`))
+			_, _ = w.Write([]byte(`[{"session_id":"` + sessionOfPublic + `","topics":["notifications.dispatch.>"],"updated_at":1}]`))
 		case "/v1/legion/agents":
 			_, _ = w.Write([]byte("[]"))
 		default:
@@ -353,7 +353,9 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		map[string]any{"title": "Ship the census"}, http.StatusCreated)).ID
 	goingRun := createdID(t, seed.mustRequest(t, callerAlice, http.MethodPost, "/api/v1/going/requests",
 		map[string]any{"words": "What do the runbook steps say?", "project": seedPublic}, http.StatusCreated))
-	for _, owned := range []struct{ project, session string }{{seedPublic, sessionOfBoth}, {seedPrivate, sessionOfPrivate}} {
+	// Each project's objects name a session that acted in that project alone (seedSessionWork), so
+	// alice, who sees PUB, sees PUB's session and not PRIV's (access.SessionClause).
+	for _, owned := range []struct{ project, session string }{{seedPublic, sessionOfPublic}, {seedPrivate, sessionOfPrivate}} {
 		project, session := owned.project, owned.session
 		objects := censusObjects{
 			documentObjects: seedDocumentObjects(t, seed, project), session: session, priority: priority, goingRun: goingRun,

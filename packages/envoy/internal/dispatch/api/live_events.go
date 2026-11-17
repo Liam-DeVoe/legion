@@ -80,9 +80,13 @@ const (
 	projectCreatedEvent       = "project.created"
 )
 
-// startEventsView checks an events view and its resume, then starts the view's subscription. The
-// view names its kind alone, and the resume the decimal id of the last event the page applied.
+// startEventsView checks an events view, then starts the view's subscription. The view keeps the
+// rule of GET /api/v1/events/log (liveViewReads, liveReadRefusal). It names its kind alone, and the
+// resume the decimal id of the last event the page applied.
 func (s *server) startEventsView(ctx context.Context, stream liveStreamer, sub string, view LiveView, resume *EventsLiveResume) (liveSubscription, *LiveError) {
+	if refusal := liveReadRefusal(ctx, sub, liveEventsView, stream.Holds, s.liveReader(stream)); refusal != nil {
+		return nil, refusal
+	}
 	if view.Window != nil || view.Query != nil || view.At != nil || view.SessionID != nil {
 		refusal := liveRefusal(sub, "INVALID_FRAME", "an events view names its kind and nothing else")
 		return nil, &refusal

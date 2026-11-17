@@ -61,10 +61,11 @@ func seedSessionWork(t *testing.T, seed privateSeed) {
 // TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects: GET /api/v1/users, GET
 // /api/v1/agents and GET /api/v1/people/{login}/nodes as each caller of verification v16. bob, and
 // a credential that lists projects, read only the people who see a project they see (PersonClause)
-// and only the sessions that acted in one (SessionClause); an open viewer reads every person and
-// every session, as every caller did before. A session's open asks count only the asks of the
-// projects the caller sees, and a person the caller may not see answers exactly as a login nobody
-// holds.
+// and only the sessions that acted in one (SessionClause); an open viewer reads every person, and
+// every session but one that acted in a project it does not see (session-priv and session-both, to
+// a viewer that does not see PRIV), as every caller did before a project could be private. A
+// session's open asks count only the asks of the projects the caller sees, and a person the caller
+// may not see answers exactly as a login nobody holds.
 func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -83,6 +84,7 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		return []string{fmt.Sprintf("%s asks=%d", sessionOfBoth, asks), sessionOfPrivate + " asks=0", sessionOfPublic + " asks=0", sessionIdle + " asks=0"}
 	}
 	privateOnly := []string{sessionOfBoth + " asks=1", sessionOfPrivate + " asks=0"}
+	publicOnly := []string{sessionOfPublic + " asks=0", sessionIdle + " asks=0"}
 	for _, test := range []struct {
 		caller privateCaller
 		// users is nil for a caller GET /api/v1/users refuses: it needs the person scope.
@@ -97,13 +99,13 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 		// hers. Every caller opens its own person's page.
 		pages []string
 	}{
-		{callerAlice, everyone, every(1), []string{seedAlice, seedCarol}},
+		{callerAlice, everyone, publicOnly, []string{seedAlice, seedCarol}},
 		{callerBob, ofPrivate, privateOnly, []string{seedCarol}},
 		{callerCarol, everyone, every(2), []string{seedAlice, seedCarol}},
 		{callerCarolPrivToken, ofPrivate, privateOnly, []string{seedCarol}},
 		{callerAlicePrivToken, []string{seedAlice}, []string{}, []string{seedAlice}},
-		{callerCarolToken, everyone, every(1), []string{seedAlice, seedCarol}},
-		{callerSharedToken, nil, every(1), nil},
+		{callerCarolToken, everyone, publicOnly, []string{seedAlice, seedCarol}},
+		{callerSharedToken, nil, publicOnly, nil},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
 			users := seed.request(t, test.caller, http.MethodGet, "/api/v1/users", nil)
@@ -155,14 +157,17 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 }
 
 // TestASessionsLastActivityCountsOnlyWhatTheCallerSees: an agent row's last_activity is the newest
-// event of the session among the events the caller sees. alice sees session-priv, as an open
-// viewer sees every session, but none of its events, so its row answers as a session with no
-// activity; session-both's newest event is its ask on PRIV, so alice's row for it is its ask on
-// PUB, older than the one bob and carol read.
+// event of the session among the events the caller sees. session-both acts on PRIV and then, last,
+// on PUB: bob sees it through PRIV but sees none of PUB's events, so his row for it is its ask on
+// PRIV, older than the PUB comment carol reads. An open viewer that does not see PRIV (alice,
+// carol's token that lists no project) does not see session-priv or session-both at all, each
+// having acted in PRIV (access.SessionClause), and reads session-pub's comment on PUB.
 func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
 	seedSessionWork(t, seed)
+	seed.asSession(t, sessionOfBoth, seedPublic, http.MethodPost, "/api/v1/issues/"+seed.issue[seedPublic]+"/comments",
+		map[string]any{"body": "Done on PUB, last."}, http.StatusCreated)
 	activity := func(caller privateCaller) map[string]*time.Time {
 		t.Helper()
 		rows := map[string]*time.Time{}
@@ -176,8 +181,10 @@ func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 	}
 	alice, bob, carol, carolToken := activity(callerAlice), activity(callerBob), activity(callerCarol), activity(callerCarolToken)
 	for caller, rows := range map[privateCaller]map[string]*time.Time{callerAlice: alice, callerCarolToken: carolToken} {
-		if at, listed := rows[sessionOfPrivate]; !listed || at != nil {
-			t.Errorf("%s reads session-priv listed %t with last activity %v, want it listed with none: every event of it is PRIV's", caller, listed, at)
+		for _, session := range []string{sessionOfPrivate, sessionOfBoth} {
+			if at, listed := rows[session]; listed {
+				t.Errorf("%s reads %s listed with last activity %v, want it not listed: it acted in PRIV", caller, session, at)
+			}
 		}
 		if rows[sessionOfPublic] == nil {
 			t.Errorf("%s reads no last activity of session-pub, want its comment on PUB", caller)
@@ -188,15 +195,11 @@ func TestASessionsLastActivityCountsOnlyWhatTheCallerSees(t *testing.T) {
 			t.Errorf("%s reads no last activity of session-priv, want its comment on PRIV", caller)
 		}
 	}
-	if alice[sessionOfBoth] == nil || carol[sessionOfBoth] == nil || bob[sessionOfBoth] == nil {
-		t.Fatalf("session-both's last activity: alice %v, bob %v, carol %v, want one for each", alice[sessionOfBoth], bob[sessionOfBoth], carol[sessionOfBoth])
+	if carol[sessionOfBoth] == nil || bob[sessionOfBoth] == nil {
+		t.Fatalf("session-both's last activity: bob %v, carol %v, want one for each", bob[sessionOfBoth], carol[sessionOfBoth])
 	}
-	if !alice[sessionOfBoth].Before(*carol[sessionOfBoth]) {
-		t.Errorf("alice reads session-both's last activity at %s and carol at %s, want alice's older: its ask on PUB, not the later one on PRIV",
-			alice[sessionOfBoth], carol[sessionOfBoth])
-	}
-	if !bob[sessionOfBoth].Equal(*carol[sessionOfBoth]) {
-		t.Errorf("bob reads session-both's last activity at %s and carol at %s, want the same: its ask on PRIV, which both see",
+	if !bob[sessionOfBoth].Before(*carol[sessionOfBoth]) {
+		t.Errorf("bob reads session-both's last activity at %s and carol at %s, want bob's older: its ask on PRIV, not the later comment on PUB",
 			bob[sessionOfBoth], carol[sessionOfBoth])
 	}
 }
@@ -458,12 +461,17 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 // TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient: a broadcast is read by its author,
 // and by a caller that may see every one of its recipients; to anyone else GET
 // /api/v1/broadcasts leaves it out and GET /api/v1/broadcasts/{id} answers it as an id nobody
-// holds. The replies under a copy are a conversation of no project, read by its parties or an open
-// viewer (PartyClause): no caller reads what session-priv answered carol unless it reads that
-// conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's count
-// of recipients who answered. Both routes are deployment reads (plan A, "Read classes"), so a
-// viewer that is not open, a restricted member or a credential that lists projects, is refused
-// them whole, the same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
+// holds. session-priv has acted in PRIV, so an open viewer that does not see PRIV (alice) may not
+// see it (access.SessionClause), and reads neither broadcast that went to it; carol's token that
+// lists no project acts for carol, who sent both, and reads them as their author.
+// The replies under a copy are a conversation of no project, read by its parties
+// or an open viewer (PartyClause): no caller reads what session-priv answered carol unless it reads
+// that conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's
+// count of recipients who answered. session-priv answers under the one credential that proves it
+// in PRIV (asSession): the shared token, which sees no private project, reads no conversation of
+// PRIV's session. Both routes are deployment reads (plan A, "Read classes"), so a viewer that is
+// not open, a restricted member or a credential that lists projects, is refused them whole, the
+// same bytes for a broadcast it wrote, one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -480,11 +488,9 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	}
 	toPrivate := send(sessionOfPrivate)
 	toBoth := send(sessionOfPrivate, sessionOfPublic)
-	if reply := bearerRequest(t, seed.handler, http.MethodPost, "/api/v1/messages/"+toPrivate.Recipients[0].Message.ID+"/reply", map[string]any{
-		"actor": map[string]any{"kind": "session", "id": sessionOfPrivate}, "attempt": 1, "body": "Green.",
-	}); reply.Code != http.StatusCreated {
-		t.Fatalf("session-priv answers carol: %d %s", reply.Code, reply.Body.String())
-	}
+	seed.asSession(t, sessionOfPrivate, seedPrivate, http.MethodPost, "/api/v1/messages/"+toPrivate.Recipients[0].Message.ID+"/reply", map[string]any{
+		"attempt": 1, "body": "Green.",
+	}, http.StatusCreated)
 
 	for _, test := range []struct {
 		caller privateCaller
@@ -495,7 +501,7 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 		listed  []string
 		replies bool
 	}{
-		{callerAlice, false, []string{toBoth.ID, toPrivate.ID}, true},
+		{callerAlice, false, []string{}, false},
 		{callerBob, true, nil, false},
 		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
 		{callerCarolPrivToken, true, nil, false},

@@ -326,6 +326,45 @@ func TestBroadcastRecipientRepliesAppearInTheBroadcastAndItsSummary(t *testing.T
 	}
 }
 
+// TestABroadcastReplyWithNoNodeReachesAnOpenViewerWhereNoProjectIsPrivate (R9): a recipient's reply
+// whose message node the graph store has not written yet (a row backfill-graph-store has not
+// reached) is read under the one rule of a message on no issue (access.MessageClause): with no
+// private project an open viewer reads it, in the broadcast and in its summary's count, as every
+// reader did before a project could be private.
+//
+// Control: origin/main, where the reply's node is not read, passes; a rule that reads a reply with
+// no node as nobody's fails, naming the planner's answer.
+func TestABroadcastReplyWithNoNodeReachesAnOpenViewerWhereNoProjectIsPrivate(t *testing.T) {
+	listener, _ := newBroadcastListener(t, broadcastSessions)
+	handler, database := newTargetedMessageHandler(t, listener.URL)
+	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
+		"body": "Status?", "delivery": "btw", "session_ids": []string{"planner"},
+	}, "alice"))
+	plannerMessage := awaitBroadcastDeliveries(t, handler, created.ID).Recipients[0].Message.ID
+	reply := decodeBody[struct {
+		ID string `json:"id"`
+	}](t, bearerRequest(t, handler, http.MethodPost, "/api/v1/messages/"+plannerMessage+"/reply", map[string]any{
+		"actor": map[string]any{"kind": "session", "id": "planner"}, "attempt": 1, "body": "Green.",
+	}))
+	if reply.ID == "" {
+		t.Fatalf("the planner's reply answered no id")
+	}
+	if tag, err := database.Pool.Exec(t.Context(), `delete from graph_nodes where kind = 'message' and id = $1`, reply.ID); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("drop the reply's node: %v (%d rows)", err, tag.RowsAffected())
+	}
+
+	stored := decodeBody[broadcastResponse](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts/"+created.ID, nil, "alice"))
+	if len(stored.Recipients) != 1 || len(stored.Recipients[0].Replies) != 1 || stored.Recipients[0].Replies[0].Body != "Green." {
+		t.Errorf("GET /api/v1/broadcasts/{id} as alice = %#v, want the planner's answer, whose node is not written yet", stored.Recipients)
+	}
+	summaries := decodeBody[[]struct {
+		Replies int `json:"replies"`
+	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/broadcasts", nil, "alice"))
+	if len(summaries) != 1 || summaries[0].Replies != 1 {
+		t.Errorf("GET /api/v1/broadcasts as alice = %#v, want one broadcast counting the planner's answer", summaries)
+	}
+}
+
 // Every message read names the broadcast that sent the message, and says null for a message no
 // broadcast sent, so a session reading a direct message back can tell a person's own message to
 // it from one recipient's copy of a broadcast: the thread read a session confirms a delivery

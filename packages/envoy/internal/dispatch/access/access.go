@@ -141,15 +141,22 @@ func PersonClause(loginExpr, viewerParam string) string {
 		PersonSeesProjectSQL("("+loginExpr+")", "(select member_kind from people where email = ("+loginExpr+"))", "seen")))
 }
 
-// SessionClause passes a session, by id, to an open viewer; to any other viewer, when it is the
-// viewer's own session or it has acted in a project the viewer sees (session_projects).
+// SessionClause passes a session, by id, when it is the viewer's own; to an open viewer, unless it
+// acted in a project the viewer does not see (session_projects), so an open member reads no
+// session of a private project it is not on, whatever else the session did; and to any other
+// viewer, when it acted in a project the viewer sees. A deployment that holds no private project
+// skips the open viewer's read: every project is public and the open viewer sees each one (R9).
 func SessionClause(sessionExpr, viewerParam string) string {
-	return clause("SessionClause", fmt.Sprintf(`(%[2]s or %[3]s or (%[1]s) = %[4]s::jsonb->>'session'
-		or exists (
+	return clause("SessionClause", fmt.Sprintf(`(%[2]s or (%[1]s) = %[4]s::jsonb->>'session'
+		or (%[3]s and (not %[5]s or not exists (
+			select 1 from session_projects unseen
+			where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
+			offset 0)))
+		or (not %[3]s and exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
-			offset 0))`,
-		sessionExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam))
+			offset 0)))`,
+		sessionExpr, viewerFlag(viewerParam, "all"), viewerFlag(viewerParam, "open"), viewerParam, viewerFlag(viewerParam, "private")))
 }
 
 // RoleClause passes a role, by name, to an open viewer; to any other viewer, when the session that

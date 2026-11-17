@@ -59,10 +59,11 @@ func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs 
 // visibleRosterSessions is the one place that decides which of the roster's sessions a reader
 // reads (K6), in their order: a session passes when SessionClause passes on its id, which is the
 // reader's own session, a session with history in a project the reader sees (session_projects),
-// or any session for an open viewer. A session with no history therefore reaches an open viewer
-// alone. The listener's own list of a session's projects (PlanC's envoy.Session.Projects, t-c-6)
-// is not in this build; when it lands it joins this statement as a second arm, a session whose
-// projects meet the reader's sees, and nothing else changes.
+// or, for an open viewer, any session with no history in a project it does not see. A session
+// with no history therefore reaches an open viewer alone. The listener's own list of a session's
+// projects (PlanC's envoy.Session.Projects, t-c-6) is not in this build; when it lands it joins
+// this statement as a second arm, a session whose projects meet the reader's sees, and nothing else
+// changes.
 func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions []envoy.Session) ([]envoy.Session, error) {
 	ids := make([]string, len(sessions))
 	for index, session := range sessions {

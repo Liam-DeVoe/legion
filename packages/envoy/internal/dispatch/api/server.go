@@ -1304,12 +1304,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 			s.writeAuthenticationError(w, err)
 			return
 		}
-		for _, scope := range scopes {
-			if !actor.Credential.Holds(scope) {
-				refuseMissingScope(w, scope, fmt.Sprintf(
-					"this request's credential does not hold the %s scope, which this route requires", scope))
-				return
-			}
+		if refused := scopeReadRefusal(scopes, actor.Credential.Holds); refused != nil {
+			refuseMissingScope(w, refused.scope, refused.message)
+			return
 		}
 		handler(w, r.WithContext(context.WithValue(
 			r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human})))
