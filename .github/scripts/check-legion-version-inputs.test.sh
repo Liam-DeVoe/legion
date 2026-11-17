@@ -51,6 +51,12 @@ elif kind == "outputs":
     spec = next(s for s in plan.VERSION_STEPS if s.job == name)
     print("\n".join(["    outputs:", *(f"      {k}: {json.dumps(v)}" for k, v in spec.outputs.items())]))
     sys.exit(0)
+elif kind == "job-if":
+    # The job's own if: when DECISION_READERS names one (position 0), as a line of the job.
+    workflow, job = name.split(":")
+    readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
+    print("\n".join(f"    if: {json.dumps(r.if_)}" for r in readers if r.position == 0))
+    sys.exit(0)
 elif kind == "readers":
     workflow, job = name.split(":")
     readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
@@ -100,6 +106,10 @@ legion_readers=$(step readers release:legion_build 2)
 publish_readers=$(step readers release:publish 0)
 envoy_build_readers=$(step readers listener:release_build 2)
 envoy_publish_readers=$(step readers listener:release_publish 5)
+legion_job_if=$(step job-if release:legion_build)
+publish_job_if=$(step job-if release:publish)
+envoy_build_job_if=$(step job-if listener:release_build)
+envoy_publish_job_if=$(step job-if listener:release_publish)
 login_uses=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import release_version_inputs as p; print(p.LOGIN)')
 confirm_version='          VERSION: "${{ needs.release_build.outputs.version }}"'
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
@@ -157,6 +167,7 @@ EOF
 jobs:
   release_build:
     runs-on: ubuntu-24.04
+$envoy_build_job_if
 $envoy_build_outputs
     steps:
 $checkout_step
@@ -164,6 +175,7 @@ $envoy_build_step
 $envoy_build_readers
   release_publish:
     runs-on: ubuntu-24.04
+$envoy_publish_job_if
     steps:
 $checkout_sha_step
 $determine_step
@@ -186,6 +198,7 @@ $hand_args
 jobs:
   legion_build:
     runs-on: ubuntu-24.04
+$legion_job_if
 $legion_outputs
     steps:
 $checkout_step
@@ -193,6 +206,7 @@ $legion_step
 $legion_readers
   publish:
     runs-on: ubuntu-24.04
+$publish_job_if
     needs: [legion_build]
     steps:
 $publish_readers
