@@ -2180,6 +2180,92 @@ test("t v and t o open Details at the history and at the collaborators, and an a
   });
 });
 
+// R4 of dispatch://INFRA-3948: `/issues/<key>/activity` opens Details at the history. The page
+// arrives with the log unread, so the history's heading has its box while the list under it is
+// still the loading line, and Details cannot yet scroll it to the top: the landing must still
+// leave the heading at the top of Details' view once the list is drawn. The log's answer is
+// held for 1.5 s, which a cold load over a slow link gives, and the window is short, so what
+// Details draws above the history is taller than its view. Found by the tester on a running
+// build of 3bd86200 with INFRA-1196's copy: a load of /activity, and `t v` from a load with
+// Details shut, left the heading at 828 of 900 px, under every property, with one entry's top
+// in view and Details scrolled to the end of what it then held.
+test("/activity read cold opens Details with the history's heading at the top of its view", async ({
+  browser,
+}) => {
+  await phase(browser, seedAgentsThread, async (page, seeded) => {
+    await page.setViewportSize({ height: 520, width: 1280 });
+    await page.route(new RegExp(`/api/v1/issues/${seeded.key}/events`), async (route) => {
+      const held = Promise.withResolvers<void>();
+      setTimeout(held.resolve, 1_500);
+      await held.promise;
+      await route.continue();
+    });
+    await gotoIssue(page, `/issues/${seeded.key}/activity`);
+    await expect(marginShell(page), "/activity did not open Details").toBeVisible();
+    await expect(historyEntries(page).first(), "the history drew no entry").toBeAttached();
+    await nextFrames(page);
+    const heading = historyPanel(page).getByRole("heading", {
+      exact: true,
+      name: CONTROL_LABELS.history,
+    });
+    await expect
+      .poll(
+        async () => {
+          const view = await historyViewport(page);
+          const box = await heading.boundingBox();
+          return box === null ? Number.POSITIVE_INFINITY : Math.round(box.y - view.top);
+        },
+        { message: "/activity left the history's heading below the top of Details' view" }
+      )
+      .toBeLessThanOrEqual(24);
+  });
+});
+
+// R4 of dispatch://INFRA-3948: the address of an agents' turn opens Details with that turn marked
+// and on screen. The marked turn is drawn whole (`CutWords whole`), so a long one is taller than
+// Details' view: its head - the author and the time that is its address - must be what the
+// reader lands on, never cut above the view. Found by the tester on a running build of
+// 3bd86200 with INFRA-1196's copy: a turn of 338 words, 1,083 px tall, landed centred, its top at
+// -65 px, its author and time out of view.
+test("the address of a long agents' turn lands on its head", async ({ browser }) => {
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "CORE", name: "Core" });
+      const issue = await createIssue({ project: "CORE", title: "A long agents' turn" });
+      await createComment(issue.key, { body: "A person's comment, a row of the outline." });
+      const body = Array.from(
+        { length: 60 },
+        (_, index) => `Paragraph ${index + 1} of the agent's long turn.`
+      ).join("\n\n");
+      const message = await createMessage(issue.key, { body }, attentionSession);
+      return { key: issue.key, message: message.id };
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}/messages/${seeded.message}`);
+      await expect(marginShell(page), "the turn's address did not open Details").toBeVisible();
+      const turn = historyItem(page, seeded.message);
+      await expect(turn).toHaveAttribute("aria-current", "true");
+      await nextFrames(page);
+      const view = await historyViewport(page);
+      const box = await turn.boundingBox();
+      expect(box, "the marked turn has no box").not.toBeNull();
+      expect(
+        (box?.height ?? 0) > view.bottom - view.top,
+        "the seeded turn is no taller than Details' view, so it proves nothing"
+      ).toBe(true);
+      expect(
+        Math.round((box?.y ?? 0) - view.top),
+        "the address of a long turn cut its head above Details' view"
+      ).toBeGreaterThanOrEqual(-1);
+      expect(
+        Math.round((box?.y ?? 0) - view.top),
+        "the address of a long turn left its head below Details' view"
+      ).toBeLessThanOrEqual(view.bottom - view.top - 40);
+    }
+  );
+});
+
 // R2 of dispatch://INFRA-3948: at 767 px and below Details covers the page, so a link of the
 // history that leaves it, and Reply, close Details; a turn's own time is the turn's address,
 // which opens Details at it, so it leaves Details open, and never hides it for a moment.
