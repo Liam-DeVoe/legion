@@ -13,11 +13,10 @@ import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
 
 /**
- * The stage: the outline, or one view in its place (dispatch://INFRA-1196 R2, part I's R1). The
- * `preset` the address opens chooses one slot: the body, which draws the outline, with no view
- * on, and that view's own slot under Spec, Verification, Plan or Decisions. Each slot draws its
- * own measure, so the stage adds no box and no width. A view whose part has not filled its slot
- * yet draws nothing.
+ * The stage: the outline, or one view in its place, never both. The `preset` the address opens
+ * chooses one slot: the body, which draws the outline, with no view on, and that view's own
+ * slot under Spec, Verification, Plan or Decisions. Each slot draws its own measure, so the
+ * stage adds no box and no width. A view whose slot is not filled yet draws nothing.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
  * the row being edited in takes onto its own stage (`document-stage.tsx`).
@@ -49,16 +48,17 @@ const VIEW_SLOTS: Readonly<Record<Preset, ((props: SlotProps) => ReactNode) | un
   verification: ViewVerificationSlot,
 };
 
-/** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern, R9). */
-const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
+/** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern). Another
+ *  drawing of the page imports it to find the view's tab-stop row. */
+export const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
- * row once that row is drawn (the tester's finding F23): a page opened at a view's address, or
- * a view turned on while the focus was on the outline it replaced, leaves the focus on the
- * view and never on the page's body. The focus is taken only while nothing holds it, so a
- * reader who pressed a control keeps it there, and once it is taken this does nothing more for
- * that view.
+ * row once that row is drawn, where the tester found the focus left on the page's body: a page
+ * opened at a view's address, or a view turned on while the focus was on the outline it
+ * replaced, leaves the focus on the view and never on the page's body. The focus is taken only
+ * while nothing holds it, so a reader who pressed a control keeps it there, and once it is taken
+ * this does nothing more for that view.
  *
  * It adds no box (`display: contents`): it is a place to look for the tree, and the view draws
  * its own measure.

@@ -975,7 +975,7 @@ test("adding one row to a page of many rows recalculates the style of that row a
 // page's `main`, which takes the focus on a page change, holds it in the row's place. A count is
 // its button's `<label>`, whose own activation focuses the button at the click: with it, this
 // row fails on "a press on Verification's count took the focus".
-// SLOW(>=2s): a seeded frame, a load waited on until part I's outline puts the focus on the
+// SLOW(>=2s): a seeded frame, a load waited on until the outline puts the focus on the
 // address's row, then three presses each waited on until the view's address moves.
 test("from an address that names a node, a press on Spec, on Decisions and on Verification's count moves to each view's address, one history entry each, and leaves the focus where it was", async ({
   browser,
@@ -983,8 +983,8 @@ test("from an address that names a node, a press on Spec, on Decisions and on Ve
   await phase(browser, seedFrame, async (page, { key }) => {
     await gotoIssue(page, `/issues/${key}#b-r1`);
     await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
-    // Under part I the page opens with the focus on the row the address names, and takes it back
-    // from what holds the outline until the reader acts (I's R19 and R7), so the opening is
+    // With the outline the page opens with the focus on the row the address names, and takes it
+    // back from what holds the outline until the reader acts, so the opening is
     // waited out and the reader acts first - a Shift, which no key of the page binds - or the
     // page would take the focus from `main` below.
     await expect(page.locator("[data-node-row]:focus"), "the page focused no row").toHaveCount(1);

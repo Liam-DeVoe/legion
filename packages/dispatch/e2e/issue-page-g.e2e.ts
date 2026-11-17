@@ -116,8 +116,8 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expectLoadSettled(settling);
       const where = `the conversation at ${size.width} px`;
       if (size.width === PHONE.width) {
-        // Part I's load puts the focus on the first question that waits on the reader, in the
-        // outline's order, and holds its row on screen (its R8): the seed holds two such.
+        // The outline's load puts the focus on the first question that waits on the reader, in
+        // the outline's order, and holds its row on screen: the seed holds two such.
         const waiting = [seeded.waitingLong, seeded.openQuestion];
         const first = (await drawnRows(page)).find((row) => waiting.includes(row.id ?? ""));
         expect(first, `${where} draws no question that waits on the reader`).toBeDefined();
@@ -304,8 +304,8 @@ async function belowWhatStays(row: Locator): Promise<number | undefined> {
 // only the row's own placement (`useRowOnScreen`) can move it: under part G the header publishes
 // no band, and `bringOnScreen` alone leaves the row where it is. Then a view chord from the
 // page's foot puts the focus on the outline's tab-stop row, which the chord shows and the row
-// places. Under part I the Spec view draws nothing until part J fills it (I's R1), so `t s` goes
-// on to `t c`, whose outline takes the focus (decision 159); part J reads `t s` again.
+// places. With the outline the Spec view draws nothing until its own slot is filled, so `t s`
+// goes on to `t c`, whose outline takes the focus; the Spec view's own rows read `t s` again.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, a
 // focus and a chord each waited out.
 test("at 390 px a focused row stands below the view row that stays at the top, after a focus that does not scroll and after t s", async ({
@@ -358,7 +358,7 @@ test("at 390 px a focused row stands below the view row that stays at the top, a
     await expect(page, "t s did not open Spec").toHaveURL(
       new RegExp(`${presetPath(seeded.key, "spec")}$`)
     );
-    // Part I's Spec view is empty until part J, so Conversation brings the outline back.
+    // The Spec view is empty until its own slot is filled, so Conversation brings the outline back.
     await page.keyboard.press("t");
     await page.keyboard.press("c");
     await expect(page, "t c did not open Conversation").toHaveURL(

@@ -21,9 +21,9 @@ import { useIssueTree } from "../useIssueTree";
 
 /** Filled by INFRA-1196 part G, "A node's row", then part I, "The outline". */
 export function BodySlot({ issue, route }: SlotProps): ReactNode {
-  // The outline (part I's R3): the issue's one tree as the Conversation view leaves it, folded to
-  // the frontier, in place of part G's open rows. The spec's summary callout is no row of it: the
-  // Spec view draws it as the issue's three sentences.
+  // The outline: the issue's one tree as the Conversation view leaves it, folded to the
+  // frontier, in place of the rows drawn with every branch open before it. The spec's summary
+  // callout is no row of it: the Spec view draws it as the issue's three sentences.
   const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
@@ -82,7 +82,7 @@ export function BodySlot({ issue, route }: SlotProps): ReactNode {
             : {})}
           filtering={view.filtering}
           focusReveal
-          // The words filter's Escape comes before the outline is left (part N).
+          // The words filter's Escape comes before the outline is left.
           holdsEscape={address.filter !== ""}
           isClosed={isClosed}
           onEditing={onEditing}

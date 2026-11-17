@@ -68,9 +68,9 @@ export const plannerActor: Actor = {
 };
 export const asPlanner = { actor: plannerActor, as: "agent" as const };
 /** The agent session that records every seeded result. An Envoy session id is a UUID
- *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place
- *  (dispatch://INFRA-1196 R9); the registry lists no such session, so the title the session
- *  stamped on its write is the only name it has. */
+ *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place;
+ *  the registry lists no such session, so the title the session stamped on its write is the
+ *  only name it has. */
 export const recorderActor: Actor = {
   id: "019a1c0a-6d4b-7e8a-bf39-4a1b5c8d9e07",
   kind: "session",

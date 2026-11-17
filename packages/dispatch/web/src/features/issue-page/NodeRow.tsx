@@ -170,9 +170,9 @@ export function NodeRow({
   pinned: boolean;
   /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
    *  every row does but two of the outline's: its first row as the page opens on it with no
-   *  question waiting on the reader, which stays where it stands until the reader acts (R8), and
+   *  question waiting on the reader, which stays where it stands until the reader acts, and
    *  the row the reader is editing, which the editor's own caret keeps in view while it grows
-   *  (decision 123). Both are `IssueTree.tsx`'s to set. */
+   *  as the reader writes. Both are `IssueTree.tsx`'s to set. */
   placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
@@ -477,8 +477,8 @@ export const NODE_ROW_LAYOUT = {
  *
  * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
  * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
- * focus (R7), so a row taller than the screen would be put at its top under the band and the
- * page would open scrolled past its header (R8). Read when the row is placed rather than as a
+ * focus, so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header. Read when the row is placed rather than as a
  * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
 export function useRowOnScreen(

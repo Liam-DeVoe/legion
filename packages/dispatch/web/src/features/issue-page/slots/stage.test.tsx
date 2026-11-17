@@ -6,10 +6,10 @@ import { CONTROL_LABELS } from "../page-words";
 import { ViewStage } from "./stage";
 
 /**
- * Where the focus lands when the page opens at a view's address (part I's R8, the tester's
- * finding F23): on the tab-stop row of the view's `role="tree"`, never on the page's body.
+ * Where the focus lands when the page opens at a view's address, which the tester found landing
+ * on the page's body: on the tab-stop row of the view's `role="tree"`, never on the body.
  *
- * A view's own slot is filled by its own part (J, V, K, Q), so the view here is a stand-in that
+ * A view's own slot is filled by that view's own code, so the view here is a stand-in that
  * draws a tree of two rows the way the outline does: one row with `tabindex="0"`, and drawn a
  * moment after it mounts, as a view draws its tree once its reads have answered.
  */

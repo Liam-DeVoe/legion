@@ -44,8 +44,7 @@ import { READER_ACTS, useNodeEditing } from "./useNodeEditing";
 import { useTreeKeymap } from "./useTreeKeymap";
 
 /**
- * The issue's body: one folded tree of its nodes (dispatch://INFRA-1196 R1, R2, R3, R6,
- * `dispatch://INFRA-1196/artifact/plan-md#b-t14`).
+ * The issue's body: one folded tree of its nodes.
  *
  * The model is `issue-tree.ts`'s, the view of it the page or a filter draws is `presets.ts`'s
  * and the fold is `tree-fold.ts`'s, all three pure; this holds what only a reader's page can
@@ -54,31 +53,29 @@ import { useTreeKeymap } from "./useTreeKeymap";
  *
  * The tree is the one body the page and every filter draw: the page hands it the tree its view
  * left. The issue is never a row: the header is the issue, so the outline's first row is the
- * first node under it (the architect's ruling 5). A filter draws its own kinds as rows and no
- * other (R2), each drawn whole at every width, its parent a line on it where that parent is no
- * row. A row drawn to place the filter's own - a requirement under Verification - is context,
- * faint and marked, and reached by the arrow keys like any other row.
+ * first node under it. A filter draws its own kinds as rows and no other, each drawn whole at
+ * every width, its parent a line on it where that parent is no row. A row drawn to place the
+ * filter's own - a requirement under Verification - is context, faint and marked, and reached
+ * by the arrow keys like any other row.
  *
  * The tree answers the WAI-ARIA tree pattern's roles and properties and keeps one tab stop: the
- * focused row is the only row that takes the focus. The keys that move it are
- * `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s, so a reader uses the pointer until they land.
- * A press on a row opens its body once the press is over, so nothing moves under the pointer
- * while it is held, and a press on another control of the page keeps the body the focus opened
- * drawn until that press has ended and its click has landed (`useReleaseFocus`), so nothing moves
- * under a press on that control either; the focus leaving by Tab or a script lets the row go at
- * once. A key that has nowhere to go says so at the row it was pressed on, until the reader's
- * next key or move.
+ * focused row is the only row that takes the focus, and the keys that move it are
+ * `useTreeKeymap.ts`'s. A press on a row opens its body once the press is over, so nothing moves
+ * under the pointer while it is held, and a press on another control of the page keeps the body
+ * the focus opened drawn until that press has ended and its click has landed
+ * (`useReleaseFocus`), so nothing moves under a press on that control either; the focus leaving
+ * by Tab or a script lets the row go at once. A key that has nowhere to go says so at the row it
+ * was pressed on, until the reader's next key or move.
  *
  * The page opens with the focus on the first open question that waits on the reader, its path
- * unfolded and its row in the viewport, and on the outline's first row where none does (R7). A
+ * unfolded and its row in the viewport, and on the outline's first row where none does. A
  * write from the line at the foot takes the reader to what they wrote once its read has drawn
- * it, its branch unfolded (R16, `outline-writer.tsx`'s `Landing`).
+ * it, its branch unfolded (`outline-writer.tsx`'s `Landing`).
  *
- * Below 1024 px the page with no filter on is read one node at a time (R16): the path down to
- * the node the reader is on is a breadcrumb, and the outline draws that node and one level
- * below it, and every path the frontier holds open whatever its depth; a branch's fold control
- * there zooms into it. From 1024 px up the outline draws three levels below the node it is
- * rooted at.
+ * Below 1024 px the page with no filter on is read one node at a time: the path down to the node
+ * the reader is on is a breadcrumb, and the outline draws that node and one level below it, and
+ * every path the frontier holds open whatever its depth; a branch's fold control there zooms
+ * into it. From 1024 px up the outline draws three levels below the node it is rooted at.
  */
 export function IssueTree({
   artifacts,
@@ -111,7 +108,7 @@ export function IssueTree({
    *  the fold is the frontier's alone. */
   filtering: boolean;
   /** Whether the node the address names is the tree's to put the focus on. It is always when a
-   *  link or a chip the reader followed on this page named it (`slots/body.tsx`, R10). On a
+   *  link or a chip the reader followed on this page named it (`slots/body.tsx`). On a
    *  fresh load it is not when the preset's own document is open on that node - a comment
    *  anchored in it, an ask indexed from one of its blocks, a block named by a fragment -
    *  because the document lands on it there, and two surfaces scrolling for the same node would
@@ -127,7 +124,7 @@ export function IssueTree({
    *  the reader is editing nothing. */
   onEditing: (artifactId: string | undefined) => void;
   /** The node this preset draws the body of without being asked: what waits for the reader
-   *  there, such as a decision waiting for their review (R7). It opens that body and takes no
+   *  there, such as a decision waiting for their review. It opens that body and takes no
    *  focus, which stays the reader's. */
   openBody?: string;
   /** Whether every read the tree is built from holds an answer, which a failed read never does
@@ -136,16 +133,16 @@ export function IssueTree({
   readsHeld?: boolean;
   /** What the Contents list last asked of the outline (`outline-request.tsx`): go to a node, and
    *  draw that node's branch alone while Focus branch is on, or the whole outline again once it
-   *  is turned off (R14). Each ask is acted on once (`useTakeOutlineRequest`). */
+   *  is turned off. Each ask is acted on once (`useTakeOutlineRequest`). */
   request?: OutlineRequest;
   /** The chain down to the node the address names, the issue first: the tree unfolds it and
-   *  puts the focus on its last node, once per address (R19). */
+   *  puts the focus on its last node, once per address. */
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the view left it. */
   root: TreeNode;
   /** Whether no filter is on (`presets.ts`'s `PresetView.rootRow`): the conversation, which is
-   *  read one node at a time below 1024 px (R16) and which the page opens on what waits on the
-   *  reader (R7). A filter's rows are drawn whole at every width. */
+   *  read one node at a time below 1024 px and which the page opens on what waits on the
+   *  reader. A filter's rows are drawn whole at every width. */
   rootRow: boolean;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
@@ -153,7 +150,7 @@ export function IssueTree({
   // another control of the page took it from, until that press has ended (`useReleaseFocus`).
   const [focused, setFocused] = useState<string | undefined>(undefined);
   // Where the tree's one tab stop rests, which outlives the focus leaving it: Shift+Tab comes
-  // back to the row the reader left, not to the first row (R9).
+  // back to the row the reader left, not to the first row.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
   // Focus branch is the page's, held above the tree with the Contents list's requests
@@ -257,9 +254,9 @@ export function IssueTree({
     rootedAbove,
     zoomed ? NARROW_LEVELS : DRAWN_LEVELS
   );
-  // The issue is no row: the header is the issue (the architect's ruling 5), so the nodes under
-  // it are the tree's top level, with no filter on as under one (R2). A zoom into a node keeps
-  // that node's own row, which is the node the reader reads from there.
+  // The issue is no row: the header is the issue, so the nodes under it are the tree's top
+  // level, with no filter on as under one. A zoom into a node keeps that node's own row, which
+  // is the node the reader reads from there.
   const head = drawn[0];
   const rows =
     head?.kind === "node" && head.node.id === root.id
@@ -272,9 +269,9 @@ export function IssueTree({
 
   // A row the page takes the reader to of its own accord - the node an address names, the open
   // question the page opens on - takes the focus while the outline's other reads are still
-  // arriving, and each pushes it down the page, out of sight: the row is focused *and on screen*
-  // (R7, R20). It is held there until the reader acts or the focus leaves it (`holdOnScreen`),
-  // one row at a time.
+  // arriving, and each pushes it down the page, out of sight: the row is focused *and on
+  // screen*, and held there until the reader acts or the focus leaves it (`holdOnScreen`), one
+  // row at a time.
   const onScreenHold = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => onScreenHold.current?.abort(), []);
   // The open question the page opens on, whose row is held once it has the focus: `reach`
@@ -283,9 +280,9 @@ export function IssueTree({
   const holdOnFocus = useRef<string | undefined>(undefined);
   // The outline's first row the page opens on where no question waits on the reader, which does
   // not place itself on screen while it holds that focus (`NodeRow`'s `placesItself`): its body
-  // opens with the focus (R7), and the page's one rule puts a row taller than the screen at its
+  // opens with the focus, and the page's one rule puts a row taller than the screen at its
   // top under the band: the page opened scrolled past its header - 89 px at 1440 by 900 and
-  // 161 px at 390 by 664 on a long answered question - where it is to stay at 0 px (R8). The
+  // 161 px at 390 by 664 on a long answered question - where it is to stay at 0 px. The
   // opening names the row in `openingRow` while it focuses it, which tells that focus from every
   // other; the reader's first act, or the focus going to any other row or out of the tree, ends
   // it.
@@ -310,8 +307,8 @@ export function IssueTree({
     },
     [setFocusedNode]
   );
-  // R7 under a press: the focus a press gives a row is taken once the press is over, and only
-  // while that row still holds the focus; a key's move takes it at once (`usePressFocus`).
+  // The focus a press gives a row is taken once the press is over, and only while that row
+  // still holds the focus; a key's move takes it at once (`usePressFocus`).
   const press = usePressFocus<{ readonly node: TreeNode; readonly row: string }>(
     ({ node, row }) => takeFocus(row, node),
     ({ row }) =>
@@ -478,7 +475,7 @@ export function IssueTree({
   }, [goToNode, request, takeRequest]);
 
   // The first row of the children's group, which their own address names (`issue-address.ts`'s
-  // `pathToTarget`, R6); undefined where the tree the view left holds no child.
+  // `pathToTarget`); undefined where the tree the view left holds no child.
   const firstChild = useMemo(
     () => pathToTarget(root, { id: root.id, kind: "children" })?.at(-1)?.id,
     [root]
@@ -489,7 +486,7 @@ export function IssueTree({
     // `t h` takes the reader to the children's first row itself, each time it is pressed and
     // from any zoom (`reach`), and opens their own address too. The address alone moved the
     // focus once per address and only to a row the tree drew, so a second `t h` after the
-    // reader moved on, or one pressed from a zoom that holds no child, moved nothing (R6, R9).
+    // reader moved on, or one pressed from a zoom that holds no child, moved nothing.
     // Where the tree holds no child the key is not offered.
     ...(firstChild === undefined
       ? {}
@@ -516,7 +513,7 @@ export function IssueTree({
     zoom: zoomed ? on : zoom,
   });
 
-  // An address that names a node puts the focus on it (R19). The row is not on the page until
+  // An address that names a node puts the focus on it. The row is not on the page until
   // the read that holds it has answered, and the document the preset draws beside the tree
   // mounts later still and can leave the focus nowhere as it does, so this looks again on
   // every tree the page draws and takes the focus back whenever nothing holds it (`focusIsLoose`:
@@ -553,7 +550,7 @@ export function IssueTree({
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
-  // on them, on the outline's first row (R7). It is the page opening: with no filter on, on an
+  // on them, on the outline's first row. It is the page opening: with no filter on, on an
   // address that names no node, before the reader has pressed, scrolled or touched anything and
   // while nothing else holds the focus. The reads arrive one after another, so the first row
   // takes the focus where it stands as soon as it is drawn, and gives it to the question once the
@@ -628,7 +625,7 @@ export function IssueTree({
     openingRow.current = undefined;
   }, [reach, root, rootRow, rows, targetId]);
 
-  // A write from the line at the foot takes the reader to what they wrote (R16): their newest
+  // A write from the line at the foot takes the reader to what they wrote: their newest
   // node under what the write answered - the reply, the comment, the question - its branch
   // unfolded, inside the viewport and focused, or, for an answer, the question's own row. The
   // send has landed when the line asks, but the read that draws it is still out, so the nodes
@@ -723,12 +720,12 @@ export function IssueTree({
             <button
               // A crumb is a word in a line of text, not a control box: below 1280 px a plain
               // button is 44 px tall (`styles.css`), which is a third of the head the first
-              // open question needs on a phone (R6). Its hit box grows by padding instead.
-              // It draws one line for a node, so it is R1's first line, cut at a word from the
-              // words every one-line drawing of a node is cut from (`lineWords`), and it wraps
-              // rather than being cut again mid-word by its box; the issue is named by its key,
-              // since the header above draws its title, and a node with no words by its kind's
-              // word, never its id (the root spec's R7).
+              // open question needs on a phone. Its hit box grows by padding instead.
+              // It draws one line for a node, so it is the node's first line (`firstLineOf`),
+              // cut at a word from the words every one-line drawing of a node is cut from
+              // (`lineWords`), and it wraps rather than being cut again mid-word by its box; the
+              // issue is named by its key, since the header above draws its title, and a node
+              // with no words by its kind's word, never its id, which is no name a reader reads.
               className="dispatch-inline-link max-w-full text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
@@ -770,7 +767,7 @@ export function IssueTree({
             onFocus={(row, node) => press.focus({ node, row })}
             onOpenDeeper={openDeeper}
             onPin={pin}
-            // A branch opens where it is at every width (R16): below 1024 px the outline draws
+            // A branch opens where it is at every width: below 1024 px the outline draws
             // one level under the node it is read from, so an opened branch deeper than that is
             // one counted line, which opens its nodes in place too. Zooming is `.`'s alone.
             onToggle={(node, expanded) => unfold(node.id, expanded !== true)}
@@ -782,10 +779,10 @@ export function IssueTree({
             rows={rows}
             tabStop={tabStop}
             threads={threads}
-            // The row the reader is editing in places nothing of its own (decision 123): the
-            // editor keeps its caret on screen as they write, and grows the row, and the row put
-            // back at its top at each change of its size took the caret off the screen - a new
-            // line written deep in the spec moved the page from 3120 px to 89 px.
+            // The row the reader is editing in places nothing of its own: the editor keeps its
+            // caret on screen as they write, and grows the row, and the row put back at its top
+            // at each change of its size took the caret off the screen - a new line written deep
+            // in the spec moved the page from 3120 px to 89 px.
             unplaced={editing?.row ?? unplaced}
           />
         </ChangeDraftsProvider>
@@ -815,7 +812,8 @@ export const LANDING_WAIT_MS = 10_000;
  * the page's top. A reader's own act (`READER_ACTS`) ends the hold, and so does the focus having
  * left the row. Answers the hold, which aborting ends sooner.
  *
- * It is exported because parts J, K and Q import it (the architect's decision 94).
+ * It is exported because the page's views draw trees of their own, and each holds the row it
+ * takes the reader to as the outline does.
  */
 export function holdOnScreen(row: HTMLElement): AbortController {
   const hold = new AbortController();
@@ -838,8 +836,8 @@ export function holdOnScreen(row: HTMLElement): AbortController {
  * places it by the page's one rule (`bringOnScreen`) when it is not - and holds it there while
  * the rest of the page arrives (`holdOnScreen`), in place of the row `held` held.
  *
- * It is exported because part K imports it, so its chart lands on the row an address names as
- * the outline does (the architect's decision 94).
+ * It is exported because another drawing of the page, a chart of the plan, lands on the row an
+ * address names as the outline does.
  */
 export function landOnRow(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
   const box = row.getBoundingClientRect();
@@ -885,11 +883,11 @@ function landingParent(
   return under === undefined ? root : pathToTarget(root, { id: under.id, kind: "item" })?.at(-1);
 }
 
-/** The facts of `node` the panel draws while its row has the focus (R12): who wrote it, the
+/** The facts of `node` the panel draws while its row has the focus: who wrote it, the
  *  item it is, its own address and its state, and its own first line as its title, cut from the
  *  words every one-line drawing of a node is cut from (`lineWords`). A node with no words is
  *  named by the page's word for its kind (`NODE_TYPE_NAMES`), never by its id, which is no name
- *  a reader reads (R7). */
+ *  a reader reads. */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
   const line = firstLineOf(lineWords(node)).line;
@@ -910,25 +908,25 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  * The focus leaving the tree with no press under way - by Tab, by a script's blur, by the tree's
  * own Escape - lets go of the row it left at once (`onLeave`): its body and acts, its focused
  * look, what a key reported at it and its own placing on screen go together, since nothing is
- * open at a row the reader has left, and a report lasts until the next key (R9), which Tab is.
+ * open at a row the reader has left, and a report lasts until the next key, which Tab is.
  *
  * The focus leaving it for a press on something else of the page lets go of the row one task
- * after that press ends, once its click has landed (dispatch://INFRA-1196, the architect's
- * decision 105 as amended). A press focuses what it lands on as it goes down, before the press
- * ends: the body closing then shortened the page under the pointer, a control below the row
- * rose by the body's height, and the click that ends the press landed on something else or on
- * nothing, so the control never fired. A press that leaves the focus on no control is such a
- * leave too: Safari focuses no button a press lands on. The press ends as the tree's own press
- * does (`press-focus.ts`'s `PRESS_ENDS`). Escape anywhere on the page lets go of the row at once
- * while a press keeps it, and the focus back in the tree by the time the press has ended keeps it.
+ * after that press ends, once its click has landed. A press focuses what it lands on as it goes
+ * down, before the press ends: the body closing then shortened the page under the pointer, a
+ * control below the row rose by the body's height, and the click that ends the press landed on
+ * something else or on nothing, so the control never fired. A press that leaves the focus on no
+ * control is such a leave too: Safari focuses no button a press lands on. The press ends as the
+ * tree's own press does (`press-focus.ts`'s `PRESS_ENDS`). Escape anywhere on the page lets go
+ * of the row at once while a press keeps it, and the focus back in the tree by the time the
+ * press has ended keeps it.
  *
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
  * tree.
  *
- * The panel goes back to the issue's own facts whenever the focus leaves the tree (R2, R12),
- * except for Details, or the control that opens it: Details is where a reader reads the node's
- * facts (R14), and the next row focused replaces them.
+ * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
+ * Details, or the control that opens it: Details is where a reader reads the node's facts, and
+ * the next row focused replaces them.
  */
 export function useReleaseFocus({
   editing,
@@ -1007,7 +1005,7 @@ export function useReleaseFocus({
 }
 
 /** The widths the tree is read one node at a time at, one level below the node it is on: below
- *  1024 px (R16), where three levels of indent and a row's own words do not fit together. It is
+ *  1024 px, where three levels of indent and a row's own words do not fit together. It is
  *  the exact negation of the width the Contents pane is drawn from (`contents-frame.tsx`'s
  *  `CONTENTS_PANE_QUERY`), so no width - a zoomed browser, a fractional device-pixel ratio -
  *  draws the pane beside a tree read one node at a time, or neither. */

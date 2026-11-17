@@ -15,7 +15,7 @@ import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
 /**
- * The rows of the issue's tree, drawn (dispatch://INFRA-1196 R1, R2, R34).
+ * The rows of the issue's tree, drawn.
  *
  * It is the drawing alone: which rows there are is the fold's (`tree-fold.ts`), and what the
  * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
@@ -58,7 +58,7 @@ export function TreeRows({
   onOpenDeeper: (id: string) => void;
   onPin: (row: string) => void;
   onToggle: (node: TreeNode, expanded: boolean | undefined) => void;
-  /** The node whose body the preset opens without being asked (R7). */
+  /** The node whose body the preset opens without being asked: what waits for the reader. */
   openBody?: string;
   /** The keys of the rows whose bodies the reader pinned open. */
   pinned: ReadonlySet<string>;
@@ -72,14 +72,14 @@ export function TreeRows({
   threads: ReadonlyMap<string, ThreadMark>;
   /** The key of the row that, focused, does not place itself on screen (`NodeRow`'s
    *  `placesItself`): the outline's first row the page opens on, until the reader acts, and the
-   *  row the reader is editing in, which the editor's caret places (decision 123). */
+   *  row the reader is editing in, which the editor's caret places as the reader writes. */
   unplaced: string | undefined;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
   // every row rather than once a row: a name and a shape for every node, the page's own words
-  // where the model holds no author (R9).
+  // where the model holds no author.
   const agentText = useAgentText();
-  // The reader, whose own words carry the ink rule and whose name is drawn in the ink (R34).
+  // The reader, whose own words carry the ink rule and whose name is drawn in the ink.
   const reader = useQuery(whoAmIQuery()).data?.login;
   return (
     <>
@@ -144,7 +144,7 @@ export function TreeRows({
 /**
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
  * rows as the fold left them, those rows with every body down to the second level open, and
- * everything - every branch unfolded and every body open (R9). The reader's own folds and pins
+ * everything - every branch unfolded and every body open. The reader's own folds and pins
  * are untouched by it, so the cycle comes back to the tree they had.
  */
 export const CYCLE_STATES = 3;
@@ -160,7 +160,7 @@ function drawsBody(cycle: number, level: number): boolean {
   return cycle === EVERYTHING || (cycle === 1 && level <= BODIES_TO_LEVEL);
 }
 
-/** The one row a branch below the drawn levels folds to (R16): how many rows it holds, in words
+/** The one row a branch below the drawn levels folds to: how many rows it holds, in words
  *  that agree with the count, and the control that opens them in place, at the level its nodes
  *  would stand at and under the guides of the levels above it. */
 function BranchMore({
