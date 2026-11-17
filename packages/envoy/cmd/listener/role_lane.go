@@ -39,10 +39,20 @@ const (
 	roleHeldDeliveryStatus = "held"
 )
 
-// roleHeldUnkeptLine is the ERROR line of a role message the lane held when the listener stopped
-// and could not keep on its role's kept lane either: the one end of a held message that leaves no
-// copy anywhere (roleForwarder.keepAtShutdown).
-const roleHeldUnkeptLine = "listener role message held at shutdown was not kept"
+// roleHoldBound is how long the lane holds one message for further attempts, counted from its first
+// hold by the listener's clock: the stream's duplicate window (contracts.DeliveryDuplicateWindow,
+// 72 h) less the kept lane's hour (roleKeepWindow). Every forward of a message to its holder carries
+// one Nats-Msg-Id, which the stream drops as a duplicate only inside that window, so a forward the
+// stream stored while its answer was lost would be stored a second time by an attempt after the
+// window. No attempt runs past this bound: the message is kept on its role's kept lane instead
+// (keepHeld, under roleKeptPastHoldBound), and the kept copy's hour, and so the forward its handover
+// makes, ends inside the window.
+const roleHoldBound = contracts.DeliveryDuplicateWindow - roleKeepWindow
+
+// roleHeldUnkeptLine is the ERROR line of a role message the lane stopped holding - the listener
+// stopped, or the message reached roleHoldBound - and could not keep on its role's kept lane either:
+// the one end of a held message that leaves no copy anywhere (roleForwarder.keepHeld).
+const roleHeldUnkeptLine = "listener role message the lane stopped holding was not kept"
 
 // roleLaneSlowConsumerInterval is how often the role lane's slow-consumer count is read for a change
 // to log (watchRoleLaneSlowConsumers).
@@ -57,11 +67,16 @@ type roleForward struct {
 }
 
 // roleHeld counts the delivery attempts of one role message that ended on a transport failure, a
-// NATS step after which the listener does not know that the stream holds a copy. A message with a
-// count holds one of the forwarder's slots from its first hold until its end, through every attempt
-// after it, so envoy_role_forwards_outstanding counts it the whole time; the zero value is a
-// message the lane just took, which takes a slot when it is queued (roleForwarder.enqueue).
-type roleHeld struct{ attempts int }
+// NATS step after which the listener does not know that the stream holds a copy, and since is when
+// the first of them ended, by the listener's clock (cfg.now), which roleHoldBound counts from. A
+// message with a count holds one of the forwarder's slots from its first hold until its end, through
+// every attempt after it, so envoy_role_forwards_outstanding counts it the whole time; the zero
+// value is a message the lane just took, which takes a slot when it is queued
+// (roleForwarder.enqueue).
+type roleHeld struct {
+	attempts int
+	since    time.Time
+}
 
 // holdsSlot reports whether the message already holds a slot of the forwarder's.
 func (h roleHeld) holdsSlot() bool { return h.attempts > 0 }
@@ -73,7 +88,9 @@ func (h roleHeld) holdsSlot() bool { return h.attempts > 0 }
 // status and exception (finishRoleForward). A forward, a read or a keep that fails on NATS leaves
 // the message held for another delivery attempt (hold), so once the lane takes a role message the
 // stream ends up holding a copy of it or the forwarder holds the message itself. Messages queued,
-// waiting and held together are bounded by roleForwardWaitLimit.
+// waiting and held together are bounded by the forwarder's slots, roleForwardWaitLimit in the
+// listener: at that bound the lane's handler waits for a slot, which leaves the role messages NATS
+// delivers after it in the lane's own subscription (bus.ConnectRoleLane) and drops none.
 type roleForwarder struct {
 	// cfg is the delivery configuration the forwards are published (forwardRole) and reported
 	// through, and a held message delivered again (deliverRoleMessage); its roleForwards is this
@@ -94,7 +111,13 @@ type roleForwarder struct {
 }
 
 func newRoleForwarder(cfg listenerDeliveryHandlerConfig) *roleForwarder {
-	f := &roleForwarder{slots: make(chan struct{}, roleForwardWaitLimit), stop: make(chan struct{}), queues: map[string][]roleForward{}}
+	return newRoleForwarderLimited(cfg, roleForwardWaitLimit)
+}
+
+// newRoleForwarderLimited is newRoleForwarder with limit slots, the bound on the role messages it
+// holds at once; a test that fills the bound passes a small one.
+func newRoleForwarderLimited(cfg listenerDeliveryHandlerConfig, limit int) *roleForwarder {
+	f := &roleForwarder{slots: make(chan struct{}, limit), stop: make(chan struct{}), queues: map[string][]roleForward{}}
 	cfg.roleForwards = f
 	f.cfg = cfg
 	return f
@@ -254,14 +277,22 @@ func roleForwardEnded(client *bus.Client, subject string, err error) bool {
 // roleHeldLine at WARN, naming holder when one was resolved. After a wait that starts at
 // roleHoldFirst and doubles to roleHoldMax, the whole delivery runs again (deliverRoleMessage): the
 // holder is resolved again, so a holder that changed gets the message and a role that lost its
-// holder keeps it on its kept lane, and a forward goes out under the same Nats-Msg-Id. A listener
-// that stops keeps the message instead (keepAtShutdown).
+// holder keeps it on its kept lane, and a forward goes out under the same Nats-Msg-Id. A message
+// whose next attempt would start past roleHoldBound is kept now instead, and so is one held when
+// the listener stops (keepHeld).
 func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHeld, slotted bool, cause error) {
 	if !slotted {
 		f.acquire()
 	}
+	if held.attempts == 0 {
+		held.since = f.cfg.now()
+	}
 	held.attempts++
 	delay := roleHoldDelay(held.attempts)
+	if !f.cfg.now().Add(delay).Before(held.since.Add(roleHoldBound)) {
+		f.keepHeld(item, held, roleKeptPastHoldBound, cause)
+		return
+	}
 	f.cfg.logger.DeliveryLog(slog.LevelWarn, roleHeldLine, holder, item.Topic, item.EventID, roleHeldDeliveryStatus,
 		slog.Int("attempt", held.attempts),
 		slog.Duration("next_attempt_in", delay),
@@ -277,7 +308,7 @@ func (f *roleForwarder) hold(item contracts.Envelope, holder string, held roleHe
 		// kept rather than tried once more.
 		select {
 		case <-f.stop:
-			f.keepAtShutdown(item, held)
+			f.keepHeld(item, held, roleKeptAtShutdown, nil)
 		default:
 			deliverRoleMessage(f.cfg, item, held)
 		}
@@ -297,23 +328,27 @@ func roleHoldDelay(attempts int) time.Duration {
 	return min(delay, roleHoldMax)
 }
 
-// keepAtShutdown is a held message's end when the listener stops: one keep on its role's kept lane
-// (keepRoleLaneMessage, under roleKeptAtShutdown), which the role's next live holder is handed by a
-// handover of any listener, and the message's slot freed. A keep that fails leaves no copy
-// anywhere, which roleHeldUnkeptLine reports at ERROR with the event id.
-func (f *roleForwarder) keepAtShutdown(item contracts.Envelope, held roleHeld) {
+// keepHeld is a held message's end when the lane stops holding it - the listener stops
+// (roleKeptAtShutdown), or its next attempt would start past roleHoldBound (roleKeptPastHoldBound,
+// with cause, the failure that would have held it once more): one keep on its role's kept lane
+// (keepRoleLaneMessage), which the role's next live holder is handed by a handover of any listener,
+// and the message's slot freed. A keep that fails leaves no copy anywhere, which roleHeldUnkeptLine
+// reports at ERROR with the event id and the reason.
+func (f *roleForwarder) keepHeld(item contracts.Envelope, held roleHeld, reason roleKeepReason, cause error) {
 	defer f.releaseHeld(held)
 	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
-	if err := keepRoleLaneMessage(f.cfg, role, item, roleKeptAtShutdown, ""); err != nil {
-		f.cfg.logger.DeliveryLog(slog.LevelError, roleHeldUnkeptLine, "", item.Topic, item.EventID, "failed",
-			slog.Int("attempts", held.attempts),
-			slog.String("error", err.Error()))
+	if err := keepRoleLaneMessage(f.cfg, role, item, reason, ""); err != nil {
+		attrs := []slog.Attr{slog.String("reason", string(reason)), slog.Int("attempts", held.attempts), slog.String("error", err.Error())}
+		if cause != nil {
+			attrs = append(attrs, slog.String("last_attempt_error", cause.Error()))
+		}
+		f.cfg.logger.DeliveryLog(slog.LevelError, roleHeldUnkeptLine, "", item.Topic, item.EventID, "failed", attrs...)
 	}
 }
 
 // stopHolding ends the forwarder's further delivery attempts: a message waiting for its next
-// attempt, and one held from now on, is kept on its role's kept lane once instead
-// (keepAtShutdown). It runs once however often it is called.
+// attempt, and one held from now on, is kept on its role's kept lane once instead (keepHeld). It
+// runs once however often it is called.
 func (f *roleForwarder) stopHolding() {
 	f.stopOnce.Do(func() { close(f.stop) })
 }

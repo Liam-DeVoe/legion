@@ -204,8 +204,8 @@ const roleKeepHolderWindow = 5 * time.Second
 const roleKeptDeliveryStatus = "kept"
 
 // roleKeepReason is why the role lane kept a message (keepRoleLaneMessage), as the lane's kept line
-// names it: one of the four constants below. It is a type of its own rather than a roles.State,
-// because two of the four are no state of a resolution, and rather than a plain string, which takes
+// names it: one of the five constants below. It is a type of its own rather than a roles.State,
+// because three of the five are no state of a resolution, and rather than a plain string, which takes
 // any string a caller has to hand: a value of another string type, a roles.State among them,
 // needs a conversion to become one. A resolution's state becomes one only through roleKeptReason,
 // which names the two states the listener keeps for, so a state it does not keep for is never a
@@ -228,6 +228,10 @@ const (
 	// listener stopped (roleForwarder.stopHolding): the keep stores the one copy that outlives the
 	// process. Like roleClaimUnread it is no roles.State, and only the kept line names it.
 	roleKeptAtShutdown roleKeepReason = "held_at_shutdown"
+	// roleKeptPastHoldBound is a held message whose next attempt would have started past
+	// roleHoldBound, the last point at which a forward is still a duplicate of any copy an earlier
+	// attempt stored (roleForwarder.hold). Like roleClaimUnread it is no roles.State.
+	roleKeptPastHoldBound roleKeepReason = "held_past_bound"
 )
 
 // roleKeepFailedLine is logged by both give-up paths - the publish route's and the role lane's -
@@ -642,8 +646,9 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and returns nil when it kept it. reason is why, as the lane's
 // kept line names it: roleKeptUnclaimed for a role nobody claims, roleKeptLapsed for a claim whose
-// holder is not live, roleClaimUnread for a claim read that did not answer, and
-// roleKeptAtShutdown for a message the lane held for another attempt when the listener stopped.
+// holder is not live, roleClaimUnread for a claim read that did not answer, roleKeptAtShutdown for
+// a message the lane held for another attempt when the listener stopped, and roleKeptPastHoldBound
+// for one the lane held up to roleHoldBound.
 // holder is the session the claim names, which the kept line names as its session_id: the lapsed
 // holder, and empty for the others, since an unclaimed role has none and a read that failed found
 // none. Kept, it writes the lane's line, which names the copy the lane holds, its stream sequence
