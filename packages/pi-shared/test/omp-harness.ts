@@ -208,6 +208,12 @@ function relayTakes(word: string): word is RelayTake {
   return relayAnswerMeaning(word)?.takes === true;
 }
 
+/** Whether `error` is nats.js's own request timeout (its `ErrorCode.Timeout`, `"TIMEOUT"`), the one
+ * error a request ends with that no server sent. */
+function isRequestTimeout(error: unknown): boolean {
+  return (error as { readonly code?: unknown } | undefined)?.code === "TIMEOUT";
+}
+
 /**
  * Sends one frame as the listener's relay of a session's consumer sends it: the stored subject,
  * sequence, stream and time in its headers (`decodeRelayFrame`), on the session's deliver
@@ -227,7 +233,7 @@ function relayTakes(word: string): word is RelayTake {
 export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
   // The request in flight, read at each of the wait's asks rather than awaited by it, so a run
   // that ended (`stopped`) fails the send at once even while a request waits; and the error the
-  // last request met, which a send that reaches the deadline names.
+  // last request met from the server, which a send that reaches the deadline names.
   let inFlight: Promise<{ readonly answered: string } | { readonly error: unknown }> | undefined;
   let reply: { readonly answered: string } | { readonly error: unknown } | undefined;
   let lastError: unknown;
@@ -258,6 +264,12 @@ export async function sendRelayFrame(frame: RelayFrame): Promise<RelayTake> {
         return undefined;
       }
       if ("answered" in reply) return reply;
+      // A request's own timeout is the row's deadline arriving (each request waits as long as the
+      // row has left), not an answer: the request stands unanswered, nothing is sent again, and the
+      // error kept is the server's last answer. Taken as an error, a timeout that fired before the
+      // 503 of a send made just ahead of the deadline came back would name the deadline as the
+      // cause, and a loaded machine would decide which of the two a no-responders send names.
+      if (isRequestTimeout(reply.error)) return undefined;
       // No responder yet: a session that has not subscribed its deliver subject emits no signal,
       // and the server only answers the next send with none, so the frame goes again.
       lastError = reply.error;
