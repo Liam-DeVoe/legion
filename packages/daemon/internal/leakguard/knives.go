@@ -53,7 +53,7 @@ type knivesEntry struct {
 	// where the entry names none.
 	origin, release string
 	// upstream is the repository the fork is of, as the registry writes it, empty where the entry
-	// names none. A commit a remote-tracking ref of its remote holds is not read (Guard.knives).
+	// names none. A commit its branches or tags reach is not read (Guard.knives).
 	upstream string
 	// forbidden is the merged list, the first registry's terms first, each as written.
 	forbidden []string
@@ -101,26 +101,24 @@ type knivesOverlayFile struct {
 // ledger rehearsals, which hold those terms by design.
 //
 // Of the push's commits, the pass reads none that the fork or the upstream of an entry that
-// applies holds already (remoteHeld): a commit a remote-tracking ref reaches of a remote whose URL
-// names one of the push's destination repositories (destinationRepos) or such an upstream, each
-// read with RepoFromURL and compared case aside, as the destination is matched against an entry.
-// The rule pass leaves out only the pushed remote's (Guard.commits). A commit the fork's ref holds
-// is the fork's own history, and one an upstream's ref holds is upstream's text, not the fork's:
-// `knives audit` reads none of it either, since its base for a branch is its fork point with
-// upstream's trunk, and a mirror sync of a fork's main, a release cut over a newer upstream base
-// and a member rebased onto one all push such commits. A ref of any other remote says nothing of
-// either repository, nor does a ref of a remote no configuration names: a cut rehearsed on a local
-// bare remote, or a ref written under refs/remotes/ by hand, would otherwise leave the real push
-// to the fork unread (the architect's rule of 2026-11-17). Nor does a ref of a remote named
-// <name>/<more> that is not selected itself, though git writes it under the selected remote
-// <name>'s own refs/remotes/<name>/: the pass leaves it out of <name>'s refs (remoteRefs). The
-// limit the pass accepts is a ref written by hand under a selected remote's own
-// refs/remotes/<name>/, outside every other remote's: that ref still holds its commit. A clone
-// that has not fetched its upstream holds no ref of it, so it reads upstream's lines and refuses
-// those that hold a term, and the refusal says to fetch it (knivesAdvice). Only a push the pass
-// would otherwise refuse asks git which of its commits are held, so a push that adds no term runs
-// no git for it.
-func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
+// applies holds already (remoteHeld): a commit that a branch or a tag of the push's destination
+// reaches, as the one read of Guard.Push answered (destination), or a branch or a tag of such an
+// upstream, read the same way from the entry's upstream URL (Guard.advertised), each ref counting
+// where this clone has the commit it is at. The destination's refs reach none of the records'
+// commits, since Guard.commits lists none they reach; the pass counts them all the same, so that
+// what it holds does not rest on the rule pass's reading. A commit the fork holds is the fork's
+// own history, and one the upstream holds is upstream's text, not the fork's: `knives audit`
+// reads none of it either, since its base for a branch is its fork point with upstream's trunk,
+// and a mirror sync of a fork's main, a release cut over a newer upstream base and a member
+// rebased onto one all push such commits. No ref of this clone's own says what either holds
+// (Guard.Push says why): a cut rehearsed on a local bare repository, whatever the remote it was
+// pushed through is named and whatever URL that remote names now, is still the real push's own,
+// and the pass reads it (the architect's rule of 2026-11-17). An upstream's ref at a commit this
+// clone does not have reaches nothing, so a clone that has not fetched as far as that ref reads
+// upstream's lines and refuses those that hold a term (knivesAdvice). The upstream is read only
+// for a push the pass would otherwise refuse, once for each upstream URL, so a push that adds no
+// term runs no git for it; a read that fails refuses the push as a setup failure naming the URL.
+func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record, destination []string) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
 		return nil
@@ -167,20 +165,27 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	if len(lines) == 0 {
 		return nil
 	}
-	// A remote's refs hold a commit where its URL names the destination, or the upstream of an
+	// A commit is held where the destination's refs reach it, or the refs of the upstream of an
 	// entry that applies.
-	holders := repos
+	holding := slices.Clip(destination)
+	upstreams := map[string]bool{}
 	for _, entry := range applying {
-		if upstream := RepoFromURL(entry.upstream); upstream != "" {
-			holders = append(holders, upstream)
+		if entry.upstream == "" || upstreams[entry.upstream] {
+			continue
 		}
+		upstreams[entry.upstream] = true
+		upstream, err := g.advertised(ctx, req.Dir, entry.upstream)
+		if err != nil {
+			return &SetupFailure{What: what, Why: "the refs of the registry entry's upstream could not be read", Err: err}
+		}
+		holding = append(holding, upstream...)
 	}
-	tracked, err := g.remoteHeld(ctx, req.Dir, holders, records)
+	reached, err := g.remoteHeld(ctx, req.Dir, holding, records)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the commits the repository's remote-tracking refs hold could not be read", Err: err}
+		return &SetupFailure{What: what, Why: "the commits the destination and the upstream hold could not be read", Err: err}
 	}
-	if len(tracked) > 0 {
-		records = slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return tracked[record.Commit] })
+	if len(reached) > 0 {
+		records = slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return reached[record.Commit] })
 		if lines = knivesLines(applying, records); len(lines) == 0 {
 			return nil
 		}
@@ -189,134 +194,56 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 }
 
 // knivesAdvice is what a refusal of the knives pass says after its report (Refusal.Advice). The
-// pass reads no commit a remote-tracking ref holds of a remote whose URL names the destination or
-// the entry's upstream (Guard.knives), so where a refused line is one an upstream wrote, the clone
-// has not fetched that upstream from a remote whose URL names it. It names no repository and no
-// term.
-const knivesAdvice = "A commit is not read where a remote-tracking ref of a remote whose URL names the destination or the registry entry's upstream holds it, " +
-	"so where a refused line is an upstream's own, fetch the upstream remote (git fetch upstream, after git remote add upstream <url> where the clone has none) and push again."
+// pass reads no commit a branch or a tag of the destination or of the entry's upstream reaches,
+// as each reports its refs at the push, and a ref counts only where this clone has the commit it
+// is at (Guard.knives): where a refused line is one an upstream wrote, the clone lacks the commit
+// upstream's ref is at. It names no repository and no term.
+const knivesAdvice = "A commit is not read where a branch or tag of the destination or of the registry entry's upstream reaches it, as each reports its refs at the push; " +
+	"a ref at a commit this clone does not have reaches nothing, so an upstream's own line is read where the clone lacks the commit upstream's branch or tag is at."
 
-// remoteHeld are the commits of records of files that a remote-tracking ref of the repository at
-// dir reaches, a ref reaching its own commit, where the ref's remote has a URL that names one of
-// repos (namesOneOf): the commits the knives pass does not read (Guard.knives). One rev-list
-// answers for all of them, fed them one a line on its standard input, with the refs of each such
-// remote (remoteRefs) after --not:
+// remoteHeld are the commits of records of files that one of held reaches, each reaching itself:
+// the commits the knives pass does not read (Guard.knives), held being the commits that the
+// branches and tags of the push's destination and of an applying entry's upstream are at
+// (Guard.advertised). One rev-list answers for all of them, fed on its standard input the
+// records' commits, a line each, and then ^<sha> for each of held:
 //
-//	git rev-list --no-walk --stdin --not [--exclude=refs/remotes/<name>/<more>/*...] --glob=refs/remotes/<name>/*
+//	git rev-list --no-walk --stdin
 //
-// It prints every fed commit that no such ref reaches, with any ancestor of one that none reaches
-// either, so a fed commit it does not print is held. git documents that --no-walk has no effect
-// where a range is given, and a ref after --not makes one, so rev-list walks from the fed commits
-// down to the refs; it is there for remotes that have no remote-tracking ref at all, where
-// rev-list would otherwise print every ancestor of the fed commits, and with it prints the fed
-// commits alone. No git runs where no record of a file names a commit, and no rev-list where no
-// remote has a URL that names one of repos: nothing is held then. A git that fails is an error,
-// never a commit read as held.
-func (g *Guard) remoteHeld(ctx context.Context, dir string, repos []string, records []Record) (map[string]bool, error) {
-	// held is every commit asked about, until rev-list names the ones no ref reaches.
-	held := map[string]bool{}
+// which is `git rev-list --no-walk <commits...> --not <held...>` with the shas off the command
+// line, since a repository can advertise thousands of refs. It prints every fed commit that none
+// of held reaches, with any ancestor of one that none reaches either, so a fed commit it does not
+// print is held. git documents that --no-walk has no effect where a range is given, and the ^
+// lines make one, so rev-list walks from the fed commits down to held. No git runs where no
+// record of a file names a commit, or where held is empty: nothing is held then. A git that fails
+// is an error, never a commit read as held.
+func (g *Guard) remoteHeld(ctx context.Context, dir string, held []string, records []Record) (map[string]bool, error) {
+	// reached is every commit asked about, until rev-list names the ones none of held reaches.
+	reached := map[string]bool{}
 	var fed strings.Builder
 	for _, record := range records {
-		if record.File == "" || record.Commit == "" || held[record.Commit] {
+		if record.File == "" || record.Commit == "" || reached[record.Commit] {
 			continue
 		}
-		held[record.Commit] = true
+		reached[record.Commit] = true
 		fed.WriteString(record.Commit)
 		fed.WriteString("\n")
 	}
-	if len(held) == 0 {
+	if len(reached) == 0 || len(held) == 0 {
 		return nil, nil
 	}
-	refs, err := g.remoteRefs(ctx, dir, func(_, remoteURL string) bool { return namesOneOf(remoteURL, repos) })
-	if err != nil {
-		return nil, err
+	for _, sha := range held {
+		fed.WriteString("^")
+		fed.WriteString(sha)
+		fed.WriteString("\n")
 	}
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	out, err := g.gitFed(ctx, dir, fed.String(), append([]string{"rev-list", "--no-walk", "--stdin", "--not"}, refs...)...)
+	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--no-walk", "--stdin")
 	if err != nil {
 		return nil, err
 	}
 	for _, unheld := range strings.Fields(out) {
-		delete(held, unheld)
+		delete(reached, unheld)
 	}
-	return held, nil
-}
-
-// remoteRefs are the arguments with which a rev-list counts the remote-tracking refs of each
-// remote of dir's configuration that counts (a remote counts where counts answers true for its
-// name and one of its URLs): the refs whose commits a pass takes to be held, the knives pass's
-// (remoteHeld) and the rule pass's (destinationRefs). One git config reads every remote's URLs:
-//
-//	git config --get-regexp '^remote\..*\.url$'
-//
-// It prints a line "remote.<name>.url <value>" for each URL, the name being all that lies
-// between, dots included, and answers 1 where no remote has a URL, so that none counts. Any other
-// status is an error.
-//
-// A remote's refs are refs/remotes/<name>/*, which git's * reads across a slash: it reaches the
-// refs of a remote named <name>/<more> as well, since git writes them under
-// refs/remotes/<name>/<more>/ (measured on git 2.47.3). Such a remote says nothing of what
-// <name>'s repository holds, as a local bare remote a cut is rehearsed on does not, so each
-// remote that counts, in the order git config first names it, has an --exclude for each other
-// remote whose name starts with its own and a slash and that does not count, then its own --glob:
-//
-//	--exclude=refs/remotes/<name>/<more>/* ... --glob=refs/remotes/<name>/*
-//
-// git applies an --exclude to the next --glob, --remotes, --branches or --all alone, and clears it
-// there, so each --glob carries its own. A remote that counts is never excluded: its refs count
-// under its own --glob. A name that holds a glob metacharacter never counts, since its --glob
-// would be read as a pattern that could reach the refs of remotes that do not count; git remote
-// add refuses such a name, since no ref name holds one, but a configuration written by hand can
-// hold it. A remote of such a name is still excluded where its name starts with that of one that
-// counts and a slash, and its --exclude is then a pattern too, which leaves out more refs than its
-// own: a pass reads more commits for it, never fewer. No argument at all is the answer where no
-// remote counts.
-func (g *Guard) remoteRefs(ctx context.Context, dir string, counts func(name, remoteURL string) bool) ([]string, error) {
-	var stderr strings.Builder
-	status, out, err := g.run(ctx, child{argv: gitArgv("config", "--get-regexp", `^remote\..*\.url$`), dir: dir, stderr: &stderr})
-	if err != nil {
-		return nil, err
-	}
-	switch status {
-	case 0:
-	case 1:
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("git config exited %d: %s", status, strings.TrimSpace(stderr.String()))
-	}
-	var names []string
-	counted := map[string]bool{}
-	for line := range strings.Lines(out) {
-		key, value, _ := strings.Cut(strings.TrimRight(line, "\r\n"), " ")
-		name, ok := strings.CutPrefix(key, "remote.")
-		if !ok {
-			continue
-		}
-		if name, ok = strings.CutSuffix(name, ".url"); !ok {
-			continue
-		}
-		if !slices.Contains(names, name) {
-			names = append(names, name)
-		}
-		if !counted[name] && !strings.ContainsAny(name, `*?[\`) && counts(name, value) {
-			counted[name] = true
-		}
-	}
-	var refs []string
-	for _, name := range names {
-		if !counted[name] {
-			continue
-		}
-		for _, other := range names {
-			if !counted[other] && strings.HasPrefix(other, name+"/") {
-				refs = append(refs, "--exclude=refs/remotes/"+other+"/*")
-			}
-		}
-		refs = append(refs, "--glob=refs/remotes/"+name+"/*")
-	}
-	return refs, nil
+	return reached, nil
 }
 
 // knivesKeptFor is how long the pass matches pushes against its kept list without reading a
@@ -592,46 +519,73 @@ func knivesChecked(i int, entry *knivesEntry) error {
 //     push hands the same (measured 2026-11-17 in an issue pod), so the URL alone can name nothing
 //     on GitHub where the remote does;
 //   - the remote, where it is itself a URL: `git push <url>` hands the hook the URL as typed;
-//   - and where the remote is a name, the URLs its configuration pushes to, as written there and
-//     before any rewriting: remote.<name>.pushurl, and where none is set remote.<name>.url. A
-//     URL or path that names no GitHub repository is read as a name too, and no remote is called
-//     that, so its reads answer nothing.
+//   - and where the remote is a name, the URLs its configuration names, as written there and
+//     before any rewriting (Guard.remotes): its remote.<name>.pushurl values, and its
+//     remote.<name>.url values as well where no push URL names a GitHub repository. A push URL
+//     at a local bare repository, which a role sets for one run (`git remote set-url --push origin
+//     <bare>`), leaves the remote's URL naming the fork, so the rehearsal is a push to the fork
+//     as the real push is, and its commits are read. A push URL that names another GitHub
+//     repository is where the push goes, and the remote's URL names nothing of it. A URL or path
+//     that names no GitHub repository is read as a name too, and no remote is called that, so its
+//     reads answer nothing.
+//
+// The configuration is read only here, for a push the knives pass has a list for.
 func (g *Guard) destinationRepos(ctx context.Context, req PushRequest) ([]string, error) {
 	var repos []string
-	add := func(remote string) {
-		if repo := RepoFromURL(remote); repo != "" {
+	add := func(address string) bool {
+		repo := RepoFromURL(address)
+		if repo != "" {
 			repos = append(repos, repo)
 		}
+		return repo != ""
 	}
 	add(req.URL)
-	if req.Remote == "" {
+	if req.Remote == "" || add(req.Remote) {
 		return repos, nil
 	}
-	if RepoFromURL(req.Remote) != "" {
-		add(req.Remote)
-		return repos, nil
-	}
-	urls, err := g.remoteURLs(ctx, req.Dir, req.Remote, "pushurl")
+	remotes, err := g.remotes(ctx, req.Dir)
 	if err != nil {
 		return nil, err
 	}
-	if len(urls) == 0 {
-		if urls, err = g.remoteURLs(ctx, req.Dir, req.Remote, "url"); err != nil {
-			return nil, err
-		}
+	pushed := slices.IndexFunc(remotes, func(r remote) bool { return r.name == req.Remote })
+	if pushed < 0 {
+		return repos, nil
 	}
-	for _, remote := range urls {
-		add(remote)
+	named := false
+	for _, address := range remotes[pushed].pushurls {
+		named = add(address) || named
+	}
+	if !named {
+		for _, address := range remotes[pushed].urls {
+			add(address)
+		}
 	}
 	return repos, nil
 }
 
-// remoteURLs are the values of remote.<remote>.<key> in dir's configuration, one a line, and none
-// where the key is not set: git config answers 1 for a key it does not hold, and for a key it
-// cannot read, which no remote has either. Any other status is an error.
-func (g *Guard) remoteURLs(ctx context.Context, dir, remote, key string) ([]string, error) {
+// remote is one remote of a repository's configuration, its URLs as written there and before
+// any rewriting.
+type remote struct {
+	// name is the remote's name, the subsection of its remote.<name>.* keys, as written.
+	name string
+	// urls are its remote.<name>.url values and pushurls its remote.<name>.pushurl values, each
+	// in the order the configuration lists them.
+	urls, pushurls []string
+}
+
+// remotes are the remotes of dir's configuration that name a URL or a push URL, in the order
+// git config first names each. One git config reads them all:
+//
+//	git config -z --get-regexp '^remote\..*\.(url|pushurl)$'
+//
+// It prints "remote.<name>.<key>\n<value>" for each value, ending each with a zero byte, so a
+// value with a newline in it is read whole; the name is all that lies between the first dot and
+// the last, dots and slashes included. A key set with no value at all has no newline, and names
+// no URL. git config answers 1 where no key matches, which is a configuration with no remote;
+// any other status is an error.
+func (g *Guard) remotes(ctx context.Context, dir string) ([]remote, error) {
 	var stderr strings.Builder
-	status, out, err := g.run(ctx, child{argv: gitArgv("config", "--get-all", "remote."+remote+"."+key), dir: dir, stderr: &stderr})
+	status, out, err := g.run(ctx, child{argv: gitArgv("config", "-z", "--get-regexp", `^remote\..*\.(url|pushurl)$`), dir: dir, stderr: &stderr})
 	if err != nil {
 		return nil, err
 	}
@@ -642,13 +596,30 @@ func (g *Guard) remoteURLs(ctx context.Context, dir, remote, key string) ([]stri
 	default:
 		return nil, fmt.Errorf("git config exited %d: %s", status, strings.TrimSpace(stderr.String()))
 	}
-	var urls []string
-	for line := range strings.Lines(out) {
-		if remote := strings.TrimRight(line, "\r\n"); remote != "" {
-			urls = append(urls, remote)
+	var remotes []remote
+	for entry := range strings.SplitSeq(out, "\x00") {
+		key, value, ok := strings.Cut(entry, "\n")
+		if !ok {
+			continue
+		}
+		subsection, ok := strings.CutPrefix(key, "remote.")
+		dot := strings.LastIndexByte(subsection, '.')
+		if !ok || dot < 0 {
+			continue
+		}
+		name, variable := subsection[:dot], subsection[dot+1:]
+		i := slices.IndexFunc(remotes, func(r remote) bool { return r.name == name })
+		if i < 0 {
+			i = len(remotes)
+			remotes = append(remotes, remote{name: name})
+		}
+		if variable == "pushurl" {
+			remotes[i].pushurls = append(remotes[i].pushurls, value)
+		} else {
+			remotes[i].urls = append(remotes[i].urls, value)
 		}
 	}
-	return urls, nil
+	return remotes, nil
 }
 
 // knivesApplying are the entries whose origin or release names one of repos (namesOneOf).
@@ -662,11 +633,10 @@ func knivesApplying(entries []knivesEntry, repos []string) []knivesEntry {
 	return applying
 }
 
-// namesOneOf is whether remote, a URL read with RepoFromURL, names one of repos, case aside: how
-// the knives pass matches an entry against the destination (knivesApplying) and a remote against
-// the destination and the upstream (remoteHeld).
-func namesOneOf(remote string, repos []string) bool {
-	repo := RepoFromURL(remote)
+// namesOneOf is whether address, a URL read with RepoFromURL, names one of repos, case aside: how
+// the knives pass matches an entry against the destination (knivesApplying).
+func namesOneOf(address string, repos []string) bool {
+	repo := RepoFromURL(address)
 	return repo != "" && slices.ContainsFunc(repos, func(named string) bool { return strings.EqualFold(named, repo) })
 }
 

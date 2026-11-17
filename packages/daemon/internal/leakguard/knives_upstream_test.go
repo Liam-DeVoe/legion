@@ -13,35 +13,38 @@ import (
 // whose base for a branch is its fork point with upstream's trunk, and as K1 of INFRA-1484 reads a
 // past update: a commit upstream's main holds adds nothing. Upstream's own lines do hold listed
 // terms: on 2026-11-14 can1357/oh-my-pi's c3b7bed169a6 added a line holding one, and a push of it
-// to the fork's main, whose remote-tracking ref held its parent, was refused by this pass.
+// to the fork's main, which held its parent, was refused by this pass.
 //
-// The commit is upstream's where the repository's remote for the entry's upstream holds it on a
-// remote-tracking ref, as a fetch of that remote leaves it. Where that ref does not hold it, the
-// same commit is the push's own, and is refused.
+// The commit is upstream's where a branch or a tag of the entry's upstream reaches it, as the
+// upstream reports its refs at the push, an annotated tag by the commit it peels to, and whether
+// or not this clone fetched that ref. Where none reaches it, the same commit is the push's own,
+// and is refused.
 func TestACommitTheEntrysUpstreamHoldsIsNotReadForKnivesTerms(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		upstream func(base, head string) string
+		name string
+		// upstream are the refs the entry's upstream holds, as `git push` names them, over the
+		// repository's two commits and its annotated tag v1 of the second.
+		upstream func(base, head string) []string
 		want     []string
 	}{
-		{name: "the upstream remote's main holds the commit", upstream: func(_, head string) string { return head }},
+		{name: "the upstream's main holds the commit", upstream: func(_, head string) []string { return []string{head + ":refs/heads/main"} }},
+		{name: "an annotated tag of the upstream's holds the commit", upstream: func(string, string) []string { return []string{"refs/tags/v1"} }},
 		{
-			name:     "the upstream remote's main holds only the commit before it",
-			upstream: func(base, _ string) string { return base },
+			name:     "the upstream's main holds only the commit before it",
+			upstream: func(base, _ string) []string { return []string{base + ":refs/heads/main"} },
 			want:     []string{"upstream.md:2: forbidden term 2"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, repo, base, head := knivesCommit(t, map[string]string{"upstream.md": "a line of upstream's prose\nthe QUILLWORTHY build\n"})
-			// The remote the registry entry names as its upstream, fetched: its main at the commit.
-			fixture.Run(repo, "git", "remote", "add", "upstream", "https://github.com/upstream-org/invented-repo")
-			fixture.Run(repo, "git", "update-ref", "refs/remotes/upstream/main", tc.upstream(base, head))
+			fixture.Run(repo, "git", "tag", "--annotate", "--message", "a release of upstream's", "v1", head)
+			fixture.Run(repo, append([]string{"git", "push", "--quiet", knivesUpstream}, tc.upstream(base, head)...)...)
 			path, listed, _ := servingKnives(t, theKnivesRow)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
 			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin))
 			if tc.want == nil {
 				if err != nil {
-					t.Fatalf("the push of a commit upstream's main holds was refused: %v", err)
+					t.Fatalf("the push of a commit upstream's refs hold was refused: %v", err)
 				}
 				return
 			}

@@ -130,8 +130,8 @@ func noAnswer(env []string) string {
 
 // child is one process this package runs: the shared check in one of its shapes, a read of a
 // repository's visibility (gh's REST read, and where that is refused for a rate limit gh's GraphQL
-// read and git's ls-remote), a git command a push's records or remote URLs are read with, or gh's
-// read of a knives registry.
+// read and git's ls-remote), a git command a push's records, remote URLs or the refs of its
+// destination and an upstream are read with, or gh's read of a knives registry.
 type child struct {
 	// argv is the command and its arguments, argv[0] naming the program.
 	argv []string

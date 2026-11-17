@@ -26,11 +26,15 @@ const knivesTerm = "Quillwort"
 // pre-push hook for a remote that pushes to it.
 const knivesOrigin = "https://github.com/invented-org/invented-repo.git"
 
+// knivesUpstream is the repository theKnivesRegistry's entry names as its upstream, as the
+// registry writes it: the URL the pass reads the upstream's refs from (Guard.knives).
+const knivesUpstream = "https://github.com/upstream-org/invented-repo"
+
 // theKnivesRegistry is a registry file in the shape knives writes one: one entry, for the fork at
-// knivesOrigin, listing two terms and naming its upstream, which the pass reads to tell the
-// upstream's remote, whose remote-tracking refs hold commits the pass does not read (Guard.knives).
+// knivesOrigin, listing two terms and naming its upstream, whose branches and tags hold commits
+// the pass does not read (Guard.knives).
 const theKnivesRegistry = `[repos.invented-repo]
-upstream = "https://github.com/upstream-org/invented-repo"
+upstream = "` + knivesUpstream + `"
 origin = "https://github.com/invented-org/invented-repo"
 forbidden = ["Bramblecote", "` + knivesTerm + `"]
 `
@@ -90,7 +94,9 @@ func servingKnives(t *testing.T, registries ...knivesServed) (path, listed, ran 
 
 // knivesCommit is a repository of two commits on main: a base the destination holds, and on it a
 // commit that writes files, each path to its content. It answers the fixture's runner, the
-// repository and the two commits.
+// repository and the two commits. The fork at knivesOrigin and the upstream at knivesUpstream are
+// two bare repositories the repository's configuration reaches (destinationAt): the fork holds
+// base on its main, and the upstream holds nothing.
 func knivesCommit(t *testing.T, files map[string]string) (fixture fixturegit.Runner, repo, base, head string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
@@ -116,7 +122,10 @@ func knivesCommit(t *testing.T, files map[string]string) (fixture fixturegit.Run
 			t.Fatal(err)
 		}
 	}
-	return fixture, repo, base, commit("a message of no interest")
+	head = commit("a message of no interest")
+	destinationAt(t, fixture, repo, knivesOrigin, base+":refs/heads/main")
+	destinationAt(t, fixture, repo, knivesUpstream)
+	return fixture, repo, base, head
 }
 
 // knivesPush is the push of head to main, where the destination holds base, to remote at url.

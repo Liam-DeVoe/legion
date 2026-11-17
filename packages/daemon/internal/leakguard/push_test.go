@@ -12,6 +12,30 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
+// reach points url at the bare repository bare in repo's configuration, as
+// url.<file URL of bare>.insteadOf. The guard reads what a push's destination, or a knives
+// entry's upstream, holds with git ls-remote of its URL, run in the repository
+// (Guard.advertised), so a test can name a repository on github.com and have the read reach a
+// bare of its own, never the network.
+func reach(t *testing.T, fixture fixturegit.Runner, repo, url, bare string) {
+	t.Helper()
+	fixture.Run(repo, "git", "config", "url.file://"+bare+".insteadOf", url)
+}
+
+// destinationAt is a bare repository of the test's own that url reaches from repo (reach),
+// holding each of refspecs, which a push from repo by the bare's path writes there as `git push`
+// reads one ("<commit>:refs/heads/main"): a push by path writes no remote-tracking ref of repo's.
+func destinationAt(t *testing.T, fixture fixturegit.Runner, repo, url string, refspecs ...string) string {
+	t.Helper()
+	bare := filepath.Join(t.TempDir(), "destination.git")
+	fixture.Run(repo, fixturegit.InitBare(bare, "main")...)
+	if len(refspecs) > 0 {
+		fixture.Run(repo, append([]string{"git", "push", "--quiet", bare}, refspecs...)...)
+	}
+	reach(t, fixture, repo, url, bare)
+	return bare
+}
+
 // A push's records are read from the commits it would add, out of a real repository: the
 // message, the author identity, each added line of each file, and the ref name are each read,
 // and a commit the destination already holds is not read at all. Every case here pushes one commit
@@ -39,10 +63,12 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 	}
 	write(t, "README.md", "one\n")
 	base := commit(t, "the commit the destination holds")
-	// The push's destination holds the base commit, on a remote-tracking ref of this repository:
-	// that is what makes it a commit no push adds.
+	// The push's destination holds the base commit on its main, which it advertises: that is what
+	// makes it a commit no push adds. It is named on github.com, and this repository's
+	// configuration reaches it at the local bare (reach).
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	reach(t, fixture, repo, theURL, remote)
 	branch := func(t *testing.T, name string) {
 		t.Helper()
 		fixture.Run(repo, "git", "checkout", "--quiet", "-B", name, base)
@@ -56,7 +82,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 		// empty.
 		ref string
 		// newRef is whether the destination holds that ref already: a new one has no sha of its
-		// own to read the push's commits from, so they are read from the remote-tracking refs.
+		// own to read the push's commits from, so they are read from the destination's other refs.
 		newRef bool
 		// want is the report, as a function of the commit's sha, and nil where the push passes.
 		want func(head string) []string
@@ -128,7 +154,7 @@ func TestAPushsRecordsAreReadFromItsCommits(t *testing.T) {
 			err := guard.Push(bound(t), PushRequest{
 				Dir:    repo,
 				Remote: "origin",
-				URL:    "https://github.com/invented-org/invented-repo.git",
+				URL:    theURL,
 				Updates: []Update{{
 					LocalRef:  ref,
 					LocalSHA:  head,
@@ -162,13 +188,14 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	fixture.Run(repo, "git", "add", "-A")
 	fixture.Run(repo, "git", "commit", "--quiet", "-m", "a commit naming "+theHost)
 	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	// The destination holds that commit at that ref already, so the push moves nothing and the
 	// commit's own text is none of its business.
+	destinationAt(t, fixture, repo, theURL, head+":refs/heads/main")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
-		URL:     "https://github.com/invented-org/invented-repo.git",
+		URL:     theURL,
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: head}},
 	})
 	if err != nil {
@@ -193,12 +220,13 @@ func TestARootCommitsAddedLinesAreRead(t *testing.T) {
 	fixture.Run(repo, "git", "commit", "--quiet", "-m", "the first commit")
 	head := fixture.Run(repo, "git", "rev-parse", "HEAD")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-	// The destination holds nothing: a ref the push creates, in a repository with no remote
-	// whose tracking refs could say otherwise.
+	// The destination holds nothing: a ref the push creates, in a repository with no branch and
+	// no tag that could say otherwise.
+	destinationAt(t, fixture, repo, theURL)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
-		URL:     "https://github.com/invented-org/invented-repo.git",
+		URL:     theURL,
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
 	})
 	want := []string{"README.md: " + theClass}
@@ -245,11 +273,12 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	if parents := fixture.Run(repo, "git", "rev-list", "--parents", "-n", "1", head); len(strings.Fields(parents)) != 3 {
 		t.Fatalf("the fixture's head is %q, want a commit of two parents", parents)
 	}
+	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
 	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
 	err := guard.Push(bound(t), PushRequest{
 		Dir:     repo,
 		Remote:  "origin",
-		URL:     "https://github.com/invented-org/invented-repo.git",
+		URL:     theURL,
 		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
 	})
 	want := []string{"resolution.md: " + theClass}
@@ -264,13 +293,14 @@ const octopusParents = 52
 
 // octopusRepo is the fixture of the octopus merge tests: a repository whose base, which the
 // destination holds, has one file, shared.md, and octopusParents parents on that base, each of
-// which adds a line of its own to shared.md, parent 17's being line17. The destination holds every
-// parent, through a remote-tracking ref, so a merge of them is the whole of what a push of it
-// adds. It answers the repository, the base, every, shared.md as it holds every parent's line,
-// which is what each merge's shared file starts from, and octopus, which writes a merge of every
-// parent whose shared.md is as shared has it, and whose resolution.md is as added has it, where
-// added is not empty: a file no parent has. A merge's commit is written with commit-tree over a
-// tree of the fixture's own, so no octopus strategy resolves 52 heads.
+// which adds a line of its own to shared.md, parent 17's being line17. The destination, which
+// theURL reaches (reach), holds every parent at a branch of its own, so a merge of them is the
+// whole of what a push of it adds. It answers the repository, the base, every, shared.md as it
+// holds every parent's line, which is what each merge's shared file starts from, and octopus,
+// which writes a merge of every parent whose shared.md is as shared has it, and whose
+// resolution.md is as added has it, where added is not empty: a file no parent has. A merge's
+// commit is written with commit-tree over a tree of the fixture's own, so no octopus strategy
+// resolves 52 heads.
 func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus func(shared, added string) string) {
 	t.Helper()
 	home, root := t.TempDir(), t.TempDir()
@@ -313,6 +343,7 @@ func octopusRepo(t *testing.T, line17 string) (repo, base, every string, octopus
 	}
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, push...)
+	reach(t, fixture, repo, theURL, remote)
 	octopus = func(shared, added string) string {
 		t.Helper()
 		write("shared.md", shared)
@@ -368,7 +399,7 @@ func TestAnOctopusMergeIsReadFromItsFiles(t *testing.T) {
 			err := guard.Push(bound(t), PushRequest{
 				Dir:     repo,
 				Remote:  "origin",
-				URL:     "https://github.com/invented-org/invented-repo.git",
+				URL:     theURL,
 				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: tc.head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
 			})
 			if tc.want == nil {
@@ -462,12 +493,12 @@ func TestAFilesRecordsCarryItsPathAndLineNumber(t *testing.T) {
 }
 
 // A forward merge, the default branch merged onto an older tip of a branch the destination
-// holds, reads no commit the repository's remote-tracking refs hold. The default branch's commit
-// here adds a line the rules refuse, and origin/main holds it: it was fetched from the
-// destination, so the push of the merge does not publish it, whichever ref the push moves. A
-// commit that adds the same line on top of the merge is on no remote-tracking ref, so it is read
-// and refused, and it is the whole of the report.
-func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
+// holds, reads no commit the destination's branches reach. The default branch's commit here adds
+// a line the rules refuse, and the destination's main holds it, so the push of the merge does not
+// publish it, whichever ref the push moves. A commit that adds the same line on top of the merge
+// is on no branch of the destination, so it is read and refused, and it is the whole of the
+// report.
+func TestAForwardMergeReadsNoCommitTheDestinationHolds(t *testing.T) {
 	home, root := t.TempDir(), t.TempDir()
 	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
 	fixture := fixturegit.Isolated(t, home)
@@ -493,10 +524,11 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	fixture.Run(repo, "git", "checkout", "--quiet", "main")
 	write("main.md", "the runner answers at "+theHost+"\n")
 	commit("a commit of the default branch")
-	// The destination holds both branches, and so does this repository's origin/: origin/work
-	// is the old tip the push moves, and origin/main holds the default branch's commit.
+	// The destination holds both branches: its work is the old tip the push moves, and its main
+	// holds the default branch's commit.
 	fixture.Run(repo, "git", "remote", "add", "origin", remote)
 	fixture.Run(repo, "git", "push", "--quiet", "origin", "main", "work")
+	reach(t, fixture, repo, theURL, remote)
 	fixture.Run(repo, "git", "checkout", "--quiet", "work")
 	fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "-m", "merge main into work", "main")
 	merge := fixture.Run(repo, "git", "rev-parse", "HEAD")
@@ -504,7 +536,7 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 		t.Fatalf("the fixture's merge is %q, want a commit of two parents", parents)
 	}
 	write("copy.md", "the runner answers at "+theHost+"\n")
-	onTop := commit("a commit no remote-tracking ref holds")
+	onTop := commit("a commit the destination does not hold")
 
 	for _, tc := range []struct {
 		name string
@@ -524,7 +556,7 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 			err := guard.Push(bound(t), PushRequest{
 				Dir:     repo,
 				Remote:  "origin",
-				URL:     "https://github.com/invented-org/invented-repo.git",
+				URL:     theURL,
 				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: tc.head, RemoteRef: "refs/heads/work", RemoteSHA: tip}},
 			})
 			if tc.want == nil {
@@ -540,83 +572,104 @@ func TestAForwardMergeReadsNoCommitARemoteTrackingRefHolds(t *testing.T) {
 	}
 }
 
-// A remote named after the pushed remote and a slash holds no commit of the pushed remote's: git
-// writes the refs of a remote named origin/rehearsal under refs/remotes/origin/rehearsal/, inside
-// origin's own refs/remotes/origin/, but a commit pushed first to such a local bare remote, as a
-// cut is rehearsed before the real push, is still one a push to origin publishes. The commit here
-// adds a line the rules refuse, and the rehearsal's remote-tracking ref, which a fetch wrote, is
-// the one ref that holds it; origin's own ref is at the commit the destination holds. A push to
-// the rehearsal's remote itself still reads none of what that remote's own ref holds.
-func TestARemoteNamedAfterThePushedRemoteAndASlashHoldsNoCommitForTheRules(t *testing.T) {
-	home, root := t.TempDir(), t.TempDir()
-	remote, rehearsal, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "rehearsal.git"), filepath.Join(root, "repo")
-	fixture := fixturegit.Isolated(t, home)
-	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
-	fixture.Run(root, fixturegit.InitBare(rehearsal, "main")...)
-	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
-	write := func(content string) {
-		t.Helper()
-		if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(content), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(message string) string {
-		t.Helper()
-		fixture.Run(repo, "git", "add", "-A")
-		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
-		return fixture.Run(repo, "git", "rev-parse", "HEAD")
-	}
-	write("one\n")
-	base := commit("the commit the destination holds")
-	fixture.Run(repo, "git", "remote", "add", "origin", remote)
-	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
-	write("one\nthe runner answers at " + theHost + "\n")
-	head := commit("a message of no interest")
-	// The commit goes to the rehearsal by its path, which writes no ref of this repository, and
-	// comes back by a fetch of the remote named origin/rehearsal, which writes its ref.
-	fixture.Run(repo, "git", "push", "--quiet", rehearsal, "HEAD:refs/heads/rehearsal")
-	fixture.Run(repo, "git", "remote", "add", "origin/rehearsal", rehearsal)
-	fixture.Run(repo, "git", "fetch", "--quiet", "origin/rehearsal")
-	if held := fixture.Run(repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/"); held != "refs/remotes/origin/main "+base+"\nrefs/remotes/origin/rehearsal/rehearsal "+head {
-		t.Fatalf("the fixture's remote-tracking refs are %q, want origin/main at the base and origin/rehearsal/rehearsal at the commit", held)
-	}
-
+// A commit a rehearsal holds is still one the real push publishes. Before the real push of a
+// release branch, a role rehearses it on a local bare repository: through a remote of its own, or
+// by pointing the pushed remote's push URL at the bare for one run. Either way git writes a
+// remote-tracking ref under the pushed remote's own refs/remotes/origin/ — for a remote named
+// origin/rehearsal at refs/remotes/origin/rehearsal/*, and for origin's own push URL at
+// refs/remotes/origin/* — and that ref says nothing of what the destination holds. The commit
+// here adds a line the rules refuse, and the destination, whose main is at the commit before it,
+// does not hold it, so the push to origin reads it and is refused. A push to the rehearsal itself
+// reads none of what the rehearsal holds.
+func TestACommitARehearsalHoldsIsReadAtThePushToTheDestination(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		remote string
-		// remoteSHA is the commit the destination holds at refs/heads/main.
-		remoteSHA string
-		// want is the report, and nil where the push passes.
-		want []string
+		name string
+		// rehearse pushes HEAD to rehearsal's refs/heads/rehearsal, and answers the remote that
+		// push named.
+		rehearse func(run func(string, ...string) string, repo, rehearsal string) string
+		// tracked is the remote-tracking ref the rehearsal's push wrote.
+		tracked string
 	}{
 		{
-			name:      "the push to origin",
-			remote:    "origin",
-			remoteSHA: base,
-			want:      []string{"README.md: " + theClass},
+			// git 2.56 refuses `git remote add` of a name that is another remote's and a slash
+			// ("is a subset of existing remote"); a configuration written by hand still holds one.
+			name: "a remote named origin/rehearsal",
+			rehearse: func(run func(string, ...string) string, repo, rehearsal string) string {
+				run(repo, "git", "config", "remote.origin/rehearsal.url", rehearsal)
+				run(repo, "git", "config", "remote.origin/rehearsal.fetch", "+refs/heads/*:refs/remotes/origin/rehearsal/*")
+				run(repo, "git", "push", "--quiet", "origin/rehearsal", "HEAD:refs/heads/rehearsal")
+				return "origin/rehearsal"
+			},
+			tracked: "refs/remotes/origin/rehearsal/rehearsal",
 		},
 		{
-			name:      "the push to the rehearsal's own remote",
-			remote:    "origin/rehearsal",
-			remoteSHA: noSHA,
+			name: "origin's push URL pointed at the rehearsal for one push",
+			rehearse: func(run func(string, ...string) string, repo, rehearsal string) string {
+				run(repo, "git", "remote", "set-url", "--push", "origin", rehearsal)
+				run(repo, "git", "push", "--quiet", "origin", "HEAD:refs/heads/rehearsal")
+				run(repo, "git", "config", "--unset", "remote.origin.pushurl")
+				return "origin"
+			},
+			tracked: "refs/remotes/origin/rehearsal",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
-			err := guard.Push(bound(t), PushRequest{
-				Dir:     repo,
-				Remote:  tc.remote,
-				URL:     "https://github.com/invented-org/invented-repo.git",
-				Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: tc.remoteSHA}},
-			})
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("the push of a commit the pushed remote's own ref holds: %v", err)
+			home, root := t.TempDir(), t.TempDir()
+			remote, rehearsal, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "rehearsal.git"), filepath.Join(root, "repo")
+			fixture := fixturegit.Isolated(t, home)
+			fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+			fixture.Run(root, fixturegit.InitBare(rehearsal, "main")...)
+			fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+			write := func(content string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte(content), 0o600); err != nil {
+					t.Fatal(err)
 				}
-				return
 			}
-			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
-				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			commit := func(message string) string {
+				t.Helper()
+				fixture.Run(repo, "git", "add", "-A")
+				fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+				return fixture.Run(repo, "git", "rev-parse", "HEAD")
+			}
+			write("one\n")
+			base := commit("the commit the destination holds")
+			fixture.Run(repo, "git", "remote", "add", "origin", remote)
+			fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+			reach(t, fixture, repo, theURL, remote)
+			write("one\nthe runner answers at " + theHost + "\n")
+			head := commit("a message of no interest")
+			rehearsed := tc.rehearse(fixture.Run, repo, rehearsal)
+			if held := fixture.Run(repo, "git", "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/"); held != "refs/remotes/origin/main "+base+"\n"+tc.tracked+" "+head {
+				t.Fatalf("the fixture's remote-tracking refs are %q, want origin/main at the base and %s at the commit", held, tc.tracked)
+			}
+			for _, push := range []struct {
+				name string
+				// remote and url are what git hands the hook; remoteSHA is the commit the push's
+				// destination holds at refs/heads/main.
+				remote, url, remoteSHA string
+				// want is the report, and nil where the push passes.
+				want []string
+			}{
+				{name: "the push to origin", remote: "origin", url: theURL, remoteSHA: base, want: []string{"README.md: " + theClass}},
+				{name: "the push to the rehearsal", remote: rehearsed, url: rehearsal, remoteSHA: noSHA},
+			} {
+				guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+				err := guard.Push(bound(t), PushRequest{
+					Dir:     repo,
+					Remote:  push.remote,
+					URL:     push.url,
+					Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: push.remoteSHA}},
+				})
+				if push.want == nil {
+					if err != nil {
+						t.Errorf("%s, of a commit the rehearsal holds: %v", push.name, err)
+					}
+					continue
+				}
+				if refused := refusal(t, err); !slices.Equal(refused.Lines, push.want) {
+					t.Errorf("%s: the report is %q, want %q", push.name, refused.Lines, push.want)
+				}
 			}
 		})
 	}

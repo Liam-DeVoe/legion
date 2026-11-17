@@ -57,10 +57,11 @@ func (r *Refusal) Error() string {
 
 // SetupFailure is a write refused because a check could not be made to run: no shared check
 // resolved, the shared check exited 2 or some status it does not document, the rule engine failed,
-// a destination's visibility could not be read, or a push's knives registries or remote URLs could
-// not be read. It refuses the write exactly as a *Refusal does — a check that did not run has
-// cleared nothing — and says so in the shared check's own words, so that a person reading a log
-// can tell a broken pod from a write that names something private.
+// a destination's visibility could not be read, or a push's knives registries, remote URLs, or the
+// refs of its destination or an upstream could not be read. It refuses the write exactly as a
+// *Refusal does — a check that did not run has cleared nothing — and says so in the shared
+// check's own words, so that a person reading a log can tell a broken pod from a write that names
+// something private.
 type SetupFailure struct {
 	// What is the write, in the entry point's words, as a Refusal's is.
 	What string

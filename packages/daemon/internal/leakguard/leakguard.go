@@ -77,12 +77,12 @@ type Options struct {
 	// nothing; `legion leak-check pre-push` writes each line to standard error, which git shows.
 	Notice func(string)
 	// Env is the environment the guard's children start from: the shared check, the visibility
-	// reads, the git commands a push's records and remote URLs are read with, and the gh reads of
-	// the knives registries. It is also where the guard reads KnivesRegistriesVar. Nil means this
-	// process's own (os.Environ()). Every child keeps all of it but the read with no credential
-	// (Guard.lsRemote), which keeps only the names lsRemoteInherits allows. The guard adds to it
-	// the names that make a credential prompt fail closed (promptsNothing), and each child's own
-	// names on top of those.
+	// reads, the git commands a push's records, remote URLs and the refs of its destination and
+	// an upstream are read with, and the gh reads of the knives registries. It is also where the
+	// guard reads KnivesRegistriesVar. Nil means this process's own (os.Environ()). Every child
+	// keeps all of it but the read with no credential (Guard.lsRemote), which keeps only the names
+	// lsRemoteInherits allows. The guard adds to it the names that make a credential prompt fail
+	// closed (promptsNothing), and each child's own names on top of those.
 	Env []string
 }
 
@@ -161,7 +161,7 @@ type Record struct {
 	Line int
 	// Commit is the full sha of the pushed commit a record is of (pushRecords), and "" for a
 	// record of anything else: a ref name, a gh call, a text. The knives pass reads it to leave
-	// out a commit a remote-tracking ref holds (Guard.knives).
+	// out a commit the destination's or an upstream's refs reach (Guard.knives).
 	Commit string
 }
 

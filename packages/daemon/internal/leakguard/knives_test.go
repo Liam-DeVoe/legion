@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -107,7 +108,7 @@ func TestAKnivesRegistryThatCannotBeReadRefusesThePush(t *testing.T) {
 	noRef.Ref = ""
 	noOwner := knivesOverlayRow
 	noOwner.Repo = "private-registry"
-	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
+	fixture, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
 
 	for _, tc := range []struct {
 		name string
@@ -184,9 +185,12 @@ func TestAKnivesRegistryThatCannotBeReadRefusesThePush(t *testing.T) {
 				listed = tc.listed
 			}
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
-			// The URL git hands the hook is a local path and the repository has no remote named
-			// origin, so nothing names the destination: the registries are read all the same.
-			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", filepath.Join(t.TempDir(), "remote.git")))
+			// The URL git hands the hook is a local path, an empty bare repository, and the
+			// repository has no remote named origin, so nothing names the destination: the
+			// registries are read all the same.
+			bare := filepath.Join(t.TempDir(), "remote.git")
+			fixture.Run(repo, fixturegit.InitBare(bare, "main")...)
+			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", bare))
 			setupFailure(t, err)
 			if err.Error() != tc.want {
 				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
@@ -202,9 +206,10 @@ func TestAKnivesRegistryThatCannotBeReadRefusesThePush(t *testing.T) {
 
 // The destination is named by what git hands the hook and by the remote's own configuration, so
 // an entry applies to a push whose URL git rewrote to a local bare path (pushInsteadOf) where the
-// remote's URL names the entry's origin, and to a push to a URL typed as the remote. The URL the
-// remote pushes to is its push URL where it has one, and a push whose remote and URLs name no
-// entry's origin or release passes, although a line holds the term.
+// remote's URL names the entry's origin, to a push to a URL typed as the remote, and to a push
+// whose push URL is a local bare path where the remote's URL names the entry's origin. The URL
+// the remote pushes to is its push URL where that names a GitHub repository, and a push whose
+// remote and URLs name no entry's origin or release passes, although a line holds the term.
 func TestTheKnivesPassNamesTheDestinationByTheRemoteAsWell(t *testing.T) {
 	another := "https://github.com/invented-org/another-repo.git"
 	for _, tc := range []struct {
@@ -237,6 +242,13 @@ func TestTheKnivesPassNamesTheDestinationByTheRemoteAsWell(t *testing.T) {
 			url:    another,
 		},
 		{
+			name:    "the remote's URL names the entry's origin, and its push URL is a local bare path",
+			config:  [][2]string{{"remote.origin.url", knivesOrigin}, {"remote.origin.pushurl", "<bare>"}},
+			remote:  "origin",
+			url:     "<bare>",
+			refused: true,
+		},
+		{
 			name:   "git hands a local bare path, and the remote's URL names another repository",
 			config: [][2]string{{"remote.origin.url", another}, {"url.<bare>.pushInsteadOf", another}},
 			remote: "origin",
@@ -246,14 +258,20 @@ func TestTheKnivesPassNamesTheDestinationByTheRemoteAsWell(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
 			bare := filepath.Join(t.TempDir(), "remote.git")
+			fixture.Run(repo, fixturegit.InitBare(bare, "main")...)
 			for _, setting := range tc.config {
-				fixture.Run(repo, "git", "config", strings.ReplaceAll(setting[0], "<bare>", bare), setting[1])
+				fixture.Run(repo, "git", "config", strings.ReplaceAll(setting[0], "<bare>", bare), strings.ReplaceAll(setting[1], "<bare>", bare))
 			}
 			url := strings.ReplaceAll(tc.url, "<bare>", bare)
 			if tc.remote == "origin" {
 				if hands := fixture.Run(repo, "git", "remote", "get-url", "--push", "origin"); hands != url {
 					t.Fatalf("git pushes origin to %q, want %q", hands, url)
 				}
+			}
+			// The bare stands in for a URL on github.com that git hands the hook, once git's own
+			// answer is checked.
+			if url != bare {
+				reach(t, fixture, repo, url, bare)
 			}
 			path, listed, _ := servingKnives(t, theKnivesRow)
 			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
@@ -321,9 +339,10 @@ func TestAnAddedPathThatHoldsAKnivesTermIsRefusedMasked(t *testing.T) {
 // for the knives pass as for the rules (TestAnOctopusMergeIsReadFromItsFiles, whose fixture,
 // octopusRepo, this is): a line of the merge's own resolution that holds a term is refused at its
 // number in the merge's file, and a line that holds one in a parent's file is text the
-// destination holds already, since it holds every parent.
+// destination holds already, since it holds every parent. The entry's upstream holds nothing.
 func TestAnOctopusMergesOwnLinesAreReadForKnivesTerms(t *testing.T) {
 	repo, base, every, octopus := octopusRepo(t, "the build of parent 17 is QUILLWORTHY")
+	destinationAt(t, fixturegit.Isolated(t, t.TempDir()), repo, knivesUpstream)
 
 	for _, tc := range []struct {
 		name string
@@ -402,14 +421,14 @@ func TestAKnivesTermInARefNameOrAMessageIsNotRead(t *testing.T) {
 	}
 }
 
-// A member's commit on top of a commit the upstream remote's tracking ref holds is read for its
-// own lines alone: the upstream commit adds a line holding a term as well, and the report names
-// only the member's. The refusal says, after its report, that a commit a remote-tracking ref holds
-// is not read and how to fetch the upstream, and it names no term.
+// A member's commit on top of a commit the upstream's main holds is read for its own lines alone:
+// the upstream commit adds a line holding a term as well, and the report names only the member's.
+// The refusal says, after its report, that a commit the destination's or the upstream's refs reach
+// is not read, and it names no term. It says to fetch nothing: a commit an upstream's ref reaches
+// is held whether or not the clone fetched that ref, wherever the clone has the commit it is at.
 func TestAMemberCommitOnAnUpstreamCommitIsRefusedForItsOwnLinesAlone(t *testing.T) {
 	fixture, repo, base, upstream := knivesCommit(t, map[string]string{"upstream.md": "the QUILLWORTHY build\n"})
-	fixture.Run(repo, "git", "remote", "add", "upstream", "https://github.com/upstream-org/invented-repo")
-	fixture.Run(repo, "git", "update-ref", "refs/remotes/upstream/main", upstream)
+	fixture.Run(repo, "git", "push", "--quiet", knivesUpstream, upstream+":refs/heads/main")
 	if err := os.WriteFile(filepath.Join(repo, "member.md"), []byte("a line of ordinary prose\nthe member's bramblecote note\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -424,8 +443,8 @@ func TestAMemberCommitOnAnUpstreamCommitIsRefusedForItsOwnLinesAlone(t *testing.
 	if !slices.Equal(refused.Lines, want) {
 		t.Errorf("the report is %q, want %q", refused.Lines, want)
 	}
-	if !strings.HasSuffix(err.Error(), "\n  "+want[0]+"\n"+knivesAdvice) || !strings.Contains(knivesAdvice, "git fetch upstream") {
-		t.Errorf("the refusal does not end with its report and then the advice to fetch the upstream:\n%v", err)
+	if !strings.HasSuffix(err.Error(), "\n  "+want[0]+"\n"+knivesAdvice) || strings.Contains(knivesAdvice, "fetch") {
+		t.Errorf("the refusal does not end with its report and then the advice, which names no fetch:\n%v", err)
 	}
 }
 
@@ -570,7 +589,8 @@ func TestAFailedKnivesReadRefusesAPushTheKeptListNames(t *testing.T) {
 // names the row by its number and the kept list by its time, and no repository, path, ref or
 // term. The commit holds a term of the entry the kept list has for another repository.
 func TestAFailedKnivesReadLetsAPushTheKeptListDoesNotNameGoOn(t *testing.T) {
-	_, repo, base, head := knivesCommit(t, map[string]string{"notes/plans.md": "the QUILLWORTHY build\n"})
+	fixture, repo, base, head := knivesCommit(t, map[string]string{"notes/plans.md": "the QUILLWORTHY build\n"})
+	destinationAt(t, fixture, repo, "https://github.com/invented-org/another-repo.git", base+":refs/heads/main")
 	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
 	failing, _, failed := knivesFailing(t)
 	clock := &visibilityTestClock{now: knivesReadAt}
@@ -606,7 +626,8 @@ func TestAFailedKnivesReadLetsAPushTheKeptListDoesNotNameGoOn(t *testing.T) {
 // every registry again, and where that read fails the push is refused, although no entry of the
 // kept list names its destination.
 func TestAKeptKnivesListInADirectoryOthersCanReadIsNotUsed(t *testing.T) {
-	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
+	fixture, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
+	destinationAt(t, fixture, repo, "https://github.com/invented-org/another-repo.git", base+":refs/heads/main")
 	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
 	failing, _, failed := knivesFailing(t)
 	clock := &visibilityTestClock{now: knivesReadAt}

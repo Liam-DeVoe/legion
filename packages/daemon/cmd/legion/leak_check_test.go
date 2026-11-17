@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -40,16 +41,19 @@ func noSharedCheck(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 }
 
-// aPushFixture is a repository holding one commit whose message is message, and the line git
-// hands a pre-push hook for a push of it to a remote that holds the ref yet.
-func aPushFixture(t *testing.T, message string) (dir, line string) {
+// aPushFixture is a repository holding one commit whose message is message, the URL of the
+// remote it is pushed to, and the line git hands a pre-push hook for a push of it to a remote that
+// does not hold the ref yet. The remote is an empty local bare repository, which the guard reads
+// what it holds from with git ls-remote.
+func aPushFixture(t *testing.T, message string) (dir, url, line string) {
 	t.Helper()
-	dir = t.TempDir()
+	dir, url = t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
 	fixture := fixturegit.Isolated(t, t.TempDir())
 	fixture.Run(dir, fixturegit.InitWorkTree("", "main")...)
+	fixture.Run(dir, fixturegit.InitBare(url, "main")...)
 	fixture.Run(dir, "git", "commit", "--allow-empty", "--quiet", "-m", message)
 	sha := fixture.Run(dir, "git", "rev-parse", "HEAD")
-	return dir, "refs/heads/main " + sha + " refs/heads/main " + noSHA + "\n"
+	return dir, url, "refs/heads/main " + sha + " refs/heads/main " + noSHA + "\n"
 }
 
 // leakCheck runs the command as git's hook and a pod's scripts run it: stdin is what they pipe
@@ -129,7 +133,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			dir, line := aPushFixture(t, tc.message)
+			dir, url, line := aPushFixture(t, tc.message)
 			// git runs its hook in the repository the push is made from, and that working
 			// directory is where the command reads the push's commits from.
 			t.Chdir(dir)
@@ -140,7 +144,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			}
 			// A local path names no github.com repository, so the guard reads no visibility and
 			// this test starts no gh.
-			code, printed := leakCheck(t, line, "pre-push", "origin", dir+".git")
+			code, printed := leakCheck(t, line, "pre-push", "origin", url)
 			if code != tc.code {
 				t.Errorf("exited %d, want %d: %s", code, tc.code, printed)
 			}

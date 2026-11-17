@@ -81,12 +81,22 @@ It carries:
   `legion leak-check` is the shell door to `packages/daemon/internal/leakguard`, and the engine the rules run through, gitleaks, is linked into the `legion` binary as a library with this repository's rule file (`private-names.toml`) embedded beside it, so no pod can meet an absent engine or an absent rule file.
   Where `leak_guard.knives_registries` in `legion.yaml` names a knives registry ([Operator configuration](#operator-configuration)), a push to a repository GitHub reports public has a third pass, after the shared check and the rule file (`Guard.knives`, `internal/leakguard/knives.go`).
   It reads each row's file with the role's own gh, the first row as the registry and each later row as an overlay that adds forbidden terms to the registry's entries, and it refuses the push when a line or a path a pushed commit adds holds a forbidden term of an entry whose origin or release names the push's destination, matched as `knives audit` matches one (case aside, as a substring); a ref name, an identity and a message are not read, as knives reads none.
-  It skips a commit a ref holds of a remote whose URL names the destination or the entry's upstream.
+  It also skips a commit that a branch or a tag of the entry's upstream reaches, read only for a push it would otherwise refuse (below).
   The role keeps the list of its last good read for 10 minutes and reads no file meanwhile, in a file under `$XDG_STATE_HOME/legion-gh/knives/` only its user can read, since it holds the terms.
   A file it cannot read, or one that is not knives' TOML, refuses as a setup error a push whose destination the kept list names, whatever the list's age, and lets any other go on with a notice on standard error; with no good read kept, it refuses every push the pass runs on.
   The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
-  The second and third passes read a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
-  a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
+  The second and third passes read a push alike:
+
+  - a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
+    a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`);
+
+  - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/push.go`).
+    Each push that adds a commit to a destination the guard scans costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
+    The knives pass reads the upstream's refs the same way, with the same failure, naming the upstream's URL.
+    A branch or a tag at a commit the clone does not have reaches nothing, so an upstream's line is read where the clone lacks the commit the upstream's ref is at.
+    No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
+    A remote whose push URL names no GitHub repository is matched by its URL as well, so the knives pass reads such a rehearsal as a push to the fork.
+
   With no row the push has no third pass, and the capability report's `knives-push-gate` row is open ([The deployment's capability report](#the-deployments-capability-report)).
   The build's last step asserts that each wrapper is first on `PATH` with the real binary behind it and that the hook is root's and executable;
 

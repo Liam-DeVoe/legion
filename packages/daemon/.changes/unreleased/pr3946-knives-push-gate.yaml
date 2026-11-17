@@ -9,10 +9,15 @@ body: |-
   file in that time; a read that fails refuses a push whose destination the kept list names and
   lets any other through with a notice on standard error, and with no good read kept every push
   to a public repository is refused.
-  The gate skips a commit only where a remote-tracking ref of a remote whose URL names the
-  destination or the entry's upstream holds it, so a clone that has not fetched its upstream refuses
-  upstream's lines, and the refusal says to fetch it and push again. The refs of a remote named
-  `<name>/<more>`, which git writes under `<name>`'s own, hold nothing for `<name>`.
+  The gate skips a commit only where a branch or a tag of the destination or of the entry's
+  upstream reaches it, as one `git ls-remote` of each reads them at the push, and where the clone
+  has the commit that ref is at; it reads the upstream only for a push it would otherwise refuse.
+  No remote-tracking ref of the clone counts, since git moves those for a push to whatever URL a
+  remote pushes to at the time, a local bare one a role points the fork's remote at for one run
+  included. Each push that adds a commit costs one `git ls-remote` of its destination, and a read
+  that fails refuses the push. A remote whose push URL names no GitHub repository is matched by
+  its URL as well, so a push rehearsed on a local bare push URL of the fork's remote is scanned
+  too.
   The daemon tells every role of an issue pod and the controller it launches the rows as
   `LEGION_KNIVES_REGISTRIES`; a tmux pane is told nothing, since its push runs no leak guard. The
   new `knives-push-gate` capability row is open while no registry is named, and under tmux, which

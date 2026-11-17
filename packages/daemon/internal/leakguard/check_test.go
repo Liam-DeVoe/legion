@@ -273,12 +273,12 @@ func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
-	// sleeps is the PATH entry of a directory whose one program is name, which sleeps far past
-	// the bound, in front of the test's own PATH: the guard's lookup finds it before the real
-	// one, and the check's bash still finds everything else.
-	sleeps := func(t *testing.T, name string) string {
+	// sleeps is the PATH entry of a directory whose one program is name, which runs body first
+	// and then sleeps far past the bound, in front of the test's own PATH: the guard's lookup
+	// finds it before the real one, and the check's bash still finds everything else.
+	sleeps := func(t *testing.T, name, body string) string {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+body+"sleep 30\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
@@ -286,7 +286,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 	t.Run("the gh visibility read", func(t *testing.T) {
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   append(fixtureenv.Isolated(t.TempDir()), sleeps(t, "gh")),
+			Env:   append(fixtureenv.Isolated(t.TempDir()), sleeps(t, "gh", "")),
 		})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -295,20 +295,40 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		answeredWithin10s(t, started)
 		says(t, setupFailure(t, err), "could not be read: gh ran 2 s and was stopped by its bound of 2 s")
 	})
-	t.Run("a git read of the push's records", func(t *testing.T) {
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, sleeps(t, "git"))
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		started := time.Now()
-		// A local commit and a ref the destination does not hold yet: the guard asks git for the
-		// commits the push would add, which is the read the stand-in git never answers.
-		err := guard.Push(ctx, PushRequest{
-			Dir:     t.TempDir(),
-			Remote:  "origin",
-			URL:     "https://github.com/invented-org/invented-repo.git",
-			Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	// A local commit and a ref the destination does not hold yet: the guard reads the
+	// destination's refs, and then asks git for the commits the push would add.
+	push := PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: strings.Repeat("1", 40), RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	}
+	for _, tc := range []struct {
+		name string
+		// body is what the stand-in git runs before its sleep.
+		body string
+		want string
+	}{
+		{
+			name: "the git read of the destination's refs",
+			want: "the destination's refs could not be read: git ls-remote " + push.URL + ": git ran 2 s and was stopped by its bound of 2 s",
+		},
+		{
+			// The stand-in answers the read of the destination's refs with none, so the read it
+			// never answers is the one of the push's commits.
+			name: "a git read of the push's records",
+			body: "case \" $* \" in *\" ls-remote \"*) exit 0 ;; esac\n",
+			want: "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, sleeps(t, "git", tc.body))
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			started := time.Now()
+			err := guard.Push(ctx, push)
+			answeredWithin10s(t, started)
+			says(t, setupFailure(t, err), tc.want)
 		})
-		answeredWithin10s(t, started)
-		says(t, setupFailure(t, err), "the push's commits could not be read: git ran 2 s and was stopped by its bound of 2 s")
-	})
+	}
 }
