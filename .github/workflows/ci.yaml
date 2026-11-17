@@ -676,6 +676,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -1956,6 +1957,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/cireconcile/*'
               - 'packages/envoy/internal/dispatch/config/*'
               - 'packages/envoy/internal/dispatch/dashboard/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -3172,6 +3174,7 @@ jobs:
               # The API's CI-reconcile passes route reads cireconcile's own record, so the soak's
               # Dispatch server compiles that package too (go list -deps ./cmd/listener).
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/**'
               - 'packages/envoy/internal/dispatch/docs/*'
               - 'packages/envoy/internal/dispatch/docs/crafted/*'
@@ -3675,6 +3678,7 @@ jobs:
               # here, for the reason this filter's header gives: a dependency's testdata is read
               # by that package's own tests, which run in a job of their own.
               - 'packages/envoy/internal/dispatch/cireconcile/*'
+              - 'packages/envoy/internal/dispatch/decisionread/*'
               - 'packages/envoy/internal/dispatch/delivery/*'
               - 'packages/envoy/internal/dispatch/delivery/measures/*'
               # internal/dispatch/api/delivery_measures_test.go:82 and delivery_test.go:714 read
