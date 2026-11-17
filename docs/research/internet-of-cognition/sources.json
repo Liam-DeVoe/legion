@@ -35,8 +35,10 @@
   "python_environment": {
     "exclude_newer": "2026-11-12T07:55:56Z",
     "requirements": "evidence/ioc-venv.in",
+    "compile_input": "evidence/ioc-venv/pyproject.toml",
     "lock": "evidence/ioc-venv.lock",
-    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the index stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes."
+    "torch_links": "https://download.pytorch.org/whl/cpu/torch/",
+    "comment": "The instant every package index read is held to: uv resolved the lock, the mas-lab constraints and the build constraints as the indexes stood then. It is the time of commit 17a8ca1d, which recorded the outputs of the model rows. The lock is compiled from compile_input, which holds the four requirements of requirements and reads torch from the PyTorch CPU index alone and every other package from PyPI; env.sh installs IOC_VENV from the hashed lock with uv pip sync --require-hashes, finding torch's file, the CPU build 2.15.0+cpu, on the page torch_links names, which lists torch's files alone."
   },
   "our_repository": {
     "name": "legion",

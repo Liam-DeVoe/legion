@@ -1,6 +1,10 @@
-# The four packages the replay installs into IOC_VENV, by name and version. evidence/ioc-venv.lock
-# is their resolution, hashed; env.sh installs IOC_VENV from the lock alone.
+# The four packages the replay installs into IOC_VENV, by name and version, torch at the
+# version of its CPU build. evidence/ioc-venv.lock is their resolution, hashed, compiled from
+# evidence/ioc-venv/pyproject.toml, which holds the same four requirements and adds the one
+# thing this file cannot say, torch's only source; env.sh installs IOC_VENV from the lock
+# alone. The build checks the two equal: env.sh's ioc_env_python_pinned holds each package
+# the lock installed to its line here, so a drift between the two fails ioc_env_python_pinned.
 sentence-transformers==6.3.0
-torch==2.15.0
+torch==2.15.0+cpu
 rdflib==7.6.0
 pyshacl==0.40.2

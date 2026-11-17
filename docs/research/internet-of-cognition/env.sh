@@ -532,7 +532,8 @@ ioc_env_records() {
 # cache an earlier run left cannot carry another set:
 # evidence/ioc-venv.in names its four requirements, sentence-transformers, torch and
 # rdflib at the versions similarity/table.md records and pyshacl, which the scope rows
-# run beside rdflib, and evidence/ioc-venv.lock pins all 71 packages with their hashes.
+# run beside rdflib, and evidence/ioc-venv.lock pins all 52 packages with their hashes,
+# torch at 2.15.0+cpu, its CPU build.
 ioc_env_python_pinned() {
     "$IOC_PY" - "$IOC_EVID/ioc-venv.in" <<'PY' >/dev/null 2>&1
 import sys
@@ -547,6 +548,15 @@ for line in open(sys.argv[1]):
 PY
 }
 
+# The page uv pip sync finds torch's file on. The lock holds torch 2.15.0+cpu, which PyPI
+# does not serve: its torch 2.15.0 for linux x86_64 is the CUDA build, whose import made
+# the replay's memory peak, 3.4 GB in one python (evidence/ioc-venv.lock's header). uv pip
+# sync reads no source a lock names, so it is given this page with --find-links rather than
+# the PyTorch index: the page lists torch's files and no other package's, so no other
+# package can come from it, and every package, torch among them, is still checked against
+# the lock's hash. Without it the sync finds no torch==2.15.0+cpu and fails.
+IOC_ENV_TORCH_LINKS="https://download.pytorch.org/whl/cpu/torch/"
+
 ioc_env_python() {
     export IOC_VENV="$IOC_CACHE/venv"
     export IOC_PY="$IOC_VENV/bin/python"
@@ -558,8 +568,8 @@ ioc_env_python() {
         ioc_env_unstamp IOC_VENV
         uv venv --clear --python 3.12 "$IOC_VENV" >&2 ||
             ioc_env_refuse "IOC_PY" "uv venv --clear --python 3.12 $IOC_VENV failed" || return 1
-        uv pip sync --python "$IOC_PY" --require-hashes "$lock" >&2 ||
-            ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes $lock failed" || return 1
+        uv pip sync --python "$IOC_PY" --require-hashes --find-links "$IOC_ENV_TORCH_LINKS" "$lock" >&2 ||
+            ioc_env_refuse "IOC_PY" "uv pip sync --require-hashes --find-links $IOC_ENV_TORCH_LINKS $lock failed" || return 1
     fi
     ioc_env_python_pinned ||
         ioc_env_refuse "IOC_PY" "$IOC_PY does not import the four requirements of evidence/ioc-venv.in at those versions" || return 1

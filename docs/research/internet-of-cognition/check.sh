@@ -1403,13 +1403,13 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               108  runs the next pipeline when this one exits 0
+#   &&                               109  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
-#   |                                384  joins the commands of a pipeline
+#   |                                385  joins the commands of a pipeline
 #   ;                                 48  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
-#   >                                  5  writes the output to a file
-#   2>                                 9  writes the error output to a file
+#   >                                  6  writes the output to a file
+#   2>                                10  writes the error output to a file
 #   2>&1                               5  sends the error output where the output goes
 #   {                                 24  opens a group
 #   }                                 24  closes a group
@@ -1419,16 +1419,16 @@ prepare_env() {
 #   in                                16  comes before a for loop's words
 #   do                                16  comes before a for loop's body
 #   done                              16  closes a for loop
-#   simple command                   569  a command word and its arguments
-#   pipeline                         384  two or more commands joined by |
-#   list                             127  two or more pipelines joined by ;, &&, || or newline
+#   simple command                   570  a command word and its arguments
+#   pipeline                         385  two or more commands joined by |
+#   list                             128  two or more pipelines joined by ;, &&, || or newline
 #   group                             24  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          16  for NAME in words; do list; done
-#   assignment before a command       23  NAME=value, set in that command's environment
+#   assignment before a command       24  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
-#   assigns ACCORD_MODEL_DIR          10  a name the rows assign
+#   assigns ACCORD_MODEL_DIR          11  a name the rows assign
 #   assigns GOFLAGS                    1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
 #   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
@@ -1444,8 +1444,8 @@ prepare_env() {
 #   assigns r                          4  a name the rows assign
 #   program awk                       14  wrapped in a function that records its status
 #   program cat                       26  wrapped in a function that records its status
-#   program cd                        70  wrapped in a function that records its status
-#   program cmp                        1  wrapped in a function that records its status
+#   program cd                        71  wrapped in a function that records its status
+#   program cmp                        2  wrapped in a function that records its status
 #   program cp                         1  wrapped in a function that records its status
 #   program curl                      28  wrapped in a function that records its status
 #   program cut                        5  wrapped in a function that records its status
@@ -1454,7 +1454,7 @@ prepare_env() {
 #   program gh                         2  wrapped in a function that records its status
 #   program git                      313  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     187  wrapped in a function that records its status
+#   program grep                     188  wrapped in a function that records its status
 #   program jq                        43  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
@@ -1472,7 +1472,7 @@ prepare_env() {
 #   program uv                         8  wrapped in a function that records its status
 #   program wc                        65  wrapped in a function that records its status
 #   program xargs                      4  wrapped in a function that records its status
-#   variable $IOC_PY                  32  a program variable, whose shim records its status
+#   variable $IOC_PY                  33  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_CTL           4  a program variable, whose shim records its status
 #   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
@@ -1486,7 +1486,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 385  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 386  a parameter, its name in braces or not
 #   $?                                 6  the status of the last command
 #   $( )                              13  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands
@@ -1876,10 +1876,11 @@ github_budget() {
 # hashed lock and a uv pip sync of one. pipx run, npx, bunx and npm exec take no lock, so a
 # package they would resolve from an index is refused; go run and go install are left to
 # go, which checks each module against go.sum or the checksum database. The locks are
-# evidence/ioc-venv.lock, all 71 packages of IOC_VENV, evidence/tm-constraints.txt, the 24
+# evidence/ioc-venv.lock, all 52 packages of IOC_VENV, evidence/tm-constraints.txt, the 24
 # third-party packages of the mas-lab environments, and evidence/build-constraints.txt,
-# each resolved as the index stood at 2026-11-12T07:55:56Z, the instant sources.json
-# records, and each read by env.sh's ioc_env_lock_py, the one reader of a lock.
+# each resolved at 2026-11-12T07:55:56Z, the instant sources.json records, from PyPI and,
+# for torch alone, the PyTorch CPU index, and each read by env.sh's ioc_env_lock_py, the
+# one reader of a lock.
 #
 # The third guarantee checks the result rather than the command. After every row, the
 # gate runs env.sh's ioc_env_frozen on each environment of IOC_ENV_FROZEN the install

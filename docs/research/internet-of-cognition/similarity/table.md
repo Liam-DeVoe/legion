@@ -45,7 +45,8 @@ A term with more than one cluster is written `flagged` (lines 346 to 350), and a
 The model is `sentence-transformers/all-MiniLM-L6-v2`, the family ACCORD names, at revision `1110a243fdf4706b3f48f1d95db1a4f5529b4d41`.
 Its `model.safetensors` is 90868376 bytes and its sha256 is `53aa51172d142c89d9012cce15ae4d6cc0ca6895895114379cacb4fab128d9db` [s-model-checksum].
 It is fetched under the cache directory `docs/research/internet-of-cognition/env.sh` prepares, never the home directory [s-model-install].
-The run used `sentence-transformers` 6.3.0 on `torch` 2.15.0+cu132 and CPython 3.12.15 [s-model-versions].
+The replay runs `sentence-transformers` 6.3.0 on `torch` 2.15.0+cpu, the CPU build, and CPython 3.12.15 [s-model-versions].
+The transcript `evidence/similarity.txt` was recorded on 2026-11-12 under `torch` 2.15.0+cu132, the CUDA build, and holds the same table the CPU build prints: every score to three decimals and every verdict of the nine pairs [s-model-builds].
 
 Setup, which every recorded command below assumes: `docs/research/internet-of-cognition/env.sh` builds it and exports what the commands read.
 
