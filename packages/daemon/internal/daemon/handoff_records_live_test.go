@@ -979,7 +979,10 @@ func (c *handoffClaimant) complete(req api.HandoffCompleteRequest) (int, api.Fai
 // the daemon's dispatch_url and the CLI's DISPATCH_URL name it.
 type handoffDispatch struct {
 	*scratchDispatch
-	client *http.Client
+	// ctx is the bound every request the driver sends carries: the test binary's own deadline less
+	// the shared wait's margin (testwait.Context), so a Dispatch that never answers fails the
+	// request by name, and one the machine's load slows fails nothing.
+	ctx context.Context
 }
 
 // startHandoffDispatch starts the run's Dispatch server from root's packages/envoy on a database
@@ -996,7 +999,7 @@ func startHandoffDispatch(t *testing.T, root string) *handoffDispatch {
 		t.Cleanup(func() { file.Close() })
 		options.log = file
 	}
-	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), client: &http.Client{Timeout: 10 * time.Second}}
+	return &handoffDispatch{scratchDispatch: startScratchDispatchOn(t, options), ctx: testwait.Context(t)}
 }
 
 // user sends one request as the person handoffRecordsUser and requires want, decoding the answer
@@ -1007,7 +1010,7 @@ func (d *handoffDispatch) user(method, path string, body any, want int, into any
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	request, err := http.NewRequest(method, d.base+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(d.ctx, method, d.base+path, bytes.NewReader(encoded))
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1031,7 +1034,7 @@ func (d *handoffDispatch) agentPost(path string, body any) (int, []byte) {
 	if err != nil {
 		d.t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPost, d.base+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(d.ctx, http.MethodPost, d.base+path, bytes.NewReader(encoded))
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1043,7 +1046,7 @@ func (d *handoffDispatch) agentPost(path string, body any) (int, []byte) {
 // agentGet reads path with the agent's bearer token into into, requiring 200.
 func (d *handoffDispatch) agentGet(path string, into any) {
 	d.t.Helper()
-	request, err := http.NewRequest(http.MethodGet, d.base+path, nil)
+	request, err := http.NewRequestWithContext(d.ctx, http.MethodGet, d.base+path, nil)
 	if err != nil {
 		d.t.Fatal(err)
 	}
@@ -1059,7 +1062,7 @@ func (d *handoffDispatch) agentGet(path string, into any) {
 
 func (d *handoffDispatch) do(request *http.Request) (int, []byte) {
 	d.t.Helper()
-	response, err := d.client.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		d.t.Fatalf("Dispatch %s %s: %v", request.Method, request.URL.Path, err)
 	}

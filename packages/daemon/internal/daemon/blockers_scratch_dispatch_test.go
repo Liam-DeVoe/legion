@@ -1006,10 +1006,6 @@ func blockersGitHub(t *testing.T) string {
 	}})
 }
 
-// scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has
-// its own.
-var scratchDispatchClient = &http.Client{Timeout: 10 * time.Second}
-
 // dispatchCall sends one request to the scratch Dispatch server as the person `smoke` — the
 // trusted identity header the harness starts the server with — and decodes its answer into `into`
 // when that is not nil.
@@ -1023,13 +1019,16 @@ func dispatchCall(t *testing.T, baseURL, method, path string, body, into any) {
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, baseURL+path, reader)
+	// The request carries the test's own bound (testwait.Context), not a span of its own: a
+	// Dispatch the machine's load slows answers late, which fails nothing, and one that never
+	// answers fails the request by name.
+	request, err := http.NewRequestWithContext(testwait.Context(t), method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build %s %s: %v", method, path, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "smoke")
-	response, err := scratchDispatchClient.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}

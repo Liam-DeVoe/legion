@@ -83,13 +83,16 @@ func dispatchAnswerWith(t *testing.T, baseURL, method, path string, body any, cr
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequest(method, baseURL+path, reader)
+	// The request carries the test's own bound (testwait.Context), not a span of its own: a
+	// Dispatch the machine's load slows answers late, which fails nothing, and one that never
+	// answers fails the request by name.
+	request, err := http.NewRequestWithContext(testwait.Context(t), method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("build %s %s: %v", method, path, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
 	credential(request)
-	response, err := scratchDispatchClient.Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}

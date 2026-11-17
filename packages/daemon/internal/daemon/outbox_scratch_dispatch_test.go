@@ -254,14 +254,17 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
 	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
 
+	// Each read carries the test's own bound (testwait.Context): a Dispatch the machine's load
+	// slows answers late, which fails nothing, and one that never answers fails the read by name.
+	bound := testwait.Context(t)
 	holders := func() []dispatch.RoleHolder {
 		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/role-holders", nil)
+		request, err := http.NewRequestWithContext(bound, http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/role-holders", nil)
 		if err != nil {
 			t.Fatalf("build the role-holder read: %v", err)
 		}
 		request.Header.Set("Authorization", "Bearer "+token)
-		response, err := pollClient.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("read the role holders of %s: %v", issue, err)
 		}
@@ -334,12 +337,14 @@ func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
 // event carries, and whether Dispatch says that body is only the first part of the message's.
 func messageCreatedEvent(t *testing.T, baseURL, token, issue string) (string, bool) {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/events?limit=200", nil)
+	// The read carries the test's own bound (testwait.Context), not a span of its own: a Dispatch
+	// the machine's load slows answers late, which fails nothing.
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/events?limit=200", nil)
 	if err != nil {
 		t.Fatalf("create the events request: %v", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET the issue's events: %v", err)
 	}
@@ -585,20 +590,22 @@ func (d *scratchDispatch) stop() {
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {
 	t.Helper()
-	client := &http.Client{Timeout: 10 * time.Second}
+	// Each write carries the test's own bound (testwait.Context), not a span of its own: a
+	// Dispatch the machine's load slows answers late, which fails nothing.
+	bound := testwait.Context(t)
 	request := func(path string, body any) *http.Response {
 		t.Helper()
 		encoded, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encode %s: %v", path, err)
 		}
-		req, err := http.NewRequest(http.MethodPost, baseURL+path, bytes.NewReader(encoded))
+		req, err := http.NewRequestWithContext(bound, http.MethodPost, baseURL+path, bytes.NewReader(encoded))
 		if err != nil {
 			t.Fatalf("create %s request: %v", path, err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Dispatch-User", "smoke")
-		response, err := client.Do(req)
+		response, err := http.DefaultClient.Do(req)
 		if err != nil {
 			t.Fatalf("POST %s: %v", path, err)
 		}
