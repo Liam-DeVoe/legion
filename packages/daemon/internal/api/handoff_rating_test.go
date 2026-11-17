@@ -183,6 +183,26 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 	}
 }
 
+// A planReason that holds a NUL character (a JSON body carries it as \u0000) is a reason nothing
+// can store: PostgreSQL's jsonb, where the daemon's outbox row holds the rating, and its text,
+// where Dispatch's record holds it, both refuse it, and the whole daemon answered the retro's
+// completion 500 FACT_APPLY_FAILED naming no field when the engine's transaction failed on the
+// rating row. The decoder of the body refuses it before the route reads it, as it refuses a NUL in
+// any string of any body (decodeJSON): 400 naming planReason and where in it the NUL stands, with
+// nothing recorded, so the agent sends it again corrected.
+func TestARatingReasonWithANULIsRefusedAsInput(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+
+	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+		PlanRating: new(4), PlanReason: "The plan fit\x00 the work."}), http.StatusBadRequest,
+		"invalid request body: planReason holds a NUL character (U+0000) at character 13, which the daemon cannot store")
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refusal = %#v, want none applied", got)
+	}
+}
+
 // A plugin at PlanRatingContract or later must rate: its retro's completion with no rating is
 // refused PLAN_RATING_REQUIRED, which says how to rate, with nothing recorded, and the same
 // completion with a rating is taken.
