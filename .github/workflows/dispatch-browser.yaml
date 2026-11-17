@@ -46,29 +46,30 @@ name: Dispatch browser suite
 # report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 # A job budget is the backstop above the sum of its step budgets, so it never fires first.
 #
-# What the job set below costs, measured rather than estimated. The full lane, green at this
-# shape: 2,061 s (run 43045412941), 1,974 s (43074443876) and 1,997 s (43079610268), each over
-# eight jobs, at 14m42s to 16m29s of wall time. The same lane on the default branch costs 2,821
-# to 2,875 s over twelve jobs (runs 43005917604, 43042217777 and 43040538810), so the shape
-# below is about 29 per cent of a run's machine time cheaper. The pull-request lane: 694 s over
-# five jobs (run 43002633713) at 7 minutes 28 seconds, where it cost 1,195 s over seven
-# (run 42868987140).
+# What the job set below costs, measured rather than estimated, at pull request #3513's last code
+# commit, b724461b, on 2026-11-17. The full lane: 2,398 s over eight jobs for 1,493 rows, 1.61
+# machine-seconds a row (run 44147547896), in an own time of 1,109 s - its binaries job, longest
+# leg and merge job, end to end. The same lane on the default branch that day costs twelve jobs
+# and a median of 3,292 s for 1,479 rows over its 20 green runs up to 21:01Z (3,068 to 3,645 s),
+# 2.23 s a row at the median of their per-row figures, so the shape below spends 0.72 of a row's
+# machine time. The pull-request lane: 718 s over five jobs for 289 rows (run 44147484156), in an
+# own time of 415 s.
 #
 # That cost is now held to a budget by the run itself, at the merge job's step "Reading five,
 # the lane's machine time": the jobs of a full lane, this merge job apart, may cost 3,156 s and
 # those of a pull-request lane 856 s, which are the committed ceiling of 3,200 s and 900 s less
 # that job's own worst case of 44 s over pull request #3513's runs of 2026-11-15 up to 17:44Z
-# (job 132733634671). The three readings above, each taken as the budget takes
-# it, which is the lane less its own merge job, are 2,025 s (43045412941, whose merge job took
-# 36 s), 1,946 s (43074443876, 28 s) and 1,964 s (43079610268, 33 s), and all three are inside
-# that budget.
+# (job 132733634671). The reading above, taken as the budget takes it, which is the lane less its
+# own merge job, is 2,359 s (44147547896, whose merge job took 39 s), and the pull-request
+# lane's 682 s (44147484156, 36 s); both are inside that budget.
 #
 # That ceiling is a coarse guard and no reading of what this issue delivers: no job can read
 # another run, so a figure written here cannot be a ratio against the day's default branch,
-# which is what R4 and R5 of dispatch://INFRA-1109/spec are. It was 2,040 s while those three
-# were the newest readings, 2,400 s once the machines got slower and this suite did not, and
-# 2,700 s once one slow pair of runs showed what an absolute figure near the measurement costs:
-# on 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013) with
+# which is what R4 and R5 of dispatch://INFRA-1109/spec are. It was 2,040 s while three runs of
+# 2026-11-11 and 2026-11-12 were the newest readings (43045412941, 43074443876 and 43079610268,
+# 2,025, 1,946 and 1,964 s at that step), 2,400 s once the machines got slower and this suite did
+# not, and 2,700 s once one slow pair of runs showed what an absolute figure near the measurement
+# costs: on 2026-11-15 two runs of one tree cost 2,252 and 2,450 s (43664675139, 43667557013) with
 # real-stack row medians of 2,746 and 3,126 ms, while the day's thirteen green merge-queue runs
 # of the default branch up to 15:03Z cost 2,975 to 3,347 s, with a median of 3,126 s. Those two
 # runs were 0.72 and 0.78 of that median, so the suite is as cheap as it was and the ceiling is
