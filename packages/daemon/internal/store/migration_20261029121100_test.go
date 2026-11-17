@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -82,4 +83,34 @@ func TestAnUnappliedTurnOutcomeRoundTripsMarked(t *testing.T) {
 		t.Fatalf("the window read back after a restart = %+v, want the second report alone marked unapplied", got.TurnOutcomes)
 	}
 	sameClaim(t, got, c)
+}
+
+// A report's task number and the provider error it carried, with that error's status and the
+// ladder step it made, are kept with the window and survive a restart, so a restarted daemon
+// reads what an applied report did to the claim's pending task (supervise's owedReport). An entry
+// an older daemon stored without them reads back with none of them, as a report that named no
+// task and no provider error, which is how that daemon read it.
+func TestAClaimsTurnOutcomesKeepTheTaskAndTheProviderErrorTheyNamed(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.TurnOutcomes = []supervise.TurnOutcome{
+		{Generation: 1, Sequence: 6, Task: 4, ProviderError: true, ProviderErrorStatus: 529, ProviderErrorRetries: 2},
+		{Generation: 1, Sequence: 7, Task: 4},
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with its reports: %v", err)
+	}
+	reopened := reopenStore(t, store)
+	got := onlyClaim(t, reopened)
+	sameClaim(t, got, c)
+
+	if _, err := reopened.Pool().Exec(ctx, `update claims set turn_outcomes = $2::jsonb where token = $1`, string(c.Token),
+		`[{"generation": 1, "sequence": 7, "refused": true, "message": "the provider refused the turn"}]`); err != nil {
+		t.Fatalf("store a window an older daemon wrote: %v", err)
+	}
+	want := []supervise.TurnOutcome{{Generation: 1, Sequence: 7, Refused: true, Message: "the provider refused the turn"}}
+	if got := onlyClaim(t, reopened).TurnOutcomes; !slices.Equal(got, want) {
+		t.Fatalf("the window an older daemon wrote reads back %+v, want %+v", got, want)
+	}
 }

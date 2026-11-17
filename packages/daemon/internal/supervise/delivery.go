@@ -959,6 +959,14 @@ func (m *Machine) adopt(ctx context.Context, a adoption) error {
 // good, and the take of it the next process makes would be answered again the text of a turn
 // that already ran.
 //
+// A claim a daemon start restored over a provider error's report the store took and whose
+// take-back it refused (Machine.ladderOwed, Claim.owedReport) has that report's take-back and
+// ladder step made here, at its first decision, the first point that can write them: the claim's
+// run of provider-error turns counts the turn, as the report's own decision counted it in memory
+// alone, and the take goes to the ladder as that decision sent it (takeToLadder). The controller
+// is not told again: that decision told it before any write. Only a claim ready, idle or working
+// holds the take for the ladder; any other has it settled by its let-go, below.
+//
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it, its value deleted; the next resume is handed its new phase's task, never that
 // one. An operator suspension is different: the operator resumes this same claim, so its pending
@@ -975,6 +983,19 @@ func (m *Machine) settle(ctx context.Context) error {
 	if m.unsaved {
 		if err := m.saved(m.putClaimAndPending(ctx)); err != nil {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
+		}
+	}
+	if pe := m.ladderOwed; pe != nil {
+		m.ladderOwed = nil
+		if SaidReady(m.claim.State) && p.taken() {
+			m.claim.ProviderErrorRun++
+			m.log.Warn(ladderOwedLine, "task", p.Number, "httpStatus", pe.Status, "providerErrorRun", m.claim.ProviderErrorRun)
+			if err := m.takeToLadder(ctx, pe.Status); err != nil {
+				return err
+			}
+			if p = m.claim.Pending; p == nil {
+				return nil
+			}
 		}
 	}
 	if !SaidReady(m.claim.State) && p.turnStarted() {

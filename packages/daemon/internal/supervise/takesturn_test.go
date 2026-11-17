@@ -9,10 +9,13 @@ package supervise
 // act, not from the start.
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // currentPlugin is a harness whose worker's plugin names its task's number in every turn's
@@ -400,4 +403,292 @@ func TestTurnOutcomeFinishTheStoreRefusedIsMadeAgainAcrossAnOutage(t *testing.T)
 		}
 		outage(t, h, number)
 	})
+}
+
+// A report's finish the store refused is owed still after a daemon restart (decision 8 of
+// dispatch://INFRA-2811). The report is applied to the claim's window before its finish is
+// written, so the worker's report sent again is a repeat that finishes nothing, and the daemon
+// that saw the refusal owed the finish in memory alone. The restarted daemon reads it from the
+// window — the newest applied report of the claim's generation that names the pending task's
+// number, over a take that stands accepted (Claim.owedReport) — and the end-frame bound it arms
+// at its start makes it, with no act of the worker's awaited: the task is finished once, by the
+// report. A report that did nothing to the task leaves nothing owed, live or after a restart:
+// one of an earlier generation, which the process the claim relaunched from sent after its
+// death took the take of that number back and after the next process took it again, finishes
+// nothing in the daemon it reaches (reachesLadder); and one that carried a provider error, whose
+// take-back and ladder step the store took, is not of the take that stands now, the next one.
+// The report of the take's own turn is what finishes the task then.
+//
+// The negative controls: the restored machine without the derivation (NewMachine with no
+// owedReport) leaves the task whose finish the store refused pending, its turn over, with nothing
+// to finish it; a report of any generation reaching the take (reachesLadder with no generation)
+// finishes the next process's take by the earlier one's report; and a provider error's report
+// owed whatever its ladder step (owedReport with no step) takes back the take after the ladder.
+func TestTurnOutcomeFinishTheStoreRefusedIsOwedAgainAfterADaemonRestart(t *testing.T) {
+	// owesNothing restarts the daemon over a claim idle after the turn of task number's take,
+	// with that turn's report to come, and holds that no bound finishes the task before the
+	// report does.
+	owesNothing := func(t *testing.T, h *harness, number uint64) {
+		t.Helper()
+		if p := h.pending(); p.Number != number || !p.turnStarted() || h.state() != StateIdle {
+			t.Fatalf("the claim is %s holding %+v, want it idle over task %d's turn, its report to come", h.state(), p, number)
+		}
+		h.restart()
+		h.connect()
+		h.advance(3 * testRPC)
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+			t.Fatalf("three bounds after the restart the claim holds %+v, want task %d's turn over and its report to come", p, number)
+		}
+		if finished := h.records.of(finishedLine); len(finished) != 0 {
+			t.Fatalf("%q was logged %d times before the turn's report, want none", finishedLine, len(finished))
+		}
+		h.mustReport(nil)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the turn's report, want task %d finished", p, number)
+		}
+	}
+	t.Run("a report naming its number, its finish refused", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		number := h.pending().Number
+		h.store.fail("RetireDelivery", errBoom)
+		if err := h.reportTurn(number, nil); !errors.Is(err, errBoom) {
+			t.Fatalf("the report whose finish the store refused = %v, want %v", err, errBoom)
+		}
+		kept := h.store.load(h.token).TurnOutcomes
+		if len(kept) != 1 || kept[0].Unapplied || kept[0].Task != number || kept[0].ProviderError {
+			t.Fatalf("the store keeps %+v, want the report applied, naming task %d and no provider error", kept, number)
+		}
+		h.store.fail("RetireDelivery", nil)
+
+		h.restart()
+		h.advance(testRPC - time.Second)
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+			t.Fatalf("less than a bound after the restart the claim holds %+v, want task %d's turn over and its finish to come", p, number)
+		}
+		h.advance(time.Second)
+
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v a bound after the restart, want task %d finished", p, number)
+		}
+		h.advance(3 * testRPC)
+		finished := h.records.of(finishedLine)
+		if len(finished) != 1 {
+			t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
+		}
+		wantAttr(t, finished[0], "by", finishedByReport)
+	})
+	t.Run("a report of an earlier generation", func(t *testing.T) {
+		h := newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.reach(StateReady)
+		h.takesTurnEndsWithItsReportToCome()
+		number, left := h.pending().Number, h.generation()
+		h.observe(runtime.Gone)
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		// The report the dead process sent as it ended its turn reaches the daemon after its death
+		// took the take back, and after the relaunched process took the task again and ran it.
+		h.worker.sequence++
+		h.must(RequestTurnOutcome{Claim: h.token, Generation: left, Sequence: h.worker.sequence, Task: number})
+		if p := h.claim().Pending; p == nil || p.Number != number || !p.turnStarted() {
+			t.Fatalf("after generation %d's report the claim holds %+v, want generation %d's take of task %d standing, its turn over",
+				left, p, h.generation(), number)
+		}
+		kept := h.store.load(h.token).TurnOutcomes
+		if h.generation() == left || len(kept) != 1 || kept[0].Generation != left || kept[0].Unapplied || kept[0].Task != number {
+			t.Fatalf("the claim is at generation %d keeping %+v, want a later one keeping generation %d's report of task %d applied",
+				h.generation(), kept, left, number)
+		}
+		owesNothing(t, h, number)
+	})
+	t.Run("a report that carried a provider error", func(t *testing.T) {
+		h := workingClaim(t, currentPlugin)
+		number := h.pending().Number
+		h.errorTurn(ProviderError{Message: "overloaded_error", Status: 529})
+		h.climbs(1, promptRetryDelay(1))
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		kept := h.store.load(h.token).TurnOutcomes
+		if len(kept) != 1 || kept[0].Unapplied || kept[0].Task != number || !kept[0].ProviderError ||
+			kept[0].ProviderErrorStatus != 529 || kept[0].ProviderErrorRetries != 1 {
+			t.Fatalf("the store keeps %+v, want the report applied, naming task %d, its provider error and the ladder's first step", kept, number)
+		}
+		owesNothing(t, h, number)
+	})
+}
+
+// A report naming the accepted take's number that comes ahead of the take's turn start, while the
+// store refuses both the start's write and the finish's, leaves the finish owed (decision 8 of
+// dispatch://INFRA-2811): the report is applied, so the worker's report sent again is a repeat,
+// and nothing else would finish the task. In the daemon that received it the start stands in
+// memory, the decision goes on to the finish, and the finish's refusal arms the end-frame bound;
+// in a daemon restarted over what the store holds — the report applied, the take still awaiting
+// its turn — the take's turn is started from the report and the finish is owed again. Either way
+// the bound finishes the task once, by the report, with the serving credit a finished take's
+// turn earns (retireTask): its phase entry served, not handed back as owed.
+//
+// The negative controls: the decision stopped at the start's refused write (reportedTask
+// returning it) leaves no finish owed in the same daemon; a finish owed after a restart only over
+// a take whose turn started (owedReport requiring it) leaves none; and the restored take's turn
+// left unstarted (NewMachine without the start) finishes the task with its entry handed back.
+func TestTurnOutcomeAheadOfItsTurnStartIsFinishedWhenTheStoreRefusedItsStartAndFinish(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(map[bool]string{false: "in the same daemon", true: "across a daemon restart"}[restart], func(t *testing.T) {
+			h := newHarnessOf(t, queuedClaim(), currentPlugin)
+			h.reach(StateReady)
+			h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
+			number := h.pending().Number
+			if p := h.pending(); !p.awaitsTurn() {
+				t.Fatalf("the task is %+v, want its take accepted and its turn to come", p)
+			}
+			h.store.fail("PutDelivery", errBoom)
+			h.store.fail("RetireDelivery", errBoom)
+			if err := h.reportTurn(number, nil); !errors.Is(err, errBoom) {
+				t.Fatalf("the report whose start and finish the store refused = %v, want %v", err, errBoom)
+			}
+			h.store.fail("PutDelivery", nil)
+			h.store.fail("RetireDelivery", nil)
+			if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsTurn() {
+				t.Fatalf("the store holds %+v (held %v), want the take still awaiting its turn", stored, ok)
+			}
+			if restart {
+				h.restart()
+			}
+
+			h.advance(testRPC - time.Second)
+			if p := h.claim().Pending; p == nil || p.Number != number {
+				t.Fatalf("less than a bound on the claim holds %+v, want task %d's finish to come", p, number)
+			}
+			h.advance(time.Second)
+
+			c := h.claim()
+			if c.Pending != nil || c.TaskFinished != number {
+				t.Fatalf("a bound on the claim holds %+v and finished task %d, want task %d finished", c.Pending, c.TaskFinished, number)
+			}
+			if c.ServedEntry != 1 || c.GivenEntry != 1 {
+				t.Fatalf("the finished claim served entry %d and was given entry %d, want entry 1 served", c.ServedEntry, c.GivenEntry)
+			}
+			finished := h.records.of(finishedLine)
+			if len(finished) != 1 {
+				t.Fatalf("%q was logged %d times, want once", finishedLine, len(finished))
+			}
+			wantAttr(t, finished[0], "by", finishedByReport)
+		})
+	}
+}
+
+// refusedTakeBack is a claim whose take's turn ended in a provider error of status, reported as
+// the store went away: it took the report's own write and refused every write after it, so the
+// report is applied and the take-back, the ladder's step and any failure of the claim are written
+// nowhere. ahead is a report that comes ahead of its turn's start frame, so the store refused the
+// start the report made too (startedUnseen); otherwise the report follows the turn's end. The
+// store answers again after the report. Across a restart, the daemon restarts over what the store
+// holds and the worker's shim says hello: the claim's first decision.
+func refusedTakeBack(t *testing.T, status int, restart, ahead bool) *harness {
+	t.Helper()
+	var h *harness
+	if ahead {
+		h = newHarnessOf(t, queuedClaim(), currentPlugin)
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText, Phase: phase.Implementing, Generation: 7, Entry: 1})
+	} else {
+		h = workingClaim(t, currentPlugin)
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	}
+	number := h.pending().Number
+	h.store.fail("PutDelivery", errBoom)
+	// PutClaim calls onPut holding the store's lock, after its own failure check.
+	h.store.onPut = func(Claim) { h.store.failures["PutClaim"] = errBoom }
+	if err := h.reportTurn(number, &ProviderError{Message: "the provider answered an error", Status: status}); !errors.Is(err, errBoom) {
+		t.Fatalf("the report whose take-back the store refused = %v, want %v", err, errBoom)
+	}
+	h.store.onPut = nil
+	h.store.fail("PutClaim", nil)
+	h.store.fail("PutDelivery", nil)
+	stored := h.store.load(h.token)
+	if p := stored.Pending; p == nil || !p.taken() || p.turnStarted() == ahead || p.ProviderErrorRetries != 0 {
+		t.Fatalf("the store holds %+v, want its take standing, its turn started %v, with no ladder step", p, !ahead)
+	}
+	if kept := stored.TurnOutcomes; len(kept) != 1 || kept[0].Unapplied || kept[0].Task != number {
+		t.Fatalf("the store keeps %+v, want the report of task %d applied", kept, number)
+	}
+	if restart {
+		h.restart()
+		h.connect()
+	}
+	return h
+}
+
+// wantLadderOwedLine holds that a daemon restarted over a provider error's report whose take-back
+// the store refused logged that take-back's making once (ladderOwedLine), and one that did not
+// restart logged none.
+func (h *harness) wantLadderOwedLine(restart bool) {
+	h.t.Helper()
+	want := map[bool]int{false: 0, true: 1}[restart]
+	if lines := h.logs.lines(ladderOwedLine); len(lines) != want {
+		h.t.Fatalf("logged %q, want the owed take-back's line %d times", lines, want)
+	}
+}
+
+// A provider error's report whose take-back the store refused still takes the task to the ladder
+// (dispatch://INFRA-956 R2, decision 8 of dispatch://INFRA-2811). The report is applied, so the
+// worker's report sent again is a repeat, and what it does to the task is done by the decision
+// that applied it or by nothing. In the daemon that received it the take-back stands in memory,
+// and the ladder's step and its wait follow it, or, for a status that holds the issue, the
+// claim's failure; the next decision writes them (settle, repair). In a daemon restarted over what
+// the store holds — the report applied, the take still accepted, its ladder step not recorded —
+// the claim's first decision makes the take-back and the step from the report
+// (Machine.ladderOwed). Either way the task is counted one provider error and one step, and is
+// given again once its wait is over; a status that holds the issue fails the claim. A report that
+// came ahead of its turn's start frame started that turn first (startedUnseen), so the take-back
+// keeps the handshake's confirmation of the take's entry, as any provider error's does: the turn
+// started on the take's text (giveBackTake).
+//
+// The negative controls: the ladder stopped at the take-back's refused write (takeToLadder
+// returning it) leaves the task in the same daemon with no step and no wait, and the claim a 400
+// ended running; the restored machine with no ladder owed (NewMachine without ladderOwed) leaves
+// the take standing, its turn over, with nothing to take it back; and a restored take awaiting
+// its turn taken back with that turn unstarted gives back the entry's confirmation.
+func TestTurnOutcomeOfAProviderErrorWhoseTakeBackTheStoreRefusedTakesTheTaskToTheLadder(t *testing.T) {
+	clears := func(t *testing.T, h *harness, restart bool) {
+		t.Helper()
+		p := h.pending()
+		if p.taken() || p.ProviderErrorRetries != 1 || p.ProviderErrorNote == "" || !h.m.waitsForProviderError(p.ID) {
+			t.Fatalf("the task is %+v (waiting %v), want it taken back, one ladder step counted and its wait armed",
+				p, h.m.waitsForProviderError(p.ID))
+		}
+		if run := h.claim().ProviderErrorRun; run != 1 {
+			t.Fatalf("the run of provider errors is %d, want 1", run)
+		}
+		h.advance(promptRetryDelay(1) - time.Second)
+		h.wantPrompts(1)
+		h.advance(time.Second)
+		h.wantPrompts(2)
+		if stored, ok := h.store.delivery(h.token); !ok || stored.ProviderErrorRetries != 1 || stored.ProviderErrorNote == "" {
+			t.Fatalf("the store holds %+v (held %v), want the ladder's step written", stored, ok)
+		}
+		h.wantLadderOwedLine(restart)
+	}
+	for _, restart := range []bool{false, true} {
+		name := map[bool]string{false: "in the same daemon", true: "across a daemon restart"}[restart]
+		t.Run(name+", a status that clears", func(t *testing.T) {
+			clears(t, refusedTakeBack(t, 529, restart, false), restart)
+		})
+		t.Run(name+", a report ahead of its turn's start", func(t *testing.T) {
+			h := refusedTakeBack(t, 529, restart, true)
+			if confirmed := h.claim().Handshake.ConfirmedAt; confirmed.IsZero() {
+				t.Fatalf("the claim's handshake is %+v, want its confirmation of the take's entry kept", h.claim().Handshake)
+			}
+			clears(t, h, restart)
+		})
+		t.Run(name+", a status that holds the issue", func(t *testing.T) {
+			h := refusedTakeBack(t, 400, restart, false)
+			h.wantState(StateFailed)
+			if failure := h.claim().Failure; !strings.Contains(failure, "HTTP 400") {
+				t.Fatalf("failure %q, want the provider error's status named", failure)
+			}
+			h.wantLadderOwedLine(restart)
+		})
+	}
 }

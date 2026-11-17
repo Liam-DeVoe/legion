@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -61,24 +62,42 @@ func promptRetryDelay(attempt int) time.Duration {
 // on the ladder. The agent's Retryable flag is logged and read by nothing: the status alone
 // decides.
 //
-// The cause is named once here and handed to whoever writes it down, since one failed turn has
-// one cause and the words are the same in the claim's failure, in the note the next take carries
-// and in the controller's notice.
+// The cause is named once (takeToLadder) and handed to whoever writes it down, since one failed
+// turn has one cause and the words are the same in the claim's failure, in the note the next take
+// carries and in the controller's notice.
 func (m *Machine) providerErrored(ctx context.Context, pe ProviderError) error {
-	cause := providerErrorCause(pe.Status)
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn of this task ended in a provider error; the task is kept and given again",
 		"task", m.claim.Pending.Number, "retryable", pe.Retryable, "httpStatus", pe.Status,
 		"provider", pe.Provider, "model", pe.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(pe.Model, cause)
-	if err := m.takeBack(ctx, takenBackProviderError); err != nil {
-		return err
-	}
-	if holdsTheIssue(pe.Status) {
-		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
-	}
-	return m.providerErrorClears(ctx, cause)
+	m.tellControllerOfProviderErrors(pe.Model, providerErrorCause(pe.Status))
+	return m.takeToLadder(ctx, pe.Status)
 }
+
+// takeToLadder is what a provider error's turn does to the task whose take it ran on, once the
+// claim's run of such turns counts it (providerErrored): the take goes back (takeBack), and the
+// status either holds the issue, failing the claim, or puts the task on the ladder
+// (providerErrorClears).
+//
+// Each step holds in memory whether or not its write lands, as the take-back does: a take-back
+// whose write the store refused is still a take-back, which the next decision writes (settle,
+// repair), so that refusal is no reason to leave the task without its ladder step and wait —
+// with no wait, that next decision's offer would give the task again at once (offerPending) — or
+// to leave running a claim the provider refused for good. A daemon that starts before any of it
+// is written does it from the record (Claim.owedReport, Machine.ladderOwed).
+func (m *Machine) takeToLadder(ctx context.Context, status int) error {
+	cause := providerErrorCause(status)
+	err := m.takeBack(ctx, takenBackProviderError)
+	if holdsTheIssue(status) {
+		return errors.Join(err, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause))
+	}
+	return errors.Join(err, m.providerErrorClears(ctx, cause))
+}
+
+// ladderOwedLine is the line of a claim a daemon start restored over a provider error's report
+// whose take-back the store never took, at Warn, logged as its first decision makes that
+// take-back (settle, Machine.ladderOwed): the report's own decision wrote nothing of it.
+const ladderOwedLine = "supervise: a provider error's report was applied before this daemon started and its take-back never written; the task goes to the ladder now"
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
 // holds the issue for its architect: a client error, 400 to 499, that is none of 401, 403, 408
@@ -109,19 +128,19 @@ func holdsTheIssue(status int) bool {
 // given (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns
 // in one transaction. Its timer's firing is what writes the value again (promptRetryDue); until
 // then a take of it is refused (claimHold), and a newer task queued meanwhile replaces it rather
-// than waiting behind it (queue).
+// than waiting behind it (queue). The step and its wait stand whether or not the write lands: a
+// write the store refused leaves the delivery unsaved and the claim write owed, and the next
+// decision makes it (settle, repair) — the wait's own firing, at the latest.
 func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
-		return err
-	}
+	err := m.putClaimAndPendingOwed(ctx)
 	after := promptRetryDelay(p.ProviderErrorRetries)
 	m.arm(TimerPromptRetry, after, p.ID)
 	m.log.Info("supervise: this provider error can clear; the task goes to the same session again after a wait",
 		"delivery", p.ID, "attempt", p.ProviderErrorRetries, "wait", after, "cause", cause)
-	return nil
+	return err
 }
 
 // promptRetryDue is the ladder's wait over: the task's value is written again for the same session

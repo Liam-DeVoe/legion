@@ -1224,9 +1224,19 @@ type Machine struct {
 	// itself again after every write the store refuses, until one lands, which is logged by=report
 	// (finishAtTurnsEnd, overTurnFinish). A let-go that settles the task's over turn finishes it
 	// too rather than take it back (interrupted, settle). The retirement that lands ends it
-	// (retireTask). It is memory only: a daemon that starts while it stands reads the task as the
-	// store holds it, its turn over and unfinished.
+	// (retireTask). It is kept in memory, and a daemon that starts while it stands owes it again,
+	// read from the report the claim's window keeps (Claim.owedReport, NewMachine), since that
+	// report is applied and its worker's resend of it is a repeat that finishes nothing.
 	finishOwed bool
+	// ladderOwed is the provider error of a turn-outcome report that a daemon start found applied
+	// with nothing of what it does to the task written — the take still accepted, the ladder's
+	// step unrecorded (Claim.owedReport, NewMachine): the take-back and the ladder's step, or the
+	// claim's failure, that the daemon before this one decided and the store never took. It holds
+	// the error's status alone, which is all that decides between the two (takeToLadder). The
+	// claim's first decision makes them, in settle, and drops it; a claim not ready, idle or
+	// working by then has its take settled by its let-go instead (settle, interrupted). It is
+	// memory only, as finishOwed is.
+	ladderOwed *ProviderError
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
 	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
@@ -1530,10 +1540,11 @@ type armed struct {
 // NewMachine builds the machine for one claim: a new one the spawn route just stored, or one the
 // daemon read back at boot. A restored claim that was booting, or registered and not yet ready, is
 // watched again from now; one restored working asks its agent whether the turn an earlier daemon
-// saw start is over (askFirst); and one whose task's turn ran with nothing to finish it since
+// saw start is over (askFirst); one whose task's turn ran with nothing to finish it since
 // waits the end-frame bound again, as that turn's end would have (finishTask), from the worker's
-// first act after the start (finishAtAct, armFinishAtAct). ctx bounds the machine's own work —
-// its timers.
+// first act after the start (finishAtAct, armFinishAtAct); and one holding a report whose effect
+// on its task the store refused owes it again (owedReport): a finish (finishOwed) or a provider
+// error's take-back and ladder step (ladderOwed). ctx bounds the machine's own work — its timers.
 //
 // A claim restored with its agent ready, idle or working is given the registration deadline's own
 // bound as a reconnect deadline (reconnectDeadline): its shim reconnects to the daemon that
@@ -1591,6 +1602,31 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	case StateWorking:
 		m.armRegistration()
 		m.askFirst = true
+	}
+	// A report applied before the daemon that applied it stopped, whose effect on the pending task
+	// the store refused: it is owed again, as it was there. A take that awaits its turn still is
+	// one whose turn the report ran, ahead of its start frame, and whose start the store refused
+	// too (startedUnseen): the start is made here first, as that report's decision made it, and
+	// the next decision writes it (settle). A finish (Machine.finishOwed) is then made by the
+	// bound, armed at once over a ready or idle claim, as the refusal armed it (finishTask), and at
+	// the end of the turn running over a working one (turnEnded, armEndFrameBound), with the
+	// serving credit a finished take's turn earns (retireTask); a claim let go settles the task by
+	// that report (settle). A provider error's take-back and ladder step (Machine.ladderOwed) are
+	// made at the claim's first decision, which can write them (settle).
+	if owed, ok := m.claim.owedReport(); ok {
+		if p := m.claim.Pending; p.awaitsTurn() {
+			p.TurnStarted = true
+			m.resetPromptBudgets()
+			m.unsaved = true
+		}
+		if owed.ProviderError {
+			m.ladderOwed = &ProviderError{Status: owed.ProviderErrorStatus}
+		} else {
+			m.finishOwed = true
+			if c.State == StateReady || c.State == StateIdle {
+				m.arm(TimerFinish, deps.Timeouts.RPC, c.Pending.ID)
+			}
+		}
 	}
 	if p := c.Pending; p != nil && p.taken() {
 		m.takeTold = sentences{
