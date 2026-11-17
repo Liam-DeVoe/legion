@@ -1061,12 +1061,13 @@ func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGates
 // issue. Each other field is a field of the route's body under the same name.
 //
 // Dispatch writes each field once and keeps every field a write leaves out, so the start and the
-// end merge in either order and a write that runs again changes nothing. That makes a field left
-// out and a field written empty two different writes: a start that wrote the model as "" would
-// keep the end's model off the record for good. So every write carries the identity of the step
-// (task, step, kind, role, type, agent and generation), the empty type of a retro or a merge and
-// the place 0 of either included, and each field a write may not know yet is a pointer, nil for
-// one the write leaves to the other.
+// end merge in either order and a write that runs again changes nothing. Every write carries the
+// identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
+// retro or a merge and the place 0 of either included, and each field a write may not know yet is
+// a pointer, nil for one the write leaves to the other. The route takes a text field sent as "" as
+// left out, so for a text field the pointer only says what the write knows; for a time and for
+// ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
+// Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
 type StepRecord struct {
 	ID         string     `json:"id"`
 	Task       string     `json:"task"`

@@ -264,8 +264,8 @@ func TestAStepRecordRunsAloneOnTheRecordLane(t *testing.T) {
 const stepRecordID = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
 
 // Dispatch writes each field of a record once and keeps every field the write leaves out (the step
-// write of Dispatch's route), so an omitted field and a field written empty are two different
-// writes: a start that sent the model as "" would keep the end's model off the record for good.
+// write of Dispatch's route), so an omitted time and a zero one are two different writes: a zero
+// started_at would stand on the record for good, and a returned_to of 0 is a return to the retro.
 // The row has to carry that difference through Postgres: a start with no session, no model and no
 // end decodes with each of them still absent, and a retro's type, which is "", and its place, 0,
 // are still written.
