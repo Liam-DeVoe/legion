@@ -132,6 +132,23 @@ func (w *Watcher) Following() bool {
 	return w.following
 }
 
+// StaleEpisode reports, in one reading, when the copy's current stale episode began and whether
+// the copy can be served (Servable). The episode begins at the first stop since the read that
+// last completed (stopFollowing) and runs across any number of reads that complete nothing, a
+// disconnect during a read's completion included, until a read restores following. The time is
+// zero while the copy follows its bucket. It is measured on the watcher's clock (WithNow). A cache
+// that judges its rows by their age reads them at that moment while the copy is served unfollowed,
+// since it cannot see the records that renewed them then, and at its own now otherwise.
+func (w *Watcher) StaleEpisode() (since time.Time, servable bool) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	servable = w.servable() == nil
+	if w.following {
+		return time.Time{}, servable
+	}
+	return w.staleSince, servable
+}
+
 // Disconnected says the connection the watcher reads through was lost. nats.go reconnects forever
 // and keeps the watcher's subscription open through the outage, so the watcher does not end and
 // nothing else would say its copy stopped following the bucket: the listener calls this from the

@@ -672,6 +672,89 @@ func TestAKeptRowReadsLiveWhileTheCopyIsDisconnected(t *testing.T) {
 	}
 }
 
+// A disconnect that lands while a read is completing - after the watcher has decided to hand the
+// read to the cache, before the cache's sweep returns - takes from that read the right to restore
+// following, so the copy goes on not following its bucket. Its stale episode runs on from the
+// read's start, and the copy still drops no row for age: a row live when the read began still
+// reads live, inside the stale bound.
+func TestAKeptRowReadsLiveAfterADisconnectDuringTheReadsCompletion(t *testing.T) {
+	client := setupNATS(t)
+	now := &clock{}
+	r, held := holdingRegistry(t, client, WithSessionClock(now.Now), WithSessionLiveWindow(time.Minute), WithSessionTTL(time.Hour))
+	if err := r.Put("ses_old", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	completion := held.holdCompletion(t, nil)
+	if err := r.Rewatch(context.Background(), client.Conn); err != nil {
+		t.Fatalf("Rewatch: %v", err)
+	}
+	waitClosed(t, completion.reached, "the read to deliver every record")
+	r.Disconnected()
+	completion.open()
+	waitClosed(t, completion.done, "the read's sweep")
+	now.advance(2 * time.Minute)
+	if r.watcher.Following() || r.Servable() != nil {
+		t.Fatalf("after a disconnect during the completion: following %v, servable %v; want not following and servable", r.watcher.Following(), r.Servable())
+	}
+	if got := listed(t, r); !slices.Equal(got, []string{"ses_old"}) {
+		t.Fatalf("listed = %v, want ses_old, live when the read began", got)
+	}
+	if _, state := r.Lookup("ses_old"); state != Live {
+		t.Fatalf("Lookup(ses_old) = %s, want %s", state, Live)
+	}
+	if got := r.LiveCount(); got != 1 {
+		t.Fatalf("LiveCount = %d, want 1", got)
+	}
+}
+
+// Past the stale bound the copy is refused (Servable), and its rows are judged at the time of
+// the reading again, not at the moment it stopped following: a session that has not registered
+// for 3 hours, past the 1-hour gone horizon, reads gone to every reader that does not ask
+// Servable first (the role holder, the fan-out skip, the Legion agent registry), however long
+// no read completes. The watcher reads the registry's clock here, so the bound is passed on it.
+func TestAKeptRowIsJudgedByItsAgePastTheStaleBound(t *testing.T) {
+	client := setupNATS(t)
+	now := &clock{}
+	r := registryWatchingOn(t, client, now.Now, WithSessionClock(now.Now), WithSessionLiveWindow(time.Minute), WithSessionTTL(10*time.Hour))
+	if err := r.Put("ses_gone", SessionEntry{Port: 1, MachineID: "m1"}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	r.Disconnected()
+	now.advance(3 * time.Hour)
+	if r.Servable() == nil {
+		t.Fatal("the copy is servable 3 hours after the disconnect with no read since, want it refused past the stale bound")
+	}
+	if _, state := r.Lookup("ses_gone"); state != Gone {
+		t.Fatalf("Lookup(ses_gone) past the stale bound = %s, want %s: its registration is 3 hours old", state, Gone)
+	}
+	if got := r.LiveCount(); got != 0 {
+		t.Fatalf("LiveCount past the stale bound = %d, want 0", got)
+	}
+	if all, err := r.List(IncludeUnresponsive()); err != nil || len(all) != 0 {
+		t.Fatalf("listed with the unresponsive rows past the stale bound = %+v, %v; want none", all, err)
+	}
+}
+
+// registryWatchingOn opens a registry on the test's own session bucket whose watcher reads
+// watcherNow, as its stale bound's clock, with no stream probe, and waits for that watcher's
+// first read to complete.
+func registryWatchingOn(t *testing.T, client *bus.Client, watcherNow func() time.Time, options ...SessionRegistryOption) *SessionRegistry {
+	t.Helper()
+	r, err := OpenSessionRegistry(client.Conn, append([]SessionRegistryOption{WithSessionReplicas(1)}, options...)...)
+	if err != nil {
+		t.Fatalf("open session registry: %v", err)
+	}
+	waitFor(t, 5*time.Second, r.watcher.Following)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.watcher.End(ctx)
+	r.watcher = kvwatch.New("session registry", r.watcher.KV(), sessionCache{r}, kvwatch.WithNow(watcherNow), kvwatch.WithStreamProbeInterval(0))
+	t.Cleanup(r.StopWatch)
+	r.watcher.Start()
+	waitFor(t, 5*time.Second, r.watcher.Following)
+	return r
+}
+
 // A session bucket recreated with another TTL expires its rows by its own: the read of the new
 // bucket adopts its MaxAge.
 func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {

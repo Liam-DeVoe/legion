@@ -282,14 +282,6 @@ type SessionRegistry struct {
 	// evidence that the session ended, since the copy could not see the heartbeats that renewed
 	// it either, so the retention of such a row's last heartbeat runs from here (departedLocked).
 	followingSince time.Time
-	// unfollowedSince is when the copy last stopped following its bucket, on the registry's own
-	// clock: the first disconnect (Disconnected) or read (sessionCache.BeginRead) since the read
-	// that last completed, and zero once a read completes (sessionCache.CompleteRead). While the
-	// copy does not follow its bucket, its rows are judged at this moment and not at the time of
-	// the reading (judgedAtLocked): the copy cannot see the heartbeats that renew them, so it
-	// drops no row for age while it reads. A stop the registry is not told of (the watcher's own
-	// end, a recreated bucket a read of its stream found) is taken from the read it arms next.
-	unfollowedSince time.Time
 
 	// expiries holds the deadline of each cached row and of each lastSeen record, earliest first;
 	// expiryIndex finds an id's item so a write moves it in place. expiryTimer is armed for
@@ -504,15 +496,9 @@ func (r *SessionRegistry) NeedsRead() bool {
 }
 
 // Disconnected says the connection the cache's watcher reads through was lost
-// (kvwatch.Watcher.Disconnected). The copy's rows are judged at this moment until a read
-// completes (unfollowedSince).
+// (kvwatch.Watcher.Disconnected).
 func (r *SessionRegistry) Disconnected() {
 	r.watcher.Disconnected()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.unfollowedSince.IsZero() && !r.following() {
-		r.unfollowedSince = r.now()
-	}
 }
 
 // following reports whether the copy follows its bucket (kvwatch.Watcher.Following). A registry
@@ -523,18 +509,27 @@ func (r *SessionRegistry) following() bool {
 }
 
 // judgedAtLocked is the moment a row of the copy is judged at, its state (StateOf) and its
-// deadline (cachedSession.expired), for a reading taken at now: now while the copy follows its
-// bucket, and the moment it stopped following (unfollowedSince) while it does not, inside the
-// stale bound the copy is served for (Servable). So a re-read drops no row for age while it runs:
-// a row that read live when the copy stopped following still reads live until the read completes,
-// and is judged by its age again from then. A row the read delivers, or a write the copy takes
-// meanwhile, carries a registration after that moment and reads live by its own. Callers hold
-// r.mu.
+// deadline (cachedSession.expired), for a reading taken at now. While the copy is served without
+// following its bucket - a read under way, or a disconnect before one, inside the stale bound -
+// it is the moment the copy stopped following, the start of its stale episode
+// (kvwatch.Watcher.StaleEpisode), so a re-read drops no row for age while it runs: a row that read
+// live then still reads live until a read completes. The watcher says when the episode began and
+// whether the copy is served in one reading, so a disconnect during a read's completion, which
+// leaves the episode running, keeps that moment. Otherwise it is now: while the copy follows, and
+// once it is refused past the stale bound, when a reader that does not ask Servable first would
+// otherwise read a session live for as long as no read completes. A row the read delivers, or a
+// write the copy takes meanwhile, carries a later registration and reads live by its own. A
+// registry built from a struct literal, which only a test does, has no watcher and judges at now.
+// Callers hold r.mu.
 func (r *SessionRegistry) judgedAtLocked(now time.Time) time.Time {
-	if r.unfollowedSince.IsZero() || !r.unfollowedSince.Before(now) || r.following() {
+	if r.watcher == nil {
 		return now
 	}
-	return r.unfollowedSince
+	since, servable := r.watcher.StaleEpisode()
+	if !servable || since.IsZero() || !since.Before(now) {
+		return now
+	}
+	return since
 }
 
 // logger is the logger WithSessionLogger set, or the default one.
@@ -551,8 +546,7 @@ type sessionCache struct{ r *SessionRegistry }
 
 // BeginRead starts a read of the session bucket (kvwatch.Copy.BeginRead) with the bucket's MaxAge
 // as the ttl when it has one, so a bucket recreated with another TTL expires its rows by its own.
-// Every row stays, and the copy's rows are judged at the moment it stopped following until the
-// read completes (unfollowedSince).
+// Every row stays.
 func (c sessionCache) BeginRead(read kvwatch.Read) {
 	r := c.r
 	r.mu.Lock()
@@ -560,9 +554,6 @@ func (c sessionCache) BeginRead(read kvwatch.Read) {
 	r.cache.BeginRead(read)
 	if read.MaxAge > 0 {
 		r.ttl = read.MaxAge
-	}
-	if r.unfollowedSince.IsZero() {
-		r.unfollowedSince = r.now()
 	}
 }
 
@@ -590,7 +581,6 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 	r.mu.Lock()
 	defer r.unlockAndNotify()
 	r.followingSince = r.now()
-	r.unfollowedSince = time.Time{}
 	r.cache.CompleteRead()
 }
 
@@ -860,24 +850,22 @@ func (r *SessionRegistry) PutWithin(ctx context.Context, sessionID string, entry
 }
 
 // Get returns the entry sessionID's cached record carries, or nats.ErrKeyNotFound when the cache
-// holds none or holds one past its deadline, even while the copy retains that row for List
-// because it does not follow its bucket (expireDue). Its one measure is the bucket's maximum age
-// — the age at which the bucket itself drops a record, which the registry expires its rows by
-// (SetTTL) — and never the live window or the gone horizon: it answers the record of a session in
-// any state while the bucket would still hold it, and nothing once the bucket would not. So it
-// says nothing about whether a session is answering, and no caller may read its not-found as a
-// session's death: with the deployed maximum age past the gone horizon, the shape this registry's
-// windows are written for (WithSessionMaxAge), a record it does not find is one no state could be
-// read from either.
+// holds none or holds one past its deadline, judged at judgedAtLocked's moment: while the copy is
+// served without following its bucket, the moment it stopped following, so a row whose deadline
+// passed only since then is still answered, as the expiry timer pops nothing then (expireDue).
+// Its one measure is the bucket's maximum age — the age at which the bucket itself drops a record,
+// which the registry expires its rows by (SetTTL) — and never the live window or the gone
+// horizon: it answers the record of a session in any state while the bucket would still hold it,
+// and nothing once the bucket would not. So it says nothing about whether a session is answering,
+// and no caller may read its not-found as a session's death: with the deployed maximum age past
+// the gone horizon, the shape this registry's windows are written for (WithSessionMaxAge), a
+// record it does not find is one no state could be read from either.
 //
 // It is the read for a caller that enriches what it already holds (a title, a last registration)
 // and asks nothing of the session's state. A caller that must tell an unresponsive session from
 // a gone one, or that acts on a session being missing, asks Lookup or Refresh, which judge the
 // record itself (StateOf), since a record this answers can be two hours old. It takes only the
-// shared lock and changes nothing: the expiry timer, not a read, removes an expired entry. While
-// the copy does not follow its bucket, a row's deadline is judged at the moment it stopped
-// following (judgedAtLocked), as the timer pops nothing then: the copy could not see the
-// heartbeats that renewed the row.
+// shared lock and changes nothing: the expiry timer, not a read, removes an expired entry.
 func (r *SessionRegistry) Get(sessionID string) (SessionEntry, error) {
 	now := r.now()
 	r.mu.RLock()
