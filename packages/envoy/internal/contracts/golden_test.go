@@ -105,25 +105,37 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 		})
 	}
 
-	// The directory holds the goldens this list writes and nothing else. biome.json's formatter
-	// excludes the whole directory, and two other tests read every .json in it as a golden
-	// (packages/daemon/internal/intake/intake_test.go and normalize_test.go here), so a file this
-	// test does not write would be read as one while no formatter and no bytes check holds it.
+	// The directory holds the goldens this list writes and nothing else, at any depth and of any
+	// name or kind. biome.json's formatter excludes the whole directory, and two other tests read
+	// its .json files as goldens (packages/daemon/internal/intake/intake_test.go and normalize_test.go
+	// here), so anything this test does not write would sit there with no formatter and no check.
 	written := map[string]bool{}
 	for _, fixture := range fixtures {
 		written[fixture.name+".json"] = true
 	}
 	goldenDir := filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes")
-	entries, err := os.ReadDir(goldenDir)
-	if err != nil {
-		t.Fatalf("list %s: %v", goldenDir, err)
-	}
-	if len(entries) == 0 {
-		t.Fatalf("%s holds no file, so this check read nothing", goldenDir)
-	}
-	for _, entry := range entries {
-		if filepath.Ext(entry.Name()) == ".json" && !written[entry.Name()] {
-			t.Errorf("%s holds %s, which this test's list does not write: add it to the list, or remove the file", goldenDir, entry.Name())
+	listed := 0
+	err := filepath.WalkDir(goldenDir, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
+		if path == goldenDir {
+			return nil
+		}
+		listed++
+		name, err := filepath.Rel(goldenDir, path)
+		if err != nil {
+			return err
+		}
+		if name = filepath.ToSlash(name); !written[name] {
+			t.Errorf("%s holds %s, which this test's list does not write: add it to the list, or remove it", goldenDir, name)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", goldenDir, err)
+	}
+	if listed == 0 {
+		t.Fatalf("%s holds no entry, so this check read nothing", goldenDir)
 	}
 }
