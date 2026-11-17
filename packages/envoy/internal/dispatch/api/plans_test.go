@@ -156,7 +156,8 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		run{"retro", "implementer", 0, new(at(40)), new(at(42)), "passed"},
 		run{"merge", "merger", 0, nil, new(at(50)), "passed"},
 	)
-	rateRetro(t, handler, "LEG", reviewed, runs[5], 1, 4, "The tester found the bug.")
+	reviewedRetro := runs[5]
+	rateRetro(t, handler, "LEG", reviewed, reviewedRetro, 1, 4, "The tester found the bug.")
 	closeIssue(t, handler, reviewed)
 
 	putPlanRecordOK(t, handler, fitted, fittedPlan.ID, with(defaultPlanBody(daemon, 1), map[string]any{
@@ -168,7 +169,8 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		run{"retro", "implementer", 0, new(at(140)), new(at(141)), "passed"},
 		run{"merge", "merger", 0, nil, new(at(160)), "passed"},
 	)
-	rateRetro(t, handler, "LEG", fitted, runs[2], 1, 5, "The plan fit the work.")
+	fittedRetro := runs[2]
+	rateRetro(t, handler, "LEG", fitted, fittedRetro, 1, 5, "The plan fit the work.")
 	closeIssue(t, handler, fitted)
 
 	putPlanRecordOK(t, handler, running, uuid.NewString(), defaultPlanBody(daemon, 1))
@@ -180,23 +182,34 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 	}
 	for _, want := range []struct {
 		issue          model.FinishedIssue
+		title          string
 		plan           model.PlanRecord
 		rating         int
 		reason         string
+		retro          string
+		retroEnded     time.Time
 		duration       int64
 		failed         int
 		started, ended time.Time
 	}{
-		{read.Issues[0], fittedPlan, 5, "The plan fit the work.", 3600, 0, at(100), at(160)},
-		{read.Issues[1], reviewedPlan, 4, "The tester found the bug.", 3000, 1, at(0), at(50)},
+		{read.Issues[0], "A run of steps 2", fittedPlan, 5, "The plan fit the work.", fittedRetro, at(141), 3600, 0, at(100), at(160)},
+		{read.Issues[1], "A run of steps 1", reviewedPlan, 4, "The tester found the bug.", reviewedRetro, at(42), 3000, 1, at(0), at(50)},
 	} {
 		issue := want.issue
 		if issue.Plan == nil || !reflect.DeepEqual(*issue.Plan, want.plan) {
 			t.Fatalf("%s's plan is %+v, want %+v, the plan its own run wrote", issue.Issue, issue.Plan, want.plan)
 		}
-		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason ||
-			issue.Ratings[0].StepID == "" || issue.Ratings[0].EndedAt == nil {
-			t.Fatalf("%s's ratings are %+v, want one, %d %q, with its record and end", issue.Issue, issue.Ratings, want.rating, want.reason)
+		if len(issue.Ratings) != 1 || issue.Ratings[0].Rating != want.rating || issue.Ratings[0].Reason != want.reason {
+			t.Fatalf("%s's ratings are %+v, want one, %d %q", issue.Issue, issue.Ratings, want.rating, want.reason)
+		}
+		// The retro's record and end, and the issue's title and close, each differ from a value of
+		// the same type beside it (the issue's key, its last end), so each is checked equal.
+		if rated := issue.Ratings[0]; rated.StepID != want.retro || rated.EndedAt == nil || !rated.EndedAt.Equal(want.retroEnded) {
+			t.Errorf("%s's rating is of record %s ended %v, want the retro %s ended %s", issue.Issue, rated.StepID, rated.EndedAt,
+				want.retro, want.retroEnded)
+		}
+		if closed := issueClosedAt(t, handler, issue.Issue); issue.Title != want.title || !issue.ClosedAt.Equal(closed) {
+			t.Errorf("%s is listed with title %q closed %s, want %q closed %s", issue.Issue, issue.Title, issue.ClosedAt, want.title, closed)
 		}
 		if issue.DurationSeconds == nil || *issue.DurationSeconds != want.duration ||
 			issue.StartedAt == nil || !issue.StartedAt.Equal(want.started) || issue.EndedAt == nil || !issue.EndedAt.Equal(want.ended) {
@@ -206,10 +219,20 @@ func TestTheReadOfAProjectListsEachFinishedIssue(t *testing.T) {
 		if issue.FailedSteps != want.failed {
 			t.Fatalf("%s counts %d failed steps, want %d", issue.Issue, issue.FailedSteps, want.failed)
 		}
-		if issue.Title == "" || issue.ClosedAt.IsZero() {
-			t.Fatalf("%s is listed with title %q closed %s, want its title and its close", issue.Issue, issue.Title, issue.ClosedAt)
-		}
 	}
+}
+
+// issueClosedAt is the close of issue key as the issue's own read answers it.
+func issueClosedAt(t *testing.T, handler http.Handler, key string) time.Time {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key, nil, "alice")
+	read := decodeBody[struct {
+		ClosedAt *time.Time `json:"closed_at"`
+	}](t, response)
+	if response.Code != http.StatusOK || read.ClosedAt == nil {
+		t.Fatalf("read %s: status=%d body=%s, want its close", key, response.Code, response.Body.String())
+	}
+	return *read.ClosedAt
 }
 
 // A rating is a retro's: the rating route refuses a record of kind step or merge, and a record the
