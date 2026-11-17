@@ -351,7 +351,8 @@ func TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock(t *testing.T) {
 // placed at the moment its gate opened, and never the position that placement gives an issue,
 // which depends on what else waits.
 //
-// What it proves: no file of the list carries one of the four wordings that claim a position.
+// What it proves: no file of the list carries one of the four wordings that claim a position
+// (positionClaims), as written or, for a Markdown file, as its rendered page shows it.
 // What it does not: whether what a file says instead is true, which stays a reader's to judge,
 // and a wrong wording nobody has written yet, since the list holds the phrases these texts used
 // and no more. internal/workflow keeps the same ban over the files of packages/daemon, which
