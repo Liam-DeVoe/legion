@@ -6,9 +6,9 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemonWhen reports whether r is the code's under test, which carries says: its bearer, or,
@@ -73,16 +73,15 @@ func TestAStandInFailsItsTestOnlyOnTheSourcesOwnReads(t *testing.T) {
 				githubtest.Unexpected(recorded, w, r)
 			}
 		}})
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, url+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, url+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}

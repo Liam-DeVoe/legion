@@ -1,14 +1,14 @@
 package githubrest
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testToken is the installation token every client of this package's tests presents to GitHub.
@@ -71,16 +71,15 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	const metadata = "/computeMetadata/v1/instance/service-accounts/default/identity"
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, server.URL+metadata, nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, server.URL+metadata, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET %s: %v", metadata, err)
 		}
@@ -92,7 +91,7 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 			t.Errorf("GET %s with Authorization %q: status %d, want 404", metadata, stranger, status)
 		}
 	}
-	if _, err := (Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}).Compare(context.Background(), "code", "handoff"); err != nil {
+	if _, err := (Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}).Compare(testwait.Context(t), "code", "handoff"); err != nil {
 		t.Fatalf("the client's own compare: %v", err)
 	}
 	if got := recorded.reported(); len(got) != 0 {

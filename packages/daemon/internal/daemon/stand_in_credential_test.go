@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemon reports whether r carries bearer, the credential the daemon under test presents to
@@ -137,14 +139,14 @@ func (f *failures) reported() []string {
 // ("" for none), and answers the status the stand-in gave.
 func standInRequest(t *testing.T, method, url, authorization string) int {
 	t.Helper()
-	request, err := http.NewRequest(method, url, nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), method, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if authorization != "" {
 		request.Header.Set("Authorization", authorization)
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("send %s %s: %v", method, url, err)
 	}
@@ -196,7 +198,12 @@ func TestAStandInFailsItsTestOnlyOnTheDaemonsOwnRequests(t *testing.T) {
 	if got := recorded.reported(); len(got) != 0 {
 		t.Fatalf("a request without a lease made the stand-in report %q, want nothing", got)
 	}
-	standInRequest(t, http.MethodGet, github.url+"/repos/acme/elsewhere", "Bearer "+string(appauth.Implement)+"-app-token-for-acme")
+	// The implement App's lease as roleTokens mints it for acme/elsewhere.
+	lease, err := roleTokens{}.Token(t.Context(), appauth.Implement, ghrepo.MustParse("acme/elsewhere"))
+	if err != nil {
+		t.Fatalf("mint the implement App's lease: %v", err)
+	}
+	standInRequest(t, http.MethodGet, github.url+"/repos/acme/elsewhere", "Bearer "+lease.Token)
 	if got, want := recorded.reported(), []string{"unexpected GitHub request GET /repos/acme/elsewhere"}; !slices.Equal(got, want) {
 		t.Fatalf("a request with the implement App's lease that the stand-in does not expect made it report %q, want %q", got, want)
 	}
@@ -229,7 +236,15 @@ func TestADaemonStandInStillFailsItsTestOnTheDaemonsOwnUnexpectedRequest(t *test
 		api.requireServed(t)
 		return
 	}
-	child := exec.Command(os.Args[0], "-test.run=^TestADaemonStandInStillFailsItsTestOnTheDaemonsOwnUnexpectedRequest$", "-test.count=1")
+	// The child's deadline is what is left of this test's (testwait.Context), so its own waits give
+	// up the margin before this test's do; with no deadline here (-timeout 0) it has none either. A
+	// child still running where this test's waits give up is killed with the context.
+	waits := testwait.Context(t)
+	timeout := "0"
+	if deadline, bounded := waits.Deadline(); bounded {
+		timeout = time.Until(deadline).String()
+	}
+	child := exec.CommandContext(waits, os.Args[0], "-test.run=^TestADaemonStandInStillFailsItsTestOnTheDaemonsOwnUnexpectedRequest$", "-test.count=1", "-test.timeout="+timeout)
 	child.Env = append(os.Environ(), standInChildEnv+"=1")
 	out, err := child.CombinedOutput()
 	if exit, failed := err.(*exec.ExitError); !failed || exit.ExitCode() != 1 {

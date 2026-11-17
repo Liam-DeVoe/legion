@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // signedByTheApp is the githubtest.Spec.Credential of the App's stand-in GitHub: a bearer whose
@@ -79,16 +81,15 @@ func TestAStandInFailsItsTestOnlyOnTheRedeliverersOwnRequests(t *testing.T) {
 		}
 		return signed + "." + base64.RawURLEncoding.EncodeToString(signature)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, github.url+"/app/hook/deliveries", nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, github.url+"/app/hook/deliveries", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET /app/hook/deliveries: %v", err)
 		}

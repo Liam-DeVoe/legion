@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // anAppCredential is the githubtest.Spec.Credential of a stand-in GitHub a Manager whose App key
@@ -69,14 +71,14 @@ func (f *failures) reported() []string {
 // answers the status the stand-in gave.
 func standInRequest(t *testing.T, url, authorization string) int {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if authorization != "" {
 		request.Header.Set("Authorization", authorization)
 	}
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("send GET %s: %v", url, err)
 	}

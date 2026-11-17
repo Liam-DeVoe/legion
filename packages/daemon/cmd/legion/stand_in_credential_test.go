@@ -7,7 +7,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemon reports whether r carries bearer, the credential the legion command under test
@@ -65,16 +66,15 @@ func TestAStandInDaemonFailsItsTestOnlyOnTheCommandsOwnRequests(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	const metadata = "/computeMetadata/v1/instance/service-accounts/default/identity"
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, server.URL+metadata, nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, server.URL+metadata, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET %s: %v", metadata, err)
 		}

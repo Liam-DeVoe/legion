@@ -9,7 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheSignIn reads the call r carries and says whether it is the sign-in's under test: a JSON
@@ -61,16 +62,15 @@ func TestAStandInFailsItsTestOnlyOnTheSignInsOwnCalls(t *testing.T) {
 	cognito := &fakeCognito{t: recorded}
 	server := httptest.NewServer(cognito)
 	t.Cleanup(server.Close)
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(method, target, body string) int {
-		request, err := http.NewRequest(method, server.URL+"/", strings.NewReader(body))
+		request, err := http.NewRequestWithContext(testwait.Context(t), method, server.URL+"/", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if target != "" {
 			request.Header.Set("X-Amz-Target", "AWSCognitoIdentityProviderService."+target)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("%s %s: %v", method, target, err)
 		}

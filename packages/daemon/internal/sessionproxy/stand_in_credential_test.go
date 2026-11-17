@@ -1,7 +1,6 @@
 package sessionproxy
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,7 +8,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // failures is a testing.TB that keeps each failure a stand-in reports with Errorf instead of
@@ -42,16 +42,15 @@ func TestTheAdminAPIFakeFailsItsTestOnlyOnTheConnectorsOwnCalls(t *testing.T) {
 	f := &adminAPIFake{t: recorded}
 	server := httptest.NewServer(f)
 	t.Cleanup(server.Close)
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, server.URL+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, server.URL+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET: %v", err)
 		}
@@ -83,7 +82,7 @@ func TestTheUpstreamHandsOutOnlyTheProxysOwnDial(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = stranger.Close() })
 	dialer := &fakeDialer{addr: up.listener.Addr().String()}
-	own, err := dialer.Dial(context.Background(), testInstance)
+	own, err := dialer.Dial(testwait.Context(t), testInstance)
 	if err != nil {
 		t.Fatalf("the fake dialer's dial: %v", err)
 	}

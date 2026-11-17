@@ -6,7 +6,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // failures is a testing.TB that keeps each failure a stand-in reports with Errorf instead of
@@ -40,16 +41,15 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 	recorded := &failures{TB: t}
 	g := &github{refs: map[string]string{"main": baseCommit}}
 	url := g.serve(recorded)
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(path, authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, url+path, nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, url+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}
@@ -57,7 +57,9 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 		return response.StatusCode
 	}
 	const metadata = "/computeMetadata/v1/instance/service-accounts/default/identity"
-	for _, stranger := range []string{"", "Bearer another-process-token-not-a-secret", "token installation-token", "Bearer installation-token" + "-read"} {
+	// The last stranger is the client's own token with a read lease's suffix, which no client of
+	// this package sends.
+	for _, stranger := range []string{"", "Bearer another-process-token-not-a-secret", "token installation-token", "Bearer " + widgets(url).Token + "-read"} {
 		for _, path := range []string{metadata, "/repos/acme/widgets/git/ref/heads/main"} {
 			if status := send(path, stranger); status != http.StatusNotFound {
 				t.Errorf("GET %s with Authorization %q: status %d, want 404", path, stranger, status)

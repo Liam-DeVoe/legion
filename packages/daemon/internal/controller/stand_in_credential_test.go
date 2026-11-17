@@ -2,10 +2,10 @@ package controller
 
 import (
 	"bytes"
-	"context"
 	"net/http"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemonWhen reports whether r is the probe's under test, which carries says: for the
@@ -33,19 +33,18 @@ func TestTheListenerStandInRecordsOnlyTheProbesOwnRequests(t *testing.T) {
 	l := &listener{status: http.StatusOK, body: holder("ses_ctl", probeNow)}
 	url := l.serve(t)
 	var log bytes.Buffer
-	if got := newTestProber(url, "envoy-bearer", &log).Probe(context.Background(), "ses_ctl"); got != Live {
+	if got := newTestProber(url, "envoy-bearer", &log).Probe(testwait.Context(t), "ses_ctl"); got != Live {
 		t.Fatalf("Probe = %s, want live; log %s", got, log.String())
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(path, authorization string) int {
-		request, err := http.NewRequest(http.MethodGet, url+path, nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, url+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
 		}

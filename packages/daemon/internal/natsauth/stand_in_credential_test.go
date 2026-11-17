@@ -7,7 +7,8 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fakeServer serves one client, so another process's connection that it served first would take
@@ -25,8 +26,10 @@ func TestAFakeServerServesOnlyTheClientOfItsTest(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = conn.Close() })
-		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-			t.Fatal(err)
+		if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+			if err := conn.SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
 		}
 		return conn
 	}

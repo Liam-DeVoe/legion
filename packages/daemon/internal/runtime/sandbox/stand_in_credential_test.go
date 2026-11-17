@@ -8,7 +8,8 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A request that is not of the code under test's shape, as another process of the machine may
@@ -20,7 +21,7 @@ func TestAStandInRecordsOnlyTheCodesOwnRequests(t *testing.T) {
 		server, credentials := healthServer(t, cacheRepo.String())
 		send := func(method, path, authorization string) int {
 			t.Helper()
-			request, err := http.NewRequest(method, server.URL+path, nil)
+			request, err := http.NewRequestWithContext(testwait.Context(t), method, server.URL+path, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,8 +72,10 @@ func TestAStandInRecordsOnlyTheCodesOwnRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer func() { _ = conn.Close() }()
-			if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
-				t.Fatal(err)
+			if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+				if err := conn.SetDeadline(deadline); err != nil {
+					t.Fatal(err)
+				}
 			}
 			line := method + " " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
 			if method != http.MethodConnect {

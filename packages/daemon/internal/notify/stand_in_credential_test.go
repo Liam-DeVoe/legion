@@ -1,7 +1,6 @@
 package notify
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemonWhen reports whether r is the client's under test, which carries says: under the
@@ -73,19 +74,18 @@ func TestAStandInListenerFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 		mu.Unlock()
 	}))
 	t.Cleanup(server.Close)
-	if _, err := New(server.URL, "envoy-bearer").DeleteSession(context.Background(), "ses_implementer", DeleteConditions{NotRegisteredAfter: time.Now()}); err != nil {
+	if _, err := New(server.URL, "envoy-bearer").DeleteSession(testwait.Context(t), "ses_implementer", DeleteConditions{NotRegisteredAfter: time.Now()}); err != nil {
 		t.Fatalf("DeleteSession: %v", err)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(method, authorization string) int {
-		request, err := http.NewRequest(method, server.URL+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), method, server.URL+"/computeMetadata/v1/instance/service-accounts/default/identity", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("%s: %v", method, err)
 		}

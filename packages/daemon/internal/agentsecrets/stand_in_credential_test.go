@@ -7,7 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemonWhen reports whether r is the client's under test, which carries says: the
@@ -55,16 +56,15 @@ func (f *failures) reported() []string {
 func TestAStandInBrokerFailsItsTestOnlyOnTheClientsOwnWrites(t *testing.T) {
 	recorded := &failures{TB: t}
 	broker, server := newRegistrationBroker(recorded, "pod-uid-1")
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/oauth/exchange/pod-sessions", strings.NewReader("not json"))
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodPost, server.URL+"/v1/oauth/exchange/pod-sessions", strings.NewReader("not json"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}

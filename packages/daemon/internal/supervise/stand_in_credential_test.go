@@ -8,7 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // registrationsToken is the daemon's own token, the bearer of every write its agent-secrets client
@@ -62,16 +63,15 @@ func TestAStandInFailsItsTestOnlyOnTheDaemonsOwnRequests(t *testing.T) {
 	broker := &holdingBroker{t: recorded, pod: "pod-uid-9", holdNext: true, held: make(chan struct{}), release: make(chan struct{}), committed: make(chan struct{})}
 	server := httptest.NewServer(broker)
 	t.Cleanup(server.Close)
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) int {
-		request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/oauth/exchange/pod-sessions", strings.NewReader("not json"))
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodPost, server.URL+"/v1/oauth/exchange/pod-sessions", strings.NewReader("not json"))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
 		}

@@ -8,7 +8,8 @@ import (
 	"slices"
 	"sync"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheDaemon reports whether r carries bearer, the credential the client under test presents
@@ -85,9 +86,8 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 		writeJSON(t, w, []any{})
 	})
 	const metadata = "/computeMetadata/v1/instance/service-accounts/default/identity"
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(authorization string) (int, error) {
-		request, err := http.NewRequest(http.MethodGet, server.URL+metadata, nil)
+		request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, server.URL+metadata, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,7 +97,7 @@ func TestAStandInFailsItsTestOnlyOnTheClientsOwnRequests(t *testing.T) {
 		if authorization != "" {
 			request.Header.Set("Authorization", authorization)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			return 0, err
 		}

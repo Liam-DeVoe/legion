@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // fromTheBridge reads the report r carries and says whether it is the bridge's under test: a
@@ -66,13 +66,12 @@ func TestAStandInFailsItsTestOnlyOnTheBridgesOwnReports(t *testing.T) {
 	rig := &reportingRig{reports: make(chan claim.TurnOutcomeRequest, 16),
 		answer: func(claim.TurnOutcomeRequest) claim.TurnOutcomeResponse { return claim.TurnOutcomeResponse{} }}
 	daemon := rig.serve(recorded)
-	client := &http.Client{Timeout: 10 * time.Second}
 	send := func(method, path string, body []byte) int {
-		request, err := http.NewRequest(method, daemon.URL+path, bytes.NewReader(body))
+		request, err := http.NewRequestWithContext(testwait.Context(t), method, daemon.URL+path, bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
-		response, err := client.Do(request)
+		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("%s %s: %v", method, path, err)
 		}
