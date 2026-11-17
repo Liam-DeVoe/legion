@@ -427,7 +427,7 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	rating, reason := 2, "The plan put the tests after the review."
+	rating, reason := 4, "The plan put the tests after the review."
 	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
 		Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}
 	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
@@ -435,7 +435,7 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 	}
 	for name, want := range map[string]string{
 		"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`, "type": `""`,
-		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "rating": "2",
+		"agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "rating": "4",
 		"rating_reason": `"The plan put the tests after the review."`, "actor": `{"kind":"session","id":"legion-daemon:LEG"}`,
 	} {
 		if got := string(body[name]); got != want {
