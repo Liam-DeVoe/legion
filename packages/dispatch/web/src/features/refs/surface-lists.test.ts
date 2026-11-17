@@ -1639,6 +1639,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "kindRefusal.text",
   },
   {
+    file: `${FEATURES}/conversation/MentionComposer.tsx`,
+    holds:
+      "the composer's words for a refused send: the host's own line for a mark it could not write again, the server's error message, or the composer's wording around it",
+    written: "refusalMessage(refusal, anchor, anchorRefusal)",
+  },
+  {
     file: `${FEATURES}/conversation/held-sends.ts`,
     holds: "the words a mention was typed as, matched against the draft and drawn nowhere",
     written: "mention.text",
@@ -1674,6 +1680,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "first.reason",
   },
   {
+    file: `${FEATURES}/issue-page/IssueActionsMenu.tsx`,
+    holds:
+      "an action control's words, the page's own (`CONTROL_LABELS` and `ANSWER_LINES` in `page-words.ts`, chosen in `IssueHeader.tsx`)",
+    written: "action.text",
+  },
+  {
     file: `${FEATURES}/issue-page/NodeRow.tsx`,
     holds:
       "a boolean: whether the reader picked the option, whose label is matched and drawn nowhere",
@@ -1685,12 +1697,6 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written:
       // biome-ignore lint/suspicious/noTemplateCurlyInString: the call as the file writes it, its template literals included, which is what the walk compares
       'createPortal( <div aria-label={CONTROL_LABELS.contents} aria-modal="true" className={`fixed inset-x-0 top-14 bottom-0 z-50 flex flex-col rounded-t-[14px] shadow-[0_-10px_30px_rgba(0,0,0,0.2)] ${pagePaneBg} ${pageInkText}`} data-testid="issue-outline-sheet" ref={dialog.containerRef} role="dialog" {...{ [NO_HOVER_PREVIEW_ATTRIBUTE]: "" }} > <div className="flex shrink-0 items-start gap-2 px-3.5 pt-2.5"> <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">{tools}</div> <button className={`rounded-[7px] border px-3 py-[3px] text-sm font-medium ${pageHairBorder} ${pagePaperBg} ${pageMutedText} ${focusVisibleRing}`} onClick={() => setOpen(false)} ref={closeButton} type="button" {...pageChrome} > {CONTROL_LABELS.close} </button> </div> <div className="flex min-h-0 flex-1 flex-col overflow-y-auto"> <ContentsChosen.Provider value={() => setOpen(false)}> <ContentsSlot {...slot} /> </ContentsChosen.Provider> </div> </div>, document.body )',
-  },
-  {
-    file: `${FEATURES}/issue-page/decision-review.ts`,
-    holds:
-      "a decision's words joined to the words of the decisions above it, to match a Change's quote against, drawn nowhere",
-    written: "words",
   },
   {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,

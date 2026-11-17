@@ -1189,10 +1189,11 @@ export function ProofDocument({
                 // left with no words: the reading list's `document-open-decision`.
                 title={tooltips ? (question ?? openDecision.question) : undefined}
               >
-                {/* The same load state: the reading list's `document-open-decision`. */}
                 {tooltips ? (
+                  // The same load state: the reading list's `document-open-decision`.
                   <TruncatedText>{question ?? openDecision.question}</TruncatedText>
                 ) : (
+                  // The same load state: the reading list's `document-open-decision`.
                   (question ?? openDecision.question)
                 )}
               </a>

@@ -39,6 +39,7 @@ export type DispatchWritingBox =
   | "ask-thread-reply"
   | "decisions-change"
   | "issue-page-decision-change"
+  | "issue-page-title-editor"
   | "create-issue-spec"
   | "approval-reason"
   | "broadcast"
@@ -66,6 +67,8 @@ export type DispatchWritingBox =
  * - `document-text`: the document's own text, which every reader of that document reads and
  *   which is sent to nobody.
  * - `issue-spec`: the spec document a new issue is created with.
+ * - `issue-title`: an issue's title, which every reader of the issue reads and which is sent to
+ *   nobody.
  * - `approval-reason`: why a reviewer asked for changes on a document.
  * - `architecture-reason`: why an issue touches no component.
  * - `priority-description`: a priority's description, which every reader of the priority reads
@@ -85,6 +88,7 @@ export type DispatchWriting =
   | "broadcast"
   | "document-text"
   | "issue-spec"
+  | "issue-title"
   | "approval-reason"
   | "architecture-reason"
   | "priority-description"
@@ -553,6 +557,19 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: true,
     reach: "Your change",
     write: "comment",
+  },
+  // The new issue page's title, which its heading becomes while the reader edits it
+  // (`IssueTitleRow.tsx`, part I of dispatch://INFRA-1196). It takes no picker.
+  {
+    box: "issue-page-title-editor",
+    covered: false,
+    delivers: false,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTitleRow.tsx"],
+    issueRows: true,
+    reach: "Issue title",
+    reason:
+      "A title is one line of plain text that every page draws as the characters typed, so a reference picked into it would never be drawn as one.",
+    write: "issue-title",
   },
   // The Create issue dialog: the issue has no key yet, so the picker offers everyone who has
   // signed in rather than an issue's people.

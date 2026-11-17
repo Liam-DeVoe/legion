@@ -111,6 +111,8 @@ export function IssueTitleRow({
         {drafts.title === "" || drafts.title.endsWith(" ") ? `${drafts.title}\u200b` : drafts.title}
       </h1>
       {editing ? (
+        // One line of plain text rather than prose, so this box takes no reference picker:
+        // `issue-page-title-editor` in `DISPATCH_WRITING_BOXES` says why.
         <textarea
           aria-describedby={drafts.titleError === null ? undefined : "issue-title-help"}
           aria-label="Issue title"
