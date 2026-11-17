@@ -80,8 +80,8 @@ func compareRuns(left, right Step) int {
 }
 
 // ProjectPlans answers each finished issue of project, an issue whose status is done and whose
-// closed_at is set, newest close first: since and until, each nil for no bound, bound the close
-// to [since, until). Each issue carries its plan (the node of its newest generation, nil where it
+// closed_at is set, newest close first, its close within window ([Since, Until), each nil for no
+// bound). Each issue carries its plan (the node of its newest generation, nil where it
 // has none), the rating of each retro in the order the retros ran, the earliest start and the
 // latest end its runs hold (nil where none holds one), and its count of runs of kind step that
 // failed. A finished issue Legion never ran is listed with none of these.
@@ -89,7 +89,7 @@ func compareRuns(left, right Step) int {
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,
 // whose predicate the literal to_kind implies) to the node rows of its runs and plans.
-func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *time.Time) ([]IssuePlan, error) {
+func ProjectPlans(ctx context.Context, q Queryer, project string, window Window) ([]IssuePlan, error) {
 	rows, err := q.Query(ctx, `
 		select i.key, i.title, i.closed_at, n.kind, n.id, n.attributes, n.made_at
 		from issues i
@@ -100,7 +100,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			and ($2::timestamptz is null or i.closed_at >= $2)
 			and ($3::timestamptz is null or i.closed_at < $3)
 		order by i.closed_at desc, i.key
-	`, project, since, until)
+	`, project, window.Since, window.Until)
 	if err != nil {
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}

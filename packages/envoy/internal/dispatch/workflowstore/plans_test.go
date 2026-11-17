@@ -150,7 +150,7 @@ func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
 		t.Fatalf("the later writes appended %d tuples, want none", len(after)-len(before))
 	}
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", nil, nil)
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	stepRun(t, pool, "LEGX-1", StepKindStep, "reviewer", 4, 1, new(minute(90)), new(minute(95)), ResultFailed)
 
 	counter := &storetest.StatementCounter{}
-	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", nil, nil)
+	read, err := ProjectPlans(context.Background(), storetest.Traced(t, pool, counter, nil), "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -390,7 +390,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		t.Fatalf("the read lists\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(wanted, "\n"))
 	}
 
-	other, err := ProjectPlans(context.Background(), pool, "LEGX", nil, nil)
+	other, err := ProjectPlans(context.Background(), pool, "LEGX", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEGX: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	retroTwo := ratedRetro(t, pool, "LEG-2", 2, minute(32), minute(33), 5, "Two tasks fit the work.")
 	stepRun(t, pool, "LEG-2", StepKindMerge, "merger", 0, 2, nil, new(minute(40)), ResultPassed)
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", nil, nil)
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 2, "Two tasks were one.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The plan was late.")
 
-	read, err := ProjectPlans(context.Background(), pool, "LEG", nil, nil)
+	read, err := ProjectPlans(context.Background(), pool, "LEG", Window{})
 	if err != nil {
 		t.Fatalf("read the plans of LEG: %v", err)
 	}
@@ -514,7 +514,7 @@ func TestProjectPlansFiltersOnClosedAt(t *testing.T) {
 		"both bounds": {&early, &late, []string{"LEG-2", "LEG-1"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			read, err := ProjectPlans(context.Background(), pool, "LEG", window.since, window.until)
+			read, err := ProjectPlans(context.Background(), pool, "LEG", Window{Since: window.since, Until: window.until})
 			if err != nil {
 				t.Fatalf("read the plans of LEG: %v", err)
 			}

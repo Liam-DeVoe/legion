@@ -47,7 +47,9 @@ type planRecordInput struct {
 }
 
 // planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`.
+// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
+// between the three, and a field added to one of them alone fails the build rather than being
+// dropped on the way.
 type planTaskInput struct {
 	ID    string   `json:"id" required:"true"`
 	Steps []string `json:"steps" required:"true"`
@@ -82,7 +84,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	if input.Tasks != nil {
 		tasks = make([]workflowstore.PlanTask, len(input.Tasks))
 		for index, task := range input.Tasks {
-			tasks[index] = workflowstore.PlanTask{ID: task.ID, Steps: task.Steps}
+			tasks[index] = workflowstore.PlanTask(task)
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
@@ -125,7 +127,8 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each bound as the statement compares it: PostgreSQL holds a close to the microsecond, and pgx
 	// would truncate a finer bound onto it (microsecondCeiling).
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, microsecondCeiling(since), microsecondCeiling(until))
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key,
+		workflowstore.Window{Since: microsecondCeiling(since), Until: microsecondCeiling(until)})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -142,7 +145,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			listed.Plan = &plan
 		}
 		for place, rating := range issue.Ratings {
-			listed.Ratings[place] = model.PlanRating{Rating: rating.Rating, Reason: rating.Reason, StepID: rating.StepID, EndedAt: rating.EndedAt}
+			listed.Ratings[place] = model.PlanRating(rating)
 		}
 		// The span is known only where the latest end is not before the earliest start: a run whose
 		// start Dispatch never got that ended before a later run started, whose end has not landed,
@@ -194,7 +197,7 @@ func planRecord(plan workflowstore.Plan) model.PlanRecord {
 		record.Version = &version
 	}
 	for index, task := range plan.Tasks {
-		record.Tasks[index] = model.PlanTask{ID: task.ID, Steps: task.Steps}
+		record.Tasks[index] = model.PlanTask(task)
 	}
 	return record
 }

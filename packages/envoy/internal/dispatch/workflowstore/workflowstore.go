@@ -171,7 +171,8 @@ type StepRead struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan, and its steps in order, each
-// a role or `role:key` (`acceptance:owner`).
+// a role or `role:key` (`acceptance:owner`). It has the fields of model.PlanTask and of the plan
+// write's body, which the route converts between, so a field added to one alone fails the build.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
@@ -211,12 +212,19 @@ type IssuePlan struct {
 }
 
 // Rating is the rating of one retro: the rating and its reason, the id of the retro's run and the
-// moment it ended, nil where its end never arrived.
+// moment it ended, nil where its end never arrived. It has the fields of model.PlanRating, which the
+// route converts it to, so a field added to one alone fails the build rather than being dropped.
 type Rating struct {
 	Rating  int
 	Reason  string
 	StepID  string
 	EndedAt *time.Time
+}
+
+// Window bounds the close of the issues a read of a project lists to [Since, Until), each nil for
+// no bound. It is one value so a read cannot take the two bounds in the wrong order.
+type Window struct {
+	Since, Until *time.Time
 }
 
 // Queryer is the query surface shared by a pool and a transaction. A write takes a pgx.Tx instead,
