@@ -699,6 +699,35 @@ run_check "$root"
 check "exits 1 on pair" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "the step with id pair of publish sets continue-on-error:")"
 
+# The reader rule reads dotted references, matched without regard to case; an if: of the two
+# workflows that reaches the needs or steps context another way is refused outright.
+echo "case: a new reader spelled with index syntax, in upper case, or through toJSON"
+root=$(written spelled-index)
+printf "      - name: Extra\n        if: needs['legion_build'].outputs.skip == 'true'\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on index syntax" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the step \`Extra\` of publish has the if: \`needs\['legion_build'\].outputs.skip == 'true'\`, which uses index syntax")"
+root=$(written spelled-upper)
+printf "      - name: Extra\n        if: NEEDS.LEGION_BUILD.OUTPUTS.SKIP == 'true'\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on upper case" "$(is "$status" 1)"
+check "reads it as a reader the list does not name" \
+  "$(contains "$out" "the step \`Extra\` of publish has the if: \`NEEDS.LEGION_BUILD.OUTPUTS.SKIP == 'true'\`, which reads a checked version step's decision")"
+root=$(written spelled-tojson)
+printf "      - name: Extra\n        if: fromJSON(toJSON(needs)).legion_build.outputs.skip == 'true'\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on a context reached through toJSON" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "which uses a needs or steps reference that is not")"
+root=$(written spelled-filter)
+printf "      - name: Extra\n        if: contains(needs.legion_build.outputs.*, 'true')\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on an object filter" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "which uses an object filter")"
+
 echo "case: a new step that reads release"
 root=$(written reader-new)
 printf '      - name: Announce the release\n        if: steps.confirm.outputs.release == %s\n        run: echo released\n' "'true'" \

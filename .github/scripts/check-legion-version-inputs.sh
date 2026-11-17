@@ -544,6 +544,27 @@ def described(selector):
     return f"step {selector[1]}"
 
 
+# A reference to the needs or steps context in the one form the reader rule reads: a dotted name
+# after it. Matched without regard to case, as GitHub reads the contexts' names.
+CONTEXT = re.compile(r"\b(needs|steps)\b", re.IGNORECASE)
+DOTTED = re.compile(r"(?:needs|steps)\.[A-Za-z_][A-Za-z0-9_-]*\.", re.IGNORECASE)
+
+
+def spelled(path, job_name, selector, cond):
+    """Rule 3's spelling bound, for every if: of the two release workflows, job and step: no index
+    syntax (`[`), no object filter (`.*`), and each needs or steps reference dotted, so that the
+    reader rule, which reads dotted references alone, sees each reader there is."""
+    if not isinstance(cond, str):
+        return
+    odd = (["index syntax `[`"] if "[" in cond else []) + (["an object filter `.*`"] if ".*" in cond else []) + (
+        ["a needs or steps reference that is not `needs.<name>.` or `steps.<name>.`"]
+        if any(not DOTTED.match(cond, m.start()) for m in CONTEXT.finditer(cond)) else [])
+    if odd:
+        problem(f"{described(selector)} of {job_name} has the if: `{cond}`, which uses {' and '.join(odd)}: an if: of "
+                f"this workflow reads the needs and steps contexts by dotted names alone, the one form the check "
+                f"reads a decision reader by", path)
+
+
 def decision_readers(path, doc):
     """Rule 3's readers for the workflow `path`: an if: that reads a checked version step's decision
     - its job's version or skip output through needs.<job>.outputs anywhere in the workflow, the
@@ -553,8 +574,8 @@ def decision_readers(path, doc):
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     jobs = jobs if isinstance(jobs, dict) else {}
     specs = [spec for spec in plan.VERSION_STEPS if spec.workflow == path]
-    anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b")
-                for s in specs if s.outputs]
+    anywhere = [re.compile(rf"\bneeds\.{re.escape(s.job)}\.outputs\.(?:{'|'.join(map(re.escape, s.outputs))})\b",
+                           re.IGNORECASE) for s in specs if s.outputs]
     held = {}    # (job, selector) -> the if: it holds, for the job itself and each of its steps
     index = {}   # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
     keys = {}    # (job, selector) -> the step's keys, for each step
@@ -562,11 +583,13 @@ def decision_readers(path, doc):
     for job_name, job in jobs.items():
         if not isinstance(job, dict):
             continue
-        own = [re.compile(rf"\bsteps\.{re.escape(s.step_id)}\.outputs\.") for s in specs if s.job == job_name]
+        own = [re.compile(rf"\bsteps\.{re.escape(s.step_id)}\.outputs\.", re.IGNORECASE)
+               for s in specs if s.job == job_name]
         checked = {s.step_id for s in specs if s.job == job_name}
         cond = job.get("if")
         held[(job_name, ("job",))] = cond
         index[(job_name, ("job",))] = 0
+        spelled(path, job_name, ("job",), cond)
         if isinstance(cond, str) and any(r.search(cond) for r in anywhere):
             found[(job_name, ("job",))] = cond
         ids = set()
@@ -577,11 +600,12 @@ def decision_readers(path, doc):
             held[(job_name, step_selector(step, n))] = cond
             index[(job_name, step_selector(step, n))] = n
             keys[(job_name, step_selector(step, n))] = set(step)
+            spelled(path, job_name, step_selector(step, n), cond)
             if step.get("id") in checked:
                 continue  # a checked version step's if: is version_step's to hold
             text = cond if isinstance(cond, str) else ""
             if not (any(r.search(text) for r in anywhere + own)
-                    or any(re.search(rf"\bsteps\.{re.escape(i)}\.", text) for i in ids)):
+                    or any(re.search(rf"\bsteps\.{re.escape(i)}\.", text, re.IGNORECASE) for i in ids)):
                 continue
             if isinstance(step.get("id"), str):
                 ids.add(step["id"])
