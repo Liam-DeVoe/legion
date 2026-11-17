@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -100,4 +101,55 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 	write := stepWrite(issue, place, step, role, typ, start.Agent, start.Starts)
 	write.Rating, write.RatingReason = new(rating), new(reason)
 	return e.enqueue(ctx, tx, issue.Key, write)
+}
+
+// stopTask stops w's task of issue where it stands, in the caller's transaction (R16; C2-1): the
+// step the issue stands in ends as end says (endStep), the task keeps its place and becomes
+// stopped with why (record.Store.StopTask), and the issue is held from the phase that place
+// derives for the stopped task (record.HoldTaskStopped), as a failed claim's hold is written
+// (claimFailed). The hold keeps the task's place (moveTask) and the slot of the phase it is from
+// (record.KeepsSlot reads record.StandsAt), and it writes no Dispatch status, since held has none
+// (PhaseStatus). The process of the step's role is stopped with its session kept (the op
+// step_stop, whose source is the daemon's, said as its reason), except for accepting, whose
+// architect is the owner itself and runs no process of Legion's for the step, and a phase no role
+// works. The task's state is the caller's to have read: a task done or left is no task to stop
+// (StopTask refuses it).
+func (e *Engine) stopTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, why, said string, end StepEnd) error {
+	from := record.StandsAt(issue)
+	if err := e.endStep(ctx, tx, issue, end); err != nil {
+		return err
+	}
+	if err := e.store.StopTask(ctx, tx, issue.Key, issue.Generation, w.Task, why); err != nil {
+		return err
+	}
+	issue.Phase, issue.Hold = phase.Held, &record.Hold{From: from, Reason: record.HoldTaskStopped}
+	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		return err
+	}
+	// The stop takes the issue into held, which is a phase change and so a movement (the rule in
+	// dispatchIssue), as a failed claim's hold is.
+	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a task is stopped", "issue", issue.Key, "tree", issue.Tree, "task", w.Task, "from", from, "reason", why)
+	role := phase.RoleFor(from)
+	if role == "" || role == claim.RoleArchitect {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "step_stop", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: said})
+}
+
+// stopUnreturned stops w's task of issue, whose step standing in issue.Phase failed with no step
+// before it of the type implementation to take its work back (R7, returnTarget), as stop_task
+// stops it (stopTask), its step ending as end says; and tells the task's owner once, in a notice
+// of kind task-stopped whose reason names the task and the step. No return happened, so no pass,
+// pair, round or hook is counted.
+func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, end StepEnd) error {
+	place, _ := w.PlaceOf(issue.Phase)
+	why := fmt.Sprintf("step %d (%s) failed and no earlier step of the type implementation can take the work", place.Position, w.Steps[place.Position-1].Role)
+	said := fmt.Sprintf("task %s of %s was stopped: %s", w.Task, issue.Key, why)
+	if err := e.stopTask(ctx, tx, issue, w, why, said, end); err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "task-stopped", Role: claim.Role(w.Steps[place.Position-1].Role), Phase: issue.Phase, Reason: said})
 }

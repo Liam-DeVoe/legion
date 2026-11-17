@@ -2040,6 +2040,17 @@ Left in place, the place a task stands at goes stale while the earlier release m
 With the tables and the columns dropped, each issue the earlier release moved has no plan rows after the roll-forward and goes on as it did.
 What the way back costs is every plan given before the rollback, which its owner gives again.
 
+This release also writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
+It is an op of the `supervise` kind, so the kind check needs no statement, but an earlier release does not know the op: its decode refuses the row (`unknown supervise operation`, `validSuperviseOp` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The stops of the steps of stopped tasks, which an earlier release cannot decode.
+delete from outbox where kind = 'supervise' and payload->>'op' = 'step_stop';
+```
+
+Each deleted row costs the stop of one step's process: that process runs on until its issue closes, and the way back above drops the task's stop with the plan rows.
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.

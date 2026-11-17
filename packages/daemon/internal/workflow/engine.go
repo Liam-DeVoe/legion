@@ -1460,12 +1460,26 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return err
 	}
-	row, ok := w.row(issue.Phase, trigger, target, Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)})
+	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	if !ok {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree); err != nil || lingers {
 		return err
+	}
+	// A failed step of a task with plan rows that names no step to return to returns its work to
+	// the step its plan reads from the steps' recorded types (R7, returnTarget), and where no step
+	// before it can take the work, the task stops instead (stopUnreturned). An issue with no plan
+	// rows returns to implementing, the row's own target, as today.
+	if w.Stored && returnsWork(trigger) && target == "" {
+		to, found := w.returnTarget(issue.Phase)
+		if !found {
+			return e.stopUnreturned(ctx, tx, issue, w, endOfTransition(trigger, issue.Phase, "", handoff))
+		}
+		if row, ok = w.row(issue.Phase, trigger, to, snapshot); !ok {
+			return fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
+		}
 	}
 	// Two counters move here, and they count different things. Every move back to an earlier phase
 	// counts the task a pass: the tester's fail, a review's request for changes, a worker's

@@ -1131,6 +1131,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
 			Topic: "notifications.role.legion-LEGION-208-reviewer"},
 		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "task-stopped", Role: claim.RoleReviewer, Phase: phase.Reviewing,
+			Reason: "task a of LEGION-208 was stopped: step 3 (reviewer) failed and no earlier step of the type implementation can take the work"},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

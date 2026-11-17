@@ -147,14 +147,67 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 }
 
 // row is the row of w's table that moves an issue standing in from on trigger, into target where
-// a target is named, whose guard admits snapshot.
+// a target is named, whose guard admits snapshot. A failed step of a task with plan rows returns
+// its work to the step its plan reads (R7: returnTarget, or the step a completion names), which is
+// an earlier step of the task's line but not always implementing, the one target of the table's
+// two returns (stepRows). Such a return is the table's row of the failed step's trigger with that
+// step as its target (returnRow).
 func (w Walk) row(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
 	for _, row := range w.table() {
 		if row.From == from && row.Trigger == trigger && (target == "" || row.To == target) && (row.Guard == nil || row.Guard(snapshot)) {
 			return row, true
 		}
 	}
+	if w.Stored && returnsWork(trigger) && target != "" {
+		return w.returnRow(from, trigger, target, snapshot)
+	}
 	return Row{}, false
+}
+
+// returnsWork says whether trigger is a failed step returning its task's work to an earlier step
+// (R7): the tester's fail and a review's request for changes. A backward move names its own
+// target, which a backward row of the line serves, and a conflicting head goes back to
+// implementing whatever the plan says (TriggerConflict).
+func returnsWork(trigger TriggerKind) bool {
+	return trigger == TriggerTesterFailed || trigger == TriggerReviewRejected
+}
+
+// returnRow is the return of the failed step standing at from to the earlier step of w's task
+// that runs as target: the table's row of from on trigger, whose target becomes target and whose
+// effects become the effects of a move into target (effectsInto). A target that is not a step of
+// the task before from returns nothing.
+func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
+	at, ok := w.PlaceOf(from)
+	to, before := w.PlaceOf(target)
+	if !ok || !before || at.Kind != record.PlaceStep || to.Kind != record.PlaceStep || to.Position >= at.Position {
+		return Row{}, false
+	}
+	for _, row := range w.table() {
+		if row.From == from && row.Trigger == trigger && (row.Guard == nil || row.Guard(snapshot)) {
+			row.To, row.Effects = target, effectsInto(target)
+			return row, true
+		}
+	}
+	return Row{}, false
+}
+
+// returnTarget is the step the failed step of w's task standing at from returns the work to when
+// the completion names none (R7): the first step before it whose recorded type is implementation
+// (record.PlanStep.Type), as the phase that step runs as. ok is false where no step before it has
+// that type: the task then stops (stopUnreturned). Each failed step a plan of this release can
+// hold comes after its implementer (plan.Supported), so only a stored type that no plan gives
+// reaches that answer.
+func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
+	at, ok := w.PlaceOf(from)
+	if !ok || at.Kind != record.PlaceStep {
+		return "", false
+	}
+	for i, step := range w.Steps[:at.Position-1] {
+		if step.Type == string(plan.TypeImplementation) {
+			return w.steps()[i], true
+		}
+	}
+	return "", false
 }
 
 // table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)

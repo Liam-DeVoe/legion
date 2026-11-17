@@ -69,6 +69,7 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/engine.go", fn: "Engine.transition"}:           {calls: 2, test: "TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody"},
 	{file: "internal/workflow/engine.go", fn: "noticeFor"}:                   {calls: 3, test: "TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole"},
 	{file: "internal/workflow/engine.go", fn: "Engine.phaseEnded"}:           {calls: 1, test: "TestAConflictTellsTheRoleWhosePhaseEndedOnItsOwnTopic"},
+	{file: "internal/workflow/plan.go", fn: "Engine.stopTask"}:               {calls: 1, test: "TestAReturnWithNoImplementationStepStopsTheTask"},
 	{file: "internal/workflow/gate.go", fn: "Engine.tellGateMoved"}:          {calls: 1, test: "TestEveryPhaseHolderAndTheRootArchitectAreToldTheGateClosedAndOpened"},
 	{file: "internal/workflow/review.go", fn: "Engine.tellChecks"}:           {calls: 1, test: "TestASettlementMovesNothingAndTellsTheThreeRoles"},
 	{file: "internal/workflow/resume.go", fn: "Engine.suspendedPhaseOwners"}: {calls: 1, test: "TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting"},

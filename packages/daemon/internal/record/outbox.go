@@ -784,7 +784,11 @@ func NoticePerClaim(kind NoticeKind) bool {
 // its session too, as one role stop of an idle pod's release, and is its own op rather than a
 // second "suspend" because the open-issue invariant reads the op to say which act it is reading —
 // a suspend stops a role of an issue the workflow is taking out, a release stops a role of an
-// issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
+// issue that stays in the workflow and comes back at the next wake; "step_stop" stops the process
+// of the step a stopped task ran and keeps its session, as a suspend does and from the same source
+// (the daemon), and is its own op for the same reason a release is: the stopped task's issue stays
+// in the workflow, held, until a later version of its plan starts the task again (workflow's
+// stopTask); "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
 // child issue's close as done, which ends the claim as a tree close does and drops its session,
 // since the issue is finished and its next run, should a person set it todo again, starts fresh.
@@ -1878,13 +1882,17 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `task-stopped` is the task a failed step stopped because no step before it of the type
+// implementation can take its work back (workflow's stopUnreturned): its issue is held, and the
+// task's owner reads which task and which step in its reason.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault",
+	"session-lost", "session-store-fault", "task-stopped",
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.
@@ -1947,7 +1955,7 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 
 func validSuperviseOp(op SuperviseOp) bool {
 	switch op {
-	case "start", "suspend", "release", "tree_close", "issue_close":
+	case "start", "suspend", "release", "step_stop", "tree_close", "issue_close":
 		return true
 	default:
 		return false

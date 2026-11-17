@@ -2109,7 +2109,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		}
 		return nil
-	case "suspend":
+	case "suspend", "step_stop":
+		// A step stop is a suspend of the process of the step a stopped task ran (workflow's
+		// stopTask): the same fence, the same source (the daemon), so the session stays, the
+		// step's pending task retires with it (supervise's RetiresPhaseTask), the stranded report
+		// passes over it and an idle release cannot take it over. It is an op of its own only so
+		// the open-issue invariant can tell it from the stop of an issue the workflow takes out.
 		if !found {
 			return r.stopWithoutMachine(ctx, row, token)
 		}
@@ -2120,17 +2125,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// Whether the suspend still acts is workflow.StopActs's rule, which promotion reads too.
 		if last := machine.Claim().LastStartRow; !workflow.StopActs(row.ID, payload, last, nil) {
-			r.log.Info("outbox suspend superseded by a newer start; finished without acting",
+			r.log.Info("outbox "+string(payload.Op)+" superseded by a newer start; finished without acting",
 				"row", row.ID, "issue", issue.Key, "role", payload.Role, "phase", issue.Phase, "start-row", last)
 			return nil
 		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
 			return fmt.Errorf("suspend claim %s: %w", token, err)
 		}
-		// A linger, a park, a hand-over and a close all stop a claim through this one row, and
-		// each takes a released claim over: the machine re-stamps the suspension's source and
-		// this drops the backstop the release left behind, so no later backstop acts on a claim
-		// this suspension now owns. The bundle stays: the issue comes back.
+		// A linger, a park, a hand-over, a close and a stopped task all stop a claim through this
+		// one body, and each takes a released claim over: the machine re-stamps the suspension's
+		// source and this drops the backstop the release left behind, so no later backstop acts on
+		// a claim this suspension now owns. The bundle stays: the issue comes back.
 		r.takeOverRelease(ctx, row.Issue)
 		return nil
 	case "release":
