@@ -25,19 +25,23 @@ stored result as JSON and exits 0. A write that landed with its answer lost prin
 `{"landed_without_answer":"<code>"}` and exits 0: the result is stored, and that includes a 201
 that names the request's key back, as Dispatch's does, whose body gives no stored result (cut,
 stalled, no JSON, empty, or JSON of another shape: `ANSWER_LOST`), and a `409 KEY_COMMITTED` that
-names it back. A 2xx that names another request's key back, or names none and gives no stored
-result, and a `409 KEY_COMMITTED` that does not name the key back, each print
-`write_outcome_unknown`: such an answer may be a proxy's page or a server that is not Dispatch,
-or a Dispatch that stored the result and answered without the key and without the result (a build
-older than the key's echo, or one behind a proxy that drops the header), so the result may be
-stored, and a second run is safe. A
-redirect is not followed: it is a refusal of whatever answered in Dispatch's place, names the
-origin it points at (its scheme and host, never its path or query), and exits 1. A write that
+names it back. A 2xx that names no key back is the stored result only where it holds the project,
+check, verdict and commit that the call sent. The answer of a Dispatch older than the key's echo
+holds them. Two other answers print `write_outcome_unknown`. One is a 2xx that names another
+request's key back, or names none and gives no stored result or another call's result. The other
+is a `409 KEY_COMMITTED` that does not name the key back. Such an answer may be a proxy's
+page or a server that is not Dispatch. It may also come from a Dispatch that stored the result and
+answered without the key and without the result. That is a build older than the key's echo, or
+one behind a proxy that drops the header. So the result may be stored, and a second run is safe.
+[`write-answers.md`](write-answers.md) gives these rules for every write. The command follows no
+redirect: a redirect is a refusal of whatever answered in Dispatch's place. Its line names the
+origin that the redirect points at: its scheme and host, never its path or query. It names nothing
+of the answer's body, and the command exits 1. A write that
 reached Dispatch with no answer that says whether it stored the result (`writeOutcomeUnknown`)
 prints `{"write_outcome_unknown":"<code>"}`, the code of its last failure such as `ECONNRESET` or
 `HTTP_200`, and exits 1: the result may be stored, and a second run is safe, because Dispatch keeps
-each result. An empty `--project` or `--check`, as an empty variable of the step gives it, is
-refused before any request with exit 2, naming the flag. A call
+each result. The command refuses an empty `--project`, `--check` or `--commit` before any request,
+with exit 2, and names the flag. An empty variable of the step gives such a value. A call
 that the broker's rate limit (429), a broker that cannot answer the trade (a 5xx, or no answer
 within the trade's own 30 s) or Dispatch's check
 of the job's token (`429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE`, `tokenNotChecked`)
