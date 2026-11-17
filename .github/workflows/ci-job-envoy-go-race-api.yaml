@@ -45,7 +45,9 @@ jobs:
     # kept by hand. The script reads the leg count and this leg's index from the matrix itself
     # (strategy.job-total, strategy.job-index), so this list is the one place the count is
     # written: a leg added here re-splits every shard. Every leg pays the race compile again,
-    # about 2.3 minutes, and runs one shard of the package.
+    # about 2.3 minutes, and runs one shard of the package. Measured in run 43903619730 at
+    # d61e8261f5: legs 1 to 3 ran 708, 736 and 730 of the 2,174 tests, and their go test took
+    # 515.9 s, 476.6 s and 384.8 s, each under the 1,080 s bar.
     # fail-fast is off so one leg's failure leaves the others to name theirs, as one job did.
     strategy:
       fail-fast: false
