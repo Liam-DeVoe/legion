@@ -341,29 +341,13 @@ export function NodeRow({
           )}
           {more || (!oneLine && !trailInWords && trail !== null) ? (
             <p className="flex min-w-0 flex-wrap items-baseline">
-              {/* A press on it leaves the focus where it is: focusing the row would draw the
-                  words whole under the pointer and move the control before the press ends, so
-                  the press would land on nothing. */}
               {more ? (
-                <button
-                  className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-                  data-node-more=""
-                  onClick={() => setOpened((held) => !held)}
-                  onMouseDown={(event) => event.preventDefault()}
-                  tabIndex={tabStops ? undefined : -1}
-                  type="button"
-                  {...pageChrome}
-                >
-                  {opened ? (
-                    CONTROL_LABELS.read_less
-                  ) : (
-                    <>
-                      {CONTROL_LABELS.read_more} ·{" "}
-                      <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-                      {CONTROL_LABELS.read_more_words}
-                    </>
-                  )}
-                </button>
+                <MoreWords
+                  hidden={clamp.hidden}
+                  onToggle={() => setOpened((held) => !held)}
+                  opened={opened}
+                  tabStops={tabStops}
+                />
               ) : null}
               {trailInWords ? null : trail}
             </p>
@@ -527,11 +511,11 @@ export function useRowOnScreen(
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
  *  own words rather than a kind it revealed (R34: "as one tag where the node has a typed
  *  kind"). Every other kind is a typed node, and its tag names it. */
-const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
+export const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
 
 /** A node's colour, as `pageKindBullet` and `pageKindTag` name them, by what it is and, for a
  *  turn, by who wrote it: a person's words are the ink, an agent's the quiet grey. */
-type Tone = keyof typeof pageKindBullet;
+export type Tone = keyof typeof pageKindBullet;
 
 function toneOf(type: NodeType, author: AuthorKind): Tone {
   switch (type) {
@@ -634,7 +618,7 @@ function Bullet({
  * author for draws none here: its body says so (`NodeBody`, ruling 5). From 761 px up it is a
  * column as wide as its first line; on a phone it is one small line under the words (ruling 4).
  */
-function RowMargin({
+export function RowMargin({
   author,
   context,
   node,
@@ -1045,17 +1029,13 @@ export function NodeEdges({
  * target's name is plain words already (`tree-drafts.ts`'s `treeContext` names every kind of
  * target in plain words, decisions 66 and 88), so it is drawn as it stands, with no markdown
  * pass: a pass would read "1. Stand the harness up." as a list and draw it without its number.
- *
- * `ambiguous` is part F's `NodeChip.ambiguous`, which its `chipOf` sets where the read answers
- * `ReferenceTarget.ambiguous` (decision 89); the prop names it until F's head that carries it
- * is merged here.
  */
 function Chip({
   chip,
   label,
   tabStops,
 }: {
-  chip: NodeChip & { readonly ambiguous?: true };
+  chip: NodeChip;
   label?: string;
   tabStops: boolean;
 }): ReactNode {
@@ -1156,26 +1136,7 @@ function NodeBody({
       data-node-body=""
       data-pinned={pinned ? "" : undefined}
     >
-      {author.kind === "unknown" ? (
-        <p
-          className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-          data-author-kind={author.kind}
-          data-node-author=""
-        >
-          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
-          <span {...pageChrome}>{author.name}</span>
-        </p>
-      ) : author.kind === "agent" && agentRoleWord(author.name) !== author.name ? (
-        <p
-          className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-          data-node-author-title=""
-        >
-          <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
-          <span className="min-w-0 break-words" {...authorText}>
-            {author.name}
-          </span>
-        </p>
-      ) : null}
+      <BodyAuthor author={author} />
       <NodeFacts facts={node.facts} tabStops={tabStops} />
       {node.gaps.map((gap) => (
         <p className={`text-xs ${pageQuietText}`} key={gap} {...pageChrome}>
@@ -1198,18 +1159,113 @@ function NodeBody({
           tabStops={tabStops}
         />
       ) : null}
-      <p>
-        <button
-          className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
-          onClick={onPin}
-          tabIndex={tabStops ? undefined : -1}
-          type="button"
-          {...pageChrome}
-        >
-          {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
-        </button>
-      </p>
+      <KeepOpen onPin={onPin} pinned={pinned} tabStops={tabStops} />
     </div>
+  );
+}
+
+/** Who made the focused node, in its body (R6, R9, ruling 5): "Author unknown", with its own
+ *  shape, where the model holds no author, and an agent's session's whole title where the row
+ *  names the agent by its role's word alone (ruling 6); nothing for any other author, whom the
+ *  row already names whole. */
+export function BodyAuthor({
+  author,
+}: {
+  author: { readonly kind: AuthorKind; readonly name: string };
+}): ReactNode {
+  if (author.kind === "unknown") {
+    return (
+      <p
+        className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+        data-author-kind={author.kind}
+        data-node-author=""
+      >
+        <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
+        <span {...pageChrome}>{author.name}</span>
+      </p>
+    );
+  }
+  if (author.kind !== "agent" || agentRoleWord(author.name) === author.name) return null;
+  return (
+    <p
+      className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
+      data-node-author-title=""
+    >
+      <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
+      <span className="min-w-0 break-words" {...authorText}>
+        {author.name}
+      </span>
+    </p>
+  );
+}
+
+/** Keep open, which holds the focused node's body open after the focus leaves it, and "Let
+ *  close" while it does, so a second press lets it close (R6). Out of the tab order unless
+ *  `tabStops` holds. */
+export function KeepOpen({
+  onPin,
+  pinned,
+  tabStops,
+}: {
+  onPin: () => void;
+  pinned: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  return (
+    <p>
+      <button
+        className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
+        onClick={onPin}
+        tabIndex={tabStops ? undefined : -1}
+        type="button"
+        {...pageChrome}
+      >
+        {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
+      </button>
+    </p>
+  );
+}
+
+/**
+ * The control under cut words (ruling 1): "more · N words", `hidden` the words the cut holds
+ * back, which draws the rest in place, and "less" once `opened` holds. A press on it leaves the
+ * focus where it is: focusing the row would draw the words whole under the pointer and move the
+ * control before the press ends, so the press would land on nothing. It is out of the tab order
+ * unless `tabStops` holds. A row of the outline and `CutWords` draw it, and so can any view that
+ * cuts a node's words; `className` adds the place it takes in its own box.
+ */
+export function MoreWords({
+  className,
+  hidden,
+  onToggle,
+  opened,
+  tabStops,
+}: {
+  className?: string;
+  hidden: number;
+  onToggle: () => void;
+  opened: boolean;
+  tabStops: boolean;
+}): ReactNode {
+  return (
+    <button
+      className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}${className === undefined ? "" : ` ${className}`}`}
+      data-node-more=""
+      onClick={onToggle}
+      onMouseDown={(event) => event.preventDefault()}
+      tabIndex={tabStops ? undefined : -1}
+      type="button"
+      {...pageChrome}
+    >
+      {opened ? (
+        CONTROL_LABELS.read_less
+      ) : (
+        <>
+          {CONTROL_LABELS.read_more} · <span {...authorText}>{hidden.toLocaleString()}</span>{" "}
+          {CONTROL_LABELS.read_more_words}
+        </>
+      )}
+    </button>
   );
 }
 

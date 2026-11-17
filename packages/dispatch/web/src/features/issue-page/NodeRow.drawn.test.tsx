@@ -3,11 +3,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
-import type { IssueChild } from "../../api/types";
+import type { DisplayTree, IssueChild } from "../../api/types";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
@@ -16,6 +16,7 @@ import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
 import { NodeOptions, NodeRow } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
+import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import {
   type AuthorKind,
@@ -28,6 +29,7 @@ import {
 import { RowText } from "./RowText";
 import { ReferenceNamesProvider, usePublishReferenceNames } from "./reference-names";
 import { ProvidersSlot } from "./slots/providers";
+import { addressesAsShortForms } from "./tree-drafts";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R1, R6, R9,
@@ -267,6 +269,23 @@ test("a folded branch draws its first line and its count, and its focus its word
     ).toBe(`3 ${CONTROL_LABELS.folded_rows}`);
   } finally {
     focused.unmount();
+  }
+});
+
+// Decision 95: a folded branch's one line writes a bare address in its words as its target's
+// short form, as every one line of a node does (`lineWords`); its body keeps the address as its
+// author wrote it.
+test("a folded branch's line writes a bare address as its short form", () => {
+  const address = "dispatch://CORE-1/spec#b-r1";
+  const text = `Read ${address} before the rows.`;
+  const folded = node({ held: 1, id: "comment-1", text, tree: displayTree(text), type: "comment" });
+  const shut = renderRow(folded, { body: false, expanded: false, folded: 1 });
+  try {
+    const line = shut.container.querySelector("[data-node-first-line]")?.textContent ?? "";
+    expect(line, "the folded line draws the address as written").not.toContain("dispatch://");
+    expect(line).toBe(`Read ${addressesAsShortForms(address)} before the rows.`);
+  } finally {
+    shut.unmount();
   }
 });
 
@@ -667,7 +686,7 @@ test("a chip named as a numbered step draws its number", () => {
 // and the read answers it gone and ambiguous. Its chip draws the reference as its author wrote
 // it, as words with no link, and never as a target deleted.
 test("a chip of an ambiguous short reference draws the reference as written, not as deleted", () => {
-  const ambiguous: NodeChip & { readonly ambiguous: true } = {
+  const ambiguous: NodeChip = {
     ambiguous: true,
     answered: true,
     gone: true,
@@ -744,6 +763,179 @@ test("a chip in a node's words draws its target's plain words, a numbered step's
     });
   } finally {
     view.unmount();
+  }
+});
+
+// Decision 102: the batched read's names are named as chips once for each answer of the read,
+// not once for each row. A block's name is its whole reading, so naming every name again for
+// every row cost the page seconds on an issue of 650 rows.
+test("the read's names are named as chips once per answer, not once per row", async () => {
+  const names = new Map(
+    Array.from({ length: 30 }, (_unused, at) => [
+      `dispatch://CORE-1/spec#b-r${at}`,
+      `The words of statement ${at}, which run on well past the room a chip has.`,
+    ])
+  );
+  const target = "dispatch://CORE-1/spec#b-r0";
+  const text = `It follows ${target}.`;
+  const named = spyOn(nodeRowChip, "chipWords");
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Named names={names}>
+            {Array.from({ length: 20 }, (_unused, at) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: twenty rows of one text.
+              <RowText key={at} markdown={text} tree={displayTree(text)} />
+            ))}
+          </Named>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await waitFor(() => {
+      const chips = view.container.querySelectorAll(`a[data-row-reference="${target}"]`);
+      expect(chips).toHaveLength(20);
+      expect(chips[19]?.textContent).toBe("The words of statement 0, which…");
+    });
+    // A row names a reference the read has not answered by its address alone (`""`), which
+    // costs nothing; each of the read's names is named once.
+    const ofNames = named.mock.calls.filter(([name]) => name !== "");
+    expect(ofNames.length, "every row named the read's names again").toBeLessThanOrEqual(
+      names.size
+    );
+  } finally {
+    view.unmount();
+    named.mockRestore();
+  }
+});
+
+/** Where the router stands and how it got there, drawn so a test reads them. */
+function Where(): ReactNode {
+  const at = useLocation();
+  const how = useNavigationType();
+  return <output data-how={how} data-where="">{`${at.pathname}${at.hash}`}</output>;
+}
+
+/** A node's words drawn at the address `at` under the read's `names`, with the router's place
+ *  beside them. `click` dispatches a click on `link` and answers whether the browser was left to
+ *  follow it, and then stops the browser: the unit suite's document loads no page. */
+function drawWordsAt(
+  at: string,
+  text: string,
+  tree: DisplayTree | undefined,
+  names: ReadonlyMap<string, string>
+) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[at]}>
+        <ReferenceNamesProvider>
+          <Named names={names}>
+            <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+            <Where />
+          </Named>
+        </ReferenceNamesProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const place = () => view.container.querySelector("[data-where]");
+  return {
+    click(link: Element | null, init: MouseEventInit = {}): boolean {
+      let left = false;
+      const stop = (event: Event) => {
+        left = !event.defaultPrevented;
+        event.preventDefault();
+      };
+      document.addEventListener("click", stop);
+      try {
+        act(() => {
+          link?.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, cancelable: true, ...init })
+          );
+        });
+      } finally {
+        document.removeEventListener("click", stop);
+      }
+      return left;
+    },
+    how: () => place()?.getAttribute("data-how"),
+    view,
+    where: () => place()?.textContent,
+  };
+}
+
+// A reference in a row's words is a link of this application: a plain click follows it in place,
+// as a link the router draws does, and never loads the whole page again. A click with a key
+// held is the browser's, which opens it elsewhere. Both the words drawn as stored and the words
+// drawn from their reading, whose links the row's own pass makes, are read.
+test("a reference in a row's words is followed in place on a plain click", async () => {
+  const target = "dispatch://CORE-1/spec#b-r1";
+  const text = `It follows ${target}.`;
+  const names = new Map([[target, "Draw the rows."]]);
+  for (const tree of [undefined, displayTree(text)]) {
+    const drawn = drawWordsAt("/issues/CORE-1", text, tree, names);
+    try {
+      const link = await waitFor(() => {
+        const found = drawn.view.container.querySelector(`a[data-row-reference="${target}"]`);
+        expect(found?.textContent).toBe("Draw the rows.");
+        return found;
+      });
+      expect(drawn.click(link, { ctrlKey: true }), "a click with a key held was stopped").toBe(
+        true
+      );
+      expect(drawn.where(), "a click with a key held was followed in place").toBe("/issues/CORE-1");
+      expect(drawn.click(link), "a plain click was left to load the page").toBe(false);
+      expect(drawn.where()).toBe("/issues/CORE-1/spec#b-r1");
+      expect(drawn.how()).toBe("PUSH");
+    } finally {
+      drawn.view.unmount();
+    }
+  }
+});
+
+// The origin also serves paths the server answers itself, which the page has no route for: a
+// link to its API is the browser's to load, never the router's, which would draw "not found".
+test("a link in a row's words to a path the server answers is left to the browser", async () => {
+  const text = "Read [the issue](/api/v1/issues/CORE-1) as JSON.";
+  const drawn = drawWordsAt("/issues/CORE-1", text, displayTree(text), new Map());
+  try {
+    const link = await waitFor(() => {
+      const found = drawn.view.container.querySelector('a[href="/api/v1/issues/CORE-1"]');
+      expect(found).not.toBeNull();
+      return found;
+    });
+    expect(drawn.click(link), "the router followed a path the server answers").toBe(true);
+    expect(drawn.where()).toBe("/issues/CORE-1");
+  } finally {
+    drawn.view.unmount();
+  }
+});
+
+// The router's own `Link` replaces the reader's place when it points at that place, so Back
+// leaves the page; a link in a row's words does the same, as a tie's chip to that address does.
+test("a link in a row's words to the address the reader is at replaces it", async () => {
+  const target = "dispatch://CORE-1/spec#b-r1";
+  const text = `It follows ${target}.`;
+  const drawn = drawWordsAt(
+    "/issues/CORE-1/spec#b-r1",
+    text,
+    undefined,
+    new Map([[target, "Draw the rows."]])
+  );
+  try {
+    const link = await waitFor(() => {
+      const found = drawn.view.container.querySelector(`a[data-row-reference="${target}"]`);
+      expect(found).not.toBeNull();
+      return found;
+    });
+    expect(drawn.click(link)).toBe(false);
+    expect(drawn.where()).toBe("/issues/CORE-1/spec#b-r1");
+    expect(drawn.how(), "a link to the reader's own place pushed a second entry").toBe("REPLACE");
+  } finally {
+    drawn.view.unmount();
   }
 });
 
