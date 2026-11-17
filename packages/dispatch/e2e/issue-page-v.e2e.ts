@@ -59,6 +59,7 @@ import {
   paintedMarks,
   RUNBOOK,
   readServed,
+  refuseBlocksRead,
   STATEMENT_B_WORDS,
   seedLinkedChecks,
   tabWalk,
@@ -81,8 +82,9 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  * the view's cards through `e2e/issue-page-v.ts`, whose measures fail where the view draws no
  * card.
  *
- * Rows 1 and 2 come from an earlier `e2e/issue-layout.e2e.ts`, and rows 3 and 4 are new, each
- * under the title the Verification document names it by.
+ * The file holds eight rows. Rows 1 and 2 come from an earlier `e2e/issue-layout.e2e.ts`, and the
+ * other six were written for this view; each runs under the title the Verification document
+ * names it by.
  */
 
 /** The issue's results read, which row 1 rewrites to draw the seventh state. */
@@ -1031,13 +1033,7 @@ test("the Verification view keeps its rows when its document's blocks read fails
 
     // From here on the Verification document's blocks read is refused, as many times as the page
     // asks it.
-    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
-    let refusals = 0;
-    const refuse = async (route: Route) => {
-      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-      refusals += 1;
-    };
-    await page.route(blocksRoute, refuse);
+    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
 
     // The view off, from a row of it: the outline takes its place.
     await verificationCard(page, ids[0] ?? "").focus();
@@ -1058,7 +1054,7 @@ test("the Verification view keeps its rows when its document's blocks read fails
       body: "Read this before the checks.",
     });
     await expect
-      .poll(() => refusals, {
+      .poll(() => blocksRead.refusals(), {
         message: "the page does not ask the Verification document's blocks again, three times",
       })
       .toBeGreaterThanOrEqual(3);
@@ -1081,7 +1077,7 @@ test("the Verification view keeps its rows when its document's blocks read fails
         message: "a statement draws otherwise once the blocks read failed after the view answered",
       })
       .toEqual(truth);
-    await page.unroute(blocksRoute, refuse);
+    await blocksRead.lift();
   });
 });
 
@@ -1153,17 +1149,10 @@ test("the Verification view says nothing of a check's statements before the Veri
     // The blocks read refused from the first load, as many times as the page asks it (two
     // retries after the first): the view says so in one line with a Retry, over a tree that
     // holds no card and no row, and draws nothing its reads do not say.
-    let refusals = 0;
-    const refusedThrice = Promise.withResolvers<void>();
-    const refuse = async (route: Route) => {
-      refusals += 1;
-      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-      if (refusals >= 3) refusedThrice.resolve();
-    };
-    await page.route(blocksRoute, refuse);
+    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
     const refusedReads = readsAnswered();
     await openPreset(page, seeded.key, "verification");
-    await Promise.all([refusedReads, refusedThrice.promise]);
+    await Promise.all([refusedReads, blocksRead.refused(3)]);
     const failedLine = verificationUnreadable(page, "blocks");
     const retry = failedLine.getByRole("button", { exact: true, name: "Retry" });
     await expect(
@@ -1194,7 +1183,7 @@ test("the Verification view says nothing of a check's statements before the Veri
 
     // The refusal lifted, Retry asks the blocks read again, and the view settles on each
     // statement's check.
-    await page.unroute(blocksRoute, refuse);
+    await blocksRead.lift();
     await retry.click();
     await expect
       .poll(() => readServed(page, ids), {
@@ -1296,13 +1285,7 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
-    let refusals = 0;
-    const refuse = async (route: Route) => {
-      refusals += 1;
-      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
-    };
-    await page.route(blocksRoute, refuse);
+    const blocksRead = await refuseBlocksRead(page, seeded.verificationArtifactId);
     await openPreset(page, seeded.key, "verification");
     const body = verificationBody(page);
     const retry = verificationUnreadable(page, "blocks").getByRole("button", {
@@ -1347,7 +1330,7 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
     // Enter on Retry while the read is still refused: the read is asked again, refused again,
     // and its line comes back, and at no reading is the focus on the page's body.
     await retry.focus();
-    const asked = refusals;
+    const asked = blocksRead.refusals();
     await page.keyboard.press("Enter");
     await nextFrames(page);
     expect(
@@ -1355,7 +1338,9 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
       "Enter on Retry leaves the focus on the page's body while the read is asked again"
     ).toBe(false);
     await expect
-      .poll(() => refusals - asked, { message: "Retry does not ask the blocks read again" })
+      .poll(() => blocksRead.refusals() - asked, {
+        message: "Retry does not ask the blocks read again",
+      })
       .toBeGreaterThanOrEqual(3);
     await expect(retry, "the read refused again draws no Retry").toHaveCount(1);
     await nextFrames(page);
@@ -1370,7 +1355,7 @@ test("the Verification view keeps the focus in the view when Retry is pressed by
 
     // The refusal lifted, Enter on Retry: the read answers and the view draws its rows, the
     // focus stays in the view, and the tree answers `j`.
-    await page.unroute(blocksRoute, refuse);
+    await blocksRead.lift();
     await retry.focus();
     await page.keyboard.press("Enter");
     await nextFrames(page);
