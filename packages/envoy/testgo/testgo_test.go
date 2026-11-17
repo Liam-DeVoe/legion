@@ -69,7 +69,7 @@ func TestTheStalledGoCommand(t *testing.T) {
 }
 
 // Output returns go's standard output alone, hands its standard error to a writer the caller set
-// as well, and fails with the exit status and both streams.
+// as well, fails with the exit status and both streams, and refuses a command whose Stdout is set.
 func TestOutputReturnsStandardOutputAndFailsWithBothStreams(t *testing.T) {
 	dir := t.TempDir()
 	stand := "#!/bin/sh\necho to-stdout\necho to-stderr >&2\nexit 3\n"
@@ -90,7 +90,14 @@ func TestOutputReturnsStandardOutputAndFailsWithBothStreams(t *testing.T) {
 		!strings.Contains(err.Error(), "to-stdout\n") || !strings.Contains(err.Error(), "to-stderr\n") {
 		t.Errorf("the error is %v, want the exit status and both streams", err)
 	}
-	if _, err := Output(&exec.Cmd{Path: cmd.Path, Stdout: io.Discard}); err == nil {
-		t.Error("Output ran a command whose Stdout was set; want it refused")
+	// A go that exits 0, so only the refusal itself can make this call fail: run, it returns no
+	// error.
+	succeeding := filepath.Join(dir, "go-succeeds")
+	if err := os.WriteFile(succeeding, []byte("#!/bin/sh\necho ran\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Output(&exec.Cmd{Path: succeeding, Stdout: io.Discard})
+	if err == nil || !strings.Contains(err.Error(), "cmd.Stdout is set") {
+		t.Errorf("Output of a command whose Stdout was set returned %v, want it refused", err)
 	}
 }
