@@ -31,6 +31,8 @@ func TestEveryClauseAnswersTrueOrFalseNeverNull(t *testing.T) {
 		"PartyClause over no parties":                             PartyClause("null::text[]", "$1"),
 		"PartyClause over another's parties":                      PartyClause("array['person:dave@example.com', 'session:session-of-nobody']", "$1"),
 		"OpenClause":                                              OpenClause("$1"),
+		"ListsClause over a missing key":                          ListsClause("null::text", "$1"),
+		"ListsClause over a project no list names":                ListsClause("'OTHER'", "$1"),
 		"IssueProjectClause over a missing key":                   IssueProjectClause("null::text", "$1"),
 		"IssueProjectClause over no issue":                        IssueProjectClause("'NOPE-1'", "$1"),
 		"ItemOwnerClause over no owner":                           ItemOwnerClause("null::text", "null::uuid", "$1"),

@@ -248,6 +248,7 @@ func TestEverySQLFragmentStartsWithTheMarker(t *testing.T) {
 		"VisibleProjectsSQL":   VisibleProjectsSQL(),
 		"ProjectClause":        ProjectClause("p.key", "$1"),
 		"OpenClause":           OpenClause("$1"),
+		"ListsClause":          ListsClause("p.key", "$1"),
 		"IssueProjectClause":   IssueProjectClause("i.key", "$1"),
 		"ItemOwnerClause":      ItemOwnerClause("c.issue_key", "c.artifact_id", "$1"),
 		"MessageClause":        MessageClause("m", "$1"),

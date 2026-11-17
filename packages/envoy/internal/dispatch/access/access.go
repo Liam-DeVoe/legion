@@ -116,6 +116,17 @@ func ViewerFlag(viewerParam, flag string) string {
 	return fmt.Sprintf(`coalesce((%s::jsonb->>'%s')::boolean, false)`, viewerParam, flag)
 }
 
+// ViewerPerson is the person of the visibility argument viewerParam binds, as text: null for a
+// viewer that names no person, so an equality with it is null and passes no row.
+func ViewerPerson(viewerParam string) string { return viewerParam + "::jsonb->>'person'" }
+
+// ListsClause passes a row of the project projectExpr names when the credential of the viewer
+// bound at viewerParam lists that project (Viewer.Lists); a credential that lists none passes no
+// row.
+func ListsClause(projectExpr, viewerParam string) string {
+	return clause("ListsClause", "(("+viewerParam+"::jsonb->'lists') ? ("+projectExpr+"))")
+}
+
 // ProjectClause passes a row of the project projectExpr names when the viewer sees that project.
 func ProjectClause(projectExpr, viewerParam string) string {
 	return clause("ProjectClause", fmt.Sprintf(`(%s or (%s::jsonb->'sees') ? (%s))`,

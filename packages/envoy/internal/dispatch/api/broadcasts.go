@@ -648,7 +648,7 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 // not see). To any other viewer it is a broadcast nobody sent. SessionClause answers true or false
 // and never null, so its negation lets no hidden recipient pass.
 func broadcastVisibleSQL(broadcast, viewerParam string) string {
-	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + viewerParam + `::jsonb->>'person')
+	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + access.ViewerPerson(viewerParam) + `)
 		or not exists (
 			select 1 from messages recipient
 			where recipient.broadcast_id = ` + broadcast + `.id

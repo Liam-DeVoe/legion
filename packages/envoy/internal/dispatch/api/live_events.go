@@ -676,9 +676,9 @@ func lostSightSQL(eventAlias, viewerParam string) string {
 	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and not ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
 		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
 			(` + e + `.payload->>'change' in ('` + model.AccessPersonRemoved + `', '` + model.AccessOwnerChanged + `')
-				and recorded.principal = ` + viewerParam + `::jsonb->>'person')
+				and recorded.principal = ` + access.ViewerPerson(viewerParam) + `)
 			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPrivate + `'
-				and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `)))
+				and (` + access.OpenClause(viewerParam) + ` or ` + access.ListsClause(e+`.project_key`, viewerParam) + `)))
 		offset 0))`
 }
 
@@ -689,7 +689,7 @@ func lostSightSQL(eventAlias, viewerParam string) string {
 // open viewer, or a credential whose list names it). It reads the server's record of the event, as
 // lostSightSQL does.
 func gainedSightSQL(eventAlias, viewerParam string) string {
-	e, person := eventAlias, viewerParam+`::jsonb->>'person'`
+	e, person := eventAlias, access.ViewerPerson(viewerParam)
 	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + access.ProjectClause(e+`.project_key`, viewerParam) + ` and exists (
 		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and (
 			(` + e + `.payload->>'change' = '` + model.AccessPersonAdded + `' and recorded.principal = ` + person + `)
@@ -698,14 +698,8 @@ func gainedSightSQL(eventAlias, viewerParam string) string {
 				select 1 from access_group_members gained where gained.group_name = recorded.principal and gained.person = ` + person + `
 				offset 0))
 			or (` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and recorded.visibility = '` + model.ProjectPublic + `'
-				and (` + access.OpenClause(viewerParam) + ` or ` + listsProjectSQL(e+`.project_key`, viewerParam) + `)))
+				and (` + access.OpenClause(viewerParam) + ` or ` + access.ListsClause(e+`.project_key`, viewerParam) + `)))
 		offset 0))`
-}
-
-// listsProjectSQL is whether the credential of the viewer bound at viewerParam lists the project
-// projectExpr names (Viewer.Lists); false for a credential that lists none.
-func listsProjectSQL(projectExpr, viewerParam string) string {
-	return `coalesce((` + viewerParam + `::jsonb->'lists') ? (` + projectExpr + `), false)`
 }
 
 // endEventsAfterFailure ends a subscription whose read failed, with an ended frame (behind), so its
