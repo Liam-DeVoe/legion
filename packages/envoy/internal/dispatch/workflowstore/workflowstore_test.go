@@ -384,6 +384,75 @@ func TestTwoWritesOfOneIDAtOneTimeKeepBoth(t *testing.T) {
 	}
 }
 
+// Two ends of a run that started reach Dispatch at one time, neither naming the run's identity, so
+// neither makes the node. The second waits for the first, then reads its end and leaves it: the run
+// keeps the first end, and the log one tuple of each of its fields.
+func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	ctx := context.Background()
+	id := uuid.NewString()
+	put(t, pool, startOf(implementer(id), minute(0)), minute(0))
+	end := func(result string, at time.Time) StepWrite {
+		return StepWrite{ID: id, Issue: "LEG-1", Result: new(result), EndedAt: new(at)}
+	}
+
+	first, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the first end: %v", err)
+	}
+	defer first.Rollback(ctx)
+	if _, err := PutStep(ctx, first, end(ResultStopped, minute(1)), daemon, minute(1)); err != nil {
+		t.Fatalf("the first end answered %v", err)
+	}
+
+	backend := make(chan uint32, 1)
+	answered := make(chan error, 1)
+	go func() {
+		second, err := pool.Begin(ctx)
+		if err != nil {
+			backend <- 0
+			answered <- err
+			return
+		}
+		defer second.Rollback(ctx)
+		var pid uint32
+		if err := second.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+			backend <- 0
+			answered <- err
+			return
+		}
+		backend <- pid
+		if _, err := PutStep(ctx, second, end(ResultPassed, minute(2)), daemon, minute(2)); err != nil {
+			answered <- err
+			return
+		}
+		answered <- second.Commit(ctx)
+	}()
+	pid := <-backend
+	if pid == 0 {
+		t.Fatalf("begin the second end: %v", <-answered)
+	}
+	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, 30*time.Second); early {
+		t.Fatalf("the second end answered %v before it waited for the first", err)
+	}
+	if err := first.Commit(ctx); err != nil {
+		t.Fatalf("commit the first end: %v", err)
+	}
+	if err := <-answered; err != nil {
+		t.Fatalf("the second end answered %v, want it taken", err)
+	}
+
+	step := issueSteps(t, pool, "LEG-1")[0]
+	if step.Result != ResultStopped || step.EndedAt == nil || !step.EndedAt.Equal(minute(1)) {
+		t.Errorf("the run reads result %q ended %v, want the first end's stopped at %s", step.Result, step.EndedAt, minute(1))
+	}
+	for _, field := range []string{AttributeResult, AttributeEndedAt} {
+		if count := valueTuples(t, pool, id, field); count != 1 {
+			t.Errorf("the log holds %d %s tuples of the run, want the first end's one", count, field)
+		}
+	}
+}
+
 // The attempt is the place of a record among the records of the same task, step and kind,
 // ordered by generation, then start (a record with no start first), then id. The retro and the
 // merge are both step 0 and count apart, by their kind; two tasks whose runs interleave at one
