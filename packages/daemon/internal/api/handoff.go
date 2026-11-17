@@ -70,14 +70,14 @@ type HandoffCompleteRequest struct {
 }
 
 // PlanRatingContract is the daemon contract that added the rating of the plan to the completion
-// that ends the retro (version.go's 155): planRating, a whole number from 1 (the plan cost the
+// that ends the retro (version.go's 161): planRating, a whole number from 1 (the plan cost the
 // work) to 5 (the plan fit the work), and planReason, why, the two together. The agent that does
 // the retro gives it, so the route takes the two on the completion whose phase is retro (phase.Of,
 // never the role) and refuses them on every other completion and on a production check's report
 // (PLAN_RATING_UNEXPECTED). A claim whose plugin declared this contract or a later one must rate
 // (PLAN_RATING_REQUIRED); a plugin below it never sends the two, and its retro, where the daemon
 // serves its claim (staleClaim), completes with no rating.
-const PlanRatingContract = 155
+const PlanRatingContract = 161
 
 // The bounds of a rating of the plan. TestPlanRatingGolden writes the three to
 // `packages/contracts/fixtures/daemon-api/plan-rating.json`, and `packages/contracts`'s

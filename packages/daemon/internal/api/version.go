@@ -2110,7 +2110,7 @@ package api
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
 //
-// 155: the completion that ends the retro rates the plan the issue ran. `POST
+// 161: the completion that ends the retro rates the plan the issue ran. `POST
 // /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
 // `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
 // (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
@@ -2127,7 +2127,7 @@ package api
 // Every refusal is a 400 written before the fact is applied, so nothing is recorded and the same
 // completion, corrected, is taken. The route hands the two to the workflow on the completion's
 // fact as one value (`intake.HandoffComplete.PlanRating`). `readBody` refuses an unknown field, so
-// a plugin sending them to a daemon below 155 would have every retro refused; the bump is why the
+// a plugin sending them to a daemon below 161 would have every retro refused; the bump is why the
 // two never meet. No shape of `GET /legion/v1/state` moves, so no caller is served a narrower one.
 // The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
 // member's name and an earlier copy of a repeated member included, holds U+0000, which
@@ -2136,11 +2136,7 @@ package api
 // route can name a stale caller (`readBody`'s identity check), as for any body that does not
 // decode. A route that stored such a string answered 500 before, and one that only compared it
 // took it; every route now refuses it before it reads the body.
-// (This entry took 155 on 2026-11-17 over main's 146. A reading of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 79 open pull requests of this repository whose file list
-// named this file or was cut short, of 163 open, made between 2026-11-17T01:16:24Z and 01:16:50Z,
-// gave above main's 146: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and #4065), 151
-// (#4106), 152 (#3730), 153 (#4115) and 154 (#3659), so this change took 155, one above the
-// highest any open head declared and the lowest free number above main's. Read the base's own
-// number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 155
+// (This entry takes 161, the lowest number above main's 151 that no open pull request declared
+// when the merge of 2026-11-17 brought main in at 34f0d8c801. Read the base's own number and every
+// open pull request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 161
