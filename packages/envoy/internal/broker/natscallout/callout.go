@@ -617,10 +617,12 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	if refused != nil && refusalWork != nil {
 		refusalWork()
 	}
-	// The answer goes out first, and only then is what happened counted: the decision counter's
-	// series locks are held by a scrape across its writes to the scraper (metrics.Registry.Handler),
-	// and the reporter's tallies feed the log, so neither a scrape client that stops reading nor a
-	// log that stalls delays an answer, and the time it is counted under is the time it took.
+	// The answer goes out first, and only then is what happened counted, so nothing a metric or
+	// the reporter's tallies do - the decision counter's lock taken by a scrape while it renders,
+	// a stalled log - delays the answer, and the time it is counted under is the time it took.
+	// Neither holds this request's slot or its place in the refusing bound for longer than that:
+	// a scrape holds no metric's lock while it writes to its client (metrics.Registry.Handler),
+	// and the reporter alone writes the log.
 	a.send(msg, req, user, refused, serverXKey)
 	a.deps.Metrics.record(kind, refused, time.Since(received))
 	if refused != nil {

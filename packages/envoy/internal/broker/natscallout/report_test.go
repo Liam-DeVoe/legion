@@ -59,7 +59,7 @@ func TestAStalledLogHoldsOneWriteAndCountsTheRest(t *testing.T) {
 	log := newStalledLog()
 	handler := newCountingHandler(slog.NewTextHandler(log, nil))
 	service := startService(t, url, keys, Deps{Log: slog.New(handler)}, Decide)
-	t.Cleanup(func() { close(log.released) })
+	t.Cleanup(log.release)
 	stallWithALine(t, url, log)
 
 	for range 50 {

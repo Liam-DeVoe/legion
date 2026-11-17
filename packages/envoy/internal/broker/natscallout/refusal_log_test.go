@@ -14,25 +14,54 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// stalledLog is a log sink that stops taking writes once stalled is set, as the broker's stdout
-// does when the reader of the pod's log pipe falls behind (the deliver comment's "a log line is a
-// write, which can block"). entered is closed when the first write blocks, and closing released
-// lets every blocked write through.
-type stalledLog struct {
-	stalled  atomic.Bool
+// writeGate holds a writer's writes, as a reader that stops reading holds the writes of whatever
+// writes to it: the broker's stdout when the reader of the pod's log pipe falls behind (the
+// deliver comment's "a log line is a write, which can block"), and a metrics server's write when a
+// scrape client stops reading. A write that calls hold waits until release, and the first one
+// marks the gate entered, which awaitHeld waits for.
+type writeGate struct {
 	entered  chan struct{}
 	once     sync.Once
 	released chan struct{}
 }
 
+func newWriteGate() *writeGate {
+	return &writeGate{entered: make(chan struct{}), released: make(chan struct{})}
+}
+
+// hold marks the gate entered and waits until it is released.
+func (g *writeGate) hold() {
+	g.once.Do(func() { close(g.entered) })
+	<-g.released
+}
+
+// release lets every held write through, and every later one.
+func (g *writeGate) release() { close(g.released) }
+
+// awaitHeld waits until a write is held at the gate, failing the test, naming what, when none is
+// within five seconds.
+func (g *writeGate) awaitHeld(t *testing.T, what string) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("no write reached %s", what)
+	}
+}
+
+// stalledLog is a log sink whose writes the gate holds once stalled is set.
+type stalledLog struct {
+	*writeGate
+	stalled atomic.Bool
+}
+
 func newStalledLog() *stalledLog {
-	return &stalledLog{entered: make(chan struct{}), released: make(chan struct{})}
+	return &stalledLog{writeGate: newWriteGate()}
 }
 
 func (l *stalledLog) Write(p []byte) (int, error) {
 	if l.stalled.Load() {
-		l.once.Do(func() { close(l.entered) })
-		<-l.released
+		l.hold()
 	}
 	return len(p), nil
 }
@@ -41,11 +70,7 @@ func (l *stalledLog) Write(p []byte) (int, error) {
 // since nothing else of the service writes to its log.
 func (l *stalledLog) awaitStuck(t *testing.T) {
 	t.Helper()
-	select {
-	case <-l.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no write reached the stalled log: the reporter never wrote the line it owed")
-	}
+	l.awaitHeld(t, "the stalled log: the reporter never wrote the line it owed")
 }
 
 // startWithStalledLog starts the service on url with a log that stalls once the test sets its
@@ -58,7 +83,7 @@ func startWithStalledLog(t *testing.T, url string, keys testnats.CalloutKeys, de
 	log := newStalledLog()
 	deps.Log = slog.New(slog.NewTextHandler(log, nil))
 	service := startService(t, url, keys, deps, Decide)
-	t.Cleanup(func() { close(log.released) })
+	t.Cleanup(log.release)
 	return log, service
 }
 

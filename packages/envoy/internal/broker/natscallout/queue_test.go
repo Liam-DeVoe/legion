@@ -203,9 +203,8 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 // admitted. With no bound the third waits behind the slot too and is admitted.
 //
 // The refusal's reason is read from the line the replica writes as it closes, which holds every
-// refusal it counted since its last line (report). A line written while the test runs can hold
-// another refusal and not this one: on a loaded machine a held request can spend its budget and
-// be refused first, and the reporter then writes its next line of refusals a minute later.
+// refusal it counted since its last line, whatever the one-line-a-minute interval says (report),
+// so the test waits on no tick of the reporter.
 func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 2)
@@ -217,9 +216,6 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	registry := metrics.New()
 	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}
 	holding, release := make(chan struct{}), make(chan struct{})
-	var releaseOnce sync.Once
-	releaseHolder := func() { releaseOnce.Do(func() { close(release) }) }
-	t.Cleanup(releaseHolder)
 	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		if req.Token == holder.token {
 			close(holding)
@@ -252,7 +248,7 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	began := time.Now()
 	_, err := connectSession(t, url, extra, nil)
 	took := time.Since(began)
-	releaseHolder()
+	close(release)
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
 	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
 	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal counted under its label", func() bool {

@@ -277,7 +277,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry))
+	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}
