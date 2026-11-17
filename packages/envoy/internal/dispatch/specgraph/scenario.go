@@ -82,10 +82,11 @@ type scenarioResult struct {
 
 // The forms of the JSON files of a scenario that ReadScenario reads itself, with the type of each
 // value, as decodeJSON names them for a value of another type: the form of one element of each
-// array file, whose own form is "[<element>, …]", and the form of uncited.json.
+// array file, whose own form is "[<element>, …]", and the form of uncited.json. A time is written
+// as approvedForm writes it, since time.Time reads only an RFC 3339 time with an upper-case T and Z.
 const (
-	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time>"}`
-	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
+	subjectForm = `{"commit":"<commit>","branch":"<branch>","deploy":"<deploy>","graph_tx":"<transaction>","now":"<RFC 3339 time with an upper-case T and Z>"}`
+	resultForm  = `{"check":"<check id>","check_version":<whole number from 1>,"kind":"<run or failing_example>","outcome":"<pass, fail or could_not_run>","commit":"<commit>","deploy":"<deploy>","graph_tx":"<transaction>","job":"<job>","leg":"<leg>","attempt":<whole number>,"at":"<RFC 3339 time with an upper-case T and Z>","seq":<whole number>,"fault_author":"<author>","test_authors":["<author>", …],"test_commit":"<commit>"}`
 	jobRunForm  = `{"job":"<job>","leg":"<leg>","commit":"<commit>","ended":<true or false>}`
 	unitForm    = `{"id":"<unit>","serves":["<statement id>", …],"needs":["<unit>", …],"waits_on":["<statement id>", …]}`
 	uncitedForm = `{"<commit>":{"<check id>":"<R48 rule>"}}`
