@@ -45,14 +45,12 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
- * issue page's (dispatch://INFRA-3935 R6, decision 56 of
- * dispatch://INFRA-1196/artifact/part-decisions-md), by the role `main`'s colour has: a dialog is
- * the page's paper inside its hairline rule over the icon rail's dark, the one page colour dark
- * in both schemes; its heading and a review are the ink, the reviewer's reason and a label the
- * muted grey, Close and a pending read the quiet grey, a refusal the failed red; Approve and the
- * dialog's Request changes are filled with the ink, as the header's one filled control is, and
- * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
- * application's one focus indicator (decision 58 of the same artifact).
+ * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
+ * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
+ * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
+ * the quiet grey, a refusal the failed red; Approve and the dialog's Request changes are filled
+ * with the ink, as the header's one filled control is, and the other actions are the header's
+ * control. The reason box keeps `main`'s focus rule, the application's one focus indicator.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -83,7 +81,7 @@ export function approvalVersion(approval: ArtifactApproval): number {
 
 /** The chip's words. `latest` is the issue page's word for the latest version, given inside
  *  `NoTooltips` alone: there a stale chip draws the latest version, which its `title` says
- *  everywhere else (dispatch://INFRA-1196 R19, R22). */
+ *  everywhere else. */
 function approvalLabel(approval: ArtifactApproval, latest?: string): string {
   // A plan is approved by its plan review, never by a person, and its chip says so.
   const approved = approval.kind === "plan_review" ? "Approved by plan review" : "Approved";
@@ -253,8 +251,7 @@ function RequestChangesDialog({
             {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
                 submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
                 the body in a browser, and Tab would then leave the dialog. Outside both are
-                `disabled` while the write is out, as on `main` (decision 162 of
-                dispatch://INFRA-1196/artifact/part-decisions-md). */}
+                `disabled` while the write is out, as on `main`. */}
             <textarea
               className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
               disabled={page === null && saving}
@@ -312,8 +309,7 @@ function RequestChangesDialog({
 }
 
 /** The chip's actions: `together`, in one box that does not wrap; otherwise with no box around
- *  them, each its parent's own item, as on `main` (`keepActionsTogether`, dispatch://INFRA-3935
- *  R10). */
+ *  them, each its parent's own item, as on `main` (`keepActionsTogether`). */
 function ActionsGroup({
   children,
   together,
@@ -334,10 +330,9 @@ export interface ApprovalChipProps {
    *  `actionsOn` names two or more documents. Inside `NoTooltips` each action's name then begins
    *  with the action's own words and says its document, "Approve the spec", "Approve v5 of the
    *  spec" for a stale approval, "Request changes to the spec", so no two actions of the line
-   *  share a name and a voice user says what they read (WCAG 2.5.3, decision 99 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). Not given, the default, and everywhere
-   *  outside `NoTooltips`, where no caller passes it today and the words to join them are not
-   *  loaded, each action is named by its words alone, as on `main` (dispatch://INFRA-3935 R1). */
+   *  share a name and a voice user says what they read (WCAG 2.5.3). Not given, the default, and
+   *  everywhere outside `NoTooltips`, where no caller passes it today and the words to join them
+   *  are not loaded, each action is named by its words alone, as on `main`. */
   actionsDocument?: string;
   artifact: Artifact;
   /** `header`: shown on the document header, with an approval-state chip.
@@ -349,15 +344,13 @@ export interface ApprovalChipProps {
   layout?: "contents" | "inline";
   /** Whether Approve and Request changes sit in one box that does not wrap, so in a parent's line
    *  that wraps the two stay together as one item beside the chip. `ApprovalSteps` passes it at
-   *  `layout="contents"`, which part P's header uses (dispatch://INFRA-3935 R10, decision 86 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). Off, the default, each action is its own
-   *  item, as on `main`. */
+   *  `layout="contents"`, which the new issue page's header uses. Off, the default, each action is
+   *  its own item, as on `main`. */
   keepActionsTogether?: boolean;
   /** `compact` draws the chip and its two actions at the size of the new issue page header's
-   *  other pills and controls (the prototype's `.pill` and `.hbtn`, dispatch://INFRA-1196 R13):
-   *  12 px type, and 24 px tall at every width for the chip and for each action, since each is
-   *  a target and a 24 px target holds at every width (decision 43 of its part-decisions-md).
-   *  `default` is every other host's. */
+   *  other pills and controls (the prototype's `.pill` and `.hbtn`): 12 px type, and 24 px tall at
+   *  every width for the chip and for each action, since each is a target and a 24 px target
+   *  holds at every width. `default` is every other host's. */
   size?: "compact" | "default";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
    *  a host that selected the approval request learns it was reviewed here. */
@@ -416,8 +409,7 @@ export function ApprovalChip({
   // Inside `NoTooltips` a press of Approve is remembered, and once its write is no longer out a
   // focus that fell to the document (`focusOnDocument`) goes to Approve where it is drawn, else to
   // the chip, which is what replaces it once the approval reads approved; the press is forgotten
-  // then, or once the write failed. A focus anywhere else is left where it is (decision 162 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  // then, or once the write failed. A focus anywhere else is left where it is.
   const approvePressed = useRef(false);
   const approveButton = useRef<HTMLButtonElement>(null);
   const chipButton = useRef<HTMLButtonElement>(null);
@@ -455,7 +447,7 @@ export function ApprovalChip({
         aria-haspopup="dialog"
         className={approvalPillClassName(approval.state, size, page !== null)}
         // Inside `NoTooltips`, the document whose approval this is, which an approval request's
-        // own address puts the focus on (dispatch://INFRA-1196 R20).
+        // own address puts the focus on.
         data-approval-artifact={page === null ? undefined : artifact.id}
         onClick={() => setReviewsOpen(true)}
         ref={chipButton}
@@ -498,8 +490,7 @@ export function ApprovalChip({
             // Inside `NoTooltips`, while the write is out, this button is `aria-disabled` and a
             // press of it does nothing: the dialog it opens gives the focus back to it when a
             // change request lands, and a `disabled` button takes no focus, which then falls to
-            // the body. Outside it is `disabled` while the write is out, as on `main` (decision
-            // 162 of dispatch://INFRA-1196/artifact/part-decisions-md).
+            // the body. Outside it is `disabled` while the write is out, as on `main`.
             aria-disabled={(page !== null && review.isPending) || undefined}
             aria-label={actionNames?.requestChanges}
             className={
