@@ -231,14 +231,25 @@ describe("dispatch steps", () => {
     const notStored: StepRecord["result"] = "skipped";
     expect(stored).not.toContain(notStored);
 
-    for (const result of stored.filter((word) => word !== "")) {
-      const { result: read } = await readSteps({
+    // The implementer's run as each end leaves it: passed, naming its report; failed, sent back to
+    // step 1 by the architect's backward move, which names no report of the implementer's; and
+    // stopped, ended under it, which returns nowhere and names none.
+    const ended: readonly StepRecord[] = [
+      implementer,
+      { ...implementer, result: "failed", returned_to: 1, report: null },
+      { ...implementer, result: "stopped", report: null },
+    ];
+    for (const run of ended) {
+      const { result } = await readSteps({
         issue: "LEG-1",
-        tasks: [{ task: "default", steps: [{ ...implementer, result }] }],
+        tasks: [{ task: "default", steps: [run] }],
       });
 
-      expect(read.text.split("\n")[1], result).toEndWith(` 2026-11-16T09:40:00Z ${result}`);
+      expect(result.text.split("\n")[1], run.result).toEndWith(
+        ` 2026-11-16T09:40:00Z ${run.result}`
+      );
     }
+    expect(ended.map((run) => run.result)).toEqual(stored.filter((word) => word !== ""));
   });
 
   // A run is of a step, a retro or a merge (model.StepRecord.Kind). The read's generated type
