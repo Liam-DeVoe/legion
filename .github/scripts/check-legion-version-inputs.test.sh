@@ -628,7 +628,25 @@ swap_steps "$root/.github/workflows/release.yaml" "      - id: legion_pair" "   
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the two steps and the module's order" \
-  "$(contains "$out" "in .github/workflows/release.yaml's job publish, the step with id legion_download is step 1, before the step with id legion_pair, step 2, where $plan_file's DECISION_READERS lists it after")"
+  "$(contains "$out" "in .github/workflows/release.yaml's job publish, the step with id legion_download is step 2, before the step with id legion_pair, step 3, where $plan_file's DECISION_READERS lists it after")"
+
+# A step whose output a reader's if: reads is listed with the readers: pair, whose ok output
+# legion_pair reads, skips the chain with an `if: false` as surely as a reader would.
+echo "case: pair, the step legion_pair reads, skipped"
+root=$(written pair-skipped)
+replace "$root/.github/workflows/release.yaml" $'        if: "${{ !cancelled() }}"\n' $'        if: false\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names pair and the module's if:" \
+  "$(contains "$out" "the step with id pair of publish has the if: \`false\`, where $readers_rule \`\${{ !cancelled() }}\` for it")"
+root=$(written pair-unlisted)
+rm "$root/.github/scripts/release_version_inputs.py"
+cp "$script_dir/release_version_inputs.py" "$root/.github/scripts/release_version_inputs.py"
+replace "$root/.github/scripts/release_version_inputs.py" $'        Reader("${{ !cancelled() }}", id="pair"),\n' ''
+run_check "$root"
+check "exits 1 on a module that lists legion_pair without the step it reads" "$(is "$status" 1)"
+check "names the step read and the reader" \
+  "$(contains "$out" "the step with id legion_pair of publish reads steps.pair, which $plan_file's DECISION_READERS does not list for publish")"
 
 echo "case: a new step that reads release"
 root=$(written reader-new)

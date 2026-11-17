@@ -127,6 +127,9 @@ DECISION_READERS = {
         Reader(f"{BUILT} && steps.notes.outputs.notes == 'true'", position=11),
     ),
     (RELEASE, "publish"): (
+        # Not itself a reader of the decision, but legion_pair's if: reads its ok output: an `if:
+        # false` here skips the chain as surely, so it is listed with the readers.
+        Reader("${{ !cancelled() }}", id="pair"),
         Reader("${{ !cancelled() && steps.pair.outputs.ok == 'true' && needs.legion_build.result == 'success' && "
                "needs.legion_build.outputs.skip != 'true' }}", id="legion_pair"),
         Reader("${{ !cancelled() && steps.legion_pair.outcome == 'success' }}", id="legion_download"),

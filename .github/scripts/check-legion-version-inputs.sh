@@ -602,6 +602,19 @@ def decision_readers(path, doc):
             problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
                     f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
                     f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
+    # The steps a listed reader's if: reads, found by parsing it: each is itself listed in the same
+    # job, or is a checked version step, so that no edit of the step it reads (an `if: false` on
+    # pair, which legion_pair reads) skips the reader unseen.
+    for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
+        if workflow != path:
+            continue
+        known = {r.id.lower() for r in readers if r.id} | {s.step_id.lower() for s in specs if s.job == job_name}
+        for reader in readers:
+            for ref in sorted(set(re.findall(r"\bsteps\.([A-Za-z_][A-Za-z0-9_-]*)\.", reader.if_, re.IGNORECASE))):
+                if ref.lower() not in known:
+                    problem(f"{described(reader_selector(reader))} of {job_name} reads steps.{ref}, which {PLAN}'s "
+                            f"DECISION_READERS does not list for {job_name}: a step whose output a reader's if: reads "
+                            f"is listed with it, since an if: that skips it skips the reader as well", path)
     # The order the listed readers run in: each reads the outcome of one before it, so a reader moved
     # above the step it reads finds no outcome and skips, and every reader after it with it.
     for (workflow, job_name), readers in sorted(plan.DECISION_READERS.items()):
