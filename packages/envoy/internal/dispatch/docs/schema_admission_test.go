@@ -31,15 +31,22 @@ import (
 // fleetProcess writes the server_processes row of another server process straight into the
 // registry: one that reads schema version and creates up to creatable, whose last heartbeat is
 // age before the database's now(). A version of 0 is the row of a build that predates the fleet
-// columns.
+// columns. The service forgets the read of the fleet its sockets share (fleetCache.forget), so the
+// next socket's admission reads the fleet this row changed, as it would once that answer's
+// second had passed.
 func fleetProcess(t *testing.T, service *Service, version, creatable int, age time.Duration) {
 	t.Helper()
-	if _, err := service.store.Pool.Exec(context.Background(), `
-		insert into server_processes (instance, signing_keys, schema_version, schema_creatable, heartbeat_at)
-		values (gen_random_uuid(), '{fingerprint}', $1, $2, now() - make_interval(secs => $3))`,
-		version, creatable, age.Seconds()); err != nil {
-		t.Fatalf("add a server process reading schema version %d: %v", version, err)
-	}
+	registerFleetProcess(t, service, version, creatable, age)
+	service.fleets.forget()
+}
+
+// forget drops the read of the live server processes the cache keeps, as a test that changes the
+// fleet under a running service needs: without it a socket admitted within the second of an
+// earlier one would take that one's fleet.
+func (c *fleetCache) forget() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.held = false
 }
 
 // page is the query a page presents on its document socket: schema_version, and schema_creatable
@@ -390,10 +397,12 @@ func TestAdmissionRecheckClosesANewerPageOnceNoLiveProcessCreatesWhatItCreates(t
 		t.Fatal("a current page was authenticated read-only")
 	}
 
-	// The rollback stops the newer build's process.
+	// The rollback stops the newer build's process, and the service forgets the fleet its sockets
+	// share, as the reconnect below would find it once that read's second had passed.
 	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes`); err != nil {
 		t.Fatalf("stop the newer build's process: %v", err)
 	}
+	service.fleets.forget()
 	if err := service.recheckSchemaAdmissions(context.Background()); err != nil {
 		t.Fatalf("re-check the sockets' admission: %v", err)
 	}

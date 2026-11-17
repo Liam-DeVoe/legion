@@ -192,11 +192,12 @@ func socketRoom(r *http.Request) string {
 // SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError), and a caller whose
 // session the pool could not read (store.Unserved), whom nothing has found signed out and who is
 // refused as the admission refuses any read it could not make (refuseAdmission). A socket's
-// admission resolves the caller and reads the document's issue and the live server processes once
-// each, here, and hands them to ygo's authorization of the same request (authorize) on the
-// connection's state; a warm room's schema verdict is the one its update observer recorded
-// (residentVerdict), so admitting a socket to a warm room walks no rooms and renders nothing, and
-// a cold one renders its document once (admitDocument).
+// admission resolves the caller and reads the document's issue once each, here, takes the live
+// server processes from the one read the sockets of a second share (admissionFleet), and hands
+// all three to ygo's authorization of the same request (authorize) on the connection's state; a
+// warm room's schema verdict is the one its update observer recorded (residentVerdict), so
+// admitting a socket to a warm room walks no rooms and renders nothing, and a cold one renders its
+// document once (admitDocument).
 //
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
@@ -237,9 +238,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	room := socketRoom(r)
 	// The admission's reads of the request pool - the caller's session (requestActor), the
-	// document's issue and the live server processes - hold one place of the pool's work outside
-	// admission between them (admission.Outside), from before the first to right after the last,
-	// so a restart's reconnect of every editor holds no more of the pool than admission leaves.
+	// document's issue and, for the socket that finds no answer of the last second to share, the
+	// live server processes (admissionFleet) - hold one place of the pool's work outside admission
+	// between them (admission.Outside), from before the first to right after the last, so a
+	// restart's reconnect of every editor holds no more of the pool than admission leaves.
 	// The place goes back before the wait for a failed room's recovery and the document's load,
 	// neither of which reads the request pool; the release on the way out gives it back for a
 	// socket refused before that. A socket that finds every place held waits for one, behind the
@@ -291,17 +293,15 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuseAdmission(w, r, "dispatch: a document socket was refused: its document's issue could not be read", room, store.RequestsPool, err)
 		return
 	}
-	// The live server processes are read here, before ygo's authorization of the socket
+	// The live server processes are taken here, before ygo's authorization of the socket
 	// (authorize) admits its page against them (connectionState.fleet), so a read of them that
 	// fails - under load, the request pool with no connection free - is this admission's refusal:
 	// a refusal of authorize's reaches the browser as ygo's 401, which says it is not signed in.
-	// The read is the request's own, through the pool its reads take (queryFrom), the request pool
-	// here, and it needs nothing the document's load makes, so it runs beside the issue's read,
-	// under the same place.
-	if s.beforeSocketFleetRead != nil {
-		s.beforeSocketFleetRead(room)
-	}
-	fleet, err := readSchemaFleet(r.Context(), s.queryFrom(r.Context()))
+	// The answer is every socket's alike, so the sockets of a second share one read of it
+	// (admissionFleet, fleetCacheTTL), made on the request's own pool (queryFrom), the request pool
+	// here, by the socket that finds no fresh answer; it needs nothing the document's load makes,
+	// so it is taken beside the issue's read, under the same place.
+	fleet, err := s.admissionFleet(r.Context(), room)
 	if err != nil {
 		refuseAdmission(w, r, "dispatch: a document socket was refused: the live server processes could not be read", room, store.RequestsPool, err)
 		return

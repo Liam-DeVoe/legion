@@ -394,10 +394,12 @@ type Service struct {
 	// loads the document's tree (loadTree). Nil outside tests; tests use it to close the issue
 	// while the socket loads.
 	afterSocketIssueRead func(room string)
-	// beforeSocketFleetRead runs in a document socket's admission (ServeHTTP) once it has read the
-	// document's issue, and before it reads the live server processes, the last of the reads its
-	// place outside admission holds. Nil outside tests; tests use it to fill the request pool
-	// between the two reads, and to see the place held while they run.
+	// beforeSocketFleetRead runs before each read of the live server processes the document
+	// sockets' admissions make (admissionFleet): once for each read, made by the socket that found
+	// no answer younger than fleetCacheTTL and no read in flight, with that socket's room, after it
+	// has read its document's issue and while it holds its place outside admission. Nil outside
+	// tests; tests use it to fill the request pool before the read, to see the place held while it
+	// runs, and to count and hold the reads.
 	beforeSocketFleetRead func(room string)
 	// afterSocketPreload runs in a cold document socket's admission (ServeHTTP) once it has offered
 	// the durable state it loaded to the room's load (offerPreload), and before it hands the socket
@@ -467,6 +469,10 @@ type Service struct {
 	// socket ends: the token's answer reads it (authorizeSchemaVersion), and so does the re-check
 	// that closes a socket the live fleet no longer admits (RunSchemaAdmission).
 	schemaAdmissions schemaAdmissions
+	// fleets is the one read of the live server processes the document sockets' admissions share
+	// for fleetCacheTTL (admissionFleet); a test that changes the fleet under a running service
+	// forgets it, and one that times its expiry moves the service's clock (now).
+	fleets fleetCache
 	// replicas holds, for each resident room document, a weak pointer to the replica its update
 	// observer keeps (weak.Pointer[renderedReplica]), which the document's reads walk (readLive),
 	// keyed by a weak pointer to that document (keepReplica).
@@ -926,6 +932,7 @@ func New(deps Deps) *Service {
 		settlements:       newSettlementSlots(settlementWorkers),
 		markWait:          markWait,
 		now:               time.Now,
+		fleets:            fleetCache{ttl: fleetCacheTTL},
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,

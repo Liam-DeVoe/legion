@@ -31,12 +31,13 @@ import (
 //     place and always runs;
 //   - a document socket's admission reads, made before the socket is handed to ygo (docs'
 //     Service.ServeHTTP): its caller's session, its document's issue and the live server
-//     processes. A restart's reconnect sends every editor's socket through them at once. They hold
-//     one place between them for the three request-pool reads (Hold), taken before the first and
-//     given back before the recovery wait and the document's load, neither of which reads the
-//     request pool, and long before the hand-off, after which the handler holds its request for
-//     the socket's whole life; a socket refused a place is refused as the document service refuses
-//     a socket it cannot serve now, 503 with Retry-After.
+//     processes, the last of which one socket a second makes for every socket (docs'
+//     fleetCacheTTL), so most sockets make two. A restart's reconnect sends every editor's socket
+//     through them at once. They hold one place between them for those reads (Hold), taken before
+//     the first and given back before the recovery wait and the document's load, neither of which
+//     reads the request pool, and long before the hand-off, after which the handler holds its
+//     request for the socket's whole life; a socket refused a place is refused as the document
+//     service refuses a socket it cannot serve now, 503 with Retry-After.
 //
 // The pool's other users outside admission take none, each for a reason of its own: the live
 // socket's upgrade and an events subscription's head check are one statement for each socket
