@@ -235,6 +235,9 @@ export function IssuePresets({
               event.preventDefault();
               setOpen("presets");
             }}
+            // As a toggle's press does (below), the press leaves the focus where it is; the
+            // menu takes it once it opens.
+            onMouseDown={(event) => event.preventDefault()}
             ref={chooser}
             type="button"
           >
@@ -320,6 +323,11 @@ export function IssuePresets({
                 onClick={() => press(preset)}
                 onFocus={() => setStop(preset)}
                 onKeyDown={(event) => walk(event, preset)}
+                // A press leaves the focus where it is. Focus taken on mousedown leaves the
+                // outline, which closes the body its row had open: on an address that names a
+                // node (`#b-`) the page grows shorter under the pointer, the press ends on
+                // something else, and the view does not change.
+                onMouseDown={(event) => event.preventDefault()}
                 ref={(node) => {
                   toggles.current[preset] = node;
                 }}

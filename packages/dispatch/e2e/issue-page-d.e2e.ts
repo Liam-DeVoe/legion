@@ -357,10 +357,24 @@ test("the frame draws an icon rail, Details over the page and the Contents pane 
     await page.setViewportSize(viewportAt(390));
     await gotoIssue(page, `/issues/${key}`);
     await expect(iconRail(page), "the phone draws the rail").toHaveCount(0);
+    // The header's own "Open navigation" (part P) is the frame's; one outside the header is
+    // today's compact bar's.
+    const openNavigation = { exact: true, name: "Open navigation" };
     await expect(
-      page.getByRole("button", { exact: true, name: "Open navigation" }),
-      "the frame draws today's compact bar at 390 px"
-    ).toHaveCount(0);
+      page.locator("[data-issue-header]").getByRole("button", openNavigation),
+      "the header draws no navigation control at 390 px"
+    ).toHaveCount(1);
+    await expect
+      .poll(
+        () =>
+          page
+            .getByRole("button", openNavigation)
+            .evaluateAll(
+              (all) => all.filter((one) => one.closest("[data-issue-header]") === null).length
+            ),
+        { message: "the frame draws today's compact bar at 390 px" }
+      )
+      .toBe(0);
     await focusNothing(page);
     await page.keyboard.press("Shift+M");
     const phoneDetails = page.getByRole("dialog", { exact: true, name: "Details" });
@@ -744,6 +758,88 @@ test("at 760 px the header scrolls away and the view row stays at the top of a s
       .toBeGreaterThan(0);
     const row = await boxOf(filterRow(page), "the view row");
     expect(Math.round(row.y), "the row left the top at 760 px").toBe(0);
+  });
+});
+
+/** The document's `scroll-padding-top`, and against it the summed height of the bands above the
+ *  rows that stay at the top of the screen: the header's identity block and the view row's box,
+ *  each counted only while it is `position: sticky`. */
+async function topPadding(page: Page): Promise<{ padding: string; stays: number }> {
+  return page.evaluate(() => {
+    const bands = new Set<Element>();
+    const block = document.querySelector("[data-identity-block]");
+    if (block !== null) bands.add(block);
+    for (let at = document.querySelector("[data-filter-row]"); at !== null; at = at.parentElement) {
+      if (getComputedStyle(at).position === "sticky") {
+        bands.add(at);
+        break;
+      }
+    }
+    let stays = 0;
+    for (const band of bands) {
+      if (getComputedStyle(band).position === "sticky") {
+        stays += Math.round(band.getBoundingClientRect().height);
+      }
+    }
+    return { padding: getComputedStyle(document.documentElement).scrollPaddingTop, stays };
+  });
+}
+
+// What a scroll brings into view stands below everything that stays at the top of the screen
+// (decision 113 of INFRA-1196's parts): the page scrolls the document, whose
+// `scroll-padding-top` is the height of the bands above the rows that are sticky at that width,
+// the view row at 390 px and the header's identity block, where a part draws it, at 1440 px. A
+// later part's focused row lands by `scrollIntoView`, which reads that padding. With no padding
+// set the row fails at 390 px on "scroll-padding-top is not the height of what stays at 390 px".
+test("the page's scroll padding at the top is the height of what stays above the rows, at 390 and 1440 px", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      if (width === 390) {
+        expect(
+          (await topPadding(page)).stays,
+          "nothing above the rows stays at the top at 390 px"
+        ).toBeGreaterThan(0);
+      }
+      await expect
+        .poll(
+          async () => {
+            const { padding, stays } = await topPadding(page);
+            return padding === `${stays}px` ? "equal" : `${padding} against ${stays}px`;
+          },
+          { message: `scroll-padding-top is not the height of what stays at ${width} px` }
+        )
+        .toBe("equal");
+    }
+  });
+});
+
+// From an address that names a node (`#b-`), a pointer press on Spec and then on Decisions moves
+// to each view's address, one history entry each (decision 93 of INFRA-1196's parts). There, a
+// press whose mousedown took the focus out of the outline closed the body of the outline's row,
+// the page grew shorter under the pointer, and the press ended elsewhere and did nothing. The
+// outline is a later part's; this row holds what each press must do.
+test("from an address that names a node, a press on Spec and then Decisions moves to each view's address, one history entry each", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    await gotoIssue(page, `/issues/${key}#b-r1`);
+    await expect(page).toHaveURL(new RegExp(`/issues/${key}#b-r1$`));
+    const entries = () => page.evaluate(() => window.history.length);
+    const before = await entries();
+    await presetToggle(page, "spec").click();
+    await expect(page, "a press on Spec did not move to Spec's address").toHaveURL(
+      addressOf(key, "spec")
+    );
+    expect(await entries(), "a press on Spec added no history entry").toBe(before + 1);
+    await presetToggle(page, "decisions").click();
+    await expect(page, "a press on Decisions did not move to Decisions' address").toHaveURL(
+      addressOf(key, "decisions")
+    );
+    expect(await entries(), "a press on Decisions added no history entry").toBe(before + 2);
   });
 });
 

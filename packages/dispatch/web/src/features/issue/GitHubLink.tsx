@@ -177,7 +177,7 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       </span>
     ) : (
       <span className={`inline-block text-sm ${pageQuietText}`} {...page.pageChrome}>
-        <span className="[overflow-wrap:anywhere]" {...page.authorText}>
+        <span className="max-w-full [overflow-wrap:anywhere]" {...page.authorText}>
           {link.url}
         </span>
         <span className="ml-1">({page.CONTROL_LABELS.external_link_unsafe})</span>
@@ -256,9 +256,13 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
           )}
         </>
       )}
+      {/* Inside `NoTooltips` the state and the checks' result are values too, so neither chip
+          keeps its width: each keeps `max-w-full` and breaks anywhere, as the reference beside
+          them does (dispatch://INFRA-3935 R6, decision 104 of
+          dispatch://INFRA-1196/artifact/part-decisions-md). */}
       {state === undefined ? null : (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
           {...page?.authorText}
         >
           {state}
@@ -266,14 +270,17 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       )}
       {isPullRequest && !checks.isError && checks.data !== undefined ? (
         <span
-          className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
+          className={`${page === null ? "shrink-0" : "min-w-0 max-w-full [overflow-wrap:anywhere]"} rounded-full px-2 py-0.5 text-xs ${page === null ? `${badgeLow.bg} ${badgeLow.text}` : pageLabelChip}`}
           {...page?.pageChrome}
         >
           {page === null ? (
             <>checks: {checks.data}</>
           ) : (
             <>
-              {page.CONTROL_LABELS.github_checks}: <span {...page.authorText}>{checks.data}</span>
+              {page.CONTROL_LABELS.github_checks}:{" "}
+              <span className="max-w-full [overflow-wrap:anywhere]" {...page.authorText}>
+                {checks.data}
+              </span>
             </>
           )}
         </span>

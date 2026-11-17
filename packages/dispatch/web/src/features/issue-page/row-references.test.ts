@@ -26,6 +26,32 @@ test("what a text cites is every whole address and every bare key, each once", (
   expect(citedReferences("")).toEqual([]);
 });
 
+// dispatch://INFRA-1196 R9 and decision 55: the batched read resolves an item id or a block id
+// written short in the owner its reference names, and answers under the reference as the request
+// wrote it. So an address written short is asked as written, beside one written whole, and a row
+// names its link from that answer.
+test("an address that writes its id short is asked for as written, and named from its answer", () => {
+  const short = "dispatch://CORE-1/comment/c0b271c7";
+  const shortBlock = "dispatch://CORE-1/spec#b-abcd1234";
+  expect(
+    citedReferences(
+      `see ${short} and dispatch://CORE-1/comment/c0b271c7-1111-4222-8333-444455556666 and ${shortBlock} and dispatch://CORE-1/spec#b-r1`
+    )
+  ).toEqual([
+    short,
+    "dispatch://CORE-1/comment/c0b271c7-1111-4222-8333-444455556666",
+    shortBlock,
+    "dispatch://CORE-1/spec#b-r1",
+  ]);
+  const [link] = rowReferences(`see ${short}`, []);
+  if (link === undefined) throw new Error("the text holds one reference");
+  expect(link.reference).toBe(short);
+  expect(rowReferenceWords(link, new Map([[short, "The comment its short id names"]]))).toEqual({
+    key: undefined,
+    words: "The comment its short id names",
+  });
+});
+
 test("a bare key links only where the batched read answered that its issue exists", () => {
   const issues = knownIssueKeys(NAMES);
   expect(issues).toEqual(["CORE-7"]);

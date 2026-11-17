@@ -15,6 +15,8 @@ import {
   badgeSelectBadge,
   badgeSelectHeaderWrapper,
   badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
@@ -96,15 +98,19 @@ export function PriorityEditor({
         : pageLabelChip;
   const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
+  // and its wrapper narrows to the line rather than keep its width (dispatch://INFRA-3935 R6,
+  // decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). The header variant is the
+  // new page's shape alone, so it wraps on every surface.
   return (
     <>
       <span
-        className={`${variant === "header" ? badgeSelectHeaderWrapper : badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
       >
         {variant === "header" ? (
           <span
             aria-hidden="true"
-            className={`inline-flex items-center gap-[5px] text-sm leading-5 font-semibold ${
+            className={`inline-flex min-w-0 max-w-full items-center gap-[5px] text-sm leading-5 font-semibold [overflow-wrap:anywhere] ${
               priority === null ? pageQuietText : pageInkText
             }`}
             {...mark}
@@ -113,7 +119,11 @@ export function PriorityEditor({
             {shown}
           </span>
         ) : (
-          <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeTone}`} {...mark}>
+          <span
+            aria-hidden="true"
+            className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+            {...mark}
+          >
             {shown}
           </span>
         )}
