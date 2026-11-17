@@ -21,7 +21,7 @@ import { envoySettings } from "../envoy-settings";
 import { createEnvoyClient } from "../transport";
 import { brokerStandIns } from "./broker-stand-ins";
 
-const { noFile, podEnvironment, servers, stubBroker, stubDispatch, tempDir } =
+const { noFile, podEnvironment, projectedToken, servers, stubBroker, stubDispatch, tempDir } =
   brokerStandIns("broker-credential");
 
 /** The Dispatch token a person holds on the machine, which a session told to trade never uses. */
@@ -143,7 +143,7 @@ test("with no bearer at all, the session's credential is its own identity traded
   // One trade of the pod's own token, under the session this caller named: nothing in the
   // environment does.
   expect(broker.trades.length).toBe(1);
-  expect(broker.trades[0]?.form.get("subject_token")).toBe("projected.service.account.token");
+  expect(broker.trades[0]?.form.get("subject_token")).toBe(projectedToken);
   expect(broker.trades[0]?.form.get("session")).toBe("example-worker-session");
   // The access token is presented under the DPoP scheme, with a proof naming this request and
   // hashing the token it is presented beside: a bearer copy of it buys nothing.

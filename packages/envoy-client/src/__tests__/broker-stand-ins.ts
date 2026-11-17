@@ -114,10 +114,14 @@ export function brokerStandIns(prefix: string) {
     return { url: `http://127.0.0.1:${server.port}`, asked };
   }
 
+  /** The pod's projected token, random as a real one is: the client holds what it trades, and a
+   *  token spelled from words would take those words out of its lines. */
+  const projectedToken = fixtureSecret("proj");
+
   /** A pod's projected token file. */
-  function projectedFile(token: string): string {
+  function projectedFile(): string {
     const file = path.join(tempDir(), "token");
-    writeFileSync(file, `${token}\n`);
+    writeFileSync(file, `${projectedToken}\n`);
     return file;
   }
 
@@ -131,11 +135,11 @@ export function brokerStandIns(prefix: string) {
       ENVOY_URL: dispatchUrl,
       AGENT_SECRETS_URL: brokerUrl,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-      AGENT_SECRETS_MACHINE_TOKEN_FILE: projectedFile("projected.service.account.token"),
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: projectedFile(),
     };
   }
 
-  return { servers, tempDir, noFile, stubBroker, stubDispatch, podEnvironment };
+  return { servers, tempDir, noFile, stubBroker, stubDispatch, podEnvironment, projectedToken };
 }
 
 /** One token the stub broker minted: what it handed out, the session and key it was traded

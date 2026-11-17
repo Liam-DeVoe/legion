@@ -733,6 +733,10 @@ afterEach(async () => {
   // What a test's Dispatch answers taught the process about its keyed layer is per process, so a
   // later suite in the same run (envoy-client's) would read it for the same origin.
   forgetKeyedLayerMemory();
+  // A broker client's retry loop trades on for the process's life, so each row's clients are
+  // closed with it: one whose trades were failing would go on trading, and logging, into the
+  // rows after it.
+  forgetBrokerClients();
   if (originalDispatchUrl === undefined) delete process.env.DISPATCH_URL;
   else process.env.DISPATCH_URL = originalDispatchUrl;
   if (originalDispatchToken === undefined) delete process.env.DISPATCH_TOKEN;
@@ -19630,6 +19634,108 @@ console.log(JSON.stringify(args));
     ).toBe(true);
     expect(notifications.join("\n").toLowerCase()).not.toContain(seed.toLowerCase());
   });
+
+  // A failing row for #4140 at c8903b20b8, found by the acceptance (AcceptE2-2). Put it in
+  // packages/pi-envoy/extensions/envoy.test.ts, inside `describe("envoy OMP extension", ...)`,
+  // beside "natsCredential follows a session switch", and run
+  // `bun test extensions/envoy.test.ts -t 'a broker that answers no trade'` in packages/pi-envoy.
+  // With the broker trade one retry loop per session (71dc1b565f), a broker that answers 503 is
+  // traded again at 15 s doubling to 5 minutes, and each caller waits on that loop within its own
+  // deadline. A pass of the session's registration holds several such callers: the listener calls
+  // (the pod's broker credential, since it holds no Envoy bearer) and the NATS dial's `ready` (20 s).
+  // Together they outlast the pass's 30 s deadline, so the queue abandons the task, and the notice
+  // says "a queued task did not settle within 30000ms and was abandoned", with no word of the
+  // trade. At 4ec0330624 the same pass names the failed trade. On the real stack (the acceptance's
+  // leak matrix) this was 12 rows whose trade cannot succeed: a broker refusing connections,
+  // answering 500 or a malformed token, an unreadable machine token.
+  test("a broker that answers no trade: the session's notice names the trade, and no pass is abandoned", async () => {
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      await request.text();
+      return new Response("the broker is away", { status: 503 });
+    };
+    const notifications: string[] = [];
+    const intervals: { callback: () => void; intervalMs: number }[] = [];
+    const context: SessionContext = {
+      cwd: "/tmp/envoy-omp-test",
+      sessionManager: { ...topLevelSession, getSessionId: () => "ses_broker_away" },
+      setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
+      ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?broker-answers-no-trade");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    await fixture.handlers.get("session_start")?.({}, context);
+    // The next heartbeat pass, while the broker is still away, as a pod's heartbeat runs it.
+    await Bun.sleep(5_000);
+    const heartbeat = intervals.at(-1);
+    if (heartbeat === undefined) throw new Error("the heartbeat interval was not registered");
+    heartbeat.callback();
+    // Past that pass's 30 s deadline, so an abandoned pass has been reported by now.
+    await Bun.sleep(34_000);
+    expect(notifications.some((message) => message.includes("did not settle within"))).toBe(false);
+    expect(
+      notifications.some((message) => message.includes("the trade for the session's token"))
+    ).toBe(true);
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }, 90_000);
+
+  test("a broker that answers 503: the session's notice names the trade's failure and its kind within 5 s", async () => {
+    // A NATS connection's `ready()` fails fast (`TokenCallOptions`): where the token client's
+    // last trade failed in a way its retry loop trades again on, the start is told at once what
+    // that trade came to, as it was before the trade became one retry loop. Waiting for ready
+    // instead held the start 20 s with nothing said.
+    const tokenFile = join(configDirectory, "projected-token");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
+    process.env.NATS_AUTH = "broker";
+    process.env.AGENT_SECRETS_URL = "http://broker.test";
+    process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
+    process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
+    globalThis.fetch = async (input, init) => {
+      const request = new Request(input, init);
+      if (new URL(request.url).host !== "broker.test")
+        return responseWithRegistration(input, init, []);
+      await request.text();
+      return new Response("the broker is away", { status: 503 });
+    };
+    const started = Date.now();
+    // Each notice with how long after the start it was made: the start itself can hold the turn,
+    // so the time is taken as the notice is made, not when the start returns.
+    const notifications: { readonly message: string; readonly at: number }[] = [];
+    const context: SessionContext = {
+      cwd: "/tmp/envoy-omp-test",
+      sessionManager: { ...topLevelSession, getSessionId: () => "ses_broker_503" },
+      setInterval: () => {},
+      ui: {
+        ...sessionContext().ui,
+        notify: (message) => notifications.push({ message, at: Date.now() - started }),
+      },
+    };
+    const { default: envoyExtension } = await import("./envoy.ts?broker-answers-503");
+    const fixture = createPi();
+    envoyExtension(fixture.pi);
+    const starting = fixture.handlers.get("session_start")?.({}, context);
+    const named = () =>
+      notifications.find(({ message }) => message.includes("the trade for the session's token"));
+    while (named() === undefined && Date.now() - started < 5_000) await Bun.sleep(50);
+    const notice = named();
+    expect(
+      notice,
+      `no notice named the trade within 5 s: ${notifications.map(({ message }) => message).join(" | ")}`
+    ).toBeDefined();
+    expect(notice?.at).toBeLessThan(5_000);
+    expect(notice?.message).toContain("HTTP 503");
+    await starting;
+    await fixture.handlers.get("session_shutdown")?.({}, context);
+  }, 60_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects

@@ -847,7 +847,7 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
     },
   });
   const identityFile = path.join(root, "projected-token");
-  await Bun.write(identityFile, "projected.service.account.token\n");
+  await Bun.write(identityFile, `${fixtureSecret("proj")}\n`);
   const asked: Array<{ authorization: string | null; proof: string | null }> = [];
   const dispatch = (async (_input, init) => {
     const headers = new Headers(init?.headers);

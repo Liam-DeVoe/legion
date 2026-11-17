@@ -5,10 +5,10 @@
 // and either registrar can be down for minutes. The broker refuses that trade `invalid_grant` with
 // an `error_description` beginning `pod_session_not_registered:`, and that one refusal is never
 // final: the client's retry loop trades again, 2 s doubling to 30 s, for as long as the session
-// runs, says so at each wait, naming the session, and no caller arriving cuts a wait short.
-// Every other refusal stays as final as it was. The loop's whole table of answers is
-// `retry-loop.test.ts`; the Go half is `registration_test.go` in
-// `packages/envoy/internal/brokerclient`.
+// runs, says so once, naming the session, again every 30 minutes while it lasts and once when it
+// ends, and no caller arriving cuts a wait short. Every other refusal stays as final as it was.
+// The loop's whole table of answers is `retry-loop.test.ts`; the Go half is
+// `registration_test.go` in `packages/envoy/internal/brokerclient`.
 
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -115,19 +115,27 @@ test("a pod trade waits for its registration however long it takes", async () =>
   // would have lost.
   expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, ...Array<number>(10).fill(30_000)]);
   expect(waits.reduce((sum, wait) => sum + wait, 0)).toBeGreaterThan(5 * 60_000);
-  // Said at each wait, naming the session.
-  expect(logged.length).toBe(refusals);
-  for (const { line } of logged) expect(line).toContain(SESSION);
+  // Said once, naming the session, within the half hour, and once more when the token landed.
+  expect(logged.length).toBe(2);
+  expect(logged[0]?.line).toContain(`no registration for this pod's session ${SESSION} yet`);
+  expect(logged[1]?.line).toContain(
+    `answered this pod's session ${SESSION} once it was registered`
+  );
 });
 
-test("an unregistered session is logged at each wait, naming the session and the next trade", async () => {
-  const { token, logged, waits } = await waitForRegistration(5);
+test("an unregistered session is logged once, again every 30 minutes while it lasts, and once when it ends", async () => {
+  // 130 refusals across 3810 s: logged at the first, at the first 30 minutes after that, and at
+  // the first 30 minutes after that again; then the token lands.
+  const { token, logged } = await waitForRegistration(130);
   expect(token?.accessToken).toBe("token-once-registered");
-  expect(logged.length).toBe(5);
-  for (const [i, { line }] of logged.entries()) {
-    expect(line).toContain(`no registration for this pod's session ${SESSION} yet`);
-    expect(line).toContain(`trading again in ${Math.ceil((waits[i] as number) / 1000)} s`);
+  const pending = logged.filter(({ line }) => line.includes("no registration"));
+  expect(pending.length).toBe(3);
+  for (const [i, { line, at }] of pending.entries()) {
+    expect(line).toContain(SESSION);
+    if (i > 0) expect(at - (pending[i - 1]?.at as number)).toBeGreaterThanOrEqual(30 * 60_000);
   }
+  expect(logged.at(-1)?.line).toContain("once it was registered, 3810 s and 130 failed trades");
+  expect(logged.length).toBe(4);
 });
 
 /**
