@@ -1202,6 +1202,66 @@ export function listProjectEvals(
   return get("/api/v1/projects/{key}/evals", { params: { key: project }, query }, options);
 }
 
+/** `GET /api/v1/projects/{key}/legion/board`: the project's Legion board, which a row reads to
+ *  assert what the server answers rather than what the page draws. The Issues tab reads the same
+ *  body over the live socket (the `legion` live view). */
+export function getLegionBoard(project: string, options: ApiOptions = {}) {
+  return get("/api/v1/projects/{key}/legion/board", { params: { key: project } }, options);
+}
+
+/** The eval whose items route serves the Legion facts of a closed issue the board does not show
+ *  (the board route's description: "a closed issue the board does not show being served by an
+ *  eval's items route alone"). */
+export const legionWorkTimeEval = "legion-work-time";
+
+/** `GET /api/v1/projects/{key}/evals/legion-work-time/items`: one page of the rows behind
+ *  `project`'s Legion work time, over the window the query names (the last 7 days where it names
+ *  none, at most 84). Each `issue` row is one issue closed in the window, its stored facts as its
+ *  columns. A project a fixture writes by SQL gets its eval only on a later pass of the eval
+ *  refresher, so a row waits for it first (`waitForLegionWorkTimeEval`). */
+export function getLegionWorkTimeItems(
+  project: string,
+  query: Query<"/api/v1/projects/{key}/evals/{slug}/items", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get(
+    "/api/v1/projects/{key}/evals/{slug}/items",
+    { params: { key: project, slug: legionWorkTimeEval }, query },
+    options
+  );
+}
+
+/** Waits until `GET /api/v1/projects/{key}/evals/legion-work-time` answers 200, for up to
+ *  `timeout`, and fails with the last answer. A project created through the API gets the eval
+ *  catalogue in the transaction that creates it; a project a fixture writes by SQL gets it on a
+ *  later pass of the eval refresher (`evals.Store.RunRefresher`), which an event or a delivery
+ *  change wakes and which starts a pass at most `evals.RefresherGap` (10 s) after the one before
+ *  it. Until then the route answers 404 EVAL_NOT_FOUND, and so does the items route. */
+export async function waitForLegionWorkTimeEval(
+  project: string,
+  timeout = 60_000,
+  login = "alice"
+): Promise<void> {
+  const path = routeUrl("/api/v1/projects/{key}/evals/{slug}", {
+    key: project,
+    slug: legionWorkTimeEval,
+  });
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const response = await fetch(new URL(path, baseUrl), { headers: await userHeaders(login) });
+    const answer = await response.text();
+    if (response.status === 200) return;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `GET ${path} did not answer 200 within ${timeout / 1000} s; it last answered ${response.status} ${answer}`
+      );
+    }
+    const tick = Promise.withResolvers<void>();
+    setTimeout(tick.resolve, 250);
+    await tick.promise;
+  }
+}
+
 /** Retry one comment mention's delivery, the endpoint the "Mention deliveries" Retry posts to. */
 export function retryCommentDelivery(
   comment: string,
