@@ -48,6 +48,165 @@ func stepRecordsWayBack(t *testing.T) string {
 	return ""
 }
 
+// rollBackStore is a store migrated to this release, on which a test seeds issues and their
+// step_starts rows as this release leaves them, runs the way back, makes the earlier release's
+// writes by hand, and rolls forward.
+type rollBackStore struct {
+	t     *testing.T
+	store *Store
+}
+
+func newRollBackStore(t *testing.T) rollBackStore {
+	t.Helper()
+	store := emptyStore(t)
+	if _, err := store.Migrate(t.Context()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return rollBackStore{t: t, store: store}
+}
+
+func (s rollBackStore) exec(sql string) {
+	s.t.Helper()
+	if _, err := s.store.Pool().Exec(s.t.Context(), sql); err != nil {
+		s.t.Fatalf("%s: %v", sql, err)
+	}
+}
+
+// issue is key in tree, standing in phase (held from heldFrom where that is not ""), at
+// generation, its implementer at pass 1.
+func (s rollBackStore) issue(key, tree, phase, heldFrom string, generation int) {
+	s.t.Helper()
+	held := "null"
+	if heldFrom != "" {
+		held = "'" + heldFrom + "'"
+	}
+	s.exec(fmt.Sprintf(`insert into issues (key, tree, project, title, phase, held_from, generation, status, rank, last_dispatch_seq)
+		values ('%s', '%s', 'LEGION', '%s', '%s', %s, %d, 'in_progress', 'A', 1)`, key, tree, key, phase, held, generation))
+	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass)
+		values ('%s', 'implementer', '', '', 0, '', 1)`, key))
+}
+
+// entry raises the entry of role on key, as each start that hands a phase worker its work does
+// (workflow's enter), every release's.
+func (s rollBackStore) entry(key, role string) {
+	s.t.Helper()
+	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry)
+		values ('%s', '%s', '', '', 0, '', 0, 1)
+		on conflict (issue, role) do update set entry = phases.entry + 1`, key, role))
+}
+
+// stepRole and stepType are the role and the type of the record of each place (workflow's
+// stepOf); a retro's and a merge's type is "".
+var (
+	stepRole = map[string]string{"step 1": "planner", "step 2": "implementer", "step 3": "tester", "step 4": "reviewer",
+		"step 5": "acceptance", "retro 0": "implementer", "merge 0": "merger"}
+	stepType = map[string]string{"step 1": "planning", "step 2": "implementation", "step 3": "testing", "step 4": "review",
+		"step 5": "review"}
+)
+
+// row is key's step_starts row at kind and place, at the count 2, whose record names a uuid of its
+// own, as StepID's does: md5 of the issue, the kind and the place (recordID).
+func (s rollBackStore) row(key, kind string, place int, run string) {
+	s.t.Helper()
+	at := fmt.Sprintf("%s %d", kind, place)
+	s.exec(fmt.Sprintf(`insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
+		values ('%[1]s', 'default', '%[2]s', %[3]d, 2, 'agent of %[1]s', '2026-11-17T01:00:00Z', '%[4]s',
+		jsonb_strip_nulls(jsonb_build_object('id', md5('%[1]s %[2]s %[3]d')::uuid, 'task', 'default', 'step', %[3]d, 'kind', '%[2]s',
+			'role', '%[5]s', 'type', nullif('%[6]s', ''), 'agent', 'agent of %[1]s', 'generation', 1, 'started_at', '2026-11-17T01:00:00Z')))`,
+		key, kind, place, run, stepRole[at], stepType[at]))
+}
+
+// recordID is the id of the record row kept for place ("KEY kind place").
+func (s rollBackStore) recordID(place string) string {
+	s.t.Helper()
+	var id string
+	if err := s.store.Pool().QueryRow(s.t.Context(), `select md5($1)::uuid::text`, place).Scan(&id); err != nil {
+		s.t.Fatalf("compute the id of %s: %v", place, err)
+	}
+	return id
+}
+
+// wayBack runs the way back an operator runs with the daemon stopped.
+func (s rollBackStore) wayBack() {
+	s.t.Helper()
+	s.exec(stepRecordsWayBack(s.t))
+}
+
+// rollForward is the newer image's Migrate, which applies the roll forward the way back re-armed.
+func (s rollBackStore) rollForward() {
+	s.t.Helper()
+	if applied, err := s.store.Migrate(s.t.Context()); err != nil || applied != 1 {
+		s.t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
+	}
+}
+
+// keptStart is what step_starts holds of one place: its run, its count and its record's id.
+type keptStart struct {
+	run    string
+	starts int64
+	id     string
+}
+
+// starts is each row of step_starts, by "KEY kind place".
+func (s rollBackStore) starts() map[string]keptStart {
+	s.t.Helper()
+	rows, err := s.store.Pool().Query(s.t.Context(), `select issue || ' ' || kind || ' ' || place, run, starts, coalesce(record->>'id', '') from step_starts`)
+	if err != nil {
+		s.t.Fatalf("read step_starts: %v", err)
+	}
+	defer rows.Close()
+	all := map[string]keptStart{}
+	for rows.Next() {
+		var place string
+		var start keptStart
+		if err := rows.Scan(&place, &start.run, &start.starts, &start.id); err != nil {
+			s.t.Fatalf("scan step_starts: %v", err)
+		}
+		all[place] = start
+	}
+	if err := rows.Err(); err != nil {
+		s.t.Fatalf("read step_starts: %v", err)
+	}
+	return all
+}
+
+// ends is every step record row of the outbox, by issue, decoded as the daemon reads it.
+func (s rollBackStore) ends() map[string][]record.StepRecord {
+	s.t.Helper()
+	outbox, err := s.store.Pool().Query(s.t.Context(), `select issue, payload from outbox where kind = 'step_record' order by id`)
+	if err != nil {
+		s.t.Fatalf("read the outbox: %v", err)
+	}
+	defer outbox.Close()
+	all := map[string][]record.StepRecord{}
+	for outbox.Next() {
+		row := record.OutboxRow{Kind: record.OutboxKindStepRecord}
+		if err := outbox.Scan(&row.Issue, &row.Payload); err != nil {
+			s.t.Fatalf("scan the outbox: %v", err)
+		}
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			s.t.Fatalf("the roll forward's step record row of %s does not decode as the daemon reads it: %v", row.Issue, err)
+		}
+		all[row.Issue] = append(all[row.Issue], payload.(record.StepRecord))
+	}
+	if err := outbox.Err(); err != nil {
+		s.t.Fatalf("read the outbox: %v", err)
+	}
+	return all
+}
+
+// assertRollForwardEnd fails unless end is the end the roll forward writes of place's record: the
+// identity the row kept, stopped at the moment of the rollback.
+func (s rollBackStore) assertRollForwardEnd(place string, end record.StepRecord, rolledBackAt time.Time) {
+	s.t.Helper()
+	issue, kindPlace, _ := strings.Cut(place, " ")
+	if id := s.recordID(place); end.ID != id || end.Agent != "agent of "+issue || end.Role != stepRole[kindPlace] || end.Generation != 1 ||
+		end.Result == nil || *end.Result != "stopped" || end.EndedAt == nil || !end.EndedAt.Equal(rolledBackAt) {
+		s.t.Errorf("the roll forward's end of %s = %+v, want the record %s the row kept, stopped at the rollback, %s", place, end, id, rolledBackAt)
+	}
+}
+
 // A rollback hands the store to an earlier release, which moves issues and starts and ends their
 // steps without a row of step_starts. The way back keeps each issue's witness and the moment of the
 // rollback, and re-arms the roll forward, which the newer image's Migrate then applies again: each
@@ -62,95 +221,48 @@ func stepRecordsWayBack(t *testing.T) string {
 // witness and the moment of the first, which the earlier release has moved since.
 func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.T) {
 	ctx := context.Background()
-	store := emptyStore(t)
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	exec := func(sql string) {
-		t.Helper()
-		if _, err := store.Pool().Exec(ctx, sql); err != nil {
-			t.Fatalf("%s: %v", sql, err)
-		}
-	}
-	issue := func(key, tree, phase, heldFrom string, generation int) {
-		t.Helper()
-		held := "null"
-		if heldFrom != "" {
-			held = "'" + heldFrom + "'"
-		}
-		exec(fmt.Sprintf(`insert into issues (key, tree, project, title, phase, held_from, generation, status, rank, last_dispatch_seq)
-			values ('%s', '%s', 'LEGION', '%s', '%s', %s, %d, 'in_progress', 'A', 1)`, key, tree, key, phase, held, generation))
-		exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass)
-			values ('%s', 'implementer', '', '', 0, '', 1)`, key))
-	}
-	// Each row's record names a uuid of its own, as StepID's does: md5 of the issue, the kind and
-	// the place, read back below as the id each end must carry.
-	row := func(key, kind string, place int, run string) {
-		t.Helper()
-		exec(fmt.Sprintf(`insert into step_starts (issue, task, kind, place, starts, agent, started_at, run, record)
-			values ('%[1]s', 'default', '%[2]s', %[3]d, 2, 'agent of %[1]s', '2026-11-17T01:00:00Z', '%[4]s',
-			jsonb_build_object('id', md5('%[1]s %[2]s %[3]d')::uuid, 'task', 'default', 'step', %[3]d, 'kind', '%[2]s', 'role', 'tester',
-				'type', 'testing', 'agent', 'agent of %[1]s', 'generation', 1, 'started_at', '2026-11-17T01:00:00Z'))`, key, kind, place, run))
-	}
-	issue("LEGION-201", "LEGION-201", "testing", "", 1)
-	row("LEGION-201", "step", 3, "open")
-	row("LEGION-201", "step", 2, "ended")
-	issue("LEGION-202", "LEGION-202", "testing", "", 1)
-	row("LEGION-202", "step", 3, "open")
-	row("LEGION-202", "step", 2, "ended")
-	issue("LEGION-203", "LEGION-203", "implementing", "", 1)
-	row("LEGION-203", "step", 3, "ended")
-	issue("LEGION-210", "LEGION-210", "done", "", 1)
-	issue("LEGION-211", "LEGION-210", "testing", "", 4)
-	row("LEGION-211", "step", 3, "open")
-	issue("LEGION-220", "LEGION-220", "done", "", 1)
-	issue("LEGION-221", "LEGION-220", "testing", "", 4)
-	row("LEGION-221", "step", 3, "open")
-	issue("LEGION-222", "LEGION-220", "held", "merging", 4)
-	row("LEGION-222", "merge", 0, "open")
-	issue("LEGION-230", "LEGION-230", "held", "testing", 1)
-	row("LEGION-230", "step", 3, "open")
-	issue("LEGION-240", "LEGION-240", "reviewing", "", 1)
-	row("LEGION-240", "step", 4, "open")
+	s := newRollBackStore(t)
+	s.issue("LEGION-201", "LEGION-201", "testing", "", 1)
+	s.row("LEGION-201", "step", 3, "open")
+	s.row("LEGION-201", "step", 2, "ended")
+	s.issue("LEGION-202", "LEGION-202", "testing", "", 1)
+	s.row("LEGION-202", "step", 3, "open")
+	s.row("LEGION-202", "step", 2, "ended")
+	s.issue("LEGION-203", "LEGION-203", "implementing", "", 1)
+	s.row("LEGION-203", "step", 3, "ended")
+	s.issue("LEGION-210", "LEGION-210", "done", "", 1)
+	s.issue("LEGION-211", "LEGION-210", "testing", "", 4)
+	s.row("LEGION-211", "step", 3, "open")
+	s.issue("LEGION-220", "LEGION-220", "done", "", 1)
+	s.issue("LEGION-221", "LEGION-220", "testing", "", 4)
+	s.row("LEGION-221", "step", 3, "open")
+	s.issue("LEGION-222", "LEGION-220", "held", "merging", 4)
+	s.row("LEGION-222", "merge", 0, "open")
+	s.issue("LEGION-230", "LEGION-230", "held", "testing", 1)
+	s.row("LEGION-230", "step", 3, "open")
+	s.issue("LEGION-240", "LEGION-240", "reviewing", "", 1)
+	s.row("LEGION-240", "step", 4, "open")
 
-	exec(stepRecordsWayBack(t))
+	s.wayBack()
 	var recorded bool
-	if err := store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, stepRecordsRollForwardVersion).Scan(&recorded); err != nil || recorded {
+	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, stepRecordsRollForwardVersion).Scan(&recorded); err != nil || recorded {
 		t.Fatalf("after the way back the roll forward is recorded = %t, %v; want its row deleted, so the roll forward applies it again", recorded, err)
 	}
 	var rolledBackAt time.Time
-	if err := store.Pool().QueryRow(ctx, `select taken_at from step_starts_rollback where issue = 'LEGION-202'`).Scan(&rolledBackAt); err != nil {
+	if err := s.store.Pool().QueryRow(ctx, `select taken_at from step_starts_rollback where issue = 'LEGION-202'`).Scan(&rolledBackAt); err != nil {
 		t.Fatalf("read the moment the way back kept: %v", err)
 	}
 	// The earlier release.
-	exec(`update phases set pass = pass + 1 where issue = 'LEGION-202' and role = 'implementer'`)
-	exec(`update issues set phase = 'testing' where key = 'LEGION-203'`)
-	exec(stepRecordsWayBack(t))
-	exec(`update issues set generation = 2 where key = 'LEGION-210'`)
-	exec(`update issues set linger_until = now() + interval '1 hour' where key = 'LEGION-220'`)
-	exec(`update issues set phase = 'testing', held_from = null where key = 'LEGION-230'`)
-	exec(`update issues set generation = 2 where key = 'LEGION-240'`)
+	s.exec(`update phases set pass = pass + 1 where issue = 'LEGION-202' and role = 'implementer'`)
+	s.exec(`update issues set phase = 'testing' where key = 'LEGION-203'`)
+	s.wayBack()
+	s.exec(`update issues set generation = 2 where key = 'LEGION-210'`)
+	s.exec(`update issues set linger_until = now() + interval '1 hour' where key = 'LEGION-220'`)
+	s.exec(`update issues set phase = 'testing', held_from = null where key = 'LEGION-230'`)
+	s.exec(`update issues set generation = 2 where key = 'LEGION-240'`)
 
-	applied, err := store.Migrate(ctx)
-	if err != nil || applied != 1 {
-		t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
-	}
-	runs := map[string]string{}
-	rows, err := store.Pool().Query(ctx, `select issue || ' ' || kind || ' ' || place, run from step_starts`)
-	if err != nil {
-		t.Fatalf("read step_starts: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var place, run string
-		if err := rows.Scan(&place, &run); err != nil {
-			t.Fatalf("scan step_starts: %v", err)
-		}
-		runs[place] = run
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read step_starts: %v", err)
-	}
+	s.rollForward()
+	runs := s.starts()
 	want := map[string]string{
 		"LEGION-201 step 3": "open", "LEGION-201 step 2": "ended",
 		"LEGION-202 step 3": "uncounted", "LEGION-202 step 2": "uncounted",
@@ -161,53 +273,83 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 		"LEGION-240 step 4": "uncounted",
 	}
 	for place, run := range want {
-		if runs[place] != run {
-			t.Errorf("after the roll forward %s reads %q, want %q", place, runs[place], run)
+		if runs[place].run != run {
+			t.Errorf("after the roll forward %s reads %q, want %q", place, runs[place].run, run)
 		}
 	}
 	if len(runs) != len(want) {
 		t.Errorf("step_starts holds %d rows after the roll forward, want the %d it held: %v", len(runs), len(want), runs)
 	}
 	var kept int
-	if err := store.Pool().QueryRow(ctx, `select count(*) from step_starts_rollback`).Scan(&kept); err != nil || kept != 0 {
+	if err := s.store.Pool().QueryRow(ctx, `select count(*) from step_starts_rollback`).Scan(&kept); err != nil || kept != 0 {
 		t.Fatalf("step_starts_rollback holds %d rows after the roll forward, %v; want none, so a later rollback keeps its own", kept, err)
 	}
-	ends := map[string]record.StepRecord{}
-	outbox, err := store.Pool().Query(ctx, `select issue, payload from outbox where kind = 'step_record'`)
-	if err != nil {
-		t.Fatalf("read the outbox: %v", err)
-	}
-	defer outbox.Close()
-	for outbox.Next() {
-		row := record.OutboxRow{Kind: record.OutboxKindStepRecord}
-		if err := outbox.Scan(&row.Issue, &row.Payload); err != nil {
-			t.Fatalf("scan the outbox: %v", err)
-		}
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			t.Fatalf("the roll forward's step record row of %s does not decode as the daemon reads it: %v", row.Issue, err)
-		}
-		ends[row.Issue] = payload.(record.StepRecord)
-	}
-	if err := outbox.Err(); err != nil {
-		t.Fatalf("read the outbox: %v", err)
-	}
+	ends := s.ends()
 	ended := []string{"LEGION-202 step 3", "LEGION-211 step 3", "LEGION-221 step 3", "LEGION-240 step 4"}
 	if len(ends) != len(ended) {
 		t.Errorf("the roll forward wrote the ends of %v, want those of the runs open at the rollback that the earlier release ended: %v", ends, ended)
 	}
-	for _, run := range ended {
-		issue, place, _ := strings.Cut(run, " ")
-		var id string
-		if err := store.Pool().QueryRow(ctx, `select md5($1)::uuid::text`, issue+" "+place).Scan(&id); err != nil {
-			t.Fatalf("compute the id of %s: %v", run, err)
+	for _, place := range ended {
+		issue, _, _ := strings.Cut(place, " ")
+		if len(ends[issue]) != 1 {
+			t.Errorf("the roll forward wrote %d ends of %s, want one", len(ends[issue]), place)
+			continue
 		}
-		end := ends[issue]
-		if end.ID != id || end.Agent != "agent of "+issue || end.Role != "tester" || end.Generation != 1 ||
-			end.Result == nil || *end.Result != "stopped" || end.EndedAt == nil || !end.EndedAt.Equal(rolledBackAt) {
-			t.Errorf("the roll forward's end of %s = %+v, want the record %s the row kept, stopped at the rollback, %s", run, end, id, rolledBackAt)
+		s.assertRollForwardEnd(place, ends[issue][0], rolledBackAt)
+	}
+}
+
+// A root's re-admission is not its members' runs ending: a member awaiting its merge keeps its
+// merge step open through the linger (workflow's beginLinger) and the root's readmit, and only the
+// promotion that starts its merger again ends that run (admit's startMidPhaseMembers), which raises
+// the merger's entry. So where the earlier release re-admits the root and starts no merger, the
+// member's run stands open at the roll forward, with its count and its record, for its next end
+// to end: a merger the promotion does not start, and a held merger, whose hold starts none. Where
+// the promotion started the merger again, the run the row held is over, and its record gets its
+// end.
+func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testing.T) {
+	s := newRollBackStore(t)
+	for _, tree := range []struct {
+		root, member, held string
+	}{{root: "LEGION-250", member: "LEGION-251"}, {root: "LEGION-260", member: "LEGION-261"}, {root: "LEGION-270", member: "LEGION-271", held: "merging"}} {
+		s.issue(tree.root, tree.root, "done", "", 1)
+		s.exec(fmt.Sprintf(`update issues set linger_until = now() + interval '1 hour' where key = '%s'`, tree.root))
+		phase := "merging"
+		if tree.held != "" {
+			phase = "held"
+		}
+		s.issue(tree.member, tree.root, phase, tree.held, 4)
+		s.entry(tree.member, "merger")
+		s.row(tree.member, "merge", 0, "open")
+	}
+	s.wayBack()
+	var rolledBackAt time.Time
+	if err := s.store.Pool().QueryRow(t.Context(), `select taken_at from step_starts_rollback where issue = 'LEGION-261'`).Scan(&rolledBackAt); err != nil {
+		t.Fatalf("read the moment the way back kept: %v", err)
+	}
+	// The earlier release re-admits each root; the promotion of LEGION-260's tree starts
+	// LEGION-261's merger again.
+	s.exec(`update issues set generation = 2, linger_until = null, phase = 'admitted' where key in ('LEGION-250', 'LEGION-260', 'LEGION-270')`)
+	s.entry("LEGION-261", "merger")
+	s.rollForward()
+
+	starts, ends := s.starts(), s.ends()
+	for _, place := range []string{"LEGION-251 merge 0", "LEGION-271 merge 0"} {
+		issue, _, _ := strings.Cut(place, " ")
+		if got := starts[place]; got != (keptStart{run: "open", starts: 2, id: s.recordID(place)}) {
+			t.Errorf("after the roll forward %s = %+v, want the run open at the count 2 under its record %s", place, got, s.recordID(place))
+		}
+		if len(ends[issue]) != 0 {
+			t.Errorf("the roll forward ended %s, whose merge still runs: %+v", place, ends[issue])
 		}
 	}
+	if got := starts["LEGION-261 merge 0"].run; got != "uncounted" {
+		t.Errorf("after the roll forward LEGION-261 merge 0 reads %q, want uncounted: its merger started again", got)
+	}
+	if len(ends["LEGION-261"]) != 1 {
+		t.Fatalf("the roll forward wrote %+v for LEGION-261, want one end of the merge its merger's new start ended", ends["LEGION-261"])
+	}
+	s.assertRollForwardEnd("LEGION-261 merge 0", ends["LEGION-261"][0], rolledBackAt)
 }
 
 // The way back an operator runs keeps what the roll forward needs and touches nothing else: every
