@@ -134,7 +134,9 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 // archives the history onto snapcompact's images, which a worker resumed on them needs a vision
 // model to read back (shimwire.Compact). They keep the sentence that names a reviewer's entry
 // (workflow.ReviewEntryLabel) word for word, since a reviewer whose summary dropped it writes no
-// entry. The bound it is asked within is the operation's own ten minutes, not the RPC timeout.
+// entry; they write the label out, since workflow's tests import this package, and this test
+// builds the sentence from workflow's label, so the two cannot part. The bound it is asked within
+// is the operation's own ten minutes, not the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)

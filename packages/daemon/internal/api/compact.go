@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // CompactResponse is what became of the compaction, and it is the same answer through both
@@ -80,7 +79,8 @@ const (
 // They keep the sentence that names a reviewer's entry (workflow.ReviewEntryLabel) word for word:
 // the reviewer copies the number of the newest one its session was given into the footer of its
 // review, and a summary that dropped it leaves the reviewer no entry to write, so its review
-// moves no commit (workflow's review).
+// moves no commit (workflow's review). The label is written out here, since workflow's tests
+// import this package, and TestACompactionAsksOhMyPiForATextSummary holds it to workflow's.
 //
 // A model reads it, so it follows ASD-STE100: one instruction per sentence, active voice, and no
 // word with a second reading.
@@ -88,7 +88,7 @@ const compactInstructions = "Write the summary as text. " +
 	"Keep what the rest of this task needs: the task itself, the decisions you made, the files you changed, " +
 	"the commands you ran and what they answered, and what is still open. " +
 	"Keep every issue key, file path, branch name, commit id and pull request number you still need. " +
-	"Keep word for word the newest sentence that starts \"" + workflow.ReviewEntryLabel + ":\" in the tasks you were given. " +
+	"Keep word for word the newest sentence that starts \"Review entry:\" in the tasks you were given. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
