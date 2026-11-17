@@ -38,9 +38,11 @@ func TestAReplyHoldReportsAFlushOnlyOnceItsPongReachesTheClient(t *testing.T) {
 	}
 	select {
 	case <-held.Withheld():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the hold did not withhold the reply within 5 s")
+	case <-time.After(Remaining(t)):
+		t.Fatal("the hold had not withheld the reply by the test's deadline")
 	}
+	// An absence, which a slow box can only miss, never invent: the flush is not reported while
+	// the client has sent none.
 	select {
 	case <-held.Flushed():
 		t.Fatal("the hold reported a flush the client never sent")
@@ -51,8 +53,8 @@ func TestAReplyHoldReportsAFlushOnlyOnceItsPongReachesTheClient(t *testing.T) {
 	}
 	select {
 	case <-held.Flushed():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the hold did not report the flush within 5 s of its PONG")
+	case <-time.After(Remaining(t)):
+		t.Fatal("the hold had not reported the flush by the test's deadline, its PONG forwarded")
 	}
 	if msg, err := replies.NextMsg(100 * time.Millisecond); err == nil {
 		t.Fatalf("the held reply reached the client: %q", msg.Data)
