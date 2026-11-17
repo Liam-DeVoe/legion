@@ -514,6 +514,16 @@ test("a later review round reads from the commit its task names, and the pair re
   );
 });
 
+// A task whose `Steps:` line names no reviewer runs no reviewer's pair, so the `Thermo` line's pair
+// half has a form of its own beside the two not-run forms above: `not run (docs-only)` and the later
+// round's form would each give a reason that such a task does not have.
+test("a task with no reviewer step records the pair half of its Thermo line as not run", () => {
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).toContain(
+    "(on a task whose `Steps:` line names no reviewer, the implementer writes the pair half, and it reads `thermonuclear pair: not run (no reviewer step in this task)`)"
+  );
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
