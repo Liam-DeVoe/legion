@@ -1461,10 +1461,10 @@ func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) 
 	return ""
 }
 
-// phaseNow is the phase issue stands in now, read back after a move inside the retry wrote it
-// (retryPhase): the move's own row decides which phase it reaches, so the record is asked rather
-// than the target named here a second time. An issue the move took out of the record stands
-// where the caller last wrote it.
+// phaseNow is the phase issue stands in now, read back after a move wrote it (retryPhase, and
+// the first step StartFirstPhase reports): the move's own row decides which phase it reaches, so
+// the record is asked rather than the target named here a second time. An issue the move took
+// out of the record stands where the caller last wrote it.
 func (e *Engine) phaseNow(ctx context.Context, tx pgx.Tx, issue record.Issue) (phase.Phase, error) {
 	moved, err := e.store.Issue(ctx, tx, issue.Key)
 	if err != nil || moved == nil {
@@ -1815,11 +1815,12 @@ func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // and costs nothing, so a pass that stops at a held candidate still makes it, and the state's
 // `blocked` still reports exactly what the deciders decided.
 //
-// The start itself, its log line and the architect's notice all say that the issue starts
-// planning, so all of them wait for the slot and travel together: told for an issue that got no
+// The start itself, its log line and the architect's notice all say that the issue starts its
+// first step, so all of them wait for the slot and travel together: told for an issue that got no
 // slot, the notice would tell the tree's architect that a child began work it has not begun. A
 // pass that stops at a held candidate therefore withholds the start and the notice of it alike,
-// which is the honest pair.
+// which is the honest pair. The notice names the phase the move reached (phaseNow), the first
+// step of the child's plan, which is planning only on today's default steps.
 //
 // waited is every issue the mirror row still names, in Dispatch's own order, all of them done by
 // now — or empty, when the issue named none or someone took its blocked-by links off while it
@@ -1840,7 +1841,11 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 		e.logOnCommit(ctx, "workflow: every issue this child waited on is done, so it starts",
 			"issue", issue.Key, "tree", issue.Tree, "blockers", waited)
 	}
-	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, waited))
+	first, err := e.phaseNow(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, first, waited))
 }
 
 // gateOpened moves an admitted member of a tree whose gate is open into the first step of its

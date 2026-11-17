@@ -1075,7 +1075,8 @@ func ChildReenteredNotice(child, root string) record.Notice {
 }
 
 // ChildStartedNotice is the notice the tree's architect is told whenever a child of it starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now. waited is every
+// its first phase (Engine.StartFirstPhase), its reason naming that phase, the first step of the
+// child's plan (planning on today's default steps), and saying why it starts now. waited is every
 // issue the child's mirror row still names, in Dispatch's own order, all of them done by now:
 // the last of them closed, which is what freed the child.
 //
@@ -1091,10 +1092,10 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
 // with — the daemon's notice routing sends one on a non-root child to the architect that owns it
 // — and not phase-finished: no phase of the child ended, it is beginning its first.
-func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	reason := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, root, strings.Join(waited, ", "))
+func ChildStartedNotice(child, root string, first phase.Phase, waited []string) record.Notice {
+	reason := fmt.Sprintf("%s starts %s under %s: every issue it waited on (%s) is done", child, first, root, strings.Join(waited, ", "))
 	if len(waited) == 0 {
-		reason = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", child, root)
+		reason = fmt.Sprintf("%s starts %s under %s: it reached the front of the waiting line and took an admission slot", child, first, root)
 	}
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }

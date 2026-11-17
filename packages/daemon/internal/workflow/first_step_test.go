@@ -194,6 +194,12 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		if strings.Contains(logged.String(), notTaken) || len(noticesOf(t, pool, "LEGION-209", "plan-not-taken")) != 0 {
 			t.Fatalf("the carry of the owner's plan logged or told a plan not taken:\n%s", logged.String())
 		}
+		// The child's architect is told the phase the child starts, its plan's first step.
+		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
+			Reason: "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
+			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
+		}
 	})
 
 	t.Run("a plan passed over at the child's generation names the carried plan it runs", func(t *testing.T) {
@@ -237,6 +243,11 @@ func TestAnOwnersPlanStartsItsFirstStep(t *testing.T) {
 		want := walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"0 default"}, todaysDefaultSteps}
 		if got := walkStandingOf(t, pool, engine, "LEGION-209", 1); !reflect.DeepEqual(got, want) {
 			t.Fatalf("LEGION-209 after its first step stands at %+v, want %+v", got, want)
+		}
+		started := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect,
+			Reason: "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot"}}
+		if got := noticesOf(t, pool, "LEGION-209", "child-status"); !reflect.DeepEqual(got, started) {
+			t.Fatalf("the child-status notices = %+v, want %+v", got, started)
 		}
 	})
 }
