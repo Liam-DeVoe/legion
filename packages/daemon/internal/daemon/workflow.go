@@ -58,6 +58,9 @@ type workflowRuntime struct {
 	// (config.Gates.Steps).
 	gatedSteps []record.DesignStep
 	tokens     appauth.Tokens
+	// apps is each role the deployment defines with the App it acts as (deploymentApps), which
+	// identity reads through appauth.AppRoleFor.
+	apps appauth.DeploymentApps
 	// forget drops the token source's cached leases for an App and owner, a token GitHub refused
 	// (tokenRefused).
 	forget          appauth.Forgetter
@@ -384,7 +387,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, fmt.Errorf("the GitHub App token source cannot drop a token GitHub refused, which a review's reads mint again")
 	}
 	w := &workflowRuntime{
-		tokens: tokens, forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
+		tokens: tokens, apps: deploymentApps(cfg.Roles), forget: forget, installs: installs, dispatch: dispatch.New(cfg.DispatchURL, dispatchToken), repositories: repos,
 		grants: credential.New(nil), projectID: projectID, dispatchProject: cfg.Project, stateDir: cfg.StateDir, log: log,
 		failed: make(chan error, 1), mappingChanged: make(chan struct{}, 1),
 		readied: newWakeSet[claim.Token](), handedOff: newWakeSet[string](), mergeStates: newWakeSet[string](),
@@ -1034,9 +1037,26 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	return nil
 }
 
-// identity is the bot a role's commits are authored by: its App's, from the lease the token
-// source mints for the owner whose installation holds the repository the role works (the identity
-// is fetched once per App and cached).
+// deploymentApps is each role the deployment defines with the App its github_app names: the
+// implement App for `implement`, the review App otherwise, review being the setting's default.
+// It is the map every reader of a role's App hands appauth.AppRoleFor, which stays the one
+// decision.
+func deploymentApps(roles []config.Role) appauth.DeploymentApps {
+	apps := make(appauth.DeploymentApps, len(roles))
+	for _, role := range roles {
+		app := appauth.Review
+		if role.GitHubApp == config.RoleAppImplement {
+			app = appauth.Implement
+		}
+		apps[role.Name] = app
+	}
+	return apps
+}
+
+// identity is the bot a role's commits are authored by: its App's (appauth.AppRoleFor, over the
+// deployment's roles), from the lease the token source mints for the owner whose installation
+// holds the repository the role works (the identity is fetched once per App and cached). A role
+// that neither Legion nor the deployment defines has no App, and its identity is that error.
 //
 // recorded is the repository the issue's record names, and the mint is made for the owner GitHub
 // serves it under now (repositories.serving): the record keeps the name it was written under for
@@ -1046,10 +1066,14 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 // adoption (adoptIdentity) — so neither can mint on an owner the repository has left and fail
 // every launch of a tree open at the transfer.
 func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorded ghrepo.Repository) (runtime.GitIdentity, error) {
-	served := w.repositories.serving(recorded)
-	lease, err := w.tokens.Token(ctx, appauth.AppRoleFor(role), served)
+	app, err := appauth.AppRoleFor(role, w.apps)
 	if err != nil {
-		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", appauth.AppRoleFor(role), role, served, err)
+		return runtime.GitIdentity{}, err
+	}
+	served := w.repositories.serving(recorded)
+	lease, err := w.tokens.Token(ctx, app, served)
+	if err != nil {
+		return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s on %s: %w", app, role, served, err)
 	}
 	return lease.Identity, nil
 }

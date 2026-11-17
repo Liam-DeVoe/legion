@@ -81,7 +81,10 @@ var ErrOwnerOutsideProject = errors.New("is not an owner of the project's reposi
 // repository directories under them.
 func GitHubCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, log *slog.Logger) runtime.GitHubCredential {
 	return func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(role)
+		appRole, err := AppRoleFor(role, nil)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
 		layout, err := bundleDirs(repos, renames, repo)
 		if err != nil {
 			return ghconfig.Bundle{}, err
@@ -112,7 +115,10 @@ func GitHubCredential(tokens Tokens, repos func() []ghrepo.Repository, renames g
 // GH_CONFIG_DIR names that directory and nothing else.
 func ControllerCredential(tokens Tokens, repos func() []ghrepo.Repository, renames ghrepo.Renames, left *LeftOut, log *slog.Logger) runtime.ControllerCredential {
 	return func(ctx context.Context, defaultOwner string) (ghconfig.Bundle, error) {
-		appRole := AppRoleFor(claim.RoleController)
+		appRole, err := AppRoleFor(claim.RoleController, nil)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
 		layout, err := bundleDirs(repos, renames, ghrepo.Repository{})
 		if err != nil {
 			return ghconfig.Bundle{}, err

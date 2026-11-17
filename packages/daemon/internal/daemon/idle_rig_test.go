@@ -576,7 +576,11 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
-		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
+		app, err := appauth.AppRoleFor(role, nil)
+		if err != nil {
+			return ghconfig.Bundle{}, err
+		}
+		rendered := ghconfig.Render("ghs_idle_rig", string(app), time.Now().Add(time.Hour))
 		owner := strings.ToLower(repo.Owner())
 		return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{owner: rendered}}, nil
 	}

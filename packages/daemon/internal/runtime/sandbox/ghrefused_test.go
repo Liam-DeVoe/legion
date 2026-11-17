@@ -163,7 +163,7 @@ func TestAPodProjectsTheGhDirectoriesEveryRolesBundleHolds(t *testing.T) {
 		}
 		secret := g.secret(roleSecretName(loc.Sandbox.Name, role))
 		_, holdsAcme := secret.Data[GitHubHostsKey("acme")]
-		if want := appauth.AppRoleFor(role) == appauth.Implement; holdsAcme != want {
+		if want := appOf(t, role) == appauth.Implement; holdsAcme != want {
 			t.Errorf("%s's Secret holds acme's gh files %v, want %v: each role's Secret holds its own bundle", role, holdsAcme, want)
 		}
 	}
@@ -181,7 +181,7 @@ func TestALaunchWhoseRolesShareNoGhDirectoryFails(t *testing.T) {
 			// Each App's installation reaches what the other's does not, so the two bundles
 			// share nothing: the review App only acme's repositories, whose directory is then
 			// that role's own default, and the implement App only the issue owner's.
-			if appauth.AppRoleFor(role) == appauth.Review {
+			if legionApp(role) == appauth.Review {
 				return ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{"acme": bundle.Dirs["acme"]}}, nil
 			}
 			delete(bundle.Dirs, "acme")

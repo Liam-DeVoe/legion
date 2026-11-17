@@ -451,7 +451,13 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 	slices.Sort(held)
 	held = ghOwnerDirs(held)
 	repo, _ := fetchRepository(pod)
-	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
+	apps, err := podAppRoles(podKindFor(role), nil)
+	if err != nil {
+		// A pod holding a role that acts as no App cannot be told what it lacks: it is read as
+		// moved, naming why, rather than kept on a set of directories nobody can compute.
+		return movedAddress{where: name, held: ghDirsName(held), handed: err.Error()}, true
+	}
+	served := ghOwnerDirs(r.gitHubDirs(repo, apps))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
 		_, found := slices.BinarySearch(held, dir)
 		return !found
@@ -463,17 +469,22 @@ func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, b
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
-// (appauth.AppRoleFor): both of them for an issue pod, whose six roles run as one or the other,
-// and the review App alone for the project controller's. It is what the record of the
-// directories a mint found GitHub refuses is read for (movedGhDirs, appauth.LeftOut).
-func podAppRoles(kind podKind) []appauth.AppRole {
+// (appauth.AppRoleFor over deployed, the deployment's roles): both of them for an issue pod,
+// whose roles run as one or the other, and the review App alone for the project controller's. It
+// is what the record of the directories a mint found GitHub refuses is read for (movedGhDirs,
+// appauth.LeftOut). A role of the pod that acts as no App is AppRoleFor's error.
+func podAppRoles(kind podKind, deployed appauth.DeploymentApps) ([]appauth.AppRole, error) {
 	apps := make([]appauth.AppRole, 0, len(appauth.Roles))
 	for _, role := range kind.roles() {
-		if app := appauth.AppRoleFor(role); !slices.Contains(apps, app) {
+		app, err := appauth.AppRoleFor(role, deployed)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(apps, app) {
 			apps = append(apps, app)
 		}
 	}
-	return apps
+	return apps, nil
 }
 
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names

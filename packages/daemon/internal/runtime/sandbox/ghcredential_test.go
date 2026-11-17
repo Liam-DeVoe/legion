@@ -154,10 +154,13 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 			if owner == "" {
 				owner = "sjawhar"
 			}
-			app := string(appauth.AppRoleFor(role))
+			app, err := appauth.AppRoleFor(role, nil)
+			if err != nil {
+				return ghconfig.Bundle{}, err
+			}
 			return ghconfig.Bundle{Default: owner, Dirs: map[string]ghconfig.Rendered{
-				"acme": ghconfig.Render("ghs_"+app+"_"+*lease.Load()+"_read", app, staticCredentialExpiry),
-				owner:  ghconfig.Render("ghs_"+app+"_"+*lease.Load(), app, staticCredentialExpiry),
+				"acme": ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load()+"_read", string(app), staticCredentialExpiry),
+				owner:  ghconfig.Render("ghs_"+string(app)+"_"+*lease.Load(), string(app), staticCredentialExpiry),
 			}}, nil
 		}
 		// The controller's bundle comes from the one function that answers by owner, over the same
@@ -200,7 +203,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 		if role == claim.RoleMerger || role == claim.RolePlanner {
 			lease = first
 		}
-		app := string(appauth.AppRoleFor(role))
+		app := string(appOf(t, role))
 		for owner, expected := range map[string]string{"sjawhar": "ghs_" + app + "_" + lease, "acme": "ghs_" + app + "_" + lease + "_read"} {
 			if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != expected {
 				t.Errorf("%s's %s hosts.yml holds %q (%v), want %q", role, owner, token, err, expected)
@@ -229,7 +232,7 @@ func TestTheRefresherFollowsAReMintedLeaseIntoEveryRolesSecret(t *testing.T) {
 func TestAControllerIsRefreshedForTheOwnerItsSecretRecords(t *testing.T) {
 	var gained atomic.Bool
 	logs := &lockedLog{}
-	app := string(appauth.AppRoleFor(claim.RoleController))
+	app := string(appOf(t, claim.RoleController))
 	// The project served sjawhar alone when the controller's pod was launched, and has since
 	// gained acme, which sorts before it.
 	bundle := func(dflt string) ghconfig.Bundle {
@@ -775,7 +778,7 @@ func TestTheRefresherKeepsARenamedIssuesWriteLeaseInItsOwnDirectory(t *testing.T
 	g.spawn(rootSpec(t))
 	issue := SandboxName(rootToken)
 	role := claim.RoleArchitect
-	app := appauth.AppRoleFor(role)
+	app := appOf(t, role)
 	name := roleSecretName(issue, role)
 	write := leaseNamed(app, "cybermonklabs", "write")
 	if repo, named := fetchRepository(g.pod(issue)); !named || repo.String() != recordedSmoke.String() {
