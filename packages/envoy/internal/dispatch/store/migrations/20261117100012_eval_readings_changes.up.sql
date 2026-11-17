@@ -1,7 +1,7 @@
--- 20261113082200_eval_readings_changes.up.sql
+-- 20261117100012_eval_readings_changes.up.sql
 --
 -- eval_readings logs its changes (dispatch://INFRA-2916, R10), so a reading wakes every view built
--- on its eval. Its own migration, as 20261111093100 is for issue_facts: the transaction holds
+-- on its eval. Its own migration, as 20261117100002 is for issue_facts: the transaction holds
 -- eval_readings's lock alone, for milliseconds.
 --
 -- The trigger is statement-level, after insert, and reads the statement's inserted rows as one
@@ -11,7 +11,7 @@
 -- seq is allocated in commit order and pg_notify('delivery_changes', '') goes out at commit.
 --
 -- delivery_changes keeps two columns for a name, repo and ref. repo holds the project key and ref
--- the eval id, as an issue_facts row holds a project and an issue (20261111093100), because a
+-- the eval id, as an issue_facts row holds a project and an issue (20261117100002), because a
 -- reading belongs to an eval of a project and to no repository. The project is the part of the
 -- eval id before its slash: a project key holds no slash (projects_key_check), and an eval id is
 -- `<project_key>/<slug>`.

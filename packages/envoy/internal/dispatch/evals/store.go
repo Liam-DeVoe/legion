@@ -65,7 +65,7 @@ type writeTx struct {
 // returned.
 //
 // Every registry write logs a change for its versions, readings and day rows, whose triggers
-// record each in the change log's outbox (delivery_changes_pending, migration 20261115155340) and
+// record each in the change log's outbox (delivery_changes_pending, migration 20261117100024) and
 // take no lock, so the write never takes the change log's lock (delivery.LockChanges). Once it has
 // committed, committed moves those rows into the log (drainChanges) before the caller answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {

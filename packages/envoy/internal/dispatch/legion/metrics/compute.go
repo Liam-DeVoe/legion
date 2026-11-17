@@ -447,7 +447,8 @@ func (c *computation) idleByRole(issue *Issue, sampled []PhaseSpan) map[string]f
 // issue's timeline begins, and the entries into `reviewing` of that observed part. A `reviewing`
 // stretch the sampler first saw is no new entry where the event log's part ends in reviewing too.
 // An issue whose only `phase` mark is the one the sampler's first pass left after it closed has
-// no observed part, so its rounds are its status entries.
+// no observed part: the stretch that mark opens lies after the close, so sampledPhases clips it
+// to nothing, and its rounds are its status entries.
 func reviewRounds(issue *Issue, timeline phaseTimeline) int {
 	rounds := statusEntries(timeline.statusesBefore(issue), statusNeedsReview)
 	for index := timeline.firstObserved; index < len(timeline.spans); index++ {

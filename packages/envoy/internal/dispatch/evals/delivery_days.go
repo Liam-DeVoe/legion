@@ -616,7 +616,7 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // WriteProjectDay writes day as its project's delivery and CI rows of its day, in one transaction:
 // each row with `insert … on conflict … do update … where (…) is distinct from (…)`, so a row
 // whose every value is what it holds is left as it is (and logs no change, migration
-// 20261113082202), recording builtBy, the running build, as the build that wrote it; then it
+// 20261117100014), recording builtBy, the running build, as the build that wrote it; then it
 // writes each of the project's rows of that day of the delivery and CI evals (deliveryDaySlugs)
 // that day does not hold, such as a repository whose last row moved to another day or project, as
 // a zero row (zeroStaleDays). It records day's members in eval_day_members on its day, and deletes

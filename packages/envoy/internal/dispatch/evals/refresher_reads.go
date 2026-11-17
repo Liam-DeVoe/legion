@@ -205,7 +205,7 @@ func (s *Store) heldMembers(ctx context.Context, projects, families, members []s
 }
 
 // shippedMembersQuery is shippedMembers' statement. It carries eval_day_members_shipped's predicate
-// (migration 20261113082154: shipped_by is not the empty string), which `shipped_by = any($2)`
+// (migration 20261117100006: shipped_by is not the empty string), which `shipped_by = any($2)`
 // implies only for the values it is executed with: under the generic plan pgx's cached statement
 // settles on, which knows no value of $2, the planner proves the partial index from that clause
 // alone, as delivery/unowned.go's statements carry issues_open_p0's.
@@ -398,7 +398,7 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 // every day the series holds on every readings write that reaches it.
 //
 // It is one statement, whose change rows wait in the change log's outbox (migration
-// 20261115155340), so it takes no change log lock; they are moved into the log once it has
+// 20261117100024), so it takes no change log lock; they are moved into the log once it has
 // committed (drainChanges).
 func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
 	logged := `select eval_id from evals_current where project_key = $1 and source = $2`

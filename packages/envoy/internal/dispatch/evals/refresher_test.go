@@ -435,7 +435,7 @@ func TestANewBuildRewritesEveryRowOfAFamily(t *testing.T) {
 
 // TestANewBuildsRewriteKeepsTheUpdatedAtOfEveryRowWhoseValuesStood: a live evals view hears of a
 // day row's write only through its eval_days change row, which the trigger logs for no rewrite
-// that moves only built_by and updated_at (migration 20261113082202), and the evals list answers
+// that moves only built_by and updated_at (migration 20261117100014), and the evals list answers
 // the oldest updated_at of the rows it folds (api/evals.go's freshness). So a new build's walk,
 // which rewrites every computed row with its own build, keeps the updated_at of each row whose
 // values it left as they were: moved, the read would answer the walk's moment while a live view

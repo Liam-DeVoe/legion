@@ -1,4 +1,4 @@
--- 20261113082154_eval_days.up.sql
+-- 20261117100006_eval_days.up.sql
 --
 -- The stored per-day aggregates of every eval (dispatch://INFRA-2916, R12), which every window
 -- read folds: a window's value is the fold of its days' rows, and a compare range is a second

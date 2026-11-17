@@ -189,7 +189,7 @@ func TestAParentGainingLegionStandingMovesEveryIssueBeneathIt(t *testing.T) {
 //
 // The loss is the one way a parent's standing moves with no event of its own: the session that
 // worked the parent writes next on the project under another issue's title, and a session's
-// newest title decides which issue its events work (legion.PhaseWork). The page that reads that
+// newest title decides which issue its events work (legion.PhaseWorkKeys). The page that reads that
 // event states the parent, because the session wrote on it and it holds a stored row
 // (sessionIssues), and nothing names any issue beneath the parent.
 //

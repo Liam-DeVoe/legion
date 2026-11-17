@@ -19,11 +19,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// PhaseWork is what the read answers: Keys is every issue it read that carries Legion phase work.
-type PhaseWork struct {
-	Keys map[string]struct{}
-}
-
 // PhaseWorkKeys is every issue that carries Legion phase work, over the whole log of every
 // project: the issues a handoff was recorded for, and the issues an event of a session titled
 // `Legion <role> · <that issue's key>` was written on. The metrics read it, once per answer beside
@@ -36,7 +31,7 @@ type PhaseWork struct {
 // the titles are resolved the one way Dispatch resolves them, each session's newest
 // (delivery.ResolveSessionTitles), so a session renamed after it wrote, or an event that carried
 // no title of its own, counts under the title the session has now.
-func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (PhaseWork, error) {
+func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (map[string]struct{}, error) {
 	return readPhaseWork(ctx, pool, nil)
 }
 
@@ -45,34 +40,34 @@ func PhaseWorkKeys(ctx context.Context, pool *store.Pool) (PhaseWork, error) {
 // events written on it, each under its session's newest title, so the answer for one issue reads
 // no row of any other, and the two reads agree on every issue both answer. An empty list reads
 // nothing.
-func PhaseWorkOf(ctx context.Context, pool *store.Pool, issues []string) (PhaseWork, error) {
+func PhaseWorkOf(ctx context.Context, pool *store.Pool, issues []string) (map[string]struct{}, error) {
 	if len(issues) == 0 {
-		return PhaseWork{Keys: map[string]struct{}{}}, nil
+		return map[string]struct{}{}, nil
 	}
 	return readPhaseWork(ctx, pool, issues)
 }
 
-// readPhaseWork is the one read both answer from, for the issues issues names, or for every issue
-// where it is nil.
-func readPhaseWork(ctx context.Context, pool *store.Pool, issues []string) (PhaseWork, error) {
-	work := PhaseWork{Keys: map[string]struct{}{}}
-	if err := readHandoffIssues(ctx, pool, issues, work.Keys); err != nil {
-		return PhaseWork{}, err
+// readPhaseWork is the one read both answer from: every issue it read that carries Legion phase
+// work, of the issues issues names, or of every issue where it is nil.
+func readPhaseWork(ctx context.Context, pool *store.Pool, issues []string) (map[string]struct{}, error) {
+	keys := map[string]struct{}{}
+	if err := readHandoffIssues(ctx, pool, issues, keys); err != nil {
+		return nil, err
 	}
 	written, sessions, err := readSessionIssues(ctx, pool, issues)
 	if err != nil {
-		return PhaseWork{}, err
+		return nil, err
 	}
 	titles, err := delivery.ResolveSessionTitles(ctx, pool, sessions)
 	if err != nil {
-		return PhaseWork{}, fmt.Errorf("resolve the session titles of the Legion phase work: %w", err)
+		return nil, fmt.Errorf("resolve the session titles of the Legion phase work: %w", err)
 	}
 	for _, one := range written {
 		if RoleSessionWorks(titles[one.session], one.issue) {
-			work.Keys[one.issue] = struct{}{}
+			keys[one.issue] = struct{}{}
 		}
 	}
-	return work, nil
+	return keys, nil
 }
 
 // readHandoffIssues takes every issue a handoff was recorded for into keys: of issues alone where

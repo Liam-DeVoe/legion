@@ -1,4 +1,4 @@
--- 20261115155339_delivery_changes_pending.up.sql
+-- 20261117100023_delivery_changes_pending.up.sql
 --
 -- The change log's outbox (dispatch://INFRA-2916, R19): the eval and Legion writes record their
 -- change rows here, taking no lock, and one short transaction of its own moves them into
@@ -16,7 +16,7 @@
 -- delivery_changes_pending holds exactly the columns a delivery_changes row takes: kind, run_kind,
 -- repo, ref, t_old, t_new and at, set by clock_timestamp() when the pending row is written, which
 -- the move keeps. Its kinds are the five the eval and Legion tables' triggers write, which
--- 20261115155340 points here: issue_facts, eval_readings, eval_versions, eval_days and
+-- 20261117100024 points here: issue_facts, eval_readings, eval_versions, eval_days and
 -- issue_filings. The delivery intake's kinds (pull_request, run, run_job, session_group, settings)
 -- are still written into delivery_changes directly, by one-statement writes or by transactions
 -- that take 6900 first or in their last statement (delivery.LockChanges). A run's jobs write
@@ -59,7 +59,7 @@
 -- live process, within milliseconds, or else by the boot of the next one.
 --
 -- The release before this one never reads this table, and writes the five kinds through the
--- triggers 20261115155340 points here, so its rows are moved by this release's drains: its own
+-- triggers 20261117100024 points here, so its rows are moved by this release's drains: its own
 -- hub never drains, and every process of this release that is alive during the roll, the one that
 -- applied this migration among them, drains on the notification each of those rows sends.
 --

@@ -1,4 +1,4 @@
--- 20261111153000_issue_facts_computed.up.sql
+-- 20261117100003_issue_facts_computed.up.sql
 --
 -- What the Legion facts consumer's last whole read of each project answered
 -- (dispatch://INFRA-2915). The consumer reads a project whole (legionfacts.ComputeProject) the
@@ -12,7 +12,7 @@
 -- worked issue. A whole-project read is the cost this consumer exists to remove, so the mark is
 -- written rather than inferred from an absence.
 --
--- The mark is not a row of issue_facts_cursor (20261111090000). That table holds one row per
+-- The mark is not a row of issue_facts_cursor (20261117100000). That table holds one row per
 -- named feed and a position in it: a number the next pass reads on from. A project's whole
 -- computation has no position. It is a fact about a project, keyed by the project, read as a yes
 -- or a no, so a row of it would leave `name` holding two kinds of thing and `position` meaning

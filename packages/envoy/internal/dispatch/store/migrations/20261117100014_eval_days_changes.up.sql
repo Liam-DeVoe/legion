@@ -1,10 +1,10 @@
--- 20261113082202_eval_days_changes.up.sql
+-- 20261117100014_eval_days_changes.up.sql
 --
 -- eval_days logs its changes (dispatch://INFRA-2916, R10), so a computed eval's view wakes once its
 -- day rows are rewritten. The input's own change (a pull request, a run, an issue's facts) wakes
 -- the views before the refresher has rewritten the day rows it touches; a view that read then
 -- would answer the old rows, and with no change of the rows' own it would never read again. Its
--- own migration, as 20261111093100 is for issue_facts: the transaction holds eval_days's lock
+-- own migration, as 20261117100002 is for issue_facts: the transaction holds eval_days's lock
 -- alone, for milliseconds.
 --
 -- One change row per eval for every transaction that writes its day rows. The refresher writes a
@@ -20,12 +20,12 @@
 -- dispatch.eval_days_changes, a JSON object of eval id to seq: set_config(..., true) reverts it
 -- when the transaction ends, and with a subtransaction that rolls back, as it does the row.
 --
--- repo holds the project key and ref the eval id, as an eval_readings row does (20261113082200).
+-- repo holds the project key and ref the eval id, as an eval_readings row does (20261117100012).
 -- t_old and t_new are midnight UTC of the first and the last day the eval's written rows hold, so
 -- the span names those days and the days between them, as an issue_facts change's span names the
 -- days an issue's work falls in.
 --
--- An update logs only the rows whose content moved: as 0100's and 20261111093100's triggers ignore
+-- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,
 -- so a new build that rebuilds a row to the same values logs nothing. The old and the new rows are
 -- matched by the primary key, and a row whose key an update moved matches nothing on either side,

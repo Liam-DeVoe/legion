@@ -63,7 +63,7 @@ func TestASessionsEventOnTheProjectTakesTheRowOfAClosedIssueItLeftAndKeepsTheWor
 	}
 	kept := ""
 	for _, key := range slices.Sorted(maps.Keys(before)) {
-		_, works := work.Keys[key]
+		_, works := work[key]
 		if before[key].ClosedAt != nil && works && !slices.Contains(stated, key) {
 			kept = key
 			break

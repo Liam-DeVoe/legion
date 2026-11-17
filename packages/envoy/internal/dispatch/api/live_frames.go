@@ -367,8 +367,8 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		read:         (*deliveryHub).readPipelineView,
 	},
 	// The Legion board is one project's small, whole picture, so every field of it but its
-	// computed_at and its issues is sent whole: its ten columns are a fixed order rather than a
-	// list a page merges by id (the page's applyDelta sorts each list it knows, which a column
+	// computed_at and its issues is sent whole: its eleven columns are a fixed order rather than
+	// a list a page merges by id (the page's applyDelta sorts each list it knows, which a column
 	// order would have to be taught), and the header and the settings the daemon reports each
 	// move as a block.
 	//

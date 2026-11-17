@@ -280,7 +280,7 @@ type rows struct {
 // SessionActor is the actor JSON of a Legion role's session working issue, carrying the title
 // Dispatch learns the session by. Every reader of the phase-work rule resolves a session's newest
 // title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
-// (migration 20261113090412's trigger, which fires for this package's bare inserts too), so the
+// (migration 20261117100015's trigger, which fires for this package's bare inserts too), so the
 // title belongs on the actor of each event it writes; evalbench's load writes its sessions so.
 func SessionActor(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,

@@ -305,7 +305,8 @@ func (r *reading) barsOf(key string, worked []span) map[string]bar {
 // `awaiting_person`, or an ask a session of the tree opened was on the person's turn (`ask.opened`
 // or `ask.handed_back`, until `ask.answered`, `ask.resolved`, or `waitingOn.answeredAt`)". The asks
 // are the ones opened on this issue by a session of its tree (keepTreeAsks); the recorded phase and
-// the recorded wait are its root's.
+// the recorded wait are its root's, the phase read through the marks that name one (phaseMarks), so
+// a `null` phase mark ends no wait.
 func (r *reading) personStretches(key string) []span {
 	held := r.population.issues[key]
 	rootKey := r.rootOf(key)
@@ -313,7 +314,7 @@ func (r *reading) personStretches(key string) []span {
 	if root == nil {
 		root, rootKey = held, key
 	}
-	stretches := markStretches(root.observed[fieldPhase], r.population.end(rootKey),
+	stretches := markStretches(phaseMarks(root.observed[fieldPhase]), r.population.end(rootKey),
 		func(value string) bool { return jsonString(value) == phaseAwaitingPerson })
 	answered := answeredAts(root)
 	for _, turn := range held.askTurns {
@@ -510,22 +511,20 @@ func (r *reading) timelineOf(key string) timeline {
 	return drawn
 }
 
-// sampledOf is the timeline the sampler's `phase` marks draw and nothing else: each mark holds
-// until the next, and the last until the issue's end. An `admitted` stretch is split in two: the
-// part the issue held a slot of its own through is design, and the part it held none is the queue.
+// sampledOf is the timeline the sampler's `phase` marks draw and nothing else: each mark that
+// names a phase holds until the next mark that names one, and the last until the issue's end
+// (phaseMarks). An `admitted` stretch is split in two: the part the issue held a slot of its own
+// through is design, and the part it held none is the queue.
 func (r *reading) sampledOf(key string) []phaseSpan {
 	if held, drawn := r.sampled[key]; drawn {
 		return held
 	}
-	marks := r.population.issues[key].observed[fieldPhase]
+	marks := phaseMarks(r.population.issues[key].observed[fieldPhase])
 	end := r.population.end(key)
 	slots := r.slotStretches(key)
 	var drawn []phaseSpan
 	for index, recorded := range marks {
 		phase := jsonString(recorded.value)
-		if phase == "" {
-			continue
-		}
 		stretch := span{from: recorded.at, to: end}
 		if index+1 < len(marks) {
 			stretch.to = marks[index+1].at
@@ -548,6 +547,23 @@ func (r *reading) sampledOf(key string) []phaseSpan {
 	slices.SortFunc(drawn, func(a, b phaseSpan) int { return a.stretch.from.Compare(b.stretch.from) })
 	r.sampled[key] = drawn
 	return drawn
+}
+
+// phaseMarks is the `phase` marks of an issue that name a phase, oldest first. A `null` mark is a
+// read that no longer carried the issue's phase, which the sampler writes when the daemon stops
+// reporting the issue: it names no phase and ends none, so the phase before it runs on through it
+// to the next mark that names one, or to the issue's end, and the issue's bars still add up to its
+// work time (the spec's "Parked and pre-work hours in phase time", which the base reads so since
+// 22bd759ecb). Both readers of the marks take them from here, the timeline (sampledOf) and the
+// recorded wait on a person (personStretches).
+func phaseMarks(marks []mark) []mark {
+	var named []mark
+	for _, recorded := range marks {
+		if jsonString(recorded.value) != "" {
+			named = append(named, recorded)
+		}
+	}
+	return named
 }
 
 // slotStretches is when the issue held a slot of its own: a `slot` mark naming a slot holds until

@@ -60,7 +60,9 @@ const (
 )
 
 // parts is "hours by phase": one part per column of the board, each holding the daemon's phases
-// that fall in it, and `other` for an hour of the work time in a phase no column names.
+// that fall in it, and `other` for an hour of the work time in a phase no column names. Retro has
+// a column of its own, and merging holds merging and awaiting merge alone (the board's eleven
+// columns since dispatch://INFRA-1077's b74df7a79b).
 var parts = []struct {
 	id     string
 	phases []string
@@ -71,7 +73,8 @@ var parts = []struct {
 	{"testing", []string{phaseTesting}},
 	{"reviewing", []string{phaseReviewing}},
 	{"accepting", []string{phaseAccepting}},
-	{"merging", []string{phaseRetro, phaseMerging, phaseAwaitingMerge}},
+	{"retro", []string{phaseRetro}},
+	{"merging", []string{phaseMerging, phaseAwaitingMerge}},
 	{partPerson, []string{phaseAwaitingPerson}},
 	{"held", []string{phaseHeld}},
 }
@@ -179,14 +182,15 @@ func (r *reading) phaseHours(key string, bars []span) map[string]float64 {
 // or `ask.handed_back`, until `ask.answered`, `ask.resolved`, or `waitingOn.answeredAt`)".
 //
 // The asks are the issue's own, the ones opened on it by a session of its tree (keepTreeAsks).
-// The recorded phase is the root's, which is the issue the daemon records a tree's wait on.
+// The recorded phase is the root's, which is the issue the daemon records a tree's wait on, read
+// through the rows that name a phase (phaseMarks): a `null` phase row ends no wait.
 func (r *reading) personStretches(key string) []span {
 	held := r.population.issues[key]
 	root := r.population.issues[r.rootOf(key)]
 	if root == nil {
 		root = held
 	}
-	stretches := markStretches(root.observed[fieldPhase], root.end(r.population.window),
+	stretches := markStretches(phaseMarks(root.observed[fieldPhase]), root.end(r.population.window),
 		func(value string) bool { return jsonString(value) == phaseAwaitingPerson })
 	answered := answeredAts(root)
 	for _, turn := range held.askTurns {
@@ -323,13 +327,13 @@ func (r *reading) timelineOf(key string) timeline {
 	return drawn
 }
 
-// observedPhases is the timeline the sampler's `phase` rows draw: each row holds until the next,
-// and the last until the issue's end. An `admitted` stretch is split in two, because the daemon
-// does not: the part the issue held a slot through is its design, and the part it held none is
-// the waiting line.
+// observedPhases is the timeline the sampler's `phase` rows draw: each row that names a phase
+// holds until the next row that names one, and the last until the issue's end (phaseMarks). An
+// `admitted` stretch is split in two, because the daemon does not: the part the issue held a slot
+// through is its design, and the part it held none is the waiting line.
 func (r *reading) observedPhases(key string) []phaseSpan {
 	held := r.population.issues[key]
-	marks := held.observed[fieldPhase]
+	marks := phaseMarks(held.observed[fieldPhase])
 	if len(marks) == 0 {
 		return nil
 	}
@@ -338,9 +342,6 @@ func (r *reading) observedPhases(key string) []phaseSpan {
 	var drawn []phaseSpan
 	for index, recorded := range marks {
 		phase := jsonString(recorded.value)
-		if phase == "" {
-			continue
-		}
 		stretch := span{from: recorded.at, to: end}
 		if index+1 < len(marks) {
 			stretch.to = marks[index+1].at
@@ -362,6 +363,22 @@ func (r *reading) observedPhases(key string) []phaseSpan {
 	}
 	slices.SortFunc(drawn, func(a, b phaseSpan) int { return a.stretch.from.Compare(b.stretch.from) })
 	return drawn
+}
+
+// phaseMarks is the `phase` rows of an issue that name a phase, oldest first. A `null` row is a
+// read that no longer carried the issue's phase, which the sampler writes when the daemon stops
+// reporting the issue: it names no phase and ends none, so the phase before it runs on through it
+// to the next row that names one, or to the issue's end (the spec's "Parked and pre-work hours in
+// phase time", which the base reads so since 22bd759ecb). Both readers of the rows take them from
+// here, the timeline (observedPhases) and the recorded wait on a person (personStretches).
+func phaseMarks(marks []mark) []mark {
+	var named []mark
+	for _, recorded := range marks {
+		if jsonString(recorded.value) != "" {
+			named = append(named, recorded)
+		}
+	}
+	return named
 }
 
 // slotStretches is when the issue held an admission slot of its own, from the slot the sampler

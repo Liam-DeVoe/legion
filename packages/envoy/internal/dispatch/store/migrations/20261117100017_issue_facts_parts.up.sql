@@ -1,6 +1,6 @@
--- 20261113111231_issue_facts_parts.up.sql
+-- 20261117100017_issue_facts_parts.up.sql
 --
--- Widens the stored per-issue Legion facts (20261111090000, dispatch://INFRA-2915) with the
+-- Widens the stored per-issue Legion facts (20261117100000, dispatch://INFRA-2915) with the
 -- per-issue values the six Legion evals fold (dispatch://INFRA-2916, R17): each is the part the
 -- metrics' window aggregation takes from one issue, computed once by legion/metrics.ProjectFacts
 -- and stored, so an eval's day rows fold stored values and recompute no rule. hours_by_phase
@@ -48,7 +48,7 @@
 -- working beside this one (cmd/dispatch/README.md, "Database migrations"): a row it inserts takes
 -- the defaults, and a row it updates keeps the values this release wrote. Every row is written
 -- whole by this release's first pass: the Legion facts consumer reads a project whole on the
--- first pass of a build other than the one its record names (20261112193821,
+-- first pass of a build other than the one its record names (20261117100004,
 -- legionfacts.legionProjects), and its write compares every column, these among them, so each
 -- row whose new values differ from the defaults is rewritten then. While the two releases roll,
 -- each pass of either build rewrites the rows under its own rule, as that record already says.

@@ -1,4 +1,4 @@
--- 20261113082153_eval_registry.up.sql
+-- 20261117100005_eval_registry.up.sql
 --
 -- The eval registry (dispatch://INFRA-2916, R1 and R2): every number a project page shows is an
 -- eval, with its definition, its series and its readings in these three tables. An eval's id is

@@ -1,4 +1,4 @@
--- 20261111093000_issue_facts_change_kind.up.sql
+-- 20261117100001_issue_facts_change_kind.up.sql
 --
 -- The delivery change log admits a sixth kind, issue_facts (dispatch://INFRA-2915). A write of the
 -- stored per-issue Legion facts logs a change under it, so every view built on those rows wakes

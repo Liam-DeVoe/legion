@@ -1,7 +1,7 @@
--- 20261112193821_issue_facts_computed_build.up.sql
+-- 20261117100004_issue_facts_computed_build.up.sql
 --
 -- The build that made each project's last whole read (dispatch://INFRA-2915). The mark
--- 20261111153000 creates says that the Legion facts consumer read a project whole, when it
+-- 20261117100003 creates says that the Legion facts consumer read a project whole, when it
 -- computed as of and how many rows that read answered. This column says which build read it,
 -- and a pass whose build is not the one the column holds reads that project whole again
 -- (legionfacts.legionProjects).
@@ -25,7 +25,7 @@
 -- build per project, and two releases are built from two commits, so each release pays that
 -- read once.
 --
--- The column is added here rather than in 20261111153000, which creates the table in this same
+-- The column is added here rather than in 20261117100003, which creates the table in this same
 -- pull request, because the three-column form of that migration was pushed and applied. The
 -- runner records a migration by its version alone (cmd/dispatch/README.md, "Database
 -- migrations"), so a database that applied the earlier form never runs it again, boots clean

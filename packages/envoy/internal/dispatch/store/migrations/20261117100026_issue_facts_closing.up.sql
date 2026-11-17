@@ -1,6 +1,6 @@
--- 20261116151147_issue_facts_closing.up.sql
+-- 20261117100026_issue_facts_closing.up.sql
 --
--- Gives each stored row of the per-issue Legion facts (20261111090000, dispatch://INFRA-2916,
+-- Gives each stored row of the per-issue Legion facts (20261117100000, dispatch://INFRA-2916,
 -- R21) what a read needs to give each fact at the read's own clock, and the build that wrote it
 -- (R27), so no timer rewrites a row:
 --   as_of          the moment the row's values are closed at: the newest input the issue's facts
@@ -18,7 +18,7 @@
 --                  still, but for a slot it never gave up.
 --   written_build  the build that wrote the row (legionfacts.Deps.Build), '' for a row no build
 --                  of this release wrote. The build a project's record of its whole read names
---                  (issue_facts_computed.computed_build, 20261112193821) computes again every row
+--                  (issue_facts_computed.computed_build, 20261117100004) computes again every row
 --                  of that project another build wrote, which is how a roll ends with no timer:
 --                  the older build's last write logs a change, whose drain wakes the newer
 --                  process, whose pass computes that row again (legionfacts.otherBuildsRows).
@@ -28,13 +28,13 @@
 --
 -- issue_facts_root, (project_key, root_key), is the Legion board's read of the rows of the trees
 -- it shows (R22, legionfacts.Read): the board serves the facts of every open issue, read through
--- issue_facts_closed (20261113082157) where closed_at is null, and of the issues it shows, which
+-- issue_facts_closed (20261117100009) where closed_at is null, and of the issues it shows, which
 -- are the issue of each card, read by key through the primary key, and every issue of a tree a
 -- card stands in, read by that tree's root through this index. Without it the read of a tree
 -- would be the project's whole range of the primary key with root_key filtered after it, which
 -- grows with every issue the project's Legion work ever covered.
 --
--- It replaces issue_facts_changed (20261111093100, as 20261115155340 left it, recording into the
+-- It replaces issue_facts_changed (20261117100002, as 20261117100024 left it, recording into the
 -- change log's outbox), so the change row an issue_facts write logs names the days that count the
 -- issue (R26): a Legion day row counts an issue on its close day alone (evals.ReadLegionDay), so
 -- the days a change of its facts can move are its close day before the change and its close day
@@ -51,14 +51,14 @@
 -- work_last_at), which names days that count no change of the issue and leaves out the close days
 -- that do.
 --
--- issue_filings (20261113082155), which the same passes write, gains its own written_build, the
+-- issue_filings (20261117100007), which the same passes write, gains its own written_build, the
 -- build that wrote the filing, '' for a filing no build of this release wrote, for the same reason:
 -- the rule that decides whose filing an issue is lives in the build, so the build a project's
 -- record names computes again every filing of that project another build wrote
 -- (legionfacts.otherBuildsFilings), through issue_filings_written_build, (project_key,
 -- written_build), read as the rows' index is.
 --
--- It drops issue_facts_open (20261111090000), the partial index over the open rows that served the
+-- It drops issue_facts_open (20261117100000), the partial index over the open rows that served the
 -- half-minute sweep's read of them and nothing else. The columns above let a read give an open
 -- issue's facts at its own clock, so this change ends that sweep, no statement reads through the
 -- index any more, and keeping it would cost a write on every upsert of an open row. The drop takes
@@ -66,7 +66,7 @@
 --
 -- The columns of each table in one statement, so each table is locked once. Each column is
 -- nullable or carries a constant default, which Postgres records in the catalog and writes into
--- no stored row. Each index is a plain build in the runner's transaction, as 20261113082157's on
+-- no stored row. Each index is a plain build in the runner's transaction, as 20261117100009's on
 -- issue_facts is: issue_facts holds one row per issue Legion worked, 8.5 MB for 28,000 rows in the
 -- measurement that migration cites, and issue_filings one row per issue a Legion session filed,
 -- fewer, both far below the census's 1 GiB bound on a table a migration locks
@@ -78,7 +78,7 @@
 -- statements read no row to refuse it and rewrite none, and the census answers 0.
 --
 -- No release before this one writes issue_facts or issue_filings: both tables ship in this
--- release (20261111090000, 20261113082155), so no build that names their columns without these
+-- release (20261117100000, 20261117100007), so no build that names their columns without these
 -- runs beside it. A row a build of this release wrote before these columns existed holds the
 -- defaults, which read as a row with no growth closed at its updated_at and written by another
 -- build, and the first pass of this build reads every project whole (its record names another

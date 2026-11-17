@@ -1,4 +1,4 @@
--- 20261113170753_eval_days_refresher.up.sql
+-- 20261117100021_eval_days_refresher.up.sql
 --
 -- The day-row refresher's own state (dispatch://INFRA-2916, R12; evals.Store.RunRefresher), which
 -- keeps every project's eval_days true to its inputs: where it stands in the two feeds it reads,

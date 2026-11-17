@@ -1,4 +1,4 @@
--- 20261111093100_issue_facts_changes.up.sql
+-- 20261117100002_issue_facts_changes.up.sql
 --
 -- issue_facts logs its changes (dispatch://INFRA-2915), so a write of the stored per-issue Legion
 -- facts wakes every view built on them. Its own migration, as 0101 to 0106 each add one trigger

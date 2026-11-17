@@ -501,7 +501,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 // next pass reads the same rows again.
 //
 // The rows' and the filings' triggers record their changes in the change log's outbox (migration
-// 20261115155340) and take no lock, so the transaction never takes the change log's lock
+// 20261117100024) and take no lock, so the transaction never takes the change log's lock
 // (delivery.LockChanges); once it has committed, the pass moves them into the log
 // (delivery.DrainPending). A drain that fails is logged and fails nothing: the rows committed, and
 // their notification wakes every live hub, which drains before it reads, as the refresher does at
@@ -557,7 +557,7 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 // carry no Legion phase work is computed whole and answers no row at all: read from an absence,
 // such a project would be computed whole again on every pass for ever. The count is what still
 // answers for the rows of a project going missing under the consumer, which is the other thing
-// an absence used to say (migration 20261111153000).
+// an absence used to say (migration 20261117100003).
 //
 // The build is the one the pass ran under (Deps.Build), the same string the read that sent
 // this project to a whole read compared against (legionProjects). The pass carries that one

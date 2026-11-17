@@ -1,4 +1,4 @@
--- 20261111090000_issue_facts.up.sql
+-- 20261117100000_issue_facts.up.sql
 --
 -- The per-issue Legion facts as stored rows, one row per project and issue
 -- (dispatch://INFRA-2915): what the board reads, so a read of them reads rows and computes

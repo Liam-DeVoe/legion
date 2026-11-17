@@ -26,9 +26,9 @@ import (
 // (WorkingColumns); an issue of either list in a working phase, or holding a slot, is in its
 // phase's column with its place in the line on its card. Design holds the issues whose phase is
 // still `admitted` that are on a card at all — the slot holders, whose architect runs at the
-// design gate, and the ones no card stands above, which are on no other issue's count; Merging
-// `retro`, `merging` and `awaiting_merge`; and Held the phase metric 2 puts on the "no role" bar
-// beside `awaiting_person` (the plan's D11).
+// design gate, and the ones no card stands above, which are on no other issue's count; Retro
+// `retro` alone; Merging `merging` and `awaiting_merge`; and Held the phase metric 2 puts on the
+// "no role" bar beside `awaiting_person` (the plan's D11).
 const (
 	ColumnQueue        = "queue"
 	ColumnDesign       = "design"
@@ -37,6 +37,7 @@ const (
 	ColumnTesting      = "testing"
 	ColumnReviewing    = "reviewing"
 	ColumnAccepting    = "accepting"
+	ColumnRetro        = "retro"
 	ColumnMerging      = "merging"
 	ColumnAwaiting     = "awaiting_person"
 	ColumnHeld         = "held"
@@ -44,25 +45,25 @@ const (
 
 // PhaseColumns is the column each phase the daemon reports falls in. A phase this does not name
 // (`done`, and any phase a later daemon adds) puts the issue on no card: the board shows the work
-// in flight, and a phase Dispatch has never heard of is not something it can place. The Merging
-// column holds the merger's phases, which are declared once beside the phases themselves
-// (MergerPhases) and read here rather than spelled again.
-var PhaseColumns = func() map[string]string {
-	columns := map[string]string{
-		PhaseAdmitted:       ColumnDesign,
-		PhasePlanning:       ColumnPlanning,
-		PhaseImplementing:   ColumnImplementing,
-		PhaseTesting:        ColumnTesting,
-		PhaseReviewing:      ColumnReviewing,
-		PhaseAccepting:      ColumnAccepting,
-		PhaseAwaitingPerson: ColumnAwaiting,
-		PhaseHeld:           ColumnHeld,
-	}
-	for _, phase := range MergerPhases {
-		columns[phase] = ColumnMerging
-	}
-	return columns
-}()
+// in flight, and a phase Dispatch has never heard of is not something it can place. Which phases
+// share a column is the board's own choice, made here: `retro` has a column of its own, as it has
+// a word of its own in the spec's tables ("Phase words in tables"), and Merging holds the two
+// phases those tables name merging, `merging` and `awaiting_merge` (dispatch://INFRA-1077's
+// b74df7a79b). The per-issue facts key their hours by these columns, so an issue's retro hours
+// are under `retro` there too, and on no merger figure.
+var PhaseColumns = map[string]string{
+	PhaseAdmitted:       ColumnDesign,
+	PhasePlanning:       ColumnPlanning,
+	PhaseImplementing:   ColumnImplementing,
+	PhaseTesting:        ColumnTesting,
+	PhaseReviewing:      ColumnReviewing,
+	PhaseAccepting:      ColumnAccepting,
+	PhaseRetro:          ColumnRetro,
+	PhaseMerging:        ColumnMerging,
+	PhaseAwaitingMerge:  ColumnMerging,
+	PhaseAwaitingPerson: ColumnAwaiting,
+	PhaseHeld:           ColumnHeld,
+}
 
 // WorkingColumns are the columns of the phases a worker works in. An issue in one of them has
 // started its work, so the Queue never holds it, even where the daemon's waiting line names it
@@ -73,6 +74,7 @@ var WorkingColumns = map[string]bool{
 	ColumnTesting:      true,
 	ColumnReviewing:    true,
 	ColumnAccepting:    true,
+	ColumnRetro:        true,
 	ColumnMerging:      true,
 }
 

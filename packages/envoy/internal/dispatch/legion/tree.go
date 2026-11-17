@@ -16,24 +16,26 @@ package legion
 //
 // Tree is the daemon's own `tree` for the issue, which names its top issue outright. It is a fact
 // of the project and not of any window, so a population answers it for every issue the daemon
-// named one for, not for the issues one report happens to read. It is empty where no read carried
-// one, which is every daemon before dispatch://INFRA-980.
+// named one for, not for the issues one report happens to read. It is the newest good read's, and
+// empty where that read named none: every daemon before dispatch://INFRA-980, and an issue that
+// left the daemon's state.
 //
 // Legion is one rule, the same for every reader: an issue is a Legion issue when the daemon
-// reports it — it is in the daemon's state, or Dispatch observed a phase of it — or when it
-// carries Legion phase work, a worker event or a handoff (dispatch://INFRA-1077's spec, "The top
-// issue of a tree"). A population answers it for the issues it holds and false for the rest. It
-// is not the rule that picks which finished issues a metric counts, which needs phase work.
-// TreeChain is the one walk that reads this field, and where the reading makes that walk stop is
-// stated once, in TreeChain's own words.
+// reports it — it is in the daemon's state, or Dispatch observed a phase of it (ReportedIssues) —
+// or when it carries Legion phase work, a worker event or a handoff (dispatch://INFRA-1077's
+// spec, "The top issue of a tree"). A population answers it for the issues it holds and false for
+// the rest. It is not the rule that picks which finished issues a metric counts, which needs phase
+// work. An issue that left the daemon's state is still a Legion issue, so a child of it still
+// climbs through it. TreeChain is the one walk that reads this field, and where the reading makes
+// that walk stop is stated once, in TreeChain's own words.
 //
 // Both halves are facts of the project and not of any window, so neither reader reads them for a
-// window. The daemon's reports both read from the whole of what the sampler recorded. The phase
-// work the metrics read in one read of every handoff and every Legion role session's event
-// (PhaseWorkKeys), and the board only for the issues its walk can climb onto that the daemon
-// reports nothing of, from all of those issues' own rows (PhaseWorkOf), which is the whole log's
-// answer for each of them. A window narrows which issues a metric measures, never which issues
-// are Legion's.
+// window. Both readers take the daemon's reports, and each reported issue's Tree, from one read of
+// the project's newest observations (ReportedIssues). The phase work the metrics read in one read
+// of every handoff and every Legion role session's event (PhaseWorkKeys), and the board only for
+// the issues its walk can climb onto that the daemon reports nothing of, from all of those issues'
+// own rows (PhaseWorkOf), which is the whole log's answer for each of them. A window narrows which
+// issues a metric measures, never which issues are Legion's.
 type TreeNode struct {
 	Tree   string
 	Parent string

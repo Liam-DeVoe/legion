@@ -45,8 +45,8 @@ type Querier interface {
 }
 
 // Row is one issue's stored Legion facts, the row issue_facts holds. Every field is the column of
-// the same name, and the migrations state what each one means (20261111090000, 20261113111231
-// and 20261116151147).
+// the same name, and the migrations state what each one means (20261117100000, 20261117100017
+// and 20261117100026).
 //
 // HoursByPhase holds the board's column ids, a column with no hours left out, so an issue whose
 // work took no measured time holds an empty map and still has a row: a row means Legion worked
@@ -95,7 +95,7 @@ type Row struct {
 }
 
 // Filing is one issue a Legion session filed, the row issue_filings holds (migration
-// 20261113082155): the filed issue, the project whose session filed it, when, the role and the
+// 20261117100007): the filed issue, the project whose session filed it, when, the role and the
 // issue that filed it and the phase that issue was in, the class metric 4 gives the filing, and
 // the filed issue's tree root as it stands now. FilerIssue and FilerPhase are "" for a filing by
 // the controller, which works no issue.
@@ -349,17 +349,30 @@ func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
 }
 
 // lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue):
-// the phase of its newest `phase` observation and the slot of its newest `slot` one. An issue the
-// sampler recorded no observation of is an issue the daemon reports nothing of, which is the set
-// the board's own line reads (api/legion_board.go's issues map), and the line numbers it in no
+// the phase of its newest `phase` observation and the slot of its newest `slot` one. An issue none
+// of whose fields holds a value at its newest observation is one the newest good read does not
+// carry — the sampler recorded nothing of it, or wrote each of its fields `null` when it left the
+// daemon's state — which is the rule the board's own line reads its issues by
+// (legion.NewestObservations, api/legion_board.go's issues map), and the line numbers it in no
 // place and draws it no card.
 func lineIssue(population *metrics.Population, key string) (legion.LineIssue, bool) {
 	issue := population.Issues[key]
-	if issue == nil || len(issue.Observed) == 0 {
+	if issue == nil || !carriedByTheNewestRead(issue) {
 		return legion.LineIssue{}, false
 	}
 	phase, _ := newestPhase(issue)
 	return legion.LineIssue{Phase: phase, Slot: newestSlot(issue)}, true
+}
+
+// carriedByTheNewestRead is whether one of the issue's fields holds a value at its newest
+// observation: the newest good read carries the issue (legion.NewestObservations' rule).
+func carriedByTheNewestRead(issue *metrics.Issue) bool {
+	for _, marks := range issue.Observed {
+		if len(marks) > 0 && marks[len(marks)-1].Value != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // reasonOf is why the issue waits, by the one card rule (legion.CardWaiting), and "" where the
@@ -428,17 +441,21 @@ func newestWait(issue *metrics.Issue) *legion.Wait {
 }
 
 // readAdmission is the daemon's newest admission block, which the sampler writes as one row of
-// the project under legion.AdmissionKey. It is nil for a project whose daemon has never answered
-// and for one that sends no block, and nil again where the row holds a value of another shape:
-// the daemon owns the wire shape, and a reader of one names what it expects.
+// the project under legion.AdmissionKey. It is nil for a project whose daemon has never answered,
+// for one that sends no block, and for one whose newest good read no longer carried it (a `null`
+// newest row), and nil again where the row holds a value of another shape: the daemon owns the
+// wire shape, and a reader of one names what it expects.
+//
+// The newest row is legion_current's, the one row per field the base keeps for its readers
+// (migration 20261117022936, legion.NewestObservations), read by that table's primary key and
+// under the rule the board reads the block by: a `null` newest row holds nothing. So the card's
+// waiting line and the stored row's are read from one block.
 func readAdmission(ctx context.Context, q Querier, project string) (*legion.Admission, error) {
 	var value []byte
 	err := q.QueryRow(ctx, `
 		select value
-		from legion_observations
-		where project = $1 and issue_key = $2 and field = $3
-		order by observed_at desc, id desc
-		limit 1
+		from legion_current
+		where project = $1 and issue_key = $2 and field = $3 and value <> 'null'::jsonb
 	`, project, legion.AdmissionKey, legion.FieldAdmission).Scan(&value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

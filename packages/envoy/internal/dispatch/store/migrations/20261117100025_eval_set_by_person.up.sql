@@ -1,4 +1,4 @@
--- 20261116014445_eval_set_by_person.up.sql
+-- 20261117100025_eval_set_by_person.up.sql
 --
 -- The record of which fields of an eval a person set (dispatch://INFRA-2916, R5). The seed fills
 -- the catalogue's target, its inclusiveness and its judges, a series' min_n and an eval's method

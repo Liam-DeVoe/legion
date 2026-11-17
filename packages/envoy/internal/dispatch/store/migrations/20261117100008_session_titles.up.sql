@@ -1,4 +1,4 @@
--- 20261113082156_session_titles.up.sql
+-- 20261117100008_session_titles.up.sql
 --
 -- Each session's title, stored on a row of its own keyed by the session (dispatch://INFRA-2916,
 -- R13). A page that names a session reads its title here by primary key, beside the rows it names

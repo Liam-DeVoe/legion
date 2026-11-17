@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"iter"
 	"slices"
 	"time"
 
@@ -126,7 +127,7 @@ type PhaseSpan struct {
 // phase before observations — metric 3's review rounds, its send-backs and the first review its
 // hours are counted from — read the status history up to that moment. An issue whose only
 // observation is the mark the sampler left after it closed has no observed hour of its own life:
-// the stretch that mark opens has no duration, so sampledPhases keeps nothing of it, and the
+// the stretch that mark opens lies after the close, so sampledPhases clips it to nothing, and the
 // whole of its life is before observations.
 func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
 	until := p.issueEnd(issue)
@@ -162,44 +163,67 @@ func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
 }
 
 // sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
-// observed phase from its mark to the next, the last to the issue's end, with each admitted
-// stretch split into the design the issue held a slot through and the queue it did not. It is
-// the issue's observed phase at each moment, which is what the two rules that read only an
-// observed phase stand on (slotWaitHours and idleByRole): an hour before the sampler first saw
-// the issue has no observed phase, so it is on neither.
+// stretch a phase mark holds (phaseStretches), with each admitted stretch split into the design
+// the issue held a slot through and the queue it did not. It is the issue's observed phase at each
+// moment, which is what the two rules that read only an observed phase stand on (slotWaitHours and
+// idleByRole): an hour before the sampler first saw the issue has no observed phase, so it is on
+// neither.
 func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
-	marks := issue.Observed[legion.FieldPhase]
-	if len(marks) == 0 {
-		return nil
-	}
 	end := p.issueEnd(issue)
 	var timeline []PhaseSpan
-	for index, mark := range marks {
-		phase := legion.JSONString([]byte(mark.Value))
-		if phase == "" {
+	for stretch := range p.phaseStretches(issue) {
+		if stretch.Span.Duration() == 0 {
 			continue
 		}
-		span := Span{From: mark.At, To: end}
-		if index+1 < len(marks) {
-			span.To = marks[index+1].At
-		}
-		if span.Duration() == 0 {
+		if stretch.Phase != legion.PhaseAdmitted {
+			timeline = append(timeline, stretch)
 			continue
 		}
-		if phase != legion.PhaseAdmitted {
-			timeline = append(timeline, PhaseSpan{Phase: phase, Span: span})
-			continue
-		}
-		held := intersect([]Span{span}, p.slotSpans(issue, end))
+		held := intersect([]Span{stretch.Span}, p.slotSpans(issue, end))
 		for _, holding := range held {
 			timeline = append(timeline, PhaseSpan{Phase: phaseDesign, Span: holding})
 		}
-		for _, waiting := range subtract([]Span{span}, held) {
+		for _, waiting := range subtract([]Span{stretch.Span}, held) {
 			timeline = append(timeline, PhaseSpan{Phase: phaseQueued, Span: waiting})
 		}
 	}
 	slices.SortFunc(timeline, func(a, b PhaseSpan) int { return a.Span.From.Compare(b.Span.From) })
 	return timeline
+}
+
+// phaseStretches is each stretch the issue's `phase` marks hold a phase through, in time order:
+// each mark that carries a phase runs to the next mark that carries one, and the last to the
+// issue's end. A stretch can be empty, or lie after the close, and the reader drops it.
+//
+// A `null` mark is a read that no longer carried the issue's phase, which the sampler records for
+// every field a read drops: it says the daemon stopped reporting the issue, not that its phase
+// changed, so it names no phase and ends none. The phase before it runs on through it, to the
+// next mark that carries a phase or to the issue's end where none follows, and its hours stay on
+// the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
+// work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
+// phase marks take them from here, the timeline (sampledPhases) and the root's recorded wait on a
+// person (waitingOnPersonSpans), so the two cannot read one mark two ways.
+func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
+	return func(yield func(PhaseSpan) bool) {
+		var open PhaseSpan
+		for _, mark := range issue.Observed[legion.FieldPhase] {
+			phase := legion.JSONString([]byte(mark.Value))
+			if phase == "" {
+				continue
+			}
+			if open.Phase != "" {
+				open.Span.To = mark.At
+				if !yield(open) {
+					return
+				}
+			}
+			open = PhaseSpan{Phase: phase, Span: Span{From: mark.At}}
+		}
+		if open.Phase != "" {
+			open.Span.To = p.issueEnd(issue)
+			yield(open)
+		}
+	}
 }
 
 // slotSpans are the stretches the issue held an admission slot, from its own `slot` observations:
@@ -212,10 +236,13 @@ func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
 }
 
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
+// sendBack is statusPhase's own decision that a status change sends the issue back to
+// implementing; a role's first event and a handoff never do.
 type phaseMark struct {
-	at     time.Time
-	source markSource
-	phase  string
+	at       time.Time
+	source   markSource
+	phase    string
+	sendBack bool
 }
 
 // markSource is which of the three sources wrote a mark. It is also the order two marks of one
@@ -289,8 +316,8 @@ func (p *Population) fallbackMarks(issue *Issue) []phaseMark {
 		if mark.Value == previous {
 			continue
 		}
-		if phase, named := statusPhase(previous, mark.Value); named {
-			add(sourceStatus, mark.At, phase)
+		if phase, sendBack, named := statusPhase(previous, mark.Value); named {
+			marks = append(marks, phaseMark{at: mark.At, source: sourceStatus, phase: phase, sendBack: sendBack})
 		}
 		previous = mark.Value
 	}
@@ -325,11 +352,10 @@ func phaseSteps(marks []phaseMark) []phaseMark {
 		if mark.source == sourceRole && (sentBack || rank <= reached) {
 			continue
 		}
-		// The send-back is the one status change statusPhase names implementing for: the
-		// `in_progress` written over `testing`, `needs_review` or `retro` (sentBackStatuses),
-		// the same move metric 3 counts as a send-back before observations (sentBackOnce). A
-		// handoff that names an earlier phase moves the phase back, but it is no send-back.
-		if mark.source == sourceStatus && mark.phase == legion.PhaseImplementing {
+		// The send-back is the status change statusPhase decides is one (phaseMark.sendBack), the
+		// same move metric 3 counts as a send-back before observations (sentBackOnce). A handoff
+		// that names an earlier phase moves the phase back, but it is no send-back.
+		if mark.sendBack {
 			sentBack = true
 		}
 		reached = max(reached, rank)
@@ -355,11 +381,12 @@ func phaseRank(phase string) int {
 	return slices.Index(phaseOrder, phase)
 }
 
-// statusPhase is the phase a status change sets before observations exist: the spec's "After a
-// send-back, the Dispatch status sets the phase: `in_progress` after `testing`, `needs_review` or
-// `retro` is implementing, `testing` is testing, and `needs_review` is reviewing until the
-// `review` handoff of that round, then accepting until the status changes" — the handoff mark is
-// what turns that last stretch into accepting.
+// statusPhase is the phase a status change sets before observations exist, and whether that
+// change is a send-back: the spec's "After a send-back, the Dispatch status sets the phase:
+// `in_progress` after `testing`, `needs_review` or `retro` is implementing, `testing` is testing,
+// and `needs_review` is reviewing until the `review` handoff of that round, then accepting until
+// the status changes" — the handoff mark is what turns that last stretch into accepting. This is
+// the one place the timeline decides a send-back, which phaseSteps reads off the mark.
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
 // `done` — leave the phase as it was. The hours they stand for are the queue's and the parked
@@ -371,26 +398,26 @@ func phaseRank(phase string) int {
 // planning"). The design mark is `fallbackMarks`' own, from the issue's first slot or its
 // architect's first event, and planning starts at the first planner event, so an `in_progress`
 // here names the send-back alone.
-func statusPhase(previous, status string) (string, bool) {
+func statusPhase(previous, status string) (phase string, sendBack, named bool) {
 	switch status {
 	case statusTesting:
-		return legion.PhaseTesting, true
+		return legion.PhaseTesting, false, true
 	case statusNeedsReview:
-		return legion.PhaseReviewing, true
+		return legion.PhaseReviewing, false, true
 	case statusRetro:
-		return legion.PhaseRetro, true
+		return legion.PhaseRetro, false, true
 	case statusImplementing:
 		// The workflow writes `in_progress` twice over: once where it admits an issue out of the
 		// queue or out of parked, and once for every send-back to implementing, whatever phase
 		// the issue comes back from (workflow/table.go's TriggerTesterFailed,
-		// TriggerReviewRejected and TriggerChecksRed all write it). Only the send-back, a move
+		// TriggerReviewRejected and TriggerConflict all write it). Only the send-back, a move
 		// out of `testing`, `needs_review` or `retro`, names a phase.
 		if slices.Contains(sentBackStatuses, previous) {
-			return legion.PhaseImplementing, true
+			return legion.PhaseImplementing, true, true
 		}
-		return "", false
+		return "", false, false
 	}
-	return "", false
+	return "", false, false
 }
 
 // enteredStatus is whether the mark at index of a status history is where the status became

@@ -10,7 +10,7 @@ import (
 // row then means 'Legion worked it'"), and R1 covers every issue the project has Legion phase
 // work for. Phase work is not only gained: a session's newest title decides which issue its
 // events work, so a role session that writes next on another issue under that issue's title
-// takes the work with it (legion.PhaseWork, which the board reads through legion.PhaseWorkOf for
+// takes the work with it (legion.PhaseWorkKeys, which the board reads through legion.PhaseWorkOf for
 // the issues its tree walk climbs onto). The issue it left then carries no phase work, and its
 // row must go.
 //

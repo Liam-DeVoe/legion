@@ -282,7 +282,7 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// events_person_words_with_declines instead. Migration 20261114081436 drops
 	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
 	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
-	// Migration 20261116151147 drops issue_facts_open, 20261111090000's index over the open
+	// Migration 20261117100026 drops issue_facts_open, 20261117100000's index over the open
 	// Legion facts rows: the sweep that read those rows every half minute was its one read, and
 	// that migration's columns end the sweep.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
@@ -1723,5 +1723,72 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+// legionCurrentVersion is 20261117022936_legion_current, which creates legion_current, the newest
+// row of each field legion_observations holds, fills it from the rows already stored and gives
+// legion_observations the trigger that keeps it.
+const legionCurrentVersion = 20261117022936
+
+// TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt: a database that
+// held observations before 20261117022936 reads the same newest rows from legion_current as from
+// the history, its `null` rows included, whatever order the rows were inserted in; and every insert
+// after it moves a field's row only where the row it inserts is newer than the one held.
+func TestMigrateLegionCurrentHoldsTheNewestRowOfEachFieldAlreadyStoredAndKeepsIt(t *testing.T) {
+	ctx := context.Background()
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, legionCurrentVersion-1)
+	hour := func(hours int) time.Time { return time.Date(2026, 11, 16, hours, 0, 0, 0, time.UTC) }
+	observe := func(issue, field, value string, at time.Time) {
+		t.Helper()
+		if _, err := store.Pool.Exec(ctx, `
+			insert into legion_observations (project, issue_key, field, value, observed_at)
+			values ('INFRA', $1, $2, $3::jsonb, $4)
+		`, issue, field, value, at); err != nil {
+			t.Fatalf("record %s's %s at %s: %v", issue, field, at, err)
+		}
+	}
+	if _, err := store.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('INFRA', 'Infra', 'alice@d.example')`); err != nil {
+		t.Fatalf("seed the project: %v", err)
+	}
+	// Each field's newest row is inserted before an older one, so the fill must order by when a row
+	// was observed and not by when it was stored.
+	observe("INFRA-1", "phase", `"implementing"`, hour(2))
+	observe("INFRA-1", "phase", `"planning"`, hour(1))
+	observe("INFRA-1", "claim.planner", `null`, hour(2))
+	observe("INFRA-1", "claim.planner", `"working"`, hour(1))
+	observe("INFRA-2", "phase", `null`, hour(3))
+	observe("INFRA-2", "phase", `"testing"`, hour(1))
+
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through legion_current: %v", err)
+	}
+	current := func() []string {
+		t.Helper()
+		rows, err := store.Pool.Query(ctx, `
+			select issue_key || '/' || field || '=' || value::text || '@' || extract(hour from observed_at at time zone 'UTC')
+			from legion_current where project = 'INFRA' order by issue_key, field
+		`)
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		listed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read legion_current: %v", err)
+		}
+		return listed
+	}
+	filled := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="implementing"@2`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, filled) {
+		t.Fatalf("legion_current after the migration = %v, want the newest row of each field the history holds, %v", got, filled)
+	}
+
+	// A newer row moves its field's row, and an older one leaves it, in the statement that wrote it.
+	observe("INFRA-1", "phase", `"reviewing"`, hour(4))
+	observe("INFRA-2", "phase", `"admitted"`, hour(0))
+	kept := []string{`INFRA-1/claim.planner=null@2`, `INFRA-1/phase="reviewing"@4`, `INFRA-2/phase=null@3`}
+	if got := current(); !slices.Equal(got, kept) {
+		t.Fatalf("legion_current after two more rows = %v, want %v", got, kept)
 	}
 }

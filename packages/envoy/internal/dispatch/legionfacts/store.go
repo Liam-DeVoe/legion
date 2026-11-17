@@ -48,7 +48,7 @@ type ProjectWrite struct {
 //
 // A stored row means Legion worked the issue (dispatch://INFRA-2915), and an issue loses its
 // phase work as well as gains it: a session's newest title decides which issue that session's
-// events work (legion.PhaseWork), so a role session that writes next on another issue under
+// events work (legion.PhaseWorkKeys), so a role session that writes next on another issue under
 // that issue's title takes the work with it, and the issue it left carries none. The deletion
 // is what takes that issue's row away; an upsert alone leaves it standing for ever.
 //
@@ -133,7 +133,7 @@ func computedKeys(rows []Row) []string {
 // where clause, so Postgres decides what changed and `returning` answers exactly the rows it
 // touched. updated_at moves only with a row that changed, because an unchanged row is never
 // updated at all. The comparison holds every column but updated_at, the ones migrations
-// 20261113111231 and 20261116151147 added among them, so a row an earlier build wrote without
+// 20261117100017 and 20261117100026 added among them, so a row an earlier build wrote without
 // them is rewritten by the first pass that computes it. The hours, the bars, the idle hours and
 // the growth are compared as jsonb, so a Go encoding that ordered an object's keys differently
 // from jsonb cannot read as a change.
@@ -389,7 +389,7 @@ func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, 
 // deleteRows runs one of the two deletions, or the stamp a Yielded write makes in its place, and
 // answers the keys it deleted or stamped, in the order Postgres took them. Each row it deletes or
 // stamps logs a delivery change of kind issue_facts carrying that row's close day, which the
-// table's own trigger writes on a delete as it does on a write (migration 20261116151147), so
+// table's own trigger writes on a delete as it does on a write (migration 20261117100026), so
 // every reader of the facts is told the row went, and the build a stamp hands the row to is woken
 // to compute it again.
 func deleteRows(ctx context.Context, q Querier, project, statement string, args ...any) ([]string, error) {
@@ -458,8 +458,8 @@ func Read(ctx context.Context, q Querier, project string, keys, roots []string, 
 // shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows:
 // the rows of the keys given, each a probe of the primary key (project_key, issue_key); the rows
 // of the trees given, each root a range of issue_facts_root (project_key, root_key), migration
-// 20261116151147; and the open rows, the range of issue_facts_closed (project_key, closed_at
-// desc), migration 20261113082157, where closed_at is null, which a btree answers as an index
+// 20261117100026; and the open rows, the range of issue_facts_closed (project_key, closed_at
+// desc), migration 20261117100009, where closed_at is null, which a btree answers as an index
 // condition. Each later read leaves out what an earlier one answered rather than the three being
 // merged, so no row is answered twice and no answered row is compared with another; a card's row
 // the tree's range reaches again is dropped by its filter, a cost bounded by the board's cards.
@@ -469,7 +469,7 @@ const shownWhere = `where project_key = $1 and issue_key = any($2)
 		and not (issue_key = any($2)) and not (root_key = any($3))`
 
 // ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
-// newest close first, through issue_facts_closed (migration 20261113082157), each as of at
+// newest close first, through issue_facts_closed (migration 20261117100009), each as of at
 // (Row.At): the issues an eval of the Legion measures counts in that window, every one with
 // Legion phase work since every stored row is one, each with every column. The Legion evals' day
 // rows are built from one day's, as of that day's end (evals.ReadLegionDay), and the eval items
@@ -690,7 +690,7 @@ func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) erro
 }
 
 // ReadFilingsIn answers the stored filings a Legion session of the project made from from up to
-// to, oldest first, through issue_filings_day (migration 20261113082155): the filings the
+// to, oldest first, through issue_filings_day (migration 20261117100007): the filings the
 // splitting eval counts in that window. The Legion evals' day rows are built from one day's
 // (evals.ReadLegionDay).
 func ReadFilingsIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Filing, error) {

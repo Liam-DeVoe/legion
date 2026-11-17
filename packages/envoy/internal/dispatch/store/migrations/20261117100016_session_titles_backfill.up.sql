@@ -1,6 +1,6 @@
--- 20261113090413_session_titles_backfill.up.sql
+-- 20261117100016_session_titles_backfill.up.sql
 --
--- The fill of 20261113082156's session_titles for the events stored before 20261113090412's
+-- The fill of 20261117100008's session_titles for the events stored before 20261117100015's
 -- trigger, as one row: the fill is owed while the row is there, and the row holds how far it has
 -- got. This migration writes no session_titles row and reads no other table, so it takes no lock
 -- that grows with any table and commits in milliseconds.
@@ -9,7 +9,7 @@
 -- migrations and before the server serves (cmd/dispatch/main.go), as it runs
 -- store.FillDocumentSearch for 20261101182501. It is not a migration for that one's reason: a
 -- migration is one transaction (store/store.go applyMigrationOnce), the statement would read
--- every session's events, events being the largest table a deployment holds, and 20261113090412's
+-- every session's events, events being the largest table a deployment holds, and 20261117100015's
 -- trigger is live by then, so a write of a session the statement had already written would wait
 -- at its commit for the whole statement while holding its owner's row, and every other write on
 -- that owner would queue behind it. A committed batch holds such a key for one batch instead.

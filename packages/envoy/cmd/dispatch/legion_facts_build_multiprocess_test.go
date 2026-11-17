@@ -104,7 +104,7 @@ func TestASecondReleaseReadsTheProjectWholeAndRecordsItsOwnCommit(t *testing.T) 
 // delay that past its first pass.
 //
 // The column is read through coalesce because it is null on a row the migration adding it found
-// and on no row a pass writes (20261112193821_issue_facts_computed_build.up.sql): a null here is
+// and on no row a pass writes (20261117100004_issue_facts_computed_build.up.sql): a null here is
 // a failure this row reports rather than a scan error it stops on.
 func waitForComputedBuild(t *testing.T, database *store.Store, process *dispatchProcess, project, want string) time.Time {
 	t.Helper()

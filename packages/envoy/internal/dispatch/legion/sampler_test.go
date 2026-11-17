@@ -3,6 +3,7 @@ package legion
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -461,5 +464,70 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 	}
 	if reads != 0 || observations != 0 {
 		t.Errorf("after a refused read: %d legion_reads rows and %d observations, want none of either", reads, observations)
+	}
+}
+
+// TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped: the two reads every reader of
+// the newest observations takes are the newest good read's. NewestObservations, the board's cards,
+// holds no field that read no longer carries; ReportedIssues, by which the board and the metrics
+// place an issue in a tree, keeps an issue that left the daemon's state after Dispatch observed a
+// phase of it, with no tree, since its `tree` left with it. Both read legion_current, which the
+// trigger keeps equal to the newest row of each field the history holds, `null` rows included.
+func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
+	daemon := newFakeDaemon(t, `{"issues":{
+		"INFRA-1":{"key":"INFRA-1","phase":"implementing","tree":"INFRA-1",
+			"workers":{"implementer":{"claim":{"state":"working"}}}},
+		"INFRA-2":{"key":"INFRA-2","phase":"testing","tree":"INFRA-1"}}}`)
+	database, sampler := configured(t, daemon.URL)
+	sampler.Pass(t.Context())
+	// The second read moves INFRA-1 on, drops its implementer's claim and no longer carries INFRA-2.
+	daemon.serves(`{"issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","tree":"INFRA-1"}}}`)
+	sampler.Pass(t.Context())
+
+	newest, err := NewestObservations(t.Context(), database.Pool, "INFRA")
+	if err != nil {
+		t.Fatalf("read the newest observations: %v", err)
+	}
+	var cards []string
+	for _, one := range newest {
+		cards = append(cards, one.IssueKey+"/"+one.Field+"="+string(one.Value))
+	}
+	slices.Sort(cards)
+	if want := []string{`INFRA-1/phase="reviewing"`, `INFRA-1/tree="INFRA-1"`}; !slices.Equal(cards, want) {
+		t.Errorf("the newest observations are %v, want %v: the newest read carries nothing else", cards, want)
+	}
+
+	reported, err := ReportedIssues(t.Context(), database.Pool, "INFRA")
+	if err != nil {
+		t.Fatalf("read the reported issues: %v", err)
+	}
+	if want := map[string]string{"INFRA-1": "INFRA-1", "INFRA-2": ""}; !maps.Equal(reported, want) {
+		t.Errorf("the reported issues are %v, want %v: INFRA-2 left the daemon's state after Dispatch observed its phase, and its tree left with it", reported, want)
+	}
+
+	rowsOf := func(query string) []string {
+		t.Helper()
+		rows, err := database.Pool.Query(t.Context(), query)
+		if err != nil {
+			t.Fatalf("read %s: %v", query, err)
+		}
+		listed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read %s: %v", query, err)
+		}
+		return listed
+	}
+	current := rowsOf(`
+		select issue_key || '/' || field || '=' || value::text || '@' || observed_at::text
+		from legion_current where project = 'INFRA' order by issue_key, field`)
+	history := rowsOf(`
+		select issue_key || '/' || field || '=' || value::text || '@' || observed_at::text
+		from (
+			select distinct on (issue_key, field) issue_key, field, value, observed_at
+			from legion_observations where project = 'INFRA'
+			order by issue_key, field, observed_at desc
+		) newest order by issue_key, field`)
+	if !slices.Equal(current, history) {
+		t.Errorf("legion_current holds %v, want the newest row of each field of the history, %v", current, history)
 	}
 }

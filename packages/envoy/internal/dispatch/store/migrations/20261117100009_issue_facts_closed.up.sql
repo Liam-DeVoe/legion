@@ -1,9 +1,9 @@
--- 20261113082157_issue_facts_closed.up.sql
+-- 20261117100009_issue_facts_closed.up.sql
 --
 -- The index behind the read of the issues that closed in a window (dispatch://INFRA-2916): the
 -- Legion evals' day rows are built from the stored facts of the issues a project closed on each
 -- day, `... from issue_facts where project_key = $1 and closed_at >= $2 and closed_at < $3`.
--- 20261111090000 left this index out because no statement read it yet; this release carries the
+-- 20261117100000 left this index out because no statement read it yet; this release carries the
 -- statement. (project_key, closed_at desc) is that read's own order: one project, then its closes
 -- newest first, so one index range answers a window. The measurement of the root design read 111
 -- rows of a 28-day window through it in 1.6 to 2.6 ms over 28,000 rows

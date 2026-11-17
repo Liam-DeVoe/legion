@@ -176,7 +176,7 @@ type touch struct {
 //
 // An event that is on no issue at all is kept where its actor is a session, because such an
 // event carries that session's title as much as an event on an issue does, and a session's
-// newest title decides which issues every event of that session works (legion.PhaseWork). A
+// newest title decides which issues every event of that session works (legion.PhaseWorkKeys). A
 // session that writes on a project or on an artifact therefore moves the facts of the issues
 // its own title can give work to or take it from, and no issue of its own names it. The event's
 // own project is not the work: the issues are read from the session and from the title the
@@ -308,7 +308,7 @@ func sessionFilings(ctx context.Context, q Querier, filed []sessionFiling) ([]fi
 // since either one alone names issues the pass must compute.
 //
 // A session's newest title decides which of the issues it wrote on carry its work
-// (legion.PhaseWork), so one write anywhere by one session can take the work off one issue and
+// (legion.PhaseWorkKeys), so one write anywhere by one session can take the work off one issue and
 // give it to another. Neither issue is named by the event itself: the issue that lost the work
 // has no event of its own, and the issue that gained it is named by a title rather than by a
 // key. They join the keys the pass computes, and nothing downstream treats them differently - a
@@ -454,7 +454,7 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 // issue whose facts moved, and a pull request no issue carries names none.
 //
 // It also keeps whether the page holds a change of a repository's mapping in repo_projects, a
-// `settings` change that names the repository (migration 20261113170752). A stored row's repo is
+// `settings` change that names the repository (migration 20261117100020). A stored row's repo is
 // the repository its issue resolves to, and the rule falls back to the project's default mapping
 // (refs.IssueRepoTerms), so a mapping change moves the repo of rows no feed names: the pass then
 // resolves every stored row's repository again (reresolveRepos).

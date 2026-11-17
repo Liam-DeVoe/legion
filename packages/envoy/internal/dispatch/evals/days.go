@@ -180,7 +180,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		return err
 	}
 	// One statement writes every row, so the statement-level trigger of eval_days logs this eval's
-	// change once (20261113082202) rather than rewriting its change row once a row. Each row's key
+	// change once (20261117100014) rather than rewriting its change row once a row. Each row's key
 	// and values go at its index among the locked rows, the key's arrays above filled again in that
 	// order. An array parameter holds no arrays of differing lengths, so the rows' samples go as one
 	// flat list, each row's the n of them from its first's position on.

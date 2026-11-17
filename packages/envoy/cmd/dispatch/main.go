@@ -387,7 +387,7 @@ func main() {
 
 	// The change rows an eval or Legion write recorded in the change log's outbox and never moved
 	// into delivery_changes, its process killed between its commit and its drain, are moved before
-	// this process serves (delivery.DrainPending, migration 20261115155339). Every live process's hub
+	// this process serves (delivery.DrainPending, migration 20261117100023). Every live process's hub
 	// drains on the notification such a row sent at its commit; this boot is what moves them when
 	// none was alive, and its drain's notification wakes every hub listening by then, this process's
 	// refresher reading the moved rows on its first pass. A drain that fails is logged and the boot
@@ -418,10 +418,10 @@ func main() {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
 	}
 
-	// session_titles (migration 20261113082156) holds each session's newest stamped title,
-	// 20261113090412's trigger keeps it in step from the deploy on, and this fills it for the
+	// session_titles (migration 20261117100008) holds each session's newest stamped title,
+	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
 	// events stored before that, in committed batches, for document_search's reason above
-	// (20261113090413's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
+	// (20261117100016's comment). A failure stops the boot: delivery.ResolveSessionTitles reads
 	// session_titles alone, so a process that served with the table unfilled would name every
 	// session stored before this release by its id, while the release before this one, which
 	// serves until this process is ready, still names them.

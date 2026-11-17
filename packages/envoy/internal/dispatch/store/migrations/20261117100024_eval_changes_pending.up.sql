@@ -1,7 +1,7 @@
--- 20261115155340_eval_changes_pending.up.sql
+-- 20261117100024_eval_changes_pending.up.sql
 --
 -- The eval and Legion tables' change triggers record their changes in the outbox
--- (delivery_changes_pending, 20261115155339) instead of delivery_changes (dispatch://INFRA-2916,
+-- (delivery_changes_pending, 20261117100023) instead of delivery_changes (dispatch://INFRA-2916,
 -- R19), so no eval write, refresher write or Legion facts pass takes the change log's lock (6900,
 -- 0100): each change row reaches delivery_changes through the drain, in a short transaction of its
 -- own after the write commits (delivery_changes_drain, delivery.DrainPending).
@@ -9,12 +9,12 @@
 -- Each function is replaced with `create or replace` and keeps its body as the migration that
 -- created it wrote it, every call of delivery_change_log (0100) now a call of
 -- delivery_change_log_pending with the same arguments:
---   issue_facts_changed (20261111093100), one change per changed issue_facts row;
---   eval_readings_changed (20261113082200), one change per eval a statement wrote readings of;
---   eval_versions_changed and eval_series_changed (20261113082201), one change per version;
---   eval_days_change_log (20261113082202), one change per eval a transaction wrote day rows of,
+--   issue_facts_changed (20261117100002), one change per changed issue_facts row;
+--   eval_readings_changed (20261117100012), one change per eval a statement wrote readings of;
+--   eval_versions_changed and eval_series_changed (20261117100013), one change per version;
+--   eval_days_change_log (20261117100014), one change per eval a transaction wrote day rows of,
 --     whose span later writes of the eval in that transaction widen;
---   issue_filings_changed (20261113170751), one change per filing moved, two where it moved
+--   issue_filings_changed (20261117100019), one change per filing moved, two where it moved
 --     project.
 --
 -- eval_days_change_log widens its transaction's own pending row, by the id
@@ -27,7 +27,7 @@
 --
 -- The triggers stay as they are: each calls its function by name, and the replaced body is what
 -- every statement after this commit runs. A trigger of the release before this one is the same
--- trigger, so its writes record pending rows too, which this release's drains move (20261115155339).
+-- trigger, so its writes record pending rows too, which this release's drains move (20261117100023).
 --
 -- Replacing a function locks no table and reads no row; the census answers 0.
 create or replace function issue_facts_changed() returns trigger language plpgsql as $$

@@ -1,9 +1,9 @@
--- 20261113170751_issue_filings_changes.up.sql
+-- 20261117100019_issue_filings_changes.up.sql
 --
 -- issue_filings logs its changes (dispatch://INFRA-2916, R12), so the day-row refresher rewrites
 -- the day a filing counts on whenever the filing moves: when the Legion facts consumer writes it,
 -- rewrites its class, its filer's phase or the filed issue's tree root, or deletes it. Its own
--- migration, as 20261111093100 is for issue_facts: the transaction holds issue_filings's lock
+-- migration, as 20261117100002 is for issue_facts: the transaction holds issue_filings's lock
 -- alone, for milliseconds.
 --
 -- The function calls delivery_change_log (0100) under the advisory lock every other kind's trigger
@@ -11,7 +11,7 @@
 -- commit.
 --
 -- repo holds the project key and ref the filed issue's key, as an issue_facts row's change does
--- (20261111093100): the project is the one whose Legion session filed the issue, which is the
+-- (20261117100002): the project is the one whose Legion session filed the issue, which is the
 -- project whose day rows count the filing. t_old and t_new are the row's filed_at before and
 -- after, the time that names the filing's day:
 --   an insert carries the new row's filed_at in t_new,

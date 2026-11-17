@@ -593,7 +593,7 @@ type goldenLegionWindow struct {
 	} `json:"reports"`
 }
 
-// readGoldenLegionWindows reads every golden file of legion/metrics (the base head 52bd50f0's
+// readGoldenLegionWindows reads every golden file of legion/metrics (the base head 89e7e83f's
 // answers over one legiontest history; legion_golden_test.go in internal/dispatch/evals says how
 // they were recorded and why the oracle moved from 02a7b3c6).
 func readGoldenLegionWindows(t *testing.T) []goldenLegionWindow {

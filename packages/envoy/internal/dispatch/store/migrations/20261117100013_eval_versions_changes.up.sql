@@ -1,16 +1,16 @@
--- 20261113082201_eval_versions_changes.up.sql
+-- 20261117100013_eval_versions_changes.up.sql
 --
 -- eval_versions and eval_series log their changes (dispatch://INFRA-2916, R10), so a new version
 -- of a definition (a registration, a changed target, a definition the seed writes) or of one of
 -- its series (a changed fold, min_n, listing or unit) wakes every view built on its eval. Its own
--- migration, as 20261111093100 is for issue_facts: the transaction holds the two tables' locks
+-- migration, as 20261117100002 is for issue_facts: the transaction holds the two tables' locks
 -- alone, for milliseconds.
 --
 -- Each trigger is row-level, after insert: each version is one change row, through
 -- delivery_change_log (0100) under the advisory lock every other kind's trigger takes. A write
 -- adds at most one version to each eval it names and to each series it names, the seed's write of
 -- a whole catalogue included, so a row per version is a row per eval or series written. repo holds
--- the project key and ref the eval id, as an eval_readings row does (20261113082200); eval_series
+-- the project key and ref the eval id, as an eval_readings row does (20261117100012); eval_series
 -- holds no project column, and the project is the part of the eval id before its slash, as the
 -- eval_readings trigger reads it.
 --

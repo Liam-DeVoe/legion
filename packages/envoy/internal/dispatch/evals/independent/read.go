@@ -332,6 +332,12 @@ func (p *population) readHandoffs(ctx context.Context, db Querier) error {
 // daemon reported, with which issues the daemon reports at all and the tree root it last named
 // for each. It reads too the moments of the project's first claim and first slot observation,
 // over every row of the project, which is where idle time and slot wait begin to have data.
+//
+// The daemon reports an issue that is in its state or that Dispatch observed a phase of
+// (dispatch://INFRA-1077's spec, "The top issue of a tree", as the base reads it since
+// 2eed8f979e): one of its fields still holds a value at its newest mark, or it has a `phase` mark
+// at all. An issue that left the daemon's state has every field written `null`, so it stays
+// reported only through a phase Dispatch once observed.
 func (p *population) readObservations(ctx context.Context, db Querier) error {
 	if err := db.QueryRow(ctx, `
 		select min(observed_at) filter (where field like 'claim.%'),
@@ -361,7 +367,6 @@ func (p *population) readObservations(ctx context.Context, db Querier) error {
 		if held == nil {
 			continue
 		}
-		held.reported = true
 		held.observed[field] = append(held.observed[field], mark{at: at, value: value})
 		if field == fieldTree {
 			held.tree = jsonString(value)
@@ -370,7 +375,24 @@ func (p *population) readObservations(ctx context.Context, db Querier) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the observations of %s: %w", p.project, err)
 	}
+	for _, held := range p.issues {
+		held.reported = reportedByObservations(held.observed)
+	}
 	return nil
+}
+
+// reportedByObservations is whether the daemon reports an issue whose marks, oldest first within
+// each field, are observed: it has a `phase` mark, or a field whose newest mark holds a value.
+func reportedByObservations(observed map[string][]mark) bool {
+	if len(observed[fieldPhase]) > 0 {
+		return true
+	}
+	for _, marks := range observed {
+		if newest := marks[len(marks)-1].value; newest != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // readFilings reads every issue a Legion session of the project created, in whichever project

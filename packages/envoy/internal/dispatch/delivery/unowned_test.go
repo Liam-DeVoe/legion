@@ -121,7 +121,7 @@ func TestOfFourP0IssuesOnlyTheOneNeitherDoneClaimedNorRoutedIsUnowned(t *testing
 }
 
 // The reads of ListUnownedP0, one project's and every project's, and CountUnownedP0's count of one
-// project's read issues through issues_open_p0 (migration 20261113082158), the partial index of
+// project's read issues through issues_open_p0 (migration 20261117100010), the partial index of
 // the open P0 issues, with the claim and the route a filter over it, and never scan issues:
 // `EXPLAIN (ANALYZE, BUFFERS)` of each statement as it is sent. A project's read is keyed by the
 // index's project_key; the read of every project is the whole of an index that holds the open P0
@@ -162,7 +162,7 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 }
 
 // The delivery live hub's read of every open P0 issue's key (OpenP0Keys), which the hub makes each
-// time it stands up its event feed, reads issues through issues_open_p0 (migration 20261113082158),
+// time it stands up its event feed, reads issues through issues_open_p0 (migration 20261117100010),
 // the partial index of the open P0 issues, and never scans issues: `EXPLAIN (ANALYZE, BUFFERS)` of
 // the statement as OpenP0Keys sends it. The fixture's project holds 200 issues, two open P0 issues
 // and a done one among them, and issues is analyzed first, as TestTheUnownedP0ReadsReadTheirPartialIndex

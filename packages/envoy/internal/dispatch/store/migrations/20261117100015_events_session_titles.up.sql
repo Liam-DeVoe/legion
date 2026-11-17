@@ -1,6 +1,6 @@
--- 20261113090412_events_session_titles.up.sql
+-- 20261117100015_events_session_titles.up.sql
 --
--- Keeps 20261113082156's session_titles in step with events (dispatch://INFRA-2916, R13): every
+-- Keeps 20261117100008's session_titles in step with events (dispatch://INFRA-2916, R13): every
 -- event a session writes stamping a title records that title as the session's own, unless the
 -- row already holds a title the session stamped later. delivery.ResolveSessionTitles reads that
 -- row by primary key where it used to resolve the title out of events on every page read.
@@ -12,7 +12,7 @@
 -- as they serve; and the test-only helper packages and tests that seed events with a bare insert
 -- (legion/legiontest among them) would each have to write the title row themselves. The trigger
 -- runs in Postgres, so it covers every insert from the commit of this migration on, whichever
--- build sends it. The events stored before that are 20261113090413's fill.
+-- build sends it. The events stored before that are 20261117100016's fill.
 --
 -- The rule is the read it replaces, the newest title a session stamped: an event of a session
 -- actor whose origin carries a non-empty session_title (an event that carries none, as a

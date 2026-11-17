@@ -13,7 +13,7 @@ import (
 
 // issueFactsChange is one delivery_changes row of the stored per-issue Legion facts: the project
 // in Repo and the issue in Ref, with the issue's close before and after the change (migration
-// 20261116151147).
+// 20261117100026).
 func issueFactsChange(project, issue string, closedBefore, closedAfter time.Time) delivery.Change {
 	return delivery.Change{Seq: 1, Kind: "issue_facts", Repo: project, Ref: issue, TOld: &closedBefore, TNew: &closedAfter}
 }
@@ -210,7 +210,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 // the 210 issues of the facts' own rig that carry Legion phase work. A build's first whole read
 // rewrites every row whose values or writer moved, as the newer build of a roll rewrites every
 // row the older wrote, and the trigger logs one delivery change for each (migration
-// 20261111093100).
+// 20261117100002).
 const batchRows = 210
 
 // writeFactsBatch writes count rows of the project in one write, as one whole read does, giving

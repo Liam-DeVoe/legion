@@ -3,11 +3,11 @@ package delivery
 import "context"
 
 // resolveSessionTitlesQuery answers, for each id it is given, that session's stored title: one
-// read of session_titles_pkey (migration 20261113082156) for the whole list, and no row for a
+// read of session_titles_pkey (migration 20261117100008) for the whole list, and no row for a
 // session that has none. It reads no events. Resolving each title out of events on a page read,
 // as an ordered read a session of events_session_actor_created_at_idx, cost 42 to 133 ms a paint
 // of the Delivery page on a production-shaped fixture (dispatch://INFRA-2916, R13), and the
-// table is written where the title is stamped instead (20261113090412's trigger). The plan test
+// table is written where the title is stamped instead (20261117100015's trigger). The plan test
 // of this package holds it there (session_titles_plan_test.go).
 const resolveSessionTitlesQuery = `select session_id, title from session_titles where session_id = any($1)`
 
@@ -18,7 +18,7 @@ const resolveSessionTitlesQuery = `select session_id, title from session_titles 
 //
 // Every write stamps a model.Actor (including its ActorOrigin.SessionTitle) as JSONB onto the row
 // it wrote and onto the matching events row, and the trigger on events (migration
-// 20261113090412) records the title of each such event in session_titles, in the event's own
+// 20261117100015) records the title of each such event in session_titles, in the event's own
 // transaction, with the boot's fill (store.FillSessionTitles) covering the events stored before
 // it; this reads that table by primary key. The name is the newest title the session stamped,
 // not the title on its newest event: a later write carrying none -- a delivery reply stamps no

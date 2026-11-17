@@ -20,8 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// The change log's outbox (delivery_changes_pending, migrations 20261115155339 and
-// 20261115155340) and its drain (DrainPending), and the order every path takes the change log's
+// The change log's outbox (delivery_changes_pending, migrations 20261117100023 and
+// 20261117100024) and its drain (DrainPending), and the order every path takes the change log's
 // lock in (LockChanges): first, before any row lock, or last, in the statement that ends its
 // transaction. R19 holds a path to at most 100 ms of the lock; these tests assert the structure
 // that bounds the hold (which transaction takes the lock, when, and how much a drain moves under
