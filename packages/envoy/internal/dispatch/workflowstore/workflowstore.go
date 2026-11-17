@@ -13,9 +13,10 @@
 // write never refuses for its order, and makes the node when none exists. A run's write sets each
 // field the node does not hold yet and leaves each field it holds (PutStep). A plan's source,
 // document, version and tasks are one fact, which a write of a higher version replaces whole and
-// any other write leaves (PutPlan). The read of an issue (IssueSteps) answers each run with its
-// attempt, which no write stores, and the read of a project (ProjectPlans) answers each of its
-// finished issues with its plan, its ratings, its time and its count of failed steps.
+// any other write leaves (PutPlan). The reads of an issue answer each run with its attempt, which
+// no write stores (IssueSteps), and the plan of its newest run (NewestPlan); the read of a project
+// (ProjectPlans) answers each of its finished issues with its plan, its ratings, its time and its
+// count of failed steps.
 //
 // The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
 // does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's

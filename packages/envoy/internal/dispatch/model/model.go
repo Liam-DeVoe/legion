@@ -3147,15 +3147,22 @@ type StepRecord struct {
 	RatingReason *string    `json:"rating_reason"`
 }
 
-// StepTask is one task of an issue with every run of its steps, in the order they ran.
+// StepTask is one task of an issue: what the issue's newest plan says of it, and every run of its
+// steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
+// in the order its block writes them, absent for a task that needs none. Planned are the steps
+// that plan gives the task, each a role or `role:key`, in order; a task the plan does not hold
+// has neither, and only its runs show it.
 type StepTask struct {
-	Task  string       `json:"task"`
-	Steps []StepRecord `json:"steps"`
+	Task    string       `json:"task"`
+	Needs   []string     `json:"needs,omitempty"`
+	Planned []string     `json:"planned,omitempty"`
+	Steps   []StepRecord `json:"steps"`
 }
 
-// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
-// task in the order of each task's first run. An issue Legion never ran, and a key no issue
-// carries, answers no task.
+// IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
+// plan's order, each with its needs, its planned steps and every run of them; then every other
+// task with a run, in the order of each such task's first run. An issue Legion never ran, and a
+// key no issue carries, answers no task.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`

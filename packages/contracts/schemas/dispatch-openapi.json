@@ -7293,7 +7293,7 @@
     },
     "/api/v1/issues/{key}/steps": {
       "get": {
-        "description": "Every run of every step of the issue's workflow, task by task in the order of each task's first run, each task's runs in the order they ran: {issue, tasks: [{task, steps}]}, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, and a key no issue carries reads as an issue with no task.",
+        "description": "The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs?, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs, absent where there are none, is the ids of the tasks of that plan the task needs, read from the needs of its plan_task block at the version of the document Legion took, and planned is the steps the plan gives it, each a role or role:key. Then each other task with a run, in the order of its first run, with neither. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, and a key no issue carries reads as an issue with no task.",
         "operationId": "getApiV1IssuesByKeySteps",
         "parameters": [
           {
@@ -26485,6 +26485,18 @@
       },
       "StepTask": {
         "properties": {
+          "needs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "planned": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "steps": {
             "items": {
               "$ref": "#/components/schemas/StepRecord"
