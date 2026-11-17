@@ -252,4 +252,19 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	if len(left) != len(wantLeft) {
 		t.Errorf("the outbox holds %d rows after the way back, want the %d rows %v", len(left), len(wantLeft), wantLeft)
 	}
+	// The way back restores no kind check: the rollback keeps this release's, which must take every
+	// kind the release before writes, its list (20261117000528's) whole, or that release's first
+	// write of a kind left out fails its transaction.
+	for _, kind := range []string{
+		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
+		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
+		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
+	} {
+		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ($1, 'LEGION-209', '{}', 0, now(), '')`, kind); err != nil {
+			t.Errorf("the release before queues a %s row after the way back: %v", kind, err)
+		}
+	}
 }
