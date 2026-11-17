@@ -162,33 +162,48 @@ func TestEveryGETRowResolvesItsCallerOnce(t *testing.T) {
 	}
 }
 
-// tokenLookups counts every personal token's read of its row (tokenLookup) on any context, for a
-// request a test cannot give a context of its own, such as a socket's upgrade.
-type tokenLookups struct{ every atomic.Int64 }
+// everyResolution counts, on any context, the statements a caller's resolution sends
+// (callerResolutions): for a request a test cannot give a context of its own, such as a socket's
+// upgrade, which a real listener serves.
+type everyResolution struct{ verified, resolved atomic.Int64 }
 
-func (l *tokenLookups) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if tokenLookup(data.SQL) {
-		l.every.Add(1)
+func (e *everyResolution) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	switch {
+	case strings.Contains(data.SQL, viewerResolution):
+		e.resolved.Add(1)
+	case personRecord(data.SQL), tokenLookup(data.SQL):
+		e.verified.Add(1)
 	}
 	return ctx
 }
 
-func (l *tokenLookups) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (e *everyResolution) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// TestTheLiveSocketVerifiesItsCredentialOnceAtOpen: the live socket's upgrade resolves its caller
+// TestTheLiveSocketResolvesItsCallerOnceAtOpen: the live socket's upgrade resolves its caller
 // once, in front of the handler (whileCallerResolves), which keeps that resolution as the caller
-// it admits and hands it to the handler (serveLiveSocket), so opening the socket with a personal
-// token reads the token's row once. The heartbeat's own resolutions come later (StreamHeartbeat).
+// it admits and hands it to the handler (serveLiveSocket), so opening the socket verifies the
+// credential once and resolves the viewer once, for each kind of caller TestEveryGETRowResolvesItsCallerOnce
+// walks. The heartbeat's own resolutions come later (StreamHeartbeat), and nothing else of the
+// seeded server resolves a caller while the socket opens.
 //
 // Control: an upgrade that resolves the caller for the heartbeat on a request of its own and
-// leaves the handler to resolve it again reads the row twice.
-func TestTheLiveSocketVerifiesItsCredentialOnceAtOpen(t *testing.T) {
-	lookups := &tokenLookups{}
-	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), lookups)})
+// leaves the handler to resolve it again verifies the credential twice.
+func TestTheLiveSocketResolvesItsCallerOnceAtOpen(t *testing.T) {
+	counted := &everyResolution{}
+	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counted)})
 	url := liveURLOf(t, seed.handler)
-	before := lookups.every.Load()
-	dialLive(t, url, seed.liveHeader(t, callerCarolToken))
-	if verified := lookups.every.Load() - before; verified != 1 {
-		t.Errorf("opening the live socket with carol's token read the token's row %d times, want once", verified)
+	for _, caller := range []privateCaller{callerAlice, callerCarolPrivToken, callerSharedToken, callerBob} {
+		verified, resolved := counted.verified.Load(), counted.resolved.Load()
+		dialLive(t, url, seed.liveHeader(t, caller))
+		verified, resolved = counted.verified.Load()-verified, counted.resolved.Load()-resolved
+		// The shared token's verification compares the bearer in memory and sends nothing.
+		wantVerified := int64(1)
+		if caller == callerSharedToken {
+			wantVerified = 0
+		}
+		if verified != wantVerified || resolved != 1 {
+			t.Errorf("opening the live socket as %s verified its credential %d times and resolved its viewer %d times, want %d and 1",
+				caller, verified, resolved, wantVerified)
+		}
 	}
 }
