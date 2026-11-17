@@ -7,7 +7,8 @@
 // which any request it did not plan for is a failure. GitRepository is a fake repository whose refs
 // and commits are a real bare git repository's, for a test that reads with git what the code under
 // test made on GitHub: its Handler is the arm of the test's switch that answers the reads and
-// writes of that repository's branches, merges included.
+// writes of that repository's branches, merges included, the compare of two commits, and its pull
+// requests.
 package githubtest
 
 import (

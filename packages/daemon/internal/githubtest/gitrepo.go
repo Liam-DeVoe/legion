@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -17,8 +19,9 @@ import (
 // GitRepo is a fake GitHub repository whose refs and commits are a real bare git repository's: a
 // test reads what the code under test made on GitHub with git itself, and fetches it as a clone's
 // origin. Its Handler answers the REST calls that read the repository and write its branches, a
-// merge of one branch into another included, as GitHub answers them, and leaves every other path
-// to the test's own handler.
+// merge of one branch into another included, that compare two commits, and that open, list and
+// read pull requests, as GitHub answers them, and leaves every other path to the test's own
+// handler.
 type GitRepo struct {
 	t             *testing.T
 	owner, name   string
@@ -27,8 +30,10 @@ type GitRepo struct {
 	// env is the environment of each git the fake runs.
 	env []string
 	// mu holds each of the fake's own operations whole, so two requests, or a request and a test's
-	// Commit, never interleave their reads and writes of one ref.
+	// Commit, never interleave their reads and writes of one ref or of pulls.
 	mu sync.Mutex
+	// pulls is each pull request the fake opened, the one numbered n at n-1.
+	pulls []PullRequest
 }
 
 // GitRepository is owner/name on a fake GitHub: a bare repository under t.TempDir() whose HEAD names
@@ -55,6 +60,23 @@ func GitRepository(t *testing.T, owner, name, defaultBranch string) *GitRepo {
 // Dir is the bare repository, which a test clones, or fetches and pushes as its origin.
 func (g *GitRepo) Dir() string {
 	return g.dir
+}
+
+// PullRequest is a pull request the fake opened: its number, title and body, its base and head
+// branches, its state, and the bearer token of the request that opened it, which a test reads to
+// say which App opened it.
+type PullRequest struct {
+	Number                  int
+	Title, Body, Base, Head string
+	State                   string
+	OpenedWith              string
+}
+
+// PullRequests is each pull request the fake opened, in the order it opened them.
+func (g *GitRepo) PullRequests() []PullRequest {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.pulls)
 }
 
 // Commit adds a commit on branch that writes each of files (path to content) over its parent's
@@ -131,6 +153,18 @@ func (g *GitRepo) Head(t *testing.T, branch string) string {
 //     are base's head and head's head, in that order; 204 with no body where base holds head
 //     already; 409 "Merge conflict" with base left where it was; 404 for a base or head the
 //     repository lacks.
+//   - GET /repos/{owner}/{name}/compare/{base}...{head}, each a branch or a commit: the head's
+//     commits base lacks (ahead_by, total_commits) and base's commits the head lacks (behind_by),
+//     the status they make (ahead, behind, identical or diverged), the merge base and base's
+//     commit, and the files the head changes since the merge base; 404 for a branch or commit the
+//     repository lacks.
+//   - POST /repos/{owner}/{name}/pulls: 201 with the pull request it opens, numbered from 1, on
+//     head (a branch, or owner:branch) against base; 422 for a head that has an open pull request
+//     ("A pull request already exists for owner:branch."), for a head with no commit base lacks
+//     ("No commits between base and head") and for a branch the repository lacks.
+//   - GET /repos/{owner}/{name}/pulls, filtered by head (owner:branch) and state (open where it
+//     names none, or closed, or all), and GET /repos/{owner}/{name}/pulls/{number}: the pull
+//     requests the fake opened, each naming its head branch's commit as it stands when it is read.
 //
 // Any other request is the caller's: Handler writes nothing for it and answers false, so a test's
 // own handler goes on. A failure of the fake's own git fails the test and answers 500.
@@ -146,6 +180,14 @@ func (g *GitRepo) Handler(w http.ResponseWriter, r *http.Request) bool {
 		g.createRef(w, r)
 	case r.Method == http.MethodPost && path == prefix+"/merges":
 		g.merge(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, prefix+"/compare/"):
+		g.compare(w, strings.TrimPrefix(path, prefix+"/compare/"))
+	case r.Method == http.MethodPost && path == prefix+"/pulls":
+		g.openPull(w, r)
+	case r.Method == http.MethodGet && path == prefix+"/pulls":
+		g.listPulls(w, r)
+	case r.Method == http.MethodGet && strings.HasPrefix(path, prefix+"/pulls/"):
+		g.readPull(w, strings.TrimPrefix(path, prefix+"/pulls/"))
 	default:
 		return false
 	}
@@ -269,6 +311,226 @@ func (g *GitRepo) merge(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+}
+
+// compare answers the compare of the two commits basehead names, base...head.
+func (g *GitRepo) compare(w http.ResponseWriter, basehead string) {
+	baseName, headName, ok := strings.Cut(basehead, "...")
+	if !ok {
+		g.refuse(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	base, err := g.commitOf(baseName)
+	if err != nil {
+		g.failed(w, "read the compare's base "+baseName, err)
+		return
+	}
+	head, err := g.commitOf(headName)
+	if err != nil {
+		g.failed(w, "read the compare's head "+headName, err)
+		return
+	}
+	if base == "" || head == "" {
+		g.refuse(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	ahead, behind, mergeBase, err := g.distance(base, head)
+	if err != nil {
+		g.failed(w, "compare "+baseName+" with "+headName, err)
+		return
+	}
+	files, err := g.changedFiles(mergeBase, head)
+	if err != nil {
+		g.failed(w, "list the files "+headName+" changes since "+baseName, err)
+		return
+	}
+	status := "diverged"
+	switch {
+	case ahead == 0 && behind == 0:
+		status = "identical"
+	case behind == 0:
+		status = "ahead"
+	case ahead == 0:
+		status = "behind"
+	}
+	g.answer(w, http.StatusOK, map[string]any{
+		"status": status, "ahead_by": ahead, "behind_by": behind, "total_commits": ahead,
+		"base_commit": map[string]string{"sha": base}, "merge_base_commit": map[string]string{"sha": mergeBase},
+		"files": files,
+	})
+}
+
+// distance is how many commits head has that base lacks, how many base has that head lacks, and
+// their merge base.
+func (g *GitRepo) distance(base, head string) (ahead, behind int, mergeBase string, err error) {
+	if mergeBase, err = g.git("merge-base", base, head); err != nil {
+		return 0, 0, "", err
+	}
+	for _, count := range []struct {
+		into  *int
+		since string
+	}{{&ahead, base + ".." + head}, {&behind, head + ".." + base}} {
+		out, err := g.git("rev-list", "--count", count.since)
+		if err == nil {
+			*count.into, err = strconv.Atoi(out)
+		}
+		if err != nil {
+			return 0, 0, "", err
+		}
+	}
+	return ahead, behind, mergeBase, nil
+}
+
+// changedFiles is each file head changes since from, as GitHub lists a comparison's files: its
+// name, its name before a rename, and what the change did to it. It is empty, not nil, for none.
+func (g *GitRepo) changedFiles(from, head string) ([]map[string]string, error) {
+	out, err := g.git("diff", "--name-status", "-M", "-z", from, head)
+	if err != nil {
+		return nil, err
+	}
+	statuses := map[byte]string{'A': "added", 'D': "removed", 'M': "modified", 'R': "renamed", 'C': "copied", 'T': "changed"}
+	files := []map[string]string{}
+	fields := strings.Split(strings.TrimSuffix(out, "\x00"), "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		kind := fields[i][0]
+		file := map[string]string{"status": statuses[kind], "filename": fields[i+1]}
+		if (kind == 'R' || kind == 'C') && i+2 < len(fields) {
+			i++
+			file["previous_filename"], file["filename"] = fields[i], fields[i+1]
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+// openPull answers the open of the pull request r's body names.
+func (g *GitRepo) openPull(w http.ResponseWriter, r *http.Request) {
+	var open struct {
+		Title string `json:"title"`
+		Head  string `json:"head"`
+		Base  string `json:"base"`
+		Body  string `json:"body"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&open); err != nil || open.Head == "" || open.Base == "" {
+		g.refuse(w, http.StatusUnprocessableEntity, "Validation Failed")
+		return
+	}
+	branch := open.Head
+	if owner, named, forked := strings.Cut(open.Head, ":"); forked {
+		if owner != g.owner {
+			g.refuse(w, http.StatusUnprocessableEntity, "Validation Failed")
+			return
+		}
+		branch = named
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	base, err := g.head(open.Base)
+	if err != nil {
+		g.failed(w, "read the pull request's base "+open.Base, err)
+		return
+	}
+	head, err := g.head(branch)
+	if err != nil {
+		g.failed(w, "read the pull request's head "+branch, err)
+		return
+	}
+	if base == "" || head == "" {
+		g.refuse(w, http.StatusUnprocessableEntity, "Validation Failed")
+		return
+	}
+	if slices.ContainsFunc(g.pulls, func(p PullRequest) bool { return p.State == "open" && p.Head == branch }) {
+		g.refuse(w, http.StatusUnprocessableEntity, fmt.Sprintf("Validation Failed: A pull request already exists for %s:%s.", g.owner, branch))
+		return
+	}
+	ahead, _, _, err := g.distance(base, head)
+	if err != nil {
+		g.failed(w, "compare the pull request's base "+open.Base+" with "+branch, err)
+		return
+	}
+	if ahead == 0 {
+		g.refuse(w, http.StatusUnprocessableEntity, fmt.Sprintf("Validation Failed: No commits between %s and %s", open.Base, branch))
+		return
+	}
+	pull := PullRequest{Number: len(g.pulls) + 1, Title: open.Title, Body: open.Body, Base: open.Base, Head: branch, State: "open",
+		OpenedWith: strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")}
+	g.pulls = append(g.pulls, pull)
+	g.answerPull(w, http.StatusCreated, pull, head)
+}
+
+// listPulls answers the list of the pull requests the fake opened that r's head and state name.
+func (g *GitRepo) listPulls(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	state := query.Get("state")
+	if state == "" {
+		state = "open"
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	listed := []map[string]any{}
+	for _, pull := range g.pulls {
+		if head := query.Get("head"); head != "" && head != g.owner+":"+pull.Head || state != "all" && state != pull.State {
+			continue
+		}
+		sha, err := g.head(pull.Head)
+		if err != nil {
+			g.failed(w, "read the head of pull request "+strconv.Itoa(pull.Number), err)
+			return
+		}
+		listed = append(listed, g.pullAnswer(pull, sha))
+	}
+	g.answer(w, http.StatusOK, listed)
+}
+
+// readPull answers the read of the pull request numbered number.
+func (g *GitRepo) readPull(w http.ResponseWriter, number string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n, err := strconv.Atoi(number)
+	if err != nil || n < 1 || n > len(g.pulls) {
+		g.refuse(w, http.StatusNotFound, "Not Found")
+		return
+	}
+	pull := g.pulls[n-1]
+	sha, err := g.head(pull.Head)
+	if err != nil {
+		g.failed(w, "read the head of pull request "+number, err)
+		return
+	}
+	g.answerPull(w, http.StatusOK, pull, sha)
+}
+
+// answerPull writes status and pull, its head branch at sha.
+func (g *GitRepo) answerPull(w http.ResponseWriter, status int, pull PullRequest, sha string) {
+	g.answer(w, status, g.pullAnswer(pull, sha))
+}
+
+// pullAnswer is GitHub's body of pull, its head branch at sha.
+func (g *GitRepo) pullAnswer(pull PullRequest, sha string) map[string]any {
+	return map[string]any{
+		"number": pull.Number, "state": pull.State, "title": pull.Title, "body": pull.Body,
+		"html_url": fmt.Sprintf("https://github.com/%s/%s/pull/%d", g.owner, g.name, pull.Number),
+		"base":     map[string]any{"ref": pull.Base},
+		"head":     map[string]any{"ref": pull.Head, "sha": sha, "repo": map[string]string{"full_name": g.owner + "/" + g.name}},
+		"merged":   false, "merged_at": nil,
+	}
+}
+
+// commitOf is the commit name names, a branch first and else a commit id, or "" where the
+// repository has neither.
+func (g *GitRepo) commitOf(name string) (string, error) {
+	commit, err := g.head(name)
+	if err != nil || commit != "" {
+		return commit, err
+	}
+	commit, err = g.git("rev-parse", "--verify", "--quiet", name+"^{commit}")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", nil
+	}
+	return commit, err
 }
 
 // head is branch's head commit, or "" where the repository has no such branch.
