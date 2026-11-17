@@ -1591,7 +1591,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -4193,6 +4193,56 @@ export interface components {
       question: string;
       suggestions: components["schemas"]["Suggestions"] | null;
     };
+    DecisionEntry: {
+      answer: null | string;
+      answer_state: null | string;
+      /** Format: date-time */
+      answered_at: null | string;
+      answered_by: null | string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      decided_by: components["schemas"]["DecisionEntryNode"] | null;
+      declined: boolean;
+      declined_note: null | string;
+      document: components["schemas"]["DecisionEntryDocument"] | null;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kept_by: null | string;
+      kept_text_sum: null | string;
+      kind: string;
+      multiple: null | boolean;
+      node: components["schemas"]["DecisionEntryNode"];
+      options: components["schemas"]["AskOption"][] | null;
+      question: null | string;
+      readings: components["schemas"]["DecisionReading"][] | null;
+      ref: string;
+      replaced: boolean;
+      resolution: components["schemas"]["AskResolution"] | null;
+      selected: string[] | null;
+      shaped: components["schemas"]["DecisionLink"][] | null;
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty: null | string;
+      uncertainty_reason: null | string;
+      urgency: null | string;
+      waiting_review: boolean;
+    };
+    DecisionEntryDocument: {
+      artifact_id: string;
+      block: string;
+      block_id: string;
+      ref: string;
+    };
+    DecisionEntryNode: {
+      id: string;
+      kind: string;
+    };
     DecisionKeep: {
       artifact_id: string;
       block_id: string;
@@ -4205,9 +4255,20 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_version: number;
+      event?: number;
       from_block: string;
       stale: boolean;
+      /** Format: date-time */
+      text_changed_at?: string;
+      text_changed_event?: number;
       to: components["schemas"]["GraphNode"];
+    };
+    DecisionReading: {
+      artifact_id: null | string;
+      authored_by: components["schemas"]["DecisionEntryNode"] | null;
+      block_id: string;
+      node: components["schemas"]["DecisionEntryNode"];
+      text: null | string;
     };
     DecisionResponse: {
       credential_id: null | string;
@@ -5074,6 +5135,7 @@ export interface components {
     IssueDecisions: {
       decisions: components["schemas"]["Decision"][] | null;
       document: null | string;
+      entries: components["schemas"]["DecisionEntry"][] | null;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDesignGate: {
@@ -13879,8 +13941,12 @@ export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuilds = components["schemas"]["DashboardBuilds"];
 export type Decision = components["schemas"]["Decision"];
 export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
+export type DecisionEntry = components["schemas"]["DecisionEntry"];
+export type DecisionEntryDocument = components["schemas"]["DecisionEntryDocument"];
+export type DecisionEntryNode = components["schemas"]["DecisionEntryNode"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
+export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
