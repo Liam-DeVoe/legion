@@ -539,8 +539,8 @@ func (r *stepRecordsRig) retro() {
 	r.work(claim.RoleImplementer, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
 }
 
-// work is one role's turn of the walk: it takes the task, answering with stepRecordsModel, and
-// finishes it.
+// work is one role's turn of the walk: it takes the task, its agent's model answering (c.model),
+// and finishes it.
 func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(role)
@@ -908,6 +908,9 @@ type stepClaimant struct {
 	bootToken string
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
+	// model is the model the agent's answers name, `<provider>/<model>`: stepRecordsModel until
+	// its test gives the agent another.
+	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
 	// open is the id of each prompt whose turn has started and not ended.
@@ -928,7 +931,7 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
+	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -1070,11 +1073,12 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	}
 }
 
-// answer is the agent's model answering, as Oh My Pi's message_end names it.
+// answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
+// message_end names as message.provider and message.model.
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
-	provider, model, _ := strings.Cut(stepRecordsModel, "/")
+	provider, model, _ := strings.Cut(c.model, "/")
 	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": model}})
 	if err != nil {
 		t.Fatal(err)
@@ -1273,8 +1277,8 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
-	planner.takeAnswering("stand-in/mo\x00del")
-	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	planner.model = "stand-in/mo\x00del"
+	r.plan()
 	r.waitSteps("the end of planning", func(got stepRecordsRead) error {
 		switch found := got.find("step", 1, 1); {
 		case found.ID == "" || found.EndedAt == nil || found.Result != "passed":
@@ -1284,29 +1288,6 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// takeAnswering is take with the agent's model answering as model, provider and model as Oh My
-// Pi's message_end names them.
-func (c *stepClaimant) takeAnswering(model string) {
-	c.r.t.Helper()
-	prompt := c.receive()
-	c.answerWith(model)
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
-	c.waitState(supervise.StateWorking)
-}
-
-// answerWith is the agent's model answering as model, `<provider>/<model>`, which Oh My Pi's
-// message_end names as message.provider and message.model.
-func (c *stepClaimant) answerWith(model string) {
-	t := c.r.t
-	t.Helper()
-	provider, name, _ := strings.Cut(model, "/")
-	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": name}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
 }
 
 // v-records, whose record is whose: each role's agent answers with a model of its own, and the
@@ -1319,7 +1300,8 @@ func (c *stepClaimant) answerWith(model string) {
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
-	planner.takeAnswering("stand-in/planner")
+	planner.model = "stand-in/planner"
+	planner.take()
 	r.waitSteps("the start of planning", func(got stepRecordsRead) error {
 		switch found := got.find("step", 1, 1); {
 		case found.ID == "" || found.StartedAt == nil:
@@ -1330,26 +1312,24 @@ func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 		return nil
 	})
 	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
-	implement := func(model string) {
-		c := r.worker(claim.RoleImplementer)
-		c.takeAnswering(model)
-		r.finish(c, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
-	}
-	test := func(model string) {
-		c := r.worker(claim.RoleTester)
-		c.takeAnswering(model)
-		r.finish(c, "test", testCompletion, phase.Reviewing)
-	}
-	implement("stand-in/implementer")
-	test("stand-in/tester")
-	r.reviewAnswering("stand-in/reviewer", "CHANGES_REQUESTED", phase.Implementing)
-	implement("stand-in/implementer-2")
-	test("stand-in/tester-2")
-	r.reviewAnswering("stand-in/reviewer-2", "APPROVED", phase.Accepting)
-	r.acceptAnswering("stand-in/architect")
-	retro := r.worker(claim.RoleImplementer)
-	retro.takeAnswering("stand-in/implementer-3")
-	r.finish(retro, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
+	// answering gives role's agent the model its next answers name.
+	answering := func(role claim.Role, model string) { r.worker(role).model = model }
+	answering(claim.RoleImplementer, "stand-in/implementer")
+	r.implement()
+	answering(claim.RoleTester, "stand-in/tester")
+	r.test()
+	answering(claim.RoleReviewer, "stand-in/reviewer")
+	r.review("CHANGES_REQUESTED", phase.Implementing)
+	answering(claim.RoleImplementer, "stand-in/implementer-2")
+	r.implement()
+	answering(claim.RoleTester, "stand-in/tester-2")
+	r.test()
+	answering(claim.RoleReviewer, "stand-in/reviewer-2")
+	r.review("APPROVED", phase.Accepting)
+	answering(claim.RoleArchitect, "stand-in/architect")
+	r.accept()
+	answering(claim.RoleImplementer, "stand-in/implementer-3")
+	r.retro()
 	r.merge()
 
 	own := func(role claim.Role, model string) stepOwner {
@@ -1406,42 +1386,4 @@ func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) err
 		return fmt.Errorf("the read holds %d records, want %d", got, len(want))
 	}
 	return nil
-}
-
-// reviewAnswering is review with the reviewer's model answering as model.
-func (r *stepRecordsRig) reviewAnswering(model, state string, next phase.Phase) {
-	t := r.t
-	t.Helper()
-	c := r.worker(claim.RoleReviewer)
-	c.takeAnswering(model)
-	c.endTurn()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
-		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
-	r.waitPhase(next)
-}
-
-// acceptAnswering is accept with the architect's model answering as model.
-func (r *stepRecordsRig) acceptAnswering(model string) {
-	t := r.t
-	t.Helper()
-	c := r.worker(claim.RoleArchitect)
-	c.send(shimwire.AgentStart{})
-	c.waitState(supervise.StateWorking)
-	c.answerWith(model)
-	c.send(shimwire.AgentEnd{})
-	c.waitState(supervise.StateIdle)
-	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
-	if status != http.StatusOK {
-		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
-	}
-	r.waitPhase(phase.Retro)
 }
