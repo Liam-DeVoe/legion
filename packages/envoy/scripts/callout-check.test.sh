@@ -107,7 +107,9 @@ EOF
 # control directory says the service grants every channel (grant-all). While the hub still lists
 # the killed broker's connection, a session is routed to that replica, which never answers, and
 # is not admitted at the hub's authorization timeout. A probe takes 50 ms of the fake clock; with
-# silent, it prints nothing; with slow, it takes 2.5 s once the second broker is gone. ---
+# silent, it prints nothing; with slow, it takes 2.5 s once the second broker is gone; with
+# other-words, a connection the hub does not admit exits 4 in words that are not the server's, as
+# natsprobe once did for any failure to connect. ---
 fake natsprobe <<'EOF'
 subject="" none=false
 while [ "$#" -gt 0 ]; do
@@ -130,7 +132,11 @@ if [ "$state" = listed ]; then
 fi
 tick 50
 if [ "$none" = true ] || [ "${AGENT_SECRETS_URL:-}" != "$(cat "$control/stack-broker")" ]; then
-  echo "not admitted: Authorization Violation"
+  if [ -e "$control/other-words" ]; then
+    echo "not admitted: nats: no servers available for connection"
+  else
+    echo "not admitted: Authorization Violation"
+  fi
   exit 4
 fi
 echo "connected as session/${AGENT_SECRETS_SESSION:-}"
@@ -192,7 +198,7 @@ output=""
 status=0
 run_check() {
   local name
-  for name in grant-all no-connections silent slow no-drop connz-down-after-kill connz-down-late read-after-kill one-broker; do
+  for name in grant-all no-connections silent slow other-words no-drop connz-down-after-kill connz-down-late read-after-kill one-broker; do
     rm -f "${control_dir}/${name}"
   done
   if [ "${CALLOUT_CHECK_GRANT_ALL:-}" = 1 ]; then
@@ -307,3 +313,14 @@ run_check no-drop connz-down-late
   fail "a list read once after the kill and then unreadable: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "a list read once after the kill and then unreadable: exit $status"
 echo "PASS: a list read once after the kill and then unreadable FAILs line 6 with the count it last read"
+
+# (k) A probe that says "not admitted" in words that are not the server's: lines 3 and 4 hold the
+# refusal to nats-server's own "Authorization Violation", as line 2 holds its refusal to the
+# server's "Permissions Violation", so a failure to connect at all cannot pass them.
+run_check other-words
+[[ "$(line 3)" == "FAIL a connection with no credential is refused: natsprobe exit 4: not admitted: nats: no servers available for connection" ]] ||
+  fail "a probe not admitted in other words: line 3 is '$(line 3)'"
+[[ "$(line 4)" == "FAIL a token another broker issued is refused: natsprobe exit 4: not admitted: nats: no servers available for connection" ]] ||
+  fail "a probe not admitted in other words: line 4 is '$(line 4)'"
+[ "$status" -eq 1 ] || fail "a probe not admitted in other words: exit $status"
+echo "PASS: a probe not admitted in words that are not the server's FAILs lines 3 and 4"

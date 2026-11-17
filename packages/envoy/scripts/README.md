@@ -323,8 +323,9 @@ NATS-audience tokens the issuer writes them. All of what `--callout` adds is in
 addition is empty. The check prints one line per property:
 a session subscribes its own delivery channel; it is refused another session's, in
 nats-server's own words (`Permissions Violation for Subscription to "..."`); a connection
-with no credential is refused; a token neither broker issued is refused (a stand-in token
-endpoint plays the other broker); the hub lists the listener's connection authorized as
+with no credential is refused, and a token neither broker issued is refused (a stand-in token
+endpoint plays the other broker), each in nats-server's own `Authorization Violation`, the only
+answer `natsprobe` exits 4 for; the hub lists the listener's connection authorized as
 `listener/<its machine id>`; and with one broker killed, three new sessions are each
 admitted within 2 s, the first counted from the kill. A session opened before the hub has
 read the killed broker's close can be routed to the dead replica and refused at the hub's

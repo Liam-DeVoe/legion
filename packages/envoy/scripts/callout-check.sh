@@ -9,9 +9,10 @@
 #   1. a session subscribes its own delivery channel;
 #   2. a session is refused another session's delivery channel, with nats-server's own
 #      "Permissions Violation for Subscription to ..." naming that channel;
-#   3. a connection with no credential is refused;
-#   4. a token neither of this stack's brokers issued is refused: a stand-in token endpoint, which
-#      answers every trade with a token of its own, plays the other broker;
+#   3. a connection with no credential is refused, with nats-server's own "Authorization
+#      Violation";
+#   4. a token neither of this stack's brokers issued is refused the same way: a stand-in token
+#      endpoint, which answers every trade with a token of its own, plays the other broker;
 #   5. the listener is connected by its own service token: the hub's connection list names a
 #      connection authorized as the listener's service user, listener/<its machine id>;
 #   6. with one of the two brokers killed, a new session is admitted within 2 s of the kill, three
@@ -174,10 +175,12 @@ else
   fail "a session is refused another session's delivery channel: natsprobe exit $probe_rc: $probe_out"
 fi
 
-# 3. No credential at all.
+# 3. No credential at all, refused by nats-server in its own words: natsprobe exits 4 only for the
+# hub's Authorization Violation, and this line holds it to those words too, as line 2 does.
+NOT_ADMITTED="Authorization Violation"
 probe "$AGENT_SECRETS_URL" --no-credential --subscribe "$OWN_CHANNEL" --wait 1s
-if [ "$probe_rc" -eq 4 ] && [ -n "$(first_line_with 'not admitted: ')" ]; then
-  pass "a connection with no credential is refused: $(first_line_with 'not admitted: ')"
+if [ "$probe_rc" -eq 4 ] && [ "$(first_line_with 'not admitted: ')" = "$NOT_ADMITTED" ]; then
+  pass "a connection with no credential is refused: $NOT_ADMITTED"
 elif [ -z "$probe_out" ]; then
   unknown "a connection with no credential is refused: natsprobe printed nothing (exit $probe_rc)"
 else
@@ -223,8 +226,8 @@ if [ ! -s "$foreign_port_file" ]; then
   unknown "a token another broker issued is refused: the stand-in token endpoint never started: $(cat "$WORK_DIR/foreign.log")"
 else
   probe "http://127.0.0.1:$(cat "$foreign_port_file")" --subscribe "$OWN_CHANNEL" --wait 1s
-  if [ "$probe_rc" -eq 4 ] && [ -n "$(first_line_with 'not admitted: ')" ]; then
-    pass "a token another broker issued is refused: $(first_line_with 'not admitted: ')"
+  if [ "$probe_rc" -eq 4 ] && [ "$(first_line_with 'not admitted: ')" = "$NOT_ADMITTED" ]; then
+    pass "a token another broker issued is refused: $NOT_ADMITTED"
   elif [ -z "$probe_out" ]; then
     unknown "a token another broker issued is refused: natsprobe printed nothing (exit $probe_rc)"
   else
