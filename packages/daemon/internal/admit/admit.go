@@ -1412,6 +1412,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				return fmt.Errorf("carry pull request to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
+		// The carried run goes on at the step it stood at, so its plan goes with it, each task
+		// where it stood; an orphan that ran before plans has none, and the carry writes nothing.
+		if err := a.store.CarryPlan(ctx, tx, stored.Key, oldGeneration, stored.Generation, true); err != nil {
+			return fmt.Errorf("carry the plan to re-admitted orphan %s: %w", stored.Key, err)
+		}
 		// Every root a hand-over created is recorded as one, so its architect's catch-up says it was
 		// handed over and decomposes nothing anew; it is marked as carrying a gate, which tells the
 		// architect never to register its own spec, only when its old root had one. The carry takes

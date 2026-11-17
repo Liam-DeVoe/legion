@@ -297,6 +297,17 @@ type HoldReason string
 // HoldEscalated is a hold its architect sent to the controller.
 const HoldEscalated HoldReason = "escalated"
 
+// HoldTaskStopped is a hold whose issue's owner stopped the task it ran (workflow's taskStopped):
+// the task keeps its place and the reason it was stopped for (PlanTask.StoppedReason, StopTask).
+// A later version of the plan that changes the task, or a person's todo on a root, starts the
+// task again at its first step, which ends the hold.
+const HoldTaskStopped HoldReason = "task-stopped"
+
+// HoldForChildren is a hold that stands in place of the retro of an issue whose plan has no
+// acceptance step, while issues beneath it are still open (From is phase.Retro, which holds no
+// slot): the retro starts once the last of them has left.
+const HoldForChildren HoldReason = "children"
+
 // Awaiting is what a root in awaiting_person waits on: an ask its architect opened on the root
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
@@ -632,6 +643,16 @@ type PhaseRow struct {
 	// re-entered without one, so a fence on the count would refuse the case the route exists to
 	// take.
 	EntryMovedBack bool
+	// StepTask and StepPlace are the step this role's row runs, for an issue with plan rows: the
+	// plan's task (PlanTask.Task) and the step's place in it, from 1 for a step and 0 for the retro
+	// on the implementer's row and for the merge on the merger's row, written by the start that
+	// raises the entry (workflow's enter). A role runs at most one step of an issue, so the row's
+	// handoff, completion, entry and decision above are the facts of that step's run. An issue with
+	// no plan rows keeps "" and 0, and so does every row the release before the column wrote. A new
+	// generation clears both with the entry's task (ClearGeneration), since the task ids belong to
+	// one generation's plan; a carried hand-over keeps its rows, and the step with them.
+	StepTask  string
+	StepPlace int
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -855,6 +876,13 @@ type PullRequest struct {
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's
 	// task says the commit is unknown and the agent reads it from GitHub (workflow.checkTask).
 	MergeSHA string
+	// Task is the plan's task whose work the pull request carries (PlanTask.Task), for an issue
+	// with plan rows: written when the row is first written, at the opened pull request, and kept
+	// by every later write of the row as it was read. The first step of a new generation rewrites
+	// it (CarryPlan), since an open pull request outlives the clear of a generation and the new
+	// plan's task can have another id. "" for an issue with no plan rows, and on every row the
+	// release before the column wrote.
+	Task string
 }
 
 // HeadRun is a pull request's head run (PullRequest.Run): Anchor, the judgement before the run's
@@ -1753,6 +1781,41 @@ type Store interface {
 	// with the agent and the moment its start would have named, and answers true; false where the
 	// place has a row already, whose latest run has ended.
 	EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, startedAt time.Time) (bool, error)
+	// PutPlan stores version v of the plan of v's issue at v's generation, with the tasks it
+	// gives and their steps. The same version given twice is refused, and so is a step of a task
+	// it does not give. A task the generation holds already takes the version's text and
+	// attributes and keeps where it stands (MoveTask, StopTask, PutReturnCounts); the steps of
+	// each task it gives are its steps alone.
+	PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error
+	// Plan is the plan of issue at generation: its highest version, every task and every step.
+	// nil where the generation has no plan rows: an issue that ran before plans, and a generation
+	// no plan reached yet.
+	Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error)
+	// OwnersNewestPlan is the newest plan in force that owner gave for issue, of any generation,
+	// generation 0 included; nil where owner gave none in force.
+	OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) (*StoredPlan, error)
+	// PlansOfOtherGivers is the version in force of each generation of issue that an owner
+	// other than owner gave.
+	PlansOfOtherGivers(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) ([]PlanVersion, error)
+	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
+	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
+	// no plan rows, and gives the pull request row of issue the id of the new plan's one task.
+	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
+	// DeletePlan deletes the plan of issue at generation from its three tables.
+	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
+	// DeleteTasks deletes each of tasks, waiting or stopped, with its steps.
+	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
+	// MoveTask writes where task stands and its state, which is not stopped (StopTask), and
+	// clears a stop's reason.
+	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error
+	// StopTask writes task stopped for reason, at the place it stands.
+	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
+	// on the implementer's phases row for one with none.
+	ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error)
+	// PutReturnCounts writes the counts of returns of task where ReturnCounts reads them, and
+	// nothing else of that row.
+	PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, c ReturnCounts) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.

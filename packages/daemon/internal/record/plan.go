@@ -1,0 +1,576 @@
+package record
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"slices"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+)
+
+// The plan of an issue is three tables (store migration 20261117034837_issue_plans): the versions
+// given for it (issue_plans), the tasks of the plan (plan_tasks), each with where it stands and its
+// counts of returns, and the steps of each task (plan_steps). Every row is keyed by the issue and
+// its generation, and no row names an issues row, because an owner can give a plan before the
+// daemon records its issue: such a plan is written at generation 0. An issue that ran before plans
+// has no rows, and goes on as it did then. The count of starts of a step is not the plan's: it lives
+// in step_starts alone, at the place TaskPlace.StepPlace names.
+
+const (
+	// PlanSourceOwner is a version the issue's owner gave (register_plan), at the version of its
+	// document.
+	PlanSourceOwner = "owner"
+	// PlanSourceDefault is the project's default steps as one task, written at the start of the
+	// work of a generation no owner's plan reached: version 0, no document and no giver.
+	PlanSourceDefault = "default"
+)
+
+// The states of a task (PlanTask.State).
+const (
+	TaskWaiting = "waiting"
+	TaskRunning = "running"
+	TaskDone    = "done"
+	TaskStopped = "stopped"
+)
+
+// The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
+// a place by (StepPlace.Kind): a step of the task, from place 1, and the task's retro and its
+// merge, at place 0, which no plan names. A task at no act has the kind "" at place 0.
+const (
+	PlaceStep  = "step"
+	PlaceRetro = "retro"
+	PlaceMerge = "merge"
+)
+
+// PlanVersion is one version of the plan of an issue at one generation. The highest version of a
+// generation is the plan in force. An owner's version is the version of its document (ArtifactID)
+// it gave, and GivenBy the claim token of the owner that gave it; a default plan has version 0, no
+// document and no giver.
+type PlanVersion struct {
+	Issue      string
+	Generation uint64
+	Version    int
+	ArtifactID string
+	Source     string
+	GivenBy    claim.Token
+	GivenAt    time.Time
+}
+
+// TaskPlace is where a task stands: at a step (PlaceStep, Position from 1), at its retro or its
+// merge (Position 0), or at no act (Kind "", Position 0).
+type TaskPlace struct {
+	Kind     string
+	Position int
+}
+
+// StepPlace is the place task stands at as the count of starts keys it: the start of the step
+// running there raises that count (RaiseStepStarts), and its record's id names it.
+func (p TaskPlace) StepPlace(task string) StepPlace {
+	return StepPlace{Task: task, Kind: p.Kind, Place: p.Position}
+}
+
+// valid says whether p is a place a task can stand at.
+func (p TaskPlace) valid() bool {
+	switch p.Kind {
+	case PlaceStep:
+		return p.Position >= 1
+	case "", PlaceRetro, PlaceMerge:
+		return p.Position == 0
+	}
+	return false
+}
+
+// ReturnCounts are the counts of returns of one task, which an issue with no plan rows keeps on its
+// implementer's phases row (PhaseRow's Pass, Rounds, ConflictRounds, BackwardMoves and CapTold, each
+// documented there). BackwardMoves is nil where no move back was counted.
+type ReturnCounts struct {
+	Pass, Rounds, ConflictRounds int
+	BackwardMoves                map[string]int
+	CapTold                      int
+}
+
+// PlanTask is one task of a plan. PlanVersion is the version that wrote its text; BlockText, Needs,
+// PartOf, OwnerRole and Merges are what that version's block says. State, StoppedReason, Place and
+// Counts are where the task stands, which the walk writes (MoveTask, StopTask, PutReturnCounts).
+// Needs is nil where the block names none.
+type PlanTask struct {
+	Issue         string
+	Generation    uint64
+	Task          string
+	PlanVersion   int
+	BlockText     string
+	Needs         []string
+	PartOf        string
+	OwnerRole     string
+	Merges        bool
+	State         string
+	StoppedReason string
+	Place         TaskPlace
+	Counts        ReturnCounts
+}
+
+// PlanStep is one step of a task, at its place from 1: the role that runs it, the step's type, the
+// agent key the plan names for it ("" for none), and the commit the newest deciding review of this
+// step read ("" until one did).
+type PlanStep struct {
+	Issue        string
+	Generation   uint64
+	Task         string
+	Position     int
+	Role         string
+	Type         string
+	AgentKey     string
+	ReviewedHead string
+}
+
+// StoredPlan is the plan of an issue at one generation: the version in force, every task ordered by
+// its id, and the steps of each task by its id, ordered by place. Steps is never nil.
+type StoredPlan struct {
+	Version PlanVersion
+	Tasks   []PlanTask
+	Steps   map[string][]PlanStep
+}
+
+// PutPlan stores version v of the plan of v.Issue at v.Generation, with the tasks it gives and the
+// steps of those tasks. The same version given twice is refused, and so is a task or a step of
+// another issue or generation, or a step of a task v does not give, whose step the write would
+// leave beside a task that keeps its own; each refusal is made before anything is written, so the
+// transaction stays usable. A task the generation holds already takes v's text and attributes and
+// keeps where it stands, which the walk writes; a new task is written as given. The steps of each
+// task v gives are replaced by the steps v gives it.
+func (s *Postgres) PutPlan(ctx context.Context, tx pgx.Tx, v PlanVersion, tasks []PlanTask, steps []PlanStep) error {
+	describe := fmt.Sprintf("put version %d of the plan of %s at generation %d", v.Version, v.Issue, v.Generation)
+	given := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.Issue != v.Issue || task.Generation != v.Generation {
+			return fmt.Errorf("%s: task %s is of %s at generation %d", describe, task.Task, task.Issue, task.Generation)
+		}
+		given = append(given, task.Task)
+	}
+	for _, step := range steps {
+		if step.Issue != v.Issue || step.Generation != v.Generation {
+			return fmt.Errorf("%s: step %d of task %s is of %s at generation %d", describe, step.Position, step.Task, step.Issue, step.Generation)
+		}
+		if !slices.Contains(given, step.Task) {
+			return fmt.Errorf("%s: step %d names task %s, which the version does not give", describe, step.Position, step.Task)
+		}
+	}
+	tag, err := tx.Exec(ctx, `insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
+		values ($1, $2, $3, $4, $5, $6, $7) on conflict (issue, generation, version) do nothing`,
+		v.Issue, int64(v.Generation), v.Version, v.Source, v.ArtifactID, string(v.GivenBy), v.GivenAt)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: that version is stored already", describe)
+	}
+	for _, task := range tasks {
+		moves, err := encodeBackwardMoves(task.Counts.BackwardMoves)
+		if err != nil {
+			return fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
+		}
+		needs := task.Needs
+		if needs == nil {
+			needs = []string{}
+		}
+		if _, err := tx.Exec(ctx, `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges,
+			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+			on conflict (issue, generation, task) do update set plan_version = excluded.plan_version, block_text = excluded.block_text,
+			needs = excluded.needs, part_of = excluded.part_of, owner_role = excluded.owner_role, merges = excluded.merges`,
+			v.Issue, int64(v.Generation), task.Task, task.PlanVersion, task.BlockText, needs, task.PartOf, task.OwnerRole, task.Merges,
+			task.State, task.StoppedReason, task.Place.Kind, task.Place.Position,
+			task.Counts.Pass, task.Counts.Rounds, task.Counts.ConflictRounds, moves, task.Counts.CapTold); err != nil {
+			return fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `delete from plan_steps where issue = $1 and generation = $2 and task = any($3)`,
+		v.Issue, int64(v.Generation), given); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	for _, step := range steps {
+		if _, err := tx.Exec(ctx, `insert into plan_steps (issue, generation, task, position, role, type, agent_key, reviewed_head)
+			values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			v.Issue, int64(v.Generation), step.Task, step.Position, step.Role, step.Type, step.AgentKey, step.ReviewedHead); err != nil {
+			return fmt.Errorf("%s: step %d of task %s: %w", describe, step.Position, step.Task, err)
+		}
+	}
+	return nil
+}
+
+const planVersionColumns = `issue, generation, version, source, artifact_id, given_by, given_at`
+
+// Plan is the plan of issue at generation, or nil where that generation has no plan rows.
+func (s *Postgres) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*StoredPlan, error) {
+	describe := fmt.Sprintf("read the plan of %s at generation %d", issue, generation)
+	version, err := scanPlanVersion(tx.QueryRow(ctx, "select "+planVersionColumns+` from issue_plans
+		where issue = $1 and generation = $2 order by version desc limit 1`, issue, int64(generation)))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	plan := &StoredPlan{Version: version, Steps: map[string][]PlanStep{}}
+	rows, err := tx.Query(ctx, `select task, plan_version, block_text, needs, part_of, owner_role, merges, state, stopped_reason,
+		running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
+		from plan_tasks where issue = $1 and generation = $2 order by task`, issue, int64(generation))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		task := PlanTask{Issue: issue, Generation: generation}
+		var moves []byte
+		if err := rows.Scan(&task.Task, &task.PlanVersion, &task.BlockText, &task.Needs, &task.PartOf, &task.OwnerRole, &task.Merges,
+			&task.State, &task.StoppedReason, &task.Place.Kind, &task.Place.Position,
+			&task.Counts.Pass, &task.Counts.Rounds, &task.Counts.ConflictRounds, &moves, &task.Counts.CapTold); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		if len(task.Needs) == 0 {
+			task.Needs = nil
+		}
+		if task.Counts.BackwardMoves, err = decodeBackwardMoves(moves); err != nil {
+			return nil, fmt.Errorf("%s: task %s: %w", describe, task.Task, err)
+		}
+		plan.Tasks = append(plan.Tasks, task)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	rows.Close()
+	steps, err := tx.Query(ctx, `select task, position, role, type, agent_key, reviewed_head
+		from plan_steps where issue = $1 and generation = $2 order by task, position`, issue, int64(generation))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	defer steps.Close()
+	for steps.Next() {
+		step := PlanStep{Issue: issue, Generation: generation}
+		if err := steps.Scan(&step.Task, &step.Position, &step.Role, &step.Type, &step.AgentKey, &step.ReviewedHead); err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		plan.Steps[step.Task] = append(plan.Steps[step.Task], step)
+	}
+	if err := steps.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return plan, nil
+}
+
+// inForce selects, of issue $1, each owner's version that is the plan in force of its generation:
+// the highest version there.
+const inForce = `source = 'owner' and issue = $1
+	and version = (select max(version) from issue_plans newest where newest.issue = issue_plans.issue and newest.generation = issue_plans.generation)`
+
+// OwnersNewestPlan is the newest plan in force that owner gave for issue, of any generation,
+// generation 0 among them, which holds a plan given before the daemon recorded the issue: the
+// latest given, and of two given at one moment the later generation's. nil where owner gave no
+// plan that is in force; a default plan is nobody's.
+func (s *Postgres) OwnersNewestPlan(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) (*StoredPlan, error) {
+	var generation int64
+	err := tx.QueryRow(ctx, `select generation from issue_plans where `+inForce+` and given_by = $2
+		order by given_at desc, generation desc limit 1`, issue, string(owner)).Scan(&generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the newest plan %s gave for %s: %w", owner, issue, err)
+	}
+	return s.Plan(ctx, tx, issue, uint64(generation))
+}
+
+// PlansOfOtherGivers is the version in force of each generation of issue that an owner other than
+// owner gave, in the order they were given: the plans the current owner's first step passes over.
+// A default plan is nobody's, so none is among them.
+func (s *Postgres) PlansOfOtherGivers(ctx context.Context, tx pgx.Tx, issue string, owner claim.Token) ([]PlanVersion, error) {
+	describe := fmt.Sprintf("read the plans of %s that givers other than %s gave", issue, owner)
+	rows, err := tx.Query(ctx, "select "+planVersionColumns+` from issue_plans where `+inForce+` and given_by <> $2
+		order by given_at, generation`, issue, string(owner))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	defer rows.Close()
+	var versions []PlanVersion
+	for rows.Next() {
+		version, err := scanPlanVersion(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", describe, err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", describe, err)
+	}
+	return versions, nil
+}
+
+// CarryPlan copies the plan of issue at generation from to generation to: every version, every task
+// and every step. carried is a hand-over that carries its run, whose tasks go on where they stood,
+// so each task keeps its state, its place and its counts, and each step the commit its review read.
+// Without carried, the plan starts from its start: each task waits at no act with every count 0,
+// and no step holds a reviewed commit. Neither copies a count of starts, which step_starts keeps by
+// place alone. Where from has no plan rows it writes nothing, so an issue that ran before plans
+// goes on as it did; a generation to that holds a plan already is refused.
+//
+// The pull request row of issue, where one stands, takes the id of the new plan's one task: the
+// clear of a generation keeps the row of an open pull request, and the new plan's task can have
+// another id. A plan of several tasks leaves the row as it is.
+func (s *Postgres) CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error {
+	describe := fmt.Sprintf("carry the plan of %s from generation %d to %d", issue, from, to)
+	if from == to {
+		return fmt.Errorf("%s: a generation is not carried onto itself", describe)
+	}
+	var held, taken bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_plans where issue = $1 and generation = $2),
+		exists (select 1 from issue_plans where issue = $1 and generation = $3)`, issue, int64(from), int64(to)).Scan(&held, &taken); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if !held {
+		return nil
+	}
+	if taken {
+		return fmt.Errorf("%s: generation %d holds a plan already", describe, to)
+	}
+	tasks := `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges, state)
+		select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges, 'waiting'
+		from plan_tasks where issue = $1 and generation = $2`
+	reviewedHead := "''"
+	if carried {
+		tasks = `insert into plan_tasks (issue, generation, task, plan_version, block_text, needs, part_of, owner_role, merges,
+			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told)
+			select issue, $3, task, plan_version, block_text, needs, part_of, owner_role, merges,
+			state, stopped_reason, running_kind, position, pass, rounds, conflict_rounds, backward_moves, cap_told
+			from plan_tasks where issue = $1 and generation = $2`
+		reviewedHead = "reviewed_head"
+	}
+	for _, statement := range []string{
+		`insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
+			select issue, $3, version, source, artifact_id, given_by, given_at from issue_plans where issue = $1 and generation = $2`,
+		tasks,
+		`insert into plan_steps (issue, generation, task, position, role, type, agent_key, reviewed_head)
+			select issue, $3, task, position, role, type, agent_key, ` + reviewedHead + `
+			from plan_steps where issue = $1 and generation = $2`,
+	} {
+		if _, err := tx.Exec(ctx, statement, issue, int64(from), int64(to)); err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `update pull_requests set task = sole.task
+		from (select min(task) as task from plan_tasks where issue = $1 and generation = $2 having count(*) = 1) sole
+		where pull_requests.issue = $1`, issue, int64(to)); err != nil {
+		return fmt.Errorf("%s: give the pull request the new plan's task: %w", describe, err)
+	}
+	return nil
+}
+
+// DeletePlan deletes the plan of issue at generation, every row of it in each of the three tables
+// (the tasks and the steps go with their versions, on delete cascade).
+func (s *Postgres) DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error {
+	if _, err := tx.Exec(ctx, `delete from issue_plans where issue = $1 and generation = $2`, issue, int64(generation)); err != nil {
+		return fmt.Errorf("delete the plan of %s at generation %d: %w", issue, generation, err)
+	}
+	return nil
+}
+
+// DeleteTasks deletes each of tasks from the plan of issue at generation, with its steps: what a
+// later version that removes a task writes. Only a waiting or a stopped task is removed, since a
+// later version changes nothing that runs or ran; a name that is neither, or that the plan does not
+// hold, is refused, naming it.
+func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error {
+	describe := fmt.Sprintf("delete tasks %v of the plan of %s at generation %d", tasks, issue, generation)
+	rows, err := tx.Query(ctx, `delete from plan_tasks where issue = $1 and generation = $2 and task = any($3)
+		and state in ('waiting', 'stopped') returning task`, issue, int64(generation), tasks)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	deleted, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	var kept []string
+	for _, task := range tasks {
+		if !slices.Contains(deleted, task) && !slices.Contains(kept, task) {
+			kept = append(kept, task)
+		}
+	}
+	if len(kept) > 0 {
+		return fmt.Errorf("%s: the plan holds no waiting or stopped task %v", describe, kept)
+	}
+	return nil
+}
+
+// MoveTask writes where task stands in the plan of issue at generation, and its state: the one
+// write of the walk's moveTask. A stop is StopTask's, which records why, so the state stopped is
+// refused here, and a move takes a stop's reason away. A place no task can stand at, a step the
+// task does not have and a task the plan does not hold are refused.
+func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error {
+	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
+	switch state {
+	case TaskWaiting, TaskRunning, TaskDone:
+	case TaskStopped:
+		return fmt.Errorf("%s: a stop is StopTask's, which records why", describe)
+	default:
+		return fmt.Errorf("%s: no task has that state", describe)
+	}
+	if !place.valid() {
+		return fmt.Errorf("%s: no task stands at that place", describe)
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6, stopped_reason = ''
+		where issue = $1 and generation = $2 and task = $3
+		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
+			and plan_steps.task = $3 and plan_steps.position = $5))`,
+		issue, int64(generation), task, place.Kind, place.Position, state)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task, or the task no such step", describe)
+	}
+	return nil
+}
+
+// StopTask writes task of the plan of issue at generation stopped for reason, at the place it
+// stands, which a later start of the task reads. A stop without its reason, of a task that is done
+// or of a task the plan does not hold, is refused.
+func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
+	describe := fmt.Sprintf("stop task %s of %s at generation %d", task, issue, generation)
+	if reason == "" {
+		return fmt.Errorf("%s: a stop records why", describe)
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4
+		where issue = $1 and generation = $2 and task = $3 and state <> 'done'`, issue, int64(generation), task, reason)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task that is not done", describe)
+	}
+	return nil
+}
+
+// hasPlan says whether issue has plan rows at generation.
+func (s *Postgres) hasPlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (bool, error) {
+	var has bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from issue_plans where issue = $1 and generation = $2)`,
+		issue, int64(generation)).Scan(&has); err != nil {
+		return false, fmt.Errorf("read whether %s has a plan at generation %d: %w", issue, generation, err)
+	}
+	return has, nil
+}
+
+// ReturnCounts is the counts of returns of task: on the task, for an issue with plan rows at
+// generation, where a task the plan does not hold is refused; on its implementer's phases row for
+// an issue with none, where they lived before plans, and the zero counts where it has no such row.
+func (s *Postgres) ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error) {
+	describe := fmt.Sprintf("read the counts of returns of task %s of %s at generation %d", task, issue, generation)
+	has, err := s.hasPlan(ctx, tx, issue, generation)
+	if err != nil {
+		return ReturnCounts{}, err
+	}
+	if !has {
+		rows, err := s.Phases(ctx, tx, issue)
+		if err != nil {
+			return ReturnCounts{}, fmt.Errorf("%s: %w", describe, err)
+		}
+		row := PhaseRowOf(rows, claim.RoleImplementer)
+		return ReturnCounts{Pass: row.Pass, Rounds: row.Rounds, ConflictRounds: row.ConflictRounds, BackwardMoves: row.BackwardMoves, CapTold: row.CapTold}, nil
+	}
+	var counts ReturnCounts
+	var moves []byte
+	err = tx.QueryRow(ctx, `select pass, rounds, conflict_rounds, backward_moves, cap_told from plan_tasks
+		where issue = $1 and generation = $2 and task = $3`, issue, int64(generation), task).
+		Scan(&counts.Pass, &counts.Rounds, &counts.ConflictRounds, &moves, &counts.CapTold)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ReturnCounts{}, fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	if err != nil {
+		return ReturnCounts{}, fmt.Errorf("%s: %w", describe, err)
+	}
+	if counts.BackwardMoves, err = decodeBackwardMoves(moves); err != nil {
+		return ReturnCounts{}, fmt.Errorf("%s: %w", describe, err)
+	}
+	return counts, nil
+}
+
+// PutReturnCounts writes the counts of returns of task where ReturnCounts reads them, and nothing
+// else: the task's other columns, or every other column of the implementer's phases row, which it
+// reads and writes back whole (a row the record does not hold yet is written for the implementer
+// with the counts alone).
+func (s *Postgres) PutReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, c ReturnCounts) error {
+	describe := fmt.Sprintf("put the counts of returns of task %s of %s at generation %d", task, issue, generation)
+	has, err := s.hasPlan(ctx, tx, issue, generation)
+	if err != nil {
+		return err
+	}
+	if !has {
+		rows, err := s.Phases(ctx, tx, issue)
+		if err != nil {
+			return fmt.Errorf("%s: %w", describe, err)
+		}
+		row := PhaseRowOf(rows, claim.RoleImplementer)
+		row.Issue, row.Role = issue, claim.RoleImplementer
+		row.Pass, row.Rounds, row.ConflictRounds, row.BackwardMoves, row.CapTold = c.Pass, c.Rounds, c.ConflictRounds, c.BackwardMoves, c.CapTold
+		return s.PutPhase(ctx, tx, row)
+	}
+	moves, err := encodeBackwardMoves(c.BackwardMoves)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	tag, err := tx.Exec(ctx, `update plan_tasks set pass = $4, rounds = $5, conflict_rounds = $6, backward_moves = $7, cap_told = $8
+		where issue = $1 and generation = $2 and task = $3`,
+		issue, int64(generation), task, c.Pass, c.Rounds, c.ConflictRounds, moves, c.CapTold)
+	if err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%s: the plan holds no such task", describe)
+	}
+	return nil
+}
+
+// scanPlanVersion reads one issue_plans row of planVersionColumns.
+func scanPlanVersion(row scanner) (PlanVersion, error) {
+	var version PlanVersion
+	var generation int64
+	var givenBy string
+	if err := row.Scan(&version.Issue, &generation, &version.Version, &version.Source, &version.ArtifactID, &givenBy, &version.GivenAt); err != nil {
+		return PlanVersion{}, err
+	}
+	version.Generation, version.GivenBy, version.GivenAt = uint64(generation), claim.Token(givenBy), version.GivenAt.UTC()
+	return version, nil
+}
+
+// encodeBackwardMoves is the jsonb a column of backward move counts holds: the empty object for no
+// move counted, as PutPhase writes it.
+func encodeBackwardMoves(moves map[string]int) ([]byte, error) {
+	if len(moves) == 0 {
+		return []byte("{}"), nil
+	}
+	encoded, err := json.Marshal(moves)
+	if err != nil {
+		return nil, fmt.Errorf("encode the backward move counts: %w", err)
+	}
+	return encoded, nil
+}
+
+// decodeBackwardMoves reads such a column back: nil for the empty object, as scanPhase reads it.
+func decodeBackwardMoves(raw []byte) (map[string]int, error) {
+	if bytes.Equal(raw, []byte("{}")) {
+		return nil, nil
+	}
+	moves := map[string]int{}
+	if err := json.Unmarshal(raw, &moves); err != nil {
+		return nil, fmt.Errorf("decode the backward move counts: %w", err)
+	}
+	if len(moves) == 0 {
+		return nil, nil
+	}
+	return moves, nil
+}

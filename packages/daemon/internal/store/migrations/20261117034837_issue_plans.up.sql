@@ -1,0 +1,90 @@
+-- 20261117034837_issue_plans.up.sql — the plan of an issue as rows, the step a phases row runs, and
+-- the task a pull request carries (record's plan.go).
+--
+-- issue_plans holds each version given for an issue at a generation: the owner's version of its
+-- plan document (source owner, given_by the claim token of the owner that gave it), or the
+-- project's default steps (source default, version 0, no document and no giver). The highest
+-- version of a generation is the plan in force. plan_tasks holds each task of the plan, what its
+-- block says, where it stands (state, running_kind, position) and its counts of returns, which an
+-- issue with no plan rows keeps on its implementer's phases row. plan_steps holds each step of a
+-- task by its place from 1. The count of starts of a step is not here: step_starts keeps it by
+-- place alone (20261117004117_step_starts). No table names an issues row, because an owner can give
+-- a plan before the daemon records its issue, which is written at generation 0.
+--
+-- phases.step_task and phases.step_place are record.PhaseRow.StepTask and StepPlace, the step a
+-- role's row runs for an issue with plan rows, and pull_requests.task is record.PullRequest.Task.
+-- Every row the upgrade finds is the row of an issue with no plan rows, since no release before
+-- this one ran a plan, and takes the defaults, which read as no step and no task.
+--
+-- There is no down file. This directory keeps none, so the way back is the transaction below, run
+-- with the daemon stopped, before the earlier image is pinned:
+--
+--   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+--   begin;
+--   drop table if exists plan_steps;
+--   drop table if exists plan_tasks;
+--   drop table if exists issue_plans;
+--   alter table phases drop column if exists step_task, drop column if exists step_place;
+--   alter table pull_requests drop column if exists task;
+--   delete from schema_version where version = 20261117034837;
+--   commit;
+--   SQL
+--
+-- The release before this one boots without the statements: its phases and pull request reads and
+-- writes name each column they touch, and it names none of the three tables. They are owed to the
+-- roll forward. Left in place, a task's place goes stale while the earlier release moves its issue
+-- along today's fixed line, and after the roll forward the walk would start from that stale place.
+-- With the tables and columns dropped and the row deleted, store.apply runs this file again, and
+-- each issue the earlier release moved has no plan rows and goes on as it did. What the way back
+-- costs is every plan given before the rollback, which its owner gives again.
+create table issue_plans (
+  issue text not null,
+  generation bigint not null,
+  version integer not null,
+  source text not null constraint issue_plans_source_check check (source in ('owner', 'default')),
+  artifact_id text not null,
+  given_by text not null,
+  given_at timestamptz not null,
+  primary key (issue, generation, version)
+);
+
+create table plan_tasks (
+  issue text not null,
+  generation bigint not null,
+  task text not null,
+  plan_version integer not null,
+  block_text text not null,
+  needs text[] not null default '{}',
+  part_of text not null default '',
+  owner_role text not null default '',
+  merges boolean not null default false,
+  state text not null constraint plan_tasks_state_check check (state in ('waiting', 'running', 'done', 'stopped')),
+  stopped_reason text not null default '',
+  running_kind text not null default '' constraint plan_tasks_running_kind_check check (running_kind in ('', 'step', 'retro', 'merge')),
+  position integer not null default 0 constraint plan_tasks_position_check check (position >= 0),
+  pass integer not null default 0,
+  rounds integer not null default 0,
+  conflict_rounds integer not null default 0,
+  backward_moves jsonb not null default '{}',
+  cap_told integer not null default 0,
+  primary key (issue, generation, task),
+  -- A step stands at a place from 1; a retro, a merge and no act at place 0.
+  constraint plan_tasks_place_check check ((running_kind = 'step') = (position >= 1)),
+  foreign key (issue, generation, plan_version) references issue_plans (issue, generation, version) on delete cascade
+);
+
+create table plan_steps (
+  issue text not null,
+  generation bigint not null,
+  task text not null,
+  position integer not null constraint plan_steps_position_check check (position >= 1),
+  role text not null constraint plan_steps_role_check check (role ~ '^[a-z][a-z0-9-]*$'),
+  type text not null,
+  agent_key text not null default '',
+  reviewed_head text not null default '',
+  primary key (issue, generation, task, position),
+  foreign key (issue, generation, task) references plan_tasks (issue, generation, task) on delete cascade
+);
+
+alter table phases add column step_task text not null default '', add column step_place integer not null default 0;
+alter table pull_requests add column task text not null default '';
