@@ -53,6 +53,7 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+import release_version_inputs
 from ci_filter_coverage import CACHE_WORKFLOW, TEST_SUFFIX, Read, TagRun, exact, go_skips_dir, run
 from ci_filter_coverage import at as at_in, gate as gate_in
 
@@ -835,25 +836,15 @@ def go_notices_runs():
 
 
 def version_input_runs():
-    """Every go list check-legion-version-inputs.sh runs, as its header lists them: ./cmd/legion in
-    packages/daemon for each legion target under CGO_ENABLED=0, and in packages/envoy the
-    legion-envoy archives' programs, envoy-listener for linux and each envoy arch under
-    CGO_ENABLED=0 and 1, agent-secrets and agent-secrets-helper for the same under 0, and
-    agent-secrets for each client target under 0."""
+    """Every go list check-legion-version-inputs.sh runs: the listings of
+    release_version_inputs.py, the one plan that check runs, over the target lists it reads."""
     why = at("ci-filters", VERSION_INPUTS_STEP)
-
-    def listing(workdir, pkgs, goos, goarch, cgo):
-        return run(workdir, pkgs, f"{why}: go list -deps for {goos}/{goarch} with CGO_ENABLED={cgo}", mode="build",
-                   step=VERSION_INPUTS_STEP, text=VERSION_INPUTS,
-                   env={"CGO_ENABLED": cgo, "GOOS": goos, "GOARCH": goarch})
-
-    out = [listing(DAEMON, ["./cmd/legion"], *target.split("/"), "0") for target in targets(GO_TARGETS, "legion")]
-    for arch in targets(GO_TARGETS, "envoy"):
-        out += [listing(ENVOY, ["./cmd/listener"], "linux", arch, cgo) for cgo in ("0", "1")]
-        out.append(listing(ENVOY, ["./cmd/agent-secrets", "./cmd/agent-secrets-helper"], "linux", arch, "0"))
-    out += [listing(ENVOY, ["./cmd/agent-secrets"], *target.split("/"), "0")
-            for target in targets(CLIENT_TARGETS, "agent-secrets-client")]
-    return out
+    listings = (release_version_inputs.legion_listings(targets(GO_TARGETS, "legion"))
+                + release_version_inputs.legion_envoy_listings(targets(GO_TARGETS, "envoy"),
+                                                               targets(CLIENT_TARGETS, "agent-secrets-client")))
+    return [run(listing.workdir, list(listing.packages), f"{why}: go list -deps {listing.label}", mode="build",
+                step=VERSION_INPUTS_STEP, text=VERSION_INPUTS, env=listing.env)
+            for listing in listings]
 
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks'
@@ -1839,6 +1830,8 @@ GO_OFFLINE = f"{SCRIPTS}/go_offline.py"
 GO_OFFLINE_STAND_IN = f"{SCRIPTS}/go-offline-test-lib.sh"
 # The shell scanner check-release-credentials.sh and check-legion-version-inputs.sh read a run: with.
 SHELL_COMMANDS = f"{SCRIPTS}/shell_commands.py"
+# The release listings check-legion-version-inputs.sh runs and version_input_runs() turns into Runs.
+RELEASE_PLAN = f"{SCRIPTS}/release_version_inputs.py"
 
 
 def harness(filter, step, harness_script, subjects, lib=True):
@@ -2061,6 +2054,7 @@ SCRIPT_TEST_GATES = [
         (GO_OFFLINE_STAND_IN, "check-ci-filters.test.sh:54 sources the stand-in go its offline case reads the engine's go "
                               "commands' environment with"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2240 imports this table to derive the plain step's -run lists"),
+        (RELEASE_PLAN, "ci_job_reads.py, which check-ci-filters.test.sh:2240 imports, imports it"),
         ("AGENTS.md", "check-ci-filters.test.sh:2694 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_legion_version_inputs_test", "Test the legion version input check",
@@ -2068,6 +2062,7 @@ SCRIPT_TEST_GATES = [
         (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:48-50)"),
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
         (SHELL_COMMANDS, "the shell scanner the script reads a version step with, linked in beside it"),
+        (RELEASE_PLAN, "the release listings the script runs, linked in beside it"),
         (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go its offline case reads the "
                               "script's go commands' environment with"),
     ]),
@@ -3113,6 +3108,7 @@ GATES = [
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         (GO_OFFLINE, f"ci_filter_coverage.py and {VERSION_INPUTS} run every go command through it"),
         (SHELL_COMMANDS, f"{VERSION_INPUTS} reads each release version step's run: with it"),
+        (RELEASE_PLAN, f"{VERSION_INPUTS} runs its listings, and ci_job_reads.py imports it for version_input_runs"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
         (CLIENT_TARGETS, f"ci_job_reads.py expands the notices runs over it, and {VERSION_INPUTS} its agent-secrets listings"),

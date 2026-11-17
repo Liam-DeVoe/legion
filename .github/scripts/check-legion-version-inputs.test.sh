@@ -45,7 +45,7 @@ fixture() {
     "$root/packages/envoy/gamma" "$root/packages/envoy/internal/delta" "$root/packages/envoy/infra/x" \
     "$root/packages/envoy/cmd/listener" "$root/packages/envoy/cmd/agent-secrets" \
     "$root/packages/envoy/cmd/agent-secrets-helper"
-  for linked in check-legion-version-inputs.sh go_offline.py shell_commands.py; do
+  for linked in check-legion-version-inputs.sh go_offline.py shell_commands.py release_version_inputs.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$root/go.work"

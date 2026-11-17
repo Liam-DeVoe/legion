@@ -1544,17 +1544,20 @@ jobs:
               # :2240 imports the table to derive the plain step's -run lists, and :2694 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
+              # ci_job_reads.py imports it.
+              - '.github/scripts/release_version_inputs.py'
               - 'AGENTS.md'
             check_legion_version_inputs_test: &check_legion_version_inputs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-legion-version-inputs.test.sh'
-              # The script under test and the two modules it imports, symlinked into every
-              # fixture, and the stand-in go its offline case reads their environment with.
+              # The script under test and the modules it imports, symlinked into every fixture,
+              # and the stand-in go its offline case reads their environment with.
               - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/go_offline.py'
               - '.github/scripts/shell_commands.py'
+              - '.github/scripts/release_version_inputs.py'
               - '.github/scripts/go-offline-test-lib.sh'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
@@ -4317,6 +4320,7 @@ jobs:
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/go_offline.py'
+              - '.github/scripts/release_version_inputs.py'
               - '.github/scripts/shell_commands.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/go-release-targets.json'
