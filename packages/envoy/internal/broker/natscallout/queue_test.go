@@ -198,9 +198,14 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 
 // A replica holds at most maxWaiting requests waiting for a decision slot, and refuses the one past
 // the bound at once, naming the bound, while the ones it holds wait on and are decided. One slot is
-// held for a second by a decision that sleeps; two requests, the bound, wait behind it; a third is
-// refused within half a second rather than waiting, and the two held are admitted once the slot
-// frees. With no bound the third waits behind the slot too and is admitted.
+// held by a decision until that refusal is heard; two requests, the bound, wait behind it; a third
+// is refused within half a second rather than waiting, and the holder and the two held are then
+// admitted. With no bound the third waits behind the slot too and is admitted.
+//
+// The refusal's reason is read from the line the replica writes as it closes, which holds every
+// refusal it counted since its last line (report). A line written while the test runs can hold
+// another refusal and not this one: on a loaded machine a held request can spend its budget and
+// be refused first, and the reporter then writes its next line of refusals a minute later.
 func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 2)
@@ -209,12 +214,19 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	holder, extra := newSession(t, "ses_holder", 15*time.Minute), newSession(t, "ses_extra", 15*time.Minute)
 	waiters := sessionsNamed(t, "ses_waiting", 2)
 	log := &logtest.Buffer{}
-	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil))}
-	holding := make(chan struct{})
+	registry := metrics.New()
+	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}
+	holding, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHolder := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseHolder)
 	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		if req.Token == holder.token {
 			close(holding)
-			time.Sleep(time.Second)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
 		}
 		return Decide(ctx, deps, services, req)
 	})
@@ -240,16 +252,19 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	began := time.Now()
 	_, err := connectSession(t, url, extra, nil)
 	took := time.Since(began)
+	releaseHolder()
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
 	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
-		return strings.Contains(log.String(), labelWaitingBound+"=1")
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal counted under its label", func() bool {
+		return strings.Contains(scrape(t, registry), `outcome="refused",reason="`+labelWaitingBound+`"} 1`)
 	})
-	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 	require.NoError(t, <-held, "the slot's holder was refused")
 	for index, err := range <-results {
 		require.NoError(t, err, "waiter %d of the bound was refused", index)
 	}
+	service.Close()
+	require.Contains(t, log.String(), labelWaitingBound+"=1", "the refusal was not in the broker's log:\n%s", log.String())
+	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 }
 
 // A request past both bounds, the requests waiting for a decision slot and the requests being

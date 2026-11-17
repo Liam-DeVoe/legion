@@ -46,20 +46,21 @@ func (h countingHandler) WithGroup(name string) slog.Handler {
 	return countingHandler{Handler: h.Handler.WithGroup(name), inFlight: h.inFlight, most: h.most}
 }
 
-// A stalled log grows nothing past its bound: while it takes no write, fifty refusals are each
-// answered at once, no more than one record is ever being logged, the reporter's, and what the
-// service keeps for the log meanwhile is a count per label and one detail, not a line, a goroutine
-// or a buffer per refusal. Written by the goroutine that made it, before its answer or after, each
-// refusal's line would be a record of its own waiting on the log, holding its goroutine.
+// A stalled log grows nothing past its bound: while it takes no write, and once the reporter's
+// write is stuck on it, fifty more refusals are each answered at once, no more than one record is
+// ever being logged, the reporter's, and what the service keeps for the log meanwhile is a count
+// per label and one detail, not a line, a goroutine or a buffer per refusal. Written by the
+// goroutine that made it, before its answer or after, each refusal's line would be a record of its
+// own waiting on the log, holding its goroutine.
 func TestAStalledLogHoldsOneWriteAndCountsTheRest(t *testing.T) {
 	withLiveness(t, 10*time.Millisecond, 10*time.Second)
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
-	log := &stalledLog{released: make(chan struct{})}
+	log := newStalledLog()
 	handler := newCountingHandler(slog.NewTextHandler(log, nil))
 	service := startService(t, url, keys, Deps{Log: slog.New(handler)}, Decide)
 	t.Cleanup(func() { close(log.released) })
-	log.stalled.Store(true)
+	stallWithALine(t, url, log)
 
 	for range 50 {
 		requireRefusedAtOnce(t, url, "next")
@@ -75,16 +76,15 @@ func TestAStalledLogHoldsOneWriteAndCountsTheRest(t *testing.T) {
 // The drop metric moves while the log is stalled: the counter moves each drop into
 // broker_nats_callout_dropped_total on its own goroutine (countWhileRunning), and the reporter,
 // blocked on the log by the first drop's line, holds nothing the metric waits for. Both bounds
-// are zero, so every request is dropped; the second drop reaches the metric with the log still
-// stalled.
+// are zero, so every request is dropped; the second drop is made once the reporter's write of the
+// first is stuck on the log, and reaches the metric all the same.
 func TestTheDropMetricMovesWhileTheLogIsStalled(t *testing.T) {
 	withWaitingBound(t, 0)
 	withRefusingBound(t, 0)
-	withLiveness(t, 20*time.Millisecond, 10*time.Second)
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
 	registry := metrics.New()
-	log := startWithStalledLog(t, url, keys, Deps{Metrics: NewMetrics(registry)})
+	log, _ := startWithStalledLog(t, url, keys, Deps{Metrics: NewMetrics(registry)})
 	log.stalled.Store(true)
 
 	for attempt := 1; attempt <= 2; attempt++ {
@@ -96,6 +96,9 @@ func TestTheDropMetricMovesWhileTheLogIsStalled(t *testing.T) {
 		testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, fmt.Sprintf("drop %d in the metric with the log stalled", attempt), func() bool {
 			return strings.Contains(scrape(t, registry), fmt.Sprintf(`broker_nats_callout_dropped_total{reason="past_bounds"} %d`, attempt))
 		})
+		if attempt == 1 {
+			log.awaitStuck(t)
+		}
 	}
 }
 

@@ -24,7 +24,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -39,12 +38,6 @@ type Deps struct {
 	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
-	// Exchange is the projects the broker's own exchange list gives account, and false for an
-	// account no entry lists (exchange.Set.ProjectsForAccount). Nil, with Access, holds no
-	// service to its projects, and refuses every entry that is not an all-projects one.
-	Exchange func(account string) ([]string, bool)
-	// Access is Dispatch's answer about one project (projectaccess).
-	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it

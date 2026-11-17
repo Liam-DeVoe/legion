@@ -617,10 +617,27 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	if refused != nil && refusalWork != nil {
 		refusalWork()
 	}
+	// The answer goes out first, and only then is what happened counted: the decision counter's
+	// series locks are held by a scrape across its writes to the scraper (metrics.Registry.Handler),
+	// and the reporter's tallies feed the log, so neither a scrape client that stops reading nor a
+	// log that stalls delays an answer, and the time it is counted under is the time it took.
+	a.send(msg, req, user, refused, serverXKey)
 	a.deps.Metrics.record(kind, refused, time.Since(received))
-	// The answer goes out first, and then what happened is counted for the reporter: nothing here
-	// waits on the log, so a log that stalls neither delays an answer nor holds the decision slot
-	// or the refusing bound's place it was made in (reportWhileRunning).
+	if refused != nil {
+		a.refusals.add(refused.Label, func() string {
+			detail := refused.Reason + " (" + kind + " from " + req.Host + ")"
+			if refused.Cause != nil {
+				detail += ": " + refused.Cause.Error()
+			}
+			return detail
+		})
+	}
+}
+
+// send answers msg: user, or refused when it is not nil, signed by the issuer and sealed to the
+// server's key when the server sent one. A step that fails is counted for the reporter
+// (failures), and the server refuses that client at its own timeout.
+func (a *answerer) send(msg *nats.Msg, req Request, user *jwt.UserClaims, refused *Refusal, serverXKey string) {
 	encoded, err := sign(a.issuer, req, user, refused)
 	if err != nil {
 		a.failures.add("encode", func() string { return "could not be encoded for " + req.Host + ": " + err.Error() })
@@ -635,15 +652,6 @@ func (a *answerer) answer(msg *nats.Msg, received time.Time, settle settle) {
 	}
 	if err := msg.Respond(out); err != nil {
 		a.failures.add("send", func() string { return "could not be sent to " + req.Host + ": " + err.Error() })
-	}
-	if refused != nil {
-		a.refusals.add(refused.Label, func() string {
-			detail := refused.Reason + " (" + kind + " from " + req.Host + ")"
-			if refused.Cause != nil {
-				detail += ": " + refused.Cause.Error()
-			}
-			return detail
-		})
 	}
 }
 
