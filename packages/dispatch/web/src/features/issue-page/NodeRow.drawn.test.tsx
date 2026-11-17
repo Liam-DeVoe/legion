@@ -246,7 +246,7 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
 // The same block of the plan, or of any other document, is a block and nothing more, so its row
 // draws its type's own word and none of a statement's marks - not its word, its shape or its
 // colour - as a `check` block outside the Verification document draws no state word.
-test("a plan's requirement row reads Requirement with no statement mark, and a spec's reads as a statement", () => {
+test("a plan's requirement row reads requirement with no statement mark, and a spec's reads as a statement", () => {
   const drawn = (id: string, more: Partial<TreeNode>) => {
     const view = renderRow(
       node({ id, text: "The page draws no raw source.", type: "requirement", ...more })

@@ -324,19 +324,21 @@ test("the five controls are named in the order the row draws them, and none is c
   for (const preset of PRESET_ORDER) {
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
   }
-  // The page draws Statement, never Requirement (R22): the kind's own name is the word, and no
-  // word the page declares says requirement but the name a `requirement` block of a document
-  // other than the spec draws, which is no statement (decision 246).
+  // The page draws Statement, never Requirement (R22): a requirement of the issue's spec is a
+  // statement, and no word the page declares says requirement. One entry is let through by name,
+  // `BLOCK_TYPE_NAMES.requirement`: the tag of a requirement block in another document, such as
+  // the plan. That block is not a statement, so its tag calls it what it is (decision 246).
   expect(NODE_TYPE_NAMES.requirement).toBe("statement");
-  expect(BLOCK_TYPE_NAMES.requirement).toBe("Requirement");
+  expect(BLOCK_TYPE_NAMES.requirement).toBe("requirement");
   for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
     expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
+  const { requirement: _letThrough, ...otherBlockNames } = BLOCK_TYPE_NAMES;
   expect(
-    WORD_SOURCES.filter((table) => table !== BLOCK_TYPE_NAMES)
+    WORD_SOURCES.map((table) => (table === BLOCK_TYPE_NAMES ? otherBlockNames : table))
       .flatMap(phrasesOf)
       .filter((phrase) => /requirement/iu.test(phrase)),
-    "a phrase but a non-statement block's name says requirement"
+    "a declared phrase other than BLOCK_TYPE_NAMES.requirement says requirement"
   ).toEqual([]);
 });
 

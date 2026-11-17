@@ -104,12 +104,13 @@ export type NodeType = keyof typeof NODE_TYPE_NAMES;
 
 /**
  * The name a typed block draws in a document that does not play its type's part, in place of
- * its type's name: a `requirement` block of any document but the issue's spec is no statement
- * (`isStatement`), so its row's tag says its type's own word and never "statement" (decision
- * 246), as a `check` block outside the Verification document draws no state word (decision 152).
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
  */
 export const BLOCK_TYPE_NAMES = freeze({
-  requirement: "Requirement",
+  requirement: "requirement",
 } as const);
 
 /**
