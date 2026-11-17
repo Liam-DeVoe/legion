@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +59,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -226,7 +226,7 @@ func (r *handoffRecordsLive) seed() {
 	}
 	// The implementer's completion of implementing reads GitHub for the open pull request on its
 	// branch, so GitHub lists the one the record holds for the issue that completes rounds here.
-	r.github = handoffRecordsDaemonGitHub(t, "legion/"+r.renew, int(number)+2)
+	r.github = handoffRecordsDaemonGitHub(t, claim.IssueBranch(r.renew), int(number)+2)
 	r.seedIssues([]dispatchSeed{
 		{key: r.a3, phase: phase.Planning, role: claim.RolePlanner},
 		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: "head-" + r.a7},
@@ -266,7 +266,7 @@ func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
 			}
 			if s.pr != 0 {
 				if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: "legion/" + s.key, HeadSHA: s.head, Failing: []string{},
+					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: claim.IssueBranch(s.key), HeadSHA: s.head, Failing: []string{},
 				}); err != nil {
 					return err
 				}
@@ -454,7 +454,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", rewritten.version, r.a7, rewritten.version)
+	want := handoffLine(r.a7, "test", rewritten.version)
 	if !strings.Contains(task.Message, want) {
 		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
 	}
@@ -971,16 +971,44 @@ func (c *handoffClaimant) endTurn() {
 	}
 }
 
-// awaitPrompt waits for the next task the daemon prompts this claim with.
-func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
+// awaitPrompt waits for the next task the daemon prompts this claim with whose message holds each
+// of want, and returns it. A prompt before it that does not is noted and passed over, so a caller
+// that names its round's task reads that task and no other message the daemon sent the claim; a
+// caller naming nothing takes the next prompt. It waits two minutes, or what is left of the test
+// binary's deadline less a second when that is sooner (testwait.Bounded), and its failure names
+// the bound it waited.
+func (c *handoffClaimant) awaitPrompt(want ...string) shimwire.Prompt {
 	c.r.t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
-		return shimwire.Prompt{}
+	bound := testwait.Bounded(c.r.t, 2*time.Minute, time.Second)
+	deadline := time.After(bound)
+	for {
+		select {
+		case prompt := <-c.prompts:
+			if holdsAll(prompt.Message, want) {
+				return prompt
+			}
+			c.r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
+		case <-deadline:
+			c.r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
+			return shimwire.Prompt{}
+		}
 	}
+}
+
+// holdsAll says whether text holds each of parts.
+func holdsAll(text string, parts []string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
+}
+
+// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
+// task).
+func handoffLine(key, word string, version int) string {
+	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`
@@ -1152,7 +1180,7 @@ func (d *handoffDispatch) latest(key, word string) handoffRecord {
 // Every other route is a 404: nothing else of GitHub is read here.
 func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		switch parts := strings.Split(rest, "/"); {
 		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
@@ -1163,7 +1191,5 @@ func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string 
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }

@@ -306,6 +306,12 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // ties to it.
 const testerVerdictLabel = "Tester's verdict"
 
+// ReviewedCommitLabel labels the commit a later review round's task names (reviewedCommit.part),
+// the head the reviewer's own last deciding review read. The reviewer's prompt and the merge gate
+// of skill://legion-worker name it to the reviewer, which a test ties to it, and the tests of the
+// packages that read a reviewer's task name it by this constant rather than type it again.
+const ReviewedCommitLabel = "Last reviewed commit"
+
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
 // with the entry it raises for that role (enter), whose task is word for word the task the
 // worker is sent. Its start carries no mark (startMarks), a fresh session among them: the
@@ -779,9 +785,9 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
-// reviewed is the part that names the commit the reviewer's last deciding review read
-// (reviewedPart), "" for every start but a later review round's, placed after the pull request
-// and before the reason.
+// reviewed is the commit the reviewer's last deciding review read (reviewedPart), "" for every
+// start but a later review round's; the part that names it (reviewedCommit.part) is placed after
+// the pull request and before the reason.
 func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reviewed reviewedCommit, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
@@ -797,34 +803,43 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
 	}
-	text += string(reviewed)
+	text += reviewed.part()
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
 	return text
 }
 
-// reviewedCommit is the part of a start's task that names the commit the reviewer's last deciding
-// review read, as reviewedPart writes it, and "" where the task names none. It has a type of its
-// own so the compiler holds each caller to that one shape: task takes it beside the reason, so a
-// swap of the two does not compile, and no string variable - a reason, a bare commit - passes for
-// it. No package outside this one can name the type, so a caller there can pass ResumePhaseTask
-// only an untyped constant, such as the "" of a start that names no commit.
+// reviewedCommit is the commit the reviewer's last deciding review read, as a start's task names
+// it (reviewedPart), and "" where the task names none. It holds the commit and not the sentence
+// that names it, and part writes that sentence, so no value of the type reaches a task as anything
+// but that sentence or nothing. It has a type of its own so task takes it beside the reason, and a
+// swap of the two does not compile, nor does a string variable passed for it. No package outside
+// this one can name the type, so a caller there can pass ResumePhaseTask only an untyped
+// constant, such as the "" of a start that names no commit.
 type reviewedCommit string
 
-// reviewedPart is the part of a start's task that names the commit the reviewer's own newest
-// deciding review read (record.PhaseRow.ReviewedHead, which review writes), so the reviewer can
-// read the difference from that commit to the head. It is read from reviewer, the reviewer's
-// phases row: " Last reviewed commit: <sha>." for the reviewer started in reviewing while the row
-// holds a commit, and "" in every other case — any other role or phase, and the first review of a
-// generation, whose row holds none. It is the one writer of the part: every start that hands the
-// reviewer a review round builds its task through task or ResumePhaseTask, and each takes the
-// part from here.
-func reviewedPart(role claim.Role, at phase.Phase, reviewer record.PhaseRow) reviewedCommit {
-	if !startsReviewRound(role, at) || reviewer.ReviewedHead == "" {
+// part is the part of a start's task that names c, " Last reviewed commit: <sha>."
+// (ReviewedCommitLabel), and "" for no commit: the one place the sentence is written.
+func (c reviewedCommit) part() string {
+	if c == "" {
 		return ""
 	}
-	return reviewedCommit(" Last reviewed commit: " + reviewer.ReviewedHead + ".")
+	return " " + ReviewedCommitLabel + ": " + string(c) + "."
+}
+
+// reviewedPart is the commit a start's task names as the one the reviewer's own newest deciding
+// review read (record.PhaseRow.ReviewedHead, which review writes), so the reviewer can read the
+// difference from that commit to the head. It is read from reviewer, the reviewer's phases row:
+// the row's commit for the reviewer started in reviewing, and "" in every other case — any other
+// role or phase, and the first review of a generation, whose row holds none. It is the one source
+// of the part: every start that hands the reviewer a review round builds its task through task or
+// ResumePhaseTask, and each takes the commit from here.
+func reviewedPart(role claim.Role, at phase.Phase, reviewer record.PhaseRow) reviewedCommit {
+	if !startsReviewRound(role, at) {
+		return ""
+	}
+	return reviewedCommit(reviewer.ReviewedHead)
 }
 
 // startsReviewRound says whether a start of role in phase at hands the reviewer a review round,
@@ -865,11 +880,12 @@ func handoffWord(role claim.Role) string {
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
 // the work on, which is what a resumed session needs to tell this phase from its last. reviewed is
-// the part that names the commit the reviewer's last deciding review read (reviewedPart), placed
-// after the continue line and before the closing sentence: a reviewer resumed in a fresh session
-// has no earlier task to read it from. It is "" for every other start.
+// the commit the reviewer's last deciding review read (reviewedPart), whose part
+// (reviewedCommit.part) is placed after the continue line and before the closing sentence: a
+// reviewer resumed in a fresh session has no earlier task to read it from. It is "" for every
+// other start.
 func ResumePhaseTask(issue record.Issue, reviewed reviewedCommit) string {
-	return continueLine(issue) + string(reviewed) + " Resume the existing phase work."
+	return continueLine(issue) + reviewed.part() + " Resume the existing phase work."
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

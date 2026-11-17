@@ -728,18 +728,7 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 			t.Fatalf("record the reviewer's row of %s holding the commit its review read: %v", key, err)
 		}
 	})
-	reviewerOf := func() record.PhaseRow {
-		t.Helper()
-		var rows []record.PhaseRow
-		inTx(t, pool, func(tx pgx.Tx) {
-			var err error
-			if rows, err = record.NewStore().Phases(ctx, tx, key); err != nil {
-				t.Fatalf("read the phases rows of %s: %v", key, err)
-			}
-		})
-		return record.PhaseRowOf(rows, claim.RoleReviewer)
-	}
-	if got := reviewerOf().ReviewedHead; got != reviewed {
+	if got := phaseRow(t, pool, key, claim.RoleReviewer).ReviewedHead; got != reviewed {
 		t.Fatalf("the reviewer's row before the way back reads the reviewed commit %q, want %s", got, reviewed)
 	}
 
@@ -772,7 +761,7 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	if applied != 1 {
 		t.Fatalf("the roll-forward applied %d migrations, want 1: the way back re-arms its own migration and no other", applied)
 	}
-	got := reviewerOf()
+	got := phaseRow(t, pool, key, claim.RoleReviewer)
 	if got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != held.EntryTask || got.ReviewedHead != "" {
 		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
 			"with no reviewed commit, the column's default", got.Claim, got.Entry, got.EntryTask, got.ReviewedHead)

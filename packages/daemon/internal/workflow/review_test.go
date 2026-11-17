@@ -28,7 +28,9 @@ import (
 // completion that follows is recorded on its own row with the issue where the review left it -
 // the findings the next implementer reads - rather than refused as a phase it no longer runs. A
 // completion that arrives first records the same row and moves nothing, the review deciding when
-// it lands.
+// it lands. In either order the review records the head its footer names as the commit the
+// reviewer read (record.PhaseRow.ReviewedHead), over the one an earlier review recorded, and a
+// request for changes tells the reviewer's next round that head.
 func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
@@ -46,6 +48,7 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 			pool := migratedPool(t)
 			ctx := context.Background()
 			seedReview(t, pool, "green")
+			anEarlierReviewRead(t, pool)
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			review := func() {
 				t.Helper()
@@ -90,6 +93,7 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 			if got := implementerRounds(t, pool); got != tc.rounds {
 				t.Fatalf("review rounds = %d, want %d: only a request for changes ends a round", got, tc.rounds)
 			}
+			decidedAtHeadOne(t, pool, engine, tc.decision)
 		})
 	}
 }
@@ -1020,7 +1024,9 @@ func TestAReviewOutsideReviewingRecordsNoRound(t *testing.T) {
 
 // A review can be processed while its issue is held from reviewing: the reviewer's launch budget
 // ran out after it posted the review. That review still decides the round, so once the retry puts
-// the issue back in reviewing, the reviewer's completion ends the round on it.
+// the issue back in reviewing, the reviewer's completion ends the round on it; and it records the
+// head its footer names as the commit the reviewer read, over the one an earlier review recorded,
+// which a request for changes tells the reviewer's next round.
 func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 	for _, tc := range []struct {
 		state string
@@ -1033,6 +1039,7 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 			pool := migratedPool(t)
 			ctx := context.Background()
 			seedReview(t, pool, "green")
+			anEarlierReviewRead(t, pool)
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			for i, fact := range []intake.Fact{
 				intake.ClaimFailed{Issue: "LEGION-208", Role: claim.RoleReviewer},
@@ -1053,6 +1060,7 @@ func TestAReviewWhileHeldFromReviewingDecidesTheRound(t *testing.T) {
 			if got := issuePhase(t, pool); got != tc.want {
 				t.Fatalf("the issue is in %s, want %s", got, tc.want)
 			}
+			decidedAtHeadOne(t, pool, engine, tc.state)
 		})
 	}
 }
@@ -1653,21 +1661,7 @@ func seedClaimSession(t *testing.T, pool *pgxpool.Pool, token claim.Token, sessi
 // reviewerDecision is LEGION-208's reviewer row's recorded decision, nil until a review decides.
 func reviewerDecision(t *testing.T, pool *pgxpool.Pool) *record.ReviewDecision {
 	t.Helper()
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(context.Background())
-	phases, err := record.NewStore().Phases(context.Background(), tx, "LEGION-208")
-	if err != nil {
-		t.Fatalf("read phases: %v", err)
-	}
-	for _, p := range phases {
-		if p.Role == claim.RoleReviewer {
-			return p.Decision
-		}
-	}
-	return nil
+	return phaseRowOf(t, pool, claim.RoleReviewer).Decision
 }
 
 // The controller now holds the review App's token too, so its own reviews, and a sibling tree's or

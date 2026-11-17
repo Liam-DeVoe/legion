@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -360,9 +361,10 @@ func TestAReviewerIsToldTheTestersVerdictAsTheTesters(t *testing.T) {
 	}
 }
 
-// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
-// its own completion carries none, so a rename on either side alone fails here.
-func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+// reviewerPrompt is the reviewer's composed prompt as its pane reads it: every part Compose names,
+// read back and joined in order.
+func reviewerPrompt(t *testing.T) string {
+	t.Helper()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
@@ -379,10 +381,40 @@ func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
 		}
 		prompt.Write(part)
 	}
+	return prompt.String()
+}
+
+// The reviewer's prompt names the label its task's verdict carries as the tester's result and says
+// its own completion carries none, so a rename on either side alone fails here.
+func TestTheReviewerPromptNamesTheTestersVerdictLabel(t *testing.T) {
+	prompt := reviewerPrompt(t)
 	for _, want := range []string{"`" + testerVerdictLabel + ":`", "`VERDICT_ROLE_FORBIDDEN`"} {
-		if !strings.Contains(prompt.String(), want) {
+		if !strings.Contains(prompt, want) {
 			t.Fatalf("the reviewer's prompt does not say %q", want)
 		}
+	}
+}
+
+// The reviewer is told the commit its later round reads from by the label its task carries
+// (reviewedCommit.part), and its prompt and the merge gate of skill://legion-worker, which the
+// prompt sends it to, name that field, so a rename of the label in the writer alone, in the
+// reviewer's prompt alone or in the merge gate alone fails here.
+func TestTheReviewerIsToldTheReviewedCommitLabelItsTaskCarries(t *testing.T) {
+	field := ReviewedCommitLabel + ": <sha>"
+	if got := reviewedCommit("<sha>").part(); !strings.HasPrefix(got, " "+field) {
+		t.Fatalf("a task names its reviewed commit as %q, want it to start with %q", got, " "+field)
+	}
+	want := "`" + field
+	if !strings.Contains(reviewerPrompt(t), want) {
+		t.Errorf("the reviewer's prompt does not say %q", want)
+	}
+	mergeGate := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "merge-gate.md")
+	body, err := os.ReadFile(mergeGate)
+	if err != nil {
+		t.Fatalf("read %s, the skill the reviewer's prompt sends it to: %v", mergeGate, err)
+	}
+	if !strings.Contains(string(body), want) {
+		t.Errorf("%s does not say %q", mergeGate, want)
 	}
 }
 

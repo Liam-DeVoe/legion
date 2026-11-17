@@ -477,6 +477,15 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 // would be false for a pull request that does touch runtime code. A range proves something only
 // on top of the round that read the code up to its start, so a later round's half never replaces
 // an earlier round's.
+//
+// The pair's own text holds the same line: a range its task names limits what it must read, and
+// a defect it sees in code the pull request changed before that range is still a finding, while
+// code the pull request leaves unchanged stays out of its findings, because the author fixes only
+// the pull request's diff. Each agent definition and each rubric skill is pinned for both halves,
+// and each sentence that bounded the findings by the diff the pair was given is pinned absent.
+// The two skills ship in the Envoy plugin, not in this package's partition, so they are read from
+// the repository's skills/, the files that plugin's prepack copies. Every file's gaps are listed
+// together, so a file that lost its sentence fails as loudly as the first one checked.
 test("a later review round reads from the commit its task names, and the pair reads that diff", () => {
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   expect(mergeGate).toContain(
@@ -496,7 +505,7 @@ test("a later review round reads from the commit its task names, and the pair re
     "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
   );
   expect(mergeGate).toContain(
-    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;"
+    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit; the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0); or a forward merge of the base changed the fingerprint, as the end of the item above decides."
   );
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
   expect(prBody).not.toContain(
@@ -517,6 +526,55 @@ test("a later review round reads from the commit its task names, and the pair re
   expect(mergeGate).toContain(
     "In a later round whose difference touches no runtime code, on a PR that does touch it, the pair half reads as `skill://legion-worker/references/pr-body.md` gives it for that round."
   );
+  const pair = [
+    {
+      file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
+      says: [
+        "Do not report issues in code the pull request leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
+        "A range your task names limits what you must read, not what you report: a defect you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not report unchanged-code issues."],
+    },
+    {
+      file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      says: [
+        "Do not flag code the pull request leaves unchanged.",
+        "A range your task names limits what you must read, not what you flag: a smell you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not flag unchanged code."],
+    },
+    {
+      file: "skills/thermonuclear-deep-review/SKILL.md",
+      says: [
+        "Report issues in code the pull request (the checked-out branch against its base) adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only the pull request's diff and that diff never shows them.",
+        "A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.",
+      ],
+      retired: [
+        "Report issues in code that diff adds or modifies",
+        "because the author fixes only this diff",
+      ],
+    },
+    {
+      file: "skills/thermonuclear-code-quality/SKILL.md",
+      says: [
+        "Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow",
+        "A finding on code the pull request leaves alone blocks it for work it did not cause.",
+        "A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.",
+      ],
+      retired: [
+        "Flag lines the diff adds or changes",
+        "A finding on code the diff leaves alone blocks the PR for work it did not cause.",
+      ],
+    },
+  ];
+  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+    const text = collapsed(path.join(REPO_ROOT, file));
+    return [
+      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
+      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
+    ];
+  });
+  expect(scopedToTheRange).toEqual([]);
 });
 
 // A task whose `Steps:` line names no reviewer runs no reviewer's pair, so the `Thermo` line's pair
