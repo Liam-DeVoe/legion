@@ -245,13 +245,16 @@ const goingFrameRow = `
 // (goingNextFrame), whose snapshot is taken once that lock is granted. The two are sent one after
 // the other and not as one batch: a connection that prepares a batch's statements before it runs
 // the first would take the run's going_requests table, a later step of the lock order, before the
-// node's row. Last, in one round trip, it appends the frame as one `frame` value tuple of the
-// node holding that sequence, the frame's name and its data (graphstore.FrameTuple, queued as
-// graphstore.Write appends it by graphstore.QueueFrameTuple), and then writes the going_events row
-// (goingFrameRow); the two are queued in that order, the order their tables' locks are taken in.
-// A row that conflicts rolls the whole transaction back, the value with it, so no frame stands
-// without its row and no row without its frame. It takes no revision fence: that belongs to the
-// block index writer alone.
+// node's row. A frame of a run with no node that finds, under the run's row, a node another
+// transaction committed and holds lets its transaction go and begins again once
+// (errGoingRunNodeHeld), so it takes that node's row first and holds nothing while it waits there.
+// Last, in one round trip, it appends the frame as one `frame` value tuple of the node holding
+// that sequence, the frame's name and its data (graphstore.FrameTuple, queued as graphstore.Write
+// appends it by graphstore.QueueFrameTuple), and then writes the going_events row (goingFrameRow);
+// the two are queued in that order, the order their tables' locks are taken in. A row that
+// conflicts rolls the whole transaction back, the value with it, so no frame stands without its
+// row and no row without its frame. It takes no revision fence: that belongs to the block index
+// writer alone.
 //
 // A frame the record stores none of answers pgx.ErrNoRows, which tells an answer still writing
 // that its run is over: a run that has stored its terminal frame takes no other, a frame whose
@@ -268,14 +271,14 @@ func appendGoingEvent(ctx context.Context, pool *store.Pool, requestID string, e
 	if err != nil {
 		return 0, err
 	}
-	tx, err := pool.Begin(store.WithoutBeforeCommit(ctx))
-	if err != nil {
-		return 0, fmt.Errorf("begin a frame of run %s: %w", requestID, err)
+	tx, err := beginGoingFrame(ctx, pool, requestID)
+	if errors.Is(err, errGoingRunNodeHeld) {
+		tx, err = beginGoingFrame(ctx, pool, requestID)
 	}
-	defer tx.Rollback(ctx)
-	if err := lockGoingRun(ctx, tx, requestID); err != nil {
+	if err != nil {
 		return 0, err
 	}
+	defer tx.Rollback(ctx)
 	var sequence int
 	var value string
 	var ended bool
@@ -313,12 +316,44 @@ func appendGoingEvent(ctx context.Context, pool *store.Pool, requestID string, e
 	return sequence, nil
 }
 
+// beginGoingFrame begins one frame's transaction and takes the run's node in it (lockGoingRun),
+// and answers that transaction. A transaction it could not lock the node in is rolled back before
+// it answers the error.
+func beginGoingFrame(ctx context.Context, pool *store.Pool, requestID string) (pgx.Tx, error) {
+	tx, err := pool.Begin(store.WithoutBeforeCommit(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("begin a frame of run %s: %w", requestID, err)
+	}
+	if err := lockGoingRun(ctx, tx, requestID); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, err
+	}
+	return tx, nil
+}
+
+// errGoingRunNodeHeld is lockGoingRun's answer for a run whose node another write committed after
+// the frame found none, and which another transaction holds: the frame holds the run's
+// going_requests row by then, and the erase of a run takes the node's row and then the run's
+// (grapherase's lockProjectionRows), so a frame that waited for that node there would wait on the
+// erase while the erase waited on it. appendGoingEvent begins the frame again, which takes the
+// node's row first and nothing before it.
+var errGoingRunNodeHeld = errors.New("the run's interaction node is held by another transaction")
+
+// goingRunNodeTaken is graphstore.NodeRowLockSQL taken without waiting: a row another transaction
+// holds is skipped, and no row is taken.
+const goingRunNodeTaken = graphstore.NodeRowLockSQL + ` skip locked`
+
 // lockGoingRun takes the interaction node row of the run requestID names `for no key update`
-// (graphstore.LockInteraction), the first lock of every frame's transaction. A run a pod of the
-// release before recorded during a roll has no node yet: its node is written first, from its
-// going_requests row, by the backfill's writer for one run (graphcensus.WriteRun), which also
-// states a frame value of every frame that pod stored, and then taken. A run the record does not
-// hold is errGoingRunGone.
+// (graphstore.LockInteraction), the first lock of every frame's transaction, so a frame takes a
+// node's row before the run's going_requests row, the order the erase of a run takes them in. A
+// run a pod of the release before recorded during a roll has no node yet: its node is written
+// first, from its going_requests row, by the backfill's writer for one run (graphcensus.WriteRun),
+// which takes that row `for no key update` and also states a frame value of every frame that pod
+// stored, and then taken. The node it writes is this transaction's own, which no other can see
+// until it commits, let alone hold. A node another write committed in between is taken without
+// waiting (goingRunNodeTaken), and where another transaction holds it the answer is
+// errGoingRunNodeHeld, which the caller begins again on, so no frame waits on a node's row while it
+// holds the run's. A run the record does not hold is errGoingRunGone.
 func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
 	locked, err := graphstore.LockInteraction(ctx, tx, requestID)
 	if err != nil || locked {
@@ -331,10 +366,14 @@ func lockGoingRun(ctx context.Context, tx pgx.Tx, requestID string) error {
 	if !held {
 		return errGoingRunGone
 	}
-	if locked, err = graphstore.LockInteraction(ctx, tx, requestID); err != nil || locked {
-		return err
+	taken, err := tx.Exec(ctx, goingRunNodeTaken, graphstore.KindInteraction, requestID)
+	if err != nil {
+		return fmt.Errorf("lock the interaction node of run %s: %w", requestID, err)
 	}
-	return fmt.Errorf("lock run %s: the store holds no interaction node of it once its writer wrote one", requestID)
+	if taken.RowsAffected() == 0 {
+		return errGoingRunNodeHeld
+	}
+	return nil
 }
 
 // endGoingRun ends the run with event, a terminal frame, and answers the terminal frame the run

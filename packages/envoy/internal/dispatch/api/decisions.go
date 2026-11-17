@@ -343,8 +343,9 @@ var entryFactKinds = []string{
 // typed-node pass placed in it in the write's own transaction (refs.IndexDecisionNodes): the
 // current part_of tuples into the document's own node, through graph_tuples_inbound, and the
 // nodes its block_refs rows name (a decision's decided_by, shaped and from_ask), keyed by the
-// document. Each candidate is then read by its own key, the live nodes of the `decision`
-// supertag kept.
+// document. Each candidate is then read by its own key, the present nodes of the `decision`
+// supertag kept: a node at any state but gone, so a proposed, settled or overtaken decision, ask
+// or reading is drawn wherever its node is (dispatch://INFRA-1950's R5 and R12).
 func decisionEntriesRead() string {
 	return `
 		with documents as (
@@ -371,7 +372,7 @@ func decisionEntriesRead() string {
 			select node.kind, node.id from asks q
 			cross join lateral (
 				select g.kind, g.id from graph_nodes g
-				where g.kind = '` + graphstore.KindAsk + `' and g.id = q.id::text and g.state = '` + graphstore.StateLive + `'
+				where g.kind = '` + graphstore.KindAsk + `' and g.id = q.id::text and g.state <> '` + graphstore.StateGone + `'
 				  and ` + refs.VisibleRow("g", "$2") + `
 				offset 0
 			) node
@@ -381,7 +382,7 @@ func decisionEntriesRead() string {
 			cross join lateral (
 				select g.kind, g.id from graph_nodes g
 				where g.kind = '` + refs.BlockNodeKind + `' and g.id = n.id and g.supertag = '` + refs.DecisionSupertag + `'
-				  and g.state = '` + graphstore.StateLive + `' and ` + refs.VisibleRow("g", "$2") + `
+				  and g.state <> '` + graphstore.StateGone + `' and ` + refs.VisibleRow("g", "$2") + `
 				offset 0
 			) node
 		)
@@ -412,7 +413,7 @@ func decisionEntriesRead() string {
 		        cross join lateral (
 		        	select r.kind, r.id from graph_nodes r
 		        	where r.kind = part.from_kind and r.id = part.from_id
-		        	  and r.supertag = '` + refs.ReadingSupertag + `' and r.state = '` + graphstore.StateLive + `'
+		        	  and r.supertag = '` + refs.ReadingSupertag + `' and r.state <> '` + graphstore.StateGone + `'
 		        	  and ` + refs.VisibleRow("r", "$2") + `
 		        	offset 0
 		        ) r

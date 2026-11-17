@@ -149,10 +149,13 @@ const BlockRefKindsSQL = `select 'mentions'
 // pass then also reads the store's own statement of the document (heldDocumentBlocks) and states,
 // from the render, what a version dropping those rows would have stated: each block the store
 // holds present that the version does not hold, gone (goneSinceStated), and each link the store
-// asserts out of a block of the document that no pair of the version writes, retracted
-// (unheldLinks). That is no repair: what decides each statement is the version's render, and the
-// store is read only for what it would go on asserting against it, as reconcileBlockParents reads
-// it for the parents. A pass over a document only this release indexed reads none of it.
+// asserts out of a block of the document, of a kind a pair of a version writes (heldLinkKinds),
+// that no pair of the version writes, retracted (unheldLinks). A tuple another writer states out
+// of a block - a requirement's constrained_by, a changed_by_run - is no such link, and the pass
+// leaves it where it stands. That is no repair: what decides each statement is the version's
+// render, and the store is read only for what it would go on asserting against it, as
+// reconcileBlockParents reads it for the parents. A pass over a document only this release indexed
+// reads none of it.
 func IndexBlocks(
 	ctx context.Context,
 	tx pgx.Tx,

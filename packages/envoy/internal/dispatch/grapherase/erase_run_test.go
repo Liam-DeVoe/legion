@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -11,10 +12,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
+
+// runWords are the words of the question every run seedRun records asks.
+const runWords = "What does the spec say?"
 
 // seedRun records one run of the command bar asked by author, with two frames, and gives it its
 // interaction node and their frame values as this build's frame path does for a run with no node
@@ -29,9 +35,9 @@ func seedRun(t *testing.T, database *store.Store, author model.Actor) string {
 	var run string
 	if err := database.Pool.QueryRow(ctx, `
 		insert into going_requests (author, project, words, ends_at)
-		values ($1::jsonb, 'CORE', 'What does the spec say?', now() + interval '30 seconds')
+		values ($1::jsonb, 'CORE', $2, now() + interval '30 seconds')
 		returning id::text
-	`, recorded).Scan(&run); err != nil {
+	`, recorded, runWords).Scan(&run); err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -100,8 +106,13 @@ func runRows(t *testing.T, database *store.Store, run string) (requests, events,
 // write the run back from its rows. A comment changed by a write made for the run carries a
 // changed_by_run tuple into it; no row of the comment states that kind
 // (graphcensus.DigestedTuple), so it is no blocker and the erase deletes it with the node.
-// Afterwards no row, no node and no tuple of the run is left, a backfill writes none of it back,
-// and the census reads zero differences.
+//
+// The run's words are its text: a read of its own address answers them whole as the node's Text,
+// and a read that shapes that text stores its display tree (texttrees), keyed by the words. The
+// erase reads them off the node (readTexts) and deletes that tree, and every row that holds them
+// - the node's row, its words value, its going_requests row - is the run's own, so the listing
+// leaves none. Afterwards no row, no node, no tuple and no stored tree of the run is left, a
+// backfill writes none of it back, and the census reads zero differences.
 func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -115,6 +126,21 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 	if requests, events, nodes, _ := runRows(t, database, run); requests != 1 || events != 2 || nodes != 1 {
 		t.Fatalf("the run holds %d going_requests rows, %d going_events rows and %d nodes before the erase, want 1, 2 and 1",
 			requests, events, nodes)
+	}
+	if err := texttrees.New(database.Pool).Store(ctx, pmdoc.DisplayLatest, runWords); err != nil {
+		t.Fatalf("store the display tree of the run's words: %v", err)
+	}
+	sum := pmdoc.TextSum(runWords)
+	trees := func() int64 {
+		t.Helper()
+		var held int64
+		if err := database.Pool.QueryRow(ctx, `select count(*) from text_trees where sum = $1`, sum[:]).Scan(&held); err != nil {
+			t.Fatalf("count the stored display trees of the run's words: %v", err)
+		}
+		return held
+	}
+	if held := trees(); held != 1 {
+		t.Fatalf("text_trees holds %d tree(s) of the run's words before the erase, want the one stored, so this test would prove nothing", held)
 	}
 
 	listing := dryRun(t, database, graphstore.KindInteraction, run)
@@ -132,6 +158,9 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 			t.Errorf("the listing names no line holding %q", line)
 		}
 	}
+	if listed(listing, "leave ") {
+		t.Errorf("the listing leaves a row holding the run's words, all of which are the run's own:\n%s", strings.Join(listing.Listing, "\n"))
+	}
 
 	erasure, err := confirmedErase(t, database, graphstore.KindInteraction, run, time.Millisecond)
 	if err != nil {
@@ -147,7 +176,9 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 	if _, held, err := graphstore.ReadNode(ctx, database.Pool, commentNodeKind, seeded.comment); err != nil || !held {
 		t.Fatalf("the comment changed by the run reads held %t (%v) after the run's erase, want it standing", held, err)
 	}
-
+	if held := trees(); held != 0 {
+		t.Errorf("after the erase text_trees holds %d tree(s) of the run's words, want none", held)
+	}
 	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
 		t.Fatalf("backfill after the erase: %v", err)
 	}
@@ -162,6 +193,123 @@ func TestTheEraseOfARunLeavesNoRowAndNoBackfillWritesItBack(t *testing.T) {
 	for _, kind := range census.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
 			t.Errorf("the census after the erase reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
+		}
+	}
+}
+
+// TestTheEraseOfARunOrAReasoningNodeHoldsItsOnlyAuthorToTheirNode: the census's person and session
+// row sides find the author of a run through its going_requests row, and the author of a lens, a
+// risk or a constraint through the node's current authored_by (graphcensus's reasoningAuthored),
+// and the erase of the node takes both, while the author's node stands: a session's for good,
+// since no erase removes one, and a person's until an erase of that person. So the erase records
+// that author as the node's writer (Erasure.Writers), as it records an ask's, a decision's and a
+// reading's, and the census reads the author off that record (graphcensus's erasedWriters).
+//
+// Each node here is its author's only record: no comment, ask or delivery names any of them. A
+// token the secrets broker scoped to erin asks a run, which makes the session's node and erin's,
+// tied by the session's alias_of; frank invokes a pre-mortem lens on CORE-1, gwen's personal token
+// writes a risk under it, and hal states a constraint on CORE-1, each with its author's node and
+// authored_by (graphstore.AuthorFacts) as the reasoning write states them. The run, the risk, the
+// constraint and the lens are erased in turn: each erasure record names that node's author, the
+// census reads zero differences before the erases and after each of them, and at the end nothing
+// but those records and the session's alias_of names any of the authors, whose nodes all stand.
+func TestTheEraseOfARunOrAReasoningNodeHoldsItsOnlyAuthorToTheirNode(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedAgreeingStore(t, database)
+	const (
+		session    = "session-proved-erins"
+		lens       = "00000000-0000-4000-8000-0000000003b1"
+		risk       = "00000000-0000-4000-8000-0000000003b2"
+		constraint = "00000000-0000-4000-8000-0000000003b3"
+	)
+	owner := func(login string) *string { return &login }
+	run := seedRun(t, database, model.Actor{Kind: "session", ID: session, Owner: owner("erin"), Act: &model.ActorAct{Session: session}})
+	at := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
+	for _, written := range []struct {
+		kind, id string
+		author   model.Actor
+		tuples   []graphstore.Tuple
+	}{
+		{graphstore.KindLens, lens, model.Actor{Kind: "user", ID: "frank"}, []graphstore.Tuple{
+			{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"},
+			{Kind: graphstore.TupleHasKind, ToKind: graphstore.KindLensKind, ToID: graphstore.LensKindPreMortem},
+		}},
+		{graphstore.KindRisk, risk, model.Actor{Kind: "session", Owner: owner("gwen")}, []graphstore.Tuple{
+			{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindLens, ToID: lens},
+		}},
+		{graphstore.KindConstraint, constraint, model.Actor{Kind: "user", ID: "hal"}, []graphstore.Tuple{
+			{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"},
+		}},
+	} {
+		nodes := []graphstore.Node{{
+			Kind: written.kind, ID: written.id, Supertag: written.kind,
+			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive, Project: "CORE",
+			MadeAt: at, MadeBy: written.author, SourceEvent: graphstore.NoEvent,
+		}}
+		tuples := make([]graphstore.Tuple, 0, len(written.tuples)+1)
+		for _, tuple := range written.tuples {
+			tuple.FromKind, tuple.FromID = written.kind, written.id
+			tuple.At, tuple.Who, tuple.SourceEvent, tuple.Asserted = at, written.author, graphstore.NoEvent, true
+			tuples = append(tuples, tuple)
+		}
+		authors, facts, named := graphstore.AuthorFacts(written.kind, written.id, written.author, at, graphstore.NoEvent)
+		if !named {
+			t.Fatalf("%s:%s's writer %+v names nobody", written.kind, written.id, written.author)
+		}
+		for _, author := range authors {
+			author.Restates = true
+			nodes = append(nodes, author)
+		}
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the write of %s:%s: %v", written.kind, written.id, err)
+		}
+		if err := graphstore.Write(ctx, tx, nodes, append(tuples, facts...)); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("write %s:%s: %v", written.kind, written.id, err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit the write of %s:%s: %v", written.kind, written.id, err)
+		}
+	}
+	requireCensusZero(t, database, "before the erases")
+
+	for _, erased := range []struct {
+		kind, id string
+		writer   ErasedWriter
+	}{
+		{graphstore.KindInteraction, run, ErasedWriter{Kind: graphstore.KindSession, ID: session}},
+		{graphstore.KindRisk, risk, ErasedWriter{Kind: graphstore.KindPerson, ID: "gwen"}},
+		{graphstore.KindConstraint, constraint, ErasedWriter{Kind: graphstore.KindPerson, ID: "hal"}},
+		{graphstore.KindLens, lens, ErasedWriter{Kind: graphstore.KindPerson, ID: "frank"}},
+	} {
+		requireErased(t, database, erased.kind, erased.id)
+		if writers := erasureWriters(t, database, erased.kind, erased.id); !slices.Equal(writers, []ErasedWriter{erased.writer}) {
+			t.Errorf("the erasure record of %s:%s names the writers %+v, want its author %+v", erased.kind, erased.id, writers, erased.writer)
+		}
+		requireCensusZero(t, database, "after the erase of "+erased.kind+":"+erased.id)
+	}
+	people := []string{"erin", "frank", "gwen", "hal"}
+	var naming int64
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from graph_tuples
+		        where ((to_kind = $1 and to_id = any($2)) or (to_kind = $3 and to_id = $4))
+		          and not (from_kind = $3 and from_id = $4 and kind = $5))
+		     + (select count(*) from going_requests)
+	`, graphstore.KindPerson, people, graphstore.KindSession, session, graphstore.TupleAliasOf).Scan(&naming); err != nil {
+		t.Fatalf("count what still names the authors: %v", err)
+	}
+	if naming != 0 {
+		t.Fatalf("after the erases %d tuple(s) or run row(s) still name an author beside the session's alias_of, want none, so only the erasure records hold them", naming)
+	}
+	authors := []ErasedWriter{{Kind: graphstore.KindSession, ID: session}}
+	for _, login := range people {
+		authors = append(authors, ErasedWriter{Kind: graphstore.KindPerson, ID: login})
+	}
+	for _, author := range authors {
+		if held := readTypeNode(t, database, author.Kind, author.ID); !held.row {
+			t.Errorf("after the erases the store holds no node %s:%s, want every author standing", author.Kind, author.ID)
 		}
 	}
 }

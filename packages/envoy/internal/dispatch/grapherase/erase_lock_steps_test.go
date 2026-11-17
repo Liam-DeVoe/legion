@@ -331,9 +331,11 @@ func blockHeld(t *testing.T, database *store.Store, artifact, blockID, address s
 // none - issue CORE-1's row, held for the whole run, is never queued behind - and starts at the
 // run's interaction node row, `for update`, then takes the run's going_requests row and then its
 // going_events rows, `for update` (lockProjectionRows, runTables), before it reads under its locks
-// or writes anything. A frame of this build takes the node row first too (api's
-// appendGoingEvent), and an older pod's delete takes the run's row before its frames. Each row is
-// held in a transaction of its own while the real Erase runs (followTheErase), which lets go of
+// or writes anything. A frame of this build takes the node row before the run's row too, and a
+// frame of a run with no node waits on no node row while it holds the run's (api's lockGoingRun,
+// whose own test, TestAFrameOfARunWithNoNodeTakesNoNodeWhileItHoldsTheRunsRow, holds it to that
+// against these two locks); an older pod's delete takes the run's row before its frames. Each row
+// is held in a transaction of its own while the real Erase runs (followTheErase), which lets go of
 // each hold the run queues behind and reads where it waits and the tables it holds a lock on. The
 // run then reads the run gone whole.
 func TestTheEraseTakesARunsRowsAfterItsNode(t *testing.T) {

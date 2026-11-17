@@ -785,12 +785,14 @@ func mapHas(set map[string]struct{}, key string) bool {
 	return held
 }
 
-// unheldTypedNodes is the node of each decision and reading the store places live in document
-// artifactID that the version's blocks no longer hold as one, written at versionAt: stated gone,
-// with the supertag it holds, where the version holds no block of its id, and stated live with
-// the supertag block where it holds the block under another type, as refs.IndexBlocks writes the
-// node of a retyped block. supertags is each block the version holds as a decision or a reading
-// (TypedFacts.supertags), whose node the typed-node pass writes itself.
+// unheldTypedNodes is the node of each decision and reading the store holds present in document
+// artifactID, at any state but gone (dispatch://INFRA-1950's R12: a proposed, settled or overtaken
+// node is as present as a live one), that the version's blocks no longer hold as one, written at
+// versionAt: stated gone, with the supertag it holds, where the version holds no block of its id,
+// and restated with the supertag block where it holds the block under another type, as
+// refs.IndexBlocks writes the node of a retyped block, which keeps the state it holds (blockNode).
+// supertags is each block the version holds as a decision or a reading (TypedFacts.supertags),
+// whose node the typed-node pass writes itself.
 //
 // It reads only what the store places in the document, each by its own key: the decisions and
 // readings its document_blocks rows hold, the block nodes whose current part_of is the document's
@@ -815,7 +817,7 @@ func unheldTypedNodes(ctx context.Context, tx pgx.Tx, artifactID string, documen
 			select node.id, node.supertag from candidates c
 			cross join lateral (
 				select g.id, g.supertag from graph_nodes g
-				where g.kind = $3 and g.id = c.id and g.state = $5 and g.supertag = any($4::text[])
+				where g.kind = $3 and g.id = c.id and g.state <> $5 and g.supertag = any($4::text[])
 				offset 0
 			) node
 		),
@@ -831,11 +833,11 @@ func unheldTypedNodes(ctx context.Context, tx pgx.Tx, artifactID string, documen
 		`t.to_kind = h.kind and t.to_id = h.id and t.kind = '`+graphstore.TuplePartOf+`' and t.to_kind <> '`+graphstore.KindValue+`'`)+`) part
 		cross join lateral (
 			select g.id, g.supertag from graph_nodes g
-			where g.kind = $3 and g.id = part.from_id and g.state = $5 and g.supertag = $8
+			where g.kind = $3 and g.id = part.from_id and g.state <> $5 and g.supertag = $8
 			offset 0
 		) node
 		where part.asserted and part.from_kind = $3
-	`, artifactID, refKey, BlockNodeKind, []string{DecisionSupertag, ReadingSupertag}, graphstore.StateLive,
+	`, artifactID, refKey, BlockNodeKind, []string{DecisionSupertag, ReadingSupertag}, graphstore.StateGone,
 		DecisionSupertag, graphstore.KindAsk, ReadingSupertag)
 	if err != nil {
 		return nil, fmt.Errorf("read the decisions and readings the store places in %s: %w", refKey, err)

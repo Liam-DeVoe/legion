@@ -1,31 +1,69 @@
 -- 20261117020856_graph_edges_asks_and_store_class.up.sql
 --
--- Two branches open at once each re-stated graph_edges from 20261109215947's arms:
--- 20261116094101 (dispatch://INFRA-1150) moved an ask's anchored_to and owned_by and its
--- followed_by into the store's arm - the asks and ask_followers arms answering only the rows whose
--- `node_kind` is null, and the tuple arm answering those relations, and an ask's `shaped`, from an
--- ask's node while the row that names it carries it - and 20261116091932 and 20261116160000
--- (dispatch://INFRA-1950) gave the tuple arm the class `store`, the relations the store holds with
--- no projection row behind them, and one arm more that answers those relations out of a finding
--- of a lens as `lens_block`. Timestamps sort them, so 20261116094101 replaced the view
--- 20261116091932 wrote, and 20261116160000, re-stated from 20261116091932, replaced the view
--- 20261116094101 wrote and the ask arms went with it. This states the view once, with every arm
--- of both, and is the only arm list a later migration re-states from:
+-- INFRA-1950: graph_edges answers the relations the node and tuple store holds with no projection
+-- row behind them. The kinds this child adds to the store - an interaction, a lens, a risk and a
+-- constraint - are tied by tuples no table projects: a node a run changed points at the run's
+-- interaction (`changed_by_run`), a lens at its lens kind (`has_kind`) and at the lens that
+-- triggered it (`triggered_by`), a requirement block at a constraint it is held to
+-- (`constrained_by`), and a risk at each check block that covers it (`prevented_by`); and each of
+-- the four is placed by its `part_of` and names whoever wrote it by its `authored_by`. The tuple
+-- arm classes each row by the projection row it consults (`projects`) and drops a row whose class
+-- is null, so before this migration the view answers none of these.
 --
---   - 20261116160000's arms, the tuple arm's class `store` and the arm of a lens's findings;
---   - 20261116094101's three `node_kind is null` tests, on the two asks arms and the
---     ask_followers arm, and its three cases of the tuple arm with their joins to asks and
---     ask_followers. None of an ask's relations is of the class `store`, which reads no tuple out
---     of an ask, so the order the tuple arm tests its classes in answers each tuple as each of the
---     two re-statements answered it.
+-- This is the one migration of this child that states graph_edges. It re-states the arm list of
+-- 20261116094101_graph_edges_asks (dispatch://INFRA-1150) - its `node_kind is null` tests on the
+-- two asks arms and the ask_followers arm, and the tuple arm's cases and joins for an ask's
+-- relations - with two changes:
 --
--- It drops no arm of either: every row either re-statement answered is answered as that one
--- answered it, so a build of either release, which reads the view this one states, reads the rows
--- it read. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this migration's short
--- transaction. It creates nothing, and refuses and rewrites no row.
+--   - The tuple arm gains the class `store`, which consults no projection row. A tuple is of the
+--     class when its kind is `changed_by_run`, `has_kind`, `triggered_by`, `constrained_by` or
+--     `prevented_by`, out of any node, or `part_of` or `authored_by`, out of a node of kind
+--     `interaction`, `lens`, `risk` or `constraint`, unless it is out of a finding of a lens,
+--     which the arm below answers. The class is tested before `block_ref`, so a requirement
+--     block's `constrained_by` is not read as a block reference, which would look for a
+--     `block_refs` row that no writer projects it into. An `authored_by` out of any other node -
+--     a comment's - stays out of the view, as it was, and so does a session's, a page's or a
+--     block's `part_of`. None of the kinds 20261116094101 cases out of an ask - `anchored_to`,
+--     `owned_by`, `followed_by` and `shaped` - is of the class, so the tuple arm classes each such
+--     tuple as 20261116094101 classed it.
+--
+--   - One arm more, over the store's current tuples, answers every relation of the class `store`
+--     out of a finding of a lens, with the literal from_kind `lens_block` at the finding's own id.
+--     A finding is a node of kind and supertag `block` whose id names its lens,
+--     `lens/<uuid>#<block id>`, and the graph addresses it as `lens_block`
+--     (`dispatch://lens/<uuid>#b-<id>`), the kind the read registry knows it by. The tuple arm
+--     writes each from_kind as the store keys it, which would name a finding `block`: a reader
+--     would look it up among a document's blocks and find nothing, and the read registry's
+--     census, which reads the node kinds the view names as literals, would read no `lens_block`
+--     at all. The arm's rules are the tuple arm's: the newest tuple of each relation while that
+--     one asserts, out of a node whose state is not `gone`, its to side and dates rendered as the
+--     tuple arm renders them. A tuple of those kinds out of a finding falls past the class `store`
+--     to the tuple arm's block-reference class, which answers a tuple only while a `block_refs`
+--     row of the pair carries the block's node, and no such row names a finding, so no relation
+--     is answered twice.
+--
+-- The two changes are one migration because a migrate pass applies each file in a transaction of
+-- its own, in version order, and applies every file the database does not hold, one below a
+-- version it already holds too. A migration of this child that stated the view from an arm list
+-- without 20261116094101's, applied to a database that already holds 20261116094101, would leave
+-- the view without the ask arms a build of that release reads, from that migration's commit until
+-- a later one put them back. With this child's arms stated here alone, a pass re-states the view
+-- only to 20261116094101's arm list or to this one, which holds every arm of that one, so no pass
+-- leaves the view without an arm a live build reads.
+--
+-- It drops no arm of 20261116094101 and changes no row an arm answered before: the rows it adds
+-- are tuples of the class `store` and relations out of a finding, which only this child writes -
+-- its writers, the lens catalogue its migrations 20261116123354 and 20261116123355 seed, and the
+-- `authored_by` of each recorded run's interaction node 20261116205055 writes - and every other
+-- row of every arm is answered as it was. So a build of the release before, which reads the view
+-- this one states, reads every row it read, and the kinds `refs.TupleKinds` lists grow by the
+-- seven of the class. Re-stating the view holds graph_edges ACCESS EXCLUSIVE for this
+-- migration's short transaction, so a reference read waits behind it. It creates nothing, and
+-- refuses and rewrites no row.
 
--- graph_edges re-stated: 20261116160000's arms, plus 20261116094101's tests on the asks and
--- ask_followers arms and the tuple arm's cases and joins for an ask's relations.
+-- graph_edges re-stated: every arm of 20261116094101, its tuple arm answering the store's own
+-- relations as the class `store`, and one arm after it answering those out of a finding of a lens
+-- as `lens_block`.
 create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq) as
   select from_kind, from_id, kind, to_kind, to_id, created_at, source_seq from refs
   union all

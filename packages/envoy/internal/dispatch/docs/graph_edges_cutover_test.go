@@ -468,14 +468,13 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	return reading
 }
 
-// storeClass is whether row is one the tuple arms answer as the class `store` (migrations
-// 20261116091932 and 20261116160000): a relation the store holds with no projection row behind
-// it, of a kind changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any
-// node, or part_of or authored_by out of an interaction, a lens, a finding of a lens (the
-// lens_block the arm after the tuple arm writes it as), a risk or a constraint. It is the
-// migrations' own rule, read over a row: a row it leaves out - a comment's authored_by, a block's
-// part_of its parent - that the view answers is held to the previous release's reading, which
-// answers none of them.
+// storeClass is whether row is one the tuple arms answer as the class `store` (migration
+// 20261117020856): a relation the store holds with no projection row behind it, of a kind
+// changed_by_run, has_kind, triggered_by, constrained_by or prevented_by out of any node, or
+// part_of or authored_by out of an interaction, a lens, a finding of a lens (the lens_block the
+// arm after the tuple arm writes it as), a risk or a constraint. It is the migration's own rule,
+// read over a row: a row it leaves out - a comment's authored_by, a block's part_of its parent -
+// that the view answers is held to the previous release's reading, which answers none of them.
 func storeClass(row graphEdgeRow) bool {
 	return slices.Contains(storeClassKinds, row.kind) ||
 		slices.Contains(storeClassOwnKinds, row.kind) && slices.Contains(storeClassSources, row.fromKind)
@@ -1310,7 +1309,7 @@ const (
 )
 
 // writeTheStoreClass states, through the store's own writer, one tuple of each kind the view's
-// tuple arm answers as its class `store` (migration 20261116091932) and a part_of out of a lens:
+// tuple arm answers as its class `store` (migration 20261117020856) and a part_of out of a lens:
 // a lens placed under CORE-1, of the kind pre-mortem, triggered by a second lens, written by
 // alice and changed by a run; a risk that a check block covers; and the target's r1, held to a
 // constraint. Their writers are api's (writeReasoningNodes, recordGoingRequest), which this package

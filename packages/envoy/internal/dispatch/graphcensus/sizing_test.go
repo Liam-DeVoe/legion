@@ -485,14 +485,14 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
 		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
 		// No table holds a kind of dispatch://INFRA-1950's yet, so each term reads the writes it
-		// is assumed at.
-		"interaction":  {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
+		// is assumed at, and the tuples its writer appends (storeKinds names each writer).
+		"interaction":  {tuples: 9, writes: 10 * sizingWindowDays, assumed: true},
 		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
-		"lens":         {tuples: 6, writes: 2 * sizingWindowDays, assumed: true},
-		"lens_finding": {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
-		"lens_kind":    {tuples: 8, writes: 11, assumed: true},
-		"constraint":   {tuples: 5, writes: 1 * sizingWindowDays, assumed: true},
-		"risk":         {tuples: 4, writes: 11 * sizingWindowDays, assumed: true},
+		"lens":         {tuples: 10, writes: 2 * sizingWindowDays, assumed: true},
+		"lens_finding": {tuples: 8, writes: 10 * sizingWindowDays, assumed: true},
+		"lens_kind":    {tuples: 8, writes: 22, assumed: true},
+		"constraint":   {tuples: 11, writes: 1 * sizingWindowDays, assumed: true},
+		"risk":         {tuples: 11, writes: 11 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

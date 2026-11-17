@@ -128,6 +128,22 @@ func blockHolds(alias, fromKind, table, column string) string {
 		and b.` + column + `::text = ` + alias + `.from_id))`
 }
 
+// edgeFrom is the from end of the graph_edges row alias as the from side names a node everywhere
+// else: an artifact by its uuid (Query, resolveNodes). The view's tuple arm names a node as
+// graph_nodes keys it, and the store keys a document's node by its ref_key
+// (graphstore.ArtifactNode), so the one relation the store states out of a document with no
+// projection row behind it - the changed_by_run a write made for a run appends
+// (graphstore.TupleChangedByRun), the only kind of the view's store class whose from end may be a
+// document - names the document by its ref_key. This reads that one back as the document's uuid,
+// so an inbound read checks and resolves its from end as it does every other and lists the edge
+// the run's count holds (changedByRun). A ref_key no artifact holds any more is left as it is, and
+// the read drops its edge as it drops one at a node that no longer exists.
+func edgeFrom(alias string) string {
+	return `(case when ` + alias + `.from_kind = 'artifact' and ` + alias + `.kind = '` + graphstore.TupleChangedByRun + `'
+		then coalesce((select edge_artifact.id::text from artifacts edge_artifact where edge_artifact.ref_key = ` + alias + `.from_id), ` + alias + `.from_id)
+		else ` + alias + `.from_id end)`
+}
+
 // blockRefListed is whether the block_refs row alias is listed: the types test of a typed
 // block's pointer, made the way the arm of graph_edges that answers the row makes it, so a read
 // of the rows themselves and a read of the view cannot answer one link differently. target is
@@ -378,19 +394,20 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			source = `g.from_kind not in ` + blockNodeKinds
 		}
 		// The citer is the far end of an inbound edge, and the from side of an edge names an
-		// artifact by its uuid.
-		source += ` and ` + VisibleEnd("g.from_kind", "g.from_id", false, seen)
+		// artifact by its uuid (edgeFrom).
+		from := edgeFrom("g")
+		source += ` and ` + VisibleEnd("g.from_kind", from, false, seen)
 		own := source
 		if itemBlocks {
 			own += ` and not ` + repliesToABlockOf(repliesFrom(item), item, "g", blocks)
 		}
-		arms = `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, null::text
+		arms = `select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.to_kind = ` + kind + ` and g.to_id = (select ` + id + `::text) and ` + own
 		switch {
 		case document:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
+			select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, g.to_id
 			from graph_edges g where g.to_kind = 'block' and g.to_id = any(` + documentBlockIDArray(id) + `)
 			and ` + VisibleKind("block", "g.to_id", seen) + ` and ` + source
 			if query.WholeDocuments {
@@ -403,13 +420,21 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 		case itemBlocks:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
+			select g.kind, g.from_kind, ` + from + `, g.created_at, g.source_seq, g.to_id
 			from graph_edges g where g.to_kind = '` + item.BlockKind() + `' and g.to_id = any(` + itemBlockIDArray(item, blocks) + `)
 			and ` + VisibleKind(item.BlockKind(), "g.to_id", seen) + ` and ` + source
 		}
 	case query.Direction == "out" && document:
+		// The document's own edges name it by its uuid, but the one the store states out of it
+		// with no projection row behind it, which names it by its ref_key (edgeFrom), read through
+		// that ref_key.
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = ` + kind + ` and g.from_id = ` + id + ` and not ` + heldByABlock("g") + `
+			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
+			union all
+			select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
+			from graph_edges g where g.from_kind = ` + kind + ` and g.kind = '` + graphstore.TupleChangedByRun + `'
+			and g.from_id = (select a.ref_key from artifacts a where a.id = ` + blocks + `::uuid)
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node

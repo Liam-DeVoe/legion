@@ -55,10 +55,11 @@ func TextSum(text string) string {
 // node a decision shaped, that who may not see is absent. Each answer names its node in NodeKind
 // and NodeID, which no wire shape carries, so a caller that asked for several finds each one.
 //
-// A node is read as a decision when it is a live block node of the `decision` supertag, or an ask
-// node with an `asks` row. A caller lists as decisions the asks a person answered; an ask in any
-// other answer state reads the same way, and the Decisions read takes the links of an open and a
-// declined ask from here too. Any other node, and a node the store does not hold, is left out.
+// A node is read as a decision when it is a block node of the `decision` supertag the store holds
+// present, at any state but gone (dispatch://INFRA-1950's R12), or an ask node with an `asks` row.
+// A caller lists as decisions the asks a person answered; an ask in any other answer state reads
+// the same way, and the Decisions read takes the links of an open and a declined ask from here
+// too. Any other node, and a node the store does not hold, is left out.
 //
 // Each decision answers:
 //
@@ -418,7 +419,7 @@ func (node heldNode) decision(ctx context.Context, versions *walker, facts []fac
 		case err == nil:
 			decision.ChangedVersion, decision.ChangedAt = changed.version, changed.at
 		}
-	case node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state == graphstore.StateLive:
+	case node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone:
 		decision.Kind = "agent"
 		decision.Ref = refs.BlockRef(documentRef, node.blockID)
 		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)

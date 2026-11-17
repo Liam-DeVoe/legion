@@ -16,19 +16,20 @@ import (
 // dispatch://INFRA-1950's plan): the person and session row sides take, beside the authors the
 // projected tables name, the author graphstore.AuthorOf names of the made_by of each lens, finding,
 // risk and constraint that holds an asserted authored_by tuple (reasoningAuthored), so an author
-// who wrote no comment is no difference, and the session a body named on the shared bearer is on
-// neither side.
+// who wrote no comment is no difference, and a session a body named, on the shared bearer or
+// beside a pod's workload, is on both sides.
 //
 // Each node is written as the reasoning write (api's writeReasoningNodes) writes it: the node, its
-// part_of, and, where the credential proved an author, the author's node and facts through
-// graphstore.AuthorFacts in the same graphstore.Write. alice writes a pre-mortem on a cookie; a
-// session a broker-issued token proved carol's writes a risk under it, which makes the session's
-// node and carol's; dave's personal token writes an author-only finding of it, made by the token
-// itself; and the shared bearer writes a constraint whose made_by names the session its body
-// claimed, with no authored_by. No comment, delivery or ask names any of them, so before this
-// census read the authors of these kinds, each of the four author nodes was a node with no row.
-// The census reads zero differences, three people and one session on the row side, and the
-// claimed session nowhere.
+// part_of, and the writer AuthorOf names of its made_by, that writer's node and facts through
+// graphstore.AuthorFacts in the same graphstore.Write, whatever the credential proved (spec v46
+// R12). alice writes a pre-mortem on a cookie; a session a broker-issued token proved carol's
+// writes a risk under it, which makes the session's node and carol's; dave's personal token writes
+// an author-only finding of it, made by the token itself; the shared bearer writes a constraint
+// whose made_by names the session its body named, which proves nobody and is its writer all the
+// same; and a pod writes a second constraint on a session its body names beside its workload. No
+// comment, delivery or ask names any of them, so before this census read the authors of these
+// kinds, each of the six author nodes was a node with no row. The census reads zero differences,
+// three people and three sessions on both sides.
 func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -36,33 +37,37 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 	owner := func(login string) *string { return &login }
 
 	const (
-		lens       = "00000000-0000-4000-8000-0000000001a1"
-		risk       = "00000000-0000-4000-8000-0000000001a2"
-		constraint = "00000000-0000-4000-8000-0000000001a3"
-		proved     = "session-proved-carols"
-		claimed    = "session-claimed-on-the-bearer"
+		lens          = "00000000-0000-4000-8000-0000000001a1"
+		risk          = "00000000-0000-4000-8000-0000000001a2"
+		constraint    = "00000000-0000-4000-8000-0000000001a3"
+		podConstraint = "00000000-0000-4000-8000-0000000001a4"
+		proved        = "session-proved-carols"
+		claimed       = "session-claimed-on-the-bearer"
+		podSession    = "session-named-beside-a-pod"
 	)
 	finding := graphstore.KindLens + "/" + lens + "#first"
 	for _, written := range []struct {
 		kind, id, visibility string
 		madeBy               model.Actor
-		proves               bool
 		tuples               []graphstore.Tuple
 	}{
 		{kind: graphstore.KindLens, id: lens, visibility: graphstore.VisibilityProject,
-			madeBy: model.Actor{Kind: "user", ID: "alice"}, proves: true,
+			madeBy: model.Actor{Kind: "user", ID: "alice"},
 			tuples: []graphstore.Tuple{
 				{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"},
 				{Kind: graphstore.TupleHasKind, ToKind: graphstore.KindLensKind, ToID: graphstore.LensKindPreMortem},
 			}},
 		{kind: graphstore.KindRisk, id: risk, visibility: graphstore.VisibilityProject,
-			madeBy: model.Actor{Kind: "session", ID: proved, Owner: owner("carol"), Act: &model.ActorAct{Session: proved}}, proves: true,
+			madeBy: model.Actor{Kind: "session", ID: proved, Owner: owner("carol"), Act: &model.ActorAct{Session: proved}},
 			tuples: []graphstore.Tuple{{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindLens, ToID: lens}}},
 		{kind: refs.BlockNodeKind, id: finding, visibility: graphstore.VisibilityAuthor,
-			madeBy: model.Actor{Kind: "session", Owner: owner("dave")}, proves: true,
+			madeBy: model.Actor{Kind: "session", Owner: owner("dave")},
 			tuples: []graphstore.Tuple{{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindLens, ToID: lens}}},
 		{kind: graphstore.KindConstraint, id: constraint, visibility: graphstore.VisibilityProject,
-			madeBy: model.Actor{Kind: "session", ID: claimed}, proves: false,
+			madeBy: model.Actor{Kind: "session", ID: claimed},
+			tuples: []graphstore.Tuple{{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"}}},
+		{kind: graphstore.KindConstraint, id: podConstraint, visibility: graphstore.VisibilityProject,
+			madeBy: model.Actor{Kind: "session", ID: podSession, Service: owner("system:serviceaccount:legion:worker-a")},
 			tuples: []graphstore.Tuple{{Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: "CORE-1"}}},
 	} {
 		node := graphstore.Node{
@@ -80,17 +85,15 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			tuple.At, tuple.Who, tuple.SourceEvent, tuple.Asserted = at, written.madeBy, graphstore.NoEvent, true
 			tuples = append(tuples, tuple)
 		}
-		if written.proves {
-			authors, facts, named := graphstore.AuthorFacts(written.kind, written.id, written.madeBy, at, graphstore.NoEvent)
-			if !named {
-				t.Fatalf("%s/%s's writer %+v names nobody", written.kind, written.id, written.madeBy)
-			}
-			for _, author := range authors {
-				author.Restates = true
-				nodes = append(nodes, author)
-			}
-			tuples = append(tuples, facts...)
+		authors, facts, named := graphstore.AuthorFacts(written.kind, written.id, written.madeBy, at, graphstore.NoEvent)
+		if !named {
+			t.Fatalf("%s/%s's writer %+v names nobody", written.kind, written.id, written.madeBy)
 		}
+		for _, author := range authors {
+			author.Restates = true
+			nodes = append(nodes, author)
+		}
+		tuples = append(tuples, facts...)
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin the write of %s/%s: %v", written.kind, written.id, err)
@@ -113,8 +116,10 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 			t.Fatalf("commit the write of %s/%s: %v", written.kind, written.id, err)
 		}
 	}
-	if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, claimed); err != nil || held {
-		t.Fatalf("the shared bearer's write made a node of the session its body claimed (held %t, %v)", held, err)
+	for _, session := range []string{claimed, podSession} {
+		if _, held, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindSession, session); err != nil || !held {
+			t.Fatalf("the write that names the session %s as its writer made no node of it (held %t, %v)", session, held, err)
+		}
 	}
 
 	report := storeCensusOf(t, database)
@@ -132,8 +137,8 @@ func TestTheCensusHoldsEachReasoningNodesAuthorToANode(t *testing.T) {
 		t.Errorf("the census checked %d people against %d person nodes, want alice, carol and dave on both sides",
 			people.Rows, people.Nodes)
 	}
-	if sessions := censusKind(t, report, graphstore.KindSession); sessions.Rows != 1 || sessions.Nodes != 1 {
-		t.Errorf("the census checked %d sessions against %d session nodes, want the proved session alone on both sides",
+	if sessions := censusKind(t, report, graphstore.KindSession); sessions.Rows != 3 || sessions.Nodes != 3 {
+		t.Errorf("the census checked %d sessions against %d session nodes, want the proved session, the one the shared bearer's body named and the one beside the pod's workload on both sides",
 			sessions.Rows, sessions.Nodes)
 	}
 }

@@ -409,19 +409,30 @@ func heldBlockParentDifferences(
 }
 
 // heldLink is one link a block node states beside its membership of its document and its
-// placement: a mention's or a pointer's, under the kind its pair names, to its far end.
-// A reading's authored_by (IndexDecisionNodes) and an ask block copy's copied_from (docs'
-// claimCopies) are no link: no block_refs row projects either, so no pair of a version
-// writes them and no pass that drops a row retracts them.
+// placement, of a kind a pair of a version writes into block_refs (heldLinkKinds): a mention's or
+// a pointer's, under the kind its pair names, to its far end, or a decision's tie. A tuple of any
+// other kind out of a block is no link of the version's: a requirement's constrained_by
+// (graphstore.TupleConstrainedBy, the pointer route's), a changed_by_run a write made for a run
+// appended (graphstore.TupleChangedByRun), a decision's kept_by (the Keep's), a reading's
+// authored_by (IndexDecisionNodes) and an ask block copy's copied_from (docs' claimCopies). No
+// block_refs row projects any of them, so no pair of a version writes them and no pass that drops
+// a row retracts them.
 type heldLink struct{ kind, toKind, toID string }
+
+// heldLinkKinds is true of a tuple t of a kind a pair of a version writes into block_refs, the
+// kinds whose links the release before this one drops by deleting their rows: a mention and a
+// pointer of each `block[]` attribute the store's type nodes declare (BlockRefKindsSQL), and a
+// decision's ties, its decided_by, from_ask and shaped (typedKinds, TypedFacts.pairs). It is the
+// census's own reading of the tuples a block_refs row states (graphcensus's DigestedTuple).
+var heldLinkKinds = `(t.kind in (` + BlockRefKindsSQL + `) or t.kind in ('` + strings.Join(typedKinds, `', '`) + `'))`
 
 // heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
 // block id: each block node that states itself a member of the document (an in_document tuple
 // into the document's artifact address) and that the store holds present, at any state but gone,
-// with every link it states now beside that membership and its placement, read the way the store
-// reads a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that
-// states no link is in the map with none, and one whose address does not start with the
-// document's ref_key is no block the pass addresses and is left out.
+// with every link it states now of a kind a version's pairs write (heldLinkKinds), read the way
+// the store reads a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A
+// member that states no such link is in the map with none, and one whose address does not start
+// with the document's ref_key is no block the pass addresses and is left out.
 //
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
 // stale (standsAtVersion): another release indexed the document after the store last stated its
@@ -447,9 +458,7 @@ func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[stri
 			from (
 				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
-				  and t.to_kind <> '`+graphstore.KindValue+`'
-				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
-				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')`)+`
+				  and t.to_kind <> '`+graphstore.KindValue+`' and `+heldLinkKinds)+`
 			) current
 			where current.asserted
 		) held on true

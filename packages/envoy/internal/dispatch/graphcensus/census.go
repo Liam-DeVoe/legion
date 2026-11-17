@@ -1058,14 +1058,14 @@ var commentWriters = `
 // at the time the record was written. It holds where an erase of that node ran at or after at
 // (graph_erasures.ran_at). Two records outlive what they record and still name who wrote it: the
 // events of a comment the erase took, which keep the actor that wrote it (commentWriters), and an
-// erase's own record of who wrote or answered the ask, decision or reading it took
-// (erasedWriters). The erase takes a person once nothing of the store names them, and both records
-// name them after it, so counting them would hold the store to the node the operator removed, for
-// good. A person who writes again after it is held by what they wrote then, which is newer. The
-// erase dates itself by the clock of the host it ran on and an event is dated by the database's,
-// but every record this leaves out was written no later than the erase of the node it records,
-// which committed before the erase of its writer could begin: that erase refuses while anything
-// of the store still names the person. No erase takes a session, so every record of one stands.
+// erase's own record of who wrote or answered the node it took (erasedWriters). The erase takes a
+// person once nothing of the store names them, and both records name them after it, so counting
+// them would hold the store to the node the operator removed, for good. A person who writes again
+// after it is held by what they wrote then, which is newer. The erase dates itself by the clock of
+// the host it ran on and an event is dated by the database's, but every record this leaves out was
+// written no later than the erase of the node it records, which committed before the erase of its
+// writer could begin: that erase refuses while anything of the store still names the person. No
+// erase takes a session, so every record of one stands.
 func erasedSince(kind, id, at string) string {
 	return `exists (
 		select 1 from graph_erasures erased
@@ -1186,10 +1186,12 @@ func provedSessionOwner(actor string) string {
 // reasoningAuthored is the author every lens, finding of one (a block whose id names its lens,
 // lensBlock), risk and constraint states now, as (kind, id, at) (storedAuthors): the far end of
 // its current authored_by into a person or a session. Their one writer (api's writeReasoningNodes)
-// states that tuple, and the author's own node beside it, only where the credential proved an
-// author (graphstore.AuthorFacts), so the far end is a person or a session the store owes a node,
-// and the owner the server proved of a session is read off its alias_of (storedOwners); a node
-// written on the shared bearer states none, and the session its body claimed is on neither side.
+// states that tuple to the writer graphstore.AuthorOf names of the node's made_by, and that
+// writer's own node beside it (graphstore.AuthorFacts), whatever the credential proved (spec v46
+// R12), so the far end is a person or a session the store owes a node, and the owner the server
+// proved of a session is read off its alias_of (storedOwners). A node written on the shared
+// bearer, or by a pod on a session its body names, names that session, which is so on both sides;
+// a node whose made_by names only a workload states none, and that workload is on neither.
 var reasoningAuthored = currentAuthors(`(held.kind in ('` + graphstore.KindLens + `', '` + graphstore.KindRisk + `', '` +
 	graphstore.KindConstraint + `') or (held.kind = '` + refs.BlockNodeKind + `' and ` + lensBlock("held") + `))`)
 
@@ -1232,7 +1234,10 @@ var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteracti
 //
 // The authors of the reasoning nodes and of the runs whose row is gone (reasoningAuthored,
 // goneRunsAuthored) are read here too, so the person and session row sides read them bound as
-// well and read the log for them no more than for the rest.
+// well and read the log for them no more than for the rest. An erase of a run, a lens, a finding,
+// a risk or a constraint takes the authored_by these read and, of a run, the going_requests row
+// commentPeople reads its author off, and records that author (erasedWriters), so an author whose
+// only record was the erased node is held to their node still.
 var storedAuthors = `
 	select r.to_kind as kind, r.to_id as id, r.created_at as at
 	from block_refs r
@@ -1284,14 +1289,15 @@ var writtenHistory = `select writer.kind, writer.id, writer.made_at
 		  and t.kind in ('` + graphstore.TupleDecidedBy + `', '` + graphstore.TupleAuthoredBy + `')
 		  and t.from_kind = '` + refs.BlockNodeKind + `')`
 
-// erasedWriters are the people and sessions an erase of an ask, a decision or a reading took the
-// authored_by, decided_by or answered_by of, as (kind, id, at): the writers `envoy-dispatch erase`
-// records in its graph_erasures row (grapherase's Erasure.Writers), each dated by that erase. The
-// erase deletes the node's tuples in both directions, and nothing else names who wrote or answered
-// it once its rows are gone, while that writer's node stands: a session's always, since no erase
-// removes one, and a person's until an erase of that person. So a writer is read here unless an
-// erase of that same node ran after the one that recorded it (erasedSince): an erased person is
-// held by no record an erase before theirs wrote.
+// erasedWriters are the people and sessions an erase took the authored_by, decided_by or
+// answered_by of, as (kind, id, at): the writers `envoy-dispatch erase` records in its
+// graph_erasures row (grapherase's Erasure.Writers) of an ask, a decision, a reading, a finding of
+// a lens, a run of the command bar, a lens, a risk or a constraint, each dated by that erase. The
+// erase deletes the node's tuples in both directions, and of a run its going_requests row, and
+// nothing else names who wrote or answered it once those are gone, while that writer's node
+// stands: a session's always, since no erase removes one, and a person's until an erase of that
+// person. So a writer is read here unless an erase of that same node ran after the one that
+// recorded it (erasedSince): an erased person is held by no record an erase before theirs wrote.
 var erasedWriters = `
 	select written->>'kind' as kind, written->>'id' as id, erasure.ran_at as at
 	from graph_erasures erasure

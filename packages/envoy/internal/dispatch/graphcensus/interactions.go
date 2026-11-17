@@ -34,8 +34,12 @@ import (
 // or the backfill beside one - queue at that row, and the second, reading in a statement of its
 // own once the first has committed, finds the node there and writes nothing. The lock conflicts
 // with no insert of a frame: a going_events row's foreign key takes the run's row `for key share`.
-// It is the step the frame path (api's appendGoingEvent) takes for a run with no node, before it
-// takes the node's row.
+// It is the step the frame path (api's lockGoingRun) takes for a run with no node, before it
+// takes the node's row. The node this writes is its transaction's own, which no other transaction
+// can see until it commits, let alone hold; a node another write committed first, which this
+// writes nothing of, may be held by then - an erase of the run takes the node's row and then the
+// run's - so the frame takes that node's row without waiting and, where another holds it, lets its
+// transaction go and begins again, taking the node's row first.
 func WriteRun(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
 	written, err := writeRun(ctx, tx, id)
 	return written.held, err

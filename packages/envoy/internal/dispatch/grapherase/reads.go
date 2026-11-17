@@ -263,8 +263,11 @@ func (e *Erasure) marginDocuments(ctx context.Context, tx pgx.Tx) ([]marginDocum
 // block's whole text at every version that recorded one (document_block_texts), not its
 // excerpt, which is the block's first refs.BlockExcerptRunes runes and would leave the rest. A
 // block no version recorded a text of - a row an older build wrote - is read by its excerpt, the
-// one place it holds its text. A node whose rows hold no text - a block reference, a person -
-// redacts nothing.
+// one place it holds its text. A run of the command bar holds the words of its question, which
+// its interaction node carries (graphstore.AttributeWords) and its own address answers whole as
+// its text, so a read of that address stores the display tree of those words (texttrees), which
+// treeSums finds by them. A node whose rows hold no text - a block reference, a person - redacts
+// nothing.
 //
 // The texts are distinct, longest first, so a text that holds a shorter one is replaced whole
 // before the shorter one is, and two reads of one node list them in one order.
@@ -285,7 +288,11 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 		select b.excerpt from document_blocks b
 		 where b.node_kind = $1 and b.node_address = $2
 		   and not exists (select 1 from document_block_texts t
-		                   where t.artifact_id = b.artifact_id and t.block_id = b.block_id and t.text is not null)`,
+		                   where t.artifact_id = b.artifact_id and t.block_id = b.block_id and t.text is not null)
+		union
+		select n.attributes->>'`+graphstore.AttributeWords+`' from graph_nodes n
+		 where $1 = '`+graphstore.KindInteraction+`' and n.kind = $1 and n.id = $2
+		   and n.attributes->>'`+graphstore.AttributeWords+`' is not null`,
 		e.Kind, e.ID, document, read.blockID)
 	if err != nil {
 		return fmt.Errorf("read the texts of %s:%s: %w", e.Kind, e.ID, err)
@@ -312,9 +319,8 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 // the node. A value tuple is listed without its value, which can be text. A tuple into a finding
 // of a lens names it by the kind the graph addresses it by, lens_block, where the store keys the
 // finding as a block, so the tuples of the node are read under either (graphstore.NodeTuplesSQL,
-// the set the delete takes). Of an ask's node or a block's, it also keeps the writers its
-// authored_by, decided_by and answered_by tuples name (Erasure.Writers), which the record of the
-// run holds once those tuples go.
+// the set the delete takes). It also keeps the writers the node's tuples name (writesTheNode,
+// Erasure.Writers), which the record of the run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -359,9 +365,15 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 }
 
 // writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
-// toKind, names who wrote or answered that node: an ask's authored_by, answered_by or decided_by,
-// or a decision's decided_by or a reading's authored_by, into a person or a session. A comment's
-// authored_by is not one: no record of an erase holds a comment's author.
+// toKind, names who wrote or answered that node, into a person or a session: an ask's
+// authored_by, answered_by or decided_by; a block's authored_by or decided_by - a decision's, a
+// reading's, a finding's of a lens; and the authored_by of a run of the command bar, a lens, a
+// risk or a constraint. The census's person and session row sides find the author of a run only
+// through its going_requests row and that of a lens, a risk or a constraint only through that
+// current authored_by (graphcensus' reasoningAuthored), and the erase takes both, so for an
+// author with no other record the erase's own record is the one that names them. A comment's
+// authored_by is not one: no record of an erase holds a comment's author, whom the events of the
+// comment name still (graphcensus' commentWriters).
 func writesTheNode(nodeKind, kind, toKind string) bool {
 	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
 		return false
@@ -371,6 +383,8 @@ func writesTheNode(nodeKind, kind, toKind string) bool {
 		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy
 	case refs.BlockNodeKind:
 		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
+	case graphstore.KindInteraction, graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint:
+		return kind == graphstore.TupleAuthoredBy
 	}
 	return false
 }

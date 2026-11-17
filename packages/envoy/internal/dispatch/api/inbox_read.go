@@ -518,9 +518,14 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // row and the second reads the sequence the first took. A run a pod of the release before
 // recorded with no node gets its node there first: graphcensus.WriteRun takes the run's
 // going_requests row `for no key update`, writes the node and its tuples in one graphstore.Write,
-// and the frame then takes the node's row. Then the frame takes the run's going_requests row
-// `for key share`, the lock the going_events foreign key takes, appends the frame value tuple and
-// writes the going_events row. No frame takes the revision fence.
+// and the frame then takes the node's row, which is its own and no other transaction's. Where
+// another write committed the node in between and another transaction holds it - an erase of the
+// run, which takes the node's row and then the run's (grapherase's lockProjectionRows) - the frame
+// takes that row without waiting, finds it held, lets its transaction go and begins again once,
+// taking the node's row first (lockGoingRun, errGoingRunNodeHeld), so no frame waits on a node's
+// row while it holds the run's. Then the frame takes the run's going_requests row `for key share`,
+// the lock the going_events foreign key takes, appends the frame value tuple and writes the
+// going_events row. No frame takes the revision fence.
 //
 // A write made for a run (graphstore.WithRun, which withinGoingRun puts on a request that names
 // its run) adds one read and no lock: graphstore.Write, after its node step, and graphstore.Caused

@@ -44,7 +44,7 @@ const (
 // to the lens whose finding invoked it. TupleConstrainedBy points from a requirement block to a
 // constraint it is held to, and TuplePreventedBy from a risk to each check block that covers it.
 // graph_edges answers each of them from the tuples alone, with no projection row behind it
-// (migration 20261116091932), and refs.TupleKinds lists them.
+// (migration 20261117020856), and refs.TupleKinds lists them.
 const (
 	TupleChangedByRun  = "changed_by_run"
 	TupleHasKind       = "has_kind"

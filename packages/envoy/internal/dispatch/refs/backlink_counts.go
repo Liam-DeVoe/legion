@@ -282,7 +282,7 @@ func blockRefCarries(fromKind, alias string) string {
 // followed_by, and a decision block's from_ask and decided_by (dispatch://INFRA-1150), which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link, and
 // the kinds the view answers from the tuples alone, with no projection row behind them (its store
-// class, migration 20261116091932): changed_by_run, has_kind, triggered_by, constrained_by and
+// class, migration 20261117020856): changed_by_run, has_kind, triggered_by, constrained_by and
 // prevented_by out of any node, and part_of and authored_by out of a node of the kinds
 // dispatch://INFRA-1950 adds (graphstore.KindInteraction and the three beside it). It is the list
 // the view's tuple arm renders (migrations 20261109215947, 20261116094101 and 20261117020856) and
@@ -399,7 +399,7 @@ type backlinkArm struct {
 	projectedIn string
 	// storedFrom makes the arm the store's alone: the current tuples of kind out of a node of one
 	// of these kinds, which graph_edges answers from the tuples with no projection row behind
-	// them (its tuple arm's store class, migration 20261116091932). Such an arm reads no table
+	// them (its tuple arm's store class, migration 20261117020856). Such an arm reads no table
 	// of its own, so it names no from, where, toID, fromKind or fromID (storedSQL).
 	storedFrom []string
 }
@@ -648,7 +648,7 @@ var backlinkArms = map[string][]backlinkArm{
 	// triggered, whose count says how many lenses its findings invoked. A finding and a risk are
 	// pointed at by the part_of of a lens invoked on them. Each is an arm of the store alone, the
 	// view's tuple arms answering every one of them, a finding's part_of as the lens_block its own
-	// arm writes (migration 20261116160000).
+	// arm writes (migration 20261117020856).
 	graphstore.KindLens: {
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}},
 		{kind: graphstore.TupleTriggeredBy, storedFrom: []string{graphstore.KindLens}},
