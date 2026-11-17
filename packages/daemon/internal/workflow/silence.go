@@ -150,7 +150,8 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
+	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue, reviewedPart(fact.Role, issue.Phase, row)), 0,
+		startMarks{resumeTask: true, reasserts: true}); err != nil {
 		return err
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))

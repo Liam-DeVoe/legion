@@ -710,6 +710,42 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	}
 }
 
+// The task of a later review round names the commit the reviewer's own newest deciding review read
+// (` Last reviewed commit: <sha>.`, which workflow's reviewedPart writes from
+// record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that commit rather
+// than the whole change again. The composed reviewer prompt therefore names the field and where it
+// comes from, says to read the difference from that commit and each thread, gives the
+// thermonuclear pair that same diff, keeps every defect seen outside it a finding, and names the
+// three cases that read the whole change again. The pair's old sentence, which ran it over the
+// whole change in every round, is gone. This shows the text is loaded, never that a reviewer
+// follows it.
+func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
+	for _, phrase := range []string{
+		"Last reviewed commit: <sha>",
+		"no entry into a phase clears it",
+		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
+		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
+		"over the diff that round reads, when that diff touches runtime code",
+		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
+		"The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other",
+		"Read the whole change again, and give the pair the whole change, in three cases: the task names no commit;",
+		"the commit is not an ancestor of the head (`git merge-base --is-ancestor <commit> <head>` does not exit 0)",
+		"a forward merge of the base changed the unchanged-diff fingerprint",
+	} {
+		if !strings.Contains(text, phrase) {
+			t.Errorf("the composed reviewer prompt omits %q", phrase)
+		}
+	}
+	if retired := "Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code"; strings.Contains(text, retired) {
+		t.Errorf("the composed reviewer prompt still says %q", retired)
+	}
+}
+
 // A pod holds every role of one issue in a single container under one memory limit, and its
 // sandbox ends the container rather than the process that filled it, so a heavy run started by
 // any role ends every role's turn. The rule that says so has to reach each role through the

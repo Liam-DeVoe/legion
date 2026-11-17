@@ -623,67 +623,29 @@ func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...
 	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
 }
 
-// publishReview publishes the reviewer's review of the pull request at head, as Envoy relays a
-// GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, with
-// the Legion footer naming the head it read, which is what lets it decide the round at all
-// (workflow's refusesRound); no reviewer session is recorded on these issues, so the review App's
-// login decides by itself (workflow's byReviewer). Each review carries an id and a time after the
-// one before it, so none is ordered behind a review already applied (record.ReviewOrder).
+// publishReview publishes the reviewer's review of the pull request at head (publishReviewAs). No
+// reviewer session is recorded on these issues, so the review App's login decides by itself
+// (workflow's byReviewer), whatever session the footer names.
 func (r *mergeWaitReadableLive) publishReview(number int, state, head string) {
 	r.t.Helper()
 	r.seq++
 	r.reviewID++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "action": "submitted",
-		"state": state, "commit_id": head, "head_sha": head, "author": reviewAppLogin,
-		"body":           "the reviewer's " + state + " of " + head + legionFooter("ses-reviewer", head),
-		"body_truncated": "false", "review_id": strconv.FormatInt(1000+r.reviewID, 10),
-		"submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the review payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.seq), string(payload)))
+	r.publishReviewAs("ses-reviewer", number, state, head, r.seq, r.reviewID)
 }
 
-// publishPush publishes the implementer's push of to onto from on issue's branch, changing code, as
-// Envoy relays a GitHub push (intake's decodePush reads it). It is published before the synchronize
-// that moves the head, which is the order that leaves the move judged by the chain of its pushes
-// (classify.AdvancePullRequestHead).
+// publishPush publishes the implementer's push of to onto from on issue's branch (publishPushOf).
 func (r *mergeWaitReadableLive) publishPush(issue, from, to string) {
 	r.t.Helper()
 	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + issue, "before": from, "after": to,
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "legion-implementer[bot]", "commit_count": "1", "head_subject": "earn what the base requires",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.legion/%s", r.subjectRepo(), issue)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("push-%s-%s", issue, to[:8]), string(payload)))
+	r.publishPushOf(issue, from, to)
 }
 
-// publishSynchronize publishes GitHub's synchronize of the pull request to head at updated, as Envoy
-// relays a GitHub pull-request event (intake's decodePullRequest reads it). updated is GitHub's own
-// clock, which the lifecycle fence orders the observation by and the record keeps as HeadUpdatedAt.
+// publishSynchronize publishes GitHub's synchronize of the pull request to head at updated
+// (publishSynchronizeOf), on mergeWaitBase.
 func (r *mergeWaitReadableLive) publishSynchronize(number int, issue, head string, updated time.Time) {
 	r.t.Helper()
 	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number),
-		"head_sha": head, "base_ref": mergeWaitBase, "head_ref": "legion/" + issue,
-		"title":      "the issue whose approval waits on GitHub",
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(number),
-		"updated_at": updated.Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", number, head[:8]), string(payload)))
+	r.publishSynchronizeOf(number, issue, head, mergeWaitBase, "the issue whose approval waits on GitHub", updated)
 }
 
 // publishBasePush publishes somebody else's push onto the base branch, as Envoy relays a GitHub
