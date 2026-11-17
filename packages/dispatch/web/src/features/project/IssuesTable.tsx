@@ -857,6 +857,13 @@ function IssueTableBody({
     priorityTitles,
     tab === undefined ? undefined : { hasLegion }
   );
+  // The view the reader picked, and whether its first draw is whole. In a project with a Legion
+  // daemon the board's first snapshot is part of it: Open sorts by Queue and draws its rows before
+  // the board answers, and the snapshot sorts them again. So the commit that draws the snapshot is
+  // the view's first draw too, as a change of view is: the table starts at its top and the anchor
+  // holds nothing for it, and Open starts with the Queue sort's first row (R11).
+  const viewKey =
+    hasLegion && board.data === undefined ? `${params.toString()}\nno board` : params.toString();
 
   const model = useDataTable<Item>({
     rows: items,
@@ -876,7 +883,7 @@ function IssueTableBody({
     onColumnFiltersChange: setFilters,
     onGlobalFilterChange: setSearch,
     onPaginationChange: setPagination,
-    viewKey: params.toString(),
+    viewKey,
     selection: { state: selection, onChange: setSelection, onMark: recordMark },
     search: { column: "title", filterFn: fuzzy },
     groupOrder: { compare: compareGroups, heading: groupValue },
@@ -1263,6 +1270,8 @@ function IssueTableBody({
             showIcebox={tab.showIcebox}
             statusPicks={statusPicks}
             userState={userState.data}
+            // Its lanes and its Icebox are the reader's own picks too.
+            viewKey={`${viewKey}\n${tab.lanes}\n${tab.showIcebox}`}
           />
         ) : null}
       </section>
@@ -1379,6 +1388,9 @@ function IssueTableBody({
             empty="No issues match these filters."
             filterCounts={openFacets}
             filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
+            // A reader at the top keeps the first row on screen too, on the Issues tab and on a
+            // priority's page (R11).
+            holdAtTop
             label={`${name} table`}
             model={model}
             noun={ISSUE_TABLE_NOUN}

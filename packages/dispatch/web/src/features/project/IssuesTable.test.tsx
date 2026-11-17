@@ -1,4 +1,5 @@
-import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, setSystemTime, spyOn, test } from "bun:test";
+import * as dndCore from "@dnd-kit/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -23,6 +24,7 @@ import type {
   LegionSetting,
 } from "../../api/types";
 import { readLayout } from "../../components/table-storage";
+import * as routeReach from "../issue/RouteReach";
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
@@ -2613,3 +2615,271 @@ test("a project with no daemon has no (i) hint", async () => {
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
   expect(screen.queryByRole("button", { name: "Legion daemon" })).toBeNull();
 });
+
+/** Lets `ms` of real time pass, and React draw whatever it set off. */
+async function waitMs(ms: number): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    await promise;
+  });
+}
+
+/** The height of each row of the table in the geometry below. */
+const ROW_PX = 64;
+
+/**
+ * The geometry the table and its anchor read, which the unit DOM has no layout engine for: the
+ * box `width` px wide at `top()`, its header `head()` tall, each row ROW_PX tall under it, all
+ * scrolled by the box's `scrollTop`; a hit test answers the row drawn at that height, and none
+ * over the header.
+ */
+function tableGeometry({
+  head,
+  top,
+  width = 1000,
+}: {
+  head: () => number;
+  top: () => number;
+  width?: number;
+}) {
+  const scrolled = () => screen.queryByTestId("issues-table-scroll")?.scrollTop ?? 0;
+  const rows = () => [...document.querySelectorAll<HTMLElement>("tr[data-issue-row]")];
+  // On `Element.prototype`, which owns the method (see above).
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this instanceof HTMLElement && this.dataset.testid === "issues-table-scroll")
+      return new DOMRect(0, top(), width, 600);
+    if (this.tagName === "THEAD") return new DOMRect(0, top(), width, head());
+    const index = rows().indexOf(this as HTMLElement);
+    if (index >= 0)
+      return new DOMRect(0, top() + head() + index * ROW_PX - scrolled(), width, ROW_PX);
+    return new DOMRect(0, top() - scrolled(), width, 2000);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) =>
+    y < top() + head()
+      ? null
+      : (rows()[Math.floor((y - top() - head() + scrolled()) / ROW_PX)] ?? null)
+  );
+  restores.push(() => {
+    rect.mockRestore();
+    point.mockRestore();
+  });
+  return {
+    rowTop: (key: string) =>
+      document.querySelector(`tr[data-issue-row="${key}"]`)?.getBoundingClientRect().top,
+    scrolled,
+  };
+}
+
+// R11: content that others add does not move a reader's place while it stays on screen. With no
+// hand on a row and the box at its top, the anchor holds the first row on screen once the reader
+// has seen it, so a row added above it lands out of view above, under the header, and the Open
+// tab counts it at once.
+test("a row added above the first row on screen lands out of view for a reader at the top", async () => {
+  const geometry = tableGeometry({ head: () => 48, top: () => 300 });
+  const rows = [issue("CORE-2"), issue("CORE-3")];
+  const { client } = table(rows);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  // The rows painted: the reader has seen the first row on screen.
+  await waitMs(50);
+  const before = geometry.rowTop("CORE-2");
+  expect(before).toBe(300 + 48);
+  expect(geometry.scrolled()).toBe(0);
+
+  rows.unshift(issue("CORE-1"));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+
+  expect(geometry.rowTop("CORE-2")).toBe(before);
+  expect(geometry.scrolled()).toBe(ROW_PX);
+  expect(geometry.rowTop("CORE-1")).toBe((before ?? 0) - ROW_PX);
+  expect(screen.getByRole("tab", { name: "Open, 3 issues" })).toBeDefined();
+});
+
+// R11: in a project with a Legion daemon the board's first snapshot is part of Open's first draw.
+// Open sorts by Queue and draws its rows before the board answers; the snapshot sorts them again,
+// and the anchor holds nothing for it, even once the rows were painted: Open starts at its top
+// with the Queue sort's first row, the issue with Place 1, whole under the header.
+test("the board's first snapshot after Open's rows are painted starts Open at its top with the Queue sort's first row", async () => {
+  const sockets = liveSockets();
+  const geometry = tableGeometry({ head: () => 48, top: () => 300 });
+  table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")], "", {}, {}, Promise.resolve(DAEMON));
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  // The rows painted before the board answers.
+  await waitMs(50);
+  await answerBoard(sockets, {
+    ...legionBoard(),
+    columns: [
+      {
+        id: "queue",
+        label: "Queue",
+        cards: [
+          { ...waitingCard("CORE-3"), waiting_place: 1 },
+          { ...waitingCard("CORE-2"), waiting_place: 2 },
+        ],
+      },
+    ],
+  });
+  await waitFor(() => expect(listedKeys()).toEqual(["CORE-3", "CORE-2", "CORE-1"]));
+  await waitMs(50);
+  expect(geometry.scrolled()).toBe(0);
+  expect(geometry.rowTop("CORE-3")).toBe(300 + 48);
+});
+
+// k13 (R11): a notice above the table moves the reader's place no more than an arrival does.
+// With the hand on a row, a failed read's alert that appears above the table while its rows stay
+// leaves that row's top where it was, and the box scrolls by the alert's height instead.
+test("an alert above the table with the hand on a row leaves that row's top in place", async () => {
+  const ALERT = 40;
+  const geometry = tableGeometry({
+    head: () => 48,
+    top: () => 300 + (document.querySelector('[role="alert"]') === null ? 0 : ALERT),
+  });
+  const { client, listing } = table([issue("CORE-1"), issue("CORE-2"), issue("CORE-3")]);
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  act(() => screen.getByRole("checkbox", { name: "Select CORE-2" }).focus());
+  const before = geometry.rowTop("CORE-2");
+  expect(before).toBe(300 + 48 + ROW_PX);
+
+  listing.mockRejectedValueOnce(new Error("unreachable"));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  expect((await screen.findByRole("alert")).textContent).toContain("Could not load issues.");
+
+  expect(listedKeys()).toEqual(["CORE-1", "CORE-2", "CORE-3"]);
+  expect(geometry.rowTop("CORE-2")).toBe(before);
+  expect(geometry.scrolled()).toBe(ALERT);
+});
+
+// k13 (R11): the first draw of a view's rows starts at the top. On a 390 px phone the table
+// first draws at the width it starts from, then measures its box and draws again before any frame
+// is painted, and the Title header stacks its sort over its filter in a box under 640 px, 44 px
+// taller. The rows move down under it; no reader has seen them yet, so nothing holds the first
+// row where it was, and the box stays at its top with the first row whole under the header.
+test("a table that draws its rows after a loading state opens at its top with its first row whole on a phone", async () => {
+  const HEAD = 49;
+  const STACKED = 44;
+  const titleStacked = () =>
+    ([...document.querySelectorAll<HTMLElement>("thead th")]
+      .find((cell) => (cell.textContent ?? "").startsWith("Title"))
+      ?.querySelector(".flex-col") ?? null) !== null;
+  const geometry = tableGeometry({
+    head: () => HEAD + (titleStacked() ? STACKED : 0),
+    top: () => 300,
+    width: 390,
+  });
+  table(
+    ["CORE-1", "CORE-2", "CORE-3"].map((key) => issue(key, { status: "done" })),
+    "?view=done"
+  );
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await waitMs(50);
+  expect(titleStacked()).toBe(true);
+  expect(geometry.scrolled()).toBe(0);
+  expect(geometry.rowTop(listedKeys()[0] ?? "")).toBe(300 + HEAD + STACKED);
+});
+
+/** A card of the board's Implementing column, in its phase since `since`. */
+function phaseCard(key: string, since: string): LegionBoardCard {
+  return {
+    ...waitingCard(key),
+    phase: "implementing",
+    phase_since: since,
+    waiting: null,
+    waiting_place: null,
+  };
+}
+
+// k13 (R11), by a count and not by a clock: a live change to one issue draws that issue's card,
+// not the Board's hundreds, and a card whose drawn time changed since the Board last drew. Every
+// card body draws `UnreachableRouteMarker` once per render and every card shell calls
+// `useDraggable` once, and on the Board nothing else does either, so their calls name the bodies
+// and the shells a change drew. Of the 100 cards with Legion facts, 50 have been in their phase
+// under a day, which reads anew each minute, and 50 between one and two days, ten minutes past
+// an hour, which reads the same 61 s on.
+test("a live read that moves one card of 600 draws at most 5 card bodies and 5 card shells", async () => {
+  const start = new Date("2026-11-17T12:00:30Z");
+  setSystemTime(start);
+  restores.push(() => setSystemTime());
+  const sockets = liveSockets();
+  const rows = Array.from({ length: 600 }, (_, index) =>
+    issue(`CORE-${1000 + index}`, { status: index % 3 === 0 ? "in_progress" : "todo" })
+  );
+  const ago = (minutes: number) => new Date(start.getTime() - minutes * 60_000).toISOString();
+  const ticking = rows.slice(0, 50).map((row) => row.key);
+  const steady = rows.slice(50, 100).map((row) => row.key);
+  const { client } = table(rows, "?layout=board", {}, {}, Promise.resolve(DAEMON));
+  await answerBoard(sockets, {
+    ...legionBoard(Object.fromEntries([...ticking, ...steady].map((key) => [key, boardFacts(3)]))),
+    columns: [
+      {
+        id: "implementing",
+        label: "Implementing",
+        cards: [
+          ...ticking.map((key, index) => phaseCard(key, ago(30 + index))),
+          ...steady.map((key, index) => phaseCard(key, ago(24 * 60 + (index % 20) * 60 + 10))),
+        ],
+      },
+    ],
+  });
+  await waitFor(
+    () => {
+      expect(document.querySelectorAll("[data-board-card]")).toHaveLength(600);
+      expect(document.querySelectorAll("[data-legion-fact=phase-time]")).toHaveLength(100);
+    },
+    { timeout: 30_000 }
+  );
+  const bodies = spyOn(routeReach, "UnreachableRouteMarker");
+  const shells = spyOn(dndCore, "useDraggable");
+  restores.push(() => {
+    bodies.mockRestore();
+    shells.mockRestore();
+  });
+  /** Moves the `nth` Todo card with no Legion card to In progress, as another reader's change
+   *  read again, and gives its key and the cards whose bodies and shells drew for it. */
+  const move = async (nth: number, updatedAt: string) => {
+    bodies.mockClear();
+    shells.mockClear();
+    const index =
+      rows.flatMap((row, at) => (at >= 100 && row.status === "todo" ? [at] : []))[nth] ?? 0;
+    const key = rows[index]?.key ?? "";
+    rows[index] = issue(key, { status: "in_progress", updated_at: updatedAt });
+    await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+    await waitFor(
+      () =>
+        expect(
+          document.querySelector(`[data-board-column="in_progress"] [data-board-card="${key}"]`)
+        ).not.toBeNull(),
+      { timeout: 30_000 }
+    );
+    // Whatever the change still draws after the card lands is counted too.
+    await waitMs(200);
+    return {
+      bodies: new Set(bodies.mock.calls.map(([props]) => props.issue.key)),
+      key,
+      shells: new Set(shells.mock.calls.map(([options]) => String(options.id))),
+    };
+  };
+
+  const sameMinute = await move(0, "2026-11-17T12:00:40Z");
+  for (const drawn of [sameMinute.bodies, sameMinute.shells]) {
+    expect(drawn.size).toBeGreaterThanOrEqual(1);
+    expect(drawn.size).toBeLessThanOrEqual(5);
+    expect(drawn.has(sameMinute.key)).toBe(true);
+  }
+  expect(bodies.mock.calls.length).toBeLessThanOrEqual(5);
+  expect(shells.mock.calls.length).toBeLessThanOrEqual(5);
+
+  setSystemTime(new Date(start.getTime() + 61_000));
+  const nextMinute = await move(1, "2026-11-17T12:01:35Z");
+  for (const drawn of [nextMinute.bodies, nextMinute.shells]) {
+    for (const key of ticking) expect(drawn.has(key)).toBe(true);
+    for (const key of steady) expect(drawn.has(key)).toBe(false);
+    const others = [...drawn].filter((key) => !ticking.includes(key));
+    expect(others).toContain(nextMinute.key);
+    expect(others.length).toBeLessThanOrEqual(5);
+  }
+}, 120_000);

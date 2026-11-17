@@ -1296,3 +1296,201 @@ test("a draw in a new minute draws again only the cards whose Time in Legion pha
   expect(counts.bodies()).toBeGreaterThanOrEqual(2);
   expect(counts.bodies()).toBeLessThanOrEqual(4);
 });
+
+/** The height of each card in the geometry below, and where a column's first card stands. */
+const CARD_PX = 120;
+const FIRST_CARD_TOP = 200;
+
+/**
+ * The geometry the Board's anchor reads, which the unit DOM has no layout engine for: the
+ * columns 288 px wide and 304 px apart, In progress in the middle of the window, each card
+ * CARD_PX tall from FIRST_CARD_TOP in its column, all scrolled by `window.scrollY`, which the
+ * test and `scrollBy` move; a hit test answers the card drawn at that point. Returns the scroll
+ * a reader makes, as the browser reports it.
+ */
+function boardGeometry(): (top: number) => void {
+  const scrollY = Object.getOwnPropertyDescriptor(window, "scrollY");
+  const setScrollY = (value: number) =>
+    Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
+  const scrollBy = window.scrollBy;
+  window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
+    const top = typeof x === "number" ? y : x.top;
+    if (top !== undefined) setScrollY(window.scrollY + top);
+  }) as typeof window.scrollBy;
+  setScrollY(0);
+  const columns = () => [...document.querySelectorAll<HTMLElement>("[data-board-column]")];
+  const middle = () =>
+    columns().findIndex((column) => column.dataset.boardColumn === "in_progress");
+  const leftOf = (index: number) => window.innerWidth / 2 - 144 + (index - middle()) * 304;
+  // On `Element.prototype`, which owns the method: bun's `mockRestore` leaves a copy on a
+  // prototype that only inherits it.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    const column = this.closest<HTMLElement>("[data-board-column]");
+    if (this.hasAttribute("data-board-card") && column !== null) {
+      const index = [...column.querySelectorAll("[data-board-card]")].indexOf(this);
+      return new DOMRect(
+        leftOf(columns().indexOf(column)),
+        FIRST_CARD_TOP + index * CARD_PX - window.scrollY,
+        288,
+        CARD_PX
+      );
+    }
+    return new DOMRect(0, -window.scrollY, window.innerWidth, 3000);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((x, y) => {
+    const at = middle() + Math.floor((x - leftOf(middle())) / 304);
+    const column = columns()[at];
+    if (column === undefined || x - leftOf(at) > 288) return null;
+    const index = Math.floor((y + window.scrollY - FIRST_CARD_TOP) / CARD_PX);
+    return index < 0
+      ? null
+      : (column.querySelectorAll<HTMLElement>("[data-board-card]")[index] ?? null);
+  });
+  restores.push(() => {
+    rect.mockRestore();
+    point.mockRestore();
+    window.scrollBy = scrollBy;
+    if (scrollY === undefined) Reflect.deleteProperty(window, "scrollY");
+    else Object.defineProperty(window, "scrollY", scrollY);
+  });
+  return (top) => {
+    setScrollY(top);
+    document.dispatchEvent(new Event("scroll"));
+  };
+}
+
+/** A card's top on screen, by its key. */
+const cardTop = (key: string) =>
+  document.querySelector(`[data-board-card="${key}"]`)?.getBoundingClientRect().top;
+
+/** The keys of a column's cards, in its order. */
+const columnCards = (column: string) =>
+  cardKeys(document.querySelector<HTMLElement>(`[data-board-column="${column}"]`) as HTMLElement);
+
+/** Waits until the frame the Board's last draw went into is painted. */
+const painted = () => waitMs(50);
+
+// R11: the Board keeps the reader's place as a table does. A card another reader adds above the
+// card the reader's hand is on does not move that card on screen: the window scrolls by the added
+// card instead. A card that itself leaves its column is not followed, and the Board's scroll boxes
+// leave the window to the anchor alone.
+test("a card added above the card in hand keeps its top, and a card that leaves its column is not followed", async () => {
+  boardGeometry();
+  const rows = [issue("CORE-2"), issue("CORE-3")];
+  const { client } = board(rows, "?layout=board");
+  const region = await boardRegion();
+  const reading = await within(region).findByRole("article", { name: "CORE-3 Work CORE-3" });
+  act(() => reading.focus());
+  const before = cardTop("CORE-3");
+  expect(before).toBe(FIRST_CARD_TOP + CARD_PX);
+
+  rows.unshift(issue("CORE-1"));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("todo")).toEqual(["CORE-1", "CORE-2", "CORE-3"]));
+  expect(cardTop("CORE-3")).toBe(before);
+  expect(window.scrollY).toBe(CARD_PX);
+
+  rows[2] = issue("CORE-3", { status: "backlog" });
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("backlog")).toEqual(["CORE-3"]));
+  expect(window.scrollY).toBe(CARD_PX);
+  for (const box of region.querySelectorAll('[data-testid="board-scroll-container"]'))
+    expect(box.className).toContain("[overflow-anchor:none]");
+});
+
+// R11: with no hand on a card and the window at its top, the anchor holds the first card of the
+// column nearest the middle once the reader has seen it: a card added above it in that column
+// stands above it, the window scrolling by its height, and the counts follow.
+test("a card added above the first card of the middle column keeps that card's top at the top", async () => {
+  boardGeometry();
+  const rows = [
+    issue("CORE-2"),
+    issue("CORE-5", { status: "in_progress" }),
+    issue("CORE-6", { status: "in_progress" }),
+    issue("CORE-8", { status: "needs_review" }),
+  ];
+  const { client } = board(rows, "?layout=board");
+  await within(await boardRegion()).findByRole("article", { name: "CORE-5 Work CORE-5" });
+  await painted();
+  expect(cardTop("CORE-5")).toBe(FIRST_CARD_TOP);
+
+  rows.unshift(issue("CORE-4", { status: "in_progress" }));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("in_progress")).toEqual(["CORE-4", "CORE-5", "CORE-6"]));
+  expect(cardTop("CORE-5")).toBe(FIRST_CARD_TOP);
+  expect(window.scrollY).toBe(CARD_PX);
+  expect(screen.getByRole("tab", { name: "Open, 5 issues" })).toBeDefined();
+});
+
+// R11: the Board draws nothing when the window scrolls, so a reader who scrolled down, saw a
+// change land there and scrolled back to the top is held by the record of their own scroll: the
+// middle column's first card keeps its top when a card is added above it.
+test("after a change while scrolled and a scroll back to the top, the middle column's first card keeps its top", async () => {
+  const scrollTo = boardGeometry();
+  const rows = [
+    issue("CORE-5", { status: "in_progress" }),
+    issue("CORE-6", { status: "in_progress" }),
+    issue("CORE-7", { status: "in_progress" }),
+  ];
+  const { client } = board(rows, "?layout=board");
+  await within(await boardRegion()).findByRole("article", { name: "CORE-5 Work CORE-5" });
+  await painted();
+  scrollTo(2 * CARD_PX + FIRST_CARD_TOP);
+  rows[2] = issue("CORE-7", { status: "in_progress", title: "Work CORE-7, reworded" });
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await screen.findByRole("article", { name: "CORE-7 Work CORE-7, reworded" });
+  await painted();
+  scrollTo(0);
+  await painted();
+  expect(cardTop("CORE-5")).toBe(FIRST_CARD_TOP);
+
+  rows.unshift(issue("CORE-4", { status: "in_progress" }));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("in_progress")).toHaveLength(4));
+  expect(cardTop("CORE-5")).toBe(FIRST_CARD_TOP);
+  expect(window.scrollY).toBe(CARD_PX);
+});
+
+// R11: the Board's anchor is off while a card is dragged, until the drop is drawn: the dragged
+// card moves under the reader's hand, and a change landing then is not held against it.
+test("a card added while another is dragged is not held, and the anchor holds again after the drop", async () => {
+  boardGeometry();
+  patchAnswered();
+  const rows = [
+    issue("CORE-5", { status: "in_progress" }),
+    issue("CORE-6", { status: "in_progress" }),
+  ];
+  const { client } = board(rows, "?layout=board");
+  const dragged = await within(await boardRegion()).findByRole("article", {
+    name: "CORE-6 Work CORE-6",
+  });
+  await painted();
+  await act(async () => {
+    fireEvent.mouseDown(dragged, { button: 0, clientX: 10, clientY: 10 });
+  });
+  await act(async () => {
+    fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
+  });
+  expect(dragged.className).toContain("opacity-50");
+
+  rows.unshift(issue("CORE-4", { status: "in_progress" }));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("in_progress")).toHaveLength(3));
+  expect(window.scrollY).toBe(0);
+
+  await act(async () => {
+    fireEvent.keyDown(document, { code: "Escape", key: "Escape" });
+  });
+  await act(async () => {
+    fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
+  });
+  await painted();
+  expect(cardTop("CORE-4")).toBe(FIRST_CARD_TOP);
+  rows.unshift(issue("CORE-3", { status: "in_progress" }));
+  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+  await waitFor(() => expect(columnCards("in_progress")).toHaveLength(4));
+  expect(cardTop("CORE-4")).toBe(FIRST_CARD_TOP);
+  expect(window.scrollY).toBe(CARD_PX);
+});

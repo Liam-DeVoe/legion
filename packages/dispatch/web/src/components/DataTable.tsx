@@ -105,8 +105,10 @@ export interface DataTableOptions<Row> {
   readonly onColumnFiltersChange: OnChangeFn<ColumnFiltersState>;
   readonly onGlobalFilterChange: (search: string) => void;
   readonly onPaginationChange: OnChangeFn<PaginationState>;
-  /** Names the view the reader chose. Where it changes, the box goes back to its top and
-   *  `ViewportAnchor` does not hold the row in hand: the reader moved, not the rows. */
+  /** Names the view the reader chose, and whether its first draw is whole (the Issues tab's
+   *  key changes once more when the Legion board first answers). Where it changes, the box goes
+   *  back to its top and `ViewportAnchor` holds nothing for the commit: the reader moved, or the
+   *  view drew for the first time, not the rows. */
   readonly viewKey: string;
   /** The selected rows, by id. A table without it selects nothing; one with it selects leaf
    *  rows, never a group's heading. */
@@ -143,7 +145,8 @@ export interface DataTableModel<Row> {
   readonly layout: TableLayoutModel;
   readonly displayRows: readonly DisplayRow<Row>[];
   readonly virtualizer: Virtualizer<HTMLDivElement, Element>;
-  /** Whether `ViewportAnchor` may hold the row in hand across this commit. */
+  /** Whether `ViewportAnchor` may hold the reader's place across this commit: every commit of
+   *  the view the reader is in but one that only scrolls. */
   readonly anchorEnabled: () => boolean;
   /** Puts the focus on a row of this page, or on what `selector` names inside it, by the path
    *  `j` and `k` take: a row the virtualizer has not drawn is scrolled to and focused once it
@@ -310,9 +313,32 @@ export function useDataTable<Row>({
     if (previousView.current !== viewKey) layout.scrollRef.current?.scrollTo({ top: 0 });
     previousView.current = viewKey;
   }, [viewKey, layout.scrollRef]);
+  // What the last commit drew: its rows and the virtualizer's scroll as it stood. A commit that
+  // only scrolls - the same rows, the virtualizer's offset or its scrolling flag moved - is the
+  // reader's own move, which the anchor leaves alone, and so a scroll alone reads no layout.
+  // Every other commit is anchored: rows another reader changed, and anything above the rows
+  // that changed height while they stayed (a notice, a failed read's alert). The same rows are
+  // the same ids holding the same data, in the same order.
+  const scroll = { offset: virtualizer.scrollOffset, scrolling: virtualizer.isScrolling };
+  const drawn = useRef({ rows: pageRows, scroll });
+  useLayoutEffect(() => {
+    drawn.current = { rows: pageRows, scroll };
+  });
+  const onlyScrolled = () => {
+    const last = drawn.current;
+    const sameRows =
+      last.rows.length === pageRows.length &&
+      pageRows.every(
+        (row, index) =>
+          row.id === last.rows[index]?.id && row.original === last.rows[index]?.original
+      );
+    const scrolled =
+      last.scroll.offset !== scroll.offset || last.scroll.scrolling !== scroll.scrolling;
+    return sameRows && scrolled;
+  };
 
   return {
-    anchorEnabled: () => previousView.current === viewKey,
+    anchorEnabled: () => previousView.current === viewKey && !onlyScrolled(),
     displayRows,
     focusRow,
     layout,
@@ -398,6 +424,12 @@ export interface DataTableProps<Row> {
   /** The width of a last, unheaded column that each row draws itself (`DataTableCells`'
    *  `trailing`). */
   readonly trailingWidth?: number;
+  /** Hold a reader at the top too (`ViewportAnchor`'s `holdAtTop`): a row another reader adds
+   *  above the first row on screen lands out of view above, under the header. Off unless the
+   *  table asks: the Issues table and the priorities table take it, and a list whose reader at
+   *  the top waits for arrivals (the Delivery page's list of merged pull requests) leaves it off
+   *  and sees them land. */
+  readonly holdAtTop?: boolean;
 }
 
 /** What every sortable header's tooltip says of its sort button, `main`'s native title of it. */
@@ -546,6 +578,7 @@ export function DataTable<Row>({
   empty,
   filterCounts,
   filterUnloaded,
+  holdAtTop = false,
   label,
   model,
   noun,
@@ -618,10 +651,12 @@ export function DataTable<Row>({
           scrollPaddingTop: 64,
         }}
       >
+        {/* The reader's place; at the top too where the caller asks (`holdAtTop`). */}
         <ViewportAnchor
           item={names.rowAttribute}
           className="w-max min-w-full"
           group={names.groupAttribute}
+          holdAtTop={holdAtTop}
           scroller={layout.scrollRef}
           enabled={model.anchorEnabled}
         >

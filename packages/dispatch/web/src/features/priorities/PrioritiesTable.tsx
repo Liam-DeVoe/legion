@@ -247,6 +247,8 @@ export function PrioritiesTable({
       <DataTable
         empty="No priorities match these filters."
         filterCounts={facets}
+        // A reader at the top keeps the first row on screen too (R11).
+        holdAtTop
         label="Priorities table"
         model={model}
         noun={NOUN}

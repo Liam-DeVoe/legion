@@ -17,6 +17,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -60,6 +61,7 @@ import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching } from "../shell/roving";
 import { useUserPreference } from "../shell/userPreference";
+import { ViewportAnchor } from "../shell/ViewportAnchor";
 import {
   announceMove,
   type BoardFocus,
@@ -495,7 +497,9 @@ function Rail({ by, cell }: { by: BoardBy; cell: BoardCell }): ReactNode {
 /** One line of the Board's columns, in a box that scrolls sideways. While a card is in flight
  *  the box does not snap: dnd-kit scrolls the Board when the pointer nears an edge, and with
  *  mandatory snapping every scroll tick jumps a whole column. `relative` keeps a card's `sr-only`
- *  text, which is placed absolutely, inside the box rather than widening the page. */
+ *  text, which is placed absolutely, inside the box rather than widening the page. The box turns
+ *  the browser's own scroll anchoring off (`overflow-anchor: none`): the Board's anchor keeps the
+ *  reader's card in place by scrolling the window, and the browser's would move it a second time. */
 function BoardLineView({
   by,
   dragging,
@@ -513,7 +517,7 @@ function BoardLineView({
 }): ReactNode {
   return (
     <div
-      className={`relative overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+      className={`relative overflow-x-auto pb-3 [overflow-anchor:none] ${dragging ? "" : "snap-x snap-mandatory"}`}
       data-testid={testId}
     >
       <div className="flex w-max items-stretch gap-4">
@@ -700,6 +704,15 @@ export function BoardControlRow({
  * A live change to one issue draws that issue's card alone: the cards are memoised on what they
  * draw (`sameCard`), the sensors' options are made once, and a card compares the Time in Legion
  * phase text it draws, while the Board reads the clock on each render.
+ *
+ * The reader keeps their place, as in a table (R11): the card the reader's hand is on (focus,
+ * then the pointer), else, once they have scrolled, the card at the middle of the Board, and at
+ * the top the first card of the column nearest the middle (`holdAtTop`), keeps its top while
+ * cards are added, removed or change height above it in its column, or a notice appears above
+ * the Board. A card is the anchor's row and its column or lane (`data-board-place`) its group, so
+ * a card that leaves its column is not followed. The page scrolls the Board, so the anchor keeps
+ * that top by scrolling the window. It is off while a card is dragged, until the drop is drawn,
+ * and for a change of the reader's own view (`viewKey`).
  */
 export function IssueBoard({
   by,
@@ -712,6 +725,7 @@ export function IssueBoard({
   showIcebox,
   statusPicks,
   userState,
+  viewKey,
 }: {
   by: BoardBy;
   /** Group the Board into swimlanes by priority, one band per priority and one for none. */
@@ -731,6 +745,10 @@ export function IssueBoard({
   /** The picks of the view's Status filter, none for no filter. */
   statusPicks: readonly string[];
   userState: UserState | undefined;
+  /** Names the view the reader picked: its address, its lanes and its Icebox, and whether its
+   *  first draw is whole (`IssueTableBody`). A change of it is the reader's own move, which the
+   *  anchor leaves alone, as a table does (`useDataTable`). */
+  viewKey: string;
 }): ReactNode {
   const { error, move } = useBoardMoves(project);
   const sensors = useSensors(
@@ -750,6 +768,18 @@ export function IssueBoard({
   // While a card is in flight the scroller must not snap (`BoardLineView`), so snapping is
   // switched off from lift to drop.
   const [dragging, setDragging] = useState(false);
+  // While a card is dragged, and until the drop's own changes are drawn, the anchor leaves the
+  // page alone: the dragged card moves under the reader's hand by a transform, and a commit then
+  // would read that move as content shifting around it. Released two frames after the drop, when
+  // the drop's write to the listing, which the query cache hands its readers after the event, has
+  // been drawn.
+  const inFlight = useRef(false);
+  // The view the last commit drew: while it is the one the reader is in, a change of the cards is
+  // someone else's and the anchor holds the reader's place; a new view is the reader's own move.
+  const drawnView = useRef(viewKey);
+  useLayoutEffect(() => {
+    drawnView.current = viewKey;
+  }, [viewKey]);
   // The click that trails a drop (mouseup or touchend on the card) is stopped by dnd-kit before
   // React sees it, which is enough for buttons but not for the title link: the browser's own
   // navigation still runs and reloads the app on the issue page. The drop itself marks that
@@ -801,6 +831,7 @@ export function IssueBoard({
   // flick - ends with no drop event at all, and the mark has to be there already.
   const liftCard = () => {
     clickBelongsToDrop.current = true;
+    inFlight.current = true;
     closeRefPreview();
     setRefusal(undefined);
     setDragging(true);
@@ -808,6 +839,11 @@ export function IssueBoard({
   const landCard = () => {
     clickBelongsToDrop.current = true;
     setDragging(false);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        inFlight.current = false;
+      })
+    );
   };
   /** Takes a planned move: a refusal says why, and a move is written. */
   const take = (plan: MovePlan | undefined) => {
@@ -1124,41 +1160,49 @@ export function IssueBoard({
         onDragStart={liftCard}
         sensors={sensors}
       >
-        {lanes ? (
-          <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-            {lines.map((line) => {
-              const lane = line.lane ?? null;
-              const count = line.cells.reduce((total, cell) => total + cell.items.length, 0);
-              return (
-                <section aria-label={`${laneLabel(lane)} lane`} key={laneKey(lane)}>
-                  <h2
-                    className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
-                  >
-                    {laneLabel(lane)}
-                    <Pill>{count}</Pill>
-                  </h2>
-                  <BoardLineView
-                    by={by}
-                    dragging={dragging}
-                    line={line}
-                    nowMs={nowMs}
-                    testId="board-lane-scroll-container"
-                    userState={userState}
-                  />
-                </section>
-              );
-            })}
-          </div>
-        ) : lines[0] === undefined ? null : (
-          <BoardLineView
-            by={by}
-            dragging={dragging}
-            line={lines[0]}
-            nowMs={nowMs}
-            testId="board-scroll-container"
-            userState={userState}
-          />
-        )}
+        {/* The reader's place (R11): a card is a row and its column or lane its group. */}
+        <ViewportAnchor
+          enabled={() => !inFlight.current && drawnView.current === viewKey}
+          group="data-board-place"
+          holdAtTop
+          item="data-board-card"
+        >
+          {lanes ? (
+            <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+              {lines.map((line) => {
+                const lane = line.lane ?? null;
+                const count = line.cells.reduce((total, cell) => total + cell.items.length, 0);
+                return (
+                  <section aria-label={`${laneLabel(lane)} lane`} key={laneKey(lane)}>
+                    <h2
+                      className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
+                    >
+                      {laneLabel(lane)}
+                      <Pill>{count}</Pill>
+                    </h2>
+                    <BoardLineView
+                      by={by}
+                      dragging={dragging}
+                      line={line}
+                      nowMs={nowMs}
+                      testId="board-lane-scroll-container"
+                      userState={userState}
+                    />
+                  </section>
+                );
+              })}
+            </div>
+          ) : lines[0] === undefined ? null : (
+            <BoardLineView
+              by={by}
+              dragging={dragging}
+              line={lines[0]}
+              nowMs={nowMs}
+              testId="board-scroll-container"
+              userState={userState}
+            />
+          )}
+        </ViewportAnchor>
       </DndContext>
     </section>
   );

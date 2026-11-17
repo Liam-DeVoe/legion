@@ -1219,3 +1219,44 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
     within(grouped).getByRole("button", { name: "Collapse us" }).closest("tr")
   ).toHaveAttribute("aria-rowindex", "2");
 });
+
+// R11: a table that does not ask to hold a reader at the top (`holdAtTop`, the Delivery page's
+// list) keeps main's rule there, and a row added above lands in view. A commit that only scrolls -
+// the same rows, the virtualizer's window moved - is the reader's own move: the anchor measures
+// nothing for it, so a scroll alone reads no row's place. A commit that changes the rows is
+// anchored, and finds the row nearest the middle of the box.
+test("a table holds no row at the top unless it asks, and a commit that only scrolls measures no place", async () => {
+  linesTall();
+  const view = draw(
+    <Deploys layoutKey="flat" pageSize={100} pager={null} rows={manyDeploys(60)} />
+  );
+  const table = await screen.findByRole("table", { name: "Deploys flat" });
+  const box = screen.getByTestId("flat-scroll");
+  const point = spyOn(document, "elementFromPoint").mockReturnValue(null);
+  restores.push(() => point.mockRestore());
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+  });
+  const arrival = (id: string): Deploy => ({
+    id,
+    minutes: 1,
+    region: "eu",
+    service: "arrival",
+    state: "live",
+  });
+  const arrived = [arrival("d0"), ...manyDeploys(60)];
+  view.rerender(<Deploys layoutKey="flat" pageSize={100} pager={null} rows={arrived} />);
+  expect(listed(table)[0]).toBe("d0");
+  expect(box.scrollTop).toBe(0);
+  expect(point).not.toHaveBeenCalled();
+
+  scrollBoxTo(box, 1000);
+  expect(listed(table)).toContain("d40");
+  expect(point).not.toHaveBeenCalled();
+  view.rerender(
+    <Deploys layoutKey="flat" pageSize={100} pager={null} rows={[...arrived, arrival("d61")]} />
+  );
+  expect(point).toHaveBeenCalled();
+});
