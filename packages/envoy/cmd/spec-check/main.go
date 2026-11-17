@@ -118,18 +118,28 @@
 // between them, and with quote characters (also a $ before one), backslashes, and line breaks with
 // the indentation after them ignored. So it also names a comment or a quoted text that no shell
 // runs, and the author rewords that line. The name is spec-check, under any path, as a word of its
-// own: a word that only holds it, such as envoy-spec-check or spec-checker, is another name.
-// compare is a word of its own too: a letter, a digit, _, -, . or / right after it makes another
-// word or a path, such as compare-all, compare.sh or compare/. A letter right after a backslash
-// ends an escape, such as the \n of a double-quoted text, so it is no byte of a word before the
-// name, and after compare a \n or a \t ends the word.
-// It does not find a command that an expansion, an escape or an alias builds, a name right after an
-// escape that ends in a digit or that another character starts, such as \x20, PowerShell's `n or a
-// batch file's %~dp0, or one with another word between the two, and it is no defence against an
-// author who hides the command: compare itself refuses to run in a CI job. A step can run the
-// comparison from a file it does not read, such as a package script or a make target: compare's
-// refusal covers that route when the step passes the runner's environment on, and nothing covers it
-// when the step does not.
+// own: a word that only holds it, such as envoy-spec-check or spec-checker, is another name, and
+// compare is a word of its own too. Each bound reads the file's own bytes. Right before the name,
+// a letter, a digit, _ or - makes the name part of another word. Right after compare, a letter, a
+// digit, _, -, . or / makes compare part of another word or a path, such as compare-all,
+// compare.sh or compare/. Each other byte ends the word: white space, a quote, ;, |, &, (, ), <, >,
+// a comma, a bracket, and the start or the end of the file. A backslash right after compare is an
+// escape, and the byte after it takes its place. A quote there ends the word only when no letter,
+// digit or _ follows the quote, so "compare"d and compare\"d are other words. After a backslash, n,
+// t and r stand for white space, so \n, \t and \r end the word on each side, as a backslash before
+// a space or a line break does after compare. So a name right after \7 or \- is not named, nor
+// compare before \x20 or \x64.
+// The rule reads the file's bytes and runs no shell expansion, so it does not find a command that
+// an expansion, an escape or an alias builds, one with another word between the two, such as a
+// redirection, a here-document or an image, or a run: | block whose two line continuations need
+// the indentation after one kept and after the other removed. Before the name, only \n, \t and \r
+// of the escapes stand for white space; each other escape or expansion of one language that builds
+// the boundary is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's
+// %~dp0, $1), and so are \0 before the name, whose NUL byte Bash skips, and \t between the two
+// words. It is no defence against an author who hides the command: compare itself refuses to
+// run in a CI job. A step can run the comparison from a file it does not read, such as a package
+// script or a make target: compare's refusal covers that route when the step passes the runner's
+// environment on, and nothing covers it when the step does not.
 // The guard follows no symbolic link at or under the four directories (the path to them, --root
 // and .github included, resolves as the system resolves it), and it reads each file whole, with
 // no bound on its size.
@@ -150,7 +160,8 @@
 // {"states":[…],"cycle":[…]}. It exits 0 for a scenario it reads, and 2, with one line on standard
 // error naming the file and the fault, for one it does not: a file or a field that the format does
 // not hold (JSON that is not UTF-8, a member written in other letters or given two times, or a
-// value of another type, named with the form of the file and its place, too), a missing file, spec
+// value of another type, named with the form of the file and its place, too), a missing file, a
+// member that the derivation reads and that a file does not set (such as the at of a result), spec
 // files that do not parse or that the rules of tree refuse, or a loop of parent and support
 // relations in the approved spec. A check of production or of the graph is judged only
 // at a subject that names a deploy, and there a check of the graph counts only the results at the

@@ -321,10 +321,13 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 // ReadApproved names a value of another type than approved.json's form needs by the form and the
 // place of the value, in the package's own words: no Go type and no verb of encoding/json/v2, which
 // picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC
-// 3339 as the writer writes it, also one with a lower-case t and z, is of another type too.
+// 3339 as the writer writes it, also one with a lower-case t and z, is of another type too, and so
+// is a version number above 2^63-1, the largest that the reader holds: the form in the same line
+// gives the time as an RFC 3339 time with an upper-case T and Z and the version as a whole number
+// from 1, without that bound.
 func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
 	t.Parallel()
-	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","document":"<document>"}, …]}, …]}`
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","document":"<document>"}, …]}, …]}`
 	version := func(n, at, document string) string {
 		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"document":` + document + `}]}]}`
 	}
@@ -335,6 +338,7 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 		{"a string in the place of removed", `{"nodes":[{"id":"a-page-shows-it","removed":"yes"}]}`, notInTheForm + `: the value at "/nodes/0/removed" is of another type`},
 		{"a string in the place of a version number", version(`"1"`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
 		{"a version number that is not whole", version(`1.5`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
+		{"a version number that no Go int holds", version(`1000000000000000000000000000000`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
 		{"a time that is not RFC 3339", version(`1`, `"2026-11-10"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
 		{"a time with a lower-case t and z", version(`1`, `"2026-11-10t00:00:00z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
 		{"a list in the place of a document", version(`1`, `"2026-11-10T00:00:00Z"`, `["x"]`), notInTheForm + `: the value at "/nodes/0/versions/0/document" is of another type`},
@@ -347,6 +351,53 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 			}
 		})
 	}
+}
+
+// The lines of ReadApproved and WriteApproved cut a node id as decodeJSON cuts a place: whole up
+// to 100 bytes, else its first and its last 50 bytes with … between them, so a line that names an
+// id of 256 KiB, the writer's longName or a long id that a document can hold, stays one short line.
+func TestTheLinesOfTheApprovedSpecCutALongNodeID(t *testing.T) {
+	t.Parallel()
+	y := func(n int) string { return strings.Repeat("y", n) }
+	longSlug := "key-" + y(1<<18-8) + "-end"
+	cutName, cutSlug := `"KEY\n`+y(46)+`…`+y(46)+`\tEND"`, `"key-`+y(46)+`…`+y(46)+`-end"`
+	document := func(id string) string {
+		return `"---\ntype: requirement\nid: ` + id + `\nkind: behavior\ntext:\n  - The page shows it.\n"`
+	}
+	node := func(id, n, document string) string {
+		return `{"id":` + id + `,"versions":[{"version":` + n + `,"at":"2026-11-10T00:00:00Z","document":` + document + `}]}`
+	}
+	for _, row := range []struct{ name, json, want string }{
+		{"a node with no version", `{"nodes":[{"id":` + jsonLongName + `,"removed":true,"versions":[]}]}`,
+			`specgraph: approved node ` + cutName + `: it has no version`},
+		{"version 0", `{"nodes":[` + node(jsonLongName, "0", document("a-page-shows-it")) + `]}`,
+			`specgraph: approved node ` + cutName + ` version 0: the versions are 1 and more, oldest first`},
+		{"a document of another node", `{"nodes":[` + node(jsonLongName, "1", document("a-page-shows-it")) + `]}`,
+			`specgraph: approved node ` + cutName + ` version 1: bad-approved-document: the document is of node "a-page-shows-it", not ` + cutName + ` (line 1 of its document)`},
+		{"a document of a node with a long id", `{"nodes":[` + node(`"a-page-shows-it"`, "1", document(longSlug)) + `]}`,
+			`specgraph: approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node ` + cutSlug + `, not "a-page-shows-it" (line 1 of its document)`},
+		{"one long id on two nodes", `{"nodes":[` + node(`"`+longSlug+`"`, "1", document(longSlug)) + `,` + node(`"`+longSlug+`"`, "1", document(longSlug)) + `]}`,
+			`specgraph: approved spec: node ` + cutSlug + ` is in the approved spec two times`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ReadApproved(strings.NewReader(row.json))
+			if err == nil {
+				t.Fatal("ReadApproved accepted the file")
+			}
+			expectOneShortLine(t, err.Error(), row.want)
+		})
+	}
+	t.Run("a node under another long id", func(t *testing.T) {
+		t.Parallel()
+		at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+		a := Approved{Nodes: map[string]ApprovedNode{longName: {ID: longSlug, Versions: []ApprovedVersion{{Version: 1, At: at, Document: "x"}}}}}
+		err := WriteApproved(&bytes.Buffer{}, a)
+		if err == nil {
+			t.Fatal("WriteApproved wrote the approved spec")
+		}
+		expectOneShortLine(t, err.Error(), `specgraph: approved spec: node `+cutSlug+` is under the id `+cutName)
+	})
 }
 
 // ReadApproved reads each field of the fixture, and the current text of a node is its newest

@@ -95,7 +95,7 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 			if want.ID == "" {
 				want.ID = checkStateCheck.ID
 			}
-			states := CheckStates(s.input())
+			states := checkStates(t, s.input())
 			if i := slices.IndexFunc(states, func(c CheckState) bool { return c.ID == want.ID }); i < 0 || states[i] != want {
 				t.Errorf("CheckStates = %+v\nwant %+v", states, want)
 			}

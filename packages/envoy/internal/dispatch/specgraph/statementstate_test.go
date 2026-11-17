@@ -329,7 +329,7 @@ func TestStatementState(t *testing.T) {
 			t.Parallel()
 			s := newStatementCase(t)
 			row.change(s)
-			state := Derive(s.input())
+			state := derive(t, s.input())
 			for _, want := range row.want {
 				i := slices.IndexFunc(state.Statements, func(st StatementState) bool { return st.ID == want.ID })
 				switch {
@@ -382,7 +382,7 @@ func TestTheTreeAndTheDerivationAskForACheckOfOneSetOfStatements(t *testing.T) {
 					refused = append(refused, p.Node)
 				}
 			}
-			for _, st := range Derive(s.input()).Statements {
+			for _, st := range derive(t, s.input()).Statements {
 				if st.Reason == "no_check" && st.Detail == st.ID {
 					derived = append(derived, st.ID)
 				}
@@ -460,7 +460,7 @@ func TestNoTreeThatTheRulesRefuseReadsTrueOrMet(t *testing.T) {
 			if len(problems) == 0 {
 				t.Fatal("the schema and Validate find no problem, so the row tests nothing")
 			}
-			state := Derive(s.input())
+			state := derive(t, s.input())
 			for _, p := range problems {
 				named := namedBy(files, p)
 				for _, id := range withParents(files, named) {
@@ -534,11 +534,11 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	s := newStatementCase(t)
 	s.addNodes(statementFast, statementFastCheck)
 	in := s.input()
-	state := Derive(in)
+	state := derive(t, in)
 	if state.Subject != in.Subject {
 		t.Errorf("Subject = %+v, want %+v", state.Subject, in.Subject)
 	}
-	if checks := CheckStates(in); !slices.Equal(state.Checks, checks) {
+	if checks := checkStates(t, in); !slices.Equal(state.Checks, checks) {
 		t.Errorf("Checks:\n got %+v\nwant %+v", state.Checks, checks)
 	}
 	want := []string{statementFast.ID, checkStateTop.ID, statementLeafTwo.ID, checkStateLeaf.ID, statementSupporter.ID}
@@ -549,7 +549,7 @@ func TestDeriveListsEachStatementInPreorder(t *testing.T) {
 	loop := checkStateTop
 	loop.Parent = checkStateLeaf.ID
 	s.replace(loop)
-	got := statementIDs(Derive(s.input()))
+	got := statementIDs(derive(t, s.input()))
 	if sorted := slices.Sorted(slices.Values(got)); !slices.Equal(sorted, slices.Sorted(slices.Values(want))) {
 		t.Errorf("with a loop of parents, the statements of Derive: %q, want each of %q once", got, want)
 	}
@@ -601,7 +601,7 @@ func TestTheDerivationEndsOnEachLoop(t *testing.T) {
 				want = append(want, st.ID)
 			}
 			slices.Sort(want)
-			if got := slices.Sorted(slices.Values(statementIDs(Derive(in)))); !slices.Equal(got, want) {
+			if got := slices.Sorted(slices.Values(statementIDs(derive(t, in)))); !slices.Equal(got, want) {
 				t.Errorf("the statements of Derive: %q, want each of %q once", got, want)
 			}
 		})
@@ -669,10 +669,21 @@ func (s *checkCase) drop(ids ...string) {
 	}
 }
 
-// remove takes the nodes with the ids out of the files and out of the approved spec.
+// remove takes the nodes with the ids out of the files and out of the approved spec. A result of a
+// check that it takes out keeps the digest of the text that ran, as a stored result does.
 func (s *checkCase) remove(ids ...string) {
+	s.t.Helper()
 	s.drop(ids...)
 	for _, id := range ids {
+		if versions := s.Approved.Nodes[id].Versions; len(versions) > 0 {
+			if text, problems := versionText(id, versions[len(versions)-1]); len(problems) == 0 && len(text.Checks) == 1 {
+				for i := range s.Results {
+					if s.Results[i].Check == id && s.Results[i].CheckDigest == "" {
+						s.Results[i].CheckDigest = text.Checks[0].Digest()
+					}
+				}
+			}
+		}
 		delete(s.Approved.Nodes, id)
 	}
 }

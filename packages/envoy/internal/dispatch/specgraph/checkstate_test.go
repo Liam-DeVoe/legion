@@ -405,15 +405,12 @@ func TestCheckState(t *testing.T) {
 		{name: "item 19: the test of a program check of production did not change", change: func(c *checkCase) {
 			c.productionProgram("docs/x.md", "c1")
 		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "true", Reason: "passed", From: "d2"}},
-		{name: "item 19: the failing example of a program check of production names no commit of its test", change: func(c *checkCase) {
-			c.productionProgram("docs/x.md", "")
-		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "no_failing_example"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
 			row.change(s)
-			states := CheckStates(s.input())
+			states := checkStates(t, s.input())
 			if !slices.IsSortedFunc(states, func(a, b CheckState) int { return cmp.Compare(a.ID, b.ID) }) {
 				t.Errorf("CheckStates is not sorted by id: %+v", states)
 			}
@@ -450,7 +447,7 @@ func TestCheckStatesJudgesTheApprovedChecks(t *testing.T) {
 	earlier.Claim = "A message that the listener stores before a restart reaches its session."
 	s.approveEarlier(checkStateApproved.Add(-48*time.Hour), earlier)
 	s.swap(earlier)
-	states := CheckStates(s.input())
+	states := checkStates(t, s.input())
 	want := []CheckState{
 		{ID: checkStateCheck.ID, State: "unknown", Reason: "not_built"},
 		{ID: checkStateGraph.ID, State: "unknown", Reason: "no_result"},
@@ -497,7 +494,7 @@ func TestTheTreeAndTheDerivationReadOneMissingFailingExample(t *testing.T) {
 			if row.missing {
 				want = CheckState{ID: c.ID, State: "unknown", Reason: "no_failing_example"}
 			}
-			if states := CheckStates(s.input()); !slices.Contains(states, want) {
+			if states := checkStates(t, s.input()); !slices.Contains(states, want) {
 				t.Errorf("CheckStates with the failing example %q:\n got %+v\nwant %+v", row.text, states, want)
 			}
 		})
@@ -528,8 +525,6 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 			CheckState{State: "unknown", Reason: "subject_moved"}, "unknown"},
 		{"control: production, c2 changes the test, and the pass ran the test of c2", checkStateProductionProgram, listenerTest, "c2",
 			CheckState{State: "true", Reason: "passed", From: "d2"}, "met"},
-		{"production, the pass names no commit of its test", checkStateProductionProgram, "docs/x.md", "",
-			CheckState{State: "unknown", Reason: "subject_moved"}, "unknown"},
 		{"control: the graph, c2 changes a file outside the tie", checkStateGraphProgram, "docs/x.md", "c1",
 			CheckState{State: "true", Reason: "passed", From: "tx1"}, "met"},
 		{"the graph, c2 changes the test, and the pass ran the test of c1", checkStateGraphProgram, listenerTest, "c1",
@@ -610,7 +605,7 @@ func TestEachLegOfAProgramCheckOfProductionKeepsItsResult(t *testing.T) {
 func deriveAlone(t *testing.T, s *checkCase, want CheckState, statements string) {
 	t.Helper()
 	s.remove(checkStateCheck.ID)
-	state := Derive(s.input())
+	state := derive(t, s.input())
 	if i := slices.IndexFunc(state.Checks, func(c CheckState) bool { return c.ID == want.ID }); i < 0 || state.Checks[i] != want {
 		t.Errorf("the checks: %+v\nwant %+v", state.Checks, want)
 	}
@@ -666,7 +661,7 @@ func newCheckCase(t *testing.T) *checkCase {
 
 // input is the Input of the case: the files parsed, each result with no digest given the digest of
 // its check's current approved text, each result's Seq its place in Results, and Now, unless the
-// row set it, one hour after the newest result.
+// row set it, one hour after the newest result, or after checkStateRun when there is none.
 func (s *checkCase) input() Input {
 	s.t.Helper()
 	in := s.Input
@@ -685,6 +680,9 @@ func (s *checkCase) input() Input {
 		if s.Now.IsZero() && r.At.Add(time.Hour).After(in.Now) {
 			in.Now = r.At.Add(time.Hour)
 		}
+	}
+	if in.Now.IsZero() {
+		in.Now = checkStateRun.Add(time.Hour)
 	}
 	return in
 }

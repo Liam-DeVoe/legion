@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ const ciRefusal = "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=
 
 // approvedForm is the form of approved.json, as compare and print name it before the place of a
 // value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","document":"<document>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","document":"<document>"}, …]}, …]}`
 
 // testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
 // each the approved spec and the files of one change: a node in a text that the approved spec
@@ -438,6 +439,35 @@ func testCompare(t *testing.T, binary string) {
 			t.Errorf("tree in a CI job: exit %d, stderr %q; want exit 0", got.code, got.stderr)
 		}
 	})
+}
+
+// compare refuses the files for each problem of Parse whose Effect is not specgraph.KeepsEachNode
+// (refusedProblems): a problem that loses a node, and a problem with no Effect, which no kind of
+// Parse gives today, so such a problem fails closed. A problem that keeps each node is tree's to
+// judge.
+func TestCompareRefusesAProblemWithNoEffect(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name    string
+		effect  specgraph.Effect
+		refused bool
+	}{
+		{"a problem with no Effect", 0, true},
+		{"a problem that loses a node", specgraph.LosesNode, true},
+		{"a problem that keeps each node", specgraph.KeepsEachNode, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			problem := specgraph.Problem{Pos: specgraph.Position{File: "orders.yaml", Line: 3}, Node: "-", Rule: "bad-yaml", Detail: "bad-yaml: yaml: line 3: mapping values are not allowed in this context", Effect: row.effect}
+			var want []specgraph.Problem
+			if row.refused {
+				want = []specgraph.Problem{problem}
+			}
+			if got := refusedProblems([]specgraph.Problem{problem}); !slices.Equal(got, want) {
+				t.Errorf("refusedProblems([%+v]) = %+v, want %+v", problem, got, want)
+			}
+		})
+	}
 }
 
 // passLine is the first line of a comparison that passes over dir, with held "<m> of <n>": the
