@@ -35,7 +35,7 @@ func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
 func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *testing.T) {
 	cluster := StartCluster(t, 3)
 	conn := connectCluster(t, cluster)
-	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

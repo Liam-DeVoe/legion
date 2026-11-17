@@ -915,7 +915,7 @@ func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
 	lookups := make(chan lookup, 8)
 	observer := testnats.Connect(t, natsURL)
 	t.Cleanup(observer.Close)
-	observerJS, err := observer.JetStream()
+	observerJS, err := observer.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open the observer's JetStream context: %v", err)
 	}

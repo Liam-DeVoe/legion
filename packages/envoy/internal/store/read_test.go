@@ -234,7 +234,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	waitClosed(t, read.reached, "the old bucket to answer the read-through")
 	apply.open()
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing
 	putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_x", MachineID: "m1", Topics: []string{"notifications.old"}, UpdatedAt: stale})
 	waitFor(t, "the copy to hold ses_x's stale row", func() bool { _, ok := reg.Cached("ses_x"); return ok })
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

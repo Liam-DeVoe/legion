@@ -24,7 +24,7 @@ func TestStartImageConfigServesTheConfigWithTheArguments(t *testing.T) {
 				t.Fatalf("connect with the seed: %v", err)
 			}
 			defer conn.Close()
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(MaxWait(t))
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}
@@ -50,7 +50,7 @@ func TestStartImageConfigRunsNoArgumentItWasNotGiven(t *testing.T) {
 				t.Fatalf("connect with the seed: %v", err)
 			}
 			defer conn.Close()
-			js, err := conn.JetStream()
+			js, err := conn.JetStream(MaxWait(t))
 			if err != nil {
 				t.Fatalf("JetStream context: %v", err)
 			}

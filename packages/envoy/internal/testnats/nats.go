@@ -228,7 +228,7 @@ func deleteStreams(t testing.TB, uri string) {
 	t.Helper()
 	conn := Connect(t, uri)
 	defer conn.Close()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Errorf("open JetStream to delete the test's streams: %v", err)
 		return
@@ -861,7 +861,10 @@ func (a dialAttempt) String() string {
 // operation before returning it. The relay accepts a connection before the server behind it has
 // finished its protocol handshake, and NATS can complete that handshake while JetStream is still
 // starting; a KV test needs both readiness boundaries. Each dial's own budget is nats.go's
-// default, and a dial that fails is made again by the shared wait.
+// default, and a dial that fails is made again by the shared wait. Each account info is bounded
+// by readWait and sent again by the shared wait when it runs out: only the leader of a cluster's
+// meta group answers one, so a member asked while that group has no leader answers nothing
+// (nats-server v2.15.1, jsAccountInfoRequest).
 func Connect(t testing.TB, uri string) *natsgo.Conn {
 	t.Helper()
 	dial := testwait.Until(t, fmt.Sprintf("a connection to the NATS server at %s", uri), func() (dialAttempt, bool) {
@@ -869,12 +872,13 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 		return dialAttempt{conn: conn, err: err}, err == nil
 	})
 	conn := dial.conn
+	js, err := conn.JetStream(natsgo.MaxWait(readWait))
+	if err != nil {
+		conn.Close()
+		t.Fatalf("open JetStream on the connection to %s: %v", uri, err)
+	}
 	waitForJetStream(t, func() error {
-		js, err := conn.JetStream()
-		if err != nil {
-			return err
-		}
-		_, err = js.AccountInfo()
+		_, err := js.AccountInfo()
 		return err
 	})
 	return conn
@@ -894,6 +898,25 @@ func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
 		return jetstream.WithDefaultTimeout(max(time.Until(deadline), time.Millisecond))
 	}
 	return jetstream.WithDefaultTimeout(unbounded)
+}
+
+// MaxWait is the option every legacy JetStream context a test makes takes
+// (conn.JetStream(testnats.MaxWait(t))). nats.go's legacy context bounds each request made without
+// a nats.Context option, a KeyValue operation's among them, by its own wait, five seconds on the
+// wall clock unless natsgo.MaxWait sets another, and a test's requests rarely carry that option.
+// So a server that answers late on a loaded machine would fail the test with "context deadline
+// exceeded". With this option such a request is bounded by what is left of the test binary's
+// deadline less testwait's margin, and with no deadline (-timeout 0) by no bound a test can reach,
+// so a late answer costs the test time and not its result. The same wait is the default expiry of
+// a pull subscription's Fetch and the time a KV watcher waits for its initial values, so neither
+// ends early either. A wait that sends a request again when it draws no answer bounds each send by
+// readWait instead (Connect, awaitInfo, awaitBucketOn): with this option a send the server never
+// answers would hold that wait until the deadline.
+func MaxWait(t testing.TB) natsgo.JSOpt {
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		return natsgo.MaxWait(max(time.Until(deadline), time.Millisecond))
+	}
+	return natsgo.MaxWait(unbounded)
 }
 
 // waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS

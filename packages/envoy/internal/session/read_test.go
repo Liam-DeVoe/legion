@@ -366,7 +366,7 @@ func TestAResultFromABucketSinceRecreatedIsDropped(t *testing.T) {
 			go func() { done <- test.call(r) }()
 			waitClosed(t, held.reached, "the old bucket to answer the delayed call")
 
-			js, err := client.Conn.JetStream()
+			js, err := client.Conn.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("jetstream: %v", err)
 			}
@@ -431,7 +431,7 @@ func TestARefreshOvertakenByAWatchAnswersTheBucketsEntry(t *testing.T) {
 	r.watcher.Start()
 	testwait.Eventually(t, "observable state", r.watcher.Following)
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestARefreshTheFenceDropsAnswersTheBucketsEntry(t *testing.T) {
 	if err := r.Delete(context.Background(), "ses_a"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestABucketRecreatedWithAnotherTTLMovesTheExpiry(t *testing.T) {
 	t.Cleanup(r.StopWatch)
 	testwait.Eventually(t, "observable state", r.watcher.Following)
 
-	js, err := client.Conn.JetStream()
+	js, err := client.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

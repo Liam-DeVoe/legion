@@ -28,7 +28,7 @@ func reconnectingConn(t *testing.T, uri string) (*nats.Conn, nats.JetStreamConte
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -174,7 +174,7 @@ func connectedToAServerOf(t *testing.T, version string) (*nats.Conn, nats.JetStr
 		t.Fatalf("connect to the fake server: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

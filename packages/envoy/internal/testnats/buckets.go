@@ -24,49 +24,34 @@ import (
 // writes to it. So a test that creates a bucket on a cluster and then has the code under test
 // open it, raise it, look it up or write to it creates it with CreateKeyValue, and one whose
 // code under test creates the bucket itself calls AwaitBucket after it, on the connection and
-// the JetStream context that code holds: the long wait here is for this fixture's own create
-// and nothing else.
+// the JetStream context that code holds.
 
-const (
-	// createWait bounds each JetStream request of the context createJetStream opens, which is
-	// the one plain create Cluster.CreateKeyValue or Cluster.CreateStream makes and nothing else:
-	// nats.go's own request timer. A create of more than one copy on a cluster is proposed through
-	// the meta group and answered by the new stream's first leader, once its members have elected
-	// one, the slowest thing these tests ask a JetStream client for: 25 bucket creates on an idle
-	// two-CPU machine took from 60 ms to 1.03 s, and a candidate that loses an election waits 4 s
-	// to 9 s before it campaigns again (nats-server v2.15.1, randElectionTimeout). This is a hang
-	// guard, two orders of magnitude away from the creates measured, not a budget a loaded runner
-	// can use up, and not a wait for code under test: a call that sends a request again rather
-	// than waiting it out, such as bus.EnsureKeyValue, would spend this wait once per send, which
-	// is minutes a call.
-	createWait = 2 * time.Minute
+// readWait bounds one read that a wait of this package sends again until it holds: Connect's
+// account info, a member's lookup of a bucket's stream (awaitBucketOn), and a read of a stream's or
+// a consumer's info (awaitInfo). It is nats.go's own request timer, a hang guard and no budget:
+// nats-server v2.15.1 leaves such a read unanswered rather than late in two states a cluster
+// passes through. Only the meta group's leader answers an account info, and a member that is not
+// it answers nothing (jsAccountInfoRequest); and a member that is not a stream's or a consumer's
+// leader answers nothing for it while it still counts a leader that is gone (jsStreamInfoRequest,
+// jsConsumerInfoRequest, isGroupLeaderless). So a read sent across a leader change or a member's
+// restart can draw no answer at all, and one that runs out is sent again by the shared wait,
+// whose one bound is the test binary's deadline.
+const readWait = 10 * time.Second
 
-	// bucketLookupWait bounds one member's lookup of a bucket's stream, which that member
-	// answers out of metadata it holds: nats.go's own request timer, a hang guard on the same
-	// footing. A lookup that runs out is made again by the wait awaitBucketOn holds.
-	bucketLookupWait = 10 * time.Second
-)
-
-// createJetStream is a JetStream context on conn whose requests are bounded by createWait, for
-// the create Cluster.CreateKeyValue or Cluster.CreateStream makes: a test fixture's own create of
-// a bucket or a stream, which Cluster.JetStream's ten seconds one create can use up on a loaded
-// machine.
-func createJetStream(t testing.TB, conn *natsgo.Conn) natsgo.JetStreamContext {
+// CreateKeyValue creates the KV bucket config names on conn, waiting for the create's answer until
+// the test binary's deadline (MaxWait), and returns its handle once every running member of the
+// cluster answers for the bucket's stream (AwaitBucket). A create of more than one copy on a
+// cluster is proposed through the meta group and answered by the new stream's first leader, once
+// its members have elected one, the slowest thing these tests ask a JetStream client for. conn is
+// the connection whose grant the create is made under, so a test of a client's permissions creates
+// the bucket as that client.
+func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
 	t.Helper()
-	js, err := conn.JetStream(natsgo.MaxWait(createWait))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
-	return js
-}
-
-// CreateKeyValue creates the KV bucket config names on conn, within createWait, and returns
-// its handle once every running member of the cluster answers for the bucket's stream
-// (AwaitBucket). conn is the connection whose grant the create is made under, so a test of a
-// client's permissions creates the bucket as that client.
-func (c *Cluster) CreateKeyValue(t testing.TB, conn *natsgo.Conn, config *natsgo.KeyValueConfig) natsgo.KeyValue {
-	t.Helper()
-	kv, err := createJetStream(t, conn).CreateKeyValue(config)
+	kv, err := js.CreateKeyValue(config)
 	if err != nil {
 		t.Fatalf("create KV bucket %s: %v", config.Bucket, err)
 	}
@@ -100,7 +85,7 @@ func (c *Cluster) awaitBucketOn(t testing.TB, i int, server *Server, stream, sub
 	t.Helper()
 	conn := Connect(t, server.URL())
 	defer conn.Close()
-	js, err := conn.JetStream(natsgo.MaxWait(bucketLookupWait))
+	js, err := conn.JetStream(natsgo.MaxWait(readWait))
 	if err != nil {
 		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
 	}

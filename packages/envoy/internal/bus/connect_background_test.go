@@ -45,7 +45,7 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 
 	srv.Start(t)
 	testwait.Eventually(t, "the client's first connection", client.Connected)
-	js, err := testnats.Connect(t, uri).JetStream()
+	js, err := testnats.Connect(t, uri).JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}

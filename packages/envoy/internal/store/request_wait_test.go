@@ -55,7 +55,7 @@ func TestARegistryOpenedWithARequestWaitOutlastsAQuietLink(t *testing.T) {
 		t.Run(held.name, func(t *testing.T) {
 			direct, cleanup := connectNATS(t)
 			defer cleanup()
-			js, err := direct.JetStream()
+			js, err := direct.JetStream(testnats.MaxWait(t))
 			if err != nil {
 				t.Fatalf("jetstream: %v", err)
 			}

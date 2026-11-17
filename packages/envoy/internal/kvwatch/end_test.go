@@ -34,7 +34,7 @@ func warnings(records []map[string]any) []string {
 // testConsumers lists the test bucket's consumers.
 func testConsumers(t *testing.T, conn *natsgo.Conn) []string {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
 	w.Start()
 	testwait.Eventually(t, "the first scan", w.Ready)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

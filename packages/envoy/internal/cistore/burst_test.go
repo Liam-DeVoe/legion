@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -969,7 +970,7 @@ func TestADeletedBucketFailsAWriteWithinTheBudget(t *testing.T) {
 	defer cleanup()
 	fake := clocktest.New(time.Now())
 	s, _ := wrapStore(t, conn, 0, WithClock(fake))
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

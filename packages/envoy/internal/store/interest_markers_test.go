@@ -69,7 +69,7 @@ func jsonRecord(t *testing.T, records []map[string]any, msg string) map[string]a
 // finds it already there.
 func rawInterestBucket(t *testing.T, conn *natsgo.Conn) (natsgo.JetStreamContext, natsgo.KeyValue) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -674,8 +674,9 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 		granted := startGrantedServer(t, []string{purgeSubject})
 		before := bucketState(t, granted.js, bus.InterestBucket)
 		// The server answers a purge the grant refuses with nothing, so the passes purge through a
-		// context that waits a second; on granted.js each pass would wait out its whole 10 s.
-		// nats.go's PurgeStream ignores a per-call wait, so the bound has to be the context's.
+		// context that waits a second; on granted.js each pass would wait until the test binary's
+		// deadline. nats.go's PurgeStream ignores a per-call wait, so the bound has to be the
+		// context's.
 		refusedPurgeJS, err := granted.conn.JetStream(natsgo.MaxWait(time.Second))
 		if err != nil {
 			t.Fatalf("jetstream for the refused purge: %v", err)
@@ -728,8 +729,8 @@ type grantedServer struct {
 	srv      *testnats.Server
 	conn     *natsgo.Conn
 	registry *Registry
-	// js waits as long as the listener's own context does (10 s, internal/bus): on a loaded machine
-	// a seeding put can take more than a second.
+	// js waits for each answer until the test binary's deadline (testnats.MaxWait): on a loaded
+	// machine a seeding put can take more than a second.
 	js natsgo.JetStreamContext
 	kv natsgo.KeyValue
 }
@@ -755,7 +756,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(10 * time.Second))
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}

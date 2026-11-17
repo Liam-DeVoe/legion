@@ -1228,7 +1228,7 @@ func TestClusteredNatsHubCluster(t *testing.T) {
 	group := r3Info.Cluster.RaftGroup
 
 	publisher := connectHub(t, urls, r.keys.operatorSeed)
-	pubJS, err := publisher.JetStream()
+	pubJS, err := publisher.JetStream(testnats.MaxWait(t))
 	require.NoError(t, err)
 	var acked, retries atomic.Int64
 	published := make(chan error, 1)

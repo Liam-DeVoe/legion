@@ -28,12 +28,33 @@ import (
 // testStreamMaxBytes is a byte limit every member of a test cluster can reserve.
 const testStreamMaxBytes = 8 << 20
 
-// startClusterJetStream starts a three-server cluster and returns it with a JetStream context
-// connected to whichever running member answers (testnats.Cluster.JetStream).
+// startClusterJetStream starts a three-server cluster and returns it with programJetStream's
+// context on it.
 func startClusterJetStream(t *testing.T) (*testnats.Cluster, nats.JetStreamContext) {
 	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
-	return cluster, cluster.JetStream(t)
+	return cluster, programJetStream(t, cluster)
+}
+
+// programJetStream is a JetStream context on whichever running member of cluster answers
+// (clusterConn), whose requests each wait RequestTimeout: the per-send bound every program of the
+// deployment opens its own context with, as memberJetStream's does. The rows hand it to the bus's
+// own start and keeper code (EnsureKeyValue, OpenKeyValue, ensureStreamWithConfig, keepStream),
+// and on a cluster nats-server leaves some of that code's requests unanswered by design: a member
+// that is not a stream's leader answers nothing for it while the group elects one, as a raise to
+// three copies makes it do (nats-server v2.15.1, jsStreamInfoRequest and isGroupLeaderless). That
+// code ends each such request at this bound: sentAgain sends a lookup, a create or a stream read
+// again, updateStream reads the stream again, and awaitReplicasCurrent returns the read of a raised
+// stream as the start's error. So a request that draws no answer ends here where it ends in a
+// program, where testnats.MaxWait(t) would hold it, and every row of the package after it, until
+// the test binary's deadline. The rows' own reads through it take the same bound.
+func programJetStream(t *testing.T, cluster *testnats.Cluster) nats.JetStreamContext {
+	t.Helper()
+	js, err := clusterConn(t, cluster).JetStream(nats.MaxWait(RequestTimeout))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	return js
 }
 
 // clusterConn is a connection to cluster, closed when the test ends: EnsureKeyValue and
@@ -515,7 +536,7 @@ func TestOneServerStoppedAStartOfAThreeCopyDeploymentWritesNothing(t *testing.T)
 
 	cluster.Servers[2].Stop(t)
 	cluster.AwaitReady(t)
-	js = cluster.JetStream(t)
+	js = programJetStream(t, cluster)
 	testnats.AwaitStreamLeader(t, js, Stream, cluster.Name(2))
 	testnats.AwaitStreamLeader(t, js, "KV_"+bucket, cluster.Name(2))
 

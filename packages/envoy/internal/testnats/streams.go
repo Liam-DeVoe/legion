@@ -12,19 +12,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// jetStreamWait bounds each JetStream request of a context Cluster.JetStream opens: nats.go's own
-// request timer, a hang guard on a request these tests see answered in milliseconds, which no
-// verdict waits out.
-const jetStreamWait = 10 * time.Second
-
-// JetStream is a JetStream context, its requests bounded by jetStreamWait, on whichever running
-// member of the cluster answers (Connect), closed when the test ends. A test creates a
-// stream of more than one copy with CreateStream rather than through it.
+// JetStream is a JetStream context, each request of it bounded by what is left of the test
+// binary's deadline (MaxWait), on whichever running member of the cluster answers (Connect),
+// closed when the test ends.
 func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	t.Helper()
 	conn := Connect(t, c.URL())
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
+	js, err := conn.JetStream(MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -32,17 +27,15 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 }
 
 // CreateStream creates the stream config names on a connection of its own to the cluster
-// (Connect), within createWait, and fails the test with the server's answer when the create is
-// refused. It sends the create once. nats-server answers the successful create of a stream of
-// more than one copy from that stream's first leader, once its members have elected one
-// (processStreamLeaderChange), so on a loaded machine the answer can come after jetStreamWait,
-// which would read a stream the server goes on to make as a failed create. A refusal, such as a
-// placement the cluster cannot make, is answered before any election.
+// (JetStream), and fails the test with the server's answer when the create is refused. It sends
+// the create once and waits for its answer until the test binary's deadline (MaxWait).
+// nats-server answers the successful create of a stream of more than one copy from that stream's
+// first leader, once its members have elected one (processStreamLeaderChange), which on a loaded
+// machine can take many seconds; a refusal, such as a placement the cluster cannot make, is
+// answered before any election.
 func (c *Cluster) CreateStream(t testing.TB, config natsgo.StreamConfig) {
 	t.Helper()
-	conn := Connect(t, c.URL())
-	t.Cleanup(conn.Close)
-	if _, err := createJetStream(t, conn).AddStream(&config); err != nil {
+	if _, err := c.JetStream(t).AddStream(&config); err != nil {
 		t.Fatalf("create stream %s: %v", config.Name, err)
 	}
 }
@@ -69,7 +62,7 @@ func settled(cluster *natsgo.ClusterInfo, n int) bool {
 func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, fmt.Sprintf("stream %s to settle", stream),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return settled(info.Cluster, info.Config.Replicas) },
 		describeStream)
 }
@@ -80,7 +73,7 @@ func AwaitSettledStream(t testing.TB, js natsgo.JetStreamContext, stream string)
 func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, n int) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, fmt.Sprintf("stream %s to hold %d settled copies", stream, n),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool { return info.Config.Replicas == n && settled(info.Cluster, n) },
 		describeStream)
 }
@@ -91,7 +84,9 @@ func AwaitStreamCopies(t testing.TB, js natsgo.JetStreamContext, stream string, 
 func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consumer string, n int) *natsgo.ConsumerInfo {
 	t.Helper()
 	return awaitInfo(t, fmt.Sprintf("consumer %s of %s to hold %d settled copies", consumer, stream, n),
-		func() (*natsgo.ConsumerInfo, error) { return js.ConsumerInfo(stream, consumer) },
+		func() (*natsgo.ConsumerInfo, error) {
+			return js.ConsumerInfo(stream, consumer, natsgo.MaxWait(readWait))
+		},
 		func(info *natsgo.ConsumerInfo) bool { return settled(info.Cluster, n) },
 		describeConsumer)
 }
@@ -101,7 +96,7 @@ func AwaitConsumerCopies(t testing.TB, js natsgo.JetStreamContext, stream, consu
 func AwaitStreamLeader(t testing.TB, js natsgo.JetStreamContext, stream, not string) *natsgo.StreamInfo {
 	t.Helper()
 	return awaitInfo(t, fmt.Sprintf("stream %s to have a leader other than %q", stream, not),
-		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream) },
+		func() (*natsgo.StreamInfo, error) { return js.StreamInfo(stream, natsgo.MaxWait(readWait)) },
 		func(info *natsgo.StreamInfo) bool {
 			return info.Cluster != nil && info.Cluster.Leader != "" && info.Cluster.Leader != not
 		},
@@ -166,8 +161,12 @@ type infoRead[T any] struct {
 func (r infoRead[T]) String() string { return fmt.Sprintf("%s (%v)", r.describe(r.info), r.err) }
 
 // awaitInfo reads an info through the shared wait until a read succeeds and done holds for it, and
-// returns that info. The failure of a wait that ran out prints what describe says of the info it
-// read last and the last error.
+// returns that info. Each caller bounds its read by readWait, whatever the wait of the context it
+// was given, so a read sent across a leader change that draws no answer is sent again: a member
+// that still counts a stream's or a consumer's leader that is gone answers nothing for it
+// (nats-server v2.15.1, jsStreamInfoRequest, jsConsumerInfoRequest, isGroupLeaderless). The
+// failure of a wait that ran out prints what describe says of the info it read last and the last
+// error.
 func awaitInfo[T any](t testing.TB, what string, read func() (*T, error), done func(*T) bool, describe func(*T) string) *T {
 	t.Helper()
 	return testwait.Until(t, what, func() (infoRead[T], bool) {

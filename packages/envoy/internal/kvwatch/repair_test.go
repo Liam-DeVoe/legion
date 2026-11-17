@@ -124,7 +124,7 @@ const (
 // jetStream is the JetStream context of conn.
 func jetStream(t *testing.T, conn *natsgo.Conn) natsgo.JetStreamContext {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
