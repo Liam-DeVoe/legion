@@ -41,6 +41,8 @@ const implementer: StepRecord = {
   report: "9b2e4d6f-8a1c-4e3b-a5d7-c9f1e3b5d7a9",
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The tester's run of step 3, still running: no end, no result, and no session or model, which
@@ -65,6 +67,8 @@ const tester: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** A merge GitHub already made: no merger started, so no agent, no model and no start. */
@@ -88,6 +92,8 @@ const mergedByGitHub: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The docs task's first run, which started before any run of task default. */
@@ -111,6 +117,8 @@ const docsDraft: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** A second run of a review of another task, sent back to step 1 of that task. */
@@ -134,6 +142,8 @@ const docsReview: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 /** The implementer's retro of LEG-1, which rated the plan: a retro is the one kind of run that
@@ -158,6 +168,8 @@ const ratedRetro: StepRecord = {
   report: null,
   rating: 4,
   rating_reason: "The plan fit the work; the review sent it back once.",
+  experiment: null,
+  variant: null,
 };
 
 /** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
@@ -182,6 +194,8 @@ const mergeSentBack: StepRecord = {
   report: null,
   rating: null,
   rating_reason: null,
+  experiment: null,
+  variant: null,
 };
 
 const config = {

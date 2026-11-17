@@ -3125,7 +3125,9 @@ type HandoffRecordedEventPayload struct {
 // the merge's place, and Report the handoff its ending role named, each null where the run has
 // none. Rating and RatingReason are a retro's alone: the rating, 1 to 5, that the agent that did
 // the retro gave the plan the issue ran, and its reason, each null where the record holds none
-// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them).
+// (PUT /api/v1/issues/{key}/steps/{id}/rating writes them). Experiment and Variant are the
+// experiment a draw put the issue in and the variant it drew there, each null where the record
+// holds none (PUT /api/v1/issues/{key}/steps/{id}/experiment writes them).
 type StepRecord struct {
 	ID           string     `json:"id"`
 	Issue        string     `json:"issue"`
@@ -3146,6 +3148,8 @@ type StepRecord struct {
 	Report       *string    `json:"report"`
 	Rating       *int       `json:"rating"`
 	RatingReason *string    `json:"rating_reason"`
+	Experiment   *string    `json:"experiment"`
+	Variant      *string    `json:"variant"`
 }
 
 // StepTask is one task of an issue with every run of its steps, in the order they ran.

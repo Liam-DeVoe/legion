@@ -19,10 +19,12 @@ import (
 // id it derives for the run (PUT /api/v1/issues/{key}/steps/{id}), and which every reader of the
 // project reads (GET /api/v1/issues/{key}/steps). A retro's record also takes the rating the agent
 // that did the retro gave the plan, and its reason, through a route of its own
-// (PUT /api/v1/issues/{key}/steps/{id}/rating): decodeJSON ignores a member a body's route does
-// not declare, so a rating sent as a member of the step write to a Dispatch older than it would be
-// dropped in silence, where a route that Dispatch does not serve answers its router's NOT_FOUND,
-// which the daemon sends again until Dispatch serves it. All three live in
+// (PUT /api/v1/issues/{key}/steps/{id}/rating), and the record of a run of an issue that a draw put
+// in an experiment takes the experiment and the variant drawn through another
+// (PUT /api/v1/issues/{key}/steps/{id}/experiment): decodeJSON ignores a member a body's route does
+// not declare, so a rating or a variant sent as a member of the step write to a Dispatch older
+// than its route would be dropped in silence, where a route that Dispatch does not serve answers
+// its router's NOT_FOUND, which the daemon sends again until Dispatch serves it. All four live in
 // internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
 // The writes are the daemon's and no one else's: a person, an agent's session and the daemon of
@@ -66,7 +68,8 @@ type stepRecordInput struct {
 }
 
 // write is the step write input states, each field as the body sent it: the fields the record
-// shares with the rating route's body, which adds the rating and its reason to it.
+// shares with the rating route's body, which adds the rating and its reason to it, and with the
+// experiment route's body, which adds the experiment and the variant.
 func (input stepRecordInput) write() workflowstore.StepWrite {
 	return workflowstore.StepWrite{
 		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
@@ -85,6 +88,15 @@ type stepRatingInput struct {
 	RatingReason *string `json:"rating_reason" required:"true"`
 }
 
+// stepExperimentInput is the body PUT /api/v1/issues/{key}/steps/{id}/experiment takes: the step
+// write's body, which makes the run's record where its start and end have not landed yet, and the
+// experiment and the variant of the run's issue, both required.
+type stepExperimentInput struct {
+	stepRecordInput
+	Experiment *string `json:"experiment" required:"true"`
+	Variant    *string `json:"variant" required:"true"`
+}
+
 // putIssueStep writes one run of one step of an issue and answers its record as it stands after
 // the write, with the attempt the read gives it. A write sets each field the record does not hold
 // yet and leaves every field it holds, so a start and an end land in either order and a write
@@ -96,7 +108,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.writeIssueStep(w, r, input.write(), input.Actor, false)
+	s.writeIssueStep(w, r, input.write(), input.Actor, stepRouteRecord)
 }
 
 // putIssueStepRating writes the rating of a retro's run, with every field of the run the body
@@ -110,7 +122,7 @@ func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
 	}
 	write := input.write()
 	write.Rating = input.rating()
-	s.writeIssueStep(w, r, write, input.Actor, true)
+	s.writeIssueStep(w, r, write, input.Actor, stepRouteRating)
 }
 
 // rating is the rating input states as the store's one value: nil where the body names no rating,
@@ -128,20 +140,67 @@ func (input stepRatingInput) rating() *workflowstore.StepRating {
 	return rating
 }
 
-// writeIssueStep is the one write of a step record behind both routes: the writer and the issue
-// are checked, write (its ID, Issue and Project filled here from the path and the issue row) is
-// written, and the record is answered as the read lists it. rates is the rating route, which
-// refuses a write that names no rating.
-func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, rates bool) {
+// putIssueStepExperiment writes the experiment and the variant of a run's issue, with every field
+// of the run the body states, as putIssueStep writes them: the two are set once, and the record is
+// made where the run's start and end have not landed yet.
+func (s *server) putIssueStepExperiment(w http.ResponseWriter, r *http.Request) {
+	var input stepExperimentInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	write := input.write()
+	write.Experiment = input.experiment()
+	s.writeIssueStep(w, r, write, input.Actor, stepRouteExperiment)
+}
+
+// experiment is the experiment and the variant input states as the store's one value: nil where
+// the body names neither, which the experiment route refuses, and else the two, "" for the one the
+// body does not name, which the store refuses as one stated without the other.
+func (input stepExperimentInput) experiment() *workflowstore.StepExperiment {
+	if input.Experiment == nil && input.Variant == nil {
+		return nil
+	}
+	drawn := &workflowstore.StepExperiment{}
+	if input.Experiment != nil {
+		drawn.Experiment = *input.Experiment
+	}
+	if input.Variant != nil {
+		drawn.Variant = *input.Variant
+	}
+	return drawn
+}
+
+// stepRoute is which of the three routes of a run's record a write came in on: each takes the
+// step write's fields, and the rating route and the experiment route each require the fields
+// only they declare.
+type stepRoute int
+
+const (
+	stepRouteRecord stepRoute = iota
+	stepRouteRating
+	stepRouteExperiment
+)
+
+// writeIssueStep is the one write of a step record behind the three routes: the writer and the
+// issue are checked, write (its ID, Issue and Project filled here from the path and the issue row)
+// is written, and the record is answered as the read lists it. route refuses a write of the rating
+// route that names no rating, and one of the experiment route that names no experiment.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, route stepRoute) {
 	actor, key, ok := s.requireIssueDaemon(w, r, supplied, "a step record")
 	if !ok {
 		return
 	}
 	// A body refused for its shape is refused before the transaction and the issue's lock, as the
 	// package refuses a required field it lacks.
-	if rates && write.Rating == nil {
+	switch {
+	case route == stepRouteRating && write.Rating == nil:
 		writeError(w, codeStepInput, http.StatusBadRequest,
 			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
+		return
+	case route == stepRouteExperiment && write.Experiment == nil:
+		writeError(w, codeStepInput, http.StatusBadRequest,
+			"experiment and variant are required: the experiment route writes the experiment and the variant of the run's issue")
 		return
 	}
 
@@ -272,9 +331,9 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report and a nil
-// Rating are a run that has none, which the answer carries as null, the rating and its reason
-// both; a return to place 0 carries 0.
+// stepRecord is a run as the routes answer it: an absent ReturnedTo, an empty report, a nil Rating
+// and a nil Experiment are a run that has none, which the answer carries as null, the rating and
+// its reason both, and the experiment and the variant both; a return to place 0 carries 0.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
@@ -289,6 +348,10 @@ func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	if step.Rating != nil {
 		rating := *step.Rating
 		record.Rating, record.RatingReason = &rating.Rating, &rating.Reason
+	}
+	if step.Experiment != nil {
+		drawn := *step.Experiment
+		record.Experiment, record.Variant = &drawn.Experiment, &drawn.Variant
 	}
 	return record
 }
