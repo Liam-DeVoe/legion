@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  `envoy-send` and the Legion daemon client follow no redirect. A 3xx is a refusal that names its
+  status, the origin it points at and the setting to correct, and `envoy-send` exits 1. Before,
+  the send followed it with the broker's DPoP proof and the message and printed `Sent`, and a
+  daemon call sent a 307's or 308's body, with the boot token or the claim's secret, on to the
+  other origin.
