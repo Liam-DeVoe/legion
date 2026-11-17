@@ -11,29 +11,16 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// planRatingsVersion is the migration whose header carries the way back of the release that rates
-// each plan, 20261117023932_outbox_kinds_with_the_plan_record. docs/kubernetes.md carries the same
-// block under "Rolling back the release that rates each plan", and internal/textcheck's
-// TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide holds the two to one text. This file
-// reads the header alone, so the guide stays out of this package's CI filter: a test that read the
-// guide would start the whole daemon Go lane on an edit of the guide alone.
-const planRatingsVersion = 20261117023932
-
-// planRatingsWayBack is the way back's block as the header of planRatingsVersion carries it, read by
-// the one reader of a migration's way back (migrations.WayBack) from the embedded migration, which is
-// that file's bytes as the binary ships them. A header with no way back stops the test by name: a
-// block this cannot find is a block it would pass while running nothing.
-func planRatingsWayBack(t *testing.T) string {
-	t.Helper()
-	block, err := migrations.WayBack(planRatingsVersion)
-	if err != nil {
-		t.Fatalf("read the way back of the release that rates each plan: %v", err)
-	}
-	return block
-}
+// planRatingsRelease names the release whose way back the header of planRecordKindVersion
+// (20261117023932_outbox_kinds_with_the_plan_record) carries, as a failure to read that block
+// names it. docs/kubernetes.md carries the same block under "Rolling back the release that rates
+// each plan", and internal/textcheck's TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide
+// holds the two to one text. This file reads the header alone, so the guide stays out of this
+// package's CI filter: a test that read the guide would start the whole daemon Go lane on an edit
+// of the guide alone.
+const planRatingsRelease = "the release that rates each plan"
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
 // it (commit aa36bcbe4e), the release this rollback goes back to: every field of this release's
@@ -158,8 +145,8 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		}
 	}
 
-	if _, err := store.Pool().Exec(ctx, planRatingsWayBack(t), pgx.QueryExecModeSimpleProtocol); err != nil {
-		t.Fatalf("run the way back the header of migration %d carries: %v", planRatingsVersion, err)
+	if _, err := store.Pool().Exec(ctx, wayBackOf(t, planRecordKindVersion, planRatingsRelease), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back the header of migration %d carries: %v", planRecordKindVersion, err)
 	}
 
 	rows, err := store.Pool().Query(ctx, `select id, kind, issue, payload, attempts, next_at, last_error from outbox order by id`)
@@ -226,13 +213,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 	// The way back restores no kind check: the rollback keeps this release's, which must take every
 	// kind the release before writes, its list (20261117000528's) whole, or that release's first
 	// write of a kind left out fails its transaction.
-	for _, kind := range []string{
-		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
-		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
-		"gated_steps_publish", "claim_release", "hook_prompt", "design_gates_publish", "update_ask",
-		"merge_queue_read", "merge_queue_removal", "role_holders_publish", "step_record",
-	} {
+	for _, kind := range stepRecordReleaseKinds {
 		if _, err := store.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
 			values ($1, 'LEGION-209', '{}', 0, now(), '')`, kind); err != nil {
 			t.Errorf("the release before queues a %s row after the way back: %v", kind, err)
