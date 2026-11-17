@@ -131,13 +131,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	})
 
 	t.Run("a todo on a root held for its children leaves the hold and says why", func(t *testing.T) {
-		const beneath = "LEGION-210"
 		pool := migratedPool(t)
 		engine, logged := loggedEngine()
 		root := stepRoot(t, pool, phase.Retro)
-		parent := root.Key
-		seedIssue(t, pool, record.Issue{Key: beneath, Repo: root.Repo, DefaultBranch: "main", GitHubRepo: root.GitHubRepo, Tree: root.Key, Parent: &parent,
-			Project: "LEGION", Title: "a child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"})
 		heldWork{from: phase.Retro, reason: record.HoldForChildren}.stand(t, pool, root)
 		task, outbox := taskOf(t, pool, engine, root.Key), outboxRowsOf(t, pool, root.Key)
 
@@ -158,8 +154,8 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		if got := outboxRowsOf(t, pool, root.Key); got != outbox {
 			t.Fatalf("the todo queued %d outbox rows of %s, want none: nothing starts and no status is written", got-outbox, root.Key)
 		}
-		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits for the issues beneath it") != 1 || !strings.Contains(line, beneath) {
-			t.Fatalf("the log of the todo = %q, want one line saying the hold stays, naming %s", line, beneath)
+		if line := logged.String(); strings.Count(line, "workflow: a todo leaves the hold of a root that waits for the issues beneath it") != 1 || !strings.Contains(line, heldBeneath) {
+			t.Fatalf("the log of the todo = %q, want one line saying the hold stays, naming %s", line, heldBeneath)
 		}
 	})
 

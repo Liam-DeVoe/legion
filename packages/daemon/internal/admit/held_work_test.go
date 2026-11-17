@@ -13,9 +13,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
+// heldBeneath is the open issue beneath the parent holdByPlan holds for its children.
+const heldBeneath = "LEGION-10"
+
 // holdByPlan writes key's plan `implementer tester`, task a at place, and the hold its plan holds
 // it in: stopped with why where reason is record.HoldTaskStopped, running where the hold stands in
-// place of its retro (record.HoldForChildren).
+// place of its retro (record.HoldForChildren), with heldBeneath in implementing beneath it.
 func holdByPlan(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase, reason record.HoldReason, place record.TaskPlace) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -46,6 +49,16 @@ func holdByPlan(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase, 
 		} {
 			if put != nil {
 				t.Fatalf("seed the hold of %s: %v", key, put)
+			}
+		}
+		if reason == record.HoldForChildren {
+			// The transition holds a parent for its children only while an issue beneath it is in
+			// the workflow (workflow's beneathRetro), and the last one's leave starts the retro.
+			parent := key
+			if err := records.PutIssue(ctx, tx, record.Issue{Key: heldBeneath, Repo: held.Repo, DefaultBranch: "main", GitHubRepo: held.GitHubRepo, Tree: held.Tree,
+				Project: testProject, Title: heldBeneath, Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+				Rank: "C", LastDispatchSeq: 3}); err != nil {
+				t.Fatalf("seed %s beneath %s: %v", heldBeneath, key, err)
 			}
 		}
 		if reason == record.HoldTaskStopped {
