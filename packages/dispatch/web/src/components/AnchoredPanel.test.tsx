@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { act, render, screen } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: the outside press below is a pointerdown with no release, which user-event has no form for.
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { useKeymap, useKeymapScope } from "../features/shell/keymap";
+import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { DisplayMenu } from "./DisplayMenu";
 import { MultiSelect } from "./MultiSelect";
 
@@ -141,6 +143,72 @@ test("an open list or menu stands above every layer a document's own floating ba
     await user.click(screen.getByRole("button", { name: "Version" }));
     const list = screen.getByRole("listbox", { name: "Version options" }).parentElement;
     expect(Number(list?.style.zIndex), "the Version list's layer").toBeGreaterThan(top);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** A panel a host opens from its own anchor, noting each dismissal it is told of. The anchor can
+ *  be taken off the page with no press, and a control outside the panel can be pressed. */
+function DismissedPanel({ dismissals }: { dismissals: PanelDismissal[] }) {
+  const [open, setOpen] = useState(false);
+  const [anchored, setAnchored] = useState(true);
+  const anchor = useRef<HTMLButtonElement>(null);
+  return (
+    <>
+      {anchored ? (
+        <button onClick={() => setOpen(true)} ref={anchor} type="button">
+          Open
+        </button>
+      ) : null}
+      <button onClick={() => setAnchored(false)} type="button">
+        Outside
+      </button>
+      {open ? (
+        <AnchoredPanel
+          anchorRef={anchor}
+          className=""
+          id="dismissed-panel"
+          label="Panel"
+          onDismiss={(how) => {
+            dismissals.push(how);
+            setOpen(false);
+          }}
+          role="dialog"
+        >
+          <button type="button">Inside</button>
+        </AnchoredPanel>
+      ) : null}
+    </>
+  );
+}
+
+// INFRA-3135, round 12: the Agents composer's Issue list hands the reader to the row on Escape
+// alone, so the panel the list stands in tells its host what dismissed it, and carries the id its
+// anchor names it by.
+test("a panel tells its host what dismissed it: Escape, Tab past its end, a press outside, its anchor gone", async () => {
+  const user = userEvent.setup();
+  const dismissals: PanelDismissal[] = [];
+  const view = render(<DismissedPanel dismissals={dismissals} />);
+  try {
+    const open = screen.getByRole("button", { name: "Open" });
+    const outside = screen.getByRole("button", { name: "Outside" });
+    await user.click(open);
+    expect(document.getElementById("dismissed-panel")).toBe(
+      screen.getByRole("dialog", { name: "Panel" })
+    );
+    expect(screen.getByRole("button", { name: "Inside" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await user.click(open);
+    await user.tab();
+    await user.click(open);
+    // A press with no release, so the control under it does nothing of its own.
+    fireEvent.pointerDown(outside);
+    await user.click(open);
+    // The anchor leaves the page with no press at all.
+    act(() => outside.click());
+    expect(dismissals).toEqual(["escape", "tab", "press", "gone"]);
+    expect(screen.queryByRole("dialog", { name: "Panel" })).toBeNull();
   } finally {
     view.unmount();
   }

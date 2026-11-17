@@ -314,10 +314,11 @@ const parallelProjects = [
   // `@webkit` tag, so each row it runs carries that tag and a comment naming the clause below it
   // exercises. Every clause here names one engine behaviour and the rows that exercise it.
   // Where a caret lands beside a collaborator's own caret: `collab-cursor`'s three rows.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -397,10 +398,11 @@ const parallelProjects = [
   // `code-line-replace`'s two rows.
   // The engine's focus rule for a click on a link inside the editor, where Firefox focuses the
   // editing host rather than the link: `picture-link-click`'s one row.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's

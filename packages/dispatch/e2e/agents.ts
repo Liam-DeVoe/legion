@@ -393,6 +393,23 @@ export function agentRow(page: Page, sessionID: string): Locator {
   return page.locator(`[data-agent-row="${sessionID}"]`);
 }
 
+/** The Issue list a row's own trigger - its `Choose issue` toggle - opened. The list is portalled
+ *  out of the row, so it is found through the panel that trigger names in `aria-controls`: this
+ *  row's list and no other list of the page. While the list is shut the trigger names nothing,
+ *  and this finds nothing. */
+export function issueListOf(row: Locator): Locator {
+  return row.locator("xpath=id(.//*[@data-agent-issue-picker]/@aria-controls)");
+}
+
+/** The option of a row's open Issue list that picks `key`: an issue's key (its row reads
+ *  `CORE-1 · <title>`, or `CORE-1 (closed)`), or `""` for `No issue`. */
+export function issueOption(row: Locator, key: string): Locator {
+  return issueListOf(row).getByRole(
+    "option",
+    key === "" ? { exact: true, name: "No issue" } : { name: new RegExp(`^${key} `) }
+  );
+}
+
 /** One of the page's four group headings (INFRA-812, R7), whose accessible name is the group's
  *  name and its count: `Idle (3)`, or `Idle (3, 1 selected)` once a row of it is selected. */
 export function agentGroupToggle(page: Page, group: AgentGroup): Locator {

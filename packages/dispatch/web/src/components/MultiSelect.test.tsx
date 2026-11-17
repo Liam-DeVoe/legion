@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the outside-press sites below are a pointerdown with no release, which user-event has no form for.
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
-import { MultiSelect } from "./MultiSelect";
+import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
   const [open, setOpen] = useState(false);
@@ -27,19 +27,35 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
   );
 }
 
-/** A single pick as a host draws one: the value it holds, every value the list handed it, and a
- *  control outside the list to press. */
-function SingleHost({ initial, options }: { initial?: string; options: string[] }) {
+/** A single pick as a host draws one: the value it holds, every value the list handed it, what
+ *  closed it each time, and a control outside the list to press, whose own action closes it. */
+function SingleHost({
+  focusOnOpen,
+  initial,
+  marks,
+  options,
+}: {
+  focusOnOpen?: boolean;
+  initial?: string;
+  marks?: ListMarks;
+  options: string[];
+}) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(initial);
   const [handed, setHanded] = useState<string[]>([]);
+  const [closings, setClosings] = useState<string[]>([]);
   return (
     <>
       <MultiSelect
         emptyMessage="Nothing here."
+        focusOnOpen={focusOnOpen}
         label="Epic"
+        marks={marks}
         mode="single"
-        onOpenChange={setOpen}
+        onOpenChange={(next, closedBy) => {
+          setOpen(next);
+          if (!next) setClosings((before) => [...before, closedBy ?? "nothing"]);
+        }}
         onPick={(picked) => {
           setValue(picked);
           setHanded((before) => [...before, picked]);
@@ -50,7 +66,10 @@ function SingleHost({ initial, options }: { initial?: string; options: string[] 
         value={value}
       />
       <output data-testid="handed">{handed.join(",")}</output>
-      <button type="button">Elsewhere</button>
+      <output data-testid="closings">{closings.join(",")}</output>
+      <button onClick={() => setOpen(false)} type="button">
+        Elsewhere
+      </button>
     </>
   );
 }
@@ -311,11 +330,11 @@ test("a single pick closes the list, puts the focus on its trigger and hands ove
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveTextContent("docs");
 
-    // From the keyboard: the arrows move the active option, and Enter picks it.
+    // From the keyboard: the list opens on the value picked, the arrows move the active option
+    // on from it, and Enter picks it.
     await user.keyboard("{Enter}");
     const search = screen.getByRole("combobox", { name: "Search epics" });
     expect(search).toHaveFocus();
-    await user.keyboard("{ArrowDown}");
     await user.keyboard("{ArrowDown}");
     expect(search).toHaveAttribute(
       "aria-activedescendant",
@@ -380,6 +399,103 @@ test("a single pick's text box narrows its options, and Enter over none picks no
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("handed").textContent).toBe("");
     expect(screen.getByRole("listbox", { name: "Epic options" })).toBeTruthy();
+  } finally {
+    view.unmount();
+  }
+});
+
+// INFRA-3135, round 12: the Agents composer's Issue list. Enter on the list opened over the issue
+// already picked has to keep that issue, as Enter on a `<select>` does, so the list opens with its
+// picked value active rather than its first option.
+test("a single pick opens with its picked value active, so Enter keeps it and the arrows move on from it", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "docs" }).id
+    );
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("handed").textContent).toBe("docs");
+    expect(trigger).toHaveTextContent("docs");
+
+    await user.click(trigger);
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveAttribute(
+      "aria-activedescendant",
+      screen.getByRole("option", { name: "frontend" }).id
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// A host whose next move depends on how the reader left the list - the Agents composer's, whose
+// Escape goes one level out to the row - is told what closed it.
+test("every close tells the host what closed the list: a pick, Escape, Tab, a press outside, the trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    await user.click(trigger);
+    await user.click(screen.getByRole("option", { name: "docs" }));
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+    await user.click(trigger);
+    await user.tab();
+    await user.click(trigger);
+    // A press with no release, as the outside presses above are.
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Elsewhere" }));
+    await user.click(trigger);
+    await user.click(trigger);
+    expect(screen.getByTestId("closings").textContent).toBe("pick,escape,tab,press,trigger");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Agents composer opens its Issue list before the issues have come and hands the focus in
+// itself once they have, and finds the list's text box - portalled out of the row - through the
+// panel the trigger names.
+test("the trigger names the open list's panel, the host's marks are on the trigger and the text box, and focusOnOpen false leaves the focus", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <SingleHost
+      focusOnOpen={false}
+      marks={{ search: { "data-test-search": "" }, trigger: { "data-test-trigger": "" } }}
+      options={["api", "docs"]}
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    expect(trigger).toHaveAttribute("data-test-trigger", "");
+    expect(trigger).not.toHaveAttribute("aria-controls");
+    await user.click(trigger);
+    expect(trigger).toHaveFocus();
+    const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    const search = screen.getByRole("combobox", { name: "Search epics" });
+    expect(search).toHaveAttribute("data-test-search", "");
+    expect(panel?.contains(search)).toBe(true);
+    expect(panel?.contains(screen.getByRole("listbox", { name: "Epic options" }))).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The Agents page closes a row's Issue list from the row itself (`leaveAgentComposer`), with the
+// reader on the row: the close leaves them there rather than pulling them onto the trigger.
+test("a close the host makes while the focus is outside the list leaves the focus there", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost options={["api", "docs"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Epic" }));
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    await user.keyboard("{Enter}");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
   } finally {
     view.unmount();
   }
