@@ -3,19 +3,20 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import type { IssueDetails } from "../../../api/types";
 import type { Preset } from "../page-words";
-import { subscribeTreeFreshness, type TreeFilter, viewKey, viewQuery } from "./tree-read";
+import { subscribeTreeFreshness, type TreeView, viewKey, viewQuery } from "./tree-read";
 
-/** The filters that read a view of the tree. Decisions reads none: its view is the decisions
- *  read (`issueDecisionsQuery`), which the load reads already. */
-const VIEW_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
+/** The views of the tree the filters read, one for each filter: Spec's, Verification's and
+ *  Plan's role documents, and the issue's decisions wherever they are written
+ *  (dispatch://INFRA-4097's plan, choice 6). */
+const VIEW_FILTERS: readonly TreeView[] = ["spec", "verification", "plan", "decisions"];
 
 /**
  * The filters' view reads of one load of the issue (dispatch://INFRA-4062 R4, R6), around the
- * stage. Each of Spec, Verification and Plan is read the first time its filter is on in a load,
- * and then held for the rest of it, never stale and never collected, so a filter turned off and
- * on again finds its answer held and sends nothing. `useIssueTree` watches the three reads
- * without ever sending one, and sets what they hold on the tree's root (`TreeNode.views`), which
- * is what each filter draws from.
+ * stage. Each filter's view is read the first time its filter is on in a load, and then held for
+ * the rest of it, never stale and never collected, so a filter turned off and on again finds its
+ * answer held and sends nothing. `useIssueTree` watches the four reads without ever sending one,
+ * and sets what they hold on the tree's root (`TreeNode.views`), which is what each filter draws
+ * from.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view

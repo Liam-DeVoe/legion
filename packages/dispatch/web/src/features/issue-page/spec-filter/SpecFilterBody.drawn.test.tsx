@@ -1017,12 +1017,15 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
   const tree = buildIssueTree({
     asks: [askRead("ask-1", "Keep both statements.")],
     coverage: coverageRead(["r3", "r4"]),
-    decisions: decisionsRead(made),
     issue: issueDetails(),
     tree: {
       converted: false,
       cursor: null,
       nodes: [
+        answered("d5", "decision", {
+          document: { artifact_id: "artifact-dec", position: 0, slug: "decisions-md" },
+          links: made[1]?.links ?? [],
+        }),
         ...["r3", "r4"].map((id, position) =>
           answered(id, "requirement", {
             document: { artifact_id: "artifact-spec", position, slug: "spec" },
@@ -1031,7 +1034,7 @@ test("w on a statement goes to the cell beside it, whichever decision the tree's
         answered("ask-1", "ask"),
       ],
       tree: null,
-      tuples: [],
+      tuples: [{ from: "d5", kind: "shaped", to: statementRef("r4") }],
       view_of: null,
     },
   });

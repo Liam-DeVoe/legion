@@ -5,59 +5,62 @@ import type { ReactNode } from "react";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
+import type { Actor, Comment } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
+import { issueTreeKey, type TreeAnswer } from "../tree-read/tree-read";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   answeredAsk,
+  changeComment,
   closing,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
-  decisionsRead,
   issueDetails,
   issueTree,
   KEY,
   openAsk,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
+  treeAnswer,
 } from "./decisions-fixtures";
 import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 /**
- * The seam between today's reads and the Decisions view (dispatch://INFRA-3937 R8). Each case
- * puts the three reads and the decisions document's blocks in the cache under the keys the
- * page's tree reads them by, as the cache holds them once the tree is drawn, and no query reads
- * again on mount, so any request the seam made would be one of its own. The view is the one the
- * slot passes: the tree as the Decisions view leaves it (`presetView`).
+ * The seam between the page's reads and the Decisions view (dispatch://INFRA-3937 R8,
+ * dispatch://INFRA-4097's plan, task t5). Each case holds the decisions view on the tree's root,
+ * as `useIssueTree.ts` sets it there (`TreeNode.views`), and puts the tree read, the asks and the
+ * comments in the cache under the keys the page's tree reads them by, as the cache holds them
+ * once the tree is drawn, and no query reads again on mount, so any request the seam made would
+ * be one of its own. The view is the one the slot passes: the tree as the Decisions view leaves
+ * it (`presetView`).
  */
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
-/** The seam's parts for the issue whose tree holds `children`, with `decisions`, `asks`,
- *  `comments` and the decisions document's `blocks` as the cache holds them. */
+/** The seam's parts for the issue whose tree holds `children`, with `decisions` the decisions
+ *  view held on its root (undefined for a view that has not answered), and `asks`, `comments`
+ *  and the tree read's answer `tree` as the cache holds them. */
 async function entriesOf(
   children: readonly TreeNode[],
-  decisions: IssueDecisions,
+  decisions: TreeAnswer | undefined,
   asks: readonly DecisionsAsk[] = [],
   comments: readonly Comment[] = [],
-  blocks: readonly ArtifactBlock[] = []
+  tree: TreeAnswer = treeAnswer([])
 ): Promise<DecisionsParts> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  client.setQueryData(["decisions", KEY], decisions);
+  client.setQueryData(issueTreeKey(KEY), tree);
   client.setQueryData(["asks", KEY], asks);
   client.setQueryData(["comments", KEY], comments);
-  // The issue names its decisions document by its role (`issueDetails`), so the seam reads that
-  // document's blocks, as the tree does.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], blocks);
   const issue = issueDetails();
-  const root = issueTree(children);
+  const whole = issueTree(children);
+  const root: TreeNode = decisions === undefined ? whole : { ...whole, views: { decisions } };
   const view = presetView(root, "decisions", "").root;
   const wrapper = ({ children: inside }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{inside}</QueryClientProvider>
@@ -70,34 +73,6 @@ async function entriesOf(
   const parts = hook.result.current;
   hook.unmount();
   return parts;
-}
-
-/** The decisions document's blocks as the blocks read answers them, in document order: each
- *  decision's heading, whose block is the decision's own (`Decision.block_id`), then one block
- *  for each paragraph of its words, each at the place it holds in the document's markdown. */
-function documentBlocks(made: readonly Decision[]): ArtifactBlock[] {
-  const blocks: ArtifactBlock[] = [];
-  let at = 0;
-  const add = (id: string, type: string, markdown: string) => {
-    blocks.push({
-      attributes: [],
-      from: at,
-      id,
-      references: { asks: 0, comments: 0 },
-      to: at + markdown.length,
-      token: id,
-      type,
-    });
-    // A blank line stands between two blocks of the markdown.
-    at += markdown.length + 2;
-  };
-  for (const one of made) {
-    add(one.block_id, "heading", `## ${one.heading}`);
-    one.text.split("\n\n").forEach((paragraph, index) => {
-      add(`${one.block_id}-${index + 1}`, "paragraph", paragraph);
-    });
-  }
-  return blocks;
 }
 
 /** The node ids of each part, in the order the part draws them. */
@@ -116,15 +91,15 @@ function idsOf(parts: DecisionsParts): Record<keyof DecisionsParts, string[]> {
 
 const D = (block: string) => decisionNode(block).id;
 
-// R8: the seam gives the view's four parts from the reads the page's tree already made. Bob's
-// answers stand under the reader's decisions, newest first among the reader's own. Two answers
-// of one moment stand in the order their nodes first stand in the tree, read depth first: Bob's
-// is under the statement at the tree's top and the reader's is the issue's last ask, so Bob's
-// stands first, which neither the reader's entries first nor a walk level by level gives. The
-// decisions document's blocks place a Change (decision 110 (1) of dispatch://INFRA-1196): two
-// decisions that wait open with the same words, and the reader's Change was written in the
-// second one's section, so the second leaves the review list for her decisions and the first
-// still waits. The quote alone would put the Change on the first.
+// R8: the seam gives the view's four parts from the reads the page's tree already made and the
+// decisions view the page holds. Bob's answers stand under the reader's decisions, newest first
+// among the reader's own. Two answers of one moment stand in the order their nodes first stand
+// in the tree, read depth first: Bob's is under the statement at the tree's top and the reader's
+// is the issue's last ask, so Bob's stands first, which neither the reader's entries first nor a
+// walk level by level gives. The tree read places a Change (dispatch://INFRA-4097's plan, choice
+// 1): two decisions that wait open with the same words, and the read hangs the reader's Change
+// under the second, so the second leaves the review list for her decisions and the first still
+// waits. No quote is matched for it, which would have put the Change on the first.
 test("the seam gives four parts from today's reads and makes no request", async () => {
   const tie = "2026-11-11T09:00:00Z";
   // Two decisions that wait, each opening with the same paragraph.
@@ -149,14 +124,14 @@ test("the seam gives four parts from today's reads and makes no request", async 
     decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
     decision("minor"),
   ];
-  // The reader's Change on the second decision, made after both last changed: its anchor
-  // quotes the decision's first paragraph, as the page's Change does, which the first decision
-  // holds too, and names that paragraph's block.
+  // The reader's Change on the second decision, made after both last changed: its anchor quotes
+  // the decision's first paragraph, as the page's Change does, which the first decision holds
+  // too. The comments read holds it, and the tree read hangs it under the second decision.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
-      block_id: "asked-1",
+      artifact_id: SPEC_DOCUMENT.id,
+      block_id: null,
       mark_id: "mark-asked",
       orphaned: false,
       quote: opening,
@@ -184,6 +159,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
+  const getIssueTree = spyOn(api, "getIssueTree");
   const listIssueAsks = spyOn(api, "listIssueAsks");
   const listComments = spyOn(api, "listComments");
   // Any request at all, past the reads the page's tree makes.
@@ -191,10 +167,13 @@ test("the seam gives four parts from today's reads and makes no request", async 
   try {
     const parts = await entriesOf(
       children,
-      decisionsRead(made),
+      treeAnswer(made),
       asks,
       [change],
-      documentBlocks(made)
+      treeAnswer([
+        ...made,
+        changeComment(change.id, "asked", change.created_at, change.body, change.author),
+      ])
     );
     const ids = idsOf(parts);
     expect(ids.yours).toEqual([
@@ -220,28 +199,27 @@ test("the seam gives four parts from today's reads and makes no request", async 
     expect(parts.review[0]).not.toHaveProperty("change");
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
+    expect(getIssueTree).not.toHaveBeenCalled();
     expect(listIssueAsks).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueDecisions.mockRestore();
+    getIssueTree.mockRestore();
     listIssueAsks.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
   }
 });
 
-// R8: a decisions read that holds no decision, or none of its `decisions` member, gives no
+// R8: a decisions view that holds no decision, or one that has not answered yet, gives no
 // decision and no error, and the view draws the questions alone. The tree is the one the page
-// builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
+// builds from a tree read that holds no decision node.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
-  // A read with no `decisions` member, which its type does not allow and an answer can still be.
-  const { document, open_questions } = decisionsRead([]);
-  const missing = { document, open_questions } as unknown as IssueDecisions;
   for (const [read, decisions] of [
-    ["an empty member", decisionsRead([])],
-    ["no member", missing],
+    ["an empty view", treeAnswer([])],
+    ["no view yet", undefined],
   ] as const) {
     const drawn = entriesOf(children, decisions);
     // The hook throws nothing on this read: the promise of its parts settles with them.

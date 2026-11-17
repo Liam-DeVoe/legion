@@ -577,11 +577,6 @@ function fullyReadIssue(): TreeNode {
       ],
       spec_artifact_id: specDocument.id,
     },
-    decisions: {
-      decisions: [decision],
-      document: decisionsDocument.id,
-      open_questions: [],
-    },
     tree: {
       converted: false,
       cursor: null,
@@ -593,6 +588,18 @@ function fullyReadIssue(): TreeNode {
           "What this is. Why it matters. What is different when done."
         ),
         block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
+        {
+          ...block("d1", "decision", 0, decision.text),
+          document: {
+            artifact_id: decisionsDocument.id,
+            position: 0,
+            slug: decisionsDocument.slug,
+          },
+          kept: decision.kept,
+          kind: decision.kind,
+          links: decision.links,
+          waiting_review: decision.waiting_review,
+        },
       ],
       tree: null,
       tuples: [],

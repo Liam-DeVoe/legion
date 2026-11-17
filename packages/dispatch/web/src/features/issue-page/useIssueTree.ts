@@ -9,7 +9,6 @@ import {
   whoAmIQuery,
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import {
   ambiguousTargets,
   buildIssueTree,
@@ -90,19 +89,21 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * the model is testable without a server and the page makes no request per node.
  *
  * The tree is the issue's tree read (`useTreeRead`), every page of it, which places, orders and
- * words every node; no document's blocks are read. Beside it stand the reads that tell what the
- * answer does not, each under the key another surface of this issue reads too, so opening
- * Details, the history or the Contents pane after the tree finds them answered rather than
- * fetching again: the coverage, the decisions, the results, the issue's asks, its comments -
- * which also say which decision of the decisions read a person asked to change
- * (`decision-review.ts`) - its messages, and the reader's login, which says which open questions
- * wait on the reader (`IssueTreeReads.viewer`).
+ * words every node; no document's blocks are read. Every decision is one of its nodes, with its
+ * review state, and a person's comment the read hangs under a decision is a change they asked of
+ * it (`decision-review.ts`), so no decisions read is made. Beside it stand the reads that tell
+ * what the answer does not, each under the key another surface of this issue reads too, so
+ * opening Details, the history or the Contents pane after the tree finds them answered rather
+ * than fetching again: the coverage, the results, the issue's asks, its comments, its messages,
+ * and the reader's login, which says which open questions wait on the reader
+ * (`IssueTreeReads.viewer`).
  *
- * Each filter's view read (`viewQuery`) is watched here and never sent: `ViewReadProvider`
- * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds,
- * with the decisions read, is set on the issue's node (`TreeNode.views`), which `presetView` and
- * `filterSignals` draw a filter from (R4). The root keeps its identity while neither the tree nor
- * a held view changes.
+ * Each filter's view read (`viewQuery`), the decisions view among them (dispatch://INFRA-4097's
+ * plan, choice 6), is watched here and never sent: `ViewReadProvider`
+ * (`tree-read/view-read.tsx`) reads a view the first time its filter is on, and whatever it holds
+ * is set on the issue's node (`TreeNode.views`), which `presetView` and `filterSignals` draw a
+ * filter from (R4), and the Decisions filter its decisions (`decisions-entries.ts`). The root
+ * keeps its identity while neither the tree nor a held view changes.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
@@ -119,7 +120,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const read = useTreeRead(issue);
   const coverage = useQuery(issueCoverageQuery(key));
-  const decisions = useQuery(issueDecisionsQuery(key, true));
   const results = useQuery(issueResultsQuery(key));
   const asks = useQuery({
     queryKey: ["asks", key],
@@ -141,32 +141,33 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const viewer = who.data?.login;
   // Each filter's view read, watched by an observer that is never enabled, so it sends nothing
   // and holds whatever `ViewReadProvider` read for the load.
-  const [specView, verificationView, planView] = useQueries({
+  const [specView, verificationView, planView, decisionsView] = useQueries({
     queries: [
       { ...viewQuery(key, "spec"), enabled: false },
       { ...viewQuery(key, "verification"), enabled: false },
       { ...viewQuery(key, "plan"), enabled: false },
+      { ...viewQuery(key, "decisions"), enabled: false },
     ],
   });
   const spec = specView?.data;
   const verification = verificationView?.data;
   const plan = planView?.data;
+  const decisions = decisionsView?.data;
   const views = useMemo((): TreeViews | undefined => {
     const held: TreeViews = {
-      ...(decisions.data === undefined ? {} : { decisions: decisions.data }),
+      ...(decisions === undefined ? {} : { decisions }),
       ...(plan === undefined ? {} : { plan }),
       ...(spec === undefined ? {} : { spec }),
       ...(verification === undefined ? {} : { verification }),
     };
     return Object.keys(held).length === 0 ? undefined : held;
-  }, [decisions.data, plan, spec, verification]);
+  }, [decisions, plan, spec, verification]);
   // One value, so the model is given the reads and nothing else.
   const reads = useMemo<IssueTreeReads>(
     () => ({
       asks: asks.data,
       comments: comments.data,
       coverage: coverage.data,
-      decisions: decisions.data,
       issue,
       messages: messages.data,
       results: results.data,
@@ -177,7 +178,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       asks.data,
       comments.data,
       coverage.data,
-      decisions.data,
       issue,
       messages.data,
       read.answer,
@@ -188,8 +188,7 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
   // One request for every name, not one per read that landed. Each of these reads adds to the
-  // tree as it arrives - the tree read every node, the decisions read a decision no node holds,
-  // the asks an answer, the comments a Change moved under its decision - so asking while any is
+  // tree as it arrives - the tree read every node, the asks an answer - so asking while any is
   // still out would ask for the addresses known so far and ask again for the rest: measured on
   // this pod, that cost the first load two reads and sometimes three, where the design is "the
   // names come last and all at once" (above) and the issue's own budget is 40 requests
@@ -203,7 +202,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     !asks.isPending &&
     !comments.isPending &&
     !coverage.isPending &&
-    !decisions.isPending &&
     !messages.isPending &&
     !results.isPending &&
     !who.isPending;

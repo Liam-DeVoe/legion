@@ -180,20 +180,13 @@ const comment: Comment = {
 };
 
 /** A read the tree is built from, by what it reads: each is one the batched name read waits on. */
-type TreeRead =
-  | "asks"
-  | "comments"
-  | "coverage"
-  | "decisions"
-  | "login"
-  | "messages"
-  | "results"
-  | "tree";
+type TreeRead = "asks" | "comments" | "coverage" | "login" | "messages" | "results" | "tree";
 
 /** Every read the hook makes, answered empty but for the tree read (`tree`, by default the
  *  plan's one task and `comments`), the reader's login and `comments`. The `held` read stays out
  *  until its `until` settles, and then answers as it would have. No document's blocks are read:
- *  that read answers nothing, and a case reads that it was never sent. */
+ *  that read answers nothing, and a case reads that it was never sent. The decisions read is no
+ *  read of the hook's: every decision is a node of the tree read, so the decisions read refuses. */
 function stubTreeReads(
   answerNames: (refs: readonly string[]) => Promise<{
     targets: ReferenceTarget[];
@@ -215,10 +208,7 @@ function stubTreeReads(
       await answered("coverage");
       return { gaps: [], has_plan: true, issue: KEY, requirements: [], spec_artifact_id: "" };
     }),
-    spyOn(api, "getIssueDecisions").mockImplementation(async () => {
-      await answered("decisions");
-      return { decisions: [], document: null, open_questions: [] };
-    }),
+    spyOn(api, "getIssueDecisions").mockRejectedValue(new Error("the hook read the decisions")),
     spyOn(api, "getIssueResults").mockImplementation(async () => {
       await answered("results");
       return { checks: [], issue: KEY, verification_artifact_id: "" };
@@ -356,7 +346,6 @@ const TREE_READS: readonly TreeRead[] = [
   "comments",
   "asks",
   "coverage",
-  "decisions",
   "messages",
   "results",
   "tree",
@@ -364,10 +353,11 @@ const TREE_READS: readonly TreeRead[] = [
 ];
 
 // The tester's F17: the names come last and all at once. While any one read of the tree is still
-// out - the comments, the asks, the coverage, the decisions, the messages, the results, the tree
-// read or the reader's login - the addresses known so far are not read; once it answers, every
-// address the tree holds - a block's own, and one a comment's words cite - is read in one
-// request, and the page publishes the answer to every surface beside it (`reference-names.tsx`).
+// out - the comments, the asks, the coverage, the messages, the results, the tree read or the
+// reader's login - the addresses known so far are not read; once it answers, every address the
+// tree holds - a block's own, and one a comment's words cite - is read in one request, and the
+// page publishes the answer to every surface beside it (`reference-names.tsx`). The decisions are
+// nodes of the tree read, so no decisions read is made.
 test("The names are read in one batched request, after every other read has answered", async () => {
   const cited = "dispatch://CORE-7";
   for (const read of TREE_READS) {
@@ -415,6 +405,7 @@ test("The names are read in one batched request, after every other read has answ
       expect(asked, `one names read after the ${read} read answers`).toHaveLength(1);
       expect(asked[0]).toContain(TASK_REF);
       expect(asked[0]).toContain(cited);
+      expect(api.getIssueDecisions).not.toHaveBeenCalled();
       view.unmount();
     } finally {
       out.resolve();
@@ -664,7 +655,8 @@ test("once the second read has nothing left to name, the first read's newer name
 // The tester's F17 and dispatch://INFRA-4062 R5: one block read for every document of the issue
 // was 25 of a first load's 47 requests, and F's four were still four. The tree read answers
 // every typed block of every role document, so the outline costs that one request, with no
-// page left to ask for, and no document's blocks are read.
+// page left to ask for, and no document's blocks are read. Every decision is a node of the tree
+// read, so no decisions read is made either.
 test("the tree is read in one request, and no document's blocks are read", async () => {
   const withDocuments: IssueDetails = {
     ...issue,
@@ -695,6 +687,7 @@ test("the tree is read in one request, and no document's blocks are read", async
     await waitFor(() => expect(named).toBe(1));
     expect((api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls).toEqual([[KEY, {}]]);
     expect(api.getArtifactBlocks).not.toHaveBeenCalled();
+    expect(api.getIssueDecisions).not.toHaveBeenCalled();
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -849,6 +842,57 @@ test("an invalidated comments query reads the tree again", async () => {
       expect(nodesInOrder(view.result.current).some((node) => node.id === comment.id)).toBe(true)
     );
     expect(api.getIssueTree).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally {
+    unsubscribe();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// dispatch://INFRA-4097's plan, choice 6: the decisions view is a view of the tree as the others
+// are - watched here and never sent, and set on the root (`root.views`) - and it is kept as fresh.
+// Every event of the issue, a Keep's (`decision.kept`) among them, invalidates the issue's own
+// read (`api/event-refresh.ts`), and the page's one subscription (`subscribeTreeFreshness`, which
+// `ViewReadProvider` mounts on the page and this case mounts itself) reads the tree again and
+// drops the held decisions view, which the filter that is on then reads again. No decisions read
+// is made.
+test("an invalidated issue read resets the decisions view", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The issue's own read, which the page holds and an event of the issue invalidates.
+  client.setQueryData(["issue", KEY], issue);
+  const unsubscribe = subscribeTreeFreshness(client, KEY);
+  const decisionsView: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode("d1", "decision", { mark: "query", text: "Keep one reading." })],
+  };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), decisionsView);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(view.result.current.views?.decisions).toBe(decisionsView));
+    expect(api.getIssueTree).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: ["issue", KEY] });
+    });
+    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(view.result.current.views?.decisions).toBeUndefined());
+    expect(client.getQueryData(viewKey(KEY, "decisions"))).toBeUndefined();
+    // The tree was read again, and the decisions view was not: the hook sends no view read, and
+    // no decisions read is made.
+    expect(
+      (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls.every(
+        ([, query]) => query?.view === undefined
+      )
+    ).toBe(true);
+    expect(api.getIssueDecisions).not.toHaveBeenCalled();
     view.unmount();
   } finally {
     unsubscribe();

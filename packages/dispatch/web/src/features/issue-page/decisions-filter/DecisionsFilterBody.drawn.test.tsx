@@ -1,13 +1,13 @@
-import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useMemo } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
 import { ApiError, api } from "../../../api/client";
-import type { Actor, ArtifactText, Comment, Decision, DecisionKeep } from "../../../api/types";
+import type { Actor, ArtifactText, DecisionKeep } from "../../../api/types";
 import { pageFocusedRow, pageInkText, pageOwnWordsRule } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -30,15 +30,22 @@ import {
   PRESET_NAMES,
 } from "../page-words";
 import { presetView } from "../presets";
+import {
+  issueTreeKey,
+  issueTreeQuery,
+  subscribeTreeFreshness,
+  type TreeAnswerNode,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
   ask,
+  changeComment,
   closing,
-  DECISIONS_DOCUMENT,
   decision,
   decisionNode,
-  decisionsRead,
   issueDetails,
   issueTree,
   KEY,
@@ -46,9 +53,11 @@ import {
   openAsk,
   READER,
   READER_ACTOR,
+  SPEC_DOCUMENT,
   shaped,
   specRef,
   statement,
+  treeAnswer,
 } from "./decisions-fixtures";
 import type { DecisionsAsk } from "./decisions-parts";
 
@@ -75,7 +84,7 @@ const FOOT_CONTROL = { name: (name: string) => name.endsWith(DECISIONS_WORDS.age
 const STORED = "Keep the rail.\n\n  It is 56 px wide -  no wider.\n";
 
 const KEPT: DecisionKeep = {
-  artifact_id: DECISIONS_DOCUMENT.id,
+  artifact_id: SPEC_DOCUMENT.id,
   block_id: "kept",
   changed_version: 1,
   kept_at: "2026-11-15T09:00:00Z",
@@ -88,7 +97,7 @@ const KEPT: DecisionKeep = {
 function wholeIssue(): {
   asks: DecisionsAsk[];
   children: TreeNode[];
-  made: Decision[];
+  made: TreeAnswerNode[];
 } {
   return {
     asks: [
@@ -162,6 +171,8 @@ interface Drawn extends RenderResult {
   readonly client: QueryClient;
   /** Draws the body again with other props, as the page does when its address moves. */
   readonly again: (props: BodyProps) => void;
+  /** What the server holds from now on, which every read of the tree made after answers. */
+  readonly serve: (next: Partial<Served>) => void;
 }
 
 interface BodyProps {
@@ -179,47 +190,67 @@ interface BodyProps {
   readonly waitingPress?: number;
 }
 
-/** A Change a person sent on a decision: a comment of the issue anchored to the decision's own
- *  words in the decisions document (`DecisionActions.tsx`). */
-function changeOf(block: string, at: string, body: string): Comment {
-  return {
-    anchor: {
-      artifact_id: DECISIONS_DOCUMENT.id,
-      block_id: null,
-      mark_id: `mark-${block}`,
-      orphaned: false,
-      quote: `The decision ${block}.`,
-      version: 1,
-    },
-    author: READER_ACTOR,
-    body,
-    created_at: at,
-    id: `change-${block}`,
-  } as Comment;
+/** What the server holds of the issue's decisions: the decision blocks of its spec, and each
+ *  comment the tree read hangs under one of them, which is a Change a person asked of it. */
+interface Served {
+  readonly changes: readonly TreeAnswerNode[];
+  readonly made: readonly TreeAnswerNode[];
 }
 
-/** The decisions document the decisions read of `made` stands for: its title, then each
- *  decision's heading and words as `made` orders them, the replaced ones after the rest and a
- *  level down under `## Replaced`, which is where the server's section rule finds each
- *  (`decision-review.ts`'s `decisionHeadings`). A Change's send reads it to say which place of
- *  its quote is the decision's own (`DecisionActions.tsx`, decision 92). */
-function decisionsText(made: readonly Decision[]): string {
-  const section = (level: string) => (row: Decision) => `${level} ${row.heading}\n\n${row.text}`;
-  const replaced = made.filter((row) => row.replaced);
-  return [
-    `# Decisions of ${KEY}`,
-    ...made.filter((row) => !row.replaced).map(section("##")),
-    ...(replaced.length === 0 ? [] : ["## Replaced", ...replaced.map(section("###"))]),
-  ].join("\n\n");
+/** The spec's text as the server holds it: its title, then each decision's words in the order
+ *  `made` gives them. A Change's send reads it to say which place of its quote is the decision's
+ *  own (`DecisionActions.tsx`, decision 92). */
+function specText(made: readonly TreeAnswerNode[]): string {
+  return [`# Spec of ${KEY}`, ...made.map((one) => one.text)].join("\n\n");
+}
+
+/** The tree read and its views as the client answers them in a case: from what the server holds
+ *  (`renderBody`'s `served`). Put back after each case. */
+let treeReads: Mock<typeof api.getIssueTree> | undefined;
+afterEach(() => {
+  treeReads?.mockRestore();
+  treeReads = undefined;
+});
+
+/**
+ * The body's reads of the issue's tree as the page holds them: the tree read (`useIssueTree.ts`),
+ * and the decisions view, which `ViewReadProvider` reads while the filter is on and
+ * `useIssueTree.ts` sets on the tree's root (`TreeNode.views`), which is where the body reads it.
+ * Both are answered before the body is drawn, as the cache holds them once the page is; a read
+ * made again - a Keep's (`DecisionActions.tsx`), or the one the page's subscription makes after a
+ * write of the issue's comments, as a Change's send is (`subscribeTreeFreshness`) - answers what
+ * the server holds then (`treeReads`).
+ */
+function HeldReads({
+  children,
+  root,
+}: {
+  children: (root: TreeNode) => ReactNode;
+  root: TreeNode;
+}): ReactNode {
+  const client = useQueryClient();
+  useEffect(() => subscribeTreeFreshness(client, KEY), [client]);
+  useQuery(issueTreeQuery(KEY));
+  const held = useQuery(viewQuery(KEY, "decisions")).data;
+  const rooted = useMemo(
+    () => (held === undefined ? root : { ...root, views: { decisions: held } }),
+    [held, root]
+  );
+  return children(rooted);
 }
 
 function renderBody(
   {
     asks = [],
+    changes = [],
     children,
-    comments = [],
     made = [],
-  }: { asks?: DecisionsAsk[]; children: TreeNode[]; comments?: Comment[]; made?: Decision[] },
+  }: {
+    asks?: DecisionsAsk[];
+    changes?: TreeAnswerNode[];
+    children: TreeNode[];
+    made?: TreeAnswerNode[];
+  },
   props: BodyProps = {},
   {
     requests = false,
@@ -232,13 +263,19 @@ function renderBody(
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  // The reads the page's tree is built from, under the keys it reads them by.
-  client.setQueryData(["decisions", KEY], decisionsRead(made));
+  let served: Served = { changes, made };
+  const readTree = () => treeAnswer([...served.made, ...served.changes]);
+  const readView = () => treeAnswer(served.made);
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async (_key, query) =>
+    query?.view === "decisions" ? readView() : readTree()
+  );
+  // The reads the page's tree is built from, under the keys it reads them by, and the
+  // decisions view the page holds.
+  client.setQueryData(issueTreeKey(KEY), readTree());
+  client.setQueryData(viewKey(KEY, "decisions"), readView());
   client.setQueryData(["asks", KEY], asks);
-  client.setQueryData(["comments", KEY], comments);
-  // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
-  // placed by its quote alone, and no case makes a request for them.
-  client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
+  client.setQueryData(["comments", KEY], []);
   const issue = issueDetails();
   const root = issueTree(children);
   // The view the slot hands the body where no address names a node and no words are typed
@@ -258,19 +295,23 @@ function renderBody(
       view ??
       (grown === undefined ? decisionsView : presetView(tree, "decisions", "", new Set()).root);
     const list = drawn ? (
-      <DecisionsFilterBody
-        artifacts={artifactsBySlug(issue)}
-        emptyLine={EMPTY_LINE}
-        holdsEscape={false}
-        isClosed={isClosed}
-        issue={issue}
-        reader={READER}
-        {...(request === undefined ? {} : { request })}
-        {...(reveal === undefined ? {} : { reveal })}
-        root={tree}
-        view={shown}
-        {...(waitingPress === undefined ? {} : { waitingPress })}
-      />
+      <HeldReads root={tree}>
+        {(held) => (
+          <DecisionsFilterBody
+            artifacts={artifactsBySlug(issue)}
+            emptyLine={EMPTY_LINE}
+            holdsEscape={false}
+            isClosed={isClosed}
+            issue={issue}
+            reader={READER}
+            {...(request === undefined ? {} : { request })}
+            {...(reveal === undefined ? {} : { reveal })}
+            root={held}
+            view={shown}
+            {...(waitingPress === undefined ? {} : { waitingPress })}
+          />
+        )}
+      </HeldReads>
     ) : null;
     return (
       <MemoryRouter>
@@ -298,7 +339,14 @@ function renderBody(
     );
   };
   const view = render(body(props));
-  return { ...view, again: (next) => view.rerender(body(next)), client };
+  return {
+    ...view,
+    again: (next) => view.rerender(body(next)),
+    client,
+    serve: (next) => {
+      served = { ...served, ...next };
+    },
+  };
 }
 
 /** An element's text as a reader reads it: every run of white space one space. */
@@ -597,27 +645,29 @@ test("Keep and Change are drawn on the review list's rows and on no other", asyn
 });
 
 // R2, R35: Keep is `DecisionActions.tsx`'s own write. The kept decision leaves the review list
-// for the reader's own decisions, where it reads "Kept by" with their name, and the focus goes
-// to the decision that stood after it.
+// for the reader's own decisions, where it reads "Kept by" with their name, once the decisions
+// view the Keep reads again says so, and the focus goes to the decision that stood after it.
 test("a kept decision moves to the reader's own decisions and the focus to the next", async () => {
   const user = userEvent.setup();
-  const kept = spyOn(api, "keepDecision").mockResolvedValue({
-    ...KEPT,
-    block_id: "second",
-    kept_at: "2026-11-16T09:00:00Z",
-  } as never);
-  const view = renderBody(wholeIssue());
+  const whole = wholeIssue();
+  const view = renderBody(whole);
+  // The Keep the server writes, which the decisions view read after it answers.
+  const written = { ...KEPT, block_id: "second", kept_at: "2026-11-16T09:00:00Z" };
+  const kept = spyOn(api, "keepDecision").mockImplementation(async () => {
+    view.serve({
+      made: whole.made.map((made) =>
+        made.id === "second" ? { ...made, kept: written, waiting_review: false } : made
+      ),
+    });
+    return written as never;
+  });
   try {
     const keep = rowOf(view, D("second")).querySelector('button[data-row-action="keep"]');
     if (keep === null) throw new Error("the review row draws no Keep");
     await user.click(keep);
     await waitFor(() => expect(kept).toHaveBeenCalled());
     // The Keep is of the words this row drew: the block and the sum of its text.
-    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([
-      DECISIONS_DOCUMENT.id,
-      "second",
-      "sha256:second",
-    ]);
+    expect(kept.mock.calls[0]?.slice(0, 3)).toEqual([SPEC_DOCUMENT.id, "second", "sha256:second"]);
 
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
     expect(rowsOfPart(view, "yours")).toEqual([D("second"), D("kept"), "a-answered", "a-declined"]);
@@ -637,13 +687,17 @@ test("a kept decision moves to the reader's own decisions and the focus to the n
 // reader's that Dispatch refused, or that it was replaced - keeps the focus where it now
 // stands: under Your decisions, or in the foot, which unfolds for it.
 test("a decision that leaves the review list by no act of the reader keeps the focus", async () => {
-  // The address names the decision, and a Change on it arrives in the comments read.
-  const changed = renderBody(wholeIssue(), { reveal: D("second") });
+  const whole = wholeIssue();
+  // The address names the decision, and a Change on it arrives in the tree read.
+  const changed = renderBody(whole, { reveal: D("second") });
   await waitFor(() => expect(focusedRow(changed)).toBe(D("second")));
   await act(async () =>
     changed.client.setQueryData(
-      ["comments", KEY],
-      [changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.")]
+      issueTreeKey(KEY),
+      treeAnswer([
+        ...whole.made,
+        changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
+      ])
     )
   );
   await waitFor(() => expect(rowsOfPart(changed, "review")).toEqual([D("first")]));
@@ -652,11 +706,10 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   expect(focusedRow(changed)).toBe(D("second"));
   changed.unmount();
 
-  // The reader is on the decision, and a decisions read says bob kept it.
-  const whole = wholeIssue();
-  const keptByBob = decisionsRead(
+  // The reader is on the decision, and the decisions view, read again, says bob kept it.
+  const keptByBob = treeAnswer(
     whole.made.map((made) =>
-      made.block_id === "second"
+      made.id === "second"
         ? {
             ...made,
             kept: { ...KEPT, block_id: "second", kept_by: "bob" },
@@ -667,7 +720,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   );
   const kept = renderBody(whole);
   await act(async () => rowOf(kept, D("second")).focus());
-  await act(async () => kept.client.setQueryData(["decisions", KEY], keptByBob));
+  await act(async () => kept.client.setQueryData(viewKey(KEY, "decisions"), keptByBob));
   await waitFor(() => expect(rowsOfPart(kept, "review")).toEqual([D("first")]));
   expect(rowsOfPart(kept, "yours")).toContain(D("second"));
   expect(
@@ -676,16 +729,16 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   expect(focusedRow(kept)).toBe(D("second"));
   kept.unmount();
 
-  // The reader is on the decision, and a decisions read says it was replaced, which puts it in
-  // the folded foot.
+  // The reader is on the decision, and the decisions view, read again, says it was replaced,
+  // which puts it in the folded foot.
   const replaced = renderBody(whole);
   await act(async () => rowOf(replaced, D("second")).focus());
   await act(async () =>
     replaced.client.setQueryData(
-      ["decisions", KEY],
-      decisionsRead(
+      viewKey(KEY, "decisions"),
+      treeAnswer(
         whole.made.map((made) =>
-          made.block_id === "second" ? { ...made, replaced: true, waiting_review: false } : made
+          made.id === "second" ? { ...made, replaced: true, waiting_review: false } : made
         )
       )
     )
@@ -696,8 +749,8 @@ test("a decision that leaves the review list by no act of the reader keeps the f
   await waitFor(() => expect(focusedRow(replaced)).toBe(D("second")));
   replaced.unmount();
 
-  // The reader pressed Keep on the decision and Dispatch refused it, which the row says; then a
-  // decisions read says bob kept it. A refused Keep is no review of the reader's, so the focus
+  // The reader pressed Keep on the decision and Dispatch refused it, which the row says; then the
+  // decisions view says bob kept it. A refused Keep is no review of the reader's, so the focus
   // stays on the decision where it now stands, not on the next one.
   const user = userEvent.setup();
   const refusal = spyOn(api, "keepDecision").mockRejectedValue(
@@ -719,7 +772,7 @@ test("a decision that leaves the review list by no act of the reader keeps the f
       ).not.toBeNull()
     );
     expect(focusedRow(refused)).toBe(D("second"));
-    await act(async () => refused.client.setQueryData(["decisions", KEY], keptByBob));
+    await act(async () => refused.client.setQueryData(viewKey(KEY, "decisions"), keptByBob));
     await waitFor(() => expect(rowsOfPart(refused, "review")).toEqual([D("first")]));
     await waitFor(() => expect(focusedRow(refused)).toBe(D("second")));
   } finally {
@@ -729,10 +782,10 @@ test("a decision that leaves the review list by no act of the reader keeps the f
 
 // R6, the class of the review list's case above (the tester's round 2): an entry that moves to
 // another part of the list by no act of the reader keeps the focus where it now stands. Another
-// person answers the open question the reader is on, which moves it under Your decisions; a
-// decisions read ties the foot's decision the reader is on to a statement, which moves it to
-// the review list. Each row is drawn again in its new part, and the focus is on it there, not
-// on the page.
+// person answers the open question the reader is on, which moves it under Your decisions; the
+// decisions view, read again, ties the foot's decision the reader is on to a statement, which
+// moves it to the review list. Each row is drawn again in its new part, and the focus is on it
+// there, not on the page.
 test("an entry that moves to another part by no act of the reader keeps the focus", async () => {
   const whole = wholeIssue();
   const answered = renderBody(whole);
@@ -767,10 +820,10 @@ test("an entry that moves to another part by no act of the reader keeps the focu
   expect(focusedRow(tied)).toBe(D("minor"));
   await act(async () =>
     tied.client.setQueryData(
-      ["decisions", KEY],
-      decisionsRead(
+      viewKey(KEY, "decisions"),
+      treeAnswer(
         whole.made.map((made) =>
-          made.block_id === "minor" ? { ...made, links: [shaped(specRef("s3"))] } : made
+          made.id === "minor" ? { ...made, links: [shaped(specRef("s3"))] } : made
         )
       )
     )
@@ -792,16 +845,16 @@ test("a closed issue draws the review list with no Keep and no Change", () => {
 // to the view's first row, else, where no row is left, to the tree: never to the page.
 test("a focused entry that another person deletes gives the focus to its neighbour", async () => {
   /** Reads the issue again with `block`'s decision deleted: gone from the tree and from the
-   *  decisions read. */
+   *  decisions view. */
   const deleted = async (
     view: Drawn,
-    issue: { children: TreeNode[]; made: Decision[] },
+    issue: { children: TreeNode[]; made: TreeAnswerNode[] },
     block: string
   ) => {
     await act(async () => {
       view.client.setQueryData(
-        ["decisions", KEY],
-        decisionsRead(issue.made.filter((made) => made.block_id !== block))
+        viewKey(KEY, "decisions"),
+        treeAnswer(issue.made.filter((made) => made.id !== block))
       );
       view.again({ children: issue.children.filter((child) => child.id !== D(block)) });
     });
@@ -855,7 +908,7 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   // The focus is off every row, so what the deleted row's focus opened is let go: the same
   // decision read back draws as a row the reader is not on.
   await act(async () => {
-    alone.client.setQueryData(["decisions", KEY], decisionsRead(lone.made));
+    alone.client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(lone.made));
     alone.again({ children: lone.children });
   });
   await waitFor(() => expect(rowOf(alone, D("first"))).toBeTruthy());
@@ -1296,33 +1349,41 @@ test("each press of the count of what waits goes to the next thing that waits", 
   await waitFor(() => expect(focusedRow(noQuestion)).toBe(D("second")));
   noQuestion.unmount();
 
-  // A press that lands before the decisions read is in is taken once it is.
+  // A press that lands before the decisions view holds the decision is taken once it does.
   const early = renderBody({ children: [statement("s1"), decisionNode("first")] });
   early.again({ waitingPress: 2 });
   expect(focusedRow(early)).toBeUndefined();
   await act(async () =>
     early.client.setQueryData(
-      ["decisions", KEY],
-      decisionsRead([decision("first", { links: [shaped(specRef("s1"))] })])
+      viewKey(KEY, "decisions"),
+      treeAnswer([decision("first", { links: [shaped(specRef("s1"))] })])
     )
   );
   await waitFor(() => expect(focusedRow(early)).toBe(D("first")));
 });
 
-// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once it is
-// in the comments read the decision says a change was asked for, leaves the review list for
-// the reader's own decisions, draws no Keep or Change, and draws what the reader asked under
-// its words with a link to it in the conversation.
+// The tester's F6: a Change sent on a decision is a comment anchored to its words. Once the tree
+// read hangs it under the decision - the send reads the issue's comments again, and the page
+// reads its tree again after them (`subscribeTreeFreshness`) - the decision says a change was
+// asked for, leaves the review list for the reader's own decisions, draws no Keep or Change, and
+// draws what the reader asked under its words with a link to it in the conversation.
 test("a decision the reader sent a Change on says so, leaves the review list and draws the change", async () => {
-  // The send reads the decisions document's text to say which place of the quote in it is the
-  // decision's own, and the reading of that text is the page's engine's, which must be loaded.
+  // The send reads the spec's text to say which place of the quote in it is the decision's own,
+  // and the reading of that text is the page's engine's, which must be loaded.
   await warmMarkdownRenderer();
   const user = userEvent.setup();
   const whole = wholeIssue();
-  const sent = changeOf("second", "2026-11-16T09:00:00Z", "Name the read, please.");
-  const create = spyOn(api, "createComment").mockResolvedValue(sent as never);
-  const list = spyOn(api, "listComments").mockResolvedValue([sent] as never);
-  const markdown = decisionsText(whole.made);
+  const view = renderBody(whole);
+  const create = spyOn(api, "createComment").mockImplementation(async () => {
+    view.serve({
+      changes: [
+        changeComment("change-second", "second", "2026-11-16T09:00:00Z", "Name the read, please."),
+      ],
+    });
+    return { id: "change-second" } as never;
+  });
+  const list = spyOn(api, "listComments").mockResolvedValue([]);
+  const markdown = specText(whole.made);
   const text = spyOn(api, "getArtifactText").mockImplementation(
     async (): Promise<ArtifactText> => ({
       markdown,
@@ -1331,7 +1392,6 @@ test("a decision the reader sent a Change on says so, leaves the review list and
       version: 1,
     })
   );
-  const view = renderBody(whole);
   try {
     expect(rowsOfPart(view, "review")).toEqual([D("second"), D("first")]);
     const change = rowOf(view, D("second")).querySelector('button[data-row-action="change"]');
@@ -1340,18 +1400,19 @@ test("a decision the reader sent a Change on says so, leaves the review list and
     await user.type(view.getByLabelText(CONTROL_LABELS.your_change), "Name the read, please.");
     await user.click(view.getByRole("button", { name: CONTROL_LABELS.send_change }));
     await waitFor(() => expect(create).toHaveBeenCalled());
-    // The comment is anchored to the decision's own words in the decisions document, at the
-    // first place they stand there: the heading above them ends with no full stop, so the quote
-    // starts nowhere before them.
+    // The comment is anchored to the decision's own words in the spec, the document the decision
+    // is a block of. No heading of the spec reads as the decision's, so the anchor names no
+    // place of the quote, which stands once in the spec (`changeAnchor`).
     expect(create.mock.calls[0]?.slice(0, 2)).toEqual([
       KEY,
       {
-        anchor: { artifact: DECISIONS_DOCUMENT.id, occurrence: 0, quote: "The decision second." },
+        anchor: { artifact: SPEC_DOCUMENT.id, quote: "The decision second." },
         body: "Name the read, please.",
       },
     ]);
 
-    // The comments are read again, and the decision is no longer the reader's to review.
+    // The comments and the tree are read again, and the decision is no longer the reader's to
+    // review.
     await waitFor(() => expect(rowsOfPart(view, "review")).toEqual([D("first")]));
     // The reader sent it, so the focus goes on to the next decision of the review list.
     await waitFor(() => expect(focusedRow(view)).toBe(D("first")));
