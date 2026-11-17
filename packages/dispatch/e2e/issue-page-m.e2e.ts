@@ -1466,6 +1466,70 @@ test("the reader's place in the history holds when a turn above it is cut by mor
   }
 });
 
+// The focus a control holds at the foot of a long agents' turn that has not shown yet. Load
+// older's own hand-on can give the focus to such a control: the first new control in view can be
+// a turn's Reply while the turn's head is above the view, the turn still drawn whole. Once the
+// turn shows it is cut to six lines (`clamp-measurer.ts`), and the place keeper keeps the turn's
+// top where it was, so its Reply rises with the cut, by thousands of pixels, out of Details' view.
+// Found by the tester on a running build of eed73c9a with a copy of a large real issue: the
+// second press of Load older, made as the focus reached it, put the focus on a turn's Reply at
+// 270 px, the turn was cut, and the Reply stood at -50 px above Details' view (53 to 900) at
+// 1440 px, in two runs of six. Here the focus goes to such a Reply as the hand-on puts it there.
+test("a control at the foot of a long turn keeps the focus in view when the turn it is in is cut", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "A long turn under the reader" });
+  // Oldest first: ten short turns, one long turn, thirty short turns. The history lists them
+  // newest first, so the long turn stands well below the first screen with ten turns under it.
+  for (let index = 0; index < 10; index += 1) {
+    await createMessage(issue.key, { body: `Older turn ${index}` }, attentionSession);
+  }
+  const paragraph = "the agents read the history and wrote what they found ".repeat(6);
+  const long = await createMessage(
+    issue.key,
+    { body: Array.from({ length: 40 }, (_, part) => `Part ${part}: ${paragraph}`).join("\n\n") },
+    attentionSession
+  );
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(issue.key, { body: `Newer turn ${index}` }, attentionSession);
+  }
+
+  const context = await reader(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await gotoIssue(page, `/issues/${issue.key}/activity`);
+    const turn = historyItem(page, long.id);
+    await expect(turn).toHaveCount(1);
+    const reply = historyPanel(page).locator(`[data-history-reply="${long.id}"]`);
+    await expect(reply).toHaveCount(1);
+    // The focus goes straight to the turn's Reply, as Load older's hand-on gives it; the turn has
+    // never shown, so it is drawn whole, and its head stays above the view.
+    await reply.focus();
+    await nextFrames(page);
+    const view = await historyViewport(page);
+    await expect
+      .poll(async () => (await turn.boundingBox())?.height ?? 0, {
+        message: "the long turn was not cut once its foot showed",
+      })
+      .toBeLessThan(400);
+    await page.waitForTimeout(1_000);
+    await nextFrames(page);
+    expect(
+      await reply.evaluate((button) => button === document.activeElement),
+      "the focus left the turn's Reply"
+    ).toBe(true);
+    const box = await reply.boundingBox();
+    expect(
+      (box?.y ?? -1) >= view.top - 1 && (box?.y ?? 0) + (box?.height ?? 0) <= view.bottom + 1,
+      `the cut of its own turn moved the focused Reply to ${Math.round(box?.y ?? 0)} px, out of Details' view (${Math.round(view.top)} to ${Math.round(view.bottom)})`
+    ).toBe(true);
+  } finally {
+    await context.close();
+  }
+});
+
 // The read mark draws one line in the history, "New since you last read", where the mark falls
 // among its entries (`history-model.ts`): a mark that moves back adds that line under the
 // entries the reader has not read, above the reader's place, so the reader's own entry has to
