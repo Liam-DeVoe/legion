@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  Two of this package's scripts take the deployment's names from the caller, each from an
+  environment variable with no default, and start nothing without them: a run that leaves one unset
+  or empty is a usage error (exit 2) that names it. `scripts/daemon-release-gate.sh` needs
+  `DAEMON_RELEASE_GATE_REPOSITORY`, the deployment repository (owner/name) whose
+  `<stack>/Pulumi.prod.yaml` files hold the pins, and `DAEMON_RELEASE_GATE_PULUMI_PROJECT_PREFIX`,
+  the prefix of that repository's Pulumi project names. `scripts/airlock-check.sh`'s k7 check needs
+  `AIRLOCK_CHECK_GCLOUD_SECRET`, the name of the agent secret the deployment's gcloud consumer reads
+  its login from, and `AIRLOCK_CHECK_WORKSPACE_DOMAIN`, the deployment's Google Workspace domain,
+  whose users the admin directory call lists.
+custom:
+  Issue: pr4280

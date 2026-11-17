@@ -1,5 +1,5 @@
 kind: Changed
-body: The daemon reads the shared public leak check's repository and checker sha256 from a new operator setting, `leak_check.repository` and `leak_check.checker_sha256` in legion.yaml or `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_SHA256` in its environment, set together or not at all; with neither, role pods run no shared check, no write is refused for its absence, and the daemon says so once at boot.
+body: The daemon reads the shared public leak check's repository and checker sha256 from a new operator setting, `leak_check.repository` and `leak_check.checker_sha256` in legion.yaml or `LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_SHA256` in its environment, set together or not at all. Under it, the daemon reads the check for each role pod, and every role pod and tmux pane is told the checker's sha256; a role pod whose installed check's `public_leak_check.py` does not hash to `leak_check.checker_sha256` starts no agent. With neither, role pods and tmux panes run no shared check, no write is refused for its absence, and the daemon says so once at boot.
 time: 2026-11-17T06:31:50.603540176Z
 custom:
     Issue: pr4280
