@@ -17,6 +17,7 @@ import {
 } from "../configurations";
 import { harnessProcessCount } from "../harness-processes";
 import realConfig from "../playwright.config";
+import { rowLimit } from "./bounded-subprocess";
 import doubledConfig, { doubledProject, doubledSpec } from "./fixtures/doubled-project.config";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
@@ -36,8 +37,7 @@ const ambientProcessCount: Record<string, string> =
 
 // The three listings are read-only subprocesses, so they start here rather than in their tests:
 // the second and third collect while the first does, which is most of this file's cost on a
-// two-core runner. What that costs is read once in this file, at the `listingTimeout` it
-// justifies, below.
+// two-core runner.
 //
 // The third names the six `-alone` projects (`clockProjectNames`, e2e/configurations.ts),
 // which carry `default: false` since dispatch://INFRA-1280. A listing that names no project
@@ -59,14 +59,17 @@ const ambientProcessCount: Record<string, string> =
 // that read it hold in that mode without it: the one project that mode declares owns rows of
 // the real listing, and it declares no wall-clock project to hold to its settings or to its
 // rows.
-const realListing = retained(listing("e2e/playwright.config.ts", ambientProcessCount));
+const realListing = retained(
+  listing(import.meta.url, "e2e/playwright.config.ts", ambientProcessCount)
+);
 const doubledListing = retained(
-  listing("e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
+  listing(import.meta.url, "e2e/__tests__/fixtures/doubled-project.config.ts", ambientProcessCount)
 );
 const clockListing =
   harnessProcessCount === 1
     ? retained(
         listing(
+          import.meta.url,
           "e2e/playwright.config.ts",
           ambientProcessCount,
           projectArguments(clockProjectNames)
@@ -118,13 +121,6 @@ function selectsAClockSpec(
   );
 }
 
-// The three listings run at once and cost about five and a half seconds together on this
-// two-core pod - 5.55 and 5.38 seconds in two runs of this file, measured at this head, of
-// which the real listing alone is 3.59 seconds and the wall-clock one 1.25 - so a test may take
-// far longer than Bun's five-second default; a minute and a half is the ceiling at which
-// something is wrong rather than slow.
-const listingTimeout = 90_000;
-
 test(
   "no row runs twice in one configuration, and every project has a configuration and rows",
   async () => {
@@ -148,7 +144,7 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // `-alone` listing names six projects and reports all eighteen - so an assertion over
     // the project list could not fail, and would pass with the `-alone` listing missing
-    // altogether. Measured at this head, the two listings hold 1,623 rows and every project
+    // altogether. Measured at this head, the two listings hold 1,627 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the `-alone`
     // six hold 23, 13, 16, 2, 2 and 3.
     const projectsWithRows = new Set(rows.map((row) => row.project));
@@ -171,7 +167,7 @@ test(
     // below shows this assertion catches it.
     expect(duplicateRows(rows, keyOfRow(configurations))).toEqual([]);
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing"] })
 );
 
 /** The rows each `-alone` project owns, by the file they stand in and how many of that file
@@ -279,7 +275,7 @@ test(
         "(e2e/configurations.ts), name it in the project's `testMatch` and say so here."
     ).toEqual(clockRowsOwned);
   },
-  listingTimeout
+  rowLimit({ atOnce: ["listing", "listing"] })
 );
 
 test(
@@ -308,7 +304,7 @@ test(
       expect([...duplicate.projects].sort()).toEqual(["chromium", doubledProject].sort());
     }
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 // The four fields that give a wall-clock row its quiet machine and keep it out of a bare run,

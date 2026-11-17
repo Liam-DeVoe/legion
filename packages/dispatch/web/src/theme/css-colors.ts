@@ -238,8 +238,10 @@ const NAMED_COLORS: ReadonlySet<string> = new Set([
  */
 const PROPERTY_NAME_PATTERN = /^(?:--.+|-?[a-z][a-z0-9-]*)$/;
 
-/** The annotation a pinned literal carries, read from just past the declaration's `;`. */
-const ANNOTATION_PATTERN = /^[ \t]*\/\*\s*([a-z]+-\d{2,3})(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//;
+/** The annotation a pinned literal carries, read from just past the declaration's `;`: a
+ * Tailwind shade (`sky-600`) or a swatch the issue page names (`page-question-tint`). */
+const ANNOTATION_PATTERN =
+  /^[ \t]*\/\*\s*([a-z]+(?:-[a-z0-9]+)+)(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//;
 
 /** An SVG paint attribute inside a data URI. `stroke-width` is not one: its name is followed by
  * `-`, not `=`. */
