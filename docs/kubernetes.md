@@ -2577,7 +2577,8 @@ The migrations recorded above this one are these.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261117004117_step_starts adds the tables `step_starts` and `step_starts_rollback` and the function `step_run_witness`, which reads none of the six, so the block holds over it and leaves the three standing, which the earlier release names in no statement.
 20261117064152_step_starts_roll_forward writes `step_starts` and `step_starts_rollback` alone and touches none of the six either, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
-20261113182000_architect_entry_upgrade writes into three of the six, and 20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses both first.
+20261113182000_architect_entry_upgrade writes into three of the six, so the contract 146 block above reverses it first.
+20261113181500_architect_stalled_notices adds the table that upgrade marks, so the contract 146 block above reverses it first too.
 20261114020537_claim_entry_handshake adds four columns of `claims` and touches none of the six, and the contract 146 block above reverses it too, because the earlier release writes no handshake into them.
 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim` and touches none of the six, and the contract 146 block above reverses it too, so that the roll-forward can add it again.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;

@@ -31,10 +31,11 @@ import (
 // The list is what a reader sees of it (visibleMarkdown): a name inside an HTML comment counts
 // for nothing, since the rendered guide does not show it, and a list whose opening sentence or
 // ending line a comment hides is no list a reader finds. A migration the list describes is one an
-// entry says what the block does to: it opens the entry, or opens a clause of it after ", and", so
-// one entry may speak for several migrations (entrySubjects). A name anywhere else in an entry is
-// a mention in passing, which tells the operator nothing of what the block does to that
-// migration, so it describes nothing; the list's every name is still held to the embedded set.
+// entry says what the block does to: one the entry opens on, alone or joined by "and" to the
+// others it speaks for (entrySubjects). A name anywhere else in an entry, a later clause or a
+// parenthesis or another's reference, is a mention in passing, which tells the operator nothing
+// of what the block does to that migration, so it describes nothing; the list's every name is
+// still held to the embedded set.
 const (
 	// phaseEntryMigration is the migration whose way back the list follows, by the name the guide
 	// (wayBackGuide, way_back_doc_test.go) writes. The list's subject is every embedded migration
@@ -45,17 +46,18 @@ const (
 	phaseEntryListEnd = "The `20261111225552` is the identifier of "
 	// phaseEntryListOpening is the sentence that opens the list, the whole of its line.
 	phaseEntryListOpening = "The migrations recorded above this one are these."
+	// migrationName is a migration's name as the guide writes it, the file's name without
+	// `.up.sql`: the one rule both patterns below find a name by.
+	migrationName = `\d{14}_\w+`
 )
 
 var (
-	// migrationNameInGuide is a migration's name as the guide writes it: the file's name without
-	// `.up.sql`.
-	migrationNameInGuide = regexp.MustCompile(`\b\d{14}_\w+`)
-	// entrySubjects is where an entry says what the block does to a migration: the migrations
-	// that open the entry, or open a clause of it after ", and", alone or several joined by
-	// " and ", each perhaps followed by the ", of <reference>," of the change it came with. Its
-	// group holds those names.
-	entrySubjects = regexp.MustCompile(`(?:^|, and )(\d{14}_\w+(?:, of \S+,)?(?: and \d{14}_\w+(?:, of \S+,)?)*)`)
+	// migrationNameInGuide finds a migration's name anywhere in a text.
+	migrationNameInGuide = regexp.MustCompile(`\b` + migrationName)
+	// entrySubject is one migration an entry opens on, its group holding the name: the first opens
+	// the entry and each after it follows " and ", each perhaps followed by the ", of <reference>,"
+	// of the change it came with, which holds no subject of its own.
+	entrySubject = regexp.MustCompile(`(?:^| and )(` + migrationName + `)(?:, of \S+,)?`)
 )
 
 // Every migration the daemon embeds above the phase entry is described in the list after the
@@ -73,10 +75,10 @@ func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		t.Errorf("%s's list of the migrations recorded above %s describes no %s: give each an entry "+
-			"beside the one it belongs with, opening on its name or with a clause after \", and\" that "+
-			"does, saying what it adds or changes and what the phase entry's block does to it; a name "+
-			"inside an HTML comment, or in passing elsewhere in an entry, does not count", wayBackGuide,
-			phaseEntryMigration, strings.Join(missing, ", "))
+			"beside the one it belongs with, opening on its name, alone or joined by \"and\" to the others "+
+			"the entry speaks for, saying what it adds or changes and what the phase entry's block does to "+
+			"it; a name inside an HTML comment, or in passing elsewhere in an entry, does not count",
+			wayBackGuide, phaseEntryMigration, strings.Join(missing, ", "))
 	}
 }
 
@@ -162,14 +164,15 @@ func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
 	}
 }
 
-// A migration counts as described only where an entry says what the block does to it: where it
-// opens the entry, or opens a clause of it after ", and", alone or with others joined by "and",
-// each perhaps followed by the ", of <reference>," of the change it came with. A name anywhere
-// else in an entry is a mention in passing, which tells the operator nothing of what the block
-// does to that migration, so it describes nothing, while the list still names it and the other
-// test still holds that name to the embedded set. The cases are the shapes the guide's entries
-// take, and two mentions in passing.
-func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntryOrAClause(t *testing.T) {
+// A migration counts as described only where an entry says what the block does to it: in the
+// subjects the entry opens on, one migration or several joined by "and", each perhaps followed by
+// the ", of <reference>," of the change it came with. A name anywhere else in an entry is a
+// mention in passing, which tells the operator nothing of what the block does to that migration,
+// so it describes nothing, while the list still names it and the other test still holds that name
+// to the embedded set: a name after the entry's predicate, one after ", and" in a later clause or
+// in parentheses, and a name that stands as another's reference. The cases are the shapes the
+// guide's entries take, and those mentions in passing.
+func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntry(t *testing.T) {
 	const (
 		opening = phaseEntryListOpening + "\n"
 		end     = phaseEntryListEnd + "`20261111225552_phase_entry.up.sql`.\n"
@@ -188,15 +191,22 @@ func TestTheListDescribesOnlyTheMigrationsThatOpenAnEntryOrAClause(t *testing.T)
 			"20990101000001_first and 20990101000002_second, of owner/repo#2, and 20990101000003_third, " +
 				"of owner/repo#3, touch none of the six either.",
 			[]string{"20990101000001_first", "20990101000002_second", "20990101000003_third"}, nil},
-		{"a migration opening a clause after \", and\"",
-			"20990101000001_first writes into three of the six, and 20990101000002_second adds the table " +
+		{"a mention opening a later clause after \", and\"",
+			"20990101000001_first writes into three of the six, and 20990101000002_passing adds the table " +
 				"it marks, so the block above reverses both first.",
-			[]string{"20990101000001_first", "20990101000002_second"}, nil},
+			[]string{"20990101000001_first"}, []string{"20990101000002_passing"}},
 		{"a mention in parentheses",
 			"20990101000001_alone adds a column. (The same release also includes 20990101000002_passing.)",
 			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
+		{"a mention after \", and\" in parentheses",
+			"20990101000001_alone adds a column. (The same release also includes an outbox check, and " +
+				"20990101000002_passing.)",
+			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
 		{"a mention after and inside a clause",
 			"20990101000001_alone adds a column and 20990101000002_passing reads it.",
+			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
+		{"a mention as the reference of another's change",
+			"20990101000001_alone, of 20990101000002_passing, adds a column.",
 			[]string{"20990101000001_alone"}, []string{"20990101000002_passing"}},
 	} {
 		described, named, err := readPhaseEntryList(list.shape, opening+list.entry+"\n"+end)
@@ -295,11 +305,24 @@ func readPhaseEntryList(name, text string) (described, named []string, err error
 		return nil, nil, fmt.Errorf("%s's list after line %d names no migration", name, start+1)
 	}
 	for _, entry := range strings.Split(visible, "\n") {
-		for _, subjects := range entrySubjects.FindAllStringSubmatch(strings.TrimLeft(entry, " \t"), -1) {
-			described = append(described, migrationNameInGuide.FindAllString(subjects[1], -1)...)
-		}
+		described = append(described, entrySubjects(strings.TrimLeft(entry, " \t"))...)
 	}
 	return described, named, nil
+}
+
+// entrySubjects is the migrations entry opens on, in order (entrySubject): the first opens the
+// entry and each after it joins the one before. A name that does neither is past the subjects,
+// and so is every name after it.
+func entrySubjects(entry string) []string {
+	var subjects []string
+	at := 0
+	for _, match := range entrySubject.FindAllStringSubmatchIndex(entry, -1) {
+		if match[0] != at {
+			break
+		}
+		subjects, at = append(subjects, entry[match[2]:match[3]]), match[1]
+	}
+	return subjects
 }
 
 // visibleMarkdown is text as the rendered page shows it: each HTML comment outside a fenced block
