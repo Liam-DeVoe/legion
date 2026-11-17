@@ -401,6 +401,15 @@ Each item below names a script, then what it proves.
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
+- `owner-steps.sh`
+
+  the plan the owner of an issue gives picks which of today's steps run, driven against the real Dispatch server this checkout builds, on a database of its own, and the whole daemon booted with `dispatch_url` at it, over a PostgreSQL the caller names and a `nats-server` of the run's own, with four issues of one project:
+  the owner writes `plan.md` with one task `a` whose steps are `implementer reviewer` through the real `dispatch artifact` command and gives it with `register_plan` before the gate opens, and the issue walks implementing, reviewing, retro and merging to done with no planner and no tester launched;
+  `dispatch steps --issue <KEY>`, run as a person, prints task `a`'s two steps, then the retro and the merge;
+  an issue given no plan walks the project's default steps and holds their rows;
+  its controls delete an issue's plan rows, during its planner's work and before its gate opens, and give a plan with a role nobody defines, which is refused `409 PLAN_REFUSED`.
+  No GitHub, no cluster
+
 - `plan-pointer-drive.sh`
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the newest `plan.md` version the plan review approved (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
@@ -5057,6 +5066,67 @@ The issue's own `time -` is no fault either: it is Dispatch knowing no span of t
 `scripts/e2e/lib/plan-ratings-read.test.ts` (`bun test scripts/e2e/lib`, in CI's `test` job) runs it against a `dispatch` stand-in on PATH that prints an answer the real command rendered: envoy-client's `dispatch plans` code prints typed finished issues, so a line it prints that this script cannot read fails the test.
 Among its cases: a whole answer passes, an issue rated twice passes, an issue its owner planned passes, an answer holding a plan whose first task has no steps (`(1 tasks: -)`) is read, an empty read is `UNKNOWN`, and each fault above has its row.
 [`plan-ratings.sh`](#plan-ratingssh)'s first step runs it on the output of the real `dispatch plans` over the Dispatch this checkout builds, so it also reads finished issues a real Dispatch served rather than ones the test typed.
+
+## owner-steps.sh
+
+```sh
+LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
+  [LEGION_E2E_NATS_BIN=<nats-server>] bash scripts/e2e/owner-steps.sh     # → "owner steps e2e: PASS in <n>s", exit 0
+```
+
+The live proof that the plan the owner of an issue gives picks which of today's steps run, run before the change merges.
+It runs on any Linux host with `go`, `git`, `jj` 0.38 or later (the daemon's boot refuses to start without them), `awk`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no GitHub, no deployed Dispatch.
+`LEGION_TEST_PG_DSN` is required, its host must be loopback, and, as for [`step-records.sh`](#step-recordssh), the driver also creates Dispatch's own database on that server and drops it on exit, so the DSN's role must be allowed to create and drop databases and the server must offer `pgvector`.
+The script starts no database, and the broker is the run's own.
+A run takes two to five minutes, most of it building Dispatch and the driver; two runs measured on a loaded host with a warm Go build cache took 44 s and 36 s, 7 to 17 s of it building the driver.
+The four checks of the run are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s;
+before them the script refuses a host with no `bun` or no `node_modules`, and exports `LEGION_E2E_REPO_ROOT`, the checkout the driver builds Dispatch from and runs the CLI out of.
+
+| check | what it holds |
+| :--- | :--- |
+| `prerequisites` | as for [`handoff-records.sh`](#handoff-recordssh) |
+| `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
+| `driver` | a test binary of `TestOwnerStepsLive` (`internal/daemon/owner_steps_live_test.go`, `-tags e2e`) |
+| `proof` | the checks below, each printing what it drove and what it read back between its own `== <name>` and one line `ok <name>` or `FAIL <name>` |
+
+Nothing of the plan's path is stood in for.
+Dispatch is the real server this checkout builds, the daemon is the whole daemon with `dispatch_url` at it, and `register_plan` reads the plan's version from Dispatch with the daemon's own client.
+The rig is the package's rig of an owner's plan (`ownerStepsRig`, `internal/daemon/owner_steps_rig_test.go`), over four issues of one project of the run's own (`OS<6 hex>`), each created with a spec and seeded at admitted with no design gate and no pull request, so nothing of an issue starts before a person approves its spec and its architect registers it.
+Its walk takes the plan the owner gives and the answer of each step's agent (`walkSteps`), so a later check walks another plan or a failed step with the same rig.
+Each fact of GitHub reaches the daemon through its own reads and its own intake, never through a write to its store: the fake GitHub API lists the issue's pull request from the implementer's completion on, so the completion's own read of the branch applies the opened; a review is a person's on the run's broker; the merge is GitHub's envelope there.
+The owner writes with the real `dispatch` CLI under bun in the architect's session, and the reader of the steps is the same CLI as the person who set the project up, with their personal token.
+
+| check | driven by | read back as | the fault it catches |
+| :--- | :--- | :--- | :--- |
+| `plan-written` | the owner's session writes `plan.md` on the first issue with one block `:::plan_task{#a steps="implementer reviewer"}` through `dispatch artifact` | the daemon's own client reads version 1 with one `plan_task` block `a` whose `steps` is `implementer reviewer` | Dispatch drops the `steps` attribute of a block, or keeps no blocks for a version |
+| `plan-registered` | `POST /legion/v1/plans/register` with the architect's grant and version 1, while the issue stands at admitted | `200` with the plan at version 1 and one task `a` naming `implementer` and `reviewer` | the route refuses an owner's plan this release carries out, or reads another version |
+| `walk-implementer-reviewer` | the spec approved and registered; the walk of the plan: the implementer's completion, a person's approving review, the retro, GitHub's merge | the issue stands in implementing, reviewing, retro, merging and done in turn, and no planner and no tester was ever launched | the walk runs today's line, or a step the plan does not name |
+| `steps-read` | `dispatch steps --issue <KEY>` as the person | the header `<KEY>: 4 steps in 1 tasks`, task `a`'s step 1 implementer and step 2 reviewer, then the retro and the merge, each ended `passed` with an agent | a step record names the task `default` or the place of today's line |
+| `walk-default-steps` | the second issue, given no plan, walked from planning to done, the architect signing off its acceptance | the eight phases in turn; `issue_plans` version 0 of the source `default`, `plan_tasks` task `default` ending `done`, `plan_steps` at places 1 to 5, one start of each step in `step_starts`, and the seven records of task `default` in `dispatch steps` | an issue with no plan gets no rows of the default steps, or its walk drops one |
+| `control-default-rows-deleted` | the third issue, given no plan, with its rows deleted from `plan_steps`, `plan_tasks` and `issue_plans` while its planner works; it walks today's line to done | the check of `walk-default-steps`' rows fails on it, saying its `issue_plans` rows are `[]` | that check passes whatever the store holds |
+| `control-refused` | `register_plan` of a plan whose task `a` names `implementer checker` | `409 PLAN_REFUSED` with the reason `step 2 of task a names the role checker, which neither the deployment nor the plan defines.`, and no plan rows | the route takes a role nobody defines |
+| `control-no-plan-rows` | the fourth issue given the plan `implementer reviewer`, with its rows deleted before its spec is registered | it starts a planner, and the check of `walk-implementer-reviewer` fails on it, naming planning as its first step | that check passes on an issue that walks today's line |
+
+The control a person can run makes `walk-implementer-reviewer` fail with the code changed.
+In `packages/daemon/internal/workflow/line.go`, make `walk` read no stored plan, so an issue with plan rows walks today's line, by changing its first test to:
+
+```go
+	if err != nil || stored == nil || true {
+```
+
+One run with that change printed, after `ok plan-written` and `ok plan-registered`:
+
+```text
+== walk-implementer-reviewer
+    owner_steps_live_test.go:75: OSACB644-1's gate opened and its first step is planning, want implementing, the first step of its owner's plan (planner launched [])
+FAIL walk-implementer-reviewer (0s)
+owner steps e2e: FAIL at proof after 47s (evidence: <dir>)
+```
+
+The planner's launch follows the move into planning, so the list the line names can still be empty when the check reads it.
+
+What the proof stands in for is what [`step-records.sh`](#step-recordssh) stands in for.
+`OWNER_STEPS_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log, the daemon's own, Dispatch's (`dispatch.log`) and the driver's output.
 
 ## plan-pointer-drive.sh
 
