@@ -1945,13 +1945,14 @@ export const dispatchToolSpecs = [
         .describe("Results to skip before the page; nonnegative integer; default 0.")
         .optional(),
     }),
-    // An empty project searches every project, as the server reads it.
+    // An empty project searches every project, as the server reads it; any other value is held
+    // to the project-key rule.
     validation: {
       check: (value) => {
         const { project } = value as { readonly project?: unknown };
-        return typeof project !== "string" || project === "" || PROJECT_KEY_PATTERN.test(project);
+        return project === "" || projectKeyValidation.check(value);
       },
-      message: `project is not a project key: ${PROJECT_KEY_RULE}`,
+      message: projectKeyValidation.message,
     },
   },
   {
