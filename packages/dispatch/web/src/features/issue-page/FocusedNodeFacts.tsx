@@ -217,7 +217,10 @@ function ItemControls({
     if (held.current === null || held.current.isConnected) return;
     held.current = null;
     if (document.activeElement === null || document.activeElement === document.body) {
-      (threadControl.current ?? pinControl.current)?.focus();
+      // Resolve or Reopen is disabled while its own write is out, as after a failure's Retry.
+      [threadControl.current, pinControl.current]
+        .find((control) => control !== null && !control.disabled)
+        ?.focus();
     }
   });
   return (

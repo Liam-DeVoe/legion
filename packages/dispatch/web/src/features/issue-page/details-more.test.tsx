@@ -437,7 +437,14 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
     pinned: false,
     seq: input.seq ?? 0,
   }));
+  // The first Resolve is refused; the second, the facts' own Retry, is held out until the case
+  // lets it land, so the case reads where the focus went while Resolve is disabled.
+  let resolves = 0;
+  const held = Promise.withResolvers<void>();
   const resolveComment = spyOn(api, "resolveComment").mockImplementation(async () => {
+    resolves += 1;
+    if (resolves === 1) throw new Error("Dispatch refused the resolve");
+    await held.promise;
     const resolved = { ...suggested, resolved: true };
     comments = [resolved];
     return resolved;
@@ -485,6 +492,19 @@ test("a comment's facts pin it, resolve its thread and accept its suggestion", a
 
     await userEvent.click(within(controls).getByRole("button", { name: CONTROL_LABELS.resolve }));
     await waitFor(() => expect(resolveComment).toHaveBeenCalledWith("comment-3", keyedAttempt));
+    // The refused Resolve says so with the facts' own Retry, which goes as it sends the write
+    // again: Resolve is disabled while that write is out, so the focus goes to Unpin.
+    const retry = await screen.findByRole("button", { name: CONTROL_LABELS.retry });
+    await userEvent.click(retry);
+    await waitFor(() => expect(resolveComment).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull()
+    );
+    expect(control(CONTROL_LABELS.resolve)).toHaveProperty("disabled", true);
+    expect(document.activeElement, "the focus fell to the page with the facts' Retry").toBe(
+      control(CONTROL_LABELS.unpin)
+    );
+    held.resolve();
     await within(controls).findByRole("button", { name: CONTROL_LABELS.reopen_thread });
     expect(control(CONTROL_LABELS.resolve)).toBeNull();
     expect(control(CONTROL_LABELS.reject)).not.toBeNull();
