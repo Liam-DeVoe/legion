@@ -2878,3 +2878,29 @@ func TestADeliveryReadTakesItsFacetsRepeatedAndItsOtherKeysOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused: the live hub's pipeline view reads
+// its at as GET /api/v1/delivery/pipeline reads it, so an at whose seven shown days start before
+// the year 1 is refused INVALID_QUERY when it is subscribed, naming the first shown day and its
+// year, as the route refuses it (TestAPipelineWhoseShownDaysStartBeforeYearOneIsRefused, R18),
+// rather than held as a view whose every answer shows days of the year 0. The first at whose days
+// all lie in the year 1 is held.
+func TestAPipelineViewWhoseShownDaysStartBeforeYearOneIsRefused(t *testing.T) {
+	for _, refused := range []struct{ at, first string }{
+		{"0001-01-01T12:00:00Z", "0000-12-26"},
+		{"0001-01-06T23:59:59Z", "0000-12-31"},
+	} {
+		_, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &refused.at})
+		if refusal == nil || refusal.Code != "INVALID_QUERY" || !strings.Contains(refusal.Message, refused.first) || !strings.Contains(refusal.Message, "year 0") {
+			t.Errorf("a pipeline view at %s: refusal = %+v, want INVALID_QUERY naming its first shown day %s and the year 0", refused.at, refusal, refused.first)
+		}
+	}
+	at := "0001-01-07T00:00:00Z"
+	spec, refusal := parseDeliveryLiveView(DeliveryLiveView{Kind: deliveryLivePipeline, At: &at})
+	if refusal != nil {
+		t.Fatalf("a pipeline view at %s: refusal = %+v, want it held: its shown days are 0001-01-01 to 0001-01-07", at, refusal)
+	}
+	if want := time.Date(1, time.January, 7, 0, 0, 0, 0, time.UTC); spec.at == nil || !spec.at.Equal(want) {
+		t.Errorf("the pipeline view at %s holds at %v, want %s", at, spec.at, want.Format(time.RFC3339))
+	}
+}

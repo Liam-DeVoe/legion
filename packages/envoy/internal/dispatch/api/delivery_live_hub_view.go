@@ -75,18 +75,19 @@ func (spec *deliveryLiveSpec) readWindowAndQuery(view DeliveryLiveView, what str
 
 // parsePipelineLiveView reads a pipeline view: it names at most an at, which is the seven days
 // ending on that day; with none it is the seven days ending at the present. It reads no window
-// and no query, since the Pipeline page follows neither the timeline's window nor its facets.
+// and no query, since the Pipeline page follows neither the timeline's window nor its facets. The
+// at is read as the route reads it (parsePipelineAt), so an at the route refuses, one whose first
+// shown day falls before the year 1 among them, is refused here before the view is held.
 func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a pipeline view names at most an at")
 	}
 	spec.key = "pipeline|now|"
 	if view.At != nil {
-		at, err := parseOptionalRFC3339(url.Values{"at": {*view.At}}, "at", time.Time{})
+		at, err := parsePipelineAt(url.Values{"at": {*view.At}}, time.Time{})
 		if err != nil {
 			return invalidLiveView("INVALID_QUERY", err.Error())
 		}
-		at = at.UTC()
 		spec.at = &at
 		spec.key = "pipeline|" + at.Format(time.RFC3339Nano) + "|"
 	}
