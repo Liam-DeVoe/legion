@@ -15,19 +15,35 @@ Add a new item next to the item it belongs with, never at the end of a list unle
 The command takes every rule from the package `packages/envoy/internal/dispatch/specgraph`.
 
 - **Which entries are spec files.**
-  A spec file is a regular file whose name ends in `.md`, directly in the directory.
-  The Dispatch server reads `.dispatch/architecture` by the same rule, from the package `packages/envoy/internal/dispatch/architecture/notes`.
+  A spec file is a regular file whose name ends in `.yaml`, directly in the directory (`specgraph.IsFile`).
+  Each other entry gives a warning (see [Warnings](#warnings)), and the command reads no text of it.
 
 - **The size of each spec file.**
   The command refuses the tree when a spec file is larger than 1 MiB (1048576 bytes).
   In that case, the command parses no spec file.
 
-- **The blocks.**
-  A statement is a `requirement` block, a check a `check` block, and the files also hold `component` and `term` blocks.
-  The command refuses a spec file that is not UTF-8 or holds a NUL byte, an attribute that a block does not take, a line that opens no block, a block with no closing line, a block inside a block, text outside a block other than headings and blank lines, a heading that names code, and a claim of more than one line or more than one sentence.
+- **The form of a file.**
+  A spec file holds one or more nodes, one YAML document for each node.
+  A document starts with a line that is exactly `---`, and its `type` is `requirement` (a statement), `check`, `component` (a component or, with `kind: interface`, an interface) or `term`.
+  The command reads each document with the YAML library `gopkg.in/yaml.v3`.
+  It checks the data of each document against one JSON Schema, `packages/envoy/internal/dispatch/specgraph/schema/spec-node.schema.json`, which gives the keys of each kind of node, their types, the keys that a node must have and the values that a key takes.
+  Each fault of the form gives one line, with one of these rules:
+
+  - `bad-yaml`: the YAML library cannot read the document, for example text that is not UTF-8, a control character or one key written two times, or the data has a key that is not a string.
+
+  - `no-node`: the file holds no document.
+
+  - `schema`: the data breaks the schema, with the place in the data as a JSON pointer and the message of the validator, for example `schema: node: additional properties 'surprise' not allowed`.
+
+  - `not-printed`: the file is not exactly the documents that `specgraph`'s `Print` writes for its nodes, at the first line that differs.
+    A key in another order, a comment, an anchor or an alias, a tag, a flow list, a block scalar, another indentation, other quotes, a space at the end of a line, a carriage return and a byte order mark each give this rule, so one node has one form in git.
+
+  - `bad-time-limit`: a time limit that is not a positive Go duration.
+
+  `spec-check print` writes the documents in the form that the command reads back.
 
 - **Every rule of `specgraph.Validate`.**
-  These rules include ids (one id on two nodes, an id that is not words of lower-case ASCII letters and digits joined by single hyphens, or that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name included.
+  These rules include ids (one id on two nodes, or an id that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a text with no letter or digit, a claim or a component purpose of more than one sentence, and a name of code in a text, a term's name included.
   The rule on a name of code reads a word by its shape alone, so it also refuses a plain word or a product name of that shape: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024` or `https://10.0.0.1/api`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`), and the form of a Go test's name (`TestFlight`).
   Of the words of such a shape, only the product names that the rule lists, such as `Node.js`, pass.
   Say such a word in other words, for example "input and output" or "the client and the server".
@@ -71,7 +87,7 @@ A caller sets `allow-empty: true` only while it has no spec file, and reads `cou
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line that the command prints about the directory or an entry of it names the directory by its absolute path.
-`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where `<n> components` counts the components other than interfaces and `<n> interfaces` counts the components with `kind="interface"`.
+`<counts>` below is `<n> statements, <n> checks, <n> components, <n> interfaces, <n> terms`, each noun in the singular for one, where `<n> components` counts the components other than interfaces and `<n> interfaces` counts the components with `kind: interface`.
 
 - **Exit 0: the tree is valid.**
   The log holds the line `spec-check: <directory>: <counts>; the tree is valid`.

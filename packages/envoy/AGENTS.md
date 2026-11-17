@@ -3096,7 +3096,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
   `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
   and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check` and `cmd/spec-check`.
+  `ReadSet` reads one directory of a checkout by that bound and by the rule of entries its caller gives: `IsNote` for `cmd/architecture-check`, and `specgraph.IsFile` for `cmd/spec-check`.
   `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
@@ -3144,15 +3144,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ci-caches.yaml`'s `architecture-check` job, a job of its own, runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>-<hash>` cache entry in main's scope (`<hash>` is the SHA-256 of `packages/envoy/go.sum`, and on a miss the action restores the newest entry of the same Go version and still saves the new key), since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
   a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
 
-- `internal/dispatch/specgraph` reads the spec files of a repository, the `*.md` files directly in its `.dispatch/spec`, and judges the tree they hold.
+- `internal/dispatch/specgraph` reads the spec files of a repository, the `*.yaml` files directly in its `.dispatch/spec` (`IsFile`), and judges the tree they hold.
   It is logic over bytes and values, with no store, no route and no database (`TestSpecgraphReachesNoStore` runs `go list -deps` over it), so `cmd/spec-check`, Dispatch's importer and the pilot can call the same rules.
-  `Parse` reads the four blocks, statements (`requirement`), checks (`check`), components (`component`) and terms (`term`), with `pmdoc.ParseTypedDirectiveOpen`, the one reader of a typed block's opening line, and refuses any attribute a block does not take;
-  it does not call `pmdoc.Parse`, whose block schema lacks the attributes these files need.
-  It refuses a file that is not UTF-8 or holds a NUL byte at its first such line (`bad-encoding`), as the architecture importer refuses such a file.
-  It refuses a claim of more than one sentence (`bad-field: a claim is one sentence`) and a heading that names code (`code-in-text`).
-  `Print` writes a node as the block that `Parse` reads back as that node, and `Digest` names a node's content apart from its file and line.
-  `Validate` finds each fault a program can find (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
-  a doubled, malformed or retired id, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a check without its parts, a component purpose of more than one sentence, and a name of code in a text, a term's name among them (`CodeNames`).
+  A spec file holds one or more nodes, one YAML document for each: statements (`type: requirement`), checks (`check`), components and interfaces (`component`, with `kind: component` or `kind: interface`) and terms (`term`).
+  `Parse` reads each document with `gopkg.in/yaml.v3` and checks its data against one JSON Schema, `internal/dispatch/specgraph/schema/spec-node.schema.json` (embedded, and read by the TypeScript test `packages/dispatch/e2e/__tests__/spec-node-schema.test.ts`, which holds `ajv` and `yaml` to the same readings over `testdata/schema-cases.json` and `testdata/nodes`).
+  A document the library cannot read, or whose data has a key that is not a string, is `bad-yaml`, with the library's own message; a file with no document is `no-node`; data the schema refuses is `schema`, with the JSON pointer and the validator's message; and a file that is not exactly the documents `Print` writes for its nodes is `not-printed`, at the first line that differs, so one node has one spelling in git: no comment, anchor, tag, flow list, block scalar, other key order, other quotes, carriage return or byte order mark.
+  `Print` writes a node as its document, a text as a list of its lines, with U+2028, U+2029 and U+0085 in double quotes so a YAML 1.2 reader reads the same string; `Layout.Place` decides the file and the place of each node that `spec-check print` writes; and `Digest` names a node's content apart from its file and line.
+  The schema states presence, type and closed values, and `Validate` states words and meaning (`go doc ./internal/dispatch/specgraph Validate` lists the rules):
+  a doubled or retired id or one with a word that states a position, a parent or a relation to a node the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves (`supported-without-check`, R5), a text with no letter or digit, a claim or a component purpose of more than one sentence (`bad-claim`, `bad-component`), and a name of code in a text, a term's name among them (`CodeNames`).
   A claim and a purpose are split into sentences as ste-lint splits a line: after `.`, `!` or `?` and any white space that Python's `\s` matches.
   `CodeNames` reads a word as a name of code by its shape alone, such as a Go test's name, `readSet` or `pmdoc.ReadSet`, so it refuses a plain word or a product name of that shape too: a slash between two ASCII letters (`I/O`, `and/or`, `client/server`, `https://example.com/docs`, but not `https://example.com/2024`), small ASCII letters and then an ASCII capital and a small letter in a word of ASCII letters and digits only (`mmHg` and `ownCloud`, but not `mmHg-based` or `véloCity`), a small word, a dot and a capital (`works.Then`), a file ending (`Three.js`, `https://bun.sh`) and the form of a Go test's name (`TestFlight`), which the writer says in other words, such as "input and output";
   of the words of such a shape, only the product names that `productNames` lists, such as `Node.js`, pass;
@@ -3177,9 +3176,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   any other report that names no test, an empty one included, reads as a run of no tests: `MatchTests` then gives no entry for a check, and a reporter must read a check with no entry as a check with no result, which R9 of the spec reads as unknown and never true.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
-  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
+  It reads each directory with `notes.ReadSet` and `specgraph.IsFile`, so the 1 MiB bound is the architecture importer's.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
-  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
+  a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind: interface`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
   a spec file above the 1 MiB bound gives one line instead, `spec-check: file too large: <dir>/<file> is <n> bytes (limit 1048576)`, and the counts are 0, since no file is parsed;
   with `--allow-empty`, a directory that does not exist or holds no spec file is exit 0, the count line ending `; the tree is empty`, and without it exit 2, with a line that names `--allow-empty`.
@@ -3210,17 +3209,22 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Then one line for each node that the files hold and the approved spec removed, `spec-check: <kind> <id>: the files hold it, and the approved spec removed it` (`specgraph.Comparison.Removed`):
   R28 counts it as a difference, and the person approves a removal before the change that takes the node out of the files, so it does not fail the comparison.
   The kind is statement, check, component, interface or term, and the lines go statements, then checks, components and interfaces, then terms, each by id.
-  Files that do not parse are exit 2 and no comparison, since a block that does not parse is missing from the tree and its text would pass.
+  Files that do not parse are exit 2 and no comparison, since a document that does not read is missing from the tree and its text would pass.
   So is an `approved.json` that `ReadApproved` refuses, and it reads JSON with the package's one strict reader (`internal/dispatch/specgraph/strictjson.go`, on `encoding/json/v2`).
   That reader refuses a byte that is not UTF-8, a member that the format does not name in its own letters, a member that one object gives two times, and text after the value, so no JSON text reads as another.
   A directory that does not exist or holds no spec file is exit 2 too, since every text of no file is approved, with a line that names `--allow-empty`.
   With `--allow-empty`, `compare` reads it as the empty tree, as `tree` does, with a line on stderr that says so:
   git keeps no empty directory, so a revert of the change that added the last spec file leaves none, and each approved node then reads `not in the files` (R2: the revert "takes it out of the files").
   It does not judge the tree, which is `tree`'s work.
-  `spec-check print --approved <approved.json> --id <id> [--id <id>...]` writes the current approved block of each node named, in the order named, and after a statement the block of each current check that serves it, each block once and the blocks separated by one blank line (`cmd/spec-check/print.go`):
-  the block as the approved spec holds it, which `ReadApproved` checked is the block `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
-  Its blocks, like the JSON of `checks`, do not pass through `runnerlog.Say`, and no CI job runs `print`.
-  An id the approved spec does not hold, or removed, is exit 2 with nothing on stdout.
+
+- `cmd/spec-check print --approved <approved.json> --id <id> [--id <id>...] --dir <dir>` writes the current approved document of each node named, and of each current check that serves a statement named, into the spec files of `<dir>` (`cmd/spec-check/print.go`), and makes `<dir>` when it does not exist:
+  the document as the approved spec holds it, which `ReadApproved` checked is the document `Print` writes, so a change copies it into the files byte for byte and no agent types it (R2 of The Spec).
+  `specgraph.(*Layout).Place` puts each node at its place, with the bound of one file, 1 MiB: a node the files hold is replaced where it stands, a new check goes after its statement and the checks that follow it, a new statement at the end of its parent's file or of `<id>.yaml`, a component or an interface at the end of `components.yaml`, a term at the end of `terms.yaml`, and a block (a statement and the checks that follow it, or one other node) that would pass the bound moves to the end of the first file of its file's series (`<stem>-2.yaml` and on) that holds it.
+  The run places the components and interfaces, then the terms, then each statement with its checks, parents first, in memory, and judges the files it would leave as `tree` does.
+  A refusal of `Place` (a check whose statement or a statement whose parent the files do not hold, a block larger than one file, a node that two places hold) or a problem of that judgment is exit 2 with no file written, one line on stderr for each, `spec-check: print would write …` or `spec-check: print would leave <dir>/<file>:<line>: <node>: <detail>`.
+  Else print writes each file that changes through a temporary file and a rename, prints `spec-check: wrote <id> to <dir>/<file>:<line>` for each node and exits 0, and a second run with the same arguments changes no byte.
+  An id the approved spec does not hold, or removed, is exit 2 with nothing written, and no CI job runs `print`.
+  `TestPlace` holds each case of the rule, and `TestPrintKeepsTheInvariant` runs print over random approved sets of 460 seeds; `SPEC_CHECK_PRINT_SEEDS`, a whole number of at least 460, raises the count.
 
 - No CI job compares the spec files with the approved spec: R2 gives that comparison at each push to Dispatch.
   No route of the Dispatch server calls `specgraph.Compare` yet.
