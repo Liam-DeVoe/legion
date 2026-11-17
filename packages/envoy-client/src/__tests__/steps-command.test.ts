@@ -396,26 +396,26 @@ describe("dispatch steps on the command line", () => {
   }
 
   test("--issue and a bare key read the same steps and print them, exit 0", async () => {
-    const server = dispatchServing({
-      routes: {
-        [STEPS_PATH]: {
-          issue: "LEG-1",
-          tasks: [{ task: "default", steps: [implementer, tester] }],
-        },
-      },
-    });
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, tester] }],
+    };
     for (const argv of [
       ["steps", "--issue", "LEG-1"],
       ["steps", "LEG-1"],
     ]) {
-      const before = server.reads.length;
+      const label = argv.join(" ");
+      const server = dispatchServing({ routes: { [STEPS_PATH]: answer } });
 
       const { code, stdout } = await run(server, argv);
 
-      expect(code, argv.join(" ")).toBe(0);
+      expect(code, label).toBe(0);
       // The run read the steps route once and asked Dispatch nothing else.
-      expect(server.reads.slice(before).map((url) => url.pathname)).toEqual([STEPS_PATH]);
-      expect(stdout).toContain(
+      expect(
+        server.reads.map((url) => url.pathname),
+        label
+      ).toEqual([STEPS_PATH]);
+      expect(stdout, label).toContain(
         [
           "LEG-1: 2 steps in 1 tasks",
           "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
