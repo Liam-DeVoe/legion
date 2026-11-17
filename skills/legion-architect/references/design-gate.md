@@ -452,8 +452,7 @@ person approved the root's version, so the person can still ask for the root's o
 ### How to write the view
 
 - The spec says what the root builds and how, in its Summary, Problem and Design. No document of
-  the root holds a `requirement` block: not its spec, its Verification document or its decisions
-  document.
+  the root holds a `requirement` block.
 - One line of the spec, under `## Requirements`, starts `Delivers:`. It names each requirement block
   of the ancestor that the root delivers, by its reference pinned to the version you register on:
   `Delivers: dispatch://<ANCESTOR>/spec#b-<id>@v<N>`.
@@ -464,8 +463,8 @@ person approved the root's version, so the person can still ask for the root's o
   other block.
 - A check that the deployment's instructions ask of every change, such as an after-merge production
   check, serves the requirement whose change it deploys.
-- A requirement that the root needs and the ancestor does not state never goes into the root. Send
-  it up, as "A requirement the ancestor does not state" says.
+- A requirement that the root needs and the ancestor does not state goes up, as "A requirement the
+  ancestor does not state" says.
 - A root that already runs with requirements of its own becomes a view at its next spec change.
   Each of its requirements that the ancestor states becomes checks that serve the ancestor's
   requirement. Each one that the ancestor does not state goes up.
@@ -549,9 +548,10 @@ until the ancestor's own pull request merges ("When the root is a view" says wha
 - A changes request is the newest review of the root's own spec.
 - A person asked for the root's own approval.
 
-The root's spec then says which of these holds. When a person asks on the issue for the root's own
-approval, request that approval first, then register that version with no basis. A person's request
-for the root's own approval wins over the basis.
+The root's spec itself then says which of these holds: a section of decisions.md does not stand for
+it. When a person asks on the issue for the root's own approval, request that approval first, then
+register that version with no basis. A person's request for the root's own approval wins over the
+basis.
 
 ### A requirement the ancestor does not state
 
