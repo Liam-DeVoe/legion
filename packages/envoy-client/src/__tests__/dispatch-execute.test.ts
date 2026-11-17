@@ -16645,7 +16645,7 @@ for (const [name, reference, routeAnswer, named, absent] of [
       response(
         {
           code: "ARTIFACT_NOT_FOUND",
-          error: `document "runbook" not found by slug; this project's documents: `,
+          error: `document "runbook" not found by slug; this project's documents: none`,
         },
         404
       ),
