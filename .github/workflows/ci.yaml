@@ -1575,10 +1575,11 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-legion-version-inputs.test.sh'
-              # The fixture library it sources; the script under test and the modules it imports,
-              # which that library symlinks into every fixture; and the stand-in go and proxy
-              # recorder procedure its last two cases read with.
+              # The fixture library and the case file it sources; the script under test and the
+              # modules it imports, which that library symlinks into every fixture; and the
+              # stand-in go and proxy recorder procedure its last two cases read with.
               - '.github/scripts/check-legion-version-inputs-fixtures.sh'
+              - '.github/scripts/check-legion-version-inputs-run-cases.sh'
               - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/go_offline.py'
               - '.github/scripts/release_version_inputs.py'
