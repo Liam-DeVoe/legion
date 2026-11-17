@@ -14,31 +14,30 @@ import (
 func TestStepOfIsTodaysSequence(t *testing.T) {
 	type step struct {
 		place record.StepPlace
-		step  int
 		role  string
 		typ   string
 	}
 	want := map[phase.Phase]step{
-		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, 1, "planner", "planning"},
-		phase.Implementing: {record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2, "implementer", "implementation"},
-		phase.Testing:      {record.StepPlace{Task: "default", Kind: "step", Place: 3}, 3, "tester", "testing"},
-		phase.Reviewing:    {record.StepPlace{Task: "default", Kind: "step", Place: 4}, 4, "reviewer", "review"},
-		phase.Accepting:    {record.StepPlace{Task: "default", Kind: "step", Place: 5}, 5, "acceptance", "review"},
-		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, 0, "implementer", ""},
-		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, 0, "merger", ""},
+		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, "planner", "planning"},
+		phase.Implementing: {record.StepPlace{Task: "default", Kind: "step", Place: 2}, "implementer", "implementation"},
+		phase.Testing:      {record.StepPlace{Task: "default", Kind: "step", Place: 3}, "tester", "testing"},
+		phase.Reviewing:    {record.StepPlace{Task: "default", Kind: "step", Place: 4}, "reviewer", "review"},
+		phase.Accepting:    {record.StepPlace{Task: "default", Kind: "step", Place: 5}, "acceptance", "review"},
+		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, "implementer", ""},
+		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, "merger", ""},
 	}
 	for _, p := range phase.Order {
-		place, n, role, typ, ok := stepOf(p)
+		place, role, typ, ok := stepOf(p)
 		w, stepPhase := want[p]
 		if ok != stepPhase {
 			t.Fatalf("stepOf(%s) ok = %v, want %v", p, ok, stepPhase)
 		}
-		if got := (step{place, n, role, typ}); ok && got != w {
+		if got := (step{place, role, typ}); ok && got != w {
 			t.Errorf("stepOf(%s) = %+v, want %+v", p, got, w)
 		}
 	}
 	for _, p := range []phase.Phase{phase.Admitted, phase.Held, phase.Done, phase.AwaitingPerson} {
-		if _, _, _, _, ok := stepOf(p); ok {
+		if _, _, _, ok := stepOf(p); ok {
 			t.Errorf("stepOf(%s) is a step; that phase runs none", p)
 		}
 	}

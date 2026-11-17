@@ -26,13 +26,13 @@ type StepAgent struct {
 }
 
 // stepOf is the step a phase runs as a step of the task default: the place its count of starts is
-// kept under, its place in the task (from 1 for a step, 0 for a retro or a merge, which no plan
+// kept under (its place in the task from 1 for a step, 0 for a retro or a merge, which no plan
 // names, so the kind tells those two apart), its role and its type ("" for a retro or a merge).
 // A phase that runs no step — admitted, awaiting a person, held, done — answers ok false; a held
 // issue's step is the step of the phase its hold is from (record.StandsAt), which the caller reads.
-func stepOf(p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
-	at := func(kind string, step int, role, typ string) (record.StepPlace, int, string, string, bool) {
-		return record.StepPlace{Task: defaultTask, Kind: kind, Place: step}, step, role, typ, true
+func stepOf(p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
+	at := func(kind string, step int, role, typ string) (record.StepPlace, string, string, bool) {
+		return record.StepPlace{Task: defaultTask, Kind: kind, Place: step}, role, typ, true
 	}
 	switch p {
 	case phase.Planning:
@@ -50,7 +50,7 @@ func stepOf(p phase.Phase) (place record.StepPlace, step int, role, typ string, 
 	case phase.Merging:
 		return at("merge", 0, "merger", "")
 	}
-	return record.StepPlace{}, 0, "", "", false
+	return record.StepPlace{}, "", "", false
 }
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
@@ -101,7 +101,7 @@ var stepStopped = StepEnd{Result: "stopped"}
 // own (record.LaneRecord). A phase that runs no step writes nothing, and neither does a record key
 // that is no issue key (recordsSteps).
 func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
-	place, step, role, typ, ok := stepOf(record.StandsAt(issue))
+	place, role, typ, ok := stepOf(record.StandsAt(issue))
 	if !ok || !recordsSteps(issue) {
 		return nil
 	}
@@ -110,7 +110,7 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, step, role, typ, string(agent), starts)
+	write := stepWrite(issue, place, role, typ, string(agent), starts)
 	write.StartedAt = new(now)
 	if read := e.readAgent(agent); read.Session != "" {
 		write.Session = new(read.Session)
@@ -134,7 +134,7 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
 	at := record.StandsAt(before)
-	place, step, role, typ, ok := stepOf(at)
+	place, role, typ, ok := stepOf(at)
 	if !ok || !recordsSteps(before) {
 		return nil
 	}
@@ -152,7 +152,7 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 			return err
 		}
 	}
-	write := stepWrite(before, place, step, role, typ, string(agent), start.Starts)
+	write := stepWrite(before, place, role, typ, string(agent), start.Starts)
 	if !startedAt.IsZero() {
 		write.StartedAt = new(startedAt)
 	}
@@ -228,9 +228,9 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 
 // stepWrite is the identity of one run of a step of issue: the fields every write of its record
 // carries.
-func stepWrite(issue record.Issue, place record.StepPlace, step int, role, typ, agent string, starts int64) record.StepRecord {
-	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place.Task, place.Kind, step, starts), Task: place.Task,
-		Step: step, Kind: place.Kind, Role: role, Type: typ, Agent: agent, Generation: issue.Generation}
+func stepWrite(issue record.Issue, place record.StepPlace, role, typ, agent string, starts int64) record.StepRecord {
+	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place.Task, place.Kind, place.Place, starts), Task: place.Task,
+		Step: place.Place, Kind: place.Kind, Role: role, Type: typ, Agent: agent, Generation: issue.Generation}
 }
 
 // readAgent is what the daemon reads of agent now (Config.StepAgent): nothing for no agent or no
@@ -249,11 +249,11 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	result, returns := endOf(trigger)
 	end := StepEnd{Result: result}
-	if _, _, _, _, ok := stepOf(from); !ok {
+	if _, _, _, ok := stepOf(from); !ok {
 		return end
 	}
-	if _, step, _, _, ok := stepOf(to); returns && ok {
-		end.ReturnedTo = new(step)
+	if into, _, _, ok := stepOf(to); returns && ok {
+		end.ReturnedTo = new(into.Place)
 	}
 	if handoff.Role != "" && handoff.Role == phase.RoleFor(from) {
 		end.Report = handoff.HandoffRecord
@@ -278,7 +278,7 @@ func (e *Engine) EndRunningStep(ctx context.Context, tx pgx.Tx, before record.Is
 // before it has no end, and the count would leave that one none.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	at := record.StandsAt(issue)
-	place, _, _, _, ok := stepOf(at)
+	place, _, _, ok := stepOf(at)
 	if !ok || !recordsSteps(issue) {
 		return nil
 	}
