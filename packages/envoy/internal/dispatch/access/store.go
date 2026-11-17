@@ -570,17 +570,18 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 // writes that each give owner a group are ordered and the second counts the first's once it
 // commits; the count is a statement of its own after that lock, so it reads what committed while
 // the lock was waited for. Every write takes a group's name lock (LockGroupName) and then one owner
-// lock, so no two writes wait on each other in a cycle.
+// lock, so no two writes wait on each other in a cycle. Its errors name no person: an error can
+// reach a log line (TestNoAccessErrorNamesAPerson).
 func roomForAGroup(ctx context.Context, tx pgx.Tx, owner string) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-group-owner'), hashtext($1))`, owner); err != nil {
-		return fmt.Errorf("lock the groups of %s: %w", owner, err)
+		return fmt.Errorf("lock the groups of the owner: %w", err)
 	}
 	var held int
 	if err := tx.QueryRow(ctx, `select count(*) from access_groups where owner = $1`, owner).Scan(&held); err != nil {
-		return fmt.Errorf("count the groups of %s: %w", owner, err)
+		return fmt.Errorf("count the groups of the owner: %w", err)
 	}
 	if held >= model.MaxGroupsPerOwner {
-		return fmt.Errorf("%w: %s holds %d", ErrGroupsPerOwnerFull, owner, held)
+		return fmt.Errorf("%w: the owner holds %d", ErrGroupsPerOwnerFull, held)
 	}
 	return nil
 }

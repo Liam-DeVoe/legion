@@ -102,9 +102,12 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 		{"Answer", func(tx pgx.Tx) error { _, err := Answer(ctx, tx, "PRIV", hiddenEmail); return err }},
 		{"Listed", func(tx pgx.Tx) error { _, err := Listed(ctx, tx, hiddenEmail); return err }},
 		{"Resolve", func(tx pgx.Tx) error { _, err := Resolve(ctx, tx, cookie(hiddenEmail)); return err }},
-		{"ReadProject", func(tx pgx.Tx) error { _, err := ReadProject(ctx, tx, "PRIV"); return err }},
+		{"ReadProject", func(tx pgx.Tx) error {
+			_, err := ReadProject(ctx, tx, "PRIV", viewerArg(t, *model.ServerViewer))
+			return err
+		}},
 		{"ReadGroup", func(tx pgx.Tx) error { _, err := ReadGroup(ctx, tx, "crew"); return err }},
-		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx); return err }},
+		{"ListGroups", func(tx pgx.Tx) error { _, err := ListGroups(ctx, tx, "", model.MaxGroupsPerOwner); return err }},
 		{"LockForAccessWrite", func(tx pgx.Tx) error { _, err := LockForAccessWrite(ctx, tx, "PRIV", "crew"); return err }},
 		{"SetOwner", func(tx pgx.Tx) error { _, _, err := SetOwner(ctx, tx, broker, "PRIV", hiddenEmail, by); return err }},
 		{"SetVisibility", func(tx pgx.Tx) error {
