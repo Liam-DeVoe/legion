@@ -1743,8 +1743,9 @@ export const dispatchToolSpecs = [
       "run. A write that reached Dispatch with no answer that says whether it stored the result " +
       'prints {"write_outcome_unknown":"<code>"} and exits 1: the result may be stored, and a ' +
       "second run is safe, because Dispatch keeps each result. A call that the broker's rate " +
-      "limit (429), a broker that cannot answer the trade (5xx) or Dispatch's check of the job's " +
-      "token (429 BROKER_TOKEN_RATE_LIMITED, 503 BROKER_UNAVAILABLE) turns away before anything " +
+      "limit (429), a broker that cannot answer the trade (a 5xx, or no answer in 30 s) or " +
+      "Dispatch's check of the job's token (429 BROKER_TOKEN_RATE_LIMITED, 503 " +
+      "BROKER_UNAVAILABLE) turns away before anything " +
       "is stored is asked again after the answer's Retry-After, or a second. The whole call has " +
       "one bound, 60 s from its start, which the runner's token request, the broker's trade and " +
       "the write all run under, and no round starts in its last 7 s; a call turned away until " +

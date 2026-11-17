@@ -6,6 +6,7 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_IN_FLIGHT,
   IDEMPOTENCY_KEY_PATTERN,
+  IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
@@ -461,6 +462,49 @@ describe("DispatchClient's writes", () => {
     expect(error).toEqual(expect.objectContaining({ code: "INTERNAL", status: 500 }));
     expect(sent).toHaveLength(2);
     expect(probes).toHaveLength(1);
+  });
+
+  // Writes that fail together share one /healthz probe, so the probe runs under its own bound and
+  // under no write's signal: the write that started it is cancelled while it runs, and the write
+  // that joined it still reads its answer and asks again. Both writes fail in transport first; the
+  // probe answers only once the first write has left. A macrotask turn lets the second write join
+  // the probe, since each step of its failure is a microtask.
+  test("a write's own end ends its wait on a shared /healthz probe, and never the probe", async () => {
+    const { promise: probing, resolve: probed } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/healthz")) {
+        probed();
+        const { promise: aborted, reject } = Promise.withResolvers<never>();
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        await Promise.race([held, aborted]);
+        return json({ status: "ok", idempotency_keys: true });
+      }
+      posts += 1;
+      if (posts <= 2) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "";
+      return json(posted, 201, { "Idempotency-Key": key });
+    }) as typeof fetch;
+    const cancel = new AbortController();
+    const first = failure(
+      client(fetchImpl, pacing().retry, cancel.signal).comment("DSP-1", comment)
+    );
+    await probing;
+    const second = client(fetchImpl, pacing().retry)
+      .comment("DSP-1", comment)
+      .then(
+        () => "posted",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+    const { promise: turned, resolve: turn } = Promise.withResolvers<void>();
+    setImmediate(turn);
+    await turned;
+    cancel.abort();
+    await first;
+    release();
+    expect({ second: await second, posts }).toEqual({ second: "posted", posts: 3 });
   });
 
   test("ask again after a gateway's 408 and Dispatch's own 5xx", async () => {
@@ -1361,6 +1405,51 @@ describe("a DispatchClient write as one call", () => {
       unknown: writeOutcomeUnknown(error),
       keys: keysOf(sent).size,
     }).toEqual({ refused: true, unknown: false, keys: 1 });
+  });
+
+  // An echoed 401 and an echoed 422 KEY_REUSED name the key back, and the keyed layer keeps
+  // neither as the key's outcome: it releases the key on a 401, which can come after the handler
+  // committed, and KEY_REUSED says only that this request was not run. After a 502 that may have
+  // stored, each ends the call as unknown, and not as a refusal that says nothing was stored.
+  for (const [name, answer] of [
+    ["an echoed 401", () => refusal(401, "UNAUTHENTICATED", "the session lapsed in the write")],
+    [
+      "an echoed 422 KEY_REUSED",
+      () => refusal(422, IDEMPOTENCY_KEY_REUSED, "this key was sent with another request"),
+    ],
+  ] as const) {
+    test(`a 502 that may have stored, then ${name}, ends as unknown under one key`, async () => {
+      const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), answer()], { echo: true });
+      const error = await failure(
+        make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+      );
+      expect({
+        unsettled: error instanceof DispatchWriteUnsettledError,
+        unknown: writeOutcomeUnknown(error),
+        posts: sent.length,
+        keys: keysOf(sent).size,
+      }).toEqual({ unsettled: true, unknown: true, posts: 2, keys: 1 });
+    });
+  }
+
+  // An echoed 401 is a handler's answer, which can come after the handler committed, so on its own
+  // it ends the call as unknown. The control: Dispatch's check of the token answers its 401 before
+  // the keyed layer, with no key back, and that refusal says nothing was stored.
+  test("an echoed 401 ends the call as unknown, and the token check's 401 as a refusal", async () => {
+    const outcome = async (echo: boolean) => {
+      const { fetchImpl } = scripted(
+        [refusal(401, "UNAUTHENTICATED", "the session lapsed in the write")],
+        { echo }
+      );
+      const error = await failure(
+        make(fetchImpl, pacing().retry).recordSpecCheckResult("ACME", result)
+      );
+      return error instanceof DispatchServiceError ? error.code : writeOutcomeUnknown(error);
+    };
+    expect({ echoed: await outcome(true), unechoed: await outcome(false) }).toEqual({
+      echoed: true,
+      unechoed: "UNAUTHENTICATED",
+    });
   });
 
   // The deadline ends a pause the client took after a rate limit, and the pause still returns, as
