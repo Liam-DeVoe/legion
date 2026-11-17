@@ -32,8 +32,8 @@ export const USABLE_CONTROL_ATTRIBUTES = [
  * whether it is drawn, since nothing under a hidden `aside` is. Two readers need this: a reach
  * that opens Details itself before it presses (the key `l`, through `useOpenDetailsAt`) must
  * find its control while Details is closed, or `l` would never open Details at Labels; and Add's
- * list must stay right while Details is closed, because opening Details does not draw the menu
- * again, so the list read while it was closed is the one the reader finds.
+ * list must stay right while Details is closed, so Details does not open on an Add without the
+ * entries whose controls are in Details, which the read its opening sets off must then put back.
  */
 export function usableControl(control: Element | null): boolean {
   if (control === null || !control.isConnected) return false;

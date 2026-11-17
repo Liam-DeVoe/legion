@@ -157,7 +157,8 @@ export function IssueMarginPanel({
   /** The issue's primary document, whose approval the Approval row draws. */
   documentArtifact: Artifact | undefined;
   /** The Details drawer's `aside` the panel is placed in (`slots/details.tsx`), which a control
-   *  elsewhere on the page sends its request for a row to; `null` while the panel is in none. */
+   *  elsewhere on the page sends its request for a row to, and which Add watches in the panel's
+   *  place (`IssueAddMenu`); `null` while the panel is in none. */
   drawerBox?: HTMLElement | null;
   /** The editor open in its row - the parent's or the route's - or `null`. */
   editingField: IssueField | null;
@@ -173,7 +174,7 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const filesList = useRef<HTMLUListElement>(null);
-  // The panel's own element, under which Add watches the controls of Details it reaches.
+  // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
   // The blocked-by editor's state is the panel's and not its row's, because a closed section
@@ -371,8 +372,7 @@ export function IssueMarginPanel({
             <DetailsErrorLine
               error={blockerTitles.error}
               message="Could not read the titles of these issues."
-              onRetry={() => void blockerTitles.refetch()}
-              retrying={blockerTitles.isFetching}
+              onRetry={retryRead(blockerTitles)}
             />
           ) : null}
         </Row>
@@ -384,8 +384,7 @@ export function IssueMarginPanel({
             <DetailsErrorLine
               error={blocking.error}
               message="Could not read what this issue blocks."
-              onRetry={() => void blocking.refetch()}
-              retrying={blocking.isFetching}
+              onRetry={retryRead(blocking)}
             />
           ) : blocking.isPending ? null : blocks.length === 0 ? (
             none
@@ -441,7 +440,9 @@ export function IssueMarginPanel({
               the issue closed), and the drafts send none of it again (`useIssueDrafts`). The save
               is Details' own write (the details slot's `useIssueHeaderWrites`), and inline, so
               the write store leaves its refusal to this row, and the header, which says the
-              page's other refusals, never sees it. */}
+              page's other refusals, never sees it. The line is drawn only while that save stands
+              refused, never while it is out, and the drafts send nothing while one is out
+              (`useSubmitGuard`), so its Retry is never disabled and needs no hold of its own. */}
           {writes.updateIssue.isError &&
           writes.updateIssue.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -449,7 +450,6 @@ export function IssueMarginPanel({
               error={writes.updateIssue.error}
               message={apiErrorMessage(writes.updateIssue.error, "Could not update this issue.")}
               onRetry={isClosed ? undefined : writes.drafts.retry}
-              retrying={writes.updateIssue.isPending}
             />
           ) : null}
         </Row>
@@ -471,6 +471,7 @@ export function IssueMarginPanel({
             which is the priority row (`IssuePriorityLine`) with nothing in it yet. */}
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2">
           <IssueAddMenu
+            drawerBox={drawerBox}
             isClosed={isClosed}
             issue={issue}
             onOpenField={onEditingField}
@@ -596,6 +597,20 @@ export function IssueMarginPanel({
       <DetailsHistory issue={issue} state={state} />
     </div>
   );
+}
+
+/** The Retry of a read of Details that failed: it sends the read again, and a press while that
+ *  read is still out joins it (`cancelRefetch: false`) rather than ending it and sending another,
+ *  as the app's other refetches do (`DispatchQueryClient` in `api/query-client.ts`, `drive` in
+ *  `api/query-refresh.ts`). The query itself decides that as the press lands. A gate on the
+ *  render's `isFetching` would not hold: a second press can arrive before React draws the
+ *  first one's fetch (`hooks/useSubmitGuard.ts`). Retry stays enabled while the read is out,
+ *  because Chromium moves the focus of a control that turns disabled to the page's body, which
+ *  would lose a reader who pressed Retry by keyboard. */
+function retryRead(read: {
+  readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
+}): () => void {
+  return () => void read.refetch({ cancelRefetch: false });
 }
 
 /** The issues of a list of them, each its key as a link and its title beside it, folded after

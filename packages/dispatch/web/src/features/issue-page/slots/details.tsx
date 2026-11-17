@@ -54,8 +54,8 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     return element;
   });
   // The drawer's `aside` the stage sits in, where a control elsewhere on the page asks for a row
-  // of the panel (`IssueMarginPanel`): read as the host takes the stage, since the panel is drawn
-  // before any host holds it.
+  // of the panel and which Add watches (`IssueMarginPanel`): read as the host takes the stage,
+  // since the panel is drawn before any host holds it.
   const [drawerBox, setDrawerBox] = useState<HTMLElement | null>(null);
   // The host takes the stage as it is drawn, and lets go of it only while it still holds it.
   const holdPanel = useCallback(

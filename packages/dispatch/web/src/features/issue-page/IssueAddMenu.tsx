@@ -18,7 +18,7 @@ import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
 import { blockedByControlName } from "./BlockedByControl";
 import type { IssueField } from "./IssueFieldForms";
-import { DETAILS_ATTRIBUTE, useMarginDrawer } from "./margin-slot";
+import { useMarginDrawer } from "./margin-slot";
 import { PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
@@ -58,11 +58,15 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  * once its own read answers, were never seen either (the review of 5906c38b).
  */
 export function IssueAddMenu({
+  drawerBox,
   isClosed,
   issue,
   onOpenField,
   panel,
 }: {
+  /** The Details drawer's `aside` the panel is placed in (`slots/details.tsx`), or `null` while
+   *  the panel is in none. */
+  drawerBox: HTMLElement | null;
   isClosed: boolean;
   issue: IssueDetails;
   onOpenField: (field: IssueField) => void;
@@ -118,8 +122,9 @@ export function IssueAddMenu({
 
   const fields = emptyFields(issue);
   // The fields of the latest commit, which `read` reads: which entries the issue lists and the
-  // names their controls have both follow the issue, and the observer that calls `read` is set
-  // up once, so `read` takes them from here rather than from the render it was made in.
+  // names their controls have both follow the issue, and the observer that calls `read` is not
+  // set up again on each render, so `read` takes them from here rather than from the render it
+  // was made in.
   const committed = useRef(fields);
   const read = useCallback(() => {
     const found = committed.current
@@ -141,7 +146,8 @@ export function IssueAddMenu({
   // from a control of Details up to Details' own `aside`, and the `aside` itself, which is hidden
   // while Details is closed; an element between them can be hidden too, as the phone's sheet hides
   // the box that holds the panel while a margin thread is open (`features/margin/MarginSheet.tsx`).
-  // So where an `aside` holds the panel, the whole `aside` is watched in the panel's place.
+  // So where an `aside` holds the panel (`drawerBox`), the whole `aside` is watched in the panel's
+  // place.
   useLayoutEffect(() => {
     committed.current = fields;
     read();
@@ -149,29 +155,24 @@ export function IssueAddMenu({
   useEffect(() => {
     const watching = new MutationObserver(read);
     let header: Element | null = null;
-    let details: Element | null = null;
     const watch = () => {
       header = document.querySelector(ISSUE_HEADER);
-      details = detailsHolding(panel.current);
       watching.disconnect();
-      for (const root of [details ?? panel.current, header]) {
+      for (const root of [drawerBox ?? panel.current, header]) {
         if (root !== null) watching.observe(root, WATCHED);
       }
     };
+    // The panel is drawn before any `aside` holds it, and can be moved to another: the watch
+    // starts again for each `drawerBox`, and the page is read once it is on, so a change made
+    // before it started is not missed.
     watch();
-    // The header can be drawn after Details, or drawn again as another element, and the panel is
-    // drawn before any `aside` holds it and can be moved to another; only an element drawn can be
-    // watched. So the body is watched for drawn and removed elements alone, and the header and
-    // Details are watched again, and the page read, whenever the header found or the `aside`
-    // around the panel has changed. That is one query and one walk up from the panel per change,
-    // so the rest of the page's drawing reads no entry.
+    read();
+    // The header can be drawn after Details, or drawn again as another element, and only an
+    // element drawn can be watched: so the body is watched for drawn and removed elements alone,
+    // and the header is watched again, and the page read, whenever the one found has changed.
+    // That is one query per change, so the rest of the page's drawing reads no entry.
     const arriving = new MutationObserver(() => {
-      if (
-        document.querySelector(ISSUE_HEADER) === header &&
-        detailsHolding(panel.current) === details
-      ) {
-        return;
-      }
+      if (document.querySelector(ISSUE_HEADER) === header) return;
       watch();
       read();
     });
@@ -180,7 +181,7 @@ export function IssueAddMenu({
       watching.disconnect();
       arriving.disconnect();
     };
-  }, [panel, read]);
+  }, [drawerBox, panel, read]);
   // The entries of this render's fields the page was last read to reach. A field that got a
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
@@ -354,12 +355,6 @@ interface AddableField {
 
 /** The issue page's header, which draws the assignee's control. */
 const ISSUE_HEADER = "[data-issue-header]";
-
-/** Details' own `aside` around `panel`, if one holds it (`features/margin/Margin.tsx`), else
- *  `null`. */
-function detailsHolding(panel: Element | null): Element | null {
-  return panel?.closest(`aside[${DETAILS_ATTRIBUTE}]`) ?? null;
-}
 
 /** What Add watches under Details and the header: each element drawn or removed, and each
  *  attribute that names a control or that `usableControl` reads. */

@@ -23,6 +23,7 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  ReferenceTargets,
   RepoProject,
   UserState,
 } from "../../api/types";
@@ -726,6 +727,80 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   }
 });
 
+/** Moves the focus to the page's body whenever the element that holds it turns disabled, as
+ *  Chromium does and happy-dom does not, until the function it returns is called. */
+function blurWhenDisabled(): () => void {
+  const watching = new MutationObserver(() => {
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("disabled")) return;
+    // happy-dom's `blur()` does nothing on a disabled element, so the attribute comes off for the
+    // blur alone and goes back at once.
+    const value = focused.getAttribute("disabled") ?? "";
+    focused.removeAttribute("disabled");
+    focused.blur();
+    focused.setAttribute("disabled", value);
+  });
+  watching.observe(document, { attributeFilter: ["disabled"], attributes: true, subtree: true });
+  return () => watching.disconnect();
+}
+
+// A Retry that turned disabled while the read it sent again was out lost the focus of a reader
+// who pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to
+// the page's body (`blurWhenDisabled` does that here). Retry stays enabled, and a press while
+// its read is out joins that read and sends nothing (`retryRead`). The titles answered once
+// before they failed, because a refetch of a read that holds an answer otherwise ends the
+// request that is out and sends another.
+test("Retry keeps the focus while the read it sent again is out, and a second press sends none", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
+  const retried = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const retryOfTitles = () =>
+    within(detailsRow(PROPERTY_LABELS.blocked_by)).queryByRole("button", {
+      name: CONTROL_LABELS.retry,
+    });
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(1));
+    titles.mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    await waitFor(() => expect(retryOfTitles(), "Blocked by offers no Retry").not.toBeNull());
+    const retry = retryOfTitles();
+    if (retry === null) throw new Error("Blocked by offers no Retry");
+
+    titles.mockImplementation(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    expect(titles, "Retry did not read the titles again").toHaveBeenCalledTimes(3);
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      retry
+    );
+    await user.keyboard("{Enter}");
+    expect(titles, "a press of Retry while its read is out sent another").toHaveBeenCalledTimes(3);
+
+    await act(async () => retried.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(retryOfTitles(), "the titles answered, but Blocked by still offers Retry").toBeNull()
+    );
+  } finally {
+    stopBlurring();
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 // A folded list's Show all goes with its press, so the focus goes on to the first entry it
 // opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
 test("Show all gives the focus to the first entry it opens", async () => {
@@ -907,17 +982,20 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
   }
 });
 
+/** No priority is live: the read the Advances row makes, answered empty. */
+const noLivePriorities = {
+  empty: "No priority is live now, so the list is empty.",
+  priorities: [],
+  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+};
+
 // The add control lists what has no value yet, so where nothing can be added - a closed issue,
 // or one with a value for every property the menu lists - it is not drawn at all.
 test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
   const { getIssue, restore } = stubIssueApi();
   // The Advances row reads the priorities, to name the one the issue advances.
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({ ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" });
   let view = renderDetails();
 
@@ -971,12 +1049,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   const full: IssueDetails = {
     ...issue,
     advances: [{ id: "PRI-7", inherited: false }],
@@ -1046,12 +1119,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
 test("Add is drawn again after the Advances form it opened is cancelled", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue({
     ...issue,
     advances: [],
@@ -1296,12 +1364,7 @@ test.each(
 )("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue(advancesOnly);
   const view = renderDetails();
   try {
@@ -1340,12 +1403,7 @@ test.each(
 test("with no checkVisibility, Add still lists a control that takes a press", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   getIssue.mockResolvedValue(advancesOnly);
   const checkVisibility = Object.getOwnPropertyDescriptor(Element.prototype, "checkVisibility");
   // Unmounts what the case drew, once it has drawn it.
@@ -1374,14 +1432,6 @@ test("with no checkVisibility, Add still lists a control that takes a press", as
     restore();
   }
 });
-
-/** No priority is live: the read the Advances row makes, answered empty. */
-const noLivePriorities = {
-  empty: "No priority is live now, so the list is empty.",
-  priorities: [],
-  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-};
 
 /** Details as the shell's drawer draws it: the details slot, whose panel the drawer's `aside`
  *  holds under a box of the sheet's own (`MarginSheet.tsx`'s `SheetBody`, which the phone's
@@ -1455,8 +1505,8 @@ test("Add lists no entry while the box between the panel and Details' aside is h
 
 // Details closed - its `aside` hidden (`Margin.tsx`), which a browser draws as `display: none`
 // and happy-dom draws as nothing at all, so the case sets that style too - is no refusal
-// (`usableControl`): what Add lists while Details is closed is what the reader finds on opening
-// it, so it is what Add lists once Details is open.
+// (`usableControl`): Details opens on what Add listed while it was closed, so that is what Add
+// lists once Details is open, and no read on opening has to put an entry back.
 test("Add lists the same entries while Details is closed as once it is open again", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -1540,12 +1590,7 @@ test("Add lists Assignee once a header drawn after it draws the assignee's contr
 test("Add is drawn once the repository's control draws its select", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "No priority is live now, so the list is empty.",
-    priorities: [],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
   // Open, Details reads what waits on the issue.
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue({
