@@ -57,14 +57,15 @@ import { commentWithBody } from "./margin-helpers";
 import { expect, test } from "./test";
 
 /**
- * Part L of dispatch://INFRA-1196, "Writing" (dispatch://INFRA-3949): the new issue page's one
+ * Writing on the new issue page: the page's one
  * box to write in, held at the foot of the screen; a reply drawn under what it answers; and the
  * read mark at the outline's end. Each row is one check of
- * dispatch://INFRA-3949/artifact/verification-md, named by its `-g` string: rows (1) to (4) are
+ * the verification document, named by its `-g` string: rows (1) to (4) are
  * c-replies, (5) and (6) c-box, (7) c-mark, (8) the outline's half of c-statement-reply, and (9)
- * its Spec view half, owed on part J and skipped until J is under this part's head (`@owed`).
+ * its Spec view half, owed until the Spec view's keymap takes the box's writer and skipped until
+ * then (`@owed`).
  *
- * The rows are on the real stack, each through D's `phase` (a reset database, alice signed in,
+ * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row writes from the box and then reads its
  * own write, as Dispatch stored it and as the outline draws it from the server's reads. Rows (1)
  * to (5) are the checkpoint's (`git show 29111db16c41:packages/dispatch/e2e/issue-layout.e2e.ts`),
@@ -224,7 +225,7 @@ async function oneRowHolding(page: Page, words: string, what: string): Promise<s
   return id;
 }
 
-// c-replies (1). R3 and R16 of dispatch://INFRA-1196 and dispatch://INFRA-3677: a reply is drawn
+// c-replies (1): a reply is drawn
 // under the entry it answers, at any depth, a resolved question's reply included; every node
 // that takes a reply draws the control; a reply from the box lands under its target; an answer
 // is drawn in the question's row; and a comment with no target is drawn at the outline's top
@@ -301,7 +302,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
       await expect.poll(() => parentOfRow(page, id), { message: what }).toBe(parent);
     };
 
-    // A reply sent from a resolved ask's control is drawn under that ask (INFRA-3677).
+    // A resolved ask still takes a reply: one sent from its control is drawn under that ask.
     await replyFromRow(page, seeded.resolvedAsk, "A reply on the resolved question.");
     await drawnUnder(
       (await commentWithBody(seeded.key, undefined, "A reply on the resolved question.")).id,
@@ -366,7 +367,7 @@ test("a reply is drawn under the entry it answers, and every node takes a reply 
   });
 });
 
-// c-replies (2). dispatch://INFRA-3677: a question its asker resolved still takes a reply, which
+// c-replies (2): a question its asker resolved still takes a reply, which
 // Dispatch stores with the question's `ask_id` and the outline draws under the question rather
 // than under the issue or nowhere.
 // SLOW(>=2s): a seeded thread and three questions, a reply written from the box and polled until
@@ -1261,7 +1262,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
 test.skip("r on a statement in the Spec view writes a comment under it @owed", {
   annotation: {
     description:
-      "Owed on part J of INFRA-1196 (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap; skipped under decision 127.",
+      "Owed: the Spec view's rows take the writer's r only once the view's keymap is passed the box's writer, which it is not yet, so this reading is skipped until then.",
     type: "owed",
   },
 }, async ({ browser }) => {

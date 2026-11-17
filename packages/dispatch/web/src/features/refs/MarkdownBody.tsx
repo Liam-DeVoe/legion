@@ -251,8 +251,7 @@ function* paintBlockInSlices(
 interface MarkdownBodyProps {
   /** Classes a host's line asks of the body's own element, after the renderer's: a reason drawn
    *  as a value of a line inside `NoTooltips`, held to that line's width so a long word wraps
-   *  there (`ApprovalSteps`, `IssueComponentsLine`; decision 104 of
-   *  dispatch://INFRA-1196/artifact/part-decisions-md). None, the default, draws the renderer's
+   *  there (`ApprovalSteps`, `IssueComponentsLine`). None, the default, draws the renderer's
    *  classes alone. */
   className?: string;
   /** The text this body holds: parsed and drawn where it has no `tree`, and written into the

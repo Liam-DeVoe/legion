@@ -203,11 +203,10 @@ export function MentionField({
   const listboxId = useId();
   const hintId = useId();
   // Inside `NoTooltips`, the new issue page's surface, a box the host does not draw in a look of
-  // its own is in the page's colours (dispatch://INFRA-3935 R6), as are its label, its mention
+  // its own is in the page's colours, as are its label, its mention
   // targets and its hint: the paper inside its hairline rule, the ink typed on it, the quiet grey
   // of a placeholder and of the hint, the muted grey of the label, and `main`'s focus rule, the
-  // application's one focus indicator (decision 58 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md). Everywhere else each class is `main`'s.
+  // application's one focus indicator. Everywhere else each class is `main`'s.
   const tooltips = useTooltips();
   const picker = useRefPicker({
     caret,

@@ -5,10 +5,10 @@ import { focusRow, rowAct } from "./issue-page-g";
 import { onScreen } from "./issue-page-i";
 
 /**
- * What the rows of part L of dispatch://INFRA-1196 (dispatch://INFRA-3949,
+ * What the browser rows of the page's writing (the spec file
  * `e2e/issue-page-l.e2e.ts`) read of the new issue page's box at the foot of the screen and of
- * its read mark, and the issues they seed. D's `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`
- * and I's `e2e/issue-page-i.ts` hold the page's frame, a node's row and the outline; this file
+ * its read mark, and the issues they seed. `e2e/issue-page.ts`, `e2e/issue-page-g.ts`
+ * and `e2e/issue-page-i.ts` hold the page's frame, a node's row and the outline; this file
  * holds what those do not (decision 2 of the parts).
  *
  * What the box draws (`IssueComposer.tsx`, `slots/foot.tsx`):
@@ -293,8 +293,8 @@ export interface StatementsSeed {
 }
 
 /**
- * One issue whose spec holds three statements a comment can be written on (dispatch://INFRA-3949
- * R11): one paragraph citing another issue by its `dispatch://` address, so the words the box
+ * One issue whose spec holds three statements a comment can be written on from the box: one
+ * paragraph citing another issue by its `dispatch://` address, so the words the box
  * quotes are read from a text that holds a reference; two paragraphs, so the quote spans two
  * blocks and the server anchors the comment to the statement itself; and one whose words the spec
  * holds again in a plain paragraph after it, so a quote with no occurrence is ambiguous and the

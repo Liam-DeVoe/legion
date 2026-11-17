@@ -492,7 +492,7 @@ export interface ReplyItem {
 }
 
 /** A statement of the issue's own documents the line can comment on: a `requirement` row of the
- *  outline (dispatch://INFRA-3949 R11). It is no entry of the conversation, so what the line
+ *  outline. It is no entry of the conversation, so what the line
  *  writes to it is a comment on the issue anchored to the statement, never a reply, and its row
  *  takes no thread read mark, since `conversationItem` answers none for it. */
 export interface StatementItem extends Pick<TreeNode, "source" | "text" | "tree"> {
@@ -525,8 +525,7 @@ export interface StatementTarget extends StatementAnchor, StatementItem {
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a
  *  comment, a message. Every other row takes none in today's model. */
 export function replyItemOf(node: TreeNode): ReplyItem | StatementItem | undefined {
-  // A statement takes a Reply too (dispatch://INFRA-3949 R11), and is no item of the
-  // conversation, so it is read before one.
+  // A statement takes a Reply too, and is no item of the conversation, so it is read before one.
   const statement = statementItemOf(node);
   if (statement !== undefined) return statement;
   const item = conversationItem(node);

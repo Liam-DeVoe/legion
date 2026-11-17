@@ -494,12 +494,12 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expectRow(page, onMessage, "inbox-thread-reply", "message-reply");
     },
   },
-  // The new issue page's one box, at the foot of its outline (dispatch://INFRA-3949), which a
+  // The new issue page's one box, at the foot of its outline, which a
   // reader gets once their `issue.page` is `outline` (`withIssuePage`). The line's name follows
   // what it writes, so it is reached by the attribute its form carries; the answer's field, drawn
   // in the line's place while the box answers a question, by its own name. An edit of the
-  // reader's own comment is opened only by part M's Edit, so the list leaves `comment-edit`
-  // uncovered until part M is under the box (dispatch://INFRA-1196 decision 154).
+  // reader's own comment is opened only by the Edit control of that comment, which the page does
+  // not draw yet, so the list leaves `comment-edit` uncovered until that Edit is under the box.
   "issue-page-composer": {
     drive: async (page, world) => {
       await withIssuePage(page.context(), "alice");
@@ -535,7 +535,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
     },
   },
   // The new issue page's Change, on a waiting decision's own row of the outline
-  // (dispatch://INFRA-1196 R7, part G's `DecisionActions.tsx`), which a reader gets once their
+  // (`DecisionActions.tsx`), which a reader gets once their
   // `issue.page` is `outline`. An agent's decision waits for the reader's review once it shapes a
   // statement of the issue's spec (`inReviewList`), so the host's spec gains one and the decision
   // cites it; its row then draws Keep and Change, the row's own key presses Change, and the form

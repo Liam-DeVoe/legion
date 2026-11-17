@@ -277,7 +277,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
       "No reader reaches it: a message's Reply on a phone is answered by the docked conversation composer, and this box opens over a comment thread alone.",
     write: "message-reply",
   },
-  // The new issue page's one box, at the foot of its outline (dispatch://INFRA-3949): with no
+  // The new issue page's one box, at the foot of its outline: with no
   // target it writes a comment or a question on the issue; aimed at a row of the outline it
   // writes a reply under it, which under a message goes to that thread's target; on the reader's
   // own comment it writes a new text of it; and on an open question it draws the answer's own
@@ -311,9 +311,9 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "[data-issue-composer]",
     write: "message-reply",
   },
-  // Only part M's Edit opens the box's edit line (dispatch://INFRA-1196 decision 154), so no
-  // reader reaches this write until part M is under the box; the row is covered then, with a
-  // driver step through that Edit.
+  // Only the Edit control of the reader's own comment opens the box's edit line, and the page
+  // does not draw that control yet, so no reader reaches this write until it is under the box;
+  // the row is covered then, with a driver step through that Edit.
   {
     box: "issue-page-composer",
     covered: false,
@@ -551,9 +551,9 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Your change",
     write: "comment",
   },
-  // The new issue page's Change on a waiting decision's node (dispatch://INFRA-1196 R7, part G's
-  // `DecisionActions.tsx`): the same write as the Decisions panel's, a comment anchored to the
-  // decision it quotes, written from the decision's own row of the outline.
+  // The new issue page's Change on a waiting decision's node (`DecisionActions.tsx`): the same
+  // write as the Decisions panel's, a comment anchored to the decision it quotes, written from
+  // the decision's own row of the outline.
   {
     box: "issue-page-decision-change",
     covered: true,
@@ -564,7 +564,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     write: "comment",
   },
   // The new issue page's title, which its heading becomes while the reader edits it
-  // (`IssueTitleRow.tsx`, part I of dispatch://INFRA-1196). It takes no picker.
+  // (`IssueTitleRow.tsx`). It takes no picker.
   {
     box: "issue-page-title-editor",
     covered: false,

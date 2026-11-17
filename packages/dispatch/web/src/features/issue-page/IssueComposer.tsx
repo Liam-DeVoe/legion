@@ -128,7 +128,7 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
 
 /**
  * The one place to write on the new issue page, held at the foot of the screen by its slot
- * (dispatch://INFRA-3949 R1, ruling 5 of dispatch://INFRA-1196, the prototype's `#composer`):
+ * (the prototype's `#composer`):
  * one line, which Enter sends, while the outline runs on under it. It is the composer every box
  * of the dashboard is (`MentionComposer`), in the look only this page asks for (`OutlineLook`),
  * and its answer line mounts the same field (`MentionField`), so no file of the page holds a box
@@ -143,8 +143,7 @@ export function useComposerShown({ documentOpen, viewOn }: BoxPlace): boolean {
  * Once a write lands, the outline takes the reader to it (`Landing`): the row of what they wrote,
  * its branch unfolded, on screen and focused (R4). Under a view no outline is drawn to consume a
  * landing, so the box asks for none there and gives the focus back to where the reader came to
- * it from (departure 1 of the plan, dispatch://INFRA-3949/artifact/plan-md). Either way the focus
- * never falls to the page's body as a line's controls unmount.
+ * it from. Either way the focus never falls to the page's body as a line's controls unmount.
  *
  * Hidden rather than unmounted while it is not drawn (`useComposerShown`), and the line that
  * writes on the issue stays mounted, hidden, while the line answers a question or edits a
@@ -777,7 +776,7 @@ function AnswerForm({
           </div>
         </div>
         {failure === null ? null : (
-          // The refusal in the page's own colour (decision 56 of dispatch://INFRA-1196), its
+          // The refusal in the page's own colour, like the rest of the box, its
           // Retry a 24 px target at every width (R2) that a press leaves the focus beside.
           <div
             className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}

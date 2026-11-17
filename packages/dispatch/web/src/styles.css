@@ -518,8 +518,8 @@ html:has([data-issue-page]) [data-identity-block] * {
   }
 }
 
-/* Each button of the new issue page's box, `[data-issue-composer]` (dispatch://INFRA-3949 R1,
-   R2, R6), is at least WCAG 2.2's 24 px target (2.5.8) at every width: a refusal's Retry and
+/* Each button of the new issue page's box, `[data-issue-composer]`, is at least WCAG 2.2's 24 px
+   target (2.5.8) at every width: a refusal's Retry and
    Discard draft too, which their own classes draw 20 px tall. Below 1280 px that 24 px stands in
    place of the 44 px floor above on its buttons, and its line takes none of the floor: at rest
    it is one line, its form at most 40 px tall, its line 26 px, the height its own classes give

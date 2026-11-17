@@ -45,7 +45,7 @@ import {
 import { ANSWER_LINES, CONTROL_LABELS, type NodeType } from "./page-words";
 
 /**
- * The new issue page's one box to write in (dispatch://INFRA-3949 R1 to R7 and R11), drawn as
+ * The new issue page's one box to write in, drawn as
  * the page draws it: under the page's writer and its words (`slots/providers.tsx`), at the foot of
  * the outline the body slot draws (`IssueTree`), or of a view's rows where a view is on. Each
  * case presses what a reader presses - a row's `r` and `a`, the box's own controls and keys - and
@@ -1570,7 +1570,7 @@ test("the target line reads the entry, the question and its options as their pla
 
 /** The classes of `element` and of everything inside it that are a colour of the dashboard's
  *  palette (`theme/classes.ts`'s slate greys and rose and red refusals), which nothing inside the
- *  issue page is drawn in (decision 56 of dispatch://INFRA-1196). */
+ *  issue page is drawn in, since the page has a palette of its own. */
 function dashboardColours(element: Element): string[] {
   return [element, ...element.querySelectorAll("*")]
     .flatMap((one) => [...one.classList])

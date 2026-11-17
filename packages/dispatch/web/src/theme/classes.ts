@@ -982,8 +982,8 @@ export const pageSendAnswer = `${pageSendBox} bg-page-waiting-text`;
 /** A control of the issue page's box - a kind's chip, an option of the question it answers, the
  *  control that ends its target, Decline - as a target at least 24 by 24 px at every width, its
  *  words centred in it: WCAG 2.2's 2.5.8, which `pageComposer`'s 22 px chips and 20 px clear
- *  control fall short of (the tester's finding F13 of dispatch://INFRA-1196). Below 1280 px
- *  `styles.css` holds every button of the box to the same 24 px in place of the 44 px floor. */
+ *  control fall short of. Below 1280 px `styles.css` holds every button of the box to the same
+ *  24 px in place of the 44 px floor. */
 export const pageComposerControl = "inline-flex min-h-6 min-w-6 items-center justify-center";
 
 /** The answer line's options, Decline to answer and Send answer, as one row of the box beside or

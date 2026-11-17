@@ -1044,7 +1044,7 @@ function addTurns(
     draft.tree = turn.bodyTree;
   }
   // A comment that answers nothing else and is anchored inside a statement of the issue's own
-  // documents hangs under that statement (dispatch://INFRA-3949 R11, decision 77's D2), whoever
+  // documents hangs under that statement, whoever
   // wrote it and wherever: the issue page's box, a document's margin, an agent. The server stores
   // the lowest block that holds the anchor's words (`pmdoc.BlockIDForRange`): a one-paragraph
   // statement's paragraph, and the statement itself for words across two of its paragraphs. So

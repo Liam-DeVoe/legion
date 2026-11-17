@@ -284,7 +284,7 @@ const EDITOR_REASON =
 /** Why the new issue page draws a person's answer as the characters stored, which is what the
  *  two rows of its answer say: the options it chose and the words it carries. */
 const ISSUE_PAGE_ANSWER_REASON =
-  "A person's answer is part of its ask and no node of its own, and the new issue page draws it word for word as the store holds it, never restated (R9 of dispatch://INFRA-1196, part I's `AskAnswer`).";
+  "A person's answer is part of its ask and no node of its own, and the new issue page draws it word for word as the store holds it, never restated (`NodeRow.tsx`'s `AskAnswer`).";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -1044,7 +1044,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "ref-picker-row-label",
   },
-  // The new issue page's box (dispatch://INFRA-3949): the one line above its field naming what
+  // The new issue page's box: the one line above its field naming what
   // it writes to, and the options of the question it answers, each a control the reader presses.
   {
     files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
@@ -1059,7 +1059,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "issue-page-composer-target",
   },
-  // The new issue page's outline (dispatch://INFRA-1196, part I's `RowText.tsx`): a node's own
+  // The new issue page's outline (`RowText.tsx`): a node's own
   // words in its row - a comment, a message, an ask's question, a block of the issue's documents
   // - drawn by the renderer from the reading the server sent. The renderer links nothing in them:
   // the row's own pass names each reference from the page's one batched read of what the tree
@@ -1104,7 +1104,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
     reach: "/issues/<ISSUE> with the new issue page, a child issue's row in the outline",
     reason:
-      "A child issue's row names the child by its title, which is one line of text already: INFRA-1702's non-goals leave a title out of the reference framework, so it is stored and shown as the characters its writer gave it.",
+      "A child issue's row names the child by its title, which is one line of text already: the reference framework leaves a title out of what it reads, so it is stored and shown as the characters its writer gave it.",
     record: false,
     rendered: false,
     surface: "issue-page-child-title",
@@ -1154,8 +1154,7 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "issue-page-title",
   },
   // A sixth such place, beside it: the new issue page writes the same title bar
-  // (`IssueOutlinePage.tsx`, decision 90 of dispatch://INFRA-1196) for a reader whose
-  // `issue.page` is `outline`.
+  // (`IssueOutlinePage.tsx`) for a reader whose `issue.page` is `outline`.
   {
     files: ["packages/dispatch/web/src/features/issue-page/IssueOutlinePage.tsx"],
     reach: "/issues/<ISSUE> with the new issue page, the browser's title bar",

@@ -269,7 +269,7 @@ export interface OutlineKind {
 
 /**
  * The composer as the issue page's one place to write, at the foot of its outline
- * (dispatch://INFRA-1196 R16, the prototype's `#composer`, whose look `theme/classes.ts`'s
+ * (the prototype's `#composer`, whose look `theme/classes.ts`'s
  * `pageComposer` holds): one line, which Enter sends and Shift+Enter breaks, the kinds it writes
  * as chips before Send, and above the line the entry its target names, with the control that
  * ends the target. The host words every part of it, since the composer imports nothing of the
@@ -1046,8 +1046,8 @@ export function MentionComposer({
       </button>
     </div>
   ) : null;
-  // The colours the send's own lines are drawn in: the page's on the issue page's box (decision
-  // 56 of dispatch://INFRA-1196), the dashboard's on every other surface.
+  // The colours the send's own lines are drawn in: the page's on the issue page's box, whose
+  // whole look is the page's own, and the dashboard's on every other surface.
   const mutedTone = outlined ? pageMutedText : textMutedOnSurface;
   const failedTone = outlined ? pageFailedText : dangerText;
   const deliveryNotices = (

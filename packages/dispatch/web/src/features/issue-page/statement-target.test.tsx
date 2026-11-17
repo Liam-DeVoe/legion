@@ -27,7 +27,7 @@ import {
 import type { NodeType } from "./page-words";
 
 /**
- * A statement as a target of the page's writer (dispatch://INFRA-3949 R11): `r` on a focused
+ * A statement as a target of the page's writer: `r` on a focused
  * statement aims the writer at it, with the anchor the box's comment carries, and no other
  * target stands beside it. The tree is drawn under the writer as `slots/body.tsx` draws it, so
  * the key is the tree's own `r` (`useTreeKeymap.ts`) and not a call made for it.

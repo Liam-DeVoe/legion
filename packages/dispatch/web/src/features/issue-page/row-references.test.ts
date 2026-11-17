@@ -26,7 +26,7 @@ test("what a text cites is every whole address and every bare key, each once", (
   expect(citedReferences("")).toEqual([]);
 });
 
-// Decision 142 of dispatch://INFRA-1196/artifact/part-decisions-md: the batched read refuses a
+// What a row cites goes to one batched read, and that read refuses a
 // person's reference, which has no target to name, so a text that cites a person and an issue
 // asks for the issue alone, and a row draws the person's words as written.
 test("a text citing a person and an issue cites the issue alone", () => {

@@ -182,7 +182,7 @@ function StepState({
  *  no width, no clamp and no tooltip, so a phone reads all of it. The reason is the reviewer's
  *  own text on that document, drawn by the renderer from the reading the server sent with it
  *  (`reason_tree`), as the Reviews dialog draws it. Inside `NoTooltips` the line is the page's
- *  own words and the reason is the reviewer's, each with its mark (dispatch://INFRA-3935 R6);
+ *  own words and the reason is the reviewer's, each with its mark;
  *  the reviewer's name carries its own (`AgentName`). */
 function StepReason({ entry }: { entry: StepEntry }): ReactNode {
   const page = usePageWords();
