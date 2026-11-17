@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -153,13 +154,26 @@ type specFormTerm struct {
 	Version    int    `json:"version"`
 }
 
+// specFormUnread is an approved document under the root that a judgment did not compare with the
+// documents it judged, because Dispatch cannot read that approved version
+// (specform.UnreadableError). It refuses nothing, and line says so.
+type specFormUnread struct {
+	Document   string `json:"document"`
+	ArtifactID string `json:"artifact_id"`
+	Issue      string `json:"issue"`
+	Version    int    `json:"version"`
+	Line       string `json:"line"`
+}
+
 // specFormSummary is what an approval request's answer says of the form of the documents it
-// handed the person, when the document it names is in scope: the root, and the count of each kind
-// of text it read. Terms counts the terms of the root's list.
+// handed the person, when the document it names is in scope: the root, the count of each kind of
+// text it read, and each approved document under the root that it could not read. Terms counts
+// the terms of the root's list.
 type specFormSummary struct {
-	Root  string                `json:"root"`
-	Texts map[specform.Kind]int `json:"texts"`
-	Terms int                   `json:"terms"`
+	Root   string                `json:"root"`
+	Texts  map[specform.Kind]int `json:"texts"`
+	Terms  int                   `json:"terms"`
+	Unread []specFormUnread      `json:"unread"`
 }
 
 // specFormRead is the body of GET /api/v1/artifacts/{id}/spec-form: one version of a document,
@@ -184,18 +198,22 @@ type specFormRead struct {
 	FindingsTotal int                   `json:"findings_total"`
 	// Terms is the list of terms of the root. It is empty until the list is read.
 	Terms []specFormTerm `json:"terms"`
+	// Unread is each approved document under the root that the judgment could not read.
+	Unread []specFormUnread `json:"unread"`
 	// RefusesApproval is whether an approval request or an approval of this version is refused.
 	RefusesApproval bool `json:"refuses_approval"`
 }
 
 // specFormDocument is one document a judgment named: the document, the version judged, where it
-// stands, and, once judged, the count of each kind of text and every finding.
+// stands, and, once judged, the count of each kind of text, every finding, and each approved
+// document under its root that the judgment could not read.
 type specFormDocument struct {
 	artifact model.Artifact
 	version  int
 	specScope
 	texts    map[specform.Kind]int
 	findings []specFormFinding
+	unread   []specFormUnread
 }
 
 // specFormResult is the judgment of the documents specFormOf named, in their order.
@@ -214,6 +232,19 @@ func (r specFormResult) refusing() []specFormFinding {
 	return findings
 }
 
+// unread is each approved document that the judgment of a document in scope could not read, once.
+func (r specFormResult) unread() []specFormUnread {
+	unread := []specFormUnread{}
+	for _, document := range r.documents {
+		for _, each := range document.unread {
+			if document.inScope() && !slices.Contains(unread, each) {
+				unread = append(unread, each)
+			}
+		}
+	}
+	return unread
+}
+
 // refusal is the refusal of act for the findings of the documents in scope, nil when there are
 // none.
 func (r specFormResult) refusal(act specform.Act) *specFormRefusal {
@@ -222,6 +253,9 @@ func (r specFormResult) refusal(act specform.Act) *specFormRefusal {
 		return nil
 	}
 	refusal := &specFormRefusal{act: act, findings: findings}
+	for _, unread := range r.unread() {
+		refusal.notes = append(refusal.notes, unread.Line)
+	}
 	for _, document := range r.documents {
 		if document.artifact.ID == findings[0].ArtifactID && document.artifact.IssueKey != nil {
 			refusal.more = fmt.Sprintf("dispatch spec-form --issue %s --artifact %s lists them all.", *document.artifact.IssueKey, document.artifact.Name)
@@ -237,7 +271,7 @@ func (r specFormResult) summary(artifactID string) *specFormSummary {
 	var summary *specFormSummary
 	for _, document := range r.documents {
 		if document.artifact.ID == artifactID && document.inScope() {
-			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}}
+			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}, Unread: r.unread()}
 		}
 	}
 	if summary == nil {
@@ -260,6 +294,8 @@ type specFormRefusal struct {
 	findings []specFormFinding
 	// more is the command that lists every finding, which the refusal names after the first 20.
 	more string
+	// notes is the line of each approved document under the root that the judgment could not read.
+	notes []string
 }
 
 func (r *specFormRefusal) plain() []specform.Finding {
@@ -272,7 +308,7 @@ func (r *specFormRefusal) plain() []specform.Finding {
 
 // Error is the refusal's words (specform.Message).
 func (r *specFormRefusal) Error() string {
-	return specform.Message(r.act, r.plain(), len(r.findings), r.more)
+	return specform.Message(r.act, r.plain(), len(r.findings), r.more, r.notes...)
 }
 
 // body is the refusal's 409 SPEC_FORM body.
@@ -284,7 +320,7 @@ func (r *specFormRefusal) body() specFormError {
 		FindingsTotal: len(r.findings),
 	}
 	if r.act == specform.ActApproval {
-		body.ChangesReason = specform.ChangesReason(r.plain(), len(r.findings), r.more)
+		body.ChangesReason = specform.ChangesReason(r.plain(), len(r.findings), r.more, r.notes...)
 	}
 	return body
 }
@@ -301,7 +337,7 @@ func (s *server) specFormOf(ctx context.Context, q queryer, documents []model.As
 	if len(s.deps.SpecRoots) == 0 && act != actRead {
 		return result, nil
 	}
-	judge := &specFormJudge{server: s, q: q, skip: map[string]bool{}, systemNames: map[string][]string{}}
+	judge := &specFormJudge{server: s, q: q, skip: map[string]bool{}, systemNames: map[string][]string{}, unread: map[string][]specFormUnread{}}
 	for _, document := range documents {
 		judge.skip[document.ArtifactID] = true
 	}
@@ -406,17 +442,29 @@ type specFormJudge struct {
 	skip map[string]bool
 	// base is the context every document shares, read at the first judgment.
 	base *specform.Context
-	// systemNames is the names of the system under each root, read at the first judgment under it.
+	// systemNames is the names of the system under each root, and unread each approved document
+	// under it that Dispatch cannot read, both read at the first judgment under it.
 	systemNames map[string][]string
+	unread      map[string][]specFormUnread
 }
 
 // judge reads document's named version and judges its texts, each definition of a term among them.
+// A version that the parser refuses is one finding of its document (specform.UnreadableError), so
+// the judgment that names it refuses it, with its way out: a new version of the document.
 func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) error {
 	markdown, err := specFormMarkdown(ctx, j.q, document.artifact, document.version)
 	if err != nil {
 		return err
 	}
+	document.findings, document.unread = []specFormFinding{}, []specFormUnread{}
 	extracted, err := specform.ExtractDocument(document.artifact.Name, document.version, markdown)
+	if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
+		document.texts = map[specform.Kind]int{}
+		document.findings = append(document.findings, specFormFinding{
+			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: unreadable.Finding(),
+		})
+		return nil
+	}
 	if err != nil {
 		return err
 	}
@@ -425,7 +473,9 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 		return err
 	}
 	document.texts = extracted.Counts
-	document.findings = []specFormFinding{}
+	if document.root != nil {
+		document.unread = append(document.unread, j.unread[*document.root]...)
+	}
 	for _, finding := range specform.Check(context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms}) {
 		document.findings = append(document.findings, specFormFinding{
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: finding,
@@ -462,7 +512,7 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 			return specform.Context{}, err
 		}
 		names = approved.SystemNames
-		j.systemNames[*root] = names
+		j.systemNames[*root], j.unread[*root] = names, approved.Unread
 	}
 	context.SystemNames = names
 	return context, nil
@@ -470,15 +520,17 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 
 // approvedSpec is what the approved covered documents under a root hold that a judgment of
 // another document reads: the names of the components and interfaces they define, which are
-// nouns of the system.
+// nouns of the system, and each of those documents whose approved version Dispatch cannot read.
 type approvedSpec struct {
 	SystemNames []string
+	Unread      []specFormUnread
 }
 
 // approvedSpecTexts reads the latest approved version of each covered document under root but
 // those skip names: the root's terms.md, and the spec and the Verification document of each issue
 // whose nearest named root is root (refs.IssueDescendants, less each named root below root and
-// its own subtree).
+// its own subtree). An approved version that the parser refuses gives nothing to compare: the
+// judgment goes on without its texts, logs it once, and names it in Unread.
 func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
 	issues, err := refs.IssueDescendants(ctx, q, root)
 	if err != nil {
@@ -526,6 +578,16 @@ func (s *server) approvedSpecTexts(ctx context.Context, q queryer, root string, 
 			return approvedSpec{}, err
 		}
 		extracted, err := specform.ExtractDocument(artifact.Name, review.Version, markdown)
+		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
+			issue := deref(artifact.IssueKey)
+			slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
+				"artifact", artifact.ID, "document", artifact.Name, "issue", issue, "version", review.Version, "error", err)
+			approved.Unread = append(approved.Unread, specFormUnread{
+				Document: artifact.Name, ArtifactID: artifact.ID, Issue: issue, Version: review.Version,
+				Line: specform.UnreadLine(artifact.Name, review.Version, issue),
+			})
+			continue
+		}
 		if err != nil {
 			return approvedSpec{}, err
 		}
