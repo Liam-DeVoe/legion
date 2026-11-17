@@ -71,10 +71,8 @@ test("clicking rows toggles a multi-selection, the trigger counts it and Clear e
   }
 });
 
-// The rows scroll under a footer pinned to the popover's bottom edge. An error drawn after the
-// rows sat below them, or under that footer, while the reader pressed a row higher up - a token's
-// seventeenth project read as a press that did nothing. It is drawn in the pinned footer, beside
-// Clear when there is one, and announced.
+// The rows scroll under a footer pinned to the popover's bottom edge, so an error is drawn in
+// that footer, in view of the row just pressed, beside Clear when there is one, and announced.
 test("an error is announced in the footer pinned below the rows, beside Clear", async () => {
   const user = userEvent.setup();
   const view = render(<Host error="At most one label." options={["api", "docs"]} />);

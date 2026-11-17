@@ -283,7 +283,7 @@ export function AgentTokensSection(): ReactNode {
   /** The projects a token may name: those the reader sees. */
   const projects = useQuery(projectsQuery()).data ?? [];
   // The form shows a refused mint beside the name it was refused over. A mint that names no
-  // project sends none, as a mint did before tokens named projects.
+  // project sends no `projects`, so Dispatch gives the token the caller's own list.
   const createToken = useKeyedWrite({
     inline: true,
     label: (input: {

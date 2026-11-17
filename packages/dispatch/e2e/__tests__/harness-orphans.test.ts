@@ -2,13 +2,12 @@
  *
  *  Every listener the harness starts is the leader of a process group of its own
  *  (`Supervisor`, e2e/local-instance-support.ts), so a stop reaches it and what it starts in turn.
- *  A parent that is killed - SIGKILL, an out-of-memory kill, a crashed runner - runs no stop, and
- *  before this the fakes outlived it: fake-envoy, fake-github, fake-broker, the plain-HTTP proxy
- *  and the dev OIDC issuer were found running hours after the run that started them, holding
- *  memory on a shared machine. So was each stack's Postgres, a container or a cluster the run
- *  started outside any process group of its own. Each row starts the real thing in a parent
- *  process of its own, kills that parent with SIGKILL, and reads what it started: none of it may
- *  survive.
+ *  A parent that is killed - SIGKILL, an out-of-memory kill, a crashed runner - runs no stop, so
+ *  its reaper (`Reaper`) ends what it started: each listener - fake-envoy, fake-github,
+ *  fake-broker, the plain-HTTP proxy and the dev OIDC issuer - and each stack's Postgres, a
+ *  container or a cluster the run started outside any process group of its own. Each row starts
+ *  the real thing in a parent process of its own, kills that parent with SIGKILL, and reads what
+ *  it started: none of it may survive.
  *
  *  The listeners' harness is a deployed run's (`PLAYWRIGHT_BASE_URL`), which starts the fake Envoy
  *  and the plain-HTTP proxy and no Dispatch server, so the row needs no database and no Go build.
