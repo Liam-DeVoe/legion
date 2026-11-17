@@ -921,6 +921,8 @@ if [ "$priv_private" = 1 ]; then
   printf 'document\t%s\n' "$(recalled main "PRIV spec")" >"$work/fill-hidden"
   printf 'document\t%s\n' "${missing[document]}" >"$work/fill-missing"
   declare -A live_pid=()
+  # live_settled READY PID: the live probe PID has written its ready file READY, or has exited.
+  live_settled() { [ -e "$1" ] || ! kill -0 "$2" 2>/dev/null; }
   for caller in "${unseeing_callers[@]}"; do
     for side in hidden missing; do
       id=${missing[document]}
@@ -944,8 +946,12 @@ if [ "$priv_private" = 1 ]; then
         "$work/live-ready-$server" "$work/live-written-$server" >"$work/live-body-$server" 2>&1 &
       live_pid[$server]=$!
     done
+    # A probe that ends before it is ready, as one whose upgrade is refused does (it prints
+    # `http <status> <body>` and writes no ready file), ends the wait at once: its output is its
+    # answer, kept and compared as any other.
     for server in main twin; do
-      until_true 10 "$caller's live socket on $server to start" test -e "$work/live-ready-$server"
+      until_true 10 "$caller's live socket on $server to start, or its probe to end" \
+        live_settled "$work/live-ready-$server" "${live_pid[$server]}"
     done
     send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
     expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
