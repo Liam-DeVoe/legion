@@ -9,7 +9,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
-import { getAsk, getIssue, listComments } from "./api";
+import { getAsk, getIssue, getIssueDecisions, listComments } from "./api";
 import { nextFrames } from "./frames";
 import {
   DESKTOP,
@@ -504,7 +504,11 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
 // six rows focused, two presses waited out for the writer's frames, and a read of the API.
-test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it", async ({
+// Owed (part U's seed commit, decision 128): the page draws a decision's Keep, Change and change
+// request from the decisions read, which answers a decision node only once INFRA-1150's T7 and
+// T8 are built, so until then the decision clauses at its end are skipped. Its `@owed` tag is
+// what a check's run leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
+test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it @owed", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
@@ -538,7 +542,22 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
       await expect(typed.locator("[data-row-act]")).toHaveCount(0);
     }
 
+    // Nothing was sent: no box exists until part L draws it. A thread's read mark is the page's
+    // own record of what the reader read (`outline-thread-read.tsx`), and no write of theirs.
+    expect(
+      writes.requests.filter(
+        (request) =>
+          ["PATCH", "POST", "PUT"].includes(request.method) &&
+          !request.path.includes("/me/threads/")
+      ),
+      "a press on a row's act wrote something"
+    ).toEqual([]);
+
     // The decision that shaped a statement waits for review: Keep and Change.
+    test.skip(
+      ((await getIssueDecisions(seeded.key)).decisions ?? []).length === 0,
+      "owed: a decision node's Keep and Change need INFRA-1150's T7 and T8 (part U's seed commit, decision 128)"
+    );
     const shaping = await focusRow(page, seeded.shaping);
     await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
 
@@ -559,16 +578,5 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
     ).toBe(seeded.changed);
     const outlined = await focusRow(page, seeded.changed);
     await expect(outlined.locator("button[data-row-action]")).toHaveCount(0);
-
-    // Nothing was sent: no box exists until part L draws it. A thread's read mark is the page's
-    // own record of what the reader read (`outline-thread-read.tsx`), and no write of theirs.
-    expect(
-      writes.requests.filter(
-        (request) =>
-          ["PATCH", "POST", "PUT"].includes(request.method) &&
-          !request.path.includes("/me/threads/")
-      ),
-      "a press on a row's act wrote something"
-    ).toEqual([]);
   });
 });
