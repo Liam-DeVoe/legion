@@ -197,19 +197,24 @@ premortem_convert() {
 # heading_of NUMBER: the heading the capture records for risk NUMBER.
 heading_of() { jq -r --argjson n "$1" '.[] | select(.number == $n) | .heading' "$work/expected-risks.json"; }
 
-# The verdict of a lens a conversion writes, held to the capture: it opens with the document's
-# verdict and holds each closing section under its heading, word for word, the two in the
-# document's order. `.` is the verdict; $e[0] is $work/expected-verdict.json.
-readonly verdict_filter='. as $v | $e[0] as $e
-  | if ($v | type) != "string" then {verdict: $v} else
-      ($v | index("What a world-class implementation looks like")) as $a | ($v | index($e.world_class)) as $b
-      | ($v | index("The smallest first slice that proves the model")) as $c | ($v | index($e.first_slice)) as $d
-      | {opens_with_the_verdict: ($v | startswith($e.verdict)),
-         world_class: ($a != null and $b != null and $a < $b),
-         first_slice: ($c != null and $d != null and $c < $d),
-         in_that_order: ($b != null and $c != null and $b < $c)}
+# The verdict of a lens a conversion writes, held to the capture word for word: the capture's
+# verdict, then each closing section under its own heading, as the document itself writes the two
+# at its end - "## <heading>", a blank line, the section, and a blank line before the next - which
+# setup reads equal to the document's own text from the first of those headings to its end.
+# Nothing is normalised, because nothing stands between the two: the store keeps the verdict as one
+# string attribute of the lens node, which the lens read answers as stored (api/lens_read.go reads
+# attributes->>'verdict'), and the report carries the string the conversion wrote. `.` is the
+# verdict; $e[0] is $work/expected-verdict.json, whose `whole` is the text it must be. A verdict
+# that differs is shown from its first different character, beside the capture's text from there.
+readonly verdict_filter='. as $v | $e[0].whole as $w
+  | if $v == $w then "word for word"
+    elif ($v | type) != "string" then {verdict: $v}
+    else ([$v, $w] | map(length) | min) as $n
+      | ([range(0; $n) | select($v[.:. + 1] != $w[.:. + 1])] | first // $n) as $at
+      | {lengths: {stored: ($v | length), capture: ($w | length)}, first_difference: $at,
+         stored_from_there: $v[$at:$at + 120], capture_from_there: $w[$at:$at + 120]}
     end'
-readonly verdict_carried='{"first_slice":true,"in_that_order":true,"opens_with_the_verdict":true,"world_class":true}'
+readonly verdict_carried='"word for word"'
 
 # would_write SECTION KEY DOCUMENT: the report in $work/body is a dry run's of the document
 # DOCUMENT of the issue KEY: the lens it would write, of kind pre-mortem under the issue, with the
@@ -221,7 +226,7 @@ would_write() {
     "$(jq -cnS --arg d "$3" --arg on "dispatch://$2" \
       '{already_converted: false, document: $d, dry_run: true, lens: {address: null, kind: "pre-mortem", on: $on}, moved_to: null}')" \
     '{dry_run, already_converted, document: .document.address, moved_to: .document.moved_to, lens: {address: .lens.address, kind: .lens.kind, on: .lens.on}}'
-  expect "$1" "the lens it would write carries the verdict and the two closing sections" "$verdict_carried" \
+  expect "$1" "the lens it would write carries the verdict and the two closing sections, word for word" "$verdict_carried" \
     --slurpfile e "$work/expected-verdict.json" ".lens.verdict | $verdict_filter"
   expect "$1" "it reports the eleven risks it would write, each with its section's heading, early warning and prevention" \
     "$(jq -cS '.' "$work/expected-risks.json")" '[.risks[] | {number, heading, early_warning, prevention}] | sort_by(.number)'
@@ -262,17 +267,28 @@ jq -cS '
       end;
   [.risks[] | {number: .index, heading: .title,
     early_warning: (.markdown | item("Early warning:")), prevention: (.markdown | item("Prevention:"))}] | sort_by(.number)' \
-  "$fixture" >"$work/expected-risks.json"
+  "$fixture" >"$work/expected-risks.json" || fail setup "read each risk's section out of the capture" "jq refused $fixture"
+# The verdict a conversion writes on its lens (verdict_filter): the capture's verdict, then each
+# closing section under its own heading. Beside it, what setup holds it to: the document's own
+# Verdict section, and the document's own text from the first closing heading to its end.
 jq -cS '
-  def section($heading): split("\n") as $l
-    | ([range(0; $l | length) | select($l[.] == "## " + $heading)] | first) as $at
+  def section(heading): split("\n") as $l
+    | ([range(0; $l | length) | select($l[.] | heading)] | first) as $at
     | if $at == null then null else
         ([range($at + 1; $l | length) | select($l[.] | test("^#{1,2}[ \t]"))] | first // ($l | length)) as $end
         | $l[$at + 1:$end] | join("\n") | sub("^([ \t]*\n)+"; "") | sub("(\n[ \t]*)+$"; "")
       end;
-  {verdict, world_class: (.document.markdown | section("What a world-class implementation looks like")),
-   first_slice: (.document.markdown | section("The smallest first slice that proves the model"))}' \
-  "$fixture" >"$work/expected-verdict.json"
+  def from_heading($line): split("\n") as $l
+    | ([range(0; $l | length) | select($l[.] == $line)] | first) as $at
+    | if $at == null then null else $l[$at:] | join("\n") | sub("(\n[ \t]*)+$"; "") end;
+  "What a world-class implementation looks like" as $wc | "The smallest first slice that proves the model" as $fs
+  | (.document.markdown | section(. == "## " + $wc)) as $world_class
+  | (.document.markdown | section(. == "## " + $fs)) as $first_slice
+  | {verdict, world_class: $world_class, first_slice: $first_slice,
+     document_verdict: (.document.markdown | section(startswith("## Verdict"))),
+     closing: (.document.markdown | from_heading("## " + $wc)),
+     whole: (.verdict + "\n\n## " + $wc + "\n\n" + $world_class + "\n\n## " + $fs + "\n\n" + $first_slice)}' \
+  "$fixture" >"$work/expected-verdict.json" || fail setup "read the verdict and the closing sections out of the capture" "jq refused $fixture"
 cp "$work/expected-risks.json" "$work/body"
 expect setup "the capture records risk 0 and the ten numbered risks, each with a heading, an early warning and a prevention" \
   '{"numbers":[0,1,2,3,4,5,6,7,8,9,10],"whole":true}' \
@@ -280,6 +296,9 @@ expect setup "the capture records risk 0 and the ten numbered risks, each with a
 cp "$work/expected-verdict.json" "$work/body"
 expect setup "the capture records the verdict and the two closing sections" true \
   'all(.verdict, .world_class, .first_slice; type == "string" and length > 0)'
+expect setup "the capture's verdict is the document's own Verdict section, word for word" true '.verdict == .document_verdict'
+expect setup "the document ends with its two closing sections, each under its heading, word for word as the lens's verdict holds them after the verdict" \
+  true '.closing != null and .whole == .verdict + "\n\n" + .closing'
 
 cat >"$work/spec.md" <<'SPEC'
 The issue standing for dispatch://INFRA-1098 in this run, whose pre-mortem is converted into nodes.
@@ -546,6 +565,10 @@ for converted in 1 2; do
   expect D "the document list of $key holds its spec, and not $document, which is retired" \
     "$(jq -cn --arg k "$key" '{retired: [], spec: ["\($k)/spec"]}')" --arg k "$key" --arg r "$ref_key" \
     '{spec: [.[] | select(.ref_key == "\($k)/spec") | .ref_key], retired: [.[] | select(.ref_key == $r) | .ref_key]}'
+  # The redirect's shape, the lens as the node the old address answers, is this driver's reading:
+  # no moved-node redirect exists at this head (references.go answers none). It is reconciled with
+  # dispatch://INFRA-1150's redirect shape when that retirement lands; until then section D, the
+  # last of the run, fails.
   references D "read $document, its old address" to "$document"
   expect D "$document answers a redirect to the lens $lens, not the answer a deleted document gives" \
     "$(jq -cn --arg l "$lens" '{kind: "lens", ref: $l}')" '.node | {kind, ref}'

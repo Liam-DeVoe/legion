@@ -15,17 +15,22 @@
 # kinds, on both issues: the chain read of the spec (GET /api/v1/lenses?on=) first, with each chain
 # it walks; the list of each kind, the lens read's lenses and each lens's risks and the person page
 # of the first person (GET /api/v1/people/{login}/nodes), which lists what a person wrote of every
-# kind (no route lists interactions: a run is read at its address and through what it changed); the
-# read of each hidden node's own address; GET /api/v1/references in both directions on each public
-# neighbour, with the backlink count beside it, and the issue's own counts; the issue's event list
-# and the whole event log (GET /api/v1/events/log); and GET /api/v1/search for each hidden node's
-# words, which answers no hit and a total of zero to both people. Each answer on the issue names no
-# hidden node and carries none of its words, each count he reads on it equals the count he reads on
-# the twin, and each answer equals the twin's whole once every id, time, seq and rank is replaced by
-# its place. The first person repeats each surface that holds these kinds and finds the node in
-# each, beside his reads, so each absence stands beside the same read finding the node; the event
-# list, the log and search hold none of them for anybody, so each absence there stands beside the
-# same read finding a public comment. The issue tree, the inbox, the coverage read and a version
+# kind, a run of the command bar to the credential that asked it alone; the read of each hidden
+# node's own address, with his cookie and with a personal token of his own; GET /api/v1/references
+# in both directions on each public neighbour, with the backlink count beside it, and the issue's
+# own counts; the issue's event list and the whole event log (GET /api/v1/events/log); and
+# GET /api/v1/search for each hidden node's words, which answers no hit and a total of zero to both
+# people. Each answer on the issue names no hidden node and carries none of its words, each count
+# he reads on it equals the count he reads on the twin, and each answer equals the twin's whole once
+# every id, time, seq and rank is replaced by its place. One public neighbour has no twin: the
+# catalogue's dispatch://lens_kind/pre-mortem, the far end of the pre-mortem's has_kind tuple, which
+# both issues share, so his reads of it are held to the same reads he made before the pre-mortem
+# was written. The first person repeats each surface that holds these kinds and finds the node in
+# each, beside his reads, so each absence stands beside the same read finding the node; her
+# personal token finds her pre-mortem and her risk at their addresses and reads her run as an
+# address nobody wrote, since a run is read by the whole credential that asked it, her cookie. The
+# event list, the log and search hold none of them for anybody, so each absence there stands beside
+# the same read finding a public comment. The issue tree, the inbox, the coverage read and a version
 # read can hold none of these kinds, and no route walks up from a risk, so the driver reads none of
 # them.
 #
@@ -43,9 +48,10 @@
 # whom the server's dev sign-in route, /auth/_dev/signin, signs in: `alice` on `bun run
 # dispatch:local`); the second person is bob and the third a login of this run's own, each signed in
 # through the same route. Every lens, risk, run and comment is a person's write with the cookie the
-# dev sign-in sets and the server's origin; the agent bearer writes both issues and the verification
-# documents, and closes both issues when the run ends, also when a check fails. Each unmet input is
-# exit 2.
+# dev sign-in sets and the server's origin; the first and the second person each mint a personal
+# token with that cookie (POST /api/v1/me/agent-tokens), which the run revokes when it ends. The
+# agent bearer writes both issues and the verification documents, and closes both issues when the
+# run ends, also when a check fails. Each unmet input is exit 2.
 #
 # The first line is `PASS: node-visibility.sh the catalogue holds its ten kinds`, read before any
 # lens is written. Each passing check prints `PASS: <section> <what>`; the first failing one prints
@@ -108,6 +114,9 @@ readonly missing="00000000-0000-4000-8000-000000000000"
 # The request header that names the run of the command bar a write is made under
 # (contracts.GoingRunHeader).
 readonly going_run_header="Dispatch-Going-Run"
+# The catalogue's kind of the hidden pre-mortem, the far end of its has_kind tuple: a public
+# neighbour every issue shares, so it has no twin.
+readonly lens_kind="dispatch://lens_kind/pre-mortem"
 # canon: an answer with each id replaced by its place among the ids it names, in the order it names
 # them, the issue key $key by <key>, and each time, seq and rank by its name, so two answers the same
 # writes made on two issues read equal where they hold the same nodes and tuples.
@@ -130,8 +139,15 @@ work_dir
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 issues=()
+# The id of the personal token each person minted, by login, which cleanup revokes.
+declare -A minted=()
 cleanup() {
-  local code=$? issue
+  local code=$? issue login
+  for login in "${!minted[@]}"; do
+    request "cookie:$login" DELETE "/api/v1/me/agent-tokens/$(q "${minted[$login]}")"
+    [[ "$status" == 2?? ]] ||
+      printf '%s: could not revoke the token %s minted: HTTP %s: %s\n' "$driver" "$login" "$status" "$(body)" >&2
+  done
   for issue in "${issues[@]}"; do
     request agent PATCH "/api/v1/issues/$issue" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
@@ -145,16 +161,18 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the bearer in $work/auth, or
+# request AS METHOD PATH [JSON [RUN]]: sends METHOD PATH as AS: `agent`, the bearer in $work/auth;
 # `cookie:<login>`, the session cookie the dev sign-in left in $work/jar.<login> and the dashboard's
-# origin, which the server requires of every write a cookie authenticates; under the run RUN of the
-# command bar where one is given. The answer's body goes to $work/body, its HTTP status to $status
-# and its Content-Type header to $content_type.
+# origin, which the server requires of every write a cookie authenticates; or `token:<login>`, the
+# personal token that person minted, in $work/auth.<login>, so no token reaches an argument list;
+# under the run RUN of the command bar where one is given. The answer's body goes to $work/body,
+# its HTTP status to $status and its Content-Type header to $content_type.
 request() {
   local -a auth data=() run=()
   local answer
   case "$1" in
     cookie:*) auth=(-b "$work/jar.${1#cookie:}" -H "Origin: $origin") ;;
+    token:*) auth=(-H "@$work/auth.${1#token:}") ;;
     *) auth=(-H "@$work/auth") ;;
   esac
   [[ $# -lt 4 ]] || data=(-H 'Content-Type: application/json' --data-binary "$4")
@@ -181,6 +199,23 @@ sign_in() {
   want_status 302 setup "dev sign-in as $1"
   grep -q $'\tdsession\t' "$work/jar.$1" || fail setup "dev sign-in as $1" "the answer set no session cookie"
   pass setup "signed in as $1"
+}
+
+# mint_token LOGIN: LOGIN's cookie mints a personal token with a name and no scopes, so it holds
+# that person's own scopes (POST /api/v1/me/agent-tokens, as node-author.sh mints one); its
+# plaintext, the answer's `token`, goes to $work/auth.LOGIN as the header request sends, and its id
+# to minted[LOGIN]. The answer, which holds the plaintext, is cleared once read, so no failure
+# message prints it.
+mint_token() {
+  local plaintext
+  request "cookie:$1" POST /api/v1/me/agent-tokens "$(jq -cn --arg n "node-visibility $1 $stamp" '{name: $n}')"
+  want_status 201 setup "mint a personal token for $1"
+  plaintext="$(jq -er '.token | select(type == "string" and . != "")' "$work/body")" ||
+    fail setup "mint a personal token for $1" "the answer holds no token"
+  minted[$1]="$(jq -er '.id' "$work/body")" || fail setup "mint a personal token for $1" "the answer holds no id"
+  printf 'Authorization: Bearer %s\n' "$plaintext" >"$work/auth.$1"
+  : >"$work/body"
+  pass setup "minted a personal token for $1"
 }
 
 # actor: the session the agent bearer's writes name.
@@ -215,10 +250,11 @@ lens_body() {
 # trade-off analysis and triggering the inversion, with one finding; the risk reserved for her under
 # it, prevented by the check; and one question of the command bar, under whose run the comment is
 # written. Before the pre-mortem is written, bob reads what the trade-off analysis answers of the
-# lenses it triggered. It sets $key, $spec, $check, $tradeoff, $inversion and $comment_id, and with
-# WITH=hidden $premortem, $finding, $risk and $run_id.
+# lenses it triggered, and the tuples in both directions at $lens_kind, the pre-mortem's has_kind
+# far end, which no twin stands for. It sets $key, $spec, $check, $tradeoff, $inversion and
+# $comment_id, and with WITH=hidden $premortem, $finding, $risk and $run_id.
 seed() {
-  local section="setup:$1" document trigger=""
+  local section="setup:$1" document trigger="" read
   request agent POST /api/v1/issues "$(jq -cn --arg p "$project" --arg s "$spec_text" --argjson a "$(actor)" \
     '{project: $p, title: "Node visibility check", force: true, actor: $a, spec: $s}')"
   want_status 201 "$section" "create the issue"
@@ -243,6 +279,11 @@ seed() {
     request "cookie:$second" GET "/api/v1/references?to=$(q "$tradeoff")&kind=triggered_by"
     want_status 200 "$section" "$second reads the triggered_by tuples into the trade-off analysis before the pre-mortem is written"
     keep before.triggered
+    for read in to from; do
+      request "cookie:$second" GET "/api/v1/references?$read=$(q "$lens_kind")"
+      want_status 200 "$section" "$second reads the tuples $read $lens_kind before the pre-mortem is written"
+      keep "before.kind.$read"
+    done
     pass "$section" "before the pre-mortem is written, the trade-off analysis counts $(jq -r '.lens.triggered | length' "$work/before.lenses.json") lenses it triggered and $(jq -r '.edges | length' "$work/before.triggered.json") triggered_by tuples into it, read as $second"
 
     invoke "$section" "$first invokes the pre-mortem reserved for her, triggered by the trade-off analysis" "cookie:$first" \
@@ -277,6 +318,11 @@ seed() {
     want_status 201 "$section" "$first asks the command bar one question"
     run_id="$(jq -er '.id' "$work/body")" || fail "$section" "ask the command bar" "no id: $(body)"
     pass "$section" "$first's run $run_id is live until $(jq -r '.ends_at' "$work/body")"
+    # The write that must land inside the run's 30 s window: the comment under the run's header.
+    # The server admits a header only for a run still live (withinGoingRun), and this driver sets
+    # no ends_at far ahead (its run string gives no STORE_DSN), so it writes the comment straight
+    # after the run is asked; a window that closed first is answered as a run nobody holds, and
+    # the status check below fails naming the write.
     request "cookie:$first" POST "/api/v1/issues/$key/comments" "$comment_body" "$run_id"
     want_status 201 "$section" "$first writes a public comment on $key under her run, named in the $going_run_header header"
   else
@@ -303,6 +349,15 @@ no_leak() {
   pass "$1" "$2"
 }
 
+# differ_at A B NAME-A NAME-B: the first five paths at which the JSON answers A and B hold
+# different values, each with the value of each under NAME-A and NAME-B.
+differ_at() {
+  jq -cn --argjson a "$1" --argjson b "$2" --arg na "$3" --arg nb "$4" \
+    '[($a | paths(scalars)), ($b | paths(scalars))] | unique
+     | map(select(($a | getpath(.)) != ($b | getpath(.)))) | .[:5]
+     | map({at: ., ($na): ($a | getpath(.)), ($nb): ($b | getpath(.))})'
+}
+
 # twin SECTION WHAT COUNTS PATH TWIN-PATH [KEEP]: bob reads PATH on the issue and TWIN-PATH on the
 # twin, each answered 200, kept as $work/bob.json and $work/bob.twin.json. The answer on the issue
 # names no hidden node and carries none of their words; each count COUNTS reads of it equals that
@@ -324,14 +379,13 @@ twin() {
     fail "$section" "each count $second reads in $what on $key is the count on $twin_key, which holds no hidden node" \
       "on $key he reads $got, on $twin_key $want"
   pass "$section" "each count $second reads in $what on $key is the count on $twin_key, which holds no hidden node: $got"
-  got="$(jq -cS --arg key "$key" "$keep_filter | $canon" "$work/bob.json")"
-  want="$(jq -cS --arg key "$twin_key" "$keep_filter | $canon" "$work/bob.twin.json")"
+  got="$(jq -cS --arg key "$key" "$keep_filter | $canon" "$work/bob.json")" ||
+    fail "$section" "put $second's read of $what on $key in canonical form" "unreadable: $(head -c 600 "$work/bob.json")"
+  want="$(jq -cS --arg key "$twin_key" "$keep_filter | $canon" "$work/bob.twin.json")" ||
+    fail "$section" "put $second's read of $what on $twin_key in canonical form" "unreadable: $(head -c 600 "$work/bob.twin.json")"
   [[ "$got" == "$want" ]] ||
     fail "$section" "$second's read of $what on $key is the read on $twin_key whole, once each id, time, seq and rank is replaced by its place" \
-      "the two differ at $(jq -cn --argjson a "$got" --argjson b "$want" \
-        '[($a | paths(scalars)), ($b | paths(scalars))] | unique
-         | map(select(($a | getpath(.)) != ($b | getpath(.)))) | .[:5]
-         | map({at: ., on_issue: ($a | getpath(.)), on_twin: ($b | getpath(.))})'); on $key he reads $got"
+      "the two differ at $(differ_at "$got" "$want" on_issue on_twin); on $key he reads $got"
   pass "$section" "$second's read of $what on $key is the read on $twin_key whole, once each id, time, seq and rank is replaced by its place"
 }
 
@@ -372,6 +426,8 @@ pass "$driver" "the catalogue holds its ten kinds"
 
 sign_in "$first"
 sign_in "$second"
+mint_token "$first"
+mint_token "$second"
 
 spec_text="$(printf 'The spec every person of %s reads.\n\nIt holds one more paragraph.\n' "$project")"
 comment_body="$(jq -cn --arg w "$public_word" '{body: "A public comment of the issue: \($w)."}')"
@@ -404,7 +460,8 @@ request "cookie:$second" GET "/api/v1/lenses?on=$(q "$spec")"
 want_status 200 C1 "$second reads the lenses on the spec $spec"
 chains="$(jq -c '[.chains[] | {lenses: [.lenses[].address], stopped_at}]' "$work/body")" ||
   fail C1 "read the chains of the spec" "unreadable: $(body)"
-got="$(jq -c --arg p "$premortem" '[.chains[].lenses[] | select(.address == $p) | .address]' "$work/body")"
+got="$(jq -c --arg p "$premortem" '[.chains[].lenses[] | select(.address == $p) | .address]' "$work/body")" ||
+  fail C1 "read the lenses of the chains of the spec" "unreadable: $(body)"
 [[ "$got" == "[]" ]] ||
   fail C1 "no chain $second reads under the public spec $spec passes through $premortem, the lens reserved for $first" \
     "the chain read of $spec, read as $second, holds $premortem: chains $chains"
@@ -439,50 +496,87 @@ expect C2 "$first's lens read of the spec lists the pre-mortem's finding, reserv
   --arg p "$premortem" '[.lenses[] | select(.address == $p) | .findings[] | {address, visibility}]'
 
 # The person page is newest first: this run's rows are the newest of the first person's, within a
-# page of 200. Each row names the issue it opens at in its href.
-readonly page_rows='[.rows[] | select(.href == "/issues/\($k)" or (.href | startswith("/issues/\($k)/")))]'
+# page of 200. A row of a lens, a finding, a risk or a comment names the issue it opens at in its
+# href. A run of the command bar stands under no issue and opens nothing, so its row's href is
+# empty, and the row counts as the issue's when its run is one the issue's comment was written
+# under ($runs): her run on $key, none on $twin_key.
+readonly page_rows='[.rows[] | select(.href == "/issues/\($k)" or (.href | startswith("/issues/\($k)/"))
+  or (.href == "" and .kind == "interaction" and (.id as $id | any($runs[]; . == $id))))]'
 request "cookie:$second" GET "/api/v1/people/$(q "$first")/nodes?limit=200"
 want_status 200 C2 "$second reads $first's page"
 cp "$work/body" "$work/bob.page.json"
 no_leak C2 "$second's read of $first's page lists no hidden node and carries none of their words" "$work/bob.page.json"
-got="$(jq -cS --arg k "$key" "$page_rows | [.[].kind] | sort" "$work/bob.page.json")"
-want="$(jq -cS --arg k "$twin_key" "$page_rows | [.[].kind] | sort" "$work/bob.page.json")"
+got="$(jq -cS --arg k "$key" --argjson runs "[\"$run_id\"]" "$page_rows | [.[].kind] | sort" "$work/bob.page.json")" ||
+  fail C2 "count the rows of $first's page on $key" "unreadable: $(head -c 600 "$work/bob.page.json")"
+want="$(jq -cS --arg k "$twin_key" --argjson runs '[]' "$page_rows | [.[].kind] | sort" "$work/bob.page.json")" ||
+  fail C2 "count the rows of $first's page on $twin_key" "unreadable: $(head -c 600 "$work/bob.page.json")"
 [[ "$got" == "$want" ]] ||
   fail C2 "$second's read of $first's page counts of each kind on $key what it counts on $twin_key" \
     "on $key it lists $got, on $twin_key $want"
 pass C2 "$second's read of $first's page counts of each kind on $key what it counts on $twin_key, which holds no hidden node: $got"
+expect C2 "$second's read of $first's page lists no run of the command bar, her run $run_id among them: a run is listed to the credential that asked it alone" \
+  '[]' '[.rows[] | select(.kind == "interaction") | .id]'
 as_first C2 "$first reads her own page" "/api/v1/people/$(q "$first")/nodes?limit=200"
-expect C2 "$first's own page lists her pre-mortem, its finding and her risk on $key, each reserved for her" \
-  "$(jq -cnS --arg p "$premortem_id" --arg f "lens/$premortem_id#$finding_id" --arg r "$risk_id" \
-    '[["lens", $p, "author"], ["lens_block", $f, "author"], ["risk", $r, "author"]] | sort')" \
-  --arg k "$key" "$page_rows | [.[] | select(.visibility == \"author\") | [.kind, .id, .visibility]] | sort"
+expect C2 "$first's own page lists her pre-mortem, its finding, her risk and her run on $key, each reserved for her" \
+  "$(jq -cnS --arg p "$premortem_id" --arg f "lens/$premortem_id#$finding_id" --arg r "$risk_id" --arg i "$run_id" \
+    '[["interaction", $i, "author"], ["lens", $p, "author"], ["lens_block", $f, "author"], ["risk", $r, "author"]] | sort')" \
+  --arg k "$key" --argjson runs "[\"$run_id\"]" "$page_rows | [.[] | select(.visibility == \"author\") | [.kind, .id, .visibility]] | sort"
+expect C2 "$first's own page lists her run $run_id, which she wrote, titled by its words and opening nothing" \
+  "$(jq -cnS --arg w "$run_word" '[{href: "", relations: ["authored_by"], title: "Which run changed the comment, \($w)?"}]')" \
+  --arg i "$run_id" '[.rows[] | select(.kind == "interaction" and .id == $i) | {href, relations, title}]'
 
 # --- C3: the read of each hidden node's own address ---------------------------------------------
 
+# finds SECTION WHO PATH READ ADDRESS: the last answer, WHO's read GET PATH (READ being to, from or
+# on), answers ADDRESS, reserved for its author.
+finds() {
+  case "$4" in
+    on) expect "$1" "$2's read GET $3 answers $5, reserved for her" \
+      "$(jq -cnS --arg a "$5" '{address: $a, visibility: "author"}')" '.on | {address, visibility}' ;;
+    *) expect "$1" "$2's read GET $3 answers $5, reserved for her" \
+      "$(jq -cnS --arg a "$5" '{ref: $a, visibility: "author"}')" '.node | {ref, visibility}' ;;
+  esac
+}
+
+# Bob reads each address with his cookie and with his personal token, and each answers him what an
+# address of the same form nobody wrote answers through the same credential. The first person's
+# cookie, which wrote all three, finds each. Her personal token proves her too, so it finds her
+# pre-mortem and her risk, whose predicate compares the person a credential proves, and reads her
+# run as an address nobody wrote: a run's predicate compares the whole credential that asked it,
+# and her cookie asked it.
 for name in premortem risk interaction; do
   address="${!name}"
   form="${address%/*}"
   id="${address##*/}"
   for read in to from on; do
-    path="$(address_read "$form/$missing" "$read")"
-    request "cookie:$second" GET "$path"
-    keep "nobody.$name.$read"
-    [[ "$status" != 200 ]] ||
-      fail C3 "an address nobody wrote, $form/$missing, answers $second otherwise than a node he reads" "HTTP 200: $(body)"
+    nobody_path="$(address_read "$form/$missing" "$read")"
     path="$(address_read "$address" "$read")"
-    request "cookie:$second" GET "$path"
-    keep "bob.$name.$read"
-    same_answer "nobody.$name.$read" "$id" ||
-      fail C3 "$second's read GET $path answers what the address nobody wrote, $form/$missing, answers" \
-        "HTTP $status, Content-Type $content_type: $(body); the address nobody wrote answers $(<"$work/nobody.$name.$read.head"): $(<"$work/nobody.$name.$read.json")"
-    pass C3 "$second's read GET $path answers HTTP $status, Content-Type $content_type and the body bytes of $form/$missing, once the id is substituted: $(body)"
+    readers=("cookie:$second" "token:$second")
+    [[ "$name" != interaction ]] || readers+=("token:$first")
+    for reader in "${readers[@]}"; do
+      case "$reader" in
+        "cookie:$second") who="$second" label=bob ;;
+        "token:$second") who="$second's personal token" label=bob-token ;;
+        *) who="$first's personal token" label=first-token ;;
+      esac
+      request "$reader" GET "$nobody_path"
+      keep "nobody.$label.$name.$read"
+      [[ "$status" != 200 ]] ||
+        fail C3 "an address nobody wrote, $form/$missing, answers $who otherwise than a node it reads" "HTTP 200: $(body)"
+      request "$reader" GET "$path"
+      keep "$label.$name.$read"
+      same_answer "nobody.$label.$name.$read" "$id" ||
+        fail C3 "$who's read GET $path answers what the address nobody wrote, $form/$missing, answers" \
+          "HTTP $status, Content-Type $content_type: $(body); the address nobody wrote answers $(<"$work/nobody.$label.$name.$read.head"): $(<"$work/nobody.$label.$name.$read.json")"
+      pass C3 "$who's read GET $path answers HTTP $status, Content-Type $content_type and the body bytes of $form/$missing, once the id is substituted: $(body)"
+    done
     as_first C3 "$first reads GET $path" "$path"
-    case "$read" in
-      on) expect C3 "$first's read GET $path answers $address, reserved for her" \
-        "$(jq -cnS --arg a "$address" '{address: $a, visibility: "author"}')" '.on | {address, visibility}' ;;
-      *) expect C3 "$first's read GET $path answers $address, reserved for her" \
-        "$(jq -cnS --arg a "$address" '{ref: $a, visibility: "author"}')" '.node | {ref, visibility}' ;;
-    esac
+    finds C3 "$first" "$path" "$read" "$address"
+    if [[ "$name" != interaction ]]; then
+      request "token:$first" GET "$path"
+      want_status 200 C3 "$first's personal token reads GET $path"
+      finds C3 "$first's personal token" "$path" "$read" "$address"
+    fi
   done
 done
 
@@ -513,6 +607,32 @@ twin C4 "the issue, with its backlink count" "$issue_counts" "/api/v1/issues/$ke
 # The lens read of the trade-off analysis is C5's, beside the count it held before.
 twin C4 "the lens read of the public inversion $inversion" "$lens_counts" \
   "/api/v1/lenses?on=$(q "$inversion")" "/api/v1/lenses?on=$(q "$twin_inversion")"
+# The far end of the pre-mortem's has_kind tuple, $lens_kind, is a node of the catalogue that both
+# issues share, so no read on the twin stands for it: bob's reads of it in both directions are held
+# to the same reads he made before the pre-mortem was written (seed), count for count and whole. A
+# lens of that kind another writer adds meanwhile, on a shared server, fails here naming itself.
+for read in to from; do
+  request "cookie:$second" GET "/api/v1/references?$read=$(q "$lens_kind")"
+  want_status 200 C4 "$second reads the tuples $read $lens_kind"
+  cp "$work/body" "$work/bob.json"
+  no_leak C4 "$second's read of the tuples $read $lens_kind names no hidden node and carries none of their words, in no excerpt either" \
+    "$work/bob.json"
+  got="$(jq -cS "$edge_counts" "$work/bob.json")" ||
+    fail C4 "count the tuples $read $lens_kind" "unreadable: $(head -c 600 "$work/bob.json")"
+  want="$(jq -cS "$edge_counts" "$work/before.kind.$read.json")" ||
+    fail C4 "count the tuples $read $lens_kind before the pre-mortem was written" "unreadable: $(head -c 600 "$work/before.kind.$read.json")"
+  [[ "$got" == "$want" ]] ||
+    fail C4 "each count $second reads in the tuples $read $lens_kind is the count he read before the pre-mortem was written" \
+      "now he reads $got, before $want"
+  pass C4 "each count $second reads in the tuples $read $lens_kind is the count he read before the pre-mortem was written: $got"
+  got="$(jq -cS . "$work/bob.json")" || fail C4 "read the tuples $read $lens_kind" "unreadable: $(head -c 600 "$work/bob.json")"
+  want="$(jq -cS . "$work/before.kind.$read.json")" ||
+    fail C4 "read the tuples $read $lens_kind before the pre-mortem was written" "unreadable: $(head -c 600 "$work/before.kind.$read.json")"
+  [[ "$got" == "$want" ]] ||
+    fail C4 "$second's read of the tuples $read $lens_kind is, whole, the read he made before the pre-mortem was written" \
+      "the two differ at $(differ_at "$got" "$want" now before); now he reads $got"
+  pass C4 "$second's read of the tuples $read $lens_kind is, whole, the read he made before the pre-mortem was written"
+done
 
 # The same reads find each hidden node as its author, with the words only it carries in the excerpt.
 as_first C4 "$first reads the part_of tuples to the spec" "/api/v1/references?to=$(q "$spec")&kind=part_of"
@@ -539,6 +659,10 @@ as_first C4 "$first reads the lens read of the trade-off analysis" "/api/v1/lens
 expect C4 "the trade-off analysis answers $first the pre-mortem among the lenses it triggered, in a chain of three" \
   "$(jq -cnS --arg a "$tradeoff" --arg b "$premortem" --arg c "$inversion" '{chains: [[$a, $b, $c]], triggered: [$b]}')" \
   '{triggered: .lens.triggered, chains: [.chains[] | [.lenses[].address]]}'
+as_first C4 "$first reads the tuples to $lens_kind" "/api/v1/references?to=$(q "$lens_kind")"
+expect C4 "the tuples to $lens_kind hold the pre-mortem's has_kind tuple for $first, its excerpt carrying the pre-mortem's words" \
+  true --arg p "$premortem" --arg w "$hidden_word" \
+  '[.edges[] | select(.kind == "has_kind" and .node.ref == $p and (.excerpt.text | contains($w)))] | length == 1'
 
 # --- C5: a tuple whose near end is hidden and whose far end is not ------------------------------
 
@@ -546,27 +670,29 @@ expect C4 "the trade-off analysis answers $first the pre-mortem among the lenses
 # the near one. readEdgeRows filters both ends, so the tuple is in neither end's answer.
 path="$(address_read "$premortem" from)"
 request "cookie:$second" GET "$path"
-same_answer nobody.premortem.from "$premortem_id" ||
+same_answer nobody.bob.premortem.from "$premortem_id" ||
   fail C5 "the near end: $second's read of the tuples out of $premortem answers what an address nobody wrote answers" \
     "HTTP $status, Content-Type $content_type: $(body)"
 pass C5 "the near end: $second's read of the tuples out of $premortem answers what an address nobody wrote answers, so the tuple is in none"
 request "cookie:$second" GET "/api/v1/references?to=$(q "$tradeoff")&kind=triggered_by"
 want_status 200 C5 "$second reads the triggered_by tuples into the trade-off analysis"
-got="$(jq -c '[.edges[] | {kind, from: .node.ref}]' "$work/body")"
+got="$(jq -c '[.edges[] | {kind, from: .node.ref}]' "$work/body")" || fail C5 "read the triggered_by tuples into the trade-off analysis" "unreadable: $(body)"
 [[ "$got" == "[]" ]] ||
   fail C5 "the far end: the triggered_by tuples $second reads into the trade-off analysis hold no tuple from $premortem" \
     "they hold $got"
 pass C5 "the far end: the triggered_by tuples $second reads into the trade-off analysis hold no tuple from $premortem"
-got="$(jq -r '.edges | length' "$work/body")"
-want="$(jq -r '.edges | length' "$work/before.triggered.json")"
+got="$(jq -r '.edges | length' "$work/body")" || fail C5 "count the triggered_by tuples into the trade-off analysis" "unreadable: $(body)"
+want="$(jq -r '.edges | length' "$work/before.triggered.json")" ||
+  fail C5 "count the triggered_by tuples into the trade-off analysis before the pre-mortem was written" "unreadable: $(<"$work/before.triggered.json")"
 [[ "$got" == "$want" ]] ||
   fail C5 "$second counts the triggered_by tuples into the trade-off analysis he counted before the pre-mortem was written" \
     "he counts $got, and counted $want before"
 pass C5 "$second counts $got triggered_by tuples into the trade-off analysis, the $want he counted before the pre-mortem was written"
 request "cookie:$second" GET "/api/v1/lenses?on=$(q "$tradeoff")"
 want_status 200 C5 "$second reads the lens read of the trade-off analysis"
-got="$(jq -r '.lens.triggered | length' "$work/body")"
-want="$(jq -r '.lens.triggered | length' "$work/before.lenses.json")"
+got="$(jq -r '.lens.triggered | length' "$work/body")" || fail C5 "count the lenses the trade-off analysis triggered" "unreadable: $(body)"
+want="$(jq -r '.lens.triggered | length' "$work/before.lenses.json")" ||
+  fail C5 "count the lenses the trade-off analysis triggered before the pre-mortem was written" "unreadable: $(<"$work/before.lenses.json")"
 [[ "$got" == "$want" ]] ||
   fail C5 "the count of triggered lenses $second reads on the trade-off analysis is the count before the pre-mortem was written" \
     "he reads $got ($(jq -c '.lens.triggered' "$work/body")), and read $want before"
@@ -600,10 +726,11 @@ printf '[]' >"$work/bob.log.json"
 while true; do
   request "cookie:$second" GET "/api/v1/events/log?after=$after&limit=1000"
   want_status 200 C6 "$second reads the event log after the event $after"
-  jq -c --slurpfile page "$work/body" '. + $page[0]' "$work/bob.log.json" >"$work/log.next"
+  jq -c --slurpfile page "$work/body" '. + $page[0]' "$work/bob.log.json" >"$work/log.next" ||
+    fail C6 "gather the event log after the event $after" "unreadable: $(body)"
   mv "$work/log.next" "$work/bob.log.json"
   [[ "$(jq -r 'length' "$work/body")" == 1000 ]] || break
-  after="$(jq -r '.[-1].id' "$work/body")"
+  after="$(jq -er '.[-1].id' "$work/body")" || fail C6 "read the last event of the page after $after" "$(body)"
 done
 no_leak C6 "$second's read of the event log, $(jq -r 'length' "$work/bob.log.json") events since $twin_key was created, holds neither the address nor the text of any hidden node" \
   "$work/bob.log.json"

@@ -7,19 +7,22 @@
 #
 #   B1  The base build, booted through lib-baseline.sh, which builds it from BASELINE_SHA (unset,
 #       `git merge-base origin/main HEAD`) and stamps it with that commit, over the run's empty
-#       database, which it migrates. Through its own API three people each ask the command bar,
-#       and the driver reads each run's stream to its terminal frame; the server stops, so nothing
-#       appends a frame after the inventory is read. With psql it writes one run row a day ahead
-#       that holds no frame, and one run for each row of the identity table below, each form
-#       straight into going_requests.author, since the older server's sign-in stores a login in its
-#       canonical form only. It then reads the inventory - each run's id, author, words and frames -
-#       out of that database and keeps it as a file.
+#       database, which it migrates. Its /healthz names that commit as its own and as its
+#       fleet_commit, the build processes.Live reads every live process as serving. Through its own
+#       API three people each ask the command bar, and the driver reads each run's stream to its
+#       terminal frame; the server stops, so nothing appends a frame after the inventory is read.
+#       With psql it writes one run row a day ahead that holds no frame, and one run for each row
+#       of the identity table below, each a day ahead too and each form straight into
+#       going_requests.author, since the older server's sign-in stores a login in its canonical
+#       form only; so every run holds a terminal frame or an ends_at a day ahead, and no boot of
+#       either build ends one by itself. It then reads the inventory - each run's id, author,
+#       words and frames - out of that database and keeps it as a file.
 #   H1  This head's server (DISPATCH_E2E_SERVER_BIN, stamped with its own commit) boots over the
-#       same database and runs every migration it holds; the driver runs
-#       `envoy-dispatch backfill-graph-store`, waits ten minutes at most until no
-#       document_block_versions row has a null version, and compares the store with the inventory
-#       row by row, then going_requests and going_events the same way, naming every run a side
-#       lacks.
+#       same database and runs every migration it holds; its /healthz names its own commit as the
+#       fleet's. The driver runs `envoy-dispatch backfill-graph-store`, waits ten minutes at most
+#       until no document_block_versions row has a null version, and compares the store with the
+#       inventory row by row, then going_requests and going_events the same way, naming every run
+#       a side lacks.
 #   H2  Through this build's routes: a pre-mortem reserved for alice with one risk prevented by a
 #       check, a trade-off lens with one finding block, triggered by the pre-mortem, a constraint
 #       reserved for bob, the requirement's constrained_by tuple to it, one lens_kind through
@@ -34,13 +37,19 @@
 #       attribute and value tuple), and a third run is dated two hours back, and the driver waits
 #       ten minutes at most until that build's sweep has ended the first and deleted the row of the
 #       second.
-#   H3  This head again and the backfill again: a node for the new run, a frame value for each frame
-#       that build appended, and the run whose row it deleted at state gone. Only then the census,
-#       the store-to-projection comparison, which is reported apart from the inventory's: a run the
-#       migration lost shows in the first and never in the second. It reads zero differences for
-#       the interaction and frame kinds, for both block projections of dispatch://INFRA-1149, for
-#       person and session, and for the visibility and state of every node of this child's kinds,
-#       each kind having checked more than zero rows, and every interaction at `author`.
+#   H3  This head again. Each boot wrote one announcement once processes.Live read every live
+#       process as its build, so they name the base build, this head, the base build and this head,
+#       in order: two builds. Before the backfill, a census beside a planted instance: it names the
+#       new run, a row with no node, and the terminal frame of the run row written by hand, a row
+#       with no frame value. Then the backfill again: a node for the new run, a frame value for each
+#       frame that build appended, and the run whose row it deleted at state gone. alice moves her
+#       pre-mortem to proposed, the finding to settled and her risk to overtaken. Only then the
+#       census, the store-to-projection comparison, which is reported apart from the inventory's: a
+#       run the migration lost shows in the first and never in the second. It reads zero
+#       differences for the interaction and frame kinds, for both block projections of
+#       dispatch://INFRA-1149, for person and session, and for the visibility and state of every
+#       node of this child's kinds, each kind having checked more than zero rows, the moved nodes
+#       counted as live ones are, and every interaction at `author`.
 #   S   The store-only kinds (lens, finding, risk, constraint, lens_kind) and their constrained_by,
 #       has_kind, triggered_by and prevented_by tuples against the inventory of the routes' writes
 #       and the migration's seed, node for node and tuple for tuple.
@@ -352,8 +361,47 @@ take_census() {
   run_cli "$1" "run envoy-dispatch census --store" census --store
   cp "$work/cli.out" "$work/census.$2"
   grep -E '^census: store (kind=[a-z_]+ nodes=|rows_checked=|ok|REFUSED|absent)|^census: store kind=[a-z_]+ (difference|and )' \
-    "$work/census.$2" | sed 's/^/  /'
+    "$work/census.$2" >"$work/census.$2.lines" ||
+    fail "$1" "envoy-dispatch census --store prints its report" "it printed no census line (exit $cli_code): $(<"$work/census.$2")"
+  sed 's/^/  /' "$work/census.$2.lines"
   pass "$1" "envoy-dispatch census --store read the store (exit $cli_code)"
+}
+
+# fleet_reads SECTION COMMIT: the server serving now answers /healthz with COMMIT as the commit it
+# serves and as its fleet_commit, the commit of the newest announcement its startup.Announcer wrote
+# once processes.Live read every live server process as serving that one build. The announcer reads
+# Live as the process registers and every 5 s after (startup.Interval), so the read is tried for up
+# to 30 s.
+fleet_reads() {
+  local tries=0
+  while true; do
+    status="$(curl -sS --max-time 10 -o "$work/body" -w '%{http_code}' "$base/healthz" 2>"$work/curl")" ||
+      status="curl failed: $(<"$work/curl")"
+    if [[ "$status" == 200 ]] && jq -e --arg c "$2" '.commit == $c and .fleet_commit == $c' "$work/body" >/dev/null 2>&1; then
+      break
+    fi
+    tries=$((tries + 1))
+    [[ "$tries" -lt 60 ]] ||
+      fail "$1" "processes.Live reads every live server process as the one build $2: /healthz names it as the commit served and as fleet_commit" \
+        "HTTP $status: $(body)"
+    sleep 0.5
+  done
+  pass "$1" "processes.Live reads every live server process as the one build $2: /healthz answers $(jq -c '{commit, fleet_commit}' "$work/body")"
+}
+
+# move_state SECTION ADDRESS STORE-ID FROM TO: alice moves the node ADDRESS, whose store address is
+# STORE-ID, from the state FROM to TO, through POST /api/v1/issues/{key}/nodes/{id}/state, or
+# through POST .../settle for TO settled, which the state route takes from no caller.
+move_state() {
+  if [[ "$5" == settled ]]; then
+    request "cookie:$alice" POST "/api/v1/issues/$key/nodes/$(q "$3")/settle"
+  else
+    request "cookie:$alice" POST "/api/v1/issues/$key/nodes/$(q "$3")/state" "$(jq -cn --arg s "$5" '{state: $s}')"
+  fi
+  want_status 200 "$1" "$alice moves $2 from $4 to $5"
+  expect "$1" "$alice moves $2 from $4 to $5" \
+    "$(jq -cnS --arg a "$2" --arg f "$4" --arg t "$5" '{address: $a, previous: $f, state: $t}')" \
+    '{address: .node.address, previous, state: .node.state}'
 }
 
 # census_kind FILE KIND: KIND's counts in the census report FILE, into $c_nodes, $c_rows,
@@ -492,6 +540,7 @@ registered_commit B1 "read the base build's row of server_processes"
 [[ -n "$baseline_commit" && "$answer" == "$baseline_commit" ]] ||
   fail B1 "the base build registers the commit it was built from" "server_processes names '$answer', want $baseline_commit"
 pass B1 "the base build serves $base, stamped with commit $baseline_commit, which its row of server_processes names"
+fleet_reads B1 "$baseline_commit"
 query B1 "read the base build's schema_migrations high-water mark" "select coalesce(max(version), 0) from schema_migrations"
 readonly base_mark="$answer"
 [[ "$base_mark" =~ ^[0-9]+$ && "$base_mark" -gt 0 ]] ||
@@ -567,6 +616,10 @@ readonly carol_recorded="$answer"
 jq -e --arg c "$carol" '.kind == "user" and .id == $c' <<<"$carol_recorded" >/dev/null ||
   fail B1 "the older server's sign-in stored $carol's login in its canonical form" "the record holds $carol_recorded"
 pass B1 "the record of $carol's own run stored the actor $carol_recorded"
+# Each run is written a day ahead, as the run row above is. This head ends, in one pass at each of
+# its boots before the backfill, every run past its ends_at that holds no terminal frame, and so may
+# a build's periodic sweep: a run written by hand that is overdue would gain a frame the inventory
+# lacks. A day ahead, none of these runs is overdue at any boot of this run, whichever build boots.
 identity_runs=()
 for row in "${identities[@]}"; do
   IFS='|' read -r what form wanted person <<<"$row"
@@ -574,15 +627,19 @@ for row in "${identities[@]}"; do
   jq -e . <<<"$form" >/dev/null || fail B1 "the identity table's form for $what is JSON" "$form"
   with_vars B1 "write the identity table's $what into going_requests.author" \
     "insert into going_requests (author, project, words, ends_at)
-     values (:'form'::jsonb, :'project', :'words', now() + interval '30 seconds')
+     values (:'form'::jsonb, :'project', :'words', now() + interval '1 day')
      returning id::text" "form=$form" "project=$project" "words=Identity table: $what."
   identity_runs+=("$answer|$form|$wanted|$person|$what")
-  pass B1 "wrote run $answer with author $form ($what), which must resolve to $wanted, $person"
+  pass B1 "wrote run $answer with author $form ($what), a day ahead, which must resolve to $wanted, $person"
 done
 readonly identity_runs
+want_value B1 "every run the inventory reads holds its terminal frame or an ends_at a day ahead, so neither build ends one of them unless this driver moves its ends_at" 0 \
+  "select count(*) from going_requests r
+   where r.ends_at < now() + interval '23 hours'
+     and not exists (select 1 from going_events e where e.request_id = r.id and e.name in ('end', 'error'))"
 
 runs_json B1 "read the inventory out of the base build's database" "$work/inventory.json"
-inventory_size="$(jq 'length' "$work/inventory.json")"
+inventory_size="$(jq 'length' "$work/inventory.json")" || fail B1 "count the runs of the inventory" "unreadable: $(head -c 600 "$work/inventory.json")"
 readonly inventory_size
 [[ "$inventory_size" == $((3 + 1 + ${#identities[@]})) ]] ||
   fail B1 "the inventory holds the three runs, the row a day ahead and one run for each row of the identity table" \
@@ -609,6 +666,7 @@ readonly head_commit="$answer"
 [[ -n "$head_commit" && "$head_commit" != "$baseline_commit" ]] ||
   fail H1 "this head is stamped with a commit of its own" "its row names '$head_commit', the base build's $baseline_commit"
 pass H1 "this head registers commit $head_commit and the base build registered $baseline_commit: two stamped builds"
+fleet_reads H1 "$head_commit"
 query H1 "read this head's schema_migrations" \
   "select coalesce(string_agg(version::text, ' ' order by version), '') from schema_migrations where version > $base_mark"
 readonly head_migrations="$answer"
@@ -789,6 +847,7 @@ registered_commit B2 "read the base build's row of server_processes"
 [[ "$answer" == "$baseline_commit" ]] ||
   fail B2 "the base build serves the database again, stamped with its commit" "its row names '$answer', want $baseline_commit"
 pass B2 "the base build serves the database again at $base, stamped with $baseline_commit"
+fleet_reads B2 "$baseline_commit"
 sign_in B2 "$alice"
 ask B2 "$alice" "What did the census read?"
 readonly run_new="$asked"
@@ -861,6 +920,42 @@ boot_server H3 "this head's server again" "$server_bin"
 registered_commit H3 "read this head's row of server_processes"
 [[ "$answer" == "$head_commit" ]] || fail H3 "this head serves the database again" "its row names '$answer', want $head_commit"
 pass H3 "this head serves the database again at $base, stamped with $head_commit"
+fleet_reads H3 "$head_commit"
+want_value H3 "processes.Live read the base build and this head as two builds: the announcements, in their order, name the base build, this head, the base build after the rollback and this head again" \
+  "$baseline_commit $head_commit $baseline_commit $head_commit" \
+  "select coalesce(string_agg(commit, ' ' order by seq), '') from server_build_announcements"
+
+# The census beside a planted instance of what it must find (the Verification preamble): before
+# the backfill, run $run_new holds the row the base build wrote and no interaction node, and the
+# terminal frame the base build's sweep appended to run $run_ahead holds its going_events row and
+# no frame value. This census must name both, so the zero readings after the backfill read the
+# store, not a census that finds nothing.
+query H3 "read the sequence of the terminal frame the base build's sweep appended to run $run_ahead" \
+  "select coalesce(string_agg(sequence::text, ' '), '') from going_events where request_id = '$run_ahead' and name in ('end', 'error')"
+readonly ahead_frame="$answer"
+[[ "$ahead_frame" =~ ^[0-9]+$ ]] || fail H3 "run $run_ahead holds one terminal frame" "the sequences of its terminal frames read '$ahead_frame'"
+want_value H3 "before the backfill, run $run_new holds its row and no interaction node, and run $run_ahead holds the row of its terminal frame $ahead_frame and no frame value" \
+  "1|0|1|0" \
+  "select (select count(*) from going_requests where id = '$run_new') || '|'
+          || (select count(*) from graph_nodes where kind = 'interaction' and id = '$run_new') || '|'
+          || (select count(*) from going_events where request_id = '$run_ahead' and sequence = $ahead_frame) || '|'
+          || (select count(*) from graph_tuples where from_kind = 'interaction' and from_id = '$run_ahead' and kind = 'frame')"
+take_census H3 planted
+grep -Fqx "census: store kind=interaction difference at interaction $run_new: the row names a node the store does not hold" \
+  "$work/census.planted" ||
+  fail H3 "the census names run $run_new, a row with no node, a difference of the kind interaction" \
+    "it reads: $(grep -E '^census: store kind=interaction ' "$work/census.planted" | tr '\n' ' ')"
+pass H3 "the census names run $run_new, a row with no node, a difference of the kind interaction: the row names a node the store does not hold"
+grep -Eq "^census: store kind=frame difference at frame $run_ahead $ahead_frame: the row and its node disagree: the row digests [0-9a-f]{32} and the node \\(none\\)\$" \
+  "$work/census.planted" ||
+  fail H3 "the census names the terminal frame $ahead_frame of run $run_ahead, a row with no frame value, a difference of the kind frame" \
+    "it reads: $(grep -E '^census: store kind=frame ' "$work/census.planted" | tr '\n' ' ')"
+pass H3 "the census names the terminal frame $ahead_frame of run $run_ahead, a row with no frame value, a difference of the kind frame: its node holds none"
+line="$(grep -m 1 -E '^census: store rows_checked=' "$work/census.planted")" ||
+  fail H3 "the census reads its total of differences" "no total in: $(<"$work/census.planted")"
+[[ ! "$line" =~ differences=0$ ]] || fail H3 "the census reads differences while the two are planted" "$line"
+pass H3 "the census reads differences while the two are planted, beside its zero readings after the backfill: $line"
+
 backfill H3
 nodes_json H3 "read the store's interaction nodes" "$work/store.h3.json"
 runs_json H3 "read going_requests and going_events" "$work/table.h3.json"
@@ -888,12 +983,24 @@ want_value H3 "the interaction of run $run_dated, whose row the base build delet
           || '|' || (select count(*) from going_events where request_id = '$run_dated')
    from graph_nodes n where n.kind = 'interaction' and n.id = '$run_dated'"
 # The inventory again: each of its runs but the one the base build deleted is in both products.
-jq -c --arg gone "$run_dated" '[.[] | select(.id != $gone)]' "$work/inventory.json" >"$work/inventory.h3.json"
+jq -c --arg gone "$run_dated" '[.[] | select(.id != $gone)]' "$work/inventory.json" >"$work/inventory.h3.json" ||
+  fail H3 "read the inventory but run $run_dated" "unreadable: $(head -c 600 "$work/inventory.json")"
 jq -r --slurpfile store "$work/store.h3.json" --slurpfile table "$work/table.h3.json" "$against_inventory_jq" \
   "$work/inventory.h3.json" >"$work/lost.h3" || fail H3 "hold the store and the going tables to the inventory" "jq refused it"
 [[ ! -s "$work/lost.h3" ]] ||
   fail H3 "the store and the going tables still hold every run of the inventory the base build did not delete" "$(tr '\n' ' ' <"$work/lost.h3")"
 pass H3 "the store and the going tables still hold the $(jq 'length' "$work/inventory.h3.json") runs of the inventory the base build did not delete"
+
+# A node at proposed, settled or overtaken is compared with its row like a live one (R12): alice
+# moves her pre-mortem to proposed, the trade-off analysis's finding to proposed and then settled,
+# and her risk to overtaken, and the census below counts each among the nodes of its kind and
+# reads zero differences.
+readonly finding_store="${finding_node/\#b-/#}"
+sign_in H3 "$alice"
+move_state H3 "$premortem" "lens/$premortem_id" live proposed
+move_state H3 "$finding" "$finding_store" live proposed
+move_state H3 "$finding" "$finding_store" proposed settled
+move_state H3 "$risk" "risk/$risk_id" live overtaken
 
 take_census C h3
 census_zero C h3 interaction
@@ -906,6 +1013,24 @@ for kind in interaction lens finding risk constraint lens_kind; do
   census_zero C h3 "${kind}_visibility_state"
 done
 census_differences C h3
+# The census counted each moved node as it counts a live one: the nodes of the kind it checked are
+# every node of the kind not gone, more than those at live.
+for moved in "lens|lens|$premortem_id|proposed" "finding|block|$finding_store|settled" "risk|risk|$risk_id|overtaken"; do
+  IFS='|' read -r kind node_kind id state <<<"$moved"
+  narrow="kind = '$node_kind'"
+  [[ "$kind" != finding ]] || narrow="$narrow and id like 'lens/%'"
+  query C "count the $kind nodes not gone and those at live" \
+    "select count(*) filter (where state <> 'gone') || '|' || count(*) filter (where state = 'live') || '|'
+            || coalesce(max(state) filter (where id = '$id'), 'none')
+     from graph_nodes where $narrow"
+  IFS='|' read -r present live held <<<"$answer"
+  census_kind "$work/census.h3" "${kind}_visibility_state" ||
+    fail C "the census reads the kind ${kind}_visibility_state" "no line of it in: $(<"$work/census.h3")"
+  [[ "$held" == "$state" && "$c_nodes" == "$present" && "$present" -gt "$live" ]] ||
+    fail C "the census counts the $kind $id at $state among the nodes of its kind, as it counts a live one" \
+      "the store holds it at $held, $present $kind node(s) are not gone and $live are live, and the census checked $c_nodes"
+  pass C "the census counts the $kind $id at $state among the $c_nodes $kind node(s) it checked, every one not gone, $live of them live, at zero differences"
+done
 want_value C "every interaction node is at visibility author" "0|true" \
   "select count(*) filter (where visibility <> 'author') || '|' || (count(*) > 0)::text
    from graph_nodes where kind = 'interaction'"
