@@ -28,7 +28,8 @@ import (
 const (
 	// codePriorityInput refuses a body no priority can be written from: a title with nothing in
 	// it or one longer than an issue title may be, an id that is no priority id, a title no id
-	// can be derived from, and a patch that names nothing to write.
+	// can be derived from, a patch that names nothing to write, and a patch whose expected names
+	// an attribute the same patch does not write.
 	codePriorityInput = "PRIORITY_INPUT"
 	// codePriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (PROJECT_EXISTS): a second create would write its own history over
@@ -36,6 +37,10 @@ const (
 	codePriorityExists = "PRIORITY_EXISTS"
 	// codePriorityNotFound answers a write addressed to an id no priority row carries.
 	codePriorityNotFound = "PRIORITY_NOT_FOUND"
+	// codePriorityChanged refuses a patch whose expected title or description is not the one
+	// the priority stores now: somebody else wrote it after the writer's edit began, and the
+	// patch would write over that change unseen (priorityChangedRefusal).
+	codePriorityChanged = "PRIORITY_CHANGED"
 	// codeRankInput refuses a move to a place the order does not have, which is the code and
 	// the wording the issue board's own drag is refused with (issue_rank.go).
 	codeRankInput = "RANK_INPUT"
@@ -278,8 +283,23 @@ type patchPriorityInput struct {
 	// after the one it lands below, which is the shape the issue board's own drag takes
 	// (rankInput, issue_rank.go). A rank that names neither is a move to nowhere and is refused,
 	// because a priority already stands somewhere.
-	Rank  *rankInput   `json:"rank"`
-	Actor *model.Actor `json:"actor"`
+	Rank *rankInput `json:"rank"`
+	// Expected is what the writer's edit started from, for the title and the description this
+	// same write writes: where the priority no longer stores it, somebody else wrote the
+	// attribute after the edit began, and the write is refused 409 PRIORITY_CHANGED rather than
+	// written over that change (priorityChangedRefusal). A write that leaves it out writes over
+	// whatever is stored. Owner and rank take none.
+	Expected *patchPriorityExpected `json:"expected"`
+	Actor    *model.Actor           `json:"actor"`
+}
+
+// patchPriorityExpected is a patch's precondition: the value each attribute held when the
+// writer's edit of it began, as the writer read it. Each names an attribute the same patch
+// writes, or the patch is refused 400 PRIORITY_INPUT, since a value nothing is written over
+// guards nothing.
+type patchPriorityExpected struct {
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
 }
 
 // patchPriority is PATCH /api/v1/priorities/{id}: the attributes the body names, and the move
@@ -288,6 +308,12 @@ type patchPriorityInput struct {
 // ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its page and its
 // history already answer. The transaction is rolled back, so a refused write appends no tuple
 // and no `priority.updated` (priorityEvent).
+//
+// A body whose expected names a value first reads the node row under its lock
+// (prioritystore.ReadForWrite) and compares, in the transaction that then writes, so a second
+// write naming the same value waits for this one and finds the value it wrote. One that differs
+// is 409 PRIORITY_CHANGED, refused before any statement writes. A body naming no expected takes
+// no lock of its own and writes as it always has.
 func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	var input patchPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -317,6 +343,10 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	if input.Owner != nil {
 		values[prioritystore.AttributeOwner] = strings.TrimSpace(*input.Owner)
 	}
+	if refusal := patchExpectedUnwritten(input); refusal != "" {
+		writeError(w, codePriorityInput, http.StatusBadRequest, refusal)
+		return
+	}
 	if len(values) == 0 && input.Rank == nil {
 		writeError(w, codePriorityInput, http.StatusBadRequest,
 			"a write names at least one of title, description, owner and rank")
@@ -344,6 +374,17 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	at := time.Now().UTC()
+	if expected := input.Expected; expected != nil && (expected.Title != nil || expected.Description != nil) {
+		stored, err := prioritystore.ReadForWrite(r.Context(), tx, id)
+		if err != nil {
+			s.refusePriorityWrite(w, id, err)
+			return
+		}
+		if refusal := priorityChangedRefusal(id, stored, *expected); refusal != "" {
+			writeError(w, codePriorityChanged, http.StatusConflict, refusal)
+			return
+		}
+	}
 	if err := prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at); err != nil {
 		s.refusePriorityWrite(w, id, err)
 		return
@@ -374,6 +415,71 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, priorityFrom(node))
+}
+
+// patchExpectedUnwritten answers why a patch's expected names an attribute the same patch does not
+// write, or "" when each value it names stands beside the attribute written over it.
+func patchExpectedUnwritten(input patchPriorityInput) string {
+	if input.Expected == nil {
+		return ""
+	}
+	var refusals []string
+	if input.Expected.Title != nil && input.Title == nil {
+		refusals = append(refusals, "expected.title is the title an edit started from, and this write writes no title")
+	}
+	if input.Expected.Description != nil && input.Description == nil {
+		refusals = append(refusals,
+			"expected.description is the description an edit started from, and this write writes no description")
+	}
+	return strings.Join(refusals, "; ")
+}
+
+// priorityChangedQuoteMax is the most characters of a stored value the 409 PRIORITY_CHANGED quotes:
+// a description is markdown of any length, and the refusal names what is stored now rather than
+// carrying it whole.
+const priorityChangedQuoteMax = 200
+
+// priorityChangedRefusal answers why a patch's expected refuses it, or "" when each value expected
+// names is the one stored now. Each attribute that differs is named with its value now, quoted and
+// cut past priorityChangedQuoteMax characters with a trailing "…", so the writer reads what the
+// write would have gone over. The title is compared with the stored title exactly: the route
+// stores a title trimmed, and every read answers it as stored, so a writer sends the title it
+// read. The description is stored as written and compared exactly too.
+func priorityChangedRefusal(id string, stored prioritystore.Node, expected patchPriorityExpected) string {
+	var changed []string
+	for _, attribute := range []struct {
+		name     string
+		expected *string
+	}{
+		{prioritystore.AttributeTitle, expected.Title},
+		{prioritystore.AttributeDescription, expected.Description},
+	} {
+		if attribute.expected == nil {
+			continue
+		}
+		if now, _ := stored.Attribute(attribute.name); now != *attribute.expected {
+			changed = append(changed, fmt.Sprintf("its %s is now %s", attribute.name, priorityChangedQuote(now)))
+		}
+	}
+	if len(changed) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("priority %q was written after this edit began, so nothing was written: %s",
+		id, strings.Join(changed, " and "))
+}
+
+// priorityChangedQuote is one stored value as the 409 PRIORITY_CHANGED quotes it: whole up to
+// priorityChangedQuoteMax characters, and past that its first priorityChangedQuoteMax characters
+// and a trailing "…". A character is a rune, so the cut never splits one.
+func priorityChangedQuote(value string) string {
+	characters := 0
+	for index := range value {
+		if characters == priorityChangedQuoteMax {
+			return fmt.Sprintf("%q", value[:index]+"…")
+		}
+		characters++
+	}
+	return fmt.Sprintf("%q", value)
 }
 
 // deletePriority is DELETE /api/v1/priorities/{id}: the state `gone`, and no row removed. The

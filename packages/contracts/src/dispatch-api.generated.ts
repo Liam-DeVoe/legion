@@ -2286,7 +2286,7 @@ export interface paths {
     delete: operations["deleteApiV1PrioritiesById"];
     options?: never;
     head?: never;
-    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?, expected?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. expected is {title?, description?}, the value the writer's edit of each started from, for the title and the description this same write writes; owner and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One that differs from the value the priority stores now (the title compared with the stored title exactly, which is stored trimmed, so a writer sends the title it read; the description exactly) is 409 PRIORITY_CHANGED, whose message names each attribute that differs and its value now, quoted and cut past 200 characters with a trailing …; that write writes nothing and appends no priority.updated. The compare and the write are one transaction holding the priority's row, so a write naming expected waits for any other write of the priority in flight and compares against what that one wrote. A body with no expected writes over whatever is stored. */
     patch: operations["patchApiV1PrioritiesById"];
     trace?: never;
   };
@@ -5645,9 +5645,14 @@ export interface components {
       started_at: string;
       state: string;
     };
+    PatchPriorityExpected: {
+      description?: null | string;
+      title?: null | string;
+    };
     PatchPriorityInput: {
       actor?: components["schemas"]["Actor"] | null;
       description?: null | string;
+      expected?: components["schemas"]["PatchPriorityExpected"] | null;
       owner?: null | string;
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
@@ -14161,6 +14166,7 @@ export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PatchPriorityExpected = components["schemas"]["PatchPriorityExpected"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
