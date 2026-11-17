@@ -163,7 +163,10 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 // the id of the retro's end, carrying the rating, its reason and every identity field of the run,
 // so it makes the record where the retro's start and end have not landed yet, and no moment and no
 // result, which are the end's. A retro from a plugin of the release before the rating completes
-// with none, and the daemon takes it and writes no rating.
+// with none, and the daemon takes it and writes no rating. The run here started before this release
+// wrote plans: its gate opened under the release before, so it has no plan record, and its retro,
+// rated or not, writes none either. A plan is written at the start of a run's work alone, so a run
+// already working at the deploy finishes with no plan (its read shows the plan null).
 func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -195,6 +198,10 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			}
 			if end == nil {
 				t.Fatalf("the retro's completion wrote no end of the retro: %+v", stepWrites(t, pool, root.Key))
+			}
+			if plans := planWrites(t, pool, root.Key); len(plans) != 0 {
+				t.Fatalf("the retro of a run that started before this release wrote the plans %+v, want none: a plan is written at the start of a run's work alone",
+					plans)
 			}
 			if tc.rating == 0 {
 				if len(rated) != 0 {
