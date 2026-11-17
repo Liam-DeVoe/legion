@@ -4100,15 +4100,17 @@ Each item below names a path with its method and identity, then its purpose.
   An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
   A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
-  The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
-  it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
-  Dispatch judges the request at the versions that it names when the reopen ends.
-  A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
-  The request then waits on its agent.
-  Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
-  A named version and an upload of the same text leave the request with its agent.
-  And Dispatch refuses a person's approval of a version that breaks the form.
-  The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
+
+  - The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
+    it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
+    Dispatch judges the request at the versions that it names when the reopen ends.
+    A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
+    The request then waits on its agent.
+    Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
+    A named version and an upload of the same text leave the request with its agent.
+    And Dispatch refuses a person's approval of a version that breaks the form.
+    The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
+
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
   For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version and carries an approval to that version, as that version's own write does on an open issue, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
   A document with stored edits that its latest version does not hold, the reopen's own block writes among them, is left to the settlement that saves them, and that settlement's version moves the request and carries the approval.
