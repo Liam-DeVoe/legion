@@ -4586,8 +4586,8 @@ Each item below names a path with its method and identity, then its purpose.
       Nothing in code font ends a sentence.
       A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
       Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
-      An address that the words show, such as `https://example.com/Web.Config`, is one word, so no stop in it breaks this rule.
-      A stop after the address ends the sentence.
+      A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
+      Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
       A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
       `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
       Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
@@ -4602,6 +4602,10 @@ Each item below names a path with its method and identity, then its purpose.
     - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
       The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
       `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
+      Each of these forms, a key, an id, an email address and a handle is a whole word.
+      A letter, a digit or `_` right before it or right after it makes it part of a longer word, which names nothing.
+      So the colour `#12abcd` names no pull request, and the package `@types/node` names no person.
+      A colour of three digits, such as `#123`, has the form of a number of a pull request, so write the colour in words.
       A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
       So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
       The finding of each rule lists the forms that it reads.
@@ -4612,6 +4616,8 @@ Each item below names a path with its method and identity, then its purpose.
       A part that is a word of an approved component name or term is no part of a name.
       An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
       A word that starts with `@` is the handle of a person, also in code font, so write a name of the system without `@`.
+      A bare key such as `ACME-12` or a bare id such as a UUID names a record of Dispatch, also when no record has it.
+      Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
       The rules also read the name of a term (kind `term`).
 
     - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
