@@ -14,7 +14,12 @@
 // other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
 // route's schema.
 import { describe, expect, test } from "bun:test";
-import { type Actor, IDEMPOTENCY_ANSWER_NOT_KEPT, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
+import {
+  type Actor,
+  IDEMPOTENCY_ANSWER_NOT_KEPT,
+  IDEMPOTENCY_KEY_COMMITTED,
+  IDEMPOTENCY_KEY_HEADER,
+} from "@legion/contracts";
 import type { z } from "zod";
 import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
@@ -512,6 +517,24 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
         unknown: undefined,
         missing: undefined,
         ...notKept,
+      });
+    });
+    // A 409 KEY_COMMITTED that names the key back says Dispatch committed the write under it and
+    // kept no answer: a landing where the route stores, and by the same rule as the 2xx path, the
+    // missing answer where it stores nothing.
+    const committed: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+      WRITE_ROWS[row.method]
+    )
+      ? { landed: IDEMPOTENCY_KEY_COMMITTED }
+      : { missing: DISPATCH_ANSWER_LOST };
+    test(`${label}: a 409 KEY_COMMITTED naming its key back is ${"landed" in committed ? "KEY_COMMITTED" : "no answer"}`, async () => {
+      const body = JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "committed" });
+      const got = await outcome(row, 409, "application/json", body, "this");
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        ...committed,
       });
     });
     for (const echo of ["this", "none"] as const) {

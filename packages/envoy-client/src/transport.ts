@@ -740,18 +740,25 @@ export class EnvoyApiError extends Error {
     }
   ) {
     let parsed: z.infer<typeof ErrorWireSchema> | undefined;
+    // A redirect's body is not read: a redirector writes its target, path and query with it, into
+    // the body too, and the line names the redirect's origin alone.
+    const redirect = details.status >= 300 && details.status < 400;
     try {
-      const result = ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
-      if (result.success) parsed = result.data;
+      const result = redirect
+        ? undefined
+        : ErrorWireSchema.safeParse(JSON.parse(details.responseBody));
+      if (result?.success) parsed = result.data;
     } catch {
       // A non-JSON error remains useful in the transport diagnostic.
     }
     // The reason joins the message: a refused registration must fail with the listener's own
     // machine-readable why in what the session is shown, not only in the client's field.
     super(
-      parsed === undefined
-        ? `${details.method} ${details.url} failed with ${details.status}${details.redirectedTo === undefined ? "" : `, redirecting to ${details.redirectedTo}`}: ${details.responseBody}`
-        : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
+      redirect
+        ? `${details.method} ${details.url} failed with ${details.status}${details.redirectedTo === undefined ? "" : `, redirecting to ${details.redirectedTo}`}`
+        : parsed === undefined
+          ? `${details.method} ${details.url} failed with ${details.status}: ${details.responseBody}`
+          : `${parsed.error}${parsed.reason === undefined ? "" : ` (reason: ${parsed.reason})`}${parsed.expected === undefined ? "" : ` (expected: ${parsed.expected.join(", ")})`}${refusalStateText(parsed)}`
     );
     this.expected = parsed?.expected;
     this.code = parsed?.code;

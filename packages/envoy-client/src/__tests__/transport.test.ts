@@ -2002,6 +2002,38 @@ describe("a listener answer that redirects to another origin", () => {
       }
     }
   });
+
+  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
+  // as text or as a link's text), so the line quotes nothing of a redirect's body.
+  test("is refused with a line that quotes nothing of its body, where a redirector writes its target", async () => {
+    // The path and the query of the target are made for this run.
+    const path = `login-${crypto.randomUUID()}`;
+    const state = crypto.randomUUID();
+    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fv1`;
+    for (const [type, body] of [
+      ["text/plain", `Found. Redirecting to ${target}`],
+      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
+      ["application/json", JSON.stringify({ error: `moved to ${target}` })],
+    ] as const) {
+      const client = createEnvoyClient({
+        baseUrl: "http://listener.test/",
+        fetch: (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+          new Response(body, {
+            status: 302,
+            headers: { Location: target, "Content-Type": type },
+          })) as typeof fetch,
+        retry: false,
+      });
+      const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(EnvoyApiError);
+      const { message } = failure as EnvoyApiError;
+      expect({
+        origin: message.endsWith("failed with 302, redirecting to https://sso.example.com"),
+        path: message.includes(path),
+        query: message.includes(state),
+      }).toEqual({ origin: true, path: false, query: false });
+    }
+  });
 });
 
 describe("newClientInstanceID", () => {

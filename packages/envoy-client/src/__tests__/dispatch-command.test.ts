@@ -390,6 +390,38 @@ describe("the dispatch command surface", () => {
     }
   });
 
+  // The same holds for every other value that names what a call is about or narrows what a read
+  // answers: an empty commit records a result at no commit, an empty `--at` pins the read to no
+  // commit and an issue list's empty `--parent` lists every issue of the project, each with no
+  // line, and an empty result id or comment id goes into the path. `issue-update --parent ""`
+  // clears the parent, as its flag says, so that command takes it.
+  test("an empty --commit, --at, --retract, --comment or issue list --parent is refused, naming the flag", () => {
+    const unset = (flag: string, noun: string) =>
+      `${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`;
+    for (const [argv, problem] of [
+      [
+        ["result", "--project", "ACME", "--check", "probe", "--verdict", "pass", "--commit", ""],
+        unset("--commit", "commit"),
+      ],
+      [["results", "--project", "ACME", "--commit", ""], unset("--commit", "commit")],
+      [["results", "--issue", "ACME-1", "--at", ""], unset("--at", "commit")],
+      [["issues", "--project", "ACME", "--parent", ""], unset("--parent", "parent")],
+      [["result", "--retract", "", "--reason", "Wrong commit."], unset("--retract", "result")],
+      [["resolve-comment", "--comment", ""], unset("--comment", "comment")],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+    expect(parseCommand(["issue-update", "--issue", "ACME-1", "--parent", ""], noFiles)).toEqual({
+      kind: "call",
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-1", parent: "" },
+      dryRun: false,
+    });
+  });
+
   test("a second bare issue key is refused", () => {
     expect(parseCommand(["read", "ACME-12", "ACME-13"], noFiles)).toEqual({
       kind: "refused",

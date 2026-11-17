@@ -12,6 +12,7 @@ import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
+  DispatchEmptyPathError,
   DispatchGatewayError,
   DispatchNoRouteError,
   type SearchOptions,
@@ -1940,6 +1941,38 @@ describe("a broker token Dispatch says is not live", () => {
   });
 });
 
+// Every URL of the client is built in one place, which refuses a path value that is empty: sent,
+// `POST /api/v1/comments//resolve` is answered by Dispatch's router with a 307 to another path.
+describe("a path value that is empty", () => {
+  test("is refused before any request, naming its place in the route", async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      asked.push(String(input));
+      return jsonResponse({});
+    }) as typeof fetch;
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+    for (const [call, place] of [
+      [() => client.resolveComment("", actor), "/api/v1/comments/{empty}/resolve"],
+      [
+        () => client.retractResult("", { actor, reason: "Wrong commit." }),
+        "/api/v1/results/{empty}/retract",
+      ],
+    ] as const) {
+      const refusal = await call().then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      expect(refusal, place).toBeInstanceOf(DispatchEmptyPathError);
+      expect((refusal as Error).message, place).toContain(place);
+    }
+    expect(asked).toEqual([]);
+  });
+});
+
 // fetch sends a DPoP proof on to another origin a redirect names (it drops `Authorization` alone),
 // and Dispatch answers no API route with a redirect, so no request of the client follows one: the
 // 302 is the answer, a refusal naming it, and the origin it names is asked nothing.
@@ -2019,12 +2052,55 @@ describe("a redirect to another origin", () => {
           (error: unknown) => error
         );
         const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect(message, location).toContain(
-          `answered 302 with an empty body, redirecting to ${origin}, `
-        );
+        expect(message, location).toContain(`answered 302, redirecting to ${origin}, `);
         for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
           expect(message, location).not.toContain(part);
         }
+      }
+    }
+  });
+
+  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
+  // as text or as a link's text), so the line quotes nothing of a redirect's body: the status and
+  // the origin say all an operator needs.
+  test("a refused redirect quotes nothing of its body, where a redirector writes its target", async () => {
+    // The path and the query of the target are made for this run.
+    const path = `login-${crypto.randomUUID()}`;
+    const state = crypto.randomUUID();
+    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fapi`;
+    for (const [type, body] of [
+      ["text/plain", `Found. Redirecting to ${target}`],
+      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
+      ["application/json", JSON.stringify({ code: "MOVED", error: `Redirecting to ${target}` })],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(body, {
+          status: 302,
+          headers: { Location: target, "Content-Type": type },
+        })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect({
+          origin: message.includes("answered 302, redirecting to https://sso.example.com, "),
+          path: message.includes(path),
+          query: message.includes(state),
+          body: message.includes("Redirecting to"),
+        }).toEqual({ origin: true, path: false, query: false, body: false });
       }
     }
   });

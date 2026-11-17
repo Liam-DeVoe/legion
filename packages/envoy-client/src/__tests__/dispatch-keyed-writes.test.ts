@@ -1185,6 +1185,31 @@ describe("DispatchClient's writes", () => {
     }
   });
 
+  // A caller's own key that is empty names no request: an answer that names no key back names
+  // nothing, so it is no landing of the call's, on the 2xx path or the 409 path alike.
+  test("a caller's empty key is never named back by an answer that names no key", async () => {
+    for (const answer of [
+      () => json({}, 200),
+      () => refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
+    ]) {
+      const { fetchImpl, sent } = scripted([answer()], { echo: false });
+
+      const error = await failure(
+        client(fetchImpl, pacing().retry).docEdit(
+          "doc-1",
+          { ops: [{ op: "insert", markdown: "More.", after: "end" }], actor },
+          ""
+        )
+      );
+
+      expect({
+        sent: sent.length,
+        landed: error instanceof DispatchWriteLandedError,
+        unknown: writeOutcomeUnknown(error),
+      }).toEqual({ sent: 1, landed: false, unknown: true });
+    }
+  });
+
   test("the production pacing is five attempts within 30 s, each cut off after 20 s of silence, and asks every 3 s until 55 s while Dispatch may be running the write", () => {
     expect(DISPATCH_WRITE_RETRY).toEqual({
       pausesMs: [1_000, 2_000, 4_000, 8_000],

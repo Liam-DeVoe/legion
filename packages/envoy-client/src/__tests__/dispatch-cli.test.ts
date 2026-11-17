@@ -172,6 +172,8 @@ const storedSpecResults = [
   storedSpecResult(41, "pass", "", 1),
 ];
 const specResultQueries: string[] = [];
+/** The query of each search the stand-in was asked. */
+const searchQueries: string[] = [];
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -602,6 +604,10 @@ const server = Bun.serve({
       specResultQueries.push(search);
       return Response.json({ results: storedSpecResults });
     }
+    if (pathname === "/api/v1/search" && request.method === "GET") {
+      searchQueries.push(search);
+      return Response.json(routeAnswer("GET /api/v1/search", {}, 200));
+    }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
   },
 });
@@ -616,6 +622,7 @@ beforeEach(() => {
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   specResultQueries.length = 0;
+  searchQueries.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
   stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
@@ -1718,6 +1725,26 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // Sent, an empty `--project` of a search searched every project, and said nothing of it. An
+  // empty variable of a step is how one is written, so it is refused before any request, naming
+  // the flag; a search of every project leaves the flag out.
+  test("dispatch search refuses an empty --project, naming the flag, and searches every project without one", async () => {
+    const empty = await run(["search", "--query", "broker token", "--project", ""], omp);
+    expect({ code: empty.code, lines: empty.stdout.split("\n").slice(0, 2) }).toEqual({
+      code: 2,
+      lines: [
+        "dispatch search was not called: 1 problem",
+        "- --project is empty, so the call names no project: a variable that gives it may be empty or unset",
+      ],
+    });
+    expect(requests).toEqual([]);
+    const every = await run(["search", "--query", "broker token"], omp);
+    expect({ code: every.code, searched: searchQueries }).toEqual({
+      code: 0,
+      searched: ["?q=broker+token"],
+    });
+  });
+
   test("dispatch projects prints each project's key and name, keys first", async () => {
     const { code, stdout } = await run(["projects"], omp);
     expect(code).toBe(0);
@@ -2213,12 +2240,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
     namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
   }, 30_000);
 
-  // A job's step writes `--project "$PROJECT" --check "$CHECK"`, and an empty variable is the
-  // honest way to send one empty: it is refused before the trade or any write, naming the flag.
-  test("an empty --project or --check is refused before any request, naming the flag", async () => {
+  // A job's step writes `--project "$PROJECT" --check "$CHECK" --commit "$SHA"`, and an empty
+  // variable is the honest way to send one empty: it is refused before the trade or any write,
+  // naming the flag.
+  test("an empty --project, --check or --commit is refused before any request, naming the flag", async () => {
     for (const [flag, noun] of [
       ["--project", "project"],
       ["--check", "check"],
+      ["--commit", "commit"],
     ] as const) {
       const argv = [...record];
       argv[argv.indexOf(flag) + 1] = "";

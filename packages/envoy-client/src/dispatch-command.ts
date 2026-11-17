@@ -556,13 +556,15 @@ export function parseCommand(
     }
   }
 
-  // An empty issue key, project key or check id names nothing, and sent it reaches a route that is
-  // no route (`PATCH /api/v1/issues/`), which a rolling release also answers, so it is refused
-  // here, naming the flag that gave it: an empty variable in a job's step is how one is written.
-  for (const field of IDENTIFIER_FIELDS) {
-    if (args[field] === "") {
+  // A value that names what a call is about or narrows what a read answers, empty, names nothing:
+  // sent, an empty issue key reaches a route that is no route (`PATCH /api/v1/issues/`), which a
+  // rolling release also answers, and an empty search project or `--at` widens the read with no
+  // line. So it is refused here, naming the flag that gave it: an empty variable in a job's step
+  // is how one is written.
+  for (const { field, noun, tools } of IDENTIFIER_FIELDS) {
+    if (args[field] === "" && (tools === undefined || tools.includes(tool))) {
       problems.push(
-        `${setBy.get(field)} is empty, so the call names no ${field}: a variable that gives it may be empty or unset`
+        `${setBy.get(field)} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`
       );
     }
   }
@@ -600,8 +602,27 @@ function appendedItem(
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
 
-/** The fields that name what a call is about, each a key or an id that is never empty. */
-const IDENTIFIER_FIELDS = ["issue", "project", "check"] as const;
+/**
+ * The fields that name what a call is about, or narrow what a read answers, each a key, an id, a
+ * commit or a filter that is never empty, with the noun its refusal names: every command's field
+ * of the name, or the listed commands' alone where another command gives the empty value a
+ * meaning (`dispatch issue-update --parent ""` clears the parent). A value the call puts in a URL
+ * path is refused there too, for every caller (`DispatchEmptyPathError`).
+ */
+const IDENTIFIER_FIELDS: readonly {
+  readonly field: string;
+  readonly noun: string;
+  readonly tools?: readonly string[];
+}[] = [
+  { field: "issue", noun: "issue" },
+  { field: "project", noun: "project" },
+  { field: "check", noun: "check" },
+  { field: "commit", noun: "commit" },
+  { field: "at", noun: "commit" },
+  { field: "retract", noun: "result" },
+  { field: "comment", noun: "comment" },
+  { field: "parent", noun: "parent", tools: ["dispatch_issues"] },
+];
 
 /** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
 function quoteWord(value: string): string {
