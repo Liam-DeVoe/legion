@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -458,7 +458,7 @@ test("the held sidebar's hide control is not replaced by the press that reaches 
     // And the press did reach the shell: the navigation is drawn behind the control.
     expect(await screen.findByRole("navigation", { name: "Navigation" })).toBeTruthy();
   } finally {
-    theFirstBatchIsAwaited(false);
+    act(() => theFirstBatchIsAwaited(false));
     view.unmount();
     for (const spy of reads) spy.mockRestore();
   }

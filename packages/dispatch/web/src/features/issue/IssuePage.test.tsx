@@ -2008,18 +2008,20 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
 
   try {
     expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
   } finally {
@@ -2696,7 +2698,7 @@ test("IssuePage hands the held header to a reader who tabs into its box, and kee
     expect(document.activeElement).not.toBe(document.body);
     expect(header.parentElement).toHaveFocus();
   } finally {
-    theFirstBatchIsAwaited(false);
+    act(() => theFirstBatchIsAwaited(false));
     view.unmount();
     restore();
   }
@@ -2726,7 +2728,7 @@ test("IssuePage hands the held tab strip to a reader who tabs into its box", asy
     expect(await screen.findByRole("tab", { name: "Spec" })).toBeTruthy();
     expect(tabs.parentElement).toHaveFocus();
   } finally {
-    theFirstBatchIsAwaited(false);
+    act(() => theFirstBatchIsAwaited(false));
     view.unmount();
     restore();
   }
@@ -2757,7 +2759,7 @@ test("IssuePage's header box keeps a closed issue's own block, Reopen's height a
     expect(notice.parentElement).toBe(kept.parentElement);
     expect(notice.parentElement?.className).toContain("mb-2");
   } finally {
-    theFirstBatchIsAwaited(false);
+    act(() => theFirstBatchIsAwaited(false));
     view.unmount();
     restore();
   }

@@ -526,6 +526,10 @@ test("the shell tells the live-view registry which agents the person pinned", as
   });
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
+  // The issue page under the shell is a chunk of its own, drawn in the commit that chunk answers
+  // in (`chunkComponent`), and the pins can be on the rail before it has: the row waits for the
+  // page, so it lands while the row waits rather than after the row has moved on.
+  await screen.findByRole("heading", { level: 1, name: issue.title });
 
   const views = liveViewsOf(queryClient);
   act(() => {

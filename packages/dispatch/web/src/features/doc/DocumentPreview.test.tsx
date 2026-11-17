@@ -120,8 +120,14 @@ describe("the document preview's parse", () => {
   // one of the four places in the answer cache.
   test("builds nothing on the reader's thread for an answer that arrives after it has gone", async () => {
     const markdown = wholeDocument("A document whose editor landed first");
+    const firstScreenful = leadingBlocks(markdown, markdownWorkerThreshold);
+    const screenfulParagraphs = firstScreenful.split("\n\n").length;
     const view = render(<DocumentPreview address={ADDRESS} building={false} markdown={markdown} />);
     try {
+      // The first pass paints itself a slice at a time on the page's own clock: the row waits
+      // for it in `waitFor`, as the rows beside it do, rather than letting it land while the row
+      // polls the worker.
+      await waitFor(() => expect(paragraphs(view.container)).toBe(screenfulParagraphs));
       await worker.waitForRequests(1);
       expect(worker.requests[0].markdown).toBe(markdown);
     } finally {

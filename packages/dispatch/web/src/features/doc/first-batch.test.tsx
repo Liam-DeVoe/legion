@@ -11,7 +11,9 @@ import {
 
 // The gate is one page's state, so each row leaves it as it found it: nothing awaited, which is
 // what every page with no document on it reads.
-afterEach(() => theFirstBatchIsAwaited(false));
+afterEach(() => {
+  act(() => theFirstBatchIsAwaited(false));
+});
 
 test("a page with no document to come holds no read", () => {
   const { result } = renderHook(() => useAfterTheFirstBatch());

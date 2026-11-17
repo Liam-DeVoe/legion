@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act } from "@testing-library/react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -25,7 +26,11 @@ import { KeymapProvider } from "../features/shell/KeymapProvider";
  * `e2e/layout.e2e.ts` rows are guards and this row is the proof. `flushSync` is what makes it
  * exact. It renders and commits in the call, and React schedules passive effects rather than
  * running them, so what the container holds when it returns is the tree with `theRouteIsDrawn`
- * still `false` - the first commit, read before anything can turn it into the second.
+ * still `false` - the first commit, read before anything can turn it into the second. The render,
+ * the read and the unmount all happen inside one `act`, which keeps every task React schedules in
+ * its own queue until its callback returns: nothing the first commit scheduled runs before the
+ * root is gone, and each update is inside `act`, where the preload's act rule wants it
+ * (`__tests__/act-warnings.ts`).
  */
 
 const user: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
@@ -74,23 +79,26 @@ function firstCommitAt(route: string): string {
   document.body.append(container);
   const root = createRoot(container);
   try {
-    flushSync(() => {
-      root.render(
-        <QueryClientProvider
-          client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-        >
-          <MemoryRouter initialEntries={[route]}>
-            <KeymapProvider>
-              <AppShell user={user} />
-            </KeymapProvider>
-          </MemoryRouter>
-        </QueryClientProvider>
-      );
+    let drawn = "";
+    act(() => {
+      flushSync(() => {
+        root.render(
+          <QueryClientProvider
+            client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+          >
+            <MemoryRouter initialEntries={[route]}>
+              <KeymapProvider>
+                <AppShell user={user} />
+              </KeymapProvider>
+            </MemoryRouter>
+          </QueryClientProvider>
+        );
+      });
+      drawn = container.innerHTML;
+      // Before `act` runs the scheduler's tasks it holds, so the shell's reads never go out: this
+      // row is about one commit, and the page behind it is `responsive-shell.test.tsx`'s.
+      flushSync(() => root.unmount());
     });
-    const drawn = container.innerHTML;
-    // Before the scheduler's task runs, so the shell's reads never go out: this row is about
-    // one commit, and the page behind it is `responsive-shell.test.tsx`'s.
-    flushSync(() => root.unmount());
     return drawn;
   } finally {
     container.remove();

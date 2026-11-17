@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { type ReactNode, Suspense, use } from "react";
 
 import { chunkComponent } from "./chunk-component";
@@ -48,8 +48,9 @@ test("a part whose arrival is a transition keeps what is drawn while its render 
   );
 
   expect(screen.getByText("the space")).toBeTruthy();
-  land();
-  await Bun.sleep(20);
+  await act(async () => {
+    land();
+  });
   expect(screen.queryByText("the boundary")).not.toBeInTheDocument();
   expect(screen.getByText("the space")).toBeTruthy();
 

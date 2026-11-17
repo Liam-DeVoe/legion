@@ -1,6 +1,6 @@
 import { afterAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -111,7 +111,7 @@ test("renders the header, the document, versions, and Referenced by for an unlin
   try {
     await screen.findByTestId("artifact-header");
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await screen.findByRole("textbox", { name: "Document editor" });
 
     expect(screen.getByRole("link", { name: "Project CORE" })).toHaveAttribute(
@@ -264,7 +264,7 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
   try {
     await screen.findByTestId("artifact-header");
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
 
     const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
     const planner = await within(subscribed).findByRole("link", { name: "Planner (live)" });

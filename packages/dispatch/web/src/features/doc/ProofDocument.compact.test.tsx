@@ -1,6 +1,6 @@
 import { beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
@@ -54,7 +54,7 @@ test("ProofDocument keeps transport active without cursor decorations in the com
 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     expect(runtime.editors[0]?.options.awareness).toBeNull();
   } finally {

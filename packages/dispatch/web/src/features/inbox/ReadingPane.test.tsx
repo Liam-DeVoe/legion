@@ -331,7 +331,7 @@ test("a decision block draws the document in pane mode, with Skip to the answer 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     expect(opened).toEqual(["artifact-1"]);
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     // What `surface="pane"` means where the editor is built: no presence, and no edits.
     expect(runtime.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
@@ -354,7 +354,7 @@ test("a decision block's column marks the section from its heading down to the b
 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     expect(await screen.findByTestId("pane-section-bar")).toBeDefined();
   } finally {
     view.unmount();
@@ -374,7 +374,7 @@ test("a decision block before any heading sits in no section, so no bar is drawn
 
   try {
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     await waitFor(() =>
       expect(screen.getByTestId("inbox-pane")).toHaveTextContent("Ship behind a flag?")
@@ -1070,7 +1070,7 @@ test("a project document's head names the project and the document, and opens it
     expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
-    runtime.sync();
+    act(() => runtime.sync());
     await waitFor(() =>
       expect(screen.getByRole("link", { name: "Open page" })).toHaveAttribute(
         "href",
