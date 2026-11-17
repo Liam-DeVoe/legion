@@ -989,6 +989,25 @@ test("a state with a stopped task and a parent held for its children parses", ()
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
+// Contract 156 gives each of those two holds its own word in `admission.held`:
+// `children_before_retro`, a parent held before its retro, whose `heldBy` names each issue beneath
+// it still in the workflow, and `task_stopped`, a stopped task that keeps no slot, with no
+// `heldBy`. A state whose held rows carry them parses, each row kept as served; a word outside
+// `LEGION_HELD_REASONS` is refused.
+test("a state whose held rows name a parent held before its retro and a stopped task parses", () => {
+  const state = fixture("state.json") as {
+    admission: { held: { issue: string; reason: string; heldBy?: string[] }[] };
+  };
+  const rows: NonNullable<z.output<typeof LegionStateResponse>["admission"]["held"]> = [
+    { issue: "LEGION-230", reason: "children_before_retro", heldBy: ["LEGION-231"] },
+    { issue: "LEGION-232", reason: "task_stopped" },
+  ];
+  state.admission.held.push(...rows);
+  expect(LegionStateResponse.parse(state).admission.held?.slice(-2)).toEqual(rows);
+  state.admission.held.push({ issue: "LEGION-233", reason: "stopped" });
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+});
+
 // The state shows the record a worker's completion of its current file-backed phase named, its id
 // and positive version; a worker that named none shows no field.
 test("the state golden carries a worker's handoff record", () => {

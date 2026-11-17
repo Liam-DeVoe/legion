@@ -809,9 +809,10 @@ func statementBound(bound time.Duration) int64 {
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
 // `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
-// below OwnerPlanContract, the contract that added the hold reasons `task-stopped` and `children`,
-// is served every issue held for either with no `holdReason` (withoutNewHoldReasons), a value and
-// not a key.
+// below OwnerPlanContract, the contract that added the hold reasons `task-stopped` and `children`
+// and the two words of `admission.held` for those holds, is served every issue held for either
+// with no `holdReason` and every held row of either word as `unclassified` with no `heldBy`
+// (withoutNewHoldReasons), values and not keys.
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -940,7 +941,8 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
-	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children"},
+	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children, " +
+		"and admission.held's words children_before_retro and task_stopped"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1462,23 +1464,36 @@ func newHoldReason(reason string) bool {
 	return reason == string(record.HoldTaskStopped) || reason == string(record.HoldForChildren)
 }
 
+// newHeldWord is whether word is one OwnerPlanContract added to `admission.held`'s `reason`:
+// children_before_retro (record.HeldChildrenBeforeRetro) and task_stopped
+// (record.HeldTaskStopped), the words of the two holds newHoldReason names. A caller below it
+// reads `reason` as a strict list of the eleven words before them and refuses the whole body for
+// another; it read unclassified, with no heldBy, for both issues.
+func newHeldWord(word record.HeldReason) bool {
+	return word == record.HeldChildrenBeforeRetro || word == record.HeldTaskStopped
+}
+
 // carriesNewHoldReasons is whether any issue of state is held for a reason OwnerPlanContract
-// added. Only a held issue carries a reason, and only a hold of one of the two carries it, so this
-// is asked of the state rather than answered true.
+// added, or any row of `admission.held` carries a word it added. Only a held issue carries a
+// reason, and only a hold of one of the two carries it or reads one of the two words, so this is
+// asked of the state rather than answered true.
 func carriesNewHoldReasons(state State) bool {
 	for _, issue := range state.Issues {
 		if newHoldReason(issue.HoldReason) {
 			return true
 		}
 	}
-	return false
+	return slices.ContainsFunc(state.Admission.Held, func(row HeldIssue) bool { return newHeldWord(row.Reason) })
 }
 
-// withoutNewHoldReasons is state with no issue carrying a `holdReason` OwnerPlanContract added: an
-// issue held for either is served as a hold of no reason is, with its `heldFrom` and nothing else
-// of the hold changed, and an escalated hold keeps its reason. Nothing else of that contract is on
-// the route but `settings` keys, which every plugin reads loosely. The issue map is copied, as
-// every sibling strip copies it, so the state the source answered is left as it was.
+// withoutNewHoldReasons is state with no issue carrying a `holdReason` OwnerPlanContract added
+// and no row of `admission.held` carrying a word it added: an issue held for either reason is
+// served as a hold of no reason is, with its `heldFrom` and nothing else of the hold changed, and
+// an escalated hold keeps its reason; a row of either word is served as unclassified with no
+// heldBy, the row such a caller read for that issue before the contract, and every other row as
+// it stands. Nothing else of that contract is on the route but `settings` keys, which every
+// plugin reads loosely. The issue map and the held rows are copied, as every sibling strip copies
+// what it changes, so the state the source answered is left as it was.
 func withoutNewHoldReasons(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
@@ -1488,6 +1503,16 @@ func withoutNewHoldReasons(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	if state.Admission.Held != nil {
+		held := make([]HeldIssue, len(state.Admission.Held))
+		for i, row := range state.Admission.Held {
+			if newHeldWord(row.Reason) {
+				row = HeldIssue{Issue: row.Issue, Reason: record.HeldUnclassified}
+			}
+			held[i] = row
+		}
+		state.Admission.Held = held
+	}
 	return state
 }
 

@@ -60,8 +60,9 @@ type PlanReason struct {
 const registerPlanRoute = "register_plan"
 
 // OwnerPlanContract is the daemon contract that added the owner's plan (version.go's 156): the
-// routes register_plan and stop_task, a failed step's returnTo on handoff_complete, and the hold
-// reasons task-stopped and children in the state's holdReason, which a caller below it is served
+// routes register_plan and stop_task, a failed step's returnTo on handoff_complete, the hold
+// reasons task-stopped and children in the state's holdReason, and the words of those two holds in
+// `admission.held` (children_before_retro and task_stopped), which a caller below it is served
 // without (stateNarrowings).
 const OwnerPlanContract = 156
 

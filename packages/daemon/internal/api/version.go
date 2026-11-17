@@ -1356,9 +1356,10 @@ package api
 // three lists together are every issue of the workflow and what each is doing, which `active` and
 // `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
 // one the daemon was about to start from one nothing will start again.
-// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
-// refuses a value it does not name rather than stripping it like an unknown key, so a word added
-// to the ladder later bumps this number again. The key itself is written on every body, empty
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
+// which refuses a value it does not name rather than stripping it like an unknown key, so a word
+// added to the ladder later bumps this number again, as 156 did with `children_before_retro` and
+// `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
 // issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
@@ -1496,7 +1497,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them.
+// reader of 98 or above refuses them. From 156 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (156 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -2126,6 +2128,14 @@ package api
 // from a pod whose claims record a contract below 156 is served an issue held for either new
 // reason with no `holdReason`, as a hold of no reason is served (one row of `stateNarrowings`,
 // `withoutNewHoldReasons`); the bands compose, and every reader from 156 on takes the three values.
+// A second value set gets wider with it: `admission.held`'s `reason` takes
+// `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
+// with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
+// that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
+// `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
+// plugin reads the word as a `z.enum`, so a caller below 156 is served each row of either word as
+// `unclassified` with no `heldBy`, the row it read for that issue before (the same row of
+// `stateNarrowings`, `withoutNewHoldReasons`).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key of the settings block the plugin parses loosely, so it narrows nothing.
 // (This entry took 156 on 2026-11-17 over main's 146. A reading of `const DaemonAPIVersion` at

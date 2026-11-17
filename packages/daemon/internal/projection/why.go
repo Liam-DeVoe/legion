@@ -394,6 +394,14 @@ var heldSentences = map[record.HeldReason]heldSentence{
 		return "The daemon has accepted the head of " + heldBy + " that the last step of its task passed, and " + heldBy + " stands above it, " +
 			"so nothing of its own work starts before that issue closes."
 	}},
+	record.HeldChildrenBeforeRetro: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "It passed the last step of its task, and its plan has no acceptance step, so the daemon holds it before its retro " +
+			"while these issues beneath it are still in the workflow: " + heldBy + ". Its retro does not start while one of them is."
+	}},
+	record.HeldTaskStopped: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
+		return "Its task was stopped, by its owner or by a failed step that had no step to return to, so no step of the task runs. " +
+			"No release of its hold starts the task again."
+	}},
 	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
 		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +
 			"its workers run as they did, and no other issue holds it."

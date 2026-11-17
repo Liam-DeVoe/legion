@@ -102,7 +102,9 @@ answered `LegionPlanRegisterResponse`) and `stop_task` (`POST /legion/v1/tasks/s
 `LegionHandoffCompleteRequest`'s `returnTo`, which a daemon before 156 refuses as a field it does
 not know, and
 the state's `holdReason` taking `task-stopped` and `children` beside `escalated`, which a caller
-below 156 is served without), after contract 155 (the completion that
+below 156 is served without, and `admission.held`'s `reason` taking `children_before_retro` and
+`task_stopped`, each row of which a caller below 156 is served as `unclassified` with no
+`heldBy`), after contract 155 (the completion that
 ends the retro rates the plan the issue ran: `LegionHandoffCompleteRequest` takes `planRating`, a
 whole number from 1 to 5, and `planReason`, why, the two together; the daemon refuses them on every
 other completion, `PLAN_RATING_UNEXPECTED`, and refuses the retro's completion without them from a
@@ -153,9 +155,10 @@ behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_sess
 the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
-each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
-the daemon reads in one order, of which `at_work` names the issues past their review from
-contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+each row carrying the issue, one word for why nothing of it runs — a word of the closed list
+`LEGION_HELD_REASONS` (the daemon's `record.HeldReasons`), which the daemon reads in one order,
+of which `at_work` names the issues past their review from contract 111 on (see
+`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
 no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission

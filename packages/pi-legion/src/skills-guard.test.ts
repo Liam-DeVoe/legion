@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { LEGION_HELD_REASONS } from "@legion/contracts/legion-api";
 import {
   brokenRelativeLinks,
   brokenSkillLinks,
@@ -921,4 +922,35 @@ test("no staged skill names a step as if every issue's task ran it", () => {
       .map((phrase) => `${path.join("skills", path.relative(staged, file))}: ${phrase}`);
   });
   expect(saying).toEqual([]);
+});
+
+// The controller reads what each word of `admission.held` means, and what ends its hold, from the
+// table of its admission reference, so the table names every word of `LEGION_HELD_REASONS`, one
+// row each, in the order the daemon reads them: a word the daemon adds with no row reaches the
+// controller as a word it cannot read. The two holds an owner's plan makes are pinned by what ends
+// each, `at_work` by the holds it sends elsewhere, and the day's report by what it says of a
+// stopped task, which nothing but its architect or a person moves. This shows the text ships,
+// never that the controller follows it.
+test("the controller's held table names every word of admission.held, in the daemon's order", () => {
+  const admission = "skills/legion-controller/references/admission.md";
+  const reference = readFileSync(path.join(staged, admission.slice("skills/".length)), "utf8");
+  const [, section = ""] = reference.split("## `admission.held`: what nothing starts");
+  const words = [...section.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, word]) => word);
+  expect(words).toEqual([...LEGION_HELD_REASONS]);
+  countedOncePerFile(
+    "The last issue `heldBy` names leaving the workflow: the daemon then starts the parent's retro by itself.",
+    [admission]
+  );
+  countedOncePerFile(
+    "A later version of its plan that changes the task, which its architect gives with `register_plan`, or, on a root, a person setting that root `todo`: the daemon then starts the task at its first step.",
+    [admission]
+  );
+  countedOncePerFile(
+    "a parent held there for its children reads `children_before_retro`, a stopped task reads `task_stopped`, and any other hold reads `unclassified`",
+    [admission]
+  );
+  countedOncePerFile(
+    "An issue whose `reason` is `task_stopped` goes in the report with its `heldFrom`: nothing starts its task again but a later version of its plan from its architect or, on a root, a person's `todo`.",
+    ["skills/legion-controller/references/daily-report.md"]
+  );
 });
