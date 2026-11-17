@@ -902,14 +902,11 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil {
-			return intake.Result{}, err
-		}
 		// The completion that ends the retro carries the rating its agent gave the plan (the
 		// route took it on no other completion, api.PlanRatingContract), and a plugin before
 		// that contract sends none, so its retro writes no rating.
-		if fact.PlanRating == 0 {
-			return intake.Result{}, nil
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == 0 {
+			return intake.Result{}, err
 		}
 		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating, fact.PlanReason)
 	}
