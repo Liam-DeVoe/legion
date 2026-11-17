@@ -14,15 +14,12 @@ import (
 // answers the count that start took.
 func raise(t *testing.T, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) int64 {
 	t.Helper()
-	write, err := NewStore().RaiseStepStarts(t.Context(), tx, issue, place, func(starts int64) StepRecord {
-		return StepRecord{ID: fmt.Sprint(starts), Task: place.Task, Step: place.Place, Kind: place.Kind, Agent: agent, StartedAt: &at}
-	})
-	if err != nil {
-		t.Fatalf("RaiseStepStarts of %s %+v: %v", issue, place, err)
-	}
 	var starts int64
-	if _, err := fmt.Sscan(write.ID, &starts); err != nil {
-		t.Fatalf("the start's write names id %q, not the count raise gave it: %v", write.ID, err)
+	if _, err := NewStore().RaiseStepStarts(t.Context(), tx, issue, place, func(count int64) StepRecord {
+		starts = count
+		return StepRecord{ID: fmt.Sprint(count), Task: place.Task, Step: place.Place, Kind: place.Kind, Agent: agent, StartedAt: &at}
+	}); err != nil {
+		t.Fatalf("RaiseStepStarts of %s %+v: %v", issue, place, err)
 	}
 	return starts
 }
