@@ -184,8 +184,11 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 		refusal string
 	}
 	reads := func(member string) nulRow { return nulRow{map[string]any{member: nulText}, nulError(member, 2)} }
-	noString := nulRow{map[string]any{"note": nulText}, `json: unknown field "note"`}
-	noBody := nulRow{map[string]any{"note": nulText}, ""}
+	// unread is a body whose one member, note, no route reads: a strict decoder refuses the member
+	// before it reads the string, and a route that reads no body answers nothing about it.
+	unread := map[string]any{"note": nulText}
+	noString := nulRow{unread, `json: unknown field "note"`}
+	noBody := nulRow{unread, ""}
 	rows := map[string]nulRow{
 		"/":                    noBody,
 		"GET /legion/v1/state": noBody,
