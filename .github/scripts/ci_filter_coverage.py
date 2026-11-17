@@ -1038,12 +1038,12 @@ def reduce_line(line: str) -> tuple:
 #
 # GOPROXY is the one name go itself reads that is here. It says where a module's bytes come from,
 # never which version: the module files this check already reads decide that, and go.sum holds
-# each module's hash whichever source serves it. This check's own go commands run with
-# GOPROXY=off over an empty module cache (Go.env below), so a workflow's value never reaches
-# them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and CI_OK_EXEMPT are
-# ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file and hands them
-# to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
-# LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
+# each module's hash whichever source serves it. This check's own go commands run offline over an
+# empty module cache (go_offline.py: GOPROXY=off, GONOPROXY=none, GOENV=off), so a workflow's
+# value never reaches them either. CI_OK_SELECTED_BY, CI_OK_PULL_REQUEST_ONLY, CI_OK_ALWAYS_RUN and
+# CI_OK_EXEMPT are ci.yaml's ci-ok classes: ci-ok-report.sh reads the first three out of that file
+# and hands them to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS
+# and LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
 # time by the test it governs, so go compiles the same files with them set as without.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",

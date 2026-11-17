@@ -5399,8 +5399,9 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # Holds every filter in `changes` to every file its job reads, recomputing each Go job's closure
-  # with go list (.github/scripts/check-ci-filters.sh). go list runs with GOPROXY=off over an empty
-  # module cache, so the job needs Go but downloads no module and restores no cache.
+  # with go list (.github/scripts/check-ci-filters.sh). go list runs offline over an empty module
+  # cache (.github/scripts/go_offline.py: GOPROXY=off, GONOPROXY=none, GOENV=off), so the job needs
+  # Go but downloads no module and restores no cache.
   ci-filters:
     needs: changes
     if: needs.changes.outputs.ci_filters == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
