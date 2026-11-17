@@ -957,15 +957,19 @@ FORCED_ORDER = f"{ENVOY}/scripts/forced-order.sh"
 FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
-ENVOY_FORCED_ORDER_SERVERS = ("2.15.1", "2.10.29")
+# The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
+# to a version with no hooks fails the step), and one on 2.10.29.
+ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
 ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
-DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server v2.15.1"
+DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
 
 
 def envoy_forced_order_step(server):
-    """The envoy-go-race step that runs the forced-order tests on nats-server `server`."""
-    return f"Forced-order tests on the hooked nats-server v{server}"
+    """The envoy-go-race step that runs the forced-order tests on nats-server `server`, or, for "",
+    on the version the workspace links."""
+    return f"Forced-order tests on the hooked nats-server v{server}" if server else \
+        "Forced-order tests on the hooked nats-server the module links"
 
 
 def forced_order_run(job, step, workdir, pkgs):

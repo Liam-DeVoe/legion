@@ -398,9 +398,11 @@ holding at a dropped point fails waiting for its hold, and with `-drop server.sh
 that stops a held server fails at its own deadline, since the stop then waits for the parked
 goroutine. It fails, naming the package, when a
 package declares no `TestForcedOrder` test. `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`.
-`ci.yaml`'s `envoy-go-race` job runs it on `./internal/testnats/hooktest/` once per hooked version, and its
-`daemon-go` job runs it with `-C packages/daemon` on 2.15.1; each counts that 10 minutes in its
-time budget.
+`ci.yaml`'s `envoy-go-race` job runs it on `./internal/testnats/hooktest/` twice: with no `-server`,
+so on the version the workspace links, and with `-server 2.10.29`. Its `daemon-go` job runs it with
+`-C packages/daemon` and no `-server`. So when `go.mod` moves to a nats-server with no hooks, both
+unversioned steps fail until the hooks are ported. Each job counts the 10 minutes in its time
+budget.
 
 ## aws-moto-check.sh
 
