@@ -19,7 +19,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-1702's `c-picker-reaches-every-kind`: one picker over every kind Dispatch holds, in each
+ * The check that the picker reaches every kind Dispatch holds, in each
  * of its hosts.
  *
  * For each of the thirteen kinds the spec names the picker inserts that kind's address, the
@@ -34,7 +34,7 @@ import { asUser } from "./users";
  *
  * One of the thirteen is not the picker's to open, and says so where it is read: a person, whom
  * the picker writes as their login and whose reference opens nothing, since
- * dispatch://INFRA-1149 owns that page.
+ * Dispatch has no page for a person yet.
  *
  * The agent live conversation draws the same picker in assistant-ui's composer, where the keys
  * are assistant-ui's: there an issue's message is offered as everywhere, and each holder's parts
@@ -252,7 +252,7 @@ test("the picker reaches every kind, and each pick reads as its node's name and 
     },
     {
       kind: "person",
-      // Nothing shows a person yet (dispatch://INFRA-1149), so their reference opens nothing.
+      // Nothing shows a person yet, so their reference opens nothing.
       opens: () => "",
       query: "@dana",
       reads: `@${PERSON_LOGIN}`,

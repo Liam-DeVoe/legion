@@ -362,7 +362,7 @@ jobs:
       # says what each event gets.
       dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.dispatch_browser }}
       # The reference rows' preview (dispatch-references): every Chromium row of the eleven spec
-      # files dispatch://INFRA-1702's Verification document names, on a pull request that
+      # files the reference framework's Verification document names, on a pull request that
       # changes what they test. No `full-ci` term: the job runs on a pull request alone and
       # gates nothing, and the merge queue's full lane runs the same rows either way.
       dispatch_references: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.dispatch_references }}
@@ -4070,7 +4070,7 @@ jobs:
               - '!**/*_test.go'
               # END generated
             # The reference rows' preview (dispatch-references): the eleven spec files
-            # dispatch://INFRA-1702's Verification document names and the nine of the reading
+            # the reference framework's Verification document names and the nine of the reading
             # list's walk, which dispatch-browser.yaml's `references` lane runs on Chromium, and
             # what they test. Narrow on purpose: unlike
             # every gate's filter here it names less than its job reads (the Bun install, the
@@ -5153,7 +5153,7 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # The reference rows' preview: every Chromium row of the eleven spec files
-  # dispatch://INFRA-1702's Verification document names and the nine of the reading list's
+  # the reference framework's Verification document names and the nine of the reading list's
   # walk, through dispatch-browser.yaml's `references` lane - its binaries job, its four shard
   # legs and its merge job, and none of its
   # alone, two-process, embedder or visual jobs. The pull-request lane above runs only the few of

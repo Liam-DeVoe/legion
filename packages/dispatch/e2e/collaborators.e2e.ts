@@ -288,7 +288,7 @@ test("the mention picker offers the issue's stopped roles and sends one as a rol
   }
 });
 
-// What a stopped role's mention does once it is sent, as main does it (INFRA-1702 Q2). The
+// What a stopped role's mention does once it is sent, as main does it. The
 // reader links the role, because the issue's collaborators record it (`role-holders.ts`).
 // Delivery reads the holder alone (the Go API's `resolveDeliveryTarget`, through the Envoy
 // client's `Role`), and a stopped session holds no role, so the mention fails at once and is

@@ -4024,7 +4024,7 @@ test("the search box reads its query from the page's address and writes back to 
   }
 });
 
-// `dispatch://role/<token>` opens `/agents?role=<token>` (INFRA-1702), so the role filter lives
+// `dispatch://role/<token>` opens `/agents?role=<token>`, so the role filter lives
 // in the address as the machine filter does: that link reads as one role picked, and unticking
 // it brings the other rows back and empties the parameter.
 test("the role filter reads the page's address, so a role reference opens the sessions holding it", async () => {

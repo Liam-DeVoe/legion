@@ -1,5 +1,5 @@
 /**
- * The mention rule (INFRA-1702 R4 and R8), the one place every reader of a record and the
+ * The mention rule, the one place every reader of a record and the
  * document editor take it from. A mention of a party - an agent's session, a role or a person -
  * is a reference written into the text as a link whose words open with the mention sign and
  * whose address names the party: `[@Planner](dispatch://agent/…)`. Such a link reads as the sign

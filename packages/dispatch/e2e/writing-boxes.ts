@@ -26,7 +26,7 @@ import { sessionIds } from "./session-ids";
 
 /**
  * The one world every writing box is driven over, and the checks each box is held to
- * (INFRA-1702's `c-field-everywhere`).
+ * (the check that every box has the picker).
  *
  * The claim is about the box, not about the surface that draws it: whichever box a person
  * writes in, the same three doors open over the same rows in the same order, the same words
@@ -35,8 +35,8 @@ import { sessionIds } from "./session-ids";
  * covered box, driven from `DISPATCH_WRITING_BOXES`, so a box the list gains with no row of its
  * own, and a row for a box the list no longer holds, are both visible.
  *
- * A box whose write delivers is held to its delivery as well (INFRA-1702's
- * `c-delivery-unchanged`): the party picked in it reaches the write, and the fake Envoy listener
+ * A box whose write delivers is held to its delivery as well (the check that delivery is
+ * unchanged): the party picked in it reaches the write, and the fake Envoy listener
  * takes one frame for that party, carrying the body the box held, once the box's own send control
  * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in.
  *
@@ -233,8 +233,8 @@ const HINT_TOLD: Partial<Record<DispatchWriting, string>> = {
 /**
  * The words under a box, written out here rather than read from the list: the box reads its
  * line from its row of `DISPATCH_WRITING_BOXES`, so a row that read its words from there too
- * would pass whatever they said. These are what the reader of the box is owed (INFRA-1702's R4
- * and R5): a box that delivers says a picked agent or role is told, and a picked person is not
+ * would pass whatever they said. These are what the reader of the box is owed: a box that
+ * delivers says a picked agent or role is told, and a picked person is not
  * told and gets no link; a box that does not says a pick links and tells nobody, and says what
  * does tell, in words of its write's own; and the ask card, whose one box makes both writes,
  * says both. A suggestion's replacement promises no link: until someone accepts the suggestion,

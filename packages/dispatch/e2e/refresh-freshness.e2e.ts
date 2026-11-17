@@ -83,7 +83,7 @@ test("document panel: a new comment citing a project document shows in its open 
     const page = await alice.newPage();
     await openLive(page, `/projects/CORE/documents/${doc.artifact.slug}`);
     const panel = page.getByRole("region", { name: "Referenced by" });
-    // The excerpt reads the bare address as the document's current name (INFRA-1702 R8).
+    // The excerpt reads the bare address as the document's current name.
     await expect(panel).toContainText(`First cite of ${doc.artifact.name}.`);
 
     await createComment(issue.key, { body: `Second cite of ${reference}.` }, bob);

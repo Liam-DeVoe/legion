@@ -128,7 +128,7 @@ test("a mention of a stopped but known session is queued for it, and the listene
     const page = await alice.newPage();
     await page.goto(`/issues/${issue}/conversation`);
     const field = page.getByRole("form", { name: "Comment composer" }).getByLabel("Comment");
-    // The one picker every box opens (INFRA-1702 R2, R3) lists the live session under its
+    // The one picker every box opens lists the live session under its
     // name, and the pick writes the mention into the draft after the typed command.
     await pickReference(field, "/btw @", /^Planner/);
     await expect(field).toHaveValue(`/btw [@Planner](dispatch://agent/${planner.session_id})`);

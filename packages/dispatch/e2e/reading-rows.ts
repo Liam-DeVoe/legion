@@ -17,7 +17,7 @@ import {
 import { sessionIds } from "./session-ids";
 
 /**
- * The reading list's walk (INFRA-1702's R9 and its checks A7 and A8): each rendered row of
+ * The reading list's walk: each rendered row of
  * `DISPATCH_READING_SURFACES` has a driver, a row of a `reading-*.e2e.ts` spec titled with the
  * row's own id followed by a colon, that reaches the surface the way the row says and reads
  * there a stored text holding each form a text names a node by (`DISPATCH_READING_FORMS`): an

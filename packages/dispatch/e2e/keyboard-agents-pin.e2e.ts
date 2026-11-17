@@ -26,7 +26,7 @@ const DWELL_MS = 1_000;
 // read.
 
 /** What the issue channel seeds into Silent's draft: the mention that names the party, which is
- *  the whole record of who the comment addresses (INFRA-1702 R4). */
+ *  the whole record of who the comment addresses. */
 const silentMention = "[@Silent](dispatch://agent/silent-session)";
 
 /** `seedAgents`, plus `Quiet` and `Silent`: live sessions with no Dispatch activity, which the

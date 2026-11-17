@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the agents' world: the
+ * The reading list's walk (`e2e/reading-rows.ts`) over the agents' world: the
  * two surfaces of the Agents page that show a stored message, the two parts of a session's live
  * view that show its own turn, the header's line quoting the session's answer to a switch, and
  * the viewer's own message the live view holds while Dispatch has not made it. Each row stores

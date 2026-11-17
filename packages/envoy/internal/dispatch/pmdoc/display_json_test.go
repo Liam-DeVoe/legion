@@ -170,7 +170,7 @@ func snippetRuns(t *testing.T, tree []byte) []snippetRun {
 // words: ts_headline reads `[dispatch://CORE-1](dispatch://CORE-1)`, which is how a document
 // stores the autolink `<dispatch://CORE-1>`, as words like any other. The headlines below are
 // PostgreSQL 18's own for these sources searched for CORE with headlineOptions (measured
-// 2026-11-14, INFRA-1702). Only the words carry the highlight: the href is the address itself, so
+// 2026-11-14). Only the words carry the highlight: the href is the address itself, so
 // the browser still reads it as a reference, and the sentinels in it start and stop nothing, so
 // the words after the link stay plain.
 func TestASnippetMarksALinksWordsAndNeverItsAddress(t *testing.T) {

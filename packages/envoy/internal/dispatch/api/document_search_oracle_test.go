@@ -133,7 +133,7 @@ var mainSearchKeywordLegsSQL = mainSearchKeywordLegs(func(searchColumn string) s
 // null. The two statements whose rows can carry covers are this release's own meaning ones, and
 // they are held against this release's own page (searchQueryMeaningOverMainsDocumentArm). The
 // other is the text the headline is cut from, which the package selects beside the headline for
-// the snippet's reading (INFRA-1702, pmdoc.SearchSnippet); it is copied here as the package
+// the snippet's reading (pmdoc.SearchSnippet); it is copied here as the package
 // writes it, a lateral the headline reads too, since its value is a row's own.
 func mainSearchPageAndTailSQL(legsSource string) string {
 	return fmt.Sprintf(`page as (
