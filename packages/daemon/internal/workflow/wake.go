@@ -63,7 +63,8 @@ type Pods interface {
 	// the role is already coming back (store.PodRecords.StartQueued).
 	StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error)
 	// TakePodWake takes one wake of issue's role and answers whether this call took it; false is
-	// a wake another pass already took, which is already bringing the pod back.
+	// a wake another pass already took, which is already bringing the pod back. at is the time of
+	// the take, which the resume records as the wake's time (wakeReleased).
 	TakePodWake(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, kind string, at time.Time) (bool, error)
 	// ClosePodGoneResume closes the open resume of issue's role when the pod it was waiting for
 	// has gone away: a release of the issue recorded since that wake was taken. It answers the
@@ -183,6 +184,10 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // that start for each claim it suspended, and the claim reads `released` until the start runs
 // (store.CancelIssueRelease). The pod never went away, so a wake taken then would record a resume
 // and queue a second start for a role that needs neither.
+//
+// StartQueued is the one gate a listener's report reads before wakeReleased reads the others.
+// This reads the issue for it and hands that issue to wakeReleased, so the wake reads the issue
+// once. The report's own time (fact.At) is not the resume's time: wakeReleased records the take's.
 func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, fact intake.ListenerWake) error {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
@@ -197,7 +202,7 @@ func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released s
 			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail, "report", fact.Report)
 		return nil
 	}
-	_, err = e.wakeReleased(ctx, tx, released, kind, detail, fact.At)
+	_, err = e.wakeReleased(ctx, tx, issue, released, kind, detail)
 	return err
 }
 
@@ -250,7 +255,7 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	// The role is the settlement's to tell only when this call is what woke it: a wake another
 	// pass took is already bringing the pod back with a task of its own, and a claim this
 	// settlement did not wake is told as any live role is (tellChecks).
-	woken, err := e.wakeReleased(ctx, tx, released, pods.WakeChecks, settlementDetail(fact), e.now())
+	woken, err := e.wakeReleased(ctx, tx, issue, released, pods.WakeChecks, settlementDetail(fact))
 	if err != nil || !woken {
 		return "", err
 	}
@@ -291,15 +296,24 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
+	issue, err := e.store.Issue(ctx, tx, released.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
 	detail := fmt.Sprintf("the backstop armed for %s's %s came due", fact.Issue, fact.Role)
-	_, err = e.wakeReleased(ctx, tx, released, pods.WakeBackstop, detail, e.now())
+	_, err = e.wakeReleased(ctx, tx, issue, released, pods.WakeBackstop, detail)
 	return intake.Result{}, err
 }
 
-// wakeReleased is the one act every wake of this file performs, and the one place the gates are
-// read: the claim is still released, and its tree is live — neither the issue nor its root has
-// left the workflow and neither lingers (pods.InWorkflowNotLingering). A pod in any other state
-// is a close's to stop or an operator's to resume, never a wake's.
+// wakeReleased is the one act every wake of this file performs. issue is the issue of released,
+// which the caller read and hands in. The gates of a wake are read in two places, and both read
+// that one issue, so a wake reads the issue once:
+//   - here, for every wake: the claim the caller read is released, and its tree is live — neither
+//     the issue nor its root has left the workflow and neither lingers
+//     (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop or an
+//     operator's to resume, never a wake's;
+//   - before this, for a listener's report alone: the role is not already coming back on a start
+//     the outbox holds (listenerWakeReleased, Pods.StartQueued).
 //
 // A wake of a role whose resume is already open wakes nothing a second time: that pod is coming
 // back, and the start row of the wake that took it carries the task. A wake that takes it records
@@ -309,6 +323,14 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // committed without one is what wedges a role, which is why the outbox's own delivery wake, which
 // resumes a claim in process instead, heals a refused wake (wakeForDelivery).
 //
+// The resume's time is the take's: the engine's clock now (e.now()), for every wake. The stuck
+// warning (internal/daemon's warnStuckResumes) and the stranded report (Stranded,
+// StrandedReleaseWake) count from it, and the pod starts to come back at the take. A listener's
+// report has a time of its own (intake.ListenerWake.At). That time stays the report's: it bounds
+// how long the report waits for a release (listenerWakeInRelease), and that wait's warning names
+// it. It is never the resume's time, because a report can wait up to wakeHeldForRelease before
+// the take, and a stuck rule that counted that wait would report a pod that is still being built.
+//
 // One row would refuse a wake wrongly, and it is closed before the take rather than read out of a
 // refusal: the resume of a pod that has gone away. A release of a pod no claim of the issue can
 // use ends no wake and so closes no resume, and it still takes the pod, leaving a row that would
@@ -317,11 +339,7 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 // wake first closes a resume of this role written before the issue's newest release
 // (Pods.ClosePodGoneResume), which matches nothing while a pod is on its way back, since such a
 // resume was itself written after every release there is.
-func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, at time.Time) (bool, error) {
-	issue, err := e.store.Issue(ctx, tx, released.Issue)
-	if err != nil || issue == nil {
-		return false, err
-	}
+func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issue, released supervise.Claim, kind, detail string) (bool, error) {
 	root, err := e.store.Issue(ctx, tx, issue.Tree)
 	if err != nil || root == nil {
 		return false, err
@@ -337,7 +355,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 		e.log.Warn("wake: a pod went away under an open resume of a released role; this wake closes that resume and takes its own",
 			"issue", issue.Key, "role", released.Role, "newest_release", newest, "kind", kind, "detail", detail)
 	}
-	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, at)
+	taken, err := e.cfg.Pods.TakePodWake(ctx, tx, issue.Key, released.Role, kind, e.now())
 	if err != nil || !taken {
 		return false, err
 	}

@@ -86,8 +86,8 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// (idleRigSendDuringTheStop). The send route reported the wake at once, before the release
 	// recorded the claim as released. That report waits for the release and is applied again,
 	// and the pod comes back for it once. The listener's own report of the stored copy comes
-	// idleRigAgentWait after the send and could bring the pod back by itself, so this reads
-	// which report took the wake: the resume's time is the time of the report that took it.
+	// idleRigAgentWait after the send and could bring the pod back by itself. So this reads
+	// which report took the wake from the resume's time, which is the time of the take.
 	t.Run("AWakeDuringAHeldStopBringsThePodBackOnce", func(t *testing.T) {
 		issue := rig.issue(idleRigHeldStop)
 		session := rig.session(issue)
@@ -115,15 +115,19 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			t.Errorf("%s has the releases %+v and the resumes %+v, want one release and one %s resume recorded against it",
 				issue.key, releases, resumes, pods.WakeAgentMessage)
 		}
-		// The send route's report took the wake: the resume's time is the report's own
-		// (store.TakePodWake records the wake's time), within seconds of the send. A daemon that
-		// dropped that report would leave the wake to the listener's own report, whose time is
-		// idleRigAgentWait after the send.
+		// The send route's report took the wake after it waited for the release. The resume's
+		// time is the take's (workflow's wakeReleased), not the report's own. The report was made
+		// within idleRigSendReportLag of the send, and the take came at least one retry later.
+		// The take came before the listener's own report of the stored copy existed: the
+		// listener makes that report no sooner than idleRigAgentWait after the send. A daemon
+		// that dropped the send route's report would leave the wake to that later report. The
+		// record keeps whole seconds, so the take is up to one second after the time it reads.
 		for _, resume := range resumes {
 			at, err := time.Parse(time.RFC3339, resume.At)
-			if err != nil || at.Before(heldSent.Truncate(time.Second)) || at.After(heldSent.Add(idleRigSendReportLag)) {
-				t.Errorf("%s's resume was taken by a wake of %q, want one within %s after the send at %s: the send route's report, applied again once the release recorded the claim",
-					issue.key, resume.At, idleRigSendReportLag, heldSent.UTC().Format(time.RFC3339))
+			after, before := heldSent.Add(idleRigSendReportLag), heldSent.Add(idleRigAgentWait)
+			if err != nil || !at.After(after) || at.Add(time.Second).After(before) {
+				t.Errorf("%s's resume was taken at %q, want a take after %s and before %s: the send route's report, taken after its wait for the release and before the listener's own report",
+					issue.key, resume.At, after.UTC().Format(time.RFC3339), before.UTC().Format(time.RFC3339))
 			}
 		}
 		// The listener stored the message when it was sent, and the woken session's new
@@ -703,7 +707,9 @@ func idleRigStoredForGone(t *testing.T, status int, body string) {
 const idleRigStopDelay = 40 * time.Second
 
 // idleRigSendReportLag bounds the time of the send route's wake report after the send: the
-// listener reports it off the send's answer. The listener's own report of the stored copy comes
+// listener reports it off the send's answer. The daemon takes that report only after it waited
+// for the release, at least one 30-second retry later. A resume time inside this bound is the
+// report's own time, not the take's. The listener's own report of the stored copy comes
 // idleRigAgentWait after the send, far outside it.
 const idleRigSendReportLag = 10 * time.Second
 

@@ -32,7 +32,7 @@ type PodRelease struct {
 }
 
 // PodResume is one wake of a released pod and what it cost: which wake brought it back, when the
-// wake reached the daemon, when the pod was Ready, and when the woken role took its first turn.
+// daemon took the wake, when the pod was Ready, and when the woken role took its first turn.
 // Stuck is a resume with no first turn ten minutes after its wake, which also writes a warning to
 // the daemon's log.
 type PodResume struct {
@@ -46,7 +46,8 @@ type PodResume struct {
 	// Kind names the wake: a daemon delivery, a CI settlement, a role message, an agent message
 	// or the backstop.
 	Kind string
-	// At is when the wake reached the daemon or the Envoy listener.
+	// At is when the daemon took the wake, by the daemon's clock. A listener's report can wait
+	// for a release before it is taken, and At is the take, not the report's own time.
 	At time.Time
 	// PodReadyAt and FirstTurnAt are zero until each is observed.
 	PodReadyAt  time.Time

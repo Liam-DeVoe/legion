@@ -100,7 +100,9 @@ func loggedLines(rig wakeRig, level, message string) []string {
 // R3: a wake report that comes while a release has stopped the role's process and has not yet
 // recorded the claim as released is applied again every 30 seconds until the release ends, for
 // at most 15 minutes after the report. A cancelled release's queued start brings the role back
-// with no wake of its own, and a wake for a claim in no release is applied once.
+// with no wake of its own, and a wake for a claim in no release is applied once. A wake taken
+// minutes after its report records the take's time as the resume's time, so the stuck rule does
+// not count the wait.
 func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -242,6 +244,50 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		}
 		if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
 			t.Fatalf("pod resumes = %v, want none for a live claim", resumes)
+		}
+	})
+
+	t.Run("(j) a wake taken minutes after its report counts its resume from the take", func(t *testing.T) {
+		rig := newWakeRig(t)
+		st := releaseStore(t, rig.pool)
+		ctx := context.Background()
+		project := wakeProjectToken(t)
+		setClaimState(t, rig.pool, claim.RoleImplementer, "idle", "")
+		boundary := markRelease(t, st)
+
+		// The report was made 9 minutes and 30 seconds before the engine's clock (wakeAt), and
+		// it waited for the release in that time.
+		report := wakeAt.Add(-(9*time.Minute + 30*time.Second))
+		fact := intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: report, Report: "report-agent"}
+		var later *intake.RetryLater
+		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
+			t.Fatalf("applying the wake during the release = %v, want a retry: the release has not recorded the claim", err)
+		}
+		setClaimState(t, rig.pool, claim.RoleImplementer, "suspended", "released")
+		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", claim.RoleImplementer, boundary); err != nil {
+			t.Fatalf("record the claim the release suspended: %v", err)
+		}
+		if err := applyWake(rig, "wake", fact); err != nil {
+			t.Fatalf("applying the redelivered wake = %v, want it applied", err)
+		}
+		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeAgentMessage, "session-implementer")
+
+		var at time.Time
+		if err := rig.pool.QueryRow(ctx, `select at from pod_resumes where issue = 'LEGION-208'`).Scan(&at); err != nil {
+			t.Fatalf("read the resume's time: %v", err)
+		}
+		if !at.Equal(wakeAt) {
+			t.Fatalf("the resume's time = %s, want the take's time %s, not the report's time %s",
+				at.UTC().Format(time.RFC3339), wakeAt.Format(time.RFC3339), report.Format(time.RFC3339))
+		}
+		// A stuck pass at a moment reads each resume taken StrandedReleaseWake or more before that
+		// moment (internal/daemon's warnStuckResumes). One minute after the take, the pod is still
+		// being built, so the resume is not stuck. Counted from the report, it would be stuck.
+		if stuck, err := st.StuckPodResumes(ctx, project, wakeAt.Add(time.Minute-StrandedReleaseWake)); err != nil || len(stuck) != 0 {
+			t.Fatalf("the stuck resumes one minute after the take = %+v, %v; want none: the wait for the release is not the pod's", stuck, err)
+		}
+		if stuck, err := st.StuckPodResumes(ctx, project, wakeAt); err != nil || len(stuck) != 1 {
+			t.Fatalf("the stuck resumes %s after the take = %+v, %v; want the one resume", StrandedReleaseWake, stuck, err)
 		}
 	})
 }
