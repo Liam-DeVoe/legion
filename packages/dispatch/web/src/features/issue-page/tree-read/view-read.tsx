@@ -5,7 +5,7 @@ import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import { focusOnDocument } from "../../shell/roving";
 import { bringOnScreen } from "../identity-block";
-import { ANSWER_LINES, type Preset } from "../page-words";
+import { ANSWER_LINES, CONTROL_LABELS, type Preset } from "../page-words";
 import {
   dropViews,
   subscribeTreeFreshness,
@@ -74,14 +74,18 @@ export function ViewReadProvider({
  * TanStack gives up a read in flight for a new one only where the query holds an answer, so the
  * press joins the read out and sends none. Refused again, the line stays as it was, the focus
  * with it. Answered, the line goes in the render that draws the outline's rows from the answer,
- * and a focus that was in it goes to the row that holds the tree's tab stop, never to the
- * page's body.
+ * and a focus that was in it goes to the row that holds the tree's tab stop. Where the answer
+ * draws no row - an issue that holds nothing yet - it goes to the outline's tree itself, which
+ * takes it while it holds it, as the Plan view's empty tree does, and hands it on to the row
+ * that holds the tab stop once one is drawn; never to the page's body.
  */
 export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
   const { failed, refetch } = useTreeRead(issue);
   // The box the line stood in, which holds the outline's tree (`slots/body.tsx`), once the line
   // left the page with the focus in it, until a row of the tree takes that focus.
   const fellIn = useRef<HTMLElement | null>(null);
+  // The outline's tree, while it holds that focus for want of a row (`holdFocus`).
+  const holding = useRef<HTMLElement | null>(null);
   // One function for every render, so React runs its cleanup only when the line leaves the
   // page; it runs before the line is taken off the page, while the focus is still in it.
   const keepsFocus = useCallback((line: HTMLDivElement | null) => {
@@ -92,23 +96,27 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
     };
   }, []);
   // After every render, since the outline draws its rows in a render of the body, which draws
-  // this line too. A focus that fell from the line goes to the tree's tab-stop row, at once and
-  // without scrolling, and the row is brought on screen in the next frame (`bringOnScreen`)
-  // where it still holds the focus. A focus something else took in the meantime stays there.
+  // this line too. A focus that fell from the line goes to the tree's tab-stop row, else to the
+  // tree itself, and from the tree to that row once one is drawn. A focus something else took in
+  // the meantime stays there: anywhere but the page's body before the tree took it, anywhere but
+  // the tree after.
   useLayoutEffect(() => {
     const box = fellIn.current;
     if (box === null) return;
-    if (!focusOnDocument()) {
+    const held = holding.current;
+    if (held === null ? !focusOnDocument() : document.activeElement !== held) {
       fellIn.current = null;
+      holding.current = null;
       return;
     }
     const row = box.querySelector<HTMLElement>(TAB_STOP_ROW);
-    if (row === null) return;
+    if (row === null) {
+      holding.current ??= holdFocus(box.querySelector<HTMLElement>(OUTLINE_TREE));
+      return;
+    }
     fellIn.current = null;
-    row.focus({ preventScroll: true });
-    requestAnimationFrame(() => {
-      if (document.activeElement === row) bringOnScreen(row);
-    });
+    holding.current = null;
+    focusOn(row);
   });
   return failed ? (
     <div data-tree-unreadable="" ref={keepsFocus}>
@@ -121,3 +129,29 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  *  (`slots/stage.tsx`'s `TAB_STOP_ROW`), which this file cannot import, since the stage imports
  *  this file. */
 const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
+
+/** The outline's tree itself (`IssueTree.tsx`), by its name. */
+const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;
+
+/** Puts the focus on `to` at once and without scrolling, and brings it on screen in the next
+ *  frame (`bringOnScreen`) where it still holds the focus. */
+function focusOn(to: HTMLElement): void {
+  to.focus({ preventScroll: true });
+  requestAnimationFrame(() => {
+    if (document.activeElement === to) bringOnScreen(to);
+  });
+}
+
+/** Puts the focus on the outline's tree, which takes none of its own (`IssueTree.tsx`): it takes
+ *  it while it holds it, as the Plan view's empty tree does (`PlanFilterBody.tsx`), and no more
+ *  once the focus leaves it, so Tab never stops on it beside its rows. Answers the tree, or null
+ *  where none is drawn. */
+function holdFocus(tree: HTMLElement | null): HTMLElement | null {
+  if (tree === null) return null;
+  if (!tree.hasAttribute("tabindex")) {
+    tree.tabIndex = -1;
+    tree.addEventListener("blur", () => tree.removeAttribute("tabindex"), { once: true });
+  }
+  focusOn(tree);
+  return tree;
+}

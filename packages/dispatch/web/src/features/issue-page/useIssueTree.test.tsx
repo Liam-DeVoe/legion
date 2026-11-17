@@ -1,6 +1,13 @@
 import { expect, jest, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
-import { focusManager, QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  focusManager,
+  MutationObserver,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -8,11 +15,16 @@ import { MemoryRouter } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
 import { liveSocketFor } from "../../api/live-socket";
 import { issueCoverageQuery, issueQuery } from "../../api/queries";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "../../api/query-client";
-import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
+import {
+  MIN_REFETCH_INTERVAL_MS,
+  refreshQueries,
+  trackQueryFetches,
+} from "../../api/query-refresh";
 import type {
   Artifact,
   Comment,
@@ -25,7 +37,7 @@ import type {
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import type { TreeNode } from "./issue-tree";
-import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
+import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
 import {
   ReferenceNamesProvider,
@@ -2755,6 +2767,690 @@ test("a write that lands while the coverage read is invalid already reads the tr
       await Bun.sleep(1_500);
     });
     expect(treeReadsOf() - before, "one tree read for the write").toBe(1);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A tree read refused, its retries spent, stays refused while the live feed is up, until the
+// reader's Retry, an event of the issue or the feed coming back. A surface that starts reading the
+// tree afterwards - a filter pressed, which draws its slot, or any slot drawn again - is none of
+// those, so it reads nothing of its own, and the read stays refused, so the failed line stays.
+test("a surface that starts reading a refused tree read sends no read while the live feed is up", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  // The app's client (`main.tsx`): its retries and their waits.
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
+  jest.useFakeTimers();
+  const feed = liveFeedOn(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await tick(2_000, 250);
+    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
+
+    const later = renderHook(() => useIssueTree(issue), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    let pendingAt = 0;
+    for (let step = 0; step < 12; step += 1) {
+      await tick(250, 250);
+      if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+    }
+    expect(treeReadsOf(), "a surface that starts reading the tree reads nothing of its own").toBe(
+      3
+    );
+    expect(pendingAt, "the read stays refused, so the failed line stays drawn").toBe(0);
+    later.unmount();
+    view.unmount();
+  } finally {
+    realClock();
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A keyboard reader presses Retry on the line of a refused tree read, and the read answers an
+// issue that holds nothing yet: the line goes, and the outline draws its line for an empty issue
+// and no row, so there is no tab-stop row to hand the focus to. The focus still goes somewhere
+// the reader can act from, never to the page's body.
+test("a Retry whose tree read answers an issue that holds nothing keeps the focus off the page's body", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const empty: IssueDetails = { ...issue, artifacts: [], plan_artifact_id: "" };
+  const nothing: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode(KEY, "issue", { parent: null })],
+  };
+  const again = Promise.withResolvers<TreeAnswer>();
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return again.promise;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={empty} route={route}>
+              <BodySlot issue={empty} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(empty), { wrapper });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(reads).toBe(2));
+
+    await act(async () => {
+      again.resolve(nothing);
+    });
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    expect(failedTreeLine(), "no failed line once the read holds data").toBeNull();
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    const focused = document.activeElement;
+    expect(
+      focused !== null && focused !== document.body && focused.isConnected,
+      "the focus stays off the page's body once the read answers an empty issue"
+    ).toBe(true);
+    view.unmount();
+  } finally {
+    again.resolve(nothing);
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A refresh asks for the decisions read, and the app's scheduler holds that read back, since it
+// begins one read of a query at most once a second. While it is held back the reader's Keep
+// lands with no answer of its own: it invalidates the decisions read, which is invalid already,
+// so the cache reports nothing, and the decisions read that then begins is the Keep's sign. That
+// read is the Keep's, not the refresh's own, so its answer reads the tree again and the tree
+// draws what the server holds after the Keep.
+test("a Keep while the refresh's decisions read is held back reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let written: Comment[] = [];
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  let kept = false;
+  (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => ({
+    decisions: [],
+    document: kept ? "kept" : null,
+    open_questions: [],
+  }));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The app's event feed starts the scheduler's record of each read's start at once, so its
+  // one-a-second rule holds from the load on.
+  trackQueryFetches(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    // A read of the decisions alone, as a surface drawn past the app's 30 s age makes one: it
+    // answers what the decisions held, so it reads the tree no more.
+    await act(async () => {
+      await client.refetchQueries({ exact: true, queryKey: ["decisions", KEY] });
+    });
+    const decisionReads = (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mock.calls
+      .length;
+    // A comment event 200 ms on: the refresh reads the tree and asks for the decisions, which
+    // the scheduler holds back to a second after their last read began.
+    await act(async () => {
+      await Bun.sleep(200);
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(150);
+    });
+    expect(
+      client.getQueryState(["decisions", KEY])?.isInvalidated,
+      "the refresh's decisions read is owed"
+    ).toBe(true);
+    expect(
+      (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mock.calls.length,
+      "and held back"
+    ).toBe(decisionReads);
+
+    // The reader's Keep lands with no answer: Dispatch holds it, and its tree answers the reply.
+    kept = true;
+    written = [comment];
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: ["decisions", KEY] });
+    });
+    await act(async () => {
+      await Bun.sleep(2_500);
+    });
+    expect(holdsComment(view.result.current), "the tree read after the Keep is drawn").toBe(true);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A tree read refused, its retries spent, while the live feed is up, and then the browser says
+// the network is back while the feed's socket never went: no event, no Retry and no feed coming
+// back, so the tree is read no more and stays refused, and its failed line stays drawn.
+test("the network said to be back while the live feed stays up reads a refused tree no more", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  // The app's client (`main.tsx`): its retries and their waits.
+  const client = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: queryRetry, retryDelay: queryRetryDelay } },
+  });
+  jest.useFakeTimers();
+  const feed = liveFeedOn(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client) });
+    await tick(2_000, 250);
+    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    expect(treeReadsOf(), "the load's read and its two retries").toBe(3);
+
+    act(() => {
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true);
+    });
+    let pendingAt = 0;
+    for (let step = 0; step < 12; step += 1) {
+      await tick(250, 250);
+      if (client.getQueryState(issueTreeKey(KEY))?.status !== "error") pendingAt += 1;
+    }
+    expect(treeReadsOf(), "the network's word reads nothing").toBe(3);
+    expect(pendingAt, "the read stays refused, so the failed line stays drawn").toBe(0);
+    view.unmount();
+  } finally {
+    onlineManager.setOnline(true);
+    realClock();
+    feed.end();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A tree read refused, and the reader leaves the issue. Coming back with nothing changed reads
+// the tree no more: a stage drawn again is no sign that the read would answer now. An event of
+// the issue while the reader is away marks the issue's reads stale, which nothing draws then;
+// the stage reads them again once the reader comes back, and what they answer reads the tree,
+// so the outline draws what it answers.
+test("an event while the reader is away from a refused tree reads it once the reader comes back", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new Error("the tree read was refused")
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue), { wrapper });
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    first.unmount();
+
+    const visit = renderHook(() => useIssueTree(issue), { wrapper });
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+    expect(treeReadsOf(), "a stage drawn again reads a refused tree no more").toBe(1);
+    expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error");
+    visit.unmount();
+
+    // Away: a reply and its event, and Dispatch now answers the tree.
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    (api.listComments as Mock<typeof api.listComments>).mockResolvedValue([comment]);
+    act(() => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+    });
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect(treeReadsOf(), "no tree read while nothing draws the tree").toBe(1);
+
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(
+      () => expect(holdsComment(back.result.current), "the reply is a row").toBe(true),
+      {
+        timeout: 3_000,
+      }
+    );
+    expect(treeReadsOf(), "one read for the event").toBe(2);
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A Retry's read answers an issue that holds nothing yet, so the outline's tree, which draws no
+// row, takes the focus from the line that left. The tree holds it only while it has no row to
+// give it to: once a read draws one - an event's, here - the focus goes on to the row that holds
+// the tree's tab stop, and the tree is no stop of Tab beside its rows.
+test("the outline's tree that took the focus for want of a row hands it to the first row drawn", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const empty: IssueDetails = { ...issue, artifacts: [], plan_artifact_id: "" };
+  const only = (nodes: readonly TreeAnswerNode[]): TreeAnswer => ({
+    ...treeAnswer([]),
+    nodes: [answerNode(KEY, "issue", { parent: null }), ...nodes],
+  });
+  const reply = answerNode(comment.id, "comment", {
+    author: comment.author,
+    made_at: comment.created_at,
+    text: comment.body,
+  });
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return only(reads === 2 ? [] : [reply]);
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={empty} route={route}>
+              <BodySlot issue={empty} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(empty), { wrapper });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    const tree = document.body.querySelector<HTMLElement>(
+      `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`
+    );
+    expect(tree, "the outline draws its tree").not.toBeNull();
+    expect(document.activeElement, "the outline's tree holds the focus").toBe(tree);
+
+    await act(async () => {
+      await Bun.sleep(MIN_REFETCH_INTERVAL_MS + 100);
+    });
+    act(() => {
+      refreshQueries(client, [{ exact: true, queryKey: issueTreeKey(KEY) }]);
+    });
+    await waitFor(() => expect(holdsComment(view.result.current.root)).toBe(true));
+    const row = await waitFor(() => {
+      const found = tree?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');
+      if (found == null) throw new Error("the outline drew no row for the reply");
+      return found;
+    });
+    await waitFor(() =>
+      expect(document.activeElement, "the row that holds the tab stop takes the focus").toBe(row)
+    );
+    expect(tree?.hasAttribute("tabindex"), "the tree is no stop of Tab beside its rows").toBe(
+      false
+    );
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A refresh asks for the decisions read while the scheduler would hold it back, and the reader
+// leaves before it is asked. Away, an event of the decisions refreshes them, which raises
+// nothing, since they are marked stale already, and Dispatch's tree changes. Back on the issue,
+// the decisions read the stage sends is the one sign of that change: it is no read of the
+// refresh's own, so its answer reads the tree again.
+test("back on the issue, the decisions read made for an event while away reads the tree again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  let written: Comment[] = [];
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+    treeAnswer(written)
+  );
+  let changed = false;
+  (api.getIssueDecisions as Mock<typeof api.getIssueDecisions>).mockImplementation(async () => ({
+    decisions: [],
+    document: changed ? "changed" : null,
+    open_questions: [],
+  }));
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  trackQueryFetches(client);
+  const wrapper = stageWrapper(client);
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    await act(async () => {
+      await Bun.sleep(1_100);
+      // A read of the decisions alone, as a surface drawn past the app's 30 s age makes one.
+      await client.refetchQueries({ exact: true, queryKey: ["decisions", KEY] });
+      await Bun.sleep(200);
+      // A comment event: the refresh reads the tree and asks for the decisions, held back.
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(150);
+    });
+    expect(client.getQueryState(["decisions", KEY])?.isInvalidated).toBe(true);
+    first.unmount();
+    await act(async () => {
+      await Bun.sleep(1_200);
+    });
+
+    changed = true;
+    written = [comment];
+    act(() => {
+      refreshQueries(client, [{ exact: true, queryKey: ["decisions", KEY] }]);
+    });
+    const back = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(
+      () => expect(holdsComment(back.result.current), "the tree read again is drawn").toBe(true),
+      { timeout: 3_000 }
+    );
+    back.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// The margin's resolve of a comment (`useMarginItems.ts`): its `onMutate` writes the resolve
+// into the comments read before Dispatch holds it, its `onSuccess` invalidates the comments and
+// the issue once Dispatch answers, and the resolve's event refreshes the comments 150 ms later,
+// as the live feed's rule does. With the feed up its event says what changed, so the write put
+// in the cache reads nothing of its own: the resolve reads the tree for its answer and for its
+// event, twice at most, and the tree read ends holding the resolve.
+for (const latency of [200, 1_200]) {
+  test(`a resolve from the margin answered in ${latency} ms reads the tree at most twice with its event, and ends holding it`, async () => {
+    const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+    // What Dispatch holds of the comment: resolved once it takes the write.
+    let held: Comment = comment;
+    (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () =>
+      treeAnswer([], {
+        nodes: [
+          answerNode(held.id, "comment", {
+            author: held.author,
+            made_at: held.created_at,
+            state: held.resolved ? "settled" : "live",
+            text: held.body,
+          }),
+        ],
+      })
+    );
+    const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    trackQueryFetches(client);
+    const feed = liveFeedOn(client);
+    try {
+      const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+      await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
+      await act(async () => {
+        await Bun.sleep(1_100);
+      });
+      const before = treeReadsOf();
+
+      const resolve = new MutationObserver(client, {
+        mutationFn: async () => {
+          held = { ...comment, resolved: true };
+          await Bun.sleep(latency);
+        },
+        onMutate: async () => {
+          await client.cancelQueries({ queryKey: ["comments", KEY] });
+          client.setQueryData<Comment[]>(["comments", KEY], (current) =>
+            current?.map((one) => ({ ...one, resolved: true }))
+          );
+        },
+        onSuccess: () => {
+          void client.invalidateQueries({ queryKey: ["comments", KEY] });
+          void client.invalidateQueries({ queryKey: ["issue", KEY] });
+        },
+      });
+      await act(async () => {
+        await resolve.mutate();
+      });
+      await act(async () => {
+        await Bun.sleep(150);
+        refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+        await Bun.sleep(3_000);
+      });
+      const sent = treeReadsOf() - before;
+      expect(sent, "the resolve's own read").toBeGreaterThanOrEqual(1);
+      expect(sent, "and one more for its event at most").toBeLessThanOrEqual(2);
+      expect(
+        client
+          .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+          ?.nodes.find((node) => node.id === comment.id)?.state,
+        "the tree read holds the resolve"
+      ).toBe("settled");
+      view.unmount();
+    } finally {
+      feed.end();
+      for (const stub of stubs) stub.mockRestore();
+      client.clear();
+    }
+  });
+}
+
+// The same resolve with the live feed down, so no event comes: the write the page put in the
+// cache is a sign of its own then, and reads the tree once before Dispatch answers; the answer's
+// invalidation reads it once more, and the tree read ends holding the resolve.
+test("a resolve from the margin with the live feed down reads the tree once for the write it put in the cache, and ends holding it", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  // What Dispatch holds of the comment: resolved once it takes the write.
+  let held: Comment = comment;
+  // Whether Dispatch has answered the resolve, as each tree read begins.
+  let answered = false;
+  const readsAnswered: boolean[] = [];
+  (api.listComments as Mock<typeof api.listComments>).mockImplementation(async () => [held]);
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    readsAnswered.push(answered);
+    return treeAnswer([], {
+      nodes: [
+        answerNode(held.id, "comment", {
+          author: held.author,
+          made_at: held.created_at,
+          state: held.resolved ? "settled" : "live",
+          text: held.body,
+        }),
+      ],
+    });
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  trackQueryFetches(client);
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper: stageWrapper(client) });
+    await waitFor(() => expect(holdsComment(view.result.current)).toBe(true));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = readsAnswered.length;
+
+    const resolve = new MutationObserver(client, {
+      mutationFn: async () => {
+        held = { ...comment, resolved: true };
+        await Bun.sleep(200);
+        answered = true;
+      },
+      onMutate: async () => {
+        await client.cancelQueries({ queryKey: ["comments", KEY] });
+        client.setQueryData<Comment[]>(["comments", KEY], (current) =>
+          current?.map((one) => ({ ...one, resolved: true }))
+        );
+      },
+      onSuccess: () => {
+        void client.invalidateQueries({ queryKey: ["comments", KEY] });
+        void client.invalidateQueries({ queryKey: ["issue", KEY] });
+      },
+    });
+    await act(async () => {
+      await resolve.mutate();
+    });
+    await act(async () => {
+      await Bun.sleep(3_000);
+    });
+    const sent = readsAnswered.slice(before);
+    expect(
+      sent.filter((read) => !read).length,
+      "the write put in the cache reads the tree once before Dispatch answers"
+    ).toBe(1);
+    expect(sent.length, "and the answer once more at most").toBeLessThanOrEqual(2);
+    expect(
+      client
+        .getQueryData<TreeAnswer>(issueTreeKey(KEY))
+        ?.nodes.find((node) => node.id === comment.id)?.state,
+      "the tree read holds the resolve"
+    ).toBe("settled");
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+/** The shell's event feed, as the app mounts it beside every page. */
+function ShellEventFeed(): null {
+  useEventFeed();
+  return null;
+}
+
+// A tree read refused, its retries spent, is read again when the live feed comes back. The
+// page's socket is restarted under it, and Dispatch starts the feed again on the next socket
+// with every event of the gap replayed, none of them of this issue: that is still the feed
+// coming back, so the refused read is asked again, or the outline stays on its failed line until
+// the reader presses Retry.
+test("a refused tree read is read again when the live feed comes back with its gap replayed whole", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: NO_ROUTE_ROLLING_RELEASE_MESSAGE })
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const sockets = installFakeLiveSockets();
+  // Signed in at event head 1, as the app's sign-in gate holds it before the page.
+  client.setQueryData(["whoami"], { event_head: "1", kind: "user", login: "alice" });
+  const startFeed = (): void => {
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    act(() => socket.receive({ type: "events_start", sub, since: "1", replay_complete: true }));
+  };
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ShellEventFeed />
+      <ViewReadProvider issue={issue} preset="conversation">
+        {children}
+      </ViewReadProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    startFeed();
+    await waitFor(() => expect(client.getQueryState(issueTreeKey(KEY))?.status).toBe("error"));
+    await act(async () => {
+      await Bun.sleep(1_100);
+    });
+    const before = treeReadsOf();
+
+    act(() => sockets.latest().restart());
+    await act(async () => {
+      await Bun.sleep(200);
+    });
+    expect(sockets.sockets.length, "the page opened its next socket").toBe(2);
+    startFeed();
+    await act(async () => {
+      await Bun.sleep(1_500);
+    });
+    expect(
+      treeReadsOf() - before,
+      "the feed coming back reads the refused tree again"
+    ).toBeGreaterThanOrEqual(1);
+    view.unmount();
+  } finally {
+    liveSocketFor(client).close();
+    sockets.restore();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
+
+// A Retry answered with an issue that holds nothing puts the focus on the outline's tree, which
+// is focusable only while it holds the focus. The reader then switches to another window and
+// back: the browser blurs the tree as the window goes and focuses it again as it comes back,
+// while the tree stays the page's focused element. That blur is no focus leaving the tree, so
+// the tree stays focusable; a browser moves the focus to the body as soon as the focused element
+// stops being focusable, which would leave the reader there on coming back.
+test("a window switch while the outline's tree holds the focus leaves it there and focusable", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const empty: IssueDetails = { ...issue, artifacts: [], plan_artifact_id: "" };
+  const nothing: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode(KEY, "issue", { parent: null })],
+  };
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return nothing;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={empty} route={route}>
+              <BodySlot issue={empty} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(empty), { wrapper });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    const tree = document.body.querySelector<HTMLElement>('[role="tree"]');
+    expect(document.activeElement, "the answer puts the focus on the outline's tree").toBe(tree);
+
+    act(() => {
+      tree?.dispatchEvent(new FocusEvent("blur"));
+      window.dispatchEvent(new FocusEvent("blur"));
+    });
+    act(() => {
+      window.dispatchEvent(new FocusEvent("focus"));
+      tree?.dispatchEvent(new FocusEvent("focus"));
+    });
+    expect(
+      {
+        focused: document.activeElement === tree,
+        focusable: tree?.getAttribute("tabindex") ?? null,
+      },
+      "the tree still holds the focus after the window switch, and can"
+    ).toEqual({ focusable: "-1", focused: true });
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
