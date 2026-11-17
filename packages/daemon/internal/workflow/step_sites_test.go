@@ -619,6 +619,48 @@ func TestAPersonsMoveToDoneEndsTheRunningStep(t *testing.T) {
 	assertEnd(t, writes[0], "step", 4, 3, "stopped", nil)
 }
 
+// A tree the operator holds runs no phase of the workflow, so its root's departure writes no step
+// record and counts no start, for the root or for its member, though the root's record carries a
+// phase, as a root taken back with its run does while it waits for its slot. The same departure of
+// a tree the workflow holds stops each one's step (leave, beginLinger).
+func TestAnOperatorsTreeLeavesNoStepRecord(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		operator bool
+	}{{"the workflow's tree", false}, {"the operator's tree", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			root := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+				Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+			seedIssue(t, pool, root)
+			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
+			if tc.operator {
+				seedOperatorTree(t, pool, root.Tree)
+			} else {
+				seedTreeLifecycle(t, pool, root.Tree)
+			}
+			applyFacts(t, pool, stepEngine(nil))("backlog", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+				Status: "backlog", Title: "root", Rank: "U"})
+			var counted int
+			if err := pool.QueryRow(t.Context(), `select count(*) from step_starts`).Scan(&counted); err != nil {
+				t.Fatalf("count the step_starts rows: %v", err)
+			}
+			rootWrites, childWrites := stepWrites(t, pool, root.Key), stepWrites(t, pool, "LEGION-209")
+			if tc.operator {
+				if len(rootWrites) != 0 || len(childWrites) != 0 || counted != 0 {
+					t.Fatalf("the operator's tree left with step rows %+v and %+v and %d step_starts rows, want none", rootWrites, childWrites, counted)
+				}
+				return
+			}
+			if len(rootWrites) != 1 || len(childWrites) != 1 || counted != 2 {
+				t.Fatalf("the workflow's tree left with step rows %+v and %+v and %d step_starts rows, want one end each", rootWrites, childWrites, counted)
+			}
+			assertEnd(t, rootWrites[0], "step", 2, 2, "stopped", nil)
+			assertEnd(t, childWrites[0], "step", 3, 3, "stopped", nil)
+		})
+	}
+}
+
 // A child set back to todo opens its next run; the step of the run it leaves is stopped, and the
 // new run, at admitted, runs none yet.
 func TestAReenteredChildEndsItsOldRun(t *testing.T) {
