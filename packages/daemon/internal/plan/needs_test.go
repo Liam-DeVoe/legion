@@ -71,6 +71,8 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 				{Task: "d", Reason: "task d needs y, which names no task of this plan."},
 				{Task: "d", Reason: "task d needs x, which names no task of this plan."},
 			}},
+		{name: "a word written twice", plan: planOf(t, 1, taskNeeding("a"), taskNeeding("d", "x", "x")),
+			want: []Refusal{{Task: "d", Reason: "task d needs x, which names no task of this plan."}}},
 		{name: "the spec's example A to E", plan: exampleAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

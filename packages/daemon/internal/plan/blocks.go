@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode/utf8"
 )
 
 // The two types of block a plan holds. Every other block of the document is its prose.
@@ -94,9 +93,9 @@ func resolveNeeds(p Plan) Plan {
 		words := task.Needs
 		task.Needs, task.Unresolved = nil, nil
 		for _, word := range words {
-			id, ok := neededID(word)
+			id := neededID(word)
 			switch {
-			case !ok || !ids[id]:
+			case !ids[id]:
 				if !slices.Contains(task.Unresolved, word) {
 					task.Unresolved = append(task.Unresolved, word)
 				}
@@ -117,22 +116,23 @@ var pin = regexp.MustCompile(`^v[1-9][0-9]*$`)
 // read as Dispatch reads a block reference's fragment (EncodeBlockID and blockID in
 // packages/envoy/internal/dispatch/text): an `@` is only ever a pin, which names a version of the
 // document and no other block, and the rest is percent-decoded. A word with no `#b-` is the id
-// itself. It is false for a fragment that names no block: an empty id, a malformed pin, or an
-// escape that does not decode to UTF-8.
-func neededID(word string) (string, bool) {
+// itself. It is "" for a fragment with a malformed pin or an escape that does not decode, an id no
+// task has: FromBlocks refuses a block with none.
+func neededID(word string) string {
 	at := strings.LastIndex(word, "#b-")
 	if at < 0 {
-		return word, true
+		return word
 	}
 	encoded := word[at+len("#b-"):]
 	if unpinned, version, pinned := strings.Cut(encoded, "@"); pinned {
 		if !pin.MatchString(version) {
-			return "", false
+			return ""
 		}
 		encoded = unpinned
 	}
-	id, err := url.PathUnescape(encoded)
-	return id, err == nil && id != "" && utf8.ValidString(id)
+	// url.PathUnescape answers "" with its error, for an escape that does not decode.
+	id, _ := url.PathUnescape(encoded)
+	return id
 }
 
 // ChangedTasks is the ids of the tasks next changes against held, in the order of their ids: each
