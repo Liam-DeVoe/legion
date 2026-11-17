@@ -7,6 +7,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
@@ -579,6 +580,13 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
@@ -891,12 +899,13 @@ ${keep}
 // renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
 // `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
 // map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
-// string enum.
+// string enum. `default` is the value a field holds where the manifest names none.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
   $ref?: string;
   const?: string;
+  default?: unknown;
   enum?: string[];
   items?: BlockProp;
   anyOf?: BlockProp[];
@@ -952,7 +961,9 @@ function blockGoType(prop: BlockProp): string {
     case "integer":
       return "int";
     case "boolean":
-      return "bool";
+      // A flag true by default is held as a pointer: an absent one then reads as its default,
+      // and a false one is written back rather than dropped as the zero value `omitempty` drops.
+      return prop.default === true ? "*bool" : "bool";
     case "array":
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;

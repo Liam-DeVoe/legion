@@ -34,7 +34,7 @@ func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testi
 	for index, age := range ages {
 		// A document whose live text is ahead of its version is skipped and left owed, so one
 		// tick reads this backlog rather than draining it.
-		owed[index] = createOwedDocument(t, database, service, "", fmt.Sprintf("spec-%d", index), shipItSpec, "Ship it.\n")
+		owed[index] = createOwedDocument(t, database, service, "CORE-1", "", fmt.Sprintf("spec-%d", index), shipItSpec, "Ship it.\n")
 		dateOwedVersion(t, database, owed[index], now.Add(-age))
 	}
 

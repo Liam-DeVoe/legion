@@ -3,6 +3,9 @@ package refs
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -62,7 +65,9 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // cause yet - graphstore.Caused gives it the version's event. A node already there keeps its
 // made_at and made_by, so a block is made by the version that first indexed it, and a block an
 // earlier build indexed with no project takes its document's here (graphstore.Write fills a
-// project the row does not hold).
+// project the row does not hold). supertag is BlockSupertag for every block but a decision and a
+// reading, which take their type's (TypedFacts.supertag), so the typed-node pass and this
+// index write one node and neither moves what the other wrote.
 //
 // The index owns a block's text and its place in its document, not its state or its visibility,
 // so every node it writes restates the block (graphstore.Node's Restates): state is live for a
@@ -75,9 +80,9 @@ func blockFits(refKey string, nodes []model.ArtifactBlock) ([]bool, int) {
 // changed marks a block whose words this version added, changed or restored, or which it
 // dropped, so a version written for a run names that block as changed by it (graphstore.Node's
 // Changed); a block the pass writes only because its row names no node yet is not marked.
-func blockNode(address string, document indexedDocument, at time.Time, state string, changed bool) graphstore.Node {
+func blockNode(address string, document indexedDocument, at time.Time, state, supertag string, changed bool) graphstore.Node {
 	return graphstore.Node{
-		Kind: BlockNodeKind, ID: address, Supertag: BlockSupertag,
+		Kind: BlockNodeKind, ID: address, Supertag: supertag,
 		Visibility: graphstore.VisibilityProject, State: state,
 		Project: document.project, Parties: document.parties,
 		MadeAt: at, MadeBy: document.writer, SourceEvent: graphstore.NoEvent,
@@ -87,16 +92,19 @@ func blockNode(address string, document indexedDocument, at time.Time, state str
 
 // indexedDocument is what the version's own row and its document's row say of the pass: the
 // document's ref_key, which every block's address starts with; the actor the version's row
-// records as its writer, which every node and tuple this pass writes carries; and the project the
+// records as its writer, which every node and tuple this pass writes carries; the project the
 // document belongs to, or for an agent conversation's file the session it is between, which every
-// block node the pass writes carries (graphstore.Node's Project and Parties). A conversation holds
-// no markdown document (api's agentOwnsFilesOnly), so no block has parties today; the read keeps
-// the one rule every document's node follows.
+// block node the pass writes carries (graphstore.Node's Project and Parties); and the issue that
+// holds the document, "" for one a project holds, which a decision's or an ask's tie to another
+// issue is read against (DecisionFacts). A conversation holds no markdown document (api's
+// agentOwnsFilesOnly), so no block has parties today; the read keeps the one rule every
+// document's node follows.
 type indexedDocument struct {
 	refKey  string
 	writer  model.Actor
 	project string
 	parties []string
+	issue   string
 }
 
 // indexedVersionRecord reads indexedDocument in one statement, under the owner row the pass's
@@ -105,14 +113,14 @@ type indexedDocument struct {
 // a credential that names nobody carries.
 func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, version int) (indexedDocument, error) {
 	var document indexedDocument
-	var project, session *string
+	var project, session, issue *string
 	var authors []byte
 	if err := tx.QueryRow(ctx, `
-		select a.ref_key, a.project_key, a.session_id, v.authors
+		select a.ref_key, a.project_key, a.session_id, a.issue_key, v.authors
 		from artifacts a
 		left join artifact_versions v on v.artifact_id = a.id and v.number = $2
 		where a.id = $1::uuid
-	`, artifactID, version).Scan(&document.refKey, &project, &session, &authors); err != nil {
+	`, artifactID, version).Scan(&document.refKey, &project, &session, &issue, &authors); err != nil {
 		return indexedDocument{}, fmt.Errorf("read version %d of %s for its block index: %w", version, artifactID, err)
 	}
 	if project != nil {
@@ -120,6 +128,9 @@ func indexedVersionRecord(ctx context.Context, tx pgx.Tx, artifactID string, ver
 	}
 	if session != nil {
 		document.parties = []string{graphstore.PartySession(*session)}
+	}
+	if issue != nil {
+		document.issue = *issue
 	}
 	writers, err := storedActors(authors)
 	if err != nil {
@@ -178,12 +189,22 @@ type blockFarEnd struct{ kind, id string }
 // insert keeps firing only for a block whose text changed: a block that only moved keeps its
 // changed_version and changed_at. The statement carries the node columns beside the parent, so
 // a row the insert did not touch learns the address of its node here.
+//
+// askParents is each reading of the version that stands in an answered ask, by its id, with that
+// ask's id (DecisionFacts): its part_of is the ask's node, since the decision a reading there
+// reads is the person's answer the node holds, while document_blocks.parent_block_id keeps the
+// id of the ask block holding it, which is that tuple's projection. only, where it is not nil,
+// is the blocks the pass states a parent for, the typed-node pass's own above the deferral bound
+// (IndexDecisionNodes); every block is placed in the version all the same, so the parent each of
+// them takes is the one a pass over the whole version gives it.
 func reconcileBlockParents(
 	ctx context.Context,
 	tx pgx.Tx,
 	artifactID, refKey string,
 	nodes []model.ArtifactBlock,
 	fits []bool,
+	askParents map[string]string,
+	only map[string]struct{},
 	at time.Time,
 	writer model.Actor,
 ) ([]graphstore.UncausedTuple, error) {
@@ -191,18 +212,35 @@ func reconcileBlockParents(
 		return nil, nil
 	}
 	placed, parents := placeBlocks(nodes, fits)
+	if only != nil {
+		kept := 0
+		for index, block := range placed {
+			if _, own := only[nodes[block].ID]; own {
+				placed[kept], parents[kept] = block, parents[index]
+				kept++
+			}
+		}
+		placed, parents = placed[:kept], parents[:kept]
+	}
 	if len(placed) == 0 {
 		return nil, nil
 	}
 	blockIDs := make([]string, len(placed))
 	parentIDs := make([]*string, len(placed))
+	var askIDs []*string
+	if len(askParents) > 0 {
+		askIDs = make([]*string, len(placed))
+	}
 	for index, block := range placed {
 		blockIDs[index] = nodes[block].ID
 		if parents[index] >= 0 {
 			parentIDs[index] = &nodes[parents[index]].ID
 		}
+		if ask, held := askParents[blockIDs[index]]; held && askIDs != nil {
+			askIDs[index] = &ask
+		}
 	}
-	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs)
+	differences, err := heldBlockParentDifferences(ctx, tx, refKey, blockIDs, parentIDs, askIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the parents the blocks of %s hold: %w", artifactID, err)
 	}
@@ -216,7 +254,10 @@ func reconcileBlockParents(
 			continue
 		}
 		toKind, toID := "artifact", refKey
-		if parent := parentIDs[difference.block]; parent != nil {
+		switch parent := parentIDs[difference.block]; {
+		case askIDs != nil && askIDs[difference.block] != nil:
+			toKind, toID = graphstore.KindAsk, *askIDs[difference.block]
+		case parent != nil:
 			toKind, toID = BlockNodeKind, blockNodeAddress(refKey, *parent)
 		}
 		tuples = append(tuples, parentTuple(address, toKind, toID, at, writer, true))
@@ -306,7 +347,9 @@ type blockParentDifference struct {
 // blockIDs are the blocks that are nodes of the store, in document order, and parentIDs the
 // block each of them sits in, nil for a block the document itself holds. The statement builds
 // both addresses from refKey, as the insert of document_blocks does, so the caller hands over
-// one ref_key and not one address per block.
+// one ref_key and not one address per block. askIDs, nil or as long as blockIDs, names the ask
+// whose node a reading in an answered ask takes for its parent in place of the block holding it
+// (reconcileBlockParents' askParents), nil for every other block.
 //
 // The comparison is the statement's: a block answers a row only where the store asserts a far
 // end the render does not give, or asserts none the render does, so an edit that moved nothing
@@ -318,17 +361,19 @@ func heldBlockParentDifferences(
 	refKey string,
 	blockIDs []string,
 	parentIDs []*string,
+	askIDs []*string,
 ) ([]blockParentDifference, error) {
 	rows, err := tx.Query(ctx, `
 		select block.ordinality,
 		       array_agg(current.to_kind) filter (where not current.wanted),
 		       array_agg(current.to_id) filter (where not current.wanted),
 		       coalesce(bool_or(current.wanted), false)
-		from unnest($1::text[], $2::text[]) with ordinality as block (id, parent)
+		from unnest($1::text[], $2::text[], $8::text[]) with ordinality as block (id, parent, ask)
 		left join lateral (
 			select held.to_kind, held.to_id,
-			       held.to_kind = case when block.parent is null then $6 else $3 end
-			       and held.to_id = case when block.parent is null then $7 else $7 || '#' || block.parent end
+			       held.to_kind = case when block.ask is not null then $9 when block.parent is null then $6 else $3 end
+			       and held.to_id = case when block.ask is not null then block.ask
+			                             when block.parent is null then $7 else $7 || '#' || block.parent end
 			         as wanted
 			from (
 				`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.asserted`,
@@ -341,7 +386,7 @@ func heldBlockParentDifferences(
 		having not coalesce(bool_or(current.wanted), false)
 		    or count(*) filter (where not current.wanted) > 0
 		order by block.ordinality
-	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey)
+	`, blockIDs, parentIDs, BlockNodeKind, graphstore.TuplePartOf, graphstore.KindValue, "artifact", refKey, askIDs, graphstore.KindAsk)
 	if err != nil {
 		return nil, err
 	}
@@ -361,6 +406,147 @@ func heldBlockParentDifferences(
 		differences = append(differences, difference)
 	}
 	return differences, rows.Err()
+}
+
+// heldLink is one link a block node states beside its membership of its document and its
+// placement: a mention's or a pointer's, under the kind its pair names, to its far end.
+// A reading's authored_by (IndexDecisionNodes) and an ask block copy's copied_from (docs'
+// claimCopies) are no link: no block_refs row projects either, so no pair of a version
+// writes them and no pass that drops a row retracts them.
+type heldLink struct{ kind, toKind, toID string }
+
+// heldDocumentBlocks is what the store states now of the blocks of the document refKey names, by
+// block id: each block node that states itself a member of the document (an in_document tuple
+// into the document's artifact address) and that the store holds present, at any state but gone,
+// with every link it states now beside that membership and its placement, read the way the store
+// reads a current relation (graphstore.CurrentTupleRead), in kind and far-end order. A member that
+// states no link is in the map with none, and one whose address does not start with the
+// document's ref_key is no block the pass addresses and is left out.
+//
+// It is the store's own side of the document, and IndexBlocks reads it only where that side is
+// stale (standsAtVersion): another release indexed the document after the store last stated its
+// blocks, and that release deleted the rows of the blocks and the links its version dropped and
+// retracted nothing, so no row is left to say what the store still holds. The pass's input stays
+// the version's render: this read is what the store would otherwise go on asserting against it,
+// as heldBlockParentDifferences is for the parents. The members come through
+// graph_tuples_inbound in one probe and each member's links through graph_tuples_current in one
+// probe a block, in one statement. The kinds and the value kind are written into the text so the
+// planner can prove each index's partial predicate whatever plan it caches.
+func heldDocumentBlocks(ctx context.Context, tx pgx.Tx, refKey string) (map[string][]heldLink, error) {
+	rows, err := tx.Query(ctx, `
+		select member.id, held.kind, held.to_kind, held.to_id
+		from (
+			select distinct t.from_id as id from graph_tuples t
+			where t.to_kind = 'artifact' and t.to_id = $1
+			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
+		) member
+		join graph_nodes n on n.kind = '`+BlockNodeKind+`' and n.id = member.id
+			and n.state <> '`+graphstore.StateGone+`'
+		left join lateral (
+			select current.kind, current.to_kind, current.to_id
+			from (
+				`+graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+BlockNodeKind+`' and t.from_id = member.id
+				  and t.to_kind <> '`+graphstore.KindValue+`'
+				  and t.kind not in ('`+TupleInDocument+`', '`+graphstore.TuplePartOf+`',
+				                     '`+graphstore.TupleAuthoredBy+`', '`+graphstore.TupleCopiedFrom+`')`)+`
+			) current
+			where current.asserted
+		) held on true
+		order by member.id, held.kind, held.to_kind, held.to_id
+	`, refKey)
+	if err != nil {
+		return nil, fmt.Errorf("read what the store states of the blocks of %s: %w", refKey, err)
+	}
+	defer rows.Close()
+	prefix := refKey + "#"
+	held := map[string][]heldLink{}
+	for rows.Next() {
+		var address string
+		var kind, toKind, toID *string
+		if err := rows.Scan(&address, &kind, &toKind, &toID); err != nil {
+			return nil, fmt.Errorf("scan what the store states of a block of %s: %w", refKey, err)
+		}
+		id, ours := strings.CutPrefix(address, prefix)
+		if !ours {
+			continue
+		}
+		links := held[id]
+		if kind != nil {
+			links = append(links, heldLink{kind: *kind, toKind: *toKind, toID: *toID})
+		}
+		held[id] = links
+	}
+	return held, rows.Err()
+}
+
+// goneSinceStated is, in id order, each block the store holds present in the document (held) that
+// the version holds no node of (nodes, its unique blocks) and that the rows did not hold either
+// (deleted, the blocks of the rows the version dropped, which IndexBlocks states gone itself): a
+// block another release's version dropped after the store last stated the document. That release
+// deleted the block's row and stated nothing, so its node stands, and it is gone exactly as a
+// block the rows dropped is, by the version that does not hold it.
+func goneSinceStated(held map[string][]heldLink, nodes []model.ArtifactBlock, deleted []string) []string {
+	if len(held) == 0 {
+		return nil
+	}
+	holds := make(map[string]struct{}, len(nodes)+len(deleted))
+	for _, block := range nodes {
+		holds[block.ID] = struct{}{}
+	}
+	for _, id := range deleted {
+		holds[id] = struct{}{}
+	}
+	var gone []string
+	for id := range held {
+		if _, kept := holds[id]; !kept {
+			gone = append(gone, id)
+		}
+	}
+	slices.Sort(gone)
+	return gone
+}
+
+// unheldLinks retracts each link the store states now out of a block of the document (held) that
+// no pair of the version writes, at the version's time and by its writer, as replaceBlockRefs
+// retracts the pair of a row it drops: a link another release's version dropped after the store
+// last stated the document, deleting its block_refs row and retracting nothing. The links of a
+// block goneSinceStated names are among them, as a dropped block's rows are among the rows
+// replaceBlockRefs drops. stated is the tuples replaceBlockRefs answered, and a link it already
+// retracts, the pair of a row it dropped, is not retracted twice. The retractions come in block
+// id order and in the read's order within a block, so a reader of the log can predict them.
+func unheldLinks(held map[string][]heldLink, refKey string, pairs []blockPair, stated []graphstore.UncausedTuple, at time.Time, writer model.Actor) []graphstore.UncausedTuple {
+	if len(held) == 0 {
+		return nil
+	}
+	type blockLink struct {
+		blockID string
+		link    heldLink
+	}
+	kept := make(map[blockLink]struct{}, len(pairs)+len(stated))
+	for _, pair := range pairs {
+		kept[blockLink{pair.blockID, heldLink{pair.kind, pair.target.Kind, pair.target.ID}}] = struct{}{}
+	}
+	prefix := refKey + "#"
+	for _, tuple := range stated {
+		if id, ours := strings.CutPrefix(tuple.FromID, prefix); ours && !tuple.Asserted {
+			kept[blockLink{id, heldLink{tuple.Kind, tuple.ToKind, tuple.ToID}}] = struct{}{}
+		}
+	}
+	var retracted []graphstore.UncausedTuple
+	for _, id := range slices.Sorted(maps.Keys(held)) {
+		for _, link := range held[id] {
+			if _, ok := kept[blockLink{id, link}]; ok {
+				continue
+			}
+			retracted = append(retracted, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: blockNodeAddress(refKey, id), Kind: link.kind,
+				ToKind: link.toKind, ToID: link.toID,
+				At: at, Who: writer, Asserted: false,
+			}})
+		}
+	}
+	return retracted
 }
 
 // blockParents names, for each block, the index of the tightest block of the same document

@@ -714,11 +714,13 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
 // answers arm among them, and the one arm over the store's current tuples that migration adds.
 // 20261116091932_graph_edges_store_tuples keeps that list arm for arm and widens only what the
-// tuple arm answers, and 20261116160000_graph_edges_findings, the last migration to restate
-// graph_edges, adds one arm over the same tuples, answering the relations out of a finding of a
-// lens as a lens_block (armOfAFinding). Each of the four arms over a kind the store now writes
-// answers only the rows of its table that name no node, and the seed names the node of every row
-// it writes, so those four answer nothing here (armGatedPerRow).
+// tuple arm answers, and 20261116160000_graph_edges_findings adds one arm over the same tuples,
+// answering the relations out of a finding of a lens as a lens_block (armOfAFinding).
+// 20261117020856_graph_edges_asks_and_store_class, the last migration to restate graph_edges,
+// keeps that list arm for arm and adds 20261116094101's tests on the asks and ask_followers arms.
+// Each of the arms over a kind the store now writes answers only the rows of its table that name
+// no node, and the seed names the node of every row it writes, so those arms answer nothing here
+// (armGatedPerRow).
 const graphArmCount = 29
 
 var (
@@ -751,7 +753,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947, 20261116091932 and 20261116160000 restate it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947, 20261116091932, 20261116160000 and 20261117020856 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}

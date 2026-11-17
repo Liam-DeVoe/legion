@@ -285,7 +285,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
 		// that step lets it through, and an indexed document is owed nothing to wait for.
-		document := createOwedDocument(t, database, service, "", step.slug, "- one\n- two\n", "")
+		document := createOwedDocument(t, database, service, "CORE-1", "", step.slug, "- one\n- two\n", "")
 		settle(t, database, document)
 		holder, err := database.Pool.Begin(ctx)
 		if err != nil {
@@ -463,11 +463,39 @@ var indexPasses = map[string]string{
 	"asks/followers.go#Follow":               "the ask and the session its caller names",
 	"api/ask_followers.go#changeAskFollower": "the follow request and the event it appended after the follow",
 	"api/asks.go#createAskFor":               "the ask the create request opens and the event it appended after the follow",
+	"docs/ask_blocks.go#causeFollows":        "the follows a settlement made and the ask.opened events it appended after them",
+	// The shaped ties of an ask block whose ask a settlement opened, stated beside the ask's row
+	// and caused by its ask.opened (refs.IndexAskTies), when that settlement writes no version.
+	"docs/ask_blocks.go#causeOpenedAskTies": "the ties writeOpenedAskTies stated of the asks the settlement opened and the ask.opened events it appended",
 	// A renewed approval request follows its ask for the requester and moves the node that
 	// follow made onto the last event the renewal appended, or leaves it at the sentinel when
 	// the renewal appended none.
 	"api/reviews.go#renewApprovalAsk": "the open approval request, the requester and the event the renewal appended",
-	"docs/ask_blocks.go#causeFollows": "the follows a settlement made and the ask.opened events it appended after them",
+	// The one writer of an ask's answer state (asks.Settle, dispatch://INFRA-1150): the answer on
+	// the ask's node, then its row, from the transition its caller names; and each site that
+	// appends what a transition held under the event it appended after it (graphstore.Caused).
+	"asks/settle.go#Settle":                            "the transition its caller names",
+	"api/ask_transitions.go#closeAskTx":                "the transition the answer, resolve or decline request makes and the event it appended",
+	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
+	"api/issue_ask_lifecycle.go#restoreIssueAsksTx":    "the asks an issue's reopen restores and the events it appended",
+	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
+	"docs/ask_blocks.go#causeSettledAnswers":           "the transitions a settlement made and the events it appended after them",
+	// A settlement states each copy among a document's ask blocks as a claim on its source, once
+	// its version is indexed: the copies its own reconciliation read off the document, and the
+	// rows of the version it indexed, which name each copy's block node.
+	"docs/ask_blocks.go#claimCopies": "the copies the settlement's reconciliation read and the blocks its version indexed",
+	// Beside those claims, in the same name and under the same event, a settlement states on each
+	// ask node the readability of its block that the reconciliation read (G1): the reason a block
+	// fails the strict read for, as the node's `invalid` value, and that value's retraction once
+	// the block reads again. It reads the value each node holds only to state what moved, never a
+	// side of a projection to mend the other.
+	"docs/ask_blocks.go#stateInvalidReasons": "the readability the settlement's reconciliation read of the document's ask blocks, and the invalid value each of their asks' nodes holds",
+	// The catch-up of a follow a process of the release before recorded: the follower rows that
+	// build wrote, stated on the ask's node where the node does not state them yet.
+	"asks/followers.go#CatchUpFollower": "the follower rows another build recorded and what the ask's node already states of them",
+	// The boot step's backfill of the asks and their followers written before this release.
+	"graphcensus/backfill.go#writeAskBatch":         "each pre-store asks row's own content",
+	"graphcensus/backfill.go#writeAskFollowerBatch": "each pre-store ask_followers row's own content",
 	// The node of every ask and message a request or a settlement creates, before its row, in the
 	// project or between the parties it belongs to, and caused by the event the create appends.
 	"api/reviews.go#openApprovalAsk":             "the approval request the request opens and the ask.opened it appended",
@@ -508,6 +536,10 @@ var indexPasses = map[string]string{
 	// as the store holds it, of which it moves the state alone, never mending a row from the store.
 	"graphcensus/backfill.go#writeRunFrames": "each going_events row an earlier build appended with no frame value, and the run's node row it takes first",
 	"graphcensus/backfill.go#writeGoneRun":   "the interaction node whose going_requests row an earlier build deleted, and that the row is gone",
+	// A document's retirement states its artifact node gone, keeping every other fact of the
+	// node, and appends that fact under the document.retired event it appends (graphstore.Caused).
+	"docs/retire.go#RetireDocument":   "the document the caller retires and the document.retired event it appended",
+	"docs/retire.go#writeRetiredNode": "the retired document's row and the node the store holds of it",
 	// The block index's cause: what a version's index pass stated, appended under the event
 	// that recorded the version once it is appended (graphstore.Caused), which reads no
 	// projection and mends nothing.
@@ -532,8 +564,13 @@ var indexPasses = map[string]string{
 	// document it is in, its own source_seq - is what it writes into the store, and the
 	// store holds nothing about those rows for it to read. That is what makes it a writer
 	// and no repair: it never reads one side of a projection to decide what to put in the
-	// other, and a row whose node is already written it leaves alone rather than mending.
-	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content",
+	// other, and a row whose node is already written it leaves alone rather than mending. The
+	// block batch also marks the document each row is in owed this release's block index
+	// (store_owed_at), which is the row's own document and no reading of either side; and
+	// markStaleDocuments marks each document another release indexed after the store last
+	// stated it, read off the two versions the document's own row records (store_version below
+	// version). That pass writes neither a projected table nor the store, so it is no entry here.
+	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
 	// The backfill of the roles. A role, its page and the page's part_of it have no projection
@@ -601,13 +638,26 @@ var indexPasses = map[string]string{
 	// The record of a fallback pass splices in the same arms for each copy the pass published:
 	// the copy's delivered_to and the session its topic names.
 	"outbox/mentions.go#recordFallbackCopies": "the fallback copies the pass published and the topic each reached",
-	// The index pass also retracts the pointer tuples at each block the render drops
+	// A version's index pass reads its render, and of each decision the author its node's
+	// decided_by tuple holds, which markdown never carries (refs.DecisionFacts): that tuple is
+	// the one record of who decided, read to restate the same tie, never to mend a row. Where
+	// another release indexed the document after the store last stated its blocks (refs'
+	// standsAtVersion), the rows it compares the render with no longer hold the blocks and
+	// links that release dropped, so it also reads what the store still asserts of the document
+	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
+	// that does not hold them, as reconcileBlockParents reads the parents the store asserts to
+	// state the render's. It also retracts the pointer tuples at each block the render drops
 	// (retractGonePointers), which it reads off the store: the store's own relations, which no
 	// projection holds, retracted because the render no longer holds their block, so it mends
 	// neither side from the other.
-	"refs/blocks.go#IndexBlocks":                "the version's render, and the pointer tuples the store holds at each block the render drops",
+	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, where another release indexed the document since the store stated it, what the store still asserts against that render, and the pointer tuples the store holds at each block the render drops",
 	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
-	"refs/blocks.go#replaceBlockRefs":           "the version's render",
+	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
+	// The typed-node pass: the decision and reading nodes of the version, their values and their
+	// authors, from the version's render and the credential the version's write proved, and above
+	// the deferral bound their part_of and the rows of their own ties, through the two passes
+	// above. It reads a node's stored values and authors only to state what moved.
+	"refs/decision_nodes.go#IndexDecisionNodes": "the version's render and the credential its write proved",
 	"refs/refs.go#Stamp":                        "the event that recorded the write",
 }
 

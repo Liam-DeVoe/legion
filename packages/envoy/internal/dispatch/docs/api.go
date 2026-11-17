@@ -32,10 +32,14 @@ type API interface {
 	SnapshotVersion(ctx context.Context, artifactID string, actor model.Actor) (VersionResult, error)
 	SettleIssueDocuments(ctx context.Context, issueKey string) error
 	WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]BlockRef, error)
+	MarkReopenOwedAskDocuments(ctx context.Context, issueKey string) error
+	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
 	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
+	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
+	TextWithAnswers(ctx context.Context, artifactID string, withBlocks bool) (string, string, []model.ArtifactBlock, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)

@@ -19,7 +19,11 @@ import (
 //     this binary's image.
 //   - `--store`, the node and tuple store held against the tables that project it
 //     (graphcensus.StoreCensus), in both directions and for every kind, refusing a kind it
-//     checked no row of.
+//     checked no row of but a kind of dispatch://INFRA-1150 that holds no row and no node; with
+//     the store-only lines of copied_from and moved_to, which no table projects, refusing a far
+//     end of either that does not resolve; and with the dangling-citation counter's line and the
+//     collision census over the restore's work (graphcensus.DanglingCitations, CollisionsOf),
+//     neither of which refuses. `--verbose` adds one line for each citation the counter counted.
 //   - `--store --sizing`, that census and the growth pass after it: what the database is
 //     written at, what every table this branch's migrations touch holds now, and where
 //     graph_tuples and graph_nodes reach in a year against pgmigrate.CensusTableLimit. The
@@ -38,15 +42,21 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		"census the node and tuple store against the tables that project it, rather than the pending migrations")
 	sizing := flags.Bool("sizing", false,
 		"with --store, add the growth pass: the write rate, each table's size, and a year's projection against the census limit")
+	verbose := flags.Bool("verbose", false,
+		"with --store, print one line for each citation the dangling-citation counter counted")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 	if flags.NArg() > 0 {
-		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store and --sizing\n", flags.Arg(0))
+		fmt.Fprintf(errOut, "census: unexpected argument %q; the flags are --store, --sizing and --verbose\n", flags.Arg(0))
 		return 2
 	}
 	if *sizing && !*storeSide {
 		fmt.Fprintln(errOut, "census: --sizing is the growth pass of the store census; run it as `census --store --sizing`")
+		return 2
+	}
+	if *verbose && !*storeSide {
+		fmt.Fprintln(errOut, "census: --verbose lists the citations the store census counts; run it as `census --store --verbose`")
 		return 2
 	}
 	if strings.TrimSpace(databaseURL) == "" {
@@ -54,7 +64,7 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 		return 2
 	}
 	if *storeSide {
-		return storeCensus(ctx, databaseURL, *sizing, out, errOut)
+		return storeCensus(ctx, databaseURL, *sizing, *verbose, out, errOut)
 	}
 	report, err := store.Census(ctx, databaseURL)
 	if err != nil {
@@ -70,14 +80,18 @@ func census(ctx context.Context, args []string, databaseURL string, out, errOut 
 
 // storeCensus runs `census --store`: it migrates nothing and writes nothing, reading one
 // read-only snapshot of its own, so a deployment can take it before it rolls, exactly as it
-// takes the migration census.
-func storeCensus(ctx context.Context, databaseURL string, sizing bool, out, errOut io.Writer) int {
+// takes the migration census. verbose prints each citation the dangling-citation counter counted.
+func storeCensus(ctx context.Context, databaseURL string, sizing, verbose bool, out, errOut io.Writer) int {
 	report, err := graphcensus.StoreCensus(ctx, databaseURL, sizing)
 	if err != nil {
 		writeCensusFailure(errOut, err)
 		return 2
 	}
-	report.Write(out)
+	if verbose {
+		report.WriteVerbose(out)
+	} else {
+		report.Write(out)
+	}
 	if report.Refused() {
 		return 1
 	}

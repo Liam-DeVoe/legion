@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // A version whose text is the text of the version a person approved holds nothing he has not
@@ -305,15 +305,28 @@ func TestARestoredTextAroundTheApproversOwnAnswerCarriesByTheAnswerCarry(t *test
 func requireRestoredAroundAChangedBlock(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
 	approved, restored := versionMarkdown(t, handler, artifactID, 1), versionMarkdown(t, handler, artifactID, number)
-	approvedCut, err := docs.CutDecisionBlocks(approved)
-	if err != nil {
-		t.Fatalf("cut version 1: %v", err)
-	}
-	restoredCut, err := docs.CutDecisionBlocks(restored)
-	if err != nil {
-		t.Fatalf("cut version %d: %v", number, err)
-	}
-	if restoredCut != approvedCut || restored == approved {
+	if cutAskBlocks(t, restored) != cutAskBlocks(t, approved) || restored == approved {
 		t.Fatalf("version %d = %q, want version 1's text %q outside a changed decision block", number, restored, approved)
 	}
+}
+
+// cutAskBlocks is markdown rendered again with every top-level ask block left out.
+func cutAskBlocks(t *testing.T, markdown string) string {
+	t.Helper()
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		t.Fatalf("parse %q: %v", markdown, err)
+	}
+	kept := tree.Children[:0]
+	for _, child := range tree.Children {
+		if child.Type != "ask" {
+			kept = append(kept, child)
+		}
+	}
+	tree.Children = kept
+	cut, err := pmdoc.Render(tree)
+	if err != nil {
+		t.Fatalf("render %q without its ask blocks: %v", markdown, err)
+	}
+	return cut
 }

@@ -21,7 +21,7 @@ import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema } from "./schema";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, recordsAnswerState, servedAskOf } from "./typed-block-drawing";
 
 export interface VersionViewProps {
   artifactId: string;
@@ -262,6 +262,11 @@ export function VersionView({
               owner={owner}
               readOnly
               rowResolution={false}
+              served={
+                markdown !== undefined && recordsAnswerState(markdown, blockId)
+                  ? undefined
+                  : servedAskOf(asks, artifactId, blockId, owner?.project)
+              }
             />
           );
         })}

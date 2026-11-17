@@ -58,10 +58,12 @@ func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
 // row of the server process registry, which every process's document socket admission reads
 // (docs.readSchemaFleet), this process's own among them; a row left at its boot's numbers would
 // admit the reconnects the switch's socket close brings against a schema the process no longer
-// serves. The store's migration here moves check's ci_check, read from this build's version, to
-// creatable only from the next one, and raises the store to that version: this build installs it
-// at its own version and may no longer create ci_check. The numbers the row must reach are the
-// ones this build's own install of that store answers, read in the test's process.
+// serves. The store's migration here moves every element creatable from this build's version -
+// the type or attribute that raised the schema to it, whichever it is - to creatable only from
+// the next one, and raises the store to that version: this build installs it at its own version
+// and may no longer create those elements, so the highest since it may create falls. The numbers
+// the row must reach are the ones this build's own install of that store answers, read in the
+// test's process.
 func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -75,13 +77,17 @@ func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 
 	if _, err := database.Pool.Exec(ctx, `
 		update graph_nodes
-		set attributes = case
-			when kind = 'attribute' then jsonb_set(attributes, '{creatable_since}', to_jsonb($1::int))
-			else jsonb_set(attributes, '{version}', to_jsonb($1::int)) end
-		where (kind = 'attribute' and id = 'check/ci_check')
-			or (kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false))
-	`, built+1); err != nil {
-		t.Fatalf("move ci_check to creatable from version %d: %v", built+1, err)
+		set attributes = (case
+				when coalesce((attributes->>'creatable_since')::int, 0) = $2
+					then jsonb_set(attributes, '{creatable_since}', to_jsonb($1::int))
+				else attributes end)
+			|| (case
+				when kind = 'supertag' and coalesce((attributes->>'block_type')::boolean, false)
+					then jsonb_build_object('version', $1::int)
+				else '{}'::jsonb end)
+		where kind in ('attribute', 'supertag')
+	`, built+1, built); err != nil {
+		t.Fatalf("move the elements creatable from version %d to creatable from version %d: %v", built, built+1, err)
 	}
 	want := installedNumbersOf(t, ctx, database.Pool)
 	if want == before {

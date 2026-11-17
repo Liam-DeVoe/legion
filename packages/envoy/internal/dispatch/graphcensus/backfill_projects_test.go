@@ -101,8 +101,17 @@ func TestTheBackfillGivesEveryRowItsNodeAndProject(t *testing.T) {
 
 	// The control: a row whose node is taken away is named again, by its kind and its id. The
 	// erase deletes the tuples it is handed by seq and no others, so it is handed every tuple of
-	// either side of the ask's node, read in its own transaction.
+	// either side of the ask's node, read in its own transaction. The asks pass marked the ask's
+	// row and its followers' rows with the node (dispatch://INFRA-1150), and a mark is a foreign key
+	// into graph_nodes, so the control first takes the marks off, leaving the rows as a build before
+	// the store wrote them.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		for _, table := range []string{"asks", "ask_followers"} {
+			if _, err := tx.Exec(ctx, `update `+table+` set node_kind = null, node_address = null
+				where node_kind = $1 and node_address = $2`, graphstore.KindAsk, seeded.ask); err != nil {
+				return err
+			}
+		}
 		var seqs []int64
 		if err := tx.QueryRow(ctx, `
 			select coalesce(array_agg(seq), '{}') from graph_tuples

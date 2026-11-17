@@ -60,11 +60,15 @@ func TestBlockSchemaRouteServesTheInstalledSchemaBesideTheStoresTypes(t *testing
 	for index, typ := range served.Types {
 		names[index] = typ.Name
 	}
-	if served.Version != 4 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 4 and callout, ask, requirement, plan_task, check", served.Version, names)
+	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading"}
+	if served.Version != 5 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 5 and %v", served.Version, names, want)
 	}
 	if ciCheck, declared := served.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
+	}
+	if parents := served.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
+		t.Fatalf("reading parents = %v, want decision and ask", parents)
 	}
 
 	types := map[string][]storeAttributeRead{}

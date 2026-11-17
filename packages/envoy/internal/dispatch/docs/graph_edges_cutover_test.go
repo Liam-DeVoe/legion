@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -27,10 +28,11 @@ import (
 // graphEdgesArm is one arm of graph_edges as this test reads it back: the relation the arm reads
 // first, and what is to become of it. The relation is enough to name an arm here because the
 // list is held in the view's own order, so two arms over one table are told apart by where they
-// stand. projects is, for the four arms over a kind this change moved, the kind whose rows the
-// store now holds beside that arm's table, and empty for every other arm; renders is, for the two
-// moved arms over comments, the edge kind each renders, which is what tells their rows apart.
-// text is the arm's own SQL as the catalogue prints it, which only an arm read back carries.
+// stand. projects is, for the arms over a kind a child moved into the store, the kind whose rows
+// the store now holds beside that arm's table, and empty for every other arm; renders is, for the
+// moved arms over comments and over asks, the edge kind each renders, which is what tells their
+// rows apart. text is the arm's own SQL as the catalogue prints it, which only an arm read back
+// carries.
 type graphEdgesArm struct {
 	relation string
 	fate     string
@@ -39,9 +41,14 @@ type graphEdgesArm struct {
 	text     string
 }
 
-// movedArmsDeletedBy is the child that deletes the four arms over the kinds this change moved,
-// once the store answers those kinds everywhere.
+// movedArmsDeletedBy is the child that deletes the four arms over the kinds dispatch://INFRA-1149
+// moved, once the store answers those kinds everywhere.
 const movedArmsDeletedBy = "dispatch://INFRA-1253"
+
+// askArmsDeletedBy is the child whose own pull request deletes the three arms over the kinds
+// dispatch://INFRA-1150 moved - an ask's anchored_to and owned_by over asks, and followed_by over
+// ask_followers - with the tuple arm's joins to those two tables.
+const askArmsDeletedBy = "dispatch://INFRA-1098"
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -53,15 +60,15 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "issues", fate: "child_of; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "artifacts", fate: "attached_to; no child has moved it"},
-	{relation: "asks", fate: "an ask's anchored_to; dispatch://INFRA-1152 writes an ask's relations"},
+	{relation: "asks", projects: "ask", renders: "anchored_to", fate: "an ask's anchored_to; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "anchored_to", fate: "a comment's anchored_to; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
-	{relation: "asks", fate: "an ask's owned_by; dispatch://INFRA-1152 writes an ask's relations"},
+	{relation: "asks", projects: "ask", renders: "owned_by", fate: "an ask's owned_by; the store answers it for a row that carries its node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", projects: "comment", renders: "owned_by", fate: "a comment's owned_by; the store answers it for a row that carries its node, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", fate: "a reply's replies_to its thread; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's answers; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask; dispatch://INFRA-1152 writes it"},
 	{relation: "messages", fate: "a message's replies_to; dispatch://INFRA-1152 writes it"},
-	{relation: "ask_followers", fate: "followed_by; dispatch://INFRA-1152 writes an ask's relations"},
+	{relation: "ask_followers", projects: "ask_follower", renders: "followed_by", fate: "followed_by; the store answers it for a row that carries its ask's node (dispatch://INFRA-1150), and " + askArmsDeletedBy + " deletes this arm"},
 	{relation: "components", fate: "a component's part_of; no child has moved it"},
 	{relation: "component_depends", fate: "depends_on; no child has moved it"},
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
@@ -115,6 +122,13 @@ func (e graphEdge) String() string {
 // of this test holds graph_edges to what that release reads over the same rows.
 const previousGraphEdges = "previous_graph_edges"
 
+// previousCountedEdges is what the previous release's count statement reads in each reading
+// (requireBacklinkCountsAsThePreviousRelease): previousGraphEdges, and beside it the rows of the
+// class `store` graph_edges answers (storeClass), which that release has no arm for and which
+// readEachArm holds to exactly the rows the fixture stated. Over it the count is that release's
+// over every row it reads, and the store's own relations counted as the view counts them.
+const previousCountedEdges = "previous_counted_graph_edges"
+
 // previousGraphEdgesMigration is the migration that last stated graph_edges before this child.
 const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments_answers.up.sql"
 
@@ -138,7 +152,10 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // tuple arm answers its class `store`, the relations the store holds with no projection row behind
 // them, which no arm of the previous release answers: one tuple of each such kind, and a part_of
 // out of a lens, which the fixture states, and in every reading exactly those, from the tuple arm
-// alone.
+// alone. Every reading counts as well: for every node kind its arm table declares,
+// refs.BacklinkCounts must answer what the previous release's count statement answers over that
+// release's view and the rows of the class `store` beside it, at every id of the kind an edge of
+// that view, a tuple or a block reference points at and at one id nothing points at.
 //
 // The readings, in order. Before the backfill, one document's rows and the comments name no node
 // beside documents the index wrote, and each of the four arms answers rows of its own. After the
@@ -148,9 +165,8 @@ const previousGraphEdgesMigration = "../store/migrations/20261105014808_comments
 // a stamped block row, a stamped block reference and a stamped comment deleted with no
 // retraction, as a build of the previous release deletes them, answer from no arm; a second
 // stamped block row and block reference deleted and written again naming no node answer once
-// each, from the old arm. refs.BacklinkCounts moves exactly as the previous release's rows do,
-// for every node kind its arm table declares, and the store census reports a difference for each
-// of the three deleted rows, which is what the release that deletes an old arm reads first.
+// each, from the old arm. The store census then reports a difference for each of the three
+// deleted rows, which is what the release that deletes an old arm reads first.
 //
 // Last, the announcement: a build of the previous release announced itself naming only its
 // commit, and once every live process serves this build its announcement lists the kinds the
@@ -166,7 +182,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 			"write the kind's tuples and let the store's own arm answer it, or declare the new arm here with the child that takes it.",
 			armRelations(read), want)
 	}
-	moved := movedArms(t, read)
+	moved := movedArms(t, read, movedArmsDeletedBy, 4)
 	tuple := tupleArm(t, read)
 	createPreviousGraphEdges(t, database)
 
@@ -176,7 +192,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	unwriteTheStoreOfADocument(t, database, graphEdgeLegacyRefKey)
 	before := readEachArm(t, database, "before the backfill", moved, tuple, fixture.stored)
 	projected := before.view
-	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
+	projectedCounts := before.counts
 	// Each of the four answers rows of its own before the backfill, so finding it empty after
 	// it is the per-row test at work and not an arm with nothing to say.
 	for index, arm := range moved {
@@ -200,7 +216,6 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	}
 	after := readEachArm(t, database, "after the backfill", moved, tuple, fixture.stored)
 	stored := after.view
-	storedCounts := graphEdgeBacklinkCounts(t, database, projected)
 	for index, arm := range moved {
 		if rows := after.arms[index]; len(rows) != 0 {
 			t.Errorf("arm %d (%s, %s) answers %d rows once every row of its table names a node, want none: the store's arm answers them now",
@@ -215,20 +230,18 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 		len(projected), len(stored), strings.Join(edgeShapes(projected), "\n  "))
 	requireEveryMovedKind(t, projected)
 	requireSameEdges(t, "the backfill", "the view answers it before the backfill", projected, "the view answers it after the backfill", stored)
-	for _, kind := range refs.BacklinkKinds() {
-		if !maps.Equal(projectedCounts[kind], storedCounts[kind]) {
-			t.Errorf("the %s backlink counts are %v before the backfill and %v after it",
-				kind, projectedCounts[kind], storedCounts[kind])
-		}
-	}
-	// A count map that holds nothing compares equal to another that holds nothing, so the kinds
-	// the four arms point at must each be counted at all.
+	// Each reading held its counts to the previous release's count over the rows that release
+	// reads, and those rows are the same on both sides of the backfill, so the counts after it are
+	// the counts before it. A count map that holds nothing compares equal to another that holds
+	// nothing, so the kinds the four arms point at must each be counted at all.
 	for _, kind := range []string{"artifact", "issue", refs.BlockNodeKind} {
 		if len(projectedCounts[kind]) == 0 {
 			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
 		}
 	}
-	requireTheTupleArmRendersTheList(t, after.tuple)
+	// followed_by is an ask's, which TestTheAsksArmsAnswerEachRowOnce writes; from_ask and
+	// decided_by are a decision block's, which the typed-node pass writes.
+	requireTheTupleArmRendersTheList(t, after.tuple, graphstore.TupleFollowedBy, "from_ask", graphstore.TupleDecidedBy)
 
 	// Pods of the previous release write beside this one, during a roll or after a rollback.
 	written := writeAsThePreviousRelease(t, database, fixture)
@@ -249,8 +262,6 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	for _, edge := range rewritten {
 		requireAnsweredOnceByItsOldArm(t, "a row the previous release deleted and wrote again", rolledBack, moved, edge)
 	}
-	rolledBackCounts := graphEdgeBacklinkCounts(t, database, projected)
-	requireCountsMoveWithTheRows(t, moved, storedCounts, after.previous, rolledBack.previous, rolledBackCounts)
 	requireTheCensusReportsEachDeletedRow(t, takeStoreCensus(t, database), deleted)
 
 	requireTheAnnouncementListsTheArmsKinds(t, database)
@@ -274,10 +285,11 @@ var nodelessRowTest = regexp.MustCompile(`(?:([a-z_]+)\.)?node_kind IS NULL`)
 // that kind finished.
 var switchedByKind = regexp.MustCompile(`graph_store_cutover`)
 
-// movedArms holds each of the four arms over a moved kind to the per-row test over its own
-// table and to the child that deletes it, and answers them with their text for reading on their
-// own.
-func movedArms(t *testing.T, read []graphEdgesArm) []movedArm {
+// movedArms holds each arm over a moved kind to the per-row test over its own table and to the
+// child that deletes it, and answers, with their text for reading on their own, the want arms
+// deletedBy deletes: the four over the kinds dispatch://INFRA-1149 moved (movedArmsDeletedBy) or
+// the three over the kinds dispatch://INFRA-1150 moved (askArmsDeletedBy).
+func movedArms(t *testing.T, read []graphEdgesArm, deletedBy string, want int) []movedArm {
 	t.Helper()
 	for index, arm := range read {
 		if switchedByKind.MatchString(arm.text) {
@@ -296,14 +308,17 @@ func movedArms(t *testing.T, read []graphEdgesArm) []movedArm {
 			t.Errorf("arm %d (%s) over the moved kind %s carries no `node_kind is null` test, so it answers rows the store answers too:\n%s",
 				index+1, arm.relation, declared.projects, arm.text)
 		}
-		if !strings.Contains(declared.fate, movedArmsDeletedBy) {
-			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which does not name %s, the child that deletes it",
-				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy)
+		if !strings.Contains(declared.fate, movedArmsDeletedBy) && !strings.Contains(declared.fate, askArmsDeletedBy) {
+			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which names neither %s nor %s, the children that delete the moved arms",
+				index+1, arm.relation, declared.projects, declared.fate, movedArmsDeletedBy, askArmsDeletedBy)
+		}
+		if !strings.Contains(declared.fate, deletedBy) {
+			continue
 		}
 		moved = append(moved, movedArm{place: index + 1, graphEdgesArm: arm})
 	}
-	if len(moved) != 4 {
-		t.Fatalf("this test declares %d arms over a moved kind, want the four this change moved", len(moved))
+	if len(moved) != want {
+		t.Fatalf("this test declares %d arms over a moved kind that %s deletes, want %d", len(moved), deletedBy, want)
 	}
 	return moved
 }
@@ -317,6 +332,9 @@ var tupleJoins = map[string]*regexp.Regexp{
 	"block_refs": regexp.MustCompile(`FROM block_refs (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id` +
 		` AND (\w+)\.kind = edge\.stated AND (\w+)\.to_kind = edge\.to_kind AND (\w+)\.to_id = edge\.to_id`),
 	"comments": regexp.MustCompile(`FROM comments (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id`),
+	"asks":     regexp.MustCompile(`FROM asks (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id`),
+	"ask_followers": regexp.MustCompile(`FROM ask_followers (\w+) WHERE (\w+)\.node_kind = edge\.from_kind AND (\w+)\.node_address = edge\.from_id` +
+		` AND (\w+)\.session_id = edge\.to_id`),
 }
 
 // tupleArm answers the arm over graph_tuples and holds it to its join to each projection table.
@@ -341,7 +359,7 @@ func tupleArm(t *testing.T, read []graphEdgesArm) movedArm {
 
 // createPreviousGraphEdges creates previousGraphEdges from the statement of the migration that
 // last stated graph_edges before this child, over the same tables, so that what the release
-// before this one reads can be read beside what this one reads.
+// before this one reads can be read beside what this one reads, and previousCountedEdges beside it.
 func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	t.Helper()
 	migration, err := os.ReadFile(previousGraphEdgesMigration)
@@ -356,15 +374,26 @@ func createPreviousGraphEdges(t *testing.T, database *store.Store) {
 	if _, err := database.Pool.Exec(context.Background(), "create view "+previousGraphEdges+" "+view); err != nil {
 		t.Fatalf("create the previous release's view: %v", err)
 	}
+	literals := func(values []string) string { return "'" + strings.Join(values, "', '") + "'" }
+	if _, err := database.Pool.Exec(context.Background(), `create view `+previousCountedEdges+` as
+		select from_kind, from_id, kind, to_kind, to_id from `+previousGraphEdges+`
+		union all
+		select from_kind, from_id, kind, to_kind, to_id from graph_edges
+		where kind in (`+literals(storeClassKinds)+`)
+		   or (kind in (`+literals(storeClassOwnKinds)+`) and from_kind in (`+literals(storeClassSources)+`))`); err != nil {
+		t.Fatalf("create the previous release's view with the class store beside it: %v", err)
+	}
 }
 
 // graphEdgesReading is one reading of the view: the whole view, the previous release's view over
 // the same rows, each of the four arms over a moved kind on its own in the order movedArms
-// answers them, and the tuple arm on its own.
+// answers them, the tuple arm on its own, and refs.BacklinkCounts for every node kind its arm
+// table declares, kind by kind.
 type graphEdgesReading struct {
 	view, previous []graphEdgeRow
 	arms           [][]graphEdgeRow
 	tuple          []graphEdgeRow
+	counts         map[string]map[string]int
 }
 
 // answering is how often the reading answers edge: from the whole view, from each of the four
@@ -392,7 +421,8 @@ func (r graphEdgesReading) answering(edge graphEdge) (view int, arms []int, tupl
 // exactly the rows of the moved kinds whose row carries it. The rows of the tuple arm's class
 // `store` (storeClass), which the previous release has no arm for, are set apart from both
 // readings first and held, in the whole view and in the tuple arm alike, to exactly the rows the
-// fixture stated of them (stored).
+// fixture stated of them (stored). It fails as well unless this build's backlink counts are the
+// previous release's over the same rows (requireBacklinkCountsAsThePreviousRelease).
 func readEachArm(t *testing.T, database *store.Store, stage string, moved []movedArm, tuple movedArm, stored []graphEdgeRow) graphEdgesReading {
 	t.Helper()
 	reading := graphEdgesReading{
@@ -427,6 +457,7 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 	}
 	requireSameEdges(t, fmt.Sprintf("%s, arm %d (graph_tuples)", stage, tuple.place),
 		"the tuple arm answers it", tupled, "the previous release reads it from a row that carries its node", marked)
+	reading.counts = requireBacklinkCountsAsThePreviousRelease(t, database, stage)
 	return reading
 }
 
@@ -439,17 +470,23 @@ func readEachArm(t *testing.T, database *store.Store, stage string, moved []move
 // part_of its parent - that the view answers is held to the previous release's reading, which
 // answers none of them.
 func storeClass(row graphEdgeRow) bool {
-	switch row.kind {
-	case graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy:
-		return true
-	case graphstore.TuplePartOf, graphstore.TupleAuthoredBy:
-		return slices.Contains([]string{
-			graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
-		}, row.fromKind)
-	}
-	return false
+	return slices.Contains(storeClassKinds, row.kind) ||
+		slices.Contains(storeClassOwnKinds, row.kind) && slices.Contains(storeClassSources, row.fromKind)
 }
+
+// The rule storeClass reads, in three lists, so the view previousCountedEdges creates holds the
+// same rows: the kinds of the class out of any node, and the two kinds of it out of the sources
+// that follow them alone.
+var (
+	storeClassKinds = []string{
+		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
+		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
+	}
+	storeClassOwnKinds = []string{graphstore.TuplePartOf, graphstore.TupleAuthoredBy}
+	storeClassSources  = []string{
+		graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk, graphstore.KindConstraint,
+	}
+)
 
 // splitStoreClass is rows without the rows of the class `store`, and those rows apart.
 func splitStoreClass(rows []graphEdgeRow) (rest, stored []graphEdgeRow) {
@@ -466,14 +503,17 @@ func splitStoreClass(rows []graphEdgeRow) (rest, stored []graphEdgeRow) {
 // movedArmOf is the arm over a moved kind whose table holds row's edge, as an index of moved, and
 // false for an edge of a kind no moved arm carries. A block's edge is a document_blocks row's when
 // it is the part_of to its document, and a block_refs row's otherwise; a comment's anchored_to and
-// owned_by are each one comments arm's.
+// owned_by are each one comments arm's, an ask's each one asks arm's, and an ask's followed_by the
+// ask_followers arm's.
 func movedArmOf(moved []movedArm, row graphEdgeRow) (int, bool) {
 	membership := row.kind == "part_of" && row.toKind == "artifact"
 	for index, arm := range moved {
 		switch {
 		case arm.projects == "block" && row.fromKind == refs.BlockNodeKind && membership,
 			arm.projects == "block_ref" && row.fromKind == refs.BlockNodeKind && !membership,
-			arm.projects == "comment" && row.fromKind == "comment" && row.kind == arm.renders:
+			arm.projects == "comment" && row.fromKind == "comment" && row.kind == arm.renders,
+			arm.projects == "ask" && row.fromKind == graphstore.KindAsk && row.kind == arm.renders,
+			arm.projects == "ask_follower" && row.fromKind == graphstore.KindAsk && row.kind == arm.renders:
 			return index, true
 		}
 	}
@@ -494,6 +534,11 @@ func carriesItsNode(t *testing.T, database *store.Store, arm movedArm, row graph
 		args = append(args, row.kind, row.toKind, row.toID)
 	case "comment":
 		statement = `select node_kind is not null from comments where id = $1::uuid`
+	case "ask":
+		statement = `select node_kind is not null from asks where id = $1::uuid`
+	case "ask_follower":
+		statement = `select node_kind is not null from ask_followers where ask_id = $1::uuid and session_id = $2`
+		args = append(args, row.toID)
 	}
 	var marked bool
 	if err := database.Pool.QueryRow(context.Background(), statement, args...).Scan(&marked); err != nil {
@@ -551,13 +596,13 @@ func requireEveryMovedKind(t *testing.T, rows []graphEdgeRow) {
 
 // requireTheTupleArmRendersTheList fails unless every kind the tuple arm answers is one of
 // refs.TupleKinds, a block's part_of to its document read as the in_document it renders, and
-// every kind of that list but the pointer kinds the fixture writes none of is answered: the arm
-// renders the list the announcement carries and nothing else. The list holds authored_by and
-// part_of for the class `store`, so the tuples of those kinds the fixture holds out of other
-// nodes - a comment's authored_by, a block's part_of its parent - are kept out of the arm by the
-// reading itself, which holds every row outside that class to the previous release's
-// (readEachArm).
-func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow) {
+// every kind of that list but the pointer kinds the fixture writes none of and the kinds in
+// unwritten, which another test's fixture writes, is answered: the arm renders the list the
+// announcement carries and nothing else. The list holds authored_by and part_of for the class
+// `store`, so the tuples of those kinds the fixture holds out of other nodes - a comment's
+// authored_by, a block's part_of its parent - are kept out of the arm by the reading itself, which
+// holds every row outside that class to the previous release's (readEachArm).
+func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow, unwritten ...string) {
 	t.Helper()
 	list := refs.TupleKinds()
 	answered := map[string]int{}
@@ -573,7 +618,7 @@ func requireTheTupleArmRendersTheList(t *testing.T, rows []graphEdgeRow) {
 	}
 	pointers := pmdoc.LinkKinds()
 	for _, kind := range list {
-		if answered[kind] == 0 && (!slices.Contains(pointers, kind) || kind == "serves") {
+		if answered[kind] == 0 && !slices.Contains(unwritten, kind) && (!slices.Contains(pointers, kind) || kind == "serves") {
 			t.Errorf("the tuple arm answers no %s edge, which refs.TupleKinds lists and the fixture writes: %v", kind, answered)
 		}
 	}
@@ -733,63 +778,69 @@ func scanGraphEdgeRows(t *testing.T, database *store.Store, what, statement stri
 	return read
 }
 
-// graphEdgeBacklinkCounts counts the inbound edges of every node the view points at, kind by
-// kind, as a list beside a row counts them. The addresses come from the reading taken over the
-// projections and are the same every time, so a node that gains or loses an inbound edge is
-// counted on both sides rather than falling out of one.
-func graphEdgeBacklinkCounts(t *testing.T, database *store.Store, rows []graphEdgeRow) map[string]map[string]int {
+// backlinkTargets is every id of kind that an edge of the previous release's view, a tuple or a
+// block reference points at when it is read, sorted, and one id nothing points at, which must be
+// absent from every answer. The tuples and the block references are read beside the view because
+// each can point where the view does not: a tuple outlives the row a build of the previous
+// release deleted, and a pointer at a block retyped out of its allowed types is listed by no arm,
+// so a count that answered either would rise at an id no edge of the view names.
+func backlinkTargets(t *testing.T, database *store.Store, kind string) []string {
 	t.Helper()
-	targets := map[string][]string{}
-	for _, row := range rows {
-		if !slices.Contains(targets[row.toKind], row.toID) {
-			targets[row.toKind] = append(targets[row.toKind], row.toID)
-		}
+	rows, err := database.Pool.Query(context.Background(), `
+		select to_id from `+previousGraphEdges+` where to_kind = $1
+		union select to_id from graph_tuples where to_kind = $1
+		union select to_id from block_refs where to_kind = $1
+		order by to_id
+	`, kind)
+	if err != nil {
+		t.Fatalf("read the %s ids an edge, a tuple or a block reference points at: %v", kind, err)
 	}
-	counts := map[string]map[string]int{}
-	for _, kind := range refs.BacklinkKinds() {
-		ids := targets[kind]
-		slices.Sort(ids)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the %s ids an edge, a tuple or a block reference points at: %v", kind, err)
+	}
+	return append(ids, "nothing-points-at-this")
+}
+
+// requireBacklinkCountsAsThePreviousRelease fails unless refs.BacklinkCounts answers, for every
+// node kind its arm table declares and at every id backlinkTargets reads for that kind, what the
+// previous release's count statement (docstest.ViewBacklinkCountSQL) answers over
+// previousCountedEdges, naming the reading, the kind, the id and both counts at each id the two
+// differ at. It answers this build's counts, kind by kind.
+func requireBacklinkCountsAsThePreviousRelease(t *testing.T, database *store.Store, stage string) map[string]map[string]int {
+	t.Helper()
+	// The arm table declares a kind for each node kind the registry resolves and for no other, so
+	// its kinds are the node kinds this build reads, the list refs binds where the statement
+	// binds $3.
+	kinds := refs.BacklinkKinds()
+	counts := make(map[string]map[string]int, len(kinds))
+	for _, kind := range kinds {
+		ids := backlinkTargets(t, database, kind)
 		count, err := refs.BacklinkCounts(context.Background(), database.Pool, model.Actor{}, kind, ids, nil)
 		if err != nil {
-			t.Fatalf("count %s backlinks: %v", kind, err)
+			t.Fatalf("%s: count %s backlinks: %v", stage, kind, err)
+		}
+		previous := docstest.ViewBacklinkCounts(t, database.Pool, previousCountedEdges, kind, ids, kinds, nil)
+		if !maps.Equal(count, previous) {
+			named := false
+			for _, id := range ids {
+				if count[id] != previous[id] {
+					named = true
+					t.Errorf("%s: refs.BacklinkCounts counts %d at the %s %s, and the previous release's count statement over %s counts %d",
+						stage, count[id], kind, id, previousCountedEdges, previous[id])
+				}
+			}
+			// Both answer only ids they were asked about, and never a zero, so this is reached
+			// only by an answer neither statement can give; it is reported whole rather than
+			// passed over.
+			if !named {
+				t.Errorf("%s: refs.BacklinkCounts counts the %s backlinks %v, and the previous release's count statement over %s counts %v",
+					stage, kind, count, previousCountedEdges, previous)
+			}
 		}
 		counts[kind] = count
 	}
 	return counts
-}
-
-// requireCountsMoveWithTheRows fails unless refs.BacklinkCounts moved between two readings exactly
-// as the previous release's view did over the rows of the moved kinds: each node's count is the
-// count before, plus each such row pointing at it that the previous release reads now and did not
-// then, less each it read then and does not now. The rows of every other arm are the same in both
-// readings, so this is what the previous release's count reads over the same rows.
-func requireCountsMoveWithTheRows(t *testing.T, moved []movedArm, before map[string]map[string]int, previousBefore, previousNow []graphEdgeRow, now map[string]map[string]int) {
-	t.Helper()
-	want := map[string]map[string]int{}
-	for kind, counts := range before {
-		want[kind] = maps.Clone(counts)
-	}
-	move := func(rows []graphEdgeRow, by int) {
-		for _, row := range rows {
-			if _, ok := movedArmOf(moved, row); !ok {
-				continue
-			}
-			if want[row.toKind] == nil {
-				want[row.toKind] = map[string]int{}
-			}
-			want[row.toKind][row.toID] += by
-			if want[row.toKind][row.toID] == 0 {
-				delete(want[row.toKind], row.toID)
-			}
-		}
-	}
-	move(previousNow, 1)
-	move(previousBefore, -1)
-	for _, kind := range refs.BacklinkKinds() {
-		if !maps.Equal(now[kind], want[kind]) {
-			t.Errorf("after the rollback the %s backlink counts are %v; the previous release's rows count %v", kind, now[kind], want[kind])
-		}
-	}
 }
 
 // requireTheCensusReportsEachDeletedRow fails unless the store census reports a difference at each
@@ -1126,18 +1177,18 @@ func seedGraphEdgeFixture(t *testing.T, database *store.Store, service *Service)
 	// The target is indexed before the document that points at it: a write states a pointer
 	// only at a block the store holds and only at a type the attribute allows, which is why the
 	// link at a type it does not allow is made by retyping the target below.
-	target := createOwedDocument(t, database, service, "", "target", graphEdgeTarget, "")
+	target := createOwedDocument(t, database, service, "CORE-1", "", "target", graphEdgeTarget, "")
 	settle(t, database, target)
 	if ticks := drainBlockIndex(t, service, "the target document"); ticks == 0 {
 		t.Fatal("the fixture indexed no document")
 	}
-	plan := createOwedDocument(t, database, service, "", "plan", graphEdgePlanWhole, "")
+	plan := createOwedDocument(t, database, service, "CORE-1", "", "plan", graphEdgePlanWhole, "")
 	settle(t, database, plan)
 	if ticks := drainBlockIndex(t, service, "the document that points at it"); ticks == 0 {
 		t.Fatal("the fixture indexed no document holding a pointer")
 	}
 
-	legacy := createOwedDocument(t, database, service, "", "legacy", graphEdgeLegacy, "")
+	legacy := createOwedDocument(t, database, service, "CORE-1", "", "legacy", graphEdgeLegacy, "")
 	settle(t, database, legacy)
 	if ticks := drainBlockIndex(t, service, "the document the store is unwritten of"); ticks == 0 {
 		t.Fatal("the fixture indexed no document to unwrite the store of")
@@ -1223,9 +1274,7 @@ const (
 // constraint. No writer of those kinds exists at this head, so the nodes are written as their
 // writers will write them, project-visible and live, in CORE. It answers the rows the view is to
 // answer of the class: those, each dated by its tuple and carrying no source_seq, and beside them
-// the one constrained_by tuple from each kind of the lens catalogue to its source, which every
-// migrated store holds (migrations 20261116123354 and 20261116123355), read from the store as
-// the seed wrote them, so a kind the seed adds or drops moves this expectation with it.
+// the lens catalogue's seeded sources (seededStoreClass).
 func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 	t.Helper()
 	ctx := context.Background()
@@ -1289,7 +1338,16 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 			t.Fatalf("the fixture states %s as of the class store, which the view's rule does not read it as", row)
 		}
 	}
-	seeded, err := database.Pool.Query(ctx, `
+	return append(rows, seededStoreClass(t, database)...)
+}
+
+// seededStoreClass is the rows of the class `store` every migrated store holds before any write:
+// the one constrained_by tuple from each kind of the lens catalogue to its source (migrations
+// 20261116123354 and 20261116123355), read from the store as the seed wrote them, so a kind the
+// seed adds or drops moves every expectation built on them with it.
+func seededStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
+	t.Helper()
+	seeded, err := database.Pool.Query(context.Background(), `
 		select from_id, to_id, at from graph_tuples
 		where from_kind = $1 and kind = $2 and to_kind = $3 and asserted
 		order by from_id`, graphstore.KindLensKind, graphstore.TupleConstrainedBy, graphstore.KindConstraint)
@@ -1297,19 +1355,18 @@ func writeTheStoreClass(t *testing.T, database *store.Store) []graphEdgeRow {
 		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
 	}
 	defer seeded.Close()
-	catalogue := 0
+	var rows []graphEdgeRow
 	for seeded.Next() {
 		row := graphEdgeRow{fromKind: graphstore.KindLensKind, kind: graphstore.TupleConstrainedBy, toKind: graphstore.KindConstraint}
 		if err := seeded.Scan(&row.fromID, &row.toID, &row.createdAt); err != nil {
 			t.Fatalf("read a seeded source of the lens catalogue: %v", err)
 		}
 		rows = append(rows, row)
-		catalogue++
 	}
 	if err := seeded.Err(); err != nil {
 		t.Fatalf("read the lens catalogue's seeded sources: %v", err)
 	}
-	if catalogue == 0 {
+	if len(rows) == 0 {
 		t.Fatal("the migrated store holds no constrained_by tuple of the lens catalogue, which its migrations seed")
 	}
 	return rows
@@ -1365,4 +1422,266 @@ func scanGraphEdgeFixture(t *testing.T, database *store.Store, what, statement s
 		t.Fatalf("%s: %v", what, err)
 	}
 	return id
+}
+
+// The three arms over an ask's relations answer each row once, from the arm the row itself
+// decides (dispatch://INFRA-1150 R3): the asks arms of anchored_to and owned_by and the
+// ask_followers arm of followed_by answer only the rows whose node_kind is null, and the tuple arm
+// answers those relations from an ask's node only while the asks row, or the ask_followers row of
+// that ask and that session, carries the node.
+//
+// It is TestGraphEdgesLosesEveryArmOverAMovedKind's reading over the asks and their followers:
+// every reading reads the whole view, the view of the release before the store (the same
+// previousGraphEdges) over the same rows, each of the seven moved arms and the tuple arm on their
+// own, and holds the whole view to the previous one row for row, each row of a moved kind to
+// exactly one arm, decided by its own projection row, the rows of the class `store` to the lens
+// catalogue's seeded sources, which are the only ones this fixture holds (seededStoreClass), and
+// refs.BacklinkCounts to the previous release's count statement over the same rows.
+//
+// The readings, in order. Before the backfill, three asks and two followers written as a build
+// before this release wrote them, naming no node, come from the three old arms, each of which
+// answers rows of its own, while an ask block this release's writer opens (createAskBlock), whose
+// row and whose author's follower row it marks, comes from the tuple arm alone. After the backfill
+// (`backfill-graph-store`) every row is marked: the three old arms answer nothing, the tuple arm
+// answers every row, and the whole view is what it was before it. An ask and a follower then
+// written as the previous release writes them, naming no node, come from their old arms alone.
+// Then the rollback, as a build of the previous release does it, retracting nothing in the store:
+// a marked follower row and a marked ask (with its follower row) deleted answer from no arm, and a
+// marked follower row deleted and written again naming no node answers once, from the old arm.
+//
+// Each case fails when its arm's marker test is taken out of the view: an old arm without its
+// `node_kind is null` answers a marked row beside the tuple arm, and a tuple arm without its join
+// to asks or ask_followers answers a deleted row.
+func TestTheAsksArmsAnswerEachRowOnce(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+
+	read := readGraphEdgesArms(t, database)
+	if want := armRelations(graphEdgesArms); !slices.Equal(armRelations(read), want) {
+		t.Fatalf("graph_edges reads %v; this test declares %v", armRelations(read), want)
+	}
+	asked := movedArms(t, read, askArmsDeletedBy, 3)
+	moved := append(movedArms(t, read, movedArmsDeletedBy, 4), asked...)
+	firstAsked := len(moved) - len(asked)
+	tuple := tupleArm(t, read)
+	createPreviousGraphEdges(t, database)
+
+	fixture := seedAskArmsFixture(t, database, service)
+	stored := seededStoreClass(t, database)
+	before := readEachArm(t, database, "before the backfill", moved, tuple, stored)
+	projectedCounts := before.counts
+	for index, arm := range asked {
+		t.Logf("arm %d (%s, %s) answers %d rows before the backfill", arm.place, arm.relation, arm.renders, len(before.arms[firstAsked+index]))
+		if len(before.arms[firstAsked+index]) == 0 {
+			t.Errorf("arm %d (%s, %s) answers no row before the backfill, so finding it empty after it would prove nothing",
+				arm.place, arm.relation, arm.renders)
+		}
+	}
+	for _, edge := range fixture.made {
+		if view, arms, tupled := before.answering(edge); view != 1 || tupled != 1 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
+			t.Errorf("before the backfill the view answers %s, which this release's writer marked, %d times (the moved arms %v, the tuple arm %d); want once, from the tuple arm",
+				edge, view, arms, tupled)
+		}
+	}
+
+	report, err := graphcensus.Backfill(ctx, database, io.Discard)
+	if err != nil {
+		t.Fatalf("backfill the store: %v", err)
+	}
+	stated := map[string]graphcensus.KindBackfill{}
+	for _, kind := range report.Kinds {
+		stated[kind.Kind] = kind
+		if !kind.Complete {
+			t.Fatalf("the backfill left %s with rows that name no node: %#v", kind.Kind, kind)
+		}
+	}
+	if stated["asks"].Rows != 3 || stated["ask_followers"].Rows != 2 {
+		t.Fatalf("the backfill marked %d asks and %d followers, want the 3 and the 2 written before this release", stated["asks"].Rows, stated["ask_followers"].Rows)
+	}
+	after := readEachArm(t, database, "after the backfill", moved, tuple, stored)
+	for index, arm := range asked {
+		if rows := after.arms[firstAsked+index]; len(rows) != 0 {
+			t.Errorf("arm %d (%s, %s) answers %d rows once every row of its table names its node, want none: the store's arm answers them now",
+				arm.place, arm.relation, arm.renders, len(rows))
+		}
+	}
+	requireSameEdges(t, "the backfill", "the view answers it before the backfill", before.view, "the view answers it after the backfill", after.view)
+	// Each reading held its counts to the previous release's count over the rows that release
+	// reads, and those rows are the same on both sides of the backfill, so the counts after it are
+	// the counts before it. A count map that holds nothing compares equal to another that holds
+	// nothing, so the kinds the asks arms point at must each be counted at all.
+	for _, kind := range []string{"artifact", graphstore.KindSession} {
+		if len(projectedCounts[kind]) == 0 {
+			t.Errorf("the %s backlink counts before the backfill are empty, so their comparison proves nothing", kind)
+		}
+	}
+	rendered := map[string]int{}
+	for _, row := range after.tuple {
+		if row.fromKind == graphstore.KindAsk {
+			rendered[row.kind]++
+		}
+	}
+	for _, kind := range []string{graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy, graphstore.TupleFollowedBy} {
+		if rendered[kind] == 0 {
+			t.Errorf("after the backfill the tuple arm renders no ask %s: %v", kind, rendered)
+		}
+	}
+	t.Logf("after the backfill the tuple arm renders the asks' %v", rendered)
+
+	// Pods of the previous release write beside this one, during a roll or after a rollback.
+	written := writeAsksAsThePreviousRelease(t, database, fixture)
+	beside := readEachArm(t, database, "beside rows the previous release wrote", moved, tuple, stored)
+	for _, edge := range written {
+		requireAnsweredOnceByItsOldArm(t, "a row the previous release wrote", beside, moved, edge)
+	}
+
+	deleted, rewritten := rollBackAsksAsThePreviousRelease(t, database, fixture)
+	rolledBack := readEachArm(t, database, "after the rollback", moved, tuple, stored)
+	for _, edge := range deleted {
+		if view, arms, tupled := rolledBack.answering(edge); view != 0 || tupled != 0 || slices.ContainsFunc(arms, func(n int) bool { return n != 0 }) {
+			t.Errorf("after the rollback the view answers the deleted row %s %d times (the moved arms %v, the tuple arm %d), want no arm: a build of the previous release deleted it",
+				edge, view, arms, tupled)
+		}
+	}
+	for _, edge := range rewritten {
+		requireAnsweredOnceByItsOldArm(t, "a row the previous release deleted and wrote again", rolledBack, moved, edge)
+	}
+}
+
+// askArmsFixture is what seedAskArmsFixture wrote that the later steps name: the issue's document
+// and the project's, the three asks written as a build before this release wrote them (one
+// anchored on the document, one owned by the project's document, one whose block the document
+// holds), the ask block this release's writer opened, and that ask's edges, which its writer
+// marked.
+type askArmsFixture struct {
+	document, runbook               string
+	anchored, owned, block, created string
+	made                            []graphEdge
+}
+
+// askArmsSession and createdAskSession are the sessions that follow the fixture's asks: the one
+// the rows written before this release name, and the author of the ask block this release opens.
+const (
+	askArmsSession    = "session-legacy"
+	createdAskSession = "session-made"
+)
+
+// seedAskArmsFixture writes the asks the three arms carry: a document of CORE-1 and a document of
+// project CORE, three asks and two followers as a build before this release wrote them - rows that
+// name no node, of asks the store holds no node of - and an ask block this release's writer opens
+// on the document (createAskBlock), whose author is a session that follows it, caused as the
+// settlement that opens it causes it.
+func seedAskArmsFixture(t *testing.T, database *store.Store, service *Service) askArmsFixture {
+	t.Helper()
+	ctx := context.Background()
+	var fixture askArmsFixture
+	fixture.document = createOwedDocument(t, database, service, "CORE-1", "", "choices", "Choices.\n", "")
+	settle(t, database, fixture.document)
+	fixture.runbook = scanGraphEdgeFixture(t, database, "the project's document", `
+		insert into artifacts (project_key, slug, name, kind, is_primary, created_by)
+		values ('CORE', 'runbook', 'runbook.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`)
+	fixture.anchored = scanGraphEdgeFixture(t, database, "the anchored ask", `
+		insert into asks (issue_key, author, question, anchor)
+		values ('CORE-1', '{"kind":"user","id":"alice"}', 'Anchored on the document?', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, fixture.document)
+	fixture.owned = scanGraphEdgeFixture(t, database, "the owned ask", `
+		insert into asks (artifact_id, author, question)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'Owned by the runbook?')
+		returning id::text
+	`, fixture.runbook)
+	fixture.block = scanGraphEdgeFixture(t, database, "the block ask", `
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ('CORE-1', '{"kind":"user","id":"alice"}', 'Held by the document?', 'legacy-block', $1::uuid)
+		returning id::text
+	`, fixture.document)
+	for _, ask := range []string{fixture.anchored, fixture.owned} {
+		if _, err := database.Pool.Exec(ctx, `insert into ask_followers (ask_id, session_id) values ($1::uuid, $2)`, ask, askArmsSession); err != nil {
+			t.Fatalf("follow ask %s as the release before follows it: %v", ask, err)
+		}
+	}
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the ask block's write: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	issue := "CORE-1"
+	ask, opened, err := createAskBlock(ctx, tx, fixture.document, artifactOwner{IssueKey: &issue, Project: "CORE", Slug: "choices"},
+		askBlock{id: "made", question: "Opened by this release?", options: []model.AskOption{}, urgency: "med"},
+		model.Actor{Kind: "session", ID: createdAskSession})
+	if err != nil {
+		t.Fatalf("open the ask block: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, opened.node, graphstore.NoEvent); err != nil {
+		t.Fatalf("cause the ask block's node: %v", err)
+	}
+	if err := graphstore.Caused(ctx, tx, opened.followed.Uncaused, graphstore.NoEvent); err != nil {
+		t.Fatalf("cause the ask block's follow: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the ask block: %v", err)
+	}
+	fixture.created = ask.ID
+	documentKey := scanGraphEdgeFixture(t, database, "the document's address", `select ref_key from artifacts where id = $1::uuid`, fixture.document)
+	fixture.made = []graphEdge{
+		{graphstore.KindAsk, ask.ID, graphstore.TupleAnchoredTo, graphstore.KindArtifact, documentKey},
+		{graphstore.KindAsk, ask.ID, graphstore.TupleFollowedBy, graphstore.KindSession, createdAskSession},
+	}
+	return fixture
+}
+
+// writeAsksAsThePreviousRelease writes an ask owned by the project's document and its follower as
+// a pod of the release before this one writes them - naming no node, with no node of the ask -
+// and answers their edges.
+func writeAsksAsThePreviousRelease(t *testing.T, database *store.Store, fixture askArmsFixture) []graphEdge {
+	t.Helper()
+	later := scanGraphEdgeFixture(t, database, "the previous release's ask", `
+		insert into asks (artifact_id, author, question)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'Written by the previous release?')
+		returning id::text
+	`, fixture.runbook)
+	if _, err := database.Pool.Exec(context.Background(), `insert into ask_followers (ask_id, session_id) values ($1::uuid, $2)`, later, askArmsSession); err != nil {
+		t.Fatalf("follow the previous release's ask: %v", err)
+	}
+	return []graphEdge{
+		{graphstore.KindAsk, later, graphstore.TupleOwnedBy, graphstore.KindArtifact, "CORE/runbook"},
+		{graphstore.KindAsk, later, graphstore.TupleFollowedBy, graphstore.KindSession, askArmsSession},
+	}
+}
+
+// rollBackAsksAsThePreviousRelease does what a build of the release before this one does after a
+// rollback, which retracts nothing in the store: it deletes the anchored ask's marked follower row
+// and the marked ask the project's document owns, whose follower row goes with it, and deletes the
+// follower row of the ask block this release opened and writes it again naming no node, dated by
+// that write. It answers the edges of the deleted rows and of the rewritten one.
+func rollBackAsksAsThePreviousRelease(t *testing.T, database *store.Store, fixture askArmsFixture) (deleted, rewritten []graphEdge) {
+	t.Helper()
+	ctx := context.Background()
+	if tag, err := database.Pool.Exec(ctx, `delete from ask_followers where ask_id = $1::uuid and session_id = $2 and node_kind is not null`,
+		fixture.anchored, askArmsSession); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("delete the anchored ask's follower: %d rows, %v", tag.RowsAffected(), err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `delete from asks where id = $1::uuid and node_kind is not null`, fixture.owned); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("delete the owned ask: %d rows, %v", tag.RowsAffected(), err)
+	}
+	if tag, err := database.Pool.Exec(ctx, `delete from ask_followers where ask_id = $1::uuid and session_id = $2 and node_kind is not null`,
+		fixture.created, createdAskSession); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("delete the ask block's follower as the previous release deletes it: %d rows, %v", tag.RowsAffected(), err)
+	}
+	if _, err := database.Pool.Exec(ctx, `insert into ask_followers (ask_id, session_id, since) values ($1::uuid, $2, clock_timestamp())`,
+		fixture.created, createdAskSession); err != nil {
+		t.Fatalf("write the ask block's follower again as the previous release writes it: %v", err)
+	}
+	deleted = []graphEdge{
+		{graphstore.KindAsk, fixture.anchored, graphstore.TupleFollowedBy, graphstore.KindSession, askArmsSession},
+		{graphstore.KindAsk, fixture.owned, graphstore.TupleOwnedBy, graphstore.KindArtifact, "CORE/runbook"},
+		{graphstore.KindAsk, fixture.owned, graphstore.TupleFollowedBy, graphstore.KindSession, askArmsSession},
+	}
+	rewritten = []graphEdge{
+		{graphstore.KindAsk, fixture.created, graphstore.TupleFollowedBy, graphstore.KindSession, createdAskSession},
+	}
+	return deleted, rewritten
 }

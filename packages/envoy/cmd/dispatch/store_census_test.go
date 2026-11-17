@@ -766,9 +766,11 @@ func runBackfill(t *testing.T, databaseURL string) {
 
 // waitForTheBlockIndex waits for the reconciliation to drain the mark the backfill left: a
 // block's parent is the nesting of its rendered version, which no column holds, so the backfill
-// marks each document it touched owed a block index and the reconciliation states the part_of
-// tuple and writes parent_block_id. The census reads a difference on every backfilled block
-// until that mark is drained, so this run waits for it rather than reading it as a difference.
+// marks each document it touched (store_owed_at, a mark of this release's own) and the
+// reconciliation states the part_of tuple, writes parent_block_id and clears the mark. The census
+// reads a difference on every backfilled block until that mark is drained, so this run waits for
+// it, and for every document owed a block index by a null version, rather than reading either as
+// a difference.
 func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string) {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
@@ -777,7 +779,7 @@ func waitForTheBlockIndex(t *testing.T, ctx context.Context, databaseURL string)
 	for {
 		var owed int
 		if err := conn.QueryRow(ctx,
-			`select count(*) from document_block_versions where version is null`).Scan(&owed); err != nil {
+			`select count(*) from document_block_versions where version is null or store_owed_at is not null`).Scan(&owed); err != nil {
 			t.Fatalf("read the documents owed a block index: %v", err)
 		}
 		if owed == 0 {
@@ -1316,7 +1318,9 @@ func censusBlockRefTuples(t *testing.T, ctx context.Context, conn *pgx.Conn) []p
 
 // ───── the census ─────────────────────────────────────────────────────────
 
-// kindCensus is one kind's line of the census report.
+// kindCensus is one kind's line of the census report. A kind held triple by triple
+// (dispatch://INFRA-1150's ties) prints the store's side as tuples= and its differences as
+// rows_without_a_tuple= and tuples_without_a_row=, read here into the same fields.
 type kindCensus struct {
 	kind               string
 	nodes, rows        int64
@@ -1337,15 +1341,22 @@ func runStoreCensus(t *testing.T, databaseURL string) []kindCensus {
 	var read []kindCensus
 	for _, line := range strings.Split(out, "\n") {
 		fields := censusFields(line)
-		if fields == nil || fields["kind"] == "" || fields["nodes"] == "" {
+		if fields == nil || fields["kind"] == "" {
+			continue
+		}
+		side, rowsMissing, sideMissing := "nodes", "rows_without_a_node", "nodes_without_a_row"
+		if fields["tuples"] != "" {
+			side, rowsMissing, sideMissing = "tuples", "rows_without_a_tuple", "tuples_without_a_row"
+		}
+		if fields[side] == "" {
 			continue
 		}
 		read = append(read, kindCensus{
 			kind:               fields["kind"],
-			nodes:              censusCount(t, fields["nodes"]),
+			nodes:              censusCount(t, fields[side]),
 			rows:               censusCount(t, fields["rows"]),
-			rowsWithoutANode:   censusCount(t, fields["rows_without_a_node"]),
-			nodesWithoutARow:   censusCount(t, fields["nodes_without_a_row"]),
+			rowsWithoutANode:   censusCount(t, fields[rowsMissing]),
+			nodesWithoutARow:   censusCount(t, fields[sideMissing]),
 			addressesPastBound: censusCount(t, fields["addresses_past_bound"]),
 		})
 	}
@@ -1410,7 +1421,16 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 		}
 	}
 	for _, kind := range report {
-		if !slices.Contains(censusKinds, kind.kind) {
+		switch {
+		case slices.Contains(censusKinds, kind.kind):
+		case slices.Contains(decisionCensusKinds, kind.kind):
+			// dispatch://INFRA-1150's kinds, which this run writes no decision for and which a store
+			// may hold none of: no row and no node of one is no refusal, and a difference is.
+			if kind.rowsWithoutANode != 0 || kind.nodesWithoutARow != 0 {
+				t.Errorf("kind %s reads %d row(s) without a node and %d node(s) without a row",
+					kind.kind, kind.rowsWithoutANode, kind.nodesWithoutARow)
+			}
+		default:
 			t.Errorf("the census checked kind %s, which this test's list does not hold", kind.kind)
 		}
 	}

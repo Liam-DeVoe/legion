@@ -662,6 +662,7 @@ var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
 	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
 	"GET /api/v1/signins":                                                "the agent-secrets broker",
+	"GET /api/v1/near-copy-checks/{id}":                                  "a near-copy check the create gate recorded",
 }
 
 // routeProbeQueries are the queries the reads that require one are sent, each naming the
@@ -679,6 +680,7 @@ func routeProbeQueries(owned crossProject) map[string]string {
 		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
 		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
 		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
+		"GET /api/v1/near-copy-checks":     url.Values{"project": {"TEST"}}.Encode(),
 	}
 }
 

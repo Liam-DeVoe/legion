@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -66,9 +67,12 @@ func asksOn(t *testing.T, service *Service, document string) int {
 	return count
 }
 
+// requireCopiedStates fails t unless the document, as an agent reads it (TextWithAnswers: each
+// ask block carrying its ask's, or its copy's source's, answer state and answer, rendered on read
+// from the ask, since no stored byte holds them), holds each of want.
 func requireCopiedStates(t *testing.T, service *Service, document string, want ...string) {
 	t.Helper()
-	text, err := service.Text(context.Background(), document)
+	text, _, _, err := service.TextWithAnswers(context.Background(), document, false)
 	if err != nil {
 		t.Fatalf("read copy: %v", err)
 	}
@@ -140,6 +144,51 @@ func TestADocumentCopiedOnItsIssueShowsItsSourcesAsksAndOpensNone(t *testing.T) 
 	if count := asksOn(t, service, copied); count != 0 {
 		t.Fatalf("the copy opened %d asks after its source was answered, want none", count)
 	}
+}
+
+// A copy names its source's document as the source ask's node holds it - the far end of the ask's
+// part_of, the record of where the ask is - and not as the source's row names it: once the node is
+// part of another document of the issue, as the restore states a move of an ask
+// (graphstore.AskClaims), a copy settled after that names the other document. A source whose row
+// names no node yet, which the boot step's backfill marks, has no part_of to read, and its copy
+// names the document its row does.
+func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
+	service, original := newTestService(t)
+	service.settle = time.Hour
+	ctx := context.Background()
+	source := copiedAskSource(t, service, original)["copy-open"]
+	elsewhere := createIssueDocument(t, service.store, 1, "# Elsewhere")
+	var elsewhereKey string
+	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, elsewhere).Scan(&elsewhereKey); err != nil {
+		t.Fatalf("read the other document's address: %v", err)
+	}
+	arms, params, err := graphstore.WriteArms(1, nil, nil, graphstore.AskClaims(source,
+		graphstore.AskPlaces{Anchor: elsewhereKey, Document: elsewhereKey},
+		model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC(), graphstore.NoEvent))
+	if err != nil {
+		t.Fatalf("build the move of the source ask's node: %v", err)
+	}
+	if _, err := service.store.Pool.Exec(ctx, "with "+arms+"\nselect 1", params...); err != nil {
+		t.Fatalf("state the source ask's node part of the other document: %v", err)
+	}
+	openCopyOf := func(document string) string {
+		return `:::ask{#copy-open urgency="med" multiple="false" state="open" ` + copiedFrom(t, service, source, document) + `}`
+	}
+
+	copied := createIssueDocument(t, service.store, 1, "# Copy")
+	seedServiceText(t, service, copied, copiedAsksDocument)
+	settleCurrentGeneration(t, service, copied)
+	requireCopiedStates(t, service, copied, openCopyOf(elsewhere))
+
+	if _, err := service.store.Pool.Exec(ctx, `update asks set node_kind = null, node_address = null where id = $1::uuid`, source); err != nil {
+		t.Fatalf("leave the source ask's row naming no node: %v", err)
+	}
+	editLiveTree(t, service, copied, func(tree *pmdoc.Node) *pmdoc.Node {
+		tree.Children[0].Children[0].Text = "Context, revisited"
+		return tree
+	})
+	settleCurrentGeneration(t, service, copied)
+	requireCopiedStates(t, service, copied, openCopyOf(original))
 }
 
 // openAskBlocksOn is the block ids of document's open asks, in order.
@@ -1262,13 +1311,21 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 			return fmt.Errorf("answer the source ask: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
-	} else if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice); err != nil {
-		return fmt.Errorf("resolve the source ask: %w", err)
 	}
-	if _, err := service.events.Append(ctx, tx, documentAskEvent(
+	var held graphstore.Uncaused
+	if answer == nil {
+		if source, err = WriteAskResolution(ctx, tx, source, "resolved", "Waived.", alice, &held); err != nil {
+			return fmt.Errorf("resolve the source ask: %w", err)
+		}
+	}
+	appended, err := service.events.Append(ctx, tx, documentAskEvent(
 		owner, original, eventType, alice, model.NewAskEventPayload(source, model.ReferenceChanges{}),
-	)); err != nil {
+	))
+	if err != nil {
 		return fmt.Errorf("append the source's %s event: %w", eventType, err)
+	}
+	if err := graphstore.Caused(ctx, tx, held, appended.ID); err != nil {
+		return fmt.Errorf("state the source's resolution: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return fmt.Errorf("commit closing the source: %w", err)

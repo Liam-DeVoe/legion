@@ -75,6 +75,11 @@ type compiledManifest struct {
 	// attributes' names, sorted.
 	linkKinds         []string
 	pointerAttributes map[string][]string
+	// admitted maps each typed block a type's parents name to the types it admits after its own
+	// content (BlockTypeSchema.Parents), and placed holds each type that names parents: such a
+	// type is in no node group (isBlockNodeType), so it stands only where a parent admits it.
+	admitted map[string]map[string]bool
+	placed   map[string]bool
 	// maxSince is the highest since among the declared elements: no document's DocumentSince
 	// is higher.
 	maxSince int
@@ -153,7 +158,9 @@ func Install(value BlockSchema) error {
 // (CheckBlockPointers), so keeping it would let an older build accept at any block the pointers
 // a newer one holds to a type it does not know. An enum attribute every choice of which is newer
 // than this build goes the same way: an enum with no choice is one validateAttributeSchema
-// refuses, which would fail the boot, and no value of it is one this build could read.
+// refuses, which would fail the boot, and no value of it is one this build could read. So does a
+// type every parent of which this build leaves out (BlockTypeSchema.Parents): a type naming no
+// parent stands wherever a block does, which a newer build never let it.
 func asOfVersion(value BlockSchema, version int) BlockSchema {
 	reads := func(since int) bool { return max(since, 1) <= version }
 	dropped := make(map[string]bool)
@@ -164,6 +171,22 @@ func asOfVersion(value BlockSchema, version int) BlockSchema {
 			continue
 		}
 		types = append(types, typ)
+	}
+	// A type left with no parent drops out, which may leave another type naming it with none.
+	isDropped := func(name string) bool { return dropped[name] }
+	for changed := true; changed; {
+		changed = false
+		for index := range types {
+			typ := &types[index]
+			if !slices.ContainsFunc(typ.Parents, isDropped) {
+				continue
+			}
+			typ.Parents = slices.DeleteFunc(slices.Clone(typ.Parents), isDropped)
+			if len(typ.Parents) == 0 {
+				dropped[typ.Name], changed = true, true
+			}
+		}
+		types = slices.DeleteFunc(types, func(typ BlockTypeSchema) bool { return dropped[typ.Name] })
 	}
 	for index := range types {
 		typ := &types[index]
@@ -273,6 +296,8 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 		versions:          make(map[Element]BlockElementVersions),
 		uncreatable:       make(map[Element]bool),
 		pointerAttributes: map[string][]string{},
+		admitted:          map[string]map[string]bool{},
+		placed:            map[string]bool{},
 		json:              raw,
 	}
 	linkKinds := map[string]struct{}{}
@@ -318,6 +343,13 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 			return nil, err
 		}
 		compiled.types[typ.Name] = typ
+		for _, parent := range typ.Parents {
+			if compiled.admitted[parent] == nil {
+				compiled.admitted[parent] = map[string]bool{}
+			}
+			compiled.admitted[parent][typ.Name] = true
+			compiled.placed[typ.Name] = true
+		}
 		var pointers []string
 		for _, attribute := range typ.Attributes {
 			name, attr := attribute.Name, attribute.BlockAttributeSchema

@@ -89,7 +89,8 @@ func TestTheBackfillLeavesOutAnOwnedByTuplePastTheBound(t *testing.T) {
 // by the backfill alike, so it states no authored_by tuple and makes no node of its author. A
 // person whose only comment is such a one, and a session that wrote only such a one, are
 // therefore no nodes of the store, and the census may hold the store to neither: counting them
-// on the row side left a difference nothing could ever close.
+// on the row side left a difference nothing could ever close. The census counts the comments
+// themselves past the bound instead, as a class of their own and no difference.
 func TestTheCensusHoldsNoAuthorOfACommentPastTheBound(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -142,7 +143,16 @@ func TestTheCensusHoldsNoAuthorOfACommentPastTheBound(t *testing.T) {
 				held.kind, held.id, got, err)
 		}
 	}
-	requireTheCensusAgrees(t, "the census over a comment past the bound", storeCensusOf(t, database))
+	report := storeCensusOf(t, database)
+	requireTheCensusAgrees(t, "the census over a comment past the bound", report)
+	// Zero differences alone would pass a census that never counted the two comments at all.
+	// They are left out of the store on purpose, so the census must count them past the bound,
+	// as a class of their own, and not pass over them in silence.
+	pastBound := censusKind(t, report, "comment").PastBound
+	if pastBound < 2 {
+		t.Fatalf("the census counts %d comment(s) past the bound, want at least the two on the long-keyed document", pastBound)
+	}
+	t.Logf("the census counts %d comment(s) past the bound", pastBound)
 }
 
 // randText is an incompressible string of n lower-case alphanumeric bytes: a btree compresses a

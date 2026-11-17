@@ -311,7 +311,10 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
 // the node. A value tuple is listed without its value, which can be text. A tuple into a finding
 // of a lens names it by the kind the graph addresses it by, lens_block (graphstore.AddressKind),
-// where the store keys the finding as a block, so a tuple into the node is read under either.
+// where the store keys the finding as a block, so a tuple into the node is read under either. Of
+// an ask's node or a block's, it also keeps the writers its authored_by, decided_by and
+// answered_by tuples name (Erasure.Writers), which the record of the run holds once those tuples
+// go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -322,6 +325,7 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	defer rows.Close()
+	writers := map[ErasedWriter]struct{}{}
 	for rows.Next() {
 		var seq int64
 		var fromKind, fromID, kind, toKind, toID string
@@ -334,6 +338,9 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		} else {
 			e.Inbound++
 		}
+		if out && writesTheNode(e.Kind, kind, toKind) {
+			writers[ErasedWriter{Kind: toKind, ID: toID}] = struct{}{}
+		}
 		far := toKind + ":" + toID
 		if toKind == graphstore.KindValue {
 			far = "a value"
@@ -345,7 +352,27 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
+	e.Writers = slices.SortedFunc(maps.Keys(writers), func(a, b ErasedWriter) int {
+		return strings.Compare(a.Kind+":"+a.ID, b.Kind+":"+b.ID)
+	})
 	return nil
+}
+
+// writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
+// toKind, names who wrote or answered that node: an ask's authored_by, answered_by or decided_by,
+// or a decision's decided_by or a reading's authored_by, into a person or a session. A comment's
+// authored_by is not one: no record of an erase holds a comment's author.
+func writesTheNode(nodeKind, kind, toKind string) bool {
+	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
+		return false
+	}
+	switch nodeKind {
+	case graphstore.KindAsk:
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy
+	case refs.BlockNodeKind:
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
+	}
+	return false
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without
@@ -775,18 +802,23 @@ func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, e
 }
 
 // nodeOwners reads the owner row each projection row of the node stands under: an issue's own
-// comment stands under the issue, and every other row under the owner of the document it belongs
-// to, which is that document's issue or, for a document no issue owns, the document's own
-// artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
-// no row projects stands under none.
+// comment or ask stands under the issue, a follower row under its ask's owner, and every other row
+// under the owner of the document it belongs to, which is that document's issue or, for a document
+// no issue owns, the document's own artifacts row - the owner docs' lockArtifactOwner finds and
+// events.LockOwnerRows takes. A node no row projects stands under none.
 func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, error) {
 	arms := make([]string, len(projectedTables))
 	for index, held := range projectedTables {
+		from, owner := held.Table+` held`, `held`
+		if held.Through != "" {
+			from, owner = from+` join `+held.Through, `owner`
+		}
 		issue := "null::text"
 		if held.Issue != "" {
-			issue = held.Issue
+			issue = owner + `.` + held.Issue
 		}
-		arms[index] = `select ` + issue + `, artifact_id from ` + held.Table + ` where node_kind = $1 and node_address = $2`
+		arms[index] = `select ` + issue + `, ` + owner + `.artifact_id from ` + from +
+			` where held.node_kind = $1 and held.node_address = $2`
 	}
 	rows, err := tx.Query(ctx, `
 		select coalesce(held.issue_key, a.issue_key, ''), coalesce(a.id::text, '')
@@ -855,13 +887,14 @@ func projectionRows(reference referencingColumn, table string) string {
 //
 // Two kinds of row do. A row that points at this node's projection through a nullable reference:
 // a reply whose reply_to names an erased comment is somebody else's words, and an ask handed back
-// through it is the ask's own history, so the erase neither deletes one nor rewrites the other.
-// And a projection row of another node the store holds, not gone, whose node states a tuple into
-// this one now of a kind that row digests (graphcensus.DigestedTuple, the census's own definition
-// of what each projection row states): a block inside an erased block (its part_of and its
-// parent_block_id), a block that cites it (its mentions or pointer tuple and its block_refs row),
-// a comment its author is (its authored_by and its author). The erase deletes the tuples into the
-// node, so such a row would go on stating a tuple the store no longer holds, which is a difference
+// through it is the ask's own history, so the erase neither deletes one nor rewrites the other; a
+// comment whose ask_id names an erased ask is a reply in its thread, the same. And a projection
+// row of another node the store holds, not gone, whose node states a tuple into this one now of a
+// kind that row digests (graphcensus.DigestedTuple, the census's own definition of what each
+// projection row states): a block inside an erased block (its part_of and its parent_block_id), a
+// block that cites it (its mentions or pointer tuple and its block_refs row), a comment or an ask
+// its author is (its authored_by and its author). The erase deletes the tuples into the node, so
+// such a row would go on stating a tuple the store no longer holds, which is a difference
 // `census --store` reads. A tuple of a kind no row states - a changed_by_run a write made for a
 // run appended out of a comment or a block, a requirement's constrained_by - is the store's alone:
 // it blocks nothing, and the erase deletes it with the node.

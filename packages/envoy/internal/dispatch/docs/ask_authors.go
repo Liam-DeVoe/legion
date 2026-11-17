@@ -13,34 +13,53 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// askBlockIDs collects the id of every ask block tree holds (pmdoc.WalkAskBlocks). It never
+// askBlockIDs collects the id of every credited block tree holds (pmdoc.WalkCreditedBlocks): each
+// ask, decision and reading, the blocks whose author the room and the durable record keep from the
+// write that introduced them until a settlement reads it - an ask's to open its row, a decision's
+// and a reading's for the decided_by and authored_by its node takes (refs.DecisionFacts). It never
 // returns nil: a document with none still returns an empty map, which askBlockSources.author
 // reads as "no block is unindexed" rather than as an unknown baseline
 // (askBlockSources.observed). A nil map therefore comes from no walk of a tree, only from a
 // caller that could not read the document it meant to walk
-// (renderedReplica.spliceTouched, observeAskBlocksForUpdate).
+// (renderedReplica.spliceTouched, observeAskBlocksForUpdate). A refusal that reads the ask blocks
+// alone, against the open asks rows, walks them with openAskBlockIDs.
 func askBlockIDs(tree *pmdoc.Node) map[string]struct{} {
 	ids := map[string]struct{}{}
 	addAskBlockIDs(ids, tree)
 	return ids
 }
 
-// addAskBlockIDs adds to ids the id of every ask block tree holds, skipping an ask block carrying
-// none: what askBlockIDs collects for a whole document, for a caller that collects the ask blocks
-// of several trees into one set (renderedReplica.spliceTouched).
+// addAskBlockIDs adds to ids the id of every credited block tree holds, skipping one carrying
+// none: what askBlockIDs collects for a whole document, for a caller that collects the credited
+// blocks of several trees into one set (renderedReplica.spliceTouched).
 func addAskBlockIDs(ids map[string]struct{}, tree *pmdoc.Node) {
-	pmdoc.WalkAskBlocks(tree, func(id string) {
+	pmdoc.WalkCreditedBlocks(tree, func(id string) {
 		if id != "" {
 			ids[id] = struct{}{}
 		}
 	})
 }
 
-// askBlockOrder lists the id of every ask block tree holds in document order, "" for a block
-// with none.
+// openAskBlockIDs collects the id of every ask block tree holds (pmdoc.WalkAskBlocks), and of no
+// other credited block: the ids an asks row can name, which a refusal of a dropped ask reads
+// against (refuseDroppedAskBlocksIn, droppedAskBlocks), so a decision retyped from an ask block is
+// no ask block kept.
+func openAskBlockIDs(tree *pmdoc.Node) map[string]struct{} {
+	ids := map[string]struct{}{}
+	pmdoc.WalkAskBlocks(tree, func(id string) {
+		if id != "" {
+			ids[id] = struct{}{}
+		}
+	})
+	return ids
+}
+
+// askBlockOrder lists the id of every credited block tree holds in document order, "" for a block
+// with none, which a block-id stamp's renames are read from (stampedAskBlocks), so the author of a
+// credited block whose id a stamp re-minted is carried to its new id.
 func askBlockOrder(tree *pmdoc.Node) []string {
 	var ids []string
-	pmdoc.WalkAskBlocks(tree, func(id string) { ids = append(ids, id) })
+	pmdoc.WalkCreditedBlocks(tree, func(id string) { ids = append(ids, id) })
 	return ids
 }
 
@@ -405,7 +424,8 @@ func readRecordedAskAuthors(ctx context.Context, q Queryer, room string) (map[st
 // in indexed, which an ask row names from now on, and of each block held does not hold, the ask
 // blocks of the tree the settlement reconciled: a block deleted from the document, or an id a
 // stamp replaced. A block still waiting for its ask - a copy, one whose observer has not run, one
-// settlement cannot read - keeps its row.
+// settlement cannot read, one a closed issue's settlement left with no row until the issue
+// reopens (reconcileAskBlocks) - keeps its row.
 func deleteSettledAskAuthors(ctx context.Context, tx pgx.Tx, room string, indexed []string, held map[string]struct{}) error {
 	// Neither array may be NULL: `not block_id = any(NULL)` is NULL, which would keep every row of a
 	// document that holds no ask block at all.

@@ -9,10 +9,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -145,6 +148,37 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into ask_followers (ask_id, session_id) values ($1::uuid, 'session-backlink')
 	`, anchoredAsk)
 
+	// The same three relations as the store holds them for an ask whose row names its node
+	// (dispatch://INFRA-1150): an ask on the notes document, anchored on it and owned by it, and a
+	// session that follows it, each stated on the ask's node, the rows marked. graph_edges' old
+	// arms leave these rows to the tuple arm, and the count reads the store's tuples for them.
+	// The answered ask's tie to a block, its shaped, is the store's alone: a block_refs row of the
+	// spec's block marked with the ask's node, as the writer of an ask block's links marks it.
+	storedAsk := scanFixture(t, tx, "create the ask the store holds", `
+		insert into asks (artifact_id, author, question, anchor)
+		values ($1::uuid, '{"kind":"user","id":"alice"}', 'held by the store?', jsonb_build_object('artifact_id', $1::text))
+		returning id::text
+	`, notesID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	stated := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	nodes, tuples, _ := graphstore.AskFacts(storedAsk, "CORE", nil, alice, stated, graphstore.NoEvent,
+		graphstore.AskPlaces{Anchor: notesRef, Owner: notesRef})
+	nodes = append(nodes, graphstore.SessionNode("session-stored", alice, stated, graphstore.NoEvent))
+	tuples = append(tuples,
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: graphstore.TupleFollowedBy,
+			ToKind: graphstore.KindSession, ToID: "session-stored", At: stated, Who: alice, Asserted: true},
+		graphstore.Tuple{FromKind: graphstore.KindAsk, FromID: storedAsk, Kind: "shaped",
+			ToKind: BlockNodeKind, ToID: notesRef + "#b1", At: stated, Who: alice, Asserted: true})
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		t.Fatalf("state the ask the store holds: %v", err)
+	}
+	execFixture(t, tx, "mark the ask the store holds", `
+		update asks set node_kind = 'ask', node_address = id::text where id = $1::uuid
+	`, storedAsk)
+	execFixture(t, tx, "follow the ask the store holds", `
+		insert into ask_followers (ask_id, session_id, node_kind, node_address) values ($1::uuid, 'session-stored', 'ask', $1)
+	`, storedAsk)
+
 	// components: part_of, depends_on; issue_component_members: affects.
 	sourceID := scanFixture(t, tx, "create the architecture source", `
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
@@ -184,6 +218,10 @@ func newBacklinkFixture(t *testing.T) backlinkFixture {
 		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
 		values ($1::uuid, 'b1', $2, 'block', $3, 'mentions', 1)
 	`, specID, specBlock, notesBlock)
+	execFixture(t, tx, "tie the ask the store holds to the notes block", `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)
+		values ($1::uuid, 'b1', $2, 'block', $3, 'shaped', 1, 'ask', $4)
+	`, specID, specBlock, notesBlock, storedAsk)
 
 	// comment_blocks: a comment block's part_of; comment_block_refs: its mentions. b3 is the
 	// block a later revision removed, which keeps its row with no position and its reference.
@@ -477,91 +515,6 @@ func scanFixture(t *testing.T, tx pgx.Tx, what, statement string, args ...any) s
 	return id
 }
 
-// backlinkCountOracle is the first arm of the count the release before this change runs over the
-// whole graph_edges view, the reading the arms of this package's count must add up to: the view,
-// filtered and grouped. It is held here as a literal, copied from that release rather than built
-// from this package's helpers, on purpose - built from the helpers, a change to the count's own
-// builders would move the oracle and the count together and the comparison would pass whatever
-// either said. $1 is the target kind, $2 the ids, $3 the node kinds this build reads; $4, when the
-// statement carries backlinkCountOracleExcluded, is the excluded edge kinds.
-const backlinkCountOracle = `select g.to_id from graph_edges g
-where g.to_kind = $1 and g.to_id = any($2)`
-
-// backlinkCountOracleAtItsBlocks is the oracle's second arm for each item kind: an edge at one
-// of the item's current blocks, counted as the item's own, since the item's own read lists it.
-// The block kind and the item's tables are written out per kind for the reason the first arm is.
-var backlinkCountOracleAtItsBlocks = map[string]string{
-	"comment": `select part.comment_id::text from graph_edges g
-	join comment_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'comment_block' and part.comment_id::text = any($2)`,
-	"message": `select part.message_id::text from graph_edges g
-	join message_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'message_block' and part.message_id::text = any($2)`,
-	"ask": `select part.ask_id::text from graph_edges g
-	join ask_blocks part on part.node_id = g.to_id and part.position is not null
-	where g.to_kind = 'ask_block' and part.ask_id::text = any($2)`,
-}
-
-// backlinkCountOracleNarrow is what each arm of the oracle carries: the source-kind filter and
-// the probe that keeps an item's own mention out of the count where one of its blocks holds a
-// link of any kind to the same target, written out as the rest of the oracle is.
-const backlinkCountOracleNarrow = `
-  and g.from_kind = any($3)
-  and not (g.kind = 'mentions' and (
-    (g.from_kind = 'artifact' and exists (select 1 from block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.artifact_id::text = g.from_id))
-    or (g.from_kind = 'comment' and exists (select 1 from comment_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.comment_id::text = g.from_id))
-    or (g.from_kind = 'message' and exists (select 1 from message_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.message_id::text = g.from_id))
-    or (g.from_kind = 'ask' and exists (select 1 from ask_block_refs b where b.to_kind = g.to_kind and b.to_id = g.to_id and b.ask_id::text = g.from_id))))`
-
-// backlinkCountOracleExcluded is the oracle's exclusion predicate, the one part of the statement
-// a caller's exclusions add.
-const backlinkCountOracleExcluded = `
-  and not (g.kind = any($4))`
-
-// oracleBacklinkCountSQL is the release before this change's whole statement for toKind: the view's own arm, the arm over
-// the item's current blocks where the kind has one, and the group. excluded says whether the
-// caller binds excluded edge kinds as $4. The timing harness measures this text as the before
-// side of the backlink pair, so it is built in one place rather than assembled twice.
-func oracleBacklinkCountSQL(toKind string, excluded bool) string {
-	narrow := backlinkCountOracleNarrow
-	if excluded {
-		narrow += backlinkCountOracleExcluded
-	}
-	arms := backlinkCountOracle + narrow
-	if atBlocks, ok := backlinkCountOracleAtItsBlocks[toKind]; ok {
-		arms += "\nunion all\n" + atBlocks + narrow
-	}
-	return `select id, count(*)::int from (` + arms + `) e (id) group by id`
-}
-
-// oracleBacklinkCounts counts the inbound edges of ids over the whole view (backlinkCountOracle),
-// with the edges at a counted item's own current blocks (backlinkCountOracleAtItsBlocks).
-func oracleBacklinkCounts(t *testing.T, q Queryer, toKind string, ids, excludeKinds []string) map[string]int {
-	t.Helper()
-	args := []any{toKind, ids, nodeKinds}
-	if len(excludeKinds) > 0 {
-		args = append(args, excludeKinds)
-	}
-	rows, err := q.Query(context.Background(), oracleBacklinkCountSQL(toKind, len(excludeKinds) > 0), args...)
-	if err != nil {
-		t.Fatalf("count %s backlinks over the view: %v", toKind, err)
-	}
-	defer rows.Close()
-	counts := map[string]int{}
-	for rows.Next() {
-		var id string
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
-			t.Fatalf("scan a %s backlink count over the view: %v", toKind, err)
-		}
-		counts[id] = count
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read the %s backlink counts over the view: %v", toKind, err)
-	}
-	return counts
-}
-
 // viewBacklinkTargets is every node of toKind the view points at, read from the view itself so
 // that each test covers whatever arms the fixture filled without naming an id, plus one address
 // nothing points at, which must be absent from every answer.
@@ -608,7 +561,7 @@ func backlinkExclusionCases(toKind string) [][]string {
 
 // A count read arm by arm is the view's count. For every node kind this build resolves, under no
 // exclusion and under each exclusion the kind's arms carry, BacklinkCounts answers exactly what
-// the whole view answers over the same addresses (backlinkCountOracle).
+// the whole view answers over the same addresses (docstest.ViewBacklinkCountSQL over graph_edges).
 //
 // The fixture's rows make the comparison able to fail rather than merely agree: one node is
 // pointed at through several arms, so a dropped arm shows as a lower count; the issue cited
@@ -656,7 +609,7 @@ func TestBacklinkCountsReadArmByArmAgreeWithTheView(t *testing.T) {
 			if err != nil {
 				t.Fatalf("count %s backlinks excluding %v: %v", toKind, exclusions, err)
 			}
-			want := oracleBacklinkCounts(t, pool, toKind, ids, exclusions)
+			want := docstest.ViewBacklinkCounts(t, pool, "graph_edges", toKind, ids, nodeKinds, exclusions)
 			if !maps.Equal(counts, want) {
 				t.Errorf("%s backlink counts excluding %v = %v; the view says %v", toKind, exclusions, counts, want)
 			}
