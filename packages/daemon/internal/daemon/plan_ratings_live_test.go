@@ -27,6 +27,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -258,11 +259,11 @@ func parsePlans(project, out string) ([]planLine, error) {
 		if err != nil {
 			return nil, fmt.Errorf("the line %q: %v", text, err)
 		}
-		line := planLine{text: text, issue: match[1], closed: match[2], plan: match[3], printedRatings: match[4], ratings: ratings, time: match[5]}
-		if _, err := fmt.Sscanf(match[6], "%d", &line.failed); err != nil {
+		failed, err := strconv.Atoi(match[6])
+		if err != nil {
 			return nil, fmt.Errorf("the line %q: failed steps %v", text, err)
 		}
-		parsed = append(parsed, line)
+		parsed = append(parsed, planLine{text: text, issue: match[1], closed: match[2], plan: match[3], printedRatings: match[4], ratings: ratings, time: match[5], failed: failed})
 	}
 	if len(parsed) != count {
 		return nil, fmt.Errorf("the header says %d finished issues and %d lines follow it", count, len(parsed))
@@ -360,7 +361,7 @@ func plansPrintedHold(project, out string, want []ratedWant) error {
 			return fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.issue)
 		}
 		started, ended := w.steps.span()
-		minutes := int64(ended.Sub(started)/time.Second) / 60
+		minutes := int64(ended.Sub(started) / time.Minute)
 		spent := fmt.Sprintf("%dh%dm", minutes/60, minutes%60)
 		switch {
 		case got.plan != plan:
