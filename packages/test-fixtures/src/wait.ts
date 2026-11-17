@@ -8,10 +8,10 @@ import { type Deadline, deadlineFor } from "./deadline";
 // The deadline (`./deadline`) is the newest mark of the row-deadline preload plus the command's
 // `--timeout`, less a margin of `max(1000 ms, guard / 20)`. Every `bun test` command in this
 // repository loads that preload (`--preload @legion/test-fixtures/row-deadline`), which marks
-// the start of each row, the end of each row and the start of a run: so every wait of a row, the
-// second included, ends before the row's guard, and so does a wait in a `beforeAll`. Outside
-// `bun test` (a proof's Bun driver) the deadline is `LEGION_PROOF_DEADLINE_MS`; with neither, a
-// wait refuses to start.
+// the start of each row, the end of each row's body, the end of each row and the start of a run:
+// so every wait of a row, the second included, ends before the row's guard, and so does a wait in
+// a `beforeAll` or in a row's first `afterEach`. Outside `bun test` (a proof's Bun driver) the
+// deadline is `LEGION_PROOF_DEADLINE_MS`; with neither, a wait refuses to start.
 //
 // Each function's last parameter, `...extra: never[]`, takes nothing: its type refuses a planted
 // duration, and at run time anything passed there throws, so a duration planted in a file `tsc`

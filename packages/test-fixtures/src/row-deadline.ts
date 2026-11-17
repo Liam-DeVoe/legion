@@ -9,10 +9,15 @@ import { markRow } from "./deadline";
 // a preload's hooks run where a mark is wanted: its `beforeEach` before each row's own
 // `beforeEach`, its `afterEach` after each row's own `afterEach` hooks and so right before a
 // `describe`'s `beforeAll` that follows the row, and its `beforeAll` before the first file of the
-// process, which under `--isolate` (and so `--parallel`) is each file. A hook a mark does not
-// directly precede (a file's own `afterEach`, an `afterAll`, the `beforeAll` of the second file of
-// a run without `--isolate`) counts from an earlier mark, so its waits end earlier than its own
-// clock would allow, never later.
+// process, which under `--isolate` (and so `--parallel`) is each file. An `afterEach` that the
+// preload's `beforeEach` registers belongs to that row alone, and runs right after the row's body
+// and before every `afterEach` of the row's file and of its describes, whether the row passed,
+// failed or its guard ended it; measured on Bun 1.4.4, with and without `--isolate` and under
+// `--parallel`, where an `onTestFinished` registered there ran only after all of them. So the
+// first of a row's own `afterEach` hooks counts from its own start, not from the row's. A hook a
+// mark does not directly precede (a row's second `afterEach`, an `afterAll`, the `beforeAll` of
+// the second file of a run without `--isolate`) counts from an earlier mark, so its waits end
+// earlier than its own clock would allow, never later.
 //
 // Under `jest.useFakeTimers()` no mark is taken: `performance.now()` then reads the fake clock,
 // which starts at 0 and moves only as the test advances it (measured on Bun 1.4.4), so a mark
@@ -23,5 +28,8 @@ function mark(): void {
 }
 
 beforeAll(mark);
-beforeEach(mark);
+beforeEach(() => {
+  mark();
+  afterEach(mark);
+});
 afterEach(mark);

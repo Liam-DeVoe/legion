@@ -29,7 +29,7 @@ interface Run {
 function runBunTest(files: Readonly<Record<string, string>>, flags: readonly string[]): Run {
   const work = makeDirectory("run");
   for (const [name, body] of Object.entries(files)) {
-    const imports = `import { beforeAll, describe, jest, test } from "bun:test";
+    const imports = `import { afterEach, beforeAll, describe, jest, test } from "bun:test";
 import { span, timeLeft, until } from ${WAIT};
 `;
     writeFileSync(join(work, name), imports + body);
@@ -120,6 +120,28 @@ describe("a describe", () => {
   expectGaveUpBeforeTheGuard(
     runBunTest({ "describe.test.ts": file }, [GUARD, "--preload", PRELOAD]),
     "the describe's fixture"
+  );
+});
+
+// The row spends most of its time, and its describe's afterEach then needs more of it than the row
+// left but less than the hook's own: counted from the row's start, the hook's span would be
+// refused, so the wait after it reaching its own deadline shows the hook's count began when the
+// row's body ended, before the file's own afterEach.
+test("a wait ends at the deadline of a file's afterEach that follows a row", () => {
+  const file = `
+describe("a describe", () => {
+  afterEach(async () => {
+    await span(700, "the hook's first wait, more than the row left of its time");
+    await until("the hook's fact", () => false);
+  });
+  test("a row that spends most of its time", async () => {
+    await span(1_100, "the row's own work");
+  });
+});
+`;
+  expectGaveUpBeforeTheGuard(
+    runBunTest({ "after.test.ts": file }, [GUARD, "--preload", PRELOAD]),
+    "the hook's fact"
   );
 });
 

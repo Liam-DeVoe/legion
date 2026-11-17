@@ -326,8 +326,9 @@ A Bun test waits and is guarded as R2 and R5 above say:
   Outside `bun test`, a proof's Bun driver takes its deadline from `LEGION_PROOF_DEADLINE_MS`, which `proof_guard` exports, and with neither a wait refuses to start.
 
 - Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
-  It marks the start and the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll`.
+  It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
   A hook that no mark directly precedes counts from an earlier mark, so its waits end earlier than its own clock would allow, never later (`packages/test-fixtures/src/row-deadline.ts`).
+  So a row's second `afterEach` counts from the mark before its first, and the time the first took is gone from it.
 
 - A command sets one guard, its `--timeout`.
   A row or a hook sets no timeout of its own, neither a third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads the command's guard and not a row's.
