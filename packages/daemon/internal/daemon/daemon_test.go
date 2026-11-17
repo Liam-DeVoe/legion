@@ -1577,7 +1577,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -1696,7 +1696,7 @@ func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
 	conn := testnats.Connect(t, url)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

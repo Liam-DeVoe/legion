@@ -69,7 +69,7 @@ func TestARestartStillHearsAnUnmappedRepositoryInGitHubsSpelling(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn := testnats.Connect(t, workflowNATS(t))
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatal(err)
 	}

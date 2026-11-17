@@ -71,7 +71,7 @@ func StartOpenImage(t testing.TB, image string) string {
 			return err, false
 		}
 		defer conn.Close()
-		js, err := jetstream.New(conn)
+		js, err := jetstream.New(conn, RequestTimeout(t))
 		if err == nil {
 			_, err = js.AccountInfo(testwait.Context(t))
 		}

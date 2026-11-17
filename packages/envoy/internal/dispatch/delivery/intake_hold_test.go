@@ -1158,7 +1158,7 @@ func durablePartWayThrough(t *testing.T, ctx context.Context, publisher *bus.Cli
 	}); err != nil {
 		t.Fatalf("create the durable: %v", err)
 	}
-	js, err := jetstream.New(publisher.Conn)
+	js, err := jetstream.New(publisher.Conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open the jetstream API: %v", err)
 	}

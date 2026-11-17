@@ -251,7 +251,7 @@ func jetStreamAs(t *testing.T, uri, seed, who string) jetstream.JetStream {
 		t.Fatalf("connect to NATS: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

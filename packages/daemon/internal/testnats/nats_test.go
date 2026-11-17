@@ -60,7 +60,7 @@ func TestAStreamMadeThroughJetStreamIsSeenAtTheURLOfTheSameTest(t *testing.T) {
 	if _, err := js.Publish(t.Context(), "seen.one", []byte("x")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	other, err := jetstream.New(Connect(t, URL(t)))
+	other, err := jetstream.New(Connect(t, URL(t)), RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream on a client of URL's address: %v", err)
 	}

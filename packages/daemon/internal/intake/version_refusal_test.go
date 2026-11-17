@@ -22,7 +22,7 @@ func TestOpenConsumersRefusesAServerThatSkipsAFilter(t *testing.T) {
 	ctx := context.Background()
 
 	url := testnats.StartOpenImage(t, testnats.SkippingImage)
-	refused, err := jetstream.New(testnats.Connect(t, url))
+	refused, err := jetstream.New(testnats.Connect(t, url), testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("JetStream on nats:2.10: %v", err)
 	}

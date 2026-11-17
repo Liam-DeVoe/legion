@@ -330,7 +330,7 @@ func startDaemonGrantServer(t *testing.T, image string, grant daemonpermissions.
 	if err != nil {
 		t.Fatalf("connect the admin user: %v", err)
 	}
-	js, err := jetstream.New(admin)
+	js, err := jetstream.New(admin, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream as the admin user: %v", err)
 	}

@@ -41,6 +41,7 @@ import (
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nkeys"
 
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -877,6 +878,22 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 		return err
 	})
 	return conn
+}
+
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answers late on a loaded machine would fail the test with "context
+// deadline exceeded". With this option such a request is bounded by what is left of the test
+// binary's deadline less testwait's margin, and with no deadline (-timeout 0) by no bound a test
+// can reach, so a late answer costs the test time and not its result. The daemon's testnats holds
+// the same option.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		return jetstream.WithDefaultTimeout(max(time.Until(deadline), time.Millisecond))
+	}
+	return jetstream.WithDefaultTimeout(unbounded)
 }
 
 // waitForJetStream retries a real JetStream operation rather than trusting a successful core-NATS

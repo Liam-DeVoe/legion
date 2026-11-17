@@ -1668,7 +1668,7 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 	_, snapshotURI := testnats.Start(t)
 	snapshotConn := testnats.Connect(t, snapshotURI)
 	t.Cleanup(snapshotConn.Close)
-	snapshotStreams, err := jetstream.New(snapshotConn)
+	snapshotStreams, err := jetstream.New(snapshotConn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("jetstream on the snapshot's server: %v", err)
 	}

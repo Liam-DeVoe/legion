@@ -40,7 +40,7 @@ func connect(t *testing.T, url string, lookup func(string) (string, bool)) (*nat
 // account.
 func usable(t *testing.T, conn *nats.Conn) {
 	t.Helper()
-	js, err := jetstream.New(conn)
+	js, err := jetstream.New(conn, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

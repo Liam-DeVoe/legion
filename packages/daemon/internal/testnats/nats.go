@@ -228,14 +228,31 @@ func (s *server) connections(t testing.TB) []Connection {
 	return open
 }
 
-// JetStream returns a JetStream client of the server URL gives t, on a client Connect opens for t.
+// JetStream returns a JetStream client of the server URL gives t, on a client Connect opens for t,
+// its requests bounded as RequestTimeout bounds them.
 func JetStream(t testing.TB) jetstream.JetStream {
 	t.Helper()
-	js, err := jetstream.New(Connect(t, URL(t)))
+	js, err := jetstream.New(Connect(t, URL(t)), RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("testnats: open JetStream on the NATS server of %s: %v", t.Name(), err)
 	}
 	return js
+}
+
+// RequestTimeout is the option every JetStream client a test makes takes
+// (jetstream.New(conn, testnats.RequestTimeout(t))). nats.go bounds a request whose context has no
+// deadline by its own DefaultTimeout, five seconds on the wall clock, and a test's request often
+// has none: context.Background, t.Context, or a context of a clocktest.Fake, which reports no
+// deadline. So a server that answered late on a loaded machine failed the test with "context
+// deadline exceeded" (TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent, with the
+// server's CONSUMER.INFO answer held 6 s). With this option such a request is bounded by what is
+// left of the test binary's deadline less testwait's margin, and with no deadline (-timeout 0) by
+// no bound a test can reach, so a late answer costs the test time and not its result.
+func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
+	if end, bounded := testwait.Context(t).Deadline(); bounded {
+		return jetstream.WithDefaultTimeout(max(time.Until(end), time.Millisecond))
+	}
+	return jetstream.WithDefaultTimeout(time.Duration(math.MaxInt64))
 }
 
 // Connect is the client a test takes of a server: it dials url, named t.Name(), and closes it when
