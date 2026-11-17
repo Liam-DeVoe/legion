@@ -133,6 +133,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	for _, step := range steps {
 		if step.ID == written.ID {
 			record = stepRecord(step)
+			break
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
