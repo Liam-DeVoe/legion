@@ -564,40 +564,6 @@ func validCICheck(check model.CheckBlock) bool {
 	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""
 }
 
-// typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
-// in document order, with its block id. The markdown is read live and parsed; nothing is
-// written. A rendering can repeat an id; the block index keys one row per id, and so does this,
-// so only the first holder of an id is visited. Its reader is the requirements of a spec
-// (requirementBlocksIn); the results routes read a check from the block index alone
-// (results_settled_check.go).
-func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, visit func(node *pmdoc.Node, id string)) error {
-	markdown, err := s.deps.Docs.Text(ctx, artifactID)
-	if err != nil {
-		return err
-	}
-	tree, err := pmdoc.ParseRendering(markdown)
-	if err != nil {
-		return fmt.Errorf("read the %s blocks of document %s: %w", blockType, artifactID, err)
-	}
-	seen := map[string]struct{}{}
-	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		if node.Type != blockType {
-			return true
-		}
-		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if id == "" {
-			return true
-		}
-		if _, repeated := seen[id]; repeated {
-			return true
-		}
-		seen[id] = struct{}{}
-		visit(node, id)
-		return true
-	})
-	return nil
-}
-
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
 // blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
 // body line the result implies carries no link and no Dispatch host.
