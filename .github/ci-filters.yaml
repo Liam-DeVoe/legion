@@ -1048,6 +1048,7 @@ test:
   # guide_layout below, and a guide-only change has to select this job for it.
   - *guide_layout_files
   - 'scripts/third-party-notices.test.ts'
+  - 'packages/dispatch/web/src/fonts/inter/**'
   - 'scripts/third-party-notices.ts'
   - 'scripts/semantic-line-breaks.ts'
   - 'scripts/semantic-line-breaks.test.ts'

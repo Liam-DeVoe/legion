@@ -2142,6 +2142,9 @@ READS = (
      "the tree the same test asserts over"),
     ("pi_legion", "packages/envoy-client/bin/dispatch.ts",
      "the same BUNDLE_ENTRYPOINTS entry, reached from another package again"),
+    ("test", "packages/dispatch/web/src/fonts/inter/package.json",
+     "scripts/third-party-notices.test.ts:102-105 (thirdPartyNotices over the font file's path)"),
+    ("test", "packages/dispatch/web/src/fonts/inter/LICENSE.txt", "the same thirdPartyNotices call"),
 )
 
 # Every filter of the changes job, which its one paths-filter step hands the action as this
