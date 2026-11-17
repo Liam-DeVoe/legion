@@ -288,20 +288,25 @@ func TestPrintRefusesANodeHeldTwoTimes(t *testing.T) {
 // The invariant of print: after each run, each file is within the bound, each node stands in
 // exactly one file, no file is empty, the judgment of tree finds no problem, each check that the
 // run wrote is in the block of its statement, and a second run changes no byte; a refused run
-// writes nothing. The test runs the printer over random approved sets: 2,000 seeds, each up to 40
-// runs of 1 to 5 nodes on one directory, with a new approved version of a node between runs, and a
-// bound of 4,096 bytes. It replays each run with Layout.Place to name the answer that each node
-// got, and requires each answer that print can give to occur: W (written at home), M (moved to the
-// next file of its series) and T (refused, its block over the bound) for each kind of node, new and
-// replaced, and S and P (refused, its statement or its parent not in the files).
+// writes nothing. The test runs the printer over random approved sets: printSeeds seeds, each up
+// to 40 runs of 1 to 5 nodes on one directory, with a new approved version of a node between runs,
+// and a bound of 4,096 bytes. It replays each run with Layout.Place to name the answer that each
+// node got, and requires each answer that print can give to occur: W (written at home), M (moved
+// to the next file of its series) and T (refused, its block over the bound) for each kind of node,
+// new and replaced, and S and P (refused, its statement or its parent not in the files).
+//
+// The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
+// that print follows the rule through the real command. Over the seeds 1 to 2,000, the last answer
+// to occur first occurs at seed 92 (term replaced T), so the default is five times that, 460 seeds.
+// SPEC_CHECK_PRINT_SEEDS raises the count, for example to 2000 for a longer run.
 func TestPrintKeepsTheInvariant(t *testing.T) {
 	t.Parallel()
 	const limit = 4096
+	seeds := printSeeds(t)
 	var mu sync.Mutex
 	seen := map[string]bool{}
-	// The seeds 1 to 2,000, spread over one group for each core, so the test takes the time of
-	// 2,000 seeds divided by the cores.
-	const seeds = 2000
+	// The seeds are spread over one group for each core, so the test takes the time of the seeds
+	// divided by the cores.
 	groups := min(max(runtime.GOMAXPROCS(0), 1), 64)
 	t.Run("seeds", func(t *testing.T) {
 		for group := range groups {
@@ -335,6 +340,25 @@ func TestPrintKeepsTheInvariant(t *testing.T) {
 			t.Errorf("no run gave the answer %q, so the generator reaches no such case", answer)
 		}
 	}
+}
+
+// defaultPrintSeeds is the count of seeds of TestPrintKeepsTheInvariant: five times the seed at
+// which the last of its answers first occurs (92), and at least 100.
+const defaultPrintSeeds = 460
+
+// printSeeds is the count of seeds of TestPrintKeepsTheInvariant: SPEC_CHECK_PRINT_SEEDS when it is
+// set, a whole number of at least defaultPrintSeeds, else defaultPrintSeeds.
+func printSeeds(t *testing.T) uint64 {
+	t.Helper()
+	value, set := os.LookupEnv("SPEC_CHECK_PRINT_SEEDS")
+	if !set {
+		return defaultPrintSeeds
+	}
+	seeds, err := strconv.ParseUint(value, 10, 64)
+	if err != nil || seeds < defaultPrintSeeds {
+		t.Fatalf("SPEC_CHECK_PRINT_SEEDS is %q; want a whole number of at least %d, which raises the count of seeds", value, defaultPrintSeeds)
+	}
+	return seeds
 }
 
 // printSeed runs the printer over the random approved set of seed, and answers each answer that
