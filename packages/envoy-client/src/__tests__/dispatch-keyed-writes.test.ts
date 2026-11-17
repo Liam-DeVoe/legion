@@ -1154,6 +1154,37 @@ describe("DispatchClient's writes", () => {
     }
   });
 
+  // A landing needs the key Dispatch names back: its keyed layer names it on every answer it gives
+  // a keyed write, `409 KEY_COMMITTED` among them, and the 2xx rule reads it the same way
+  // (`#writtenRow`). A KEY_COMMITTED that names none, or another request's, is no verdict of
+  // Dispatch's on this write, which may have reached Dispatch behind what answered it.
+  test("a 409 KEY_COMMITTED that does not name the write's key back leaves its outcome unknown", async () => {
+    for (const named of [{}, { "Idempotency-Key": "another-request-key" }]) {
+      const { fetchImpl, sent } = scripted(
+        [
+          refusal(
+            409,
+            IDEMPOTENCY_KEY_COMMITTED,
+            "the write landed and its answer was lost",
+            named
+          ),
+        ],
+        { echo: false }
+      );
+
+      const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+      expect(
+        {
+          sent: sent.length,
+          landed: error instanceof DispatchWriteLandedError,
+          unknown: writeOutcomeUnknown(error),
+        },
+        JSON.stringify(named)
+      ).toEqual({ sent: 1, landed: false, unknown: true });
+    }
+  });
+
   test("the production pacing is five attempts within 30 s, each cut off after 20 s of silence, and asks every 3 s until 55 s while Dispatch may be running the write", () => {
     expect(DISPATCH_WRITE_RETRY).toEqual({
       pausesMs: [1_000, 2_000, 4_000, 8_000],

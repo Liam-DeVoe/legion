@@ -341,6 +341,55 @@ describe("the dispatch command surface", () => {
     });
   });
 
+  // An empty issue key, project key or check id names nothing, and sent it reaches a route that is
+  // no route (`PATCH /api/v1/issues/`), which a rolling release also answers. It is refused before
+  // any request, naming the flag that gave it: an empty variable in a job's step writes one.
+  test("an empty --issue, --project or --check is refused, naming the flag that gave it", () => {
+    const emptyFile = {
+      readText: (path: string): string => {
+        if (path === "empty.txt") return "";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    for (const [argv, problem] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issue-update", "--issue=", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["read", "--issue-file", "empty.txt"],
+        "--issue-file is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issues", "--project", ""],
+        "--project is empty, so the call names no project: a variable that gives it may be empty or unset",
+      ],
+      [
+        [
+          "result",
+          "--project",
+          "ACME",
+          "--check",
+          "",
+          "--verdict",
+          "pass",
+          "--commit",
+          "a".repeat(40),
+        ],
+        "--check is empty, so the call names no check: a variable that gives it may be empty or unset",
+      ],
+    ] as const) {
+      expect(parseCommand(argv, emptyFile), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+  });
+
   test("a second bare issue key is refused", () => {
     expect(parseCommand(["read", "ACME-12", "ACME-13"], noFiles)).toEqual({
       kind: "refused",

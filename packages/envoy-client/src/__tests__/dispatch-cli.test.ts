@@ -836,6 +836,24 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
+  // An empty key or id is refused before any request, naming the flag: sent, an empty `--issue`
+  // asked `PATCH /api/v1/issues/`, which no route serves, and came back seven seconds later as a
+  // refusal about a rolling release.
+  test("an empty --issue is refused before any request, naming the flag", async () => {
+    const { code, stdout } = await run(
+      ["issue-update", "--issue", "", "--status", "in_progress"],
+      omp
+    );
+    expect({ code, lines: stdout.split("\n").slice(0, 2) }).toEqual({
+      code: 2,
+      lines: [
+        "dispatch issue-update was not called: 1 problem",
+        "- --issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+    });
+    expect(requests).toEqual([]);
+  });
+
   // `--run -` would send the one character "-" where the caller meant stdin, so a text flag's bare
   // `-` is a usage error before any request, dry run included. When nothing else is wrong, the
   // refusal names the `-file` twin of each such flag and lists no flags.
@@ -1844,6 +1862,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  request with a 503. */
   let runnerHold: Promise<boolean> = Promise.resolve(true);
   let dispatchAnswer: () => Response | Promise<Response>;
+  /** The `Idempotency-Key` of the request the stand-in Dispatch answers now, "" for none. */
+  let answeringKey = "";
   const stored = storedSpecResult(43, "pass", "", 1);
 
   const runner = Bun.serve({
@@ -1874,6 +1894,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     hostname: "127.0.0.1",
     fetch: async (request) => {
       const text = await request.text();
+      answeringKey = request.headers.get("Idempotency-Key") ?? "";
       written.push({
         method: request.method,
         path: new URL(request.url).pathname,
@@ -2061,15 +2082,41 @@ describe("dispatch result --project, as a CI job writes it", () => {
     namesNoToken(record, brokerRefused.stdout, brokerRefused.stderr);
   }, 30_000);
 
+  // A job's step writes `--project "$PROJECT" --check "$CHECK"`, and an empty variable is the
+  // honest way to send one empty: it is refused before the trade or any write, naming the flag.
+  test("an empty --project or --check is refused before any request, naming the flag", async () => {
+    for (const [flag, noun] of [
+      ["--project", "project"],
+      ["--check", "check"],
+    ] as const) {
+      const argv = [...record];
+      argv[argv.indexOf(flag) + 1] = "";
+      const { code, stdout, stderr } = await runJob(argv, jobEnvironment());
+      expect({ code, stderr, lines: stdout.split("\n").slice(0, 2) }, flag).toEqual({
+        code: 2,
+        stderr: "",
+        lines: [
+          "dispatch result was not called: 1 problem",
+          `- ${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`,
+        ],
+      });
+    }
+    sentNothing();
+  });
+
+  /** Dispatch's `409 KEY_COMMITTED` to the write it answers now, naming its key back as the keyed
+   *  layer does on every answer it gives a keyed write, unless `named` says otherwise. */
+  const keyCommitted = (named = answeringKey) =>
+    Response.json(
+      { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
+      { status: 409, headers: named === "" ? {} : { "Idempotency-Key": named } }
+    );
+
   // A write whose answer was lost after Dispatch stored it (409 KEY_COMMITTED) is done, and the
   // job's log is read by a program: it prints the JSON the session path records for the same
   // case and exits 0. It gives no advice, since a results token reads nothing back.
   test("a result stored with its answer lost prints landed_without_answer as JSON and exits 0", async () => {
-    dispatchAnswer = () =>
-      Response.json(
-        { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-        { status: 409 }
-      );
+    dispatchAnswer = () => keyCommitted();
     const { code, stdout, stderr } = await runJob(record, jobEnvironment());
     expect({ code, stdout, stderr }).toEqual({
       code: 0,
@@ -2079,6 +2126,25 @@ describe("dispatch result --project, as a CI job writes it", () => {
     expect(written.map((seen) => [seen.method, seen.path])).toEqual([
       ["POST", "/api/v1/projects/ACME/results"],
     ]);
+  });
+
+  // A landing needs the key Dispatch names back, on a 409 as on a 2xx: a KEY_COMMITTED that names
+  // none, or another request's, is no verdict of Dispatch's on this write, so the result may or
+  // may not be stored, and a second run is safe.
+  test("a 409 KEY_COMMITTED that does not name the write's key back prints write_outcome_unknown and exits 1", async () => {
+    for (const named of ["", "another-request-key"]) {
+      written.length = 0;
+      dispatchAnswer = () => keyCommitted(named);
+      const { code, stdout, stderr } = await runJob(record, jobEnvironment());
+      expect({ code, stdout, stderr }, named).toEqual({
+        code: 1,
+        stdout: `${JSON.stringify({ write_outcome_unknown: "HTTP_409" })}\n`,
+        stderr: "",
+      });
+      expect(written.map((seen) => [seen.method, seen.path])).toEqual([
+        ["POST", "/api/v1/projects/ACME/results"],
+      ]);
+    }
   });
 
   /** A proxy in front of the stand-in Dispatch that sends each request on, and closes the job's
@@ -2179,10 +2245,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       if (written.at(-1)?.path === "/healthz") return Response.json({ idempotency_keys: true });
       return written.filter((seen) => seen.method === "POST").length === 1
         ? Response.json(stored, { status: 201 })
-        : Response.json(
-            { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-            { status: 409 }
-          );
+        : keyCommitted();
     };
     try {
       const ran = await runJob(record, { ...jobEnvironment(), DISPATCH_URL: proxy.url });
@@ -3735,14 +3798,16 @@ describe("the dispatch CLI's subscription note", () => {
     expect(requests.some((request) => request.path === "/api/v1/issues/DSP-1/messages")).toBe(true);
   });
 
-  // A write that landed before its answer was lost (409 KEY_COMMITTED) is done: the call succeeds,
-  // and its one line says the write was made and to read it back, since there is nothing to print.
+  // A write that landed before its answer was lost (409 KEY_COMMITTED, naming its key back as the
+  // keyed layer does) is done: the call succeeds, and its one line says the write was made and to
+  // read it back, since there is nothing to print.
   test("a write answered KEY_COMMITTED exits 0 with one line saying to read it back", async () => {
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/api/v1/issues/DSP-1/messages")) {
+        const key = new Headers(init?.headers).get("Idempotency-Key") ?? "";
         return Response.json(
           { code: "KEY_COMMITTED", error: "the write landed and its answer was lost" },
-          { status: 409 }
+          { status: 409, headers: { "Idempotency-Key": key } }
         );
       }
       return fetch(input, init);

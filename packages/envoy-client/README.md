@@ -666,22 +666,29 @@ ran (`tokenNotChecked`: `429 BROKER_TOKEN_RATE_LIMITED`, `503 BROKER_UNAVAILABLE
 as no attempt that may have reached Dispatch. A refusal carries its `Retry-After` as
 `retryAfterMs`. A write Dispatch
 made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLandedCode`, and
-`status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
-not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
-answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx that
-names its key back and whose body gives no row, the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
-write's 2xx only after the write committed. Every `POST` and `PATCH` of the client reads its 2xx into
+`status`): `409 KEY_COMMITTED` that names the request's key back, a write that landed before its
+answer was lost, which Dispatch will not run again, a replayed 2xx (`Idempotency-Replayed: ?1`)
+reading `ANSWER_NOT_KEPT`, a first answer larger than Dispatch keeps (`answerNotKept`, shared with
+the page), or a write's 2xx that names its key back and whose body gives no row, the client's own
+`ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a write's 2xx only after the write
+committed. Every `POST` and `PATCH` of the client reads its 2xx into
 the row its callers read (`dispatch-write-rows.ts`: those members, in the forms the route answers
 them), by the key the 2xx names back: Dispatch's keyed layer names the request's
 `Idempotency-Key` back on every answer it gives a keyed write. A 2xx that names it back is
 Dispatch's own, so a body cut or stalled past the deadline, one that is no JSON whatever its type
 says, an empty one and JSON that is not that row are each this landing. A 2xx that names no key
-back and gives the row is the answer of a Dispatch with no keyed layer. Every other 2xx (one that
-names another request's key back, or names none and gives no row: a proxy's page, a server that is
-not Dispatch) is no answer of Dispatch's, and the write's outcome is unknown, a
-`DispatchWriteUnsettledError`. No request of the client follows a redirect: Dispatch answers none
-with a 3xx, so a 3xx is a refusal of whatever answered in its place. The round trip and the related-item
-check store nothing, so a 2xx of either that is not its answer is a `DispatchAnswerMissingError`
+back and gives the row is the answer of a Dispatch with no keyed layer. Every other 2xx, and a
+`409 KEY_COMMITTED` that names no key back or another request's, is no answer the client can take
+as Dispatch's to this write: a proxy's page, a server that is not Dispatch, or a Dispatch that
+stored the write and whose answer came without the key and without its row (a build older than
+the key's echo, or one behind a proxy that drops the header). The write's outcome is unknown, a
+`DispatchWriteUnsettledError`, so check whether it took effect before asking again. No request of
+the client, its reads, its writes and the `/healthz` probe, follows a redirect: Dispatch's API
+routes answer none with a 3xx, so a 3xx is a refusal of whatever answered in its place, and it
+names the origin the redirect points at (`redirectOrigin`: the scheme and the host, never the path
+or the query). The round trip and the related-item
+check store nothing, so a 2xx of either that is not its answer, a replay whose first answer
+Dispatch did not keep among them, is a `DispatchAnswerMissingError`
 (`ANSWER_LOST`), which says nothing was made. A landing is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
@@ -884,7 +891,9 @@ first `: `; a label holding `: ` goes in `--options-json`, which the generated c
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
 stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
-names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
+names a local file. An empty `--issue`, `--project` or `--check`, as an empty variable gives it, is
+refused the same way, naming the flag, since it names nothing and sent it reaches no route.
+`dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills

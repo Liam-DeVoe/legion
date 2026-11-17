@@ -14,7 +14,8 @@
 // other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
 // route's schema.
 import { describe, expect, test } from "bun:test";
-import { type Actor, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
+import { type Actor, IDEMPOTENCY_ANSWER_NOT_KEPT, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
+import type { z } from "zod";
 import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import {
@@ -288,14 +289,15 @@ const CASES: readonly WriteRowCase[] = [
 type Echo = "this" | "none" | "other";
 
 /** A Dispatch that answers the case's route with `status` and `body` under `type`, naming back
- *  the key `echo` says (and its fallback's first route with no route for it), recording each
- *  request it was sent. */
+ *  the key `echo` says (and its fallback's first route with no route for it), with the headers
+ *  `extra` adds, recording each request it was sent. */
 function dispatchAnswering(
   row: WriteRowCase,
   status: number,
   type: string,
   body: string,
-  echo: Echo
+  echo: Echo,
+  extra: Readonly<Record<string, string>> = {}
 ) {
   const sent: string[] = [];
   const fetchImpl = (async (input: Request | string | URL, init?: RequestInit) => {
@@ -309,7 +311,7 @@ function dispatchAnswering(
         { status: 404 }
       );
     }
-    const headers: Record<string, string> = { "Content-Type": type };
+    const headers: Record<string, string> = { "Content-Type": type, ...extra };
     const key = request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? "";
     if (echo === "this") headers[IDEMPOTENCY_KEY_HEADER] = key;
     if (echo === "other") headers[IDEMPOTENCY_KEY_HEADER] = `${key}-another`;
@@ -323,8 +325,15 @@ function dispatchAnswering(
 
 /** What the call made of the answer: the answer, the landing's code, an outcome it cannot know,
  *  the answer missing from a call that stores nothing, or the error. */
-async function outcome(row: WriteRowCase, status: number, type: string, body: string, echo: Echo) {
-  const { sent, client } = dispatchAnswering(row, status, type, body, echo);
+async function outcome(
+  row: WriteRowCase,
+  status: number,
+  type: string,
+  body: string,
+  echo: Echo,
+  extra: Readonly<Record<string, string>> = {}
+) {
+  const { sent, client } = dispatchAnswering(row, status, type, body, echo, extra);
   try {
     return { sent, answered: await row.call(client) };
   } catch (error) {
@@ -349,6 +358,42 @@ function noAnswer(
   return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
 }
 
+/** Each path inside `schema` at which an object refuses a member it does not name (a
+ *  `z.strictObject`, whose catchall is `never`), against the rule that a row keeps each one. */
+function strictPaths(schema: z.core.$ZodType, at: string): string[] {
+  // `$ZodTypes` is zod's union of its own types, which a switch on the definition's type narrows.
+  const def = (schema as z.core.$ZodTypes)._zod.def;
+  switch (def.type) {
+    case "object":
+      return [
+        ...(def.catchall?._zod.def.type === "never" ? [at] : []),
+        ...Object.entries(def.shape).flatMap(([name, member]) =>
+          strictPaths(member, `${at}.${name}`)
+        ),
+      ];
+    case "array":
+      return strictPaths(def.element, `${at}[]`);
+    case "union":
+      return def.options.flatMap((option) => strictPaths(option, at));
+    case "intersection":
+      return [...strictPaths(def.left, at), ...strictPaths(def.right, at)];
+    case "record":
+      return strictPaths(def.valueType, `${at}{}`);
+    case "pipe":
+      return [...strictPaths(def.in, at), ...strictPaths(def.out, at)];
+    case "optional":
+    case "nullable":
+    case "readonly":
+    case "nonoptional":
+    case "default":
+    case "prefault":
+    case "catch":
+      return strictPaths(def.innerType, at);
+    default:
+      return [];
+  }
+}
+
 describe("every keyed write reads Dispatch's declared answer as its row, by the key it names back", () => {
   test("the table drives every row of WRITE_ROWS", () => {
     const driven = [...new Set<string>(CASES.map((row) => row.method))].sort();
@@ -358,6 +403,37 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
   test("the routes that store nothing are the round trip and the related-item check", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
     expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
+  });
+
+  // A newer Dispatch may answer a member the row does not name, at any depth, and an older client
+  // must still read the answer as its own: a row that refused it would print a landing.
+  test("no row refuses a member it does not name, at any depth", () => {
+    const strict = Object.entries(WRITE_ROWS).flatMap(([method, row]) => strictPaths(row, method));
+    expect(strict).toEqual([]);
+  });
+
+  test("an issue update whose advance and link carry a member the row does not name is its answer", async () => {
+    const [patched] = answersOf("PATCH /api/v1/issues/{key}");
+    if (patched === undefined) throw new Error("PATCH /api/v1/issues/{key} declares no 2xx");
+    const answered = {
+      ...(instance(patched.schema, "most") as Record<string, unknown>),
+      advances: [{ id: "ship-the-daemon", inherited: false, title: "Ship the daemon" }],
+      external_links: [{ url: "https://example.com/pr/1", kind: "pr", title: "The pull request" }],
+    };
+    const updateIssue = CASES.find((row) => row.method === "updateIssue");
+    if (updateIssue === undefined) throw new Error("the table drives no updateIssue");
+    const got = await outcome(
+      updateIssue,
+      patched.status,
+      "application/json",
+      JSON.stringify(answered),
+      "this"
+    );
+    expect({ answered: "answered" in got, landed: got.landed, thrown: got.thrown }).toEqual({
+      answered: true,
+      landed: undefined,
+      thrown: undefined,
+    });
   });
 
   for (const row of CASES) {
@@ -374,8 +450,17 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
           expect(answerErrors(row.route, answer.status, answered)).toEqual([]);
           const body = JSON.stringify(answered);
           const got = await outcome(row, answer.status, "application/json", body, "this");
-          expect({ landed: got.landed, thrown: got.thrown }).toEqual({
+          expect({
+            answered: "answered" in got,
+            landed: got.landed,
+            unknown: got.unknown,
+            missing: got.missing,
+            thrown: got.thrown,
+          }).toEqual({
+            answered: true,
             landed: undefined,
+            unknown: undefined,
+            missing: undefined,
             thrown: undefined,
           });
           const last = got.sent.at(-1)?.split(" ") ?? [];
@@ -406,6 +491,27 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
         unknown: undefined,
         missing: undefined,
         ...noAnswer(row, "other"),
+      });
+    });
+    // Dispatch keeps an answer up to 1 MiB; a repeat under the key of a larger one is a replayed
+    // 2xx reading ANSWER_NOT_KEPT (`keyedAnswerKept`, request_keys.go). A route that stores
+    // nothing made nothing, so it is the missing answer there, and a landing only where the route
+    // stores.
+    const notKept: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+      WRITE_ROWS[row.method]
+    )
+      ? { landed: IDEMPOTENCY_ANSWER_NOT_KEPT }
+      : { missing: DISPATCH_ANSWER_LOST };
+    test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "ANSWER_NOT_KEPT" : "no answer"}`, async () => {
+      const body = JSON.stringify({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" });
+      const got = await outcome(row, status, "application/json", body, "this", {
+        "Idempotency-Replayed": "?1",
+      });
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
+        landed: undefined,
+        unknown: undefined,
+        missing: undefined,
+        ...notKept,
       });
     });
     for (const echo of ["this", "none"] as const) {

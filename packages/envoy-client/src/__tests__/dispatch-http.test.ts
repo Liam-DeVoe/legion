@@ -927,7 +927,7 @@ describe("DispatchClient", () => {
     const user = "user-7f2a";
     const secret = "pw-4c7e19";
     const configured = `https://${user}:${secret}@host.example`;
-    const { fetchImpl, requests } = fakeFetch([
+    const { fetchImpl: answers, requests } = fakeFetch([
       new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
         status: 502,
         statusText: "Bad Gateway",
@@ -941,6 +941,16 @@ describe("DispatchClient", () => {
         404
       ),
     ]);
+    // Dispatch's keyed layer names the write's key back on its KEY_COMMITTED, as on every answer
+    // it gives a keyed write, and a landing needs it.
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const answer = await answers(input, init);
+      const key = new Headers(init?.headers).get("Idempotency-Key");
+      if (answer.status !== 409 || key === null) return answer;
+      const echoed = new Response(answer.body, answer);
+      echoed.headers.set("Idempotency-Key", key);
+      return echoed;
+    }) as typeof fetch;
     const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
       retryNoRoute: false,
@@ -1966,6 +1976,104 @@ describe("a redirect to another origin", () => {
       expect(refusal).toBeInstanceOf(DispatchGatewayError);
       expect((refusal as DispatchGatewayError).status).toBe(302);
       expect(elsewhere).toEqual([]);
+    } finally {
+      dispatch.stop(true);
+      other.stop(true);
+    }
+  });
+
+  // The refusal says where the redirect points, so an operator who wrote `http://` for an
+  // `https://` Dispatch fixes the URL from the line: the scheme and the host, never a path, a
+  // query or a user, any of which can carry a secret.
+  test("a refused redirect names the origin it points at, and nothing else of it", async () => {
+    // A target that carries a user and a secret, built from its parts; the secret is made for
+    // this run, so no line of the test holds a credential.
+    const hidden = crypto.randomUUID();
+    const withUser = new URL("https://dispatch.example.com/api/v1/issues/DSP-1");
+    withUser.username = "user";
+    withUser.password = hidden;
+    for (const [location, origin] of [
+      [
+        "https://sso.example.com:8443/start?session=s3cr3t-query#frag",
+        "https://sso.example.com:8443",
+      ],
+      [withUser.href, "https://dispatch.example.com"],
+      ["/login?next=%2Fapi", "http://dispatch.test"],
+    ] as const) {
+      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 302, headers: { Location: location } })) as typeof fetch;
+      const client = new DispatchClient(
+        "http://dispatch.test",
+        bearerCredential("secret"),
+        fetchImpl,
+        {
+          sleep: async () => undefined,
+        }
+      );
+      for (const call of [
+        () => client.getIssue("DSP-1"),
+        () => client.comment("DSP-1", { body: "Review", actor }),
+      ]) {
+        const refusal = await call().then(
+          () => undefined,
+          (error: unknown) => error
+        );
+        const message = refusal instanceof Error ? refusal.message : String(refusal);
+        expect(message, location).toContain(
+          `answered 302 with an empty body, redirecting to ${origin}, `
+        );
+        for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
+          expect(message, location).not.toContain(part);
+        }
+      }
+    }
+  });
+
+  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
+  // is sent again under its key: a probe that followed the redirect would hand the proof to the
+  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
+  test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
+    const elsewhere: string[] = [];
+    const other = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        elsewhere.push(`${request.method} ${new URL(request.url).pathname}`);
+        return jsonResponse({ status: "ok", idempotency_keys: true });
+      },
+    });
+    const asked: string[] = [];
+    const dispatch = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(request) {
+        const path = new URL(request.url).pathname;
+        asked.push(`${request.method} ${path}`);
+        if (path === "/healthz") {
+          return new Response(null, {
+            status: 302,
+            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
+          });
+        }
+        return new Response("<html><body>Bad Gateway</body></html>", {
+          status: 502,
+          headers: { "Content-Type": "text/html" },
+        });
+      },
+    });
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async () => ({ Authorization: "DPoP secret", DPoP: "PROOF" }),
+    };
+    try {
+      const client = new DispatchClient(`http://127.0.0.1:${dispatch.port}`, credential, fetch, {
+        sleep: async () => undefined,
+      });
+      await client.comment("DSP-1", { body: "Review", actor }).catch(() => undefined);
+      expect({ asked, elsewhere }).toEqual({
+        asked: ["POST /api/v1/issues/DSP-1/comments", "GET /healthz"],
+        elsewhere: [],
+      });
     } finally {
       dispatch.stop(true);
       other.stop(true);
