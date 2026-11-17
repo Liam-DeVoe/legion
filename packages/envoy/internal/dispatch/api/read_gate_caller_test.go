@@ -2,82 +2,193 @@ package api
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/readclass"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// tokenLookups counts the reads of a personal token's row (personalTokenActor) sent on a
-// recording context (recordingKey): one per verification of a `dsp_` credential, so a test
-// counts one request's own and none of the server's background work.
-type tokenLookups struct{ sent atomic.Int64 }
+// tokenLookup reports whether statement is a personal token's read of its own row
+// (personalTokenActor): one per verification of a `dsp_` credential.
+func tokenLookup(statement string) bool {
+	statement = strings.TrimSpace(statement)
+	return strings.HasPrefix(statement, "select") && strings.Contains(statement, "from agent_tokens") &&
+		strings.Contains(statement, "where token_hash = $1")
+}
+
+// personRecord reports whether statement is the test identity's record of the person a request
+// names (identity.HeaderIdentity, store.PgPeopleStore.Record): one per verification of a person at
+// the browser, as a cookie's verification is one read of its session in production.
+func personRecord(statement string) bool {
+	return strings.Contains(statement, "insert into people (email) values ($1) on conflict (email) do nothing")
+}
+
+// callerResolutions is what one request sent to resolve its caller: verified, the statements that
+// verify its credential (personRecord, tokenLookup), and resolved, those that resolve its viewer
+// (access.Resolve, viewerResolution). The shared token's verification compares the bearer in
+// memory and sends nothing, so for it only the viewer's statements are seen.
+type callerResolutions struct{ verified, resolved int }
+
+func resolutionsIn(statements []string) callerResolutions {
+	var counted callerResolutions
+	for _, statement := range statements {
+		switch {
+		case strings.Contains(statement, viewerResolution):
+			counted.resolved++
+		case personRecord(statement), tokenLookup(statement):
+			counted.verified++
+		}
+	}
+	return counted
+}
+
+// readAs makes one GET of target as caller on a recording context and answers the statements it
+// made, as read makes one as alice.
+func (c *fragmentCensus) readAs(t *testing.T, seed privateSeed, caller privateCaller, target string) (int, []string) {
+	t.Helper()
+	c.mu.Lock()
+	c.statements = nil
+	c.mu.Unlock()
+	response := seed.requestIn(t, context.WithValue(t.Context(), recordingKey{}, true), caller, http.MethodGet, target, nil)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return response.Code, slices.Clone(c.statements)
+}
+
+// gateWalkTarget is the path the walk reads a GET row at: its wildcards filled by its Probe with
+// objects (censusObjects.fill), a deploy run by an id no run holds, since the seed stores none and
+// the row resolves its caller before it reads one, and the query censusQueries gives the row.
+func gateWalkTarget(t *testing.T, objects censusObjects, name, pattern string) string {
+	t.Helper()
+	probe := readClasses[name].Probe
+	for wildcardName, object := range probe {
+		if object == probeDeliveryRun {
+			pattern = strings.ReplaceAll(pattern, "{"+wildcardName+"}", "1")
+		}
+	}
+	target := objects.fill(t, pattern, probe)
+	if query, takes := censusQueries[name]; takes {
+		target += "?" + query(objects).Encode()
+	}
+	return target
+}
+
+// TestEveryGETRowResolvesItsCallerOnce walks every GET row the server mounts and reads each as one
+// caller of each kind - alice at the browser, carol's personal token that lists PRIV, the shared
+// token, and bob, a restricted member - each at the objects of a project it sees, so the read runs
+// the statements of its answer. Each request must verify its caller's credential at most once and
+// resolve its viewer at most once: the read check resolves both in front of the handler and keeps
+// them in the request's context (withinReadScope, withCallerResolved), and every layer and handler
+// behind it reads them there. What is counted is the statements a resolution sends, on the
+// request's own context (callerResolutions): a person's record by the test identity and a token's
+// read of its row for the credential, and access.Resolve's one statement for the viewer. The
+// shared token's credential sends none, so it is held to its viewer's alone.
+//
+// Control: a read check that resolves the viewer and does not keep the caller (readerOf alone)
+// leaves each handler that asks for the caller again (requireAuthenticated, actingPerson,
+// artifactReaderOf) to verify the credential a second or third time, and the walk fails naming
+// each such row.
+func TestEveryGETRowResolvesItsCallerOnce(t *testing.T) {
+	census := &fragmentCensus{}
+	fixture := seedFragmentCensus(t, census)
+	callers := []struct {
+		caller  privateCaller
+		objects censusObjects
+	}{
+		{callerAlice, fixture.public},
+		{callerCarolPrivToken, fixture.private},
+		{callerSharedToken, fixture.public},
+		{callerBob, fixture.private},
+	}
+	// spread counts, by caller and by count, the rows whose requests verified or resolved that
+	// many times.
+	spread := map[string]map[int]int{}
+	tally := func(caller privateCaller, what string, count int) {
+		key := string(caller) + " " + what
+		if spread[key] == nil {
+			spread[key] = map[int]int{}
+		}
+		spread[key][count]++
+	}
+	var over []string
+	walked, verifiedTotal, resolvedTotal := 0, 0, 0
+	for _, route := range fixture.server.routes() {
+		if route.Method != http.MethodGet || slices.Contains(route.Reads, readclass.TestHook) {
+			continue
+		}
+		name := route.Method + " " + route.Pattern
+		var line []string
+		for _, read := range callers {
+			target := gateWalkTarget(t, read.objects, name, route.Pattern)
+			status, statements := census.readAs(t, fixture.privateSeed, read.caller, target)
+			counted := resolutionsIn(statements)
+			walked++
+			verifiedTotal += counted.verified
+			resolvedTotal += counted.resolved
+			tally(read.caller, "verified", counted.verified)
+			tally(read.caller, "resolved", counted.resolved)
+			line = append(line, fmt.Sprintf("%s %d: verified %d, resolved %d", read.caller, status, counted.verified, counted.resolved))
+			if counted.verified > 1 || counted.resolved > 1 {
+				over = append(over, fmt.Sprintf("%s as %s (GET %s, %d): verified its credential %d times and resolved its viewer %d times",
+					name, read.caller, target, status, counted.verified, counted.resolved))
+			}
+		}
+		t.Logf("%s: %s", name, strings.Join(line, "; "))
+	}
+	if walked == 0 {
+		t.Fatal("the server mounts no GET row, so the walk read nothing")
+	}
+	for _, key := range slices.Sorted(maps.Keys(spread)) {
+		var counts []string
+		for _, count := range slices.Sorted(maps.Keys(spread[key])) {
+			counts = append(counts, fmt.Sprintf("%d rows at %d", spread[key][count], count))
+		}
+		t.Logf("spread, %s: %s", key, strings.Join(counts, ", "))
+	}
+	t.Logf("%d reads walked: %d credential verifications and %d viewer resolutions in all", walked, verifiedTotal, resolvedTotal)
+	if verifiedTotal == 0 || resolvedTotal == 0 {
+		t.Fatalf("the walk counted %d verifications and %d resolutions, so the counters see nothing", verifiedTotal, resolvedTotal)
+	}
+	for _, row := range over {
+		t.Error(row)
+	}
+}
+
+// tokenLookups counts every personal token's read of its row (tokenLookup) on any context, for a
+// request a test cannot give a context of its own, such as a socket's upgrade.
+type tokenLookups struct{ every atomic.Int64 }
 
 func (l *tokenLookups) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	statement := strings.TrimSpace(data.SQL)
-	if ctx.Value(recordingKey{}) != nil && strings.HasPrefix(statement, "select") &&
-		strings.Contains(statement, "from agent_tokens") && strings.Contains(statement, "where token_hash = $1") {
-		l.sent.Add(1)
+	if tokenLookup(data.SQL) {
+		l.every.Add(1)
 	}
 	return ctx
 }
 
 func (l *tokenLookups) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// TestAGETVerifiesItsCredentialOnce: a GET row whose classes need the viewer is read behind
-// withinReadScope, which resolves the caller once and keeps it in the request's context
-// (withCallerResolved), so a handler behind it that resolves the caller again - through
-// requireAuthenticated, readerOf, artifactReaderOf or actingPerson - reads the kept caller and
-// verifies the credential no second time. Each read below is made with a personal token, whose
-// verification reads its agent_tokens row, and each must read that row exactly once.
+// TestTheLiveSocketVerifiesItsCredentialOnceAtOpen: the live socket's upgrade resolves its caller
+// once, in front of the handler (whileCallerResolves), which keeps that resolution as the caller
+// it admits and hands it to the handler (serveLiveSocket), so opening the socket with a personal
+// token reads the token's row once. The heartbeat's own resolutions come later (StreamHeartbeat).
 //
-// Control: a gate that resolves the viewer without keeping the caller (readerOf alone) verifies
-// the token again in each handler that asks, and the count of each read below is 2 or 3.
-func TestAGETVerifiesItsCredentialOnce(t *testing.T) {
+// Control: an upgrade that resolves the caller for the heartbeat on a request of its own and
+// leaves the handler to resolve it again reads the row twice.
+func TestTheLiveSocketVerifiesItsCredentialOnceAtOpen(t *testing.T) {
 	lookups := &tokenLookups{}
 	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), lookups)})
-	issue := "/api/v1/issues/" + seed.issue[seedPublic]
-	const unheld = "/api/v1/artifacts/00000000-0000-4000-8000-000000000000"
-	for _, read := range []struct {
-		target string
-		status int
-	}{
-		{issue, http.StatusOK},
-		{issue + "/comments", http.StatusOK},
-		{issue + "/asks", http.StatusOK},
-		{unheld, http.StatusNotFound},
-		{unheld + "/versions/1", http.StatusNotFound},
-	} {
-		before := lookups.sent.Load()
-		response := seed.requestIn(t, context.WithValue(t.Context(), recordingKey{}, true), callerCarolToken, http.MethodGet, read.target, nil)
-		if response.Code != read.status {
-			t.Fatalf("GET %s with carol's token = %d %s, want %d", read.target, response.Code, response.Body.String(), read.status)
-		}
-		if verified := lookups.sent.Load() - before; verified != 1 {
-			t.Errorf("GET %s read its personal token's row %d times, want once", read.target, verified)
-		}
-	}
-}
-
-// TestWhoamiVerifiesItsCredentialOnce: GET /api/v1/whoami, a row of the caller's own class that no
-// gate resolves, verifies the caller once and reads the viewer of a credential that lists
-// projects from that one resolution (whoamiPrivateProjects), so a token's row is read once.
-//
-// Control: a whoamiPrivateProjects that resolves the request's reader afresh (resolveReader)
-// verifies the token a second time, and the count is 2.
-func TestWhoamiVerifiesItsCredentialOnce(t *testing.T) {
-	lookups := &tokenLookups{}
-	seed := seedPrivateProjectWith(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), lookups)})
-	before := lookups.sent.Load()
-	response := seed.requestIn(t, context.WithValue(t.Context(), recordingKey{}, true), callerCarolPrivToken, http.MethodGet, "/api/v1/whoami", nil)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"private_projects":["`+seedPrivate+`"]`) {
-		t.Fatalf("GET /api/v1/whoami with carol's token that lists PRIV = %d %s, want 200 naming PRIV private", response.Code, response.Body.String())
-	}
-	if verified := lookups.sent.Load() - before; verified != 1 {
-		t.Errorf("GET /api/v1/whoami read its personal token's row %d times, want once", verified)
+	url := liveURLOf(t, seed.handler)
+	before := lookups.every.Load()
+	dialLive(t, url, seed.liveHeader(t, callerCarolToken))
+	if verified := lookups.every.Load() - before; verified != 1 {
+		t.Errorf("opening the live socket with carol's token read the token's row %d times, want once", verified)
 	}
 }
