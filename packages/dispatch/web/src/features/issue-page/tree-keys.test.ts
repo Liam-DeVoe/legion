@@ -209,3 +209,50 @@ test("every row of a narrow drawing has a key of its own", () => {
     "CORE-1>spec#b-r1>spec#b-q1",
   ]);
 });
+
+/** What the model says of a node a later one took the place of (dispatch://INFRA-4063 R5). */
+const OVERTAKEN = { closed: true, life: "overtaken" } as const;
+
+// dispatch://INFRA-4063 R5: a parent's line of overtaken children takes the focus as a row
+// does, so it holds a key of its own: the path down to the parent, told apart from the parent's
+// own row and from its deeper branch's.
+test("a line's key is overtaken and its path", () => {
+  const spec = node("spec", "document", [node("spec#b-r1", "requirement", [], OVERTAKEN)]);
+  expect(
+    rowKeyOf({ held: 1, kind: "overtaken", level: 3, of: spec, open: false, trail: ["CORE-1"] })
+  ).toBe("overtaken:CORE-1>spec");
+
+  const keys = treeRows(node("CORE-1", "issue", [spec]), {
+    ...NOTHING_OPENED,
+    branches: new Set(["spec"]),
+    overtaken: new Set(["spec"]),
+  }).map(rowKeyOf);
+  expect(keys).toEqual(["CORE-1", "CORE-1>spec", "overtaken:CORE-1>spec", "CORE-1>spec>spec#b-r1"]);
+});
+
+// dispatch://INFRA-4063 R6: `q` and `w` walk the tree and not the rows (`nodesInOrder`), so an
+// overtaken question and an overtaken decision are reached though neither is a row while its
+// parent's line is closed.
+test("`q` and `w` reach an overtaken question and decision", () => {
+  const root = node("CORE-1", "issue", [
+    node("spec", "document", [
+      node("spec#b-r1", "requirement", [], { reference: "dispatch://CORE-1/spec#b-r1" }),
+      node("spec#b-q1", "ask", [], { ...OVERTAKEN, question: true, state: "open" }),
+    ]),
+    node("decisions-md#b-d1", "decision", [], {
+      ...OVERTAKEN,
+      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
+    }),
+  ]);
+  const keys = treeRows(root, { ...NOTHING_OPENED, branches: new Set(["spec"]) }).map(rowKeyOf);
+  expect(keys).toEqual([
+    "CORE-1",
+    "CORE-1>spec",
+    "CORE-1>spec>spec#b-r1",
+    "overtaken:CORE-1>spec",
+    "overtaken:CORE-1",
+  ]);
+
+  expect(nextQuestion(root, undefined)?.id).toBe("spec#b-q1");
+  expect(decisionBehind(root, "spec#b-r1")?.id).toBe("decisions-md#b-d1");
+});

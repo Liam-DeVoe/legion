@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
+import { heldBy } from "./issue-tree";
 import type { NodeType } from "./page-words";
 import {
   DRAWN_LEVELS,
@@ -44,6 +45,9 @@ function node(
 
 /** The ids of every row drawn, in reading order; a branch's own row reads as `more:<id>`. */
 function idsOf(rows: readonly DrawnRow[]): string[] {
+  // A node's line of overtaken children reads as `line:<id>` (dispatch://INFRA-4063 R5).
+  if (!rows.every((row) => row.kind !== "overtaken"))
+    return rows.flatMap((row) => (row.kind === "overtaken" ? `line:${row.of.id}` : idsOf([row])));
   return rows.map((row) => (row.kind === "deeper" ? `more:${row.of.id}` : row.node.id));
 }
 
@@ -389,4 +393,123 @@ test("below 1024 px the frontier's paths are drawn whatever their depth", () => 
   );
   expect(idsOf(inside)).toEqual(["doc-1", "doc-2", "question"]);
   expect(zoomBreadcrumb(root, "doc-1").map((one) => one.id)).toEqual(["CORE-1"]);
+});
+
+/** The line a node's overtaken children fold to, where the rows draw one under `id`. */
+function lineOf(rows: readonly DrawnRow[], id: string) {
+  const line = rows.find((row) => row.kind === "overtaken" && row.of.id === id);
+  return line?.kind === "overtaken" ? line : undefined;
+}
+
+/** What the model says of a node a later one took the place of (dispatch://INFRA-4063 R5). */
+const OVERTAKEN = { closed: true, life: "overtaken" } as const;
+
+/** An issue whose one document holds a live requirement between two overtaken ones, the second
+ *  holding a note, and counts what it holds as the tree read does (`heldBy`). */
+function withOvertaken(): TreeNode {
+  const children = [
+    node("spec#b-r1", "requirement", [], OVERTAKEN),
+    node("spec#b-r2", "requirement"),
+    node("spec#b-r3", "requirement", [node("spec#b-r3-note", "callout")], OVERTAKEN),
+  ];
+  return node("CORE-1", "issue", [node("spec", "document", children, { held: heldBy(children) })]);
+}
+
+// dispatch://INFRA-4063 R5: under a parent that holds overtaken nodes, one line after its other
+// children says how many it holds directly, and is a row of the tree, which the keys reach.
+// Opened, each overtaken node is a row one level below the line, folded with its subtree.
+test("overtaken children are one focusable line that counts them", () => {
+  const root = withOvertaken();
+  const opened = { ...NOTHING_OPENED, branches: new Set(["spec"]) };
+  const closed = treeRows(root, opened);
+  expect(idsOf(closed)).toEqual(["CORE-1", "spec", "spec#b-r2", "line:spec"]);
+  const line = lineOf(closed, "spec");
+  expect(line?.held).toBe(2);
+  expect(line?.level).toBe(3);
+  expect(line?.open).toBe(false);
+  expect(line?.trail).toEqual(["CORE-1"]);
+
+  const open = treeRows(root, { ...opened, overtaken: new Set(["spec"]) });
+  expect(idsOf(open)).toEqual([
+    "CORE-1",
+    "spec",
+    "spec#b-r2",
+    "line:spec",
+    "spec#b-r1",
+    "spec#b-r3",
+  ]);
+  expect(lineOf(open, "spec")?.open).toBe(true);
+  for (const id of ["spec#b-r1", "spec#b-r3"]) {
+    expect(rowOf(open, id)?.level).toBe(4);
+    expect(rowOf(open, id)?.trail).toEqual(["CORE-1", "spec"]);
+  }
+  const holding = rowOf(open, "spec#b-r3");
+  expect(holding?.kind === "node" ? holding.expanded : undefined).toBe(false);
+  expect(holding?.kind === "node" ? holding.folded : undefined).toBe(1);
+});
+
+// dispatch://INFRA-4063 R5: an open question under an overtaken node opens no path, so neither
+// that node nor its parent unfolds because of it, and opened by the reader the overtaken node
+// still arrives folded.
+test("the frontier never passes into an overtaken node", () => {
+  const question = node("spec#b-q1", "ask", [], { question: true, state: "open" });
+  const issueWith = (life: Partial<TreeNode>): TreeNode =>
+    node("CORE-1", "issue", [
+      node("spec", "document", [node("spec#b-r1", "requirement", [question], life)]),
+    ]);
+  // The control: under a live requirement, the question opens the path down to it.
+  expect([...frontier(issueWith({}))].sort()).toEqual(["CORE-1", "spec", "spec#b-r1"]);
+
+  const root = issueWith(OVERTAKEN);
+  expect([...frontier(root)]).toEqual([]);
+  expect(idsOf(treeRows(root))).toEqual(["CORE-1", "spec"]);
+  const opened = treeRows(root, {
+    ...NOTHING_OPENED,
+    branches: new Set(["spec"]),
+    overtaken: new Set(["spec"]),
+  });
+  expect(idsOf(opened)).toEqual(["CORE-1", "spec", "line:spec", "spec#b-r1"]);
+  const overtaken = rowOf(opened, "spec#b-r1");
+  expect(overtaken?.kind === "node" ? overtaken.expanded : undefined).toBe(false);
+});
+
+// dispatch://INFRA-4063 R5: a folded branch's count counts its line of overtaken children as one
+// row and nothing under it, which is the number of rows the branch draws opened, its line closed.
+test("a folded count counts the line as one row", () => {
+  const root = withOvertaken();
+  const folded = rowOf(treeRows(root), "spec");
+  expect(folded?.kind === "node" ? folded.expanded : undefined).toBe(false);
+  expect(folded?.kind === "node" ? folded.folded : undefined).toBe(2);
+  const opened = treeRows(root, { ...NOTHING_OPENED, branches: new Set(["spec"]) });
+  expect(idsOf(opened).slice(2)).toEqual(["spec#b-r2", "line:spec"]);
+});
+
+// dispatch://INFRA-4063 R2: a proposed node is only put forward until a person settles it, so a
+// proposed statement no check serves and a proposed check that has not passed open no path; a
+// proposed question and a proposed decision waiting for review still ask the reader.
+test("a proposed statement no check serves and a proposed check that has not passed open no path", () => {
+  const issueWith = (life: Partial<TreeNode>): TreeNode =>
+    node("CORE-1", "issue", [
+      node("spec", "document", [
+        node("spec#b-r1", "requirement", [], { ...life, counts: { checks: 0, planTasks: 0 } }),
+      ]),
+      node("verification", "document", [
+        node("verification#b-c1", "check", [], { ...life, state: "failed" }),
+      ]),
+      node("asks", "document", [node("q", "ask", [], { ...life, question: true, state: "open" })]),
+      node("decisions", "document", [node("d", "decision", [], { ...life, waiting: true })]),
+    ]);
+  // The control: live, each of the four opens the path down to it.
+  expect([...frontier(issueWith({}))].sort()).toEqual([
+    "CORE-1",
+    "asks",
+    "decisions",
+    "spec",
+    "verification",
+  ]);
+  expect([...frontier(issueWith({ life: "proposed" }))].sort()).toEqual([
+    "CORE-1",
+    "asks",
+    "decisions",
+  ]);
 });
