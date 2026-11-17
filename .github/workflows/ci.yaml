@@ -2810,18 +2810,19 @@ jobs:
               # entry, and its way backs of the step records and of the plan ratings, to the block
               # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
-              # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:127) and the troubleshooting page's refusal table's
-              # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
-              # own check reads it. They are .txt files, which the module's `**/*.go` above does
-              # not match.
+              # The eight copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # reads to hold them to the texts themselves: the waiting line's four, the three way
+              # backs' (way_back_doc_test.go:127, step_variant_way_back_doc_test.go:26) and the
+              # troubleshooting page's refusal table's (troubleshooting_refusals_doc_test.go:41),
+              # each committed beside the package whose own check reads it. They are .txt files,
+              # which the module's `**/*.go` above does not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
               - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
               - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
               - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
               - 'packages/daemon/internal/daemon/upgrade_architect_entry_way_back_extract.txt'
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
+              - 'packages/daemon/internal/store/step_variant_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
               # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also

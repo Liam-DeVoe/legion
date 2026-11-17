@@ -536,6 +536,14 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
                                "for plan_ratings_way_back_doc_test.go:40 (wayBackBlockOfTheGuide, way_back_doc_test.go:150) "
                                "and :71 (entryLinkIn of shippedText)")),
+    # internal/store's step_variant_way_back_test.go reads only the copy in its own directory, so
+    # it needs no row; this one holds that copy to the guide, in the text-check job.
+    f"{DAEMON}/internal/textcheck/step_variant_way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:485 reads it under ../../../.. "
+                               "for step_variant_way_back_doc_test.go:31 (wayBackBlockOfTheGuide, way_back_doc_test.go:150)"),
+        (f"{DAEMON}/internal/store/step_variant_way_back_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:475 reads it as ../store/step_variant_way_back_extract.txt for "
+         "step_variant_way_back_doc_test.go:26, the committed copy it holds the guide's block to (quotedBody)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.

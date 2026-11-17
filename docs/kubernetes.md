@@ -2102,6 +2102,9 @@ update outbox set payload = payload - 'experiment' - 'variant'
 where kind = 'step_record' and (payload ? 'experiment' or payload ? 'variant');
 ```
 
+This block is the one source of the statement.
+`internal/store`'s `TestTheStepVariantWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows, from the copy `internal/store/step_variant_way_back_extract.txt`, and reads each row as the release that rates each plan reads it; `internal/textcheck`'s `TestTheStepVariantWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+
 The statement deletes no row and changes no other member of a payload, so each row keeps its retry state and then writes its record, with its rating where it carries one, under the earlier release.
 What it costs is the variant of each of those records that had not reached Dispatch: the read of that issue's steps and the read of the project's finished issues name no variant for that run, and nothing else of the issue changes.
 A variant that reached Dispatch before the rollback stays there; its row can still be queued when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`).
