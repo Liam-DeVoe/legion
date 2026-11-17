@@ -2271,17 +2271,21 @@ export const dispatchToolSpecs = [
     name: "dispatch_steps",
     example: { issue: "DSP-1" },
     description:
-      "Print each step that ran on an issue, as the Legion daemon recorded it at the step's " +
-      "start and at its end. The first line is `<KEY>: <n> steps in <m> tasks`. Then each run " +
-      "of a step prints one line, task by task, in the order each task first ran: `<task> " +
+      "Print each task of an issue's plan and each step that ran on the issue, as the Legion " +
+      "daemon recorded it at the step's start and at its end. The first line is `<KEY>: <n> " +
+      "steps in <m> tasks`. The tasks of the issue's newest plan come first, in the plan's " +
+      "order, then each other task with a run, in the order each first ran. A task of the plan " +
+      "prints `task <task> needs <tasks>: <place> <step> <state>, ...`: the tasks it needs, or " +
+      "nothing, then each step the plan gives it, where state is not started, running, or the " +
+      "result of its newest run. Then each run of a step of the task prints one line: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on, or that Dispatch does not " +
-      `hold, prints 0 steps in 0 tasks. ${ISSUE_REFERENCE}`,
+      "A closed issue's steps read too. An issue that no step ran on and that has no plan, or " +
+      `that Dispatch does not hold, prints 0 steps in 0 tasks. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),

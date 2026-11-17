@@ -192,6 +192,63 @@ describe("dispatch steps", () => {
     );
   });
 
+  // The tasks of the plan come first, each on a line naming the tasks it needs and each step the
+  // plan gives it with where its newest run stands, before its runs; a task with no planned step
+  // prints its runs alone, as before. The fault is a task or a step of the plan the reader cannot
+  // see; the control is the command that prints the runs alone, under which no `task` line shows.
+  test("each task of the plan prints its needs and the state of each planned step", async () => {
+    const implementing: StepRecord = { ...tester, role: "implementer", step: 1, task: "a" };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        { task: "a", planned: ["implementer", "reviewer"], steps: [implementing] },
+        { task: "b", needs: ["a"], planned: ["tester"], steps: null },
+      ],
+    };
+
+    const result = await readSteps("LEG-1", answering([], answer));
+
+    expect(result.text).toBe(
+      [
+        "LEG-1: 1 steps in 2 tasks",
+        "task a needs nothing: 1 implementer running, 2 reviewer not started",
+        "a 1 step implementer testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+        "task b needs a: 1 tester not started",
+      ].join("\n")
+    );
+    expect(result.details).toEqual({
+      issue: "LEG-1",
+      tasks: [
+        { task: "a", planned: ["implementer", "reviewer"], steps: [implementing] },
+        { task: "b", needs: ["a"], planned: ["tester"], steps: [] },
+      ],
+    });
+  });
+
+  // A planned step stands where its newest run stands: a run that failed and then passed reads
+  // passed, and a retro or a merge, at step 0, is no step of the plan.
+  test("a planned step reads the result of its newest run", async () => {
+    const failed: StepRecord = { ...docsReview, task: "default", step: 1, role: "implementer" };
+    const passed: StepRecord = { ...implementer, step: 1, attempt: 2 };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: ["setup", "docs"],
+          planned: ["implementer", "acceptance:owner"],
+          steps: [failed, passed, mergedByGitHub],
+        },
+      ],
+    };
+
+    const result = await readSteps("LEG-1", answering([], answer));
+
+    expect(result.text.split("\n")[1]).toBe(
+      "task default needs setup, docs: 1 implementer passed, 2 acceptance:owner not started"
+    );
+  });
+
   // Dispatch answers an issue it does not hold, and one no step ran on, with no task; the
   // generated type also lets the list be null, which reads as the empty list.
   test("an issue with no step prints 0 steps in 0 tasks", async () => {

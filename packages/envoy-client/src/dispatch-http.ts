@@ -1810,9 +1810,10 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "handoffs", id]);
   }
 
-  /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
-   *  order each task first ran, each with the attempt the read computes. An issue Dispatch does
-   *  not hold answers with no task, as its handoffs read. */
+  /** `GET /api/v1/issues/{key}/steps`: the tasks of the issue's newest plan, each with its needs
+   *  and its planned steps, then each other task in the order it first ran, each with every run of
+   *  its steps and the attempt the read computes. An issue Dispatch does not hold answers with no
+   *  task, as its handoffs read. */
   async listSteps(issue: string): Promise<IssueSteps> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }

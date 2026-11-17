@@ -39,8 +39,10 @@ out=$(dispatch steps --issue "$issue" 2>&1) || code=$?
 [ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $out"
 printf '%s\n' "$out"
 
-# Each line after the header is one run, as `dispatch steps` prints it:
+# Each line after the header is one run, as `dispatch steps` prints it, except the line of a task
+# of the issue's plan, which comes before its runs and is no run:
 #   <task> <step> <kind> <role> <type|-> attempt <a> <agent|-> <model|-> <started_at|-> <ended_at|running> <result|running>
+#   task <task> needs <tasks|nothing>: <place> <step> <state>, …
 awk -v issue="$issue" '
   function unknown(why) { print "UNKNOWN: " why; status = 2; exit }
   NR == 1 {
@@ -50,6 +52,7 @@ awk -v issue="$issue" '
     next
   }
   NF == 0 { next }
+  $1 == "task" && $3 == "needs" { next }
   {
     if (NF != 12 || $6 != "attempt") unknown("the line is no run: " $0)
     runs++

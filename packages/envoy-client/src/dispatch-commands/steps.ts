@@ -26,18 +26,45 @@ function stepLine(record: StepRecord): string {
   ].join(" ");
 }
 
-/** `dispatch steps`: each run of each step of an issue, task by task, as Dispatch lists them. */
+/** A task of the plan: the tasks it needs, then each step the plan gives it, with where its newest
+ *  run stands - the last run of kind `step` at its place, `running` until it ends and then its
+ *  result - or `not started` before any run of it. */
+function taskLine(
+  task: string,
+  needs: readonly string[],
+  planned: readonly string[],
+  steps: readonly StepRecord[]
+): string {
+  const newest = new Map(
+    steps.filter((record) => record.kind === "step").map((record) => [record.step, record])
+  );
+  const states = planned.map((name, index) => {
+    const run = newest.get(index + 1);
+    if (run === undefined) return `${index + 1} ${name} not started`;
+    return `${index + 1} ${name} ${run.ended_at === null ? "running" : orDash(run.result)}`;
+  });
+  const needed = needs.length === 0 ? "nothing" : needs.join(", ");
+  return `task ${task} needs ${needed}: ${states.join(", ")}`;
+}
+
+/** `dispatch steps`: each task of an issue as Dispatch lists them, the tasks of its plan first,
+ *  and each run of each step, task by task. A task of the plan prints the line of its needs and
+ *  its planned steps (taskLine) before its runs; any other task prints its runs alone. */
 export async function stepsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { client, issue } = context;
   const read = await client.listSteps(issue());
   // The generated shape lets either list be null; Dispatch writes `[]`, and null reads the same.
-  const tasks = (read.tasks ?? []).map((task) => ({ task: task.task, steps: task.steps ?? [] }));
+  // A Dispatch older than the plan's tasks sends no `needs` or `planned`, which read as none.
+  const tasks = (read.tasks ?? []).map((task) => ({ ...task, steps: task.steps ?? [] }));
   const records = tasks.flatMap((task) => task.steps);
+  const lines = tasks.flatMap((task) => {
+    const runs = task.steps.map(stepLine);
+    const planned = task.planned ?? [];
+    if (planned.length === 0) return runs;
+    return [taskLine(task.task, task.needs ?? [], planned, task.steps), ...runs];
+  });
   return {
-    text: [
-      `${read.issue}: ${records.length} steps in ${tasks.length} tasks`,
-      ...records.map(stepLine),
-    ].join("\n"),
+    text: [`${read.issue}: ${records.length} steps in ${tasks.length} tasks`, ...lines].join("\n"),
     details: { issue: read.issue, tasks },
   };
 }
