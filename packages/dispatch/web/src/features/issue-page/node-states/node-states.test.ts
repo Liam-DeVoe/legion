@@ -39,7 +39,7 @@ import {
   statement as specStatement,
 } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider } from "../focused-node";
-import { ContentsList } from "../IssueContents";
+import { ContentsList, contentsOf } from "../IssueContents";
 import { IssuePresets } from "../IssuePresets";
 import { IssueTree, type OutlineRequest } from "../IssueTree";
 import { overtakenLineOf } from "../issue-address";
@@ -866,6 +866,45 @@ test("in the cycle's last state, Enter on the overtaken line opens it", async ()
     await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
     expect(rowOf(view.container, "comment-2")).not.toBeNull();
   } finally {
+    view.unmount();
+  }
+});
+
+// The cycle key draws bodies above what holds the focus and moves no focus, so the outline puts
+// what holds it back on screen once the cycle's tree is drawn: on the outline's line of overtaken
+// nodes that is the line, which the bodies drawn above it would otherwise push off the screen.
+test("the cycle key brings the overtaken line that holds the focus on screen", async () => {
+  readWide();
+  const user = userEvent.setup();
+  const view = renderTree(commentAndLine());
+  // happy-dom lays nothing out, so the line's box is given: below the window's foot. Every other
+  // box is empty.
+  const below = { bottom: 2028, top: 2000 };
+  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: HTMLElement
+  ) {
+    return this.matches("[data-overtaken-line]")
+      ? new DOMRect(0, below.top, 800, below.bottom - below.top)
+      : new DOMRect();
+  });
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+    const line = theLine(view.container);
+    await user.keyboard("j");
+    await waitFor(() => expect(document.activeElement).toBe(line));
+    scrolled.mockClear();
+
+    await user.keyboard("z");
+    expect(document.activeElement).toBe(line);
+    expect(scrolled, "the cycle left the line where it stood").toHaveBeenCalled();
+    // Scrolled by that much, the line stands whole inside the window.
+    const by = (scrolled.mock.calls[0]?.[0] as ScrollToOptions | undefined)?.top ?? 0;
+    expect(below.top - by).toBeGreaterThanOrEqual(0);
+    expect(below.bottom - by).toBeLessThanOrEqual(window.innerHeight);
+  } finally {
+    boxes.mockRestore();
+    scrolled.mockRestore();
     view.unmount();
   }
 });
@@ -1793,6 +1832,45 @@ test("the Contents list draws no entry for an overtaken question", () => {
   }
 });
 
+// A Contents entry's failing mark counts a statement for a failed check that a count reads: a
+// failed check that is overtaken, or proposed, marks nothing, as the Verification view and the
+// failing flag leave it out, while a live failed check beside them still marks its statement.
+test("a Contents entry's failing mark leaves out a failed check no count reads", () => {
+  const served = (block: string) =>
+    node(
+      `spec#b-r${block}`,
+      "requirement",
+      [node(`verification-md#b-c${block}`, "check", [], { state: "failed" })],
+      { statement: true }
+    );
+  const root = stamped(node(KEY, "issue", [node("ask-1", "ask", ["1", "2", "3"].map(served))]), {
+    "verification-md#b-c1": { life: "overtaken" },
+    "verification-md#b-c2": { life: "proposed" },
+  });
+  expect(contentsOf(root, undefined).map((entry) => entry.marks)).toEqual([
+    { children: 0, failing: 1, for_review: 0, statements: 3 },
+  ]);
+});
+
+// A proposed statement is no failing one of a Contents entry, though a live check under it
+// failed, as the failing flag and the Verification summary leave that check out; it is still one
+// of the entry's statements. A live statement whose check failed still marks the entry failing.
+test("a Contents entry's failing mark leaves out a proposed statement whose check failed", () => {
+  const served = (block: string) =>
+    node(
+      `spec#b-r${block}`,
+      "requirement",
+      [node(`verification-md#b-c${block}`, "check", [], { state: "failed" })],
+      { statement: true }
+    );
+  const root = stamped(node(KEY, "issue", [node("ask-1", "ask", ["1", "2"].map(served))]), {
+    "spec#b-r1": { life: "proposed" },
+  });
+  expect(contentsOf(root, undefined).map((entry) => entry.marks)).toEqual([
+    { children: 0, failing: 1, for_review: 0, statements: 2 },
+  ]);
+});
+
 /** An issue of two statements, the second overtaken, whose one group under the issue draws the
  *  first statement and then the line the second folds to. */
 function statementAndLine(): TreeNode {
@@ -2152,6 +2230,156 @@ test("a Spec run headed by a person's decision that waits on the asks read keeps
   try {
     expect(cellBeside(view.container, "spec#b-r1")).not.toHaveAttribute("data-decision-id");
     expect(cellBeside(view.container, "spec#b-r2")).not.toHaveAttribute("data-decision-id");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Spec a decision at or under an overtaken node is left out before any run is headed, so
+// the run of a statement whose ties are an overtaken decision, then a person's decision that waits
+// on the asks read, then a live decision, is the person's: while the asks read is out its cell
+// draws no decision, and the live decision does not move up to head it.
+test("a Spec run waits on a person's decision that stands after an overtaken one", () => {
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([
+        statement("r1"),
+        specDecisionNode("d1"),
+        specDecisionNode("d2"),
+        specDecisionNode("d3"),
+      ]),
+      { "decisions-md#b-d1": { life: "overtaken" } }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        specDecision("d1", { links: [specShaped(specStatementRef("r1"))] }),
+        specDecision("d2", { kind: "person", links: [specShaped(specStatementRef("r1"))] }),
+        specDecision("d3", { links: [specShaped(specStatementRef("r1"))] }),
+      ]),
+    },
+  };
+  const view = drawSpec(root, { asksOut: true });
+  try {
+    expect(cellBeside(view.container, "spec#b-r1")).not.toHaveAttribute("data-decision-id");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Spec a person's decision whose own node the tree does not hold is drawn by the question
+// they answered, and stands where that question stands: with the question overtaken it heads no
+// run, and the live decision that shaped the statement after it heads the statement's run.
+test("a Spec run is not headed by a person's decision drawn by an overtaken question", () => {
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([
+        statement("r1"),
+        answeredAsk("ask-1", { at: "2026-11-14T09:00:00Z", text: "Draw it." }),
+        specDecisionNode("d2"),
+      ]),
+      { "ask-1": { life: "overtaken" } }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        specDecision("d1", {
+          asks: ["ask-1"],
+          kind: "person",
+          links: [specShaped(specStatementRef("r1"))],
+        }),
+        specDecision("d2", { links: [specShaped(specStatementRef("r1"))] }),
+      ]),
+    },
+  };
+  const view = drawSpec(root);
+  try {
+    expect(cellBeside(view.container, "spec#b-r1")).toHaveAttribute(
+      "data-decision-id",
+      "decisions-md#b-d2"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Spec an opened line draws the statements it holds run by run as their decisions shaped
+// them, a run that waits on the asks read included: a folded statement whose run waits on a
+// person's decision keeps a run of its own, which draws no decision while that read is out, though
+// a live decision informed it too and another statement of the line was shaped by an overtaken
+// decision.
+test("an opened Spec line keeps a run that waits on the asks read", async () => {
+  const user = userEvent.setup();
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([
+        statement("r1"),
+        statement("r2"),
+        statement("r3"),
+        statement("r4"),
+        specDecisionNode("d1"),
+        specDecisionNode("d2"),
+        specDecisionNode("d3"),
+      ]),
+      {
+        "decisions-md#b-d1": { life: "overtaken" },
+        "spec#b-r2": { life: "overtaken" },
+        "spec#b-r3": { life: "overtaken" },
+        "spec#b-r4": { life: "overtaken" },
+      }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        // The view read's own state, which the view's rows carry.
+        ...["r2", "r3", "r4"].map((block) =>
+          answerNode(`spec#b-${block}`, "requirement", { mark: "query", state: "overtaken" })
+        ),
+        specDecision("d1", { links: [specShaped(specStatementRef("r4"))] }),
+        specDecision("d2", { kind: "person", links: [specShaped(specStatementRef("r2"))] }),
+        specDecision("d3", { links: [specShaped(specStatementRef("r2"))] }),
+      ]),
+    },
+  };
+  const view = drawSpec(root, { asksOut: true });
+  try {
+    const line = theLine(view.container);
+    await user.click(line);
+    await waitFor(() => expect(line).toHaveAttribute("aria-expanded", "true"));
+    const waits = cellBeside(view.container, "spec#b-r2");
+    expect(waits).not.toHaveAttribute("data-decision-id");
+    expect(waits).toHaveAttribute("data-spec-statements", "spec#b-r2");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Under Spec a closed statement folds out of the runs before they are built: two statements one
+// decision shaped, with an overtaken statement between them, are one run beside one cell of that
+// decision, as they are with no statement between them.
+test("a Spec run of one decision is one run across an overtaken statement", () => {
+  const D1 = "decisions-md#b-d1";
+  const root: TreeNode = {
+    ...stamped(
+      specIssueTree([statement("r1"), statement("r2"), statement("r3"), specDecisionNode("d1")]),
+      { "spec#b-r2": { life: "overtaken" } }
+    ),
+    views: {
+      spec: specViewAnswer([
+        answerNode("spec#b-r1", "requirement", { mark: "query" }),
+        answerNode("spec#b-r2", "requirement", { mark: "query", state: "overtaken" }),
+        answerNode("spec#b-r3", "requirement", { mark: "query" }),
+        specDecision("d1", {
+          links: [specShaped(specStatementRef("r1")), specShaped(specStatementRef("r3"))],
+        }),
+      ]),
+    },
+  };
+  const view = drawSpec(root);
+  try {
+    const cells = view.container.querySelectorAll(`[data-spec-cell][data-decision-id="${D1}"]`);
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toHaveAttribute("data-spec-statements", "spec#b-r1 spec#b-r3");
   } finally {
     view.unmount();
   }
@@ -3292,11 +3520,13 @@ function planWithOvertaken(): TreeNode {
 
 /** What a case draws the Plan view under: the whole plan's tasks where the view is what the
  *  words filter left of them, the chain down to the node the address names, and the address's
- *  search, which carries the words (`?q=`). */
+ *  search, which carries the words (`?q=`); with `take`, the page's `navigate` handed to it, so a
+ *  case moves the address as the reader does. */
 interface PlanPlace {
   readonly plan?: readonly TreeNode[];
   readonly reveal?: readonly TreeNode[];
   readonly search?: string;
+  readonly take?: (navigate: (to: string) => void) => void;
 }
 
 /** The Plan view over `root`, the view's tasks, drawn as its slot draws it
@@ -3305,11 +3535,12 @@ interface PlanPlace {
 function planBody(
   root: TreeNode,
   client: QueryClient,
-  { plan = root.children, reveal, search = "" }: PlanPlace
+  { plan = root.children, reveal, search = "", take }: PlanPlace
 ): ReactNode {
   return createElement(
     MemoryRouter,
     { initialEntries: [`/${search}`] },
+    take === undefined ? null : createElement(NavigateProbe, { take }),
     createElement(
       QueryClientProvider,
       { client },
@@ -3505,6 +3736,34 @@ test("the Plan view opens the line of an overtaken task an address or the words 
     expect(rowOf(words.container, T2)).not.toBeNull();
   } finally {
     words.unmount();
+  }
+});
+
+// Under the Plan chart a line the words drew open closes with no press once the reader clears
+// the words. The task's row under it that held the chart's one tab stop is then no row, so the
+// stop goes to the line that now folds it, as the outline's and the Spec view's do, and not to
+// the first bar.
+test("a Plan line the words drew open takes the tab stop of its task when the words go", async () => {
+  readWide();
+  let moveTo: (to: string) => void = () => {};
+  const view = drawPlan(planWithOvertaken(), {
+    search: "?q=t2",
+    take: (navigate) => {
+      moveTo = navigate;
+    },
+  });
+  try {
+    expect(theLine(view.container)).toHaveAttribute("aria-expanded", "true");
+    act(() => rowOf(view.container, T2)?.focus());
+    await waitFor(() => expect(rowOf(view.container, T2)).toHaveAttribute("tabindex", "0"));
+
+    act(() => moveTo("/"));
+    await waitFor(() => expect(theLine(view.container)).toHaveAttribute("aria-expanded", "false"));
+    expect(rowOf(view.container, T2)).toBeNull();
+    expect(theLine(view.container)).toHaveAttribute("tabindex", "0");
+    expect(rowOf(view.container, T1)).toHaveAttribute("tabindex", "-1");
+  } finally {
+    view.unmount();
   }
 });
 

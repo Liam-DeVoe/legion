@@ -975,6 +975,9 @@ function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undef
 /** The row of `tree` that holds the focus, on the row itself or on a control inside it; null
  *  where the focus is on no row of it. */
 function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
+  // The outline's line of overtaken nodes takes the focus as a row does, and is placed as one.
+  const line = document.activeElement?.closest<HTMLElement>("[data-overtaken-line]") ?? null;
+  if (line !== null && tree?.contains(line) === true) return line;
   const row = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
   return row !== null && tree?.contains(row) === true ? row : null;
 }

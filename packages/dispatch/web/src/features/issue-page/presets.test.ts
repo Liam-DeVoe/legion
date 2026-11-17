@@ -469,6 +469,20 @@ test("no flag counts them", () => {
   });
 });
 
+// The failing flag counts the checks the Verification summary counts: a live failed check that
+// serves only a proposed statement, which no count reads, is no failing check of the flag, while
+// one that serves a live statement still is.
+test("the failing flag leaves out a failed check that serves only a proposed statement", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      statement("spec#b-r1", [node("verification#b-c1", "check", [], { state: "failed" })]),
+      statement("spec#b-r2", [node("verification#b-c2", "check", [], { state: "failed" })]),
+    ]),
+    { "spec#b-r1": { life: "proposed" } }
+  );
+  expect(filterSignals(root, "").verification.flag).toEqual({ count: 1, word: "failing" });
+});
+
 // What asks the reader stays. A proposed decision that waits for review is on the review list as
 // today, so the to-review flag counts it.
 test("a proposed decision waiting for review is still on the to-review flag", () => {

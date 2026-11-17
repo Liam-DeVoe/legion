@@ -41,6 +41,7 @@ import {
   NODE_TYPE_NAMES,
   sentenceCase,
 } from "./page-words";
+import * as treeFold from "./tree-fold";
 import { pathTo } from "./tree-fold";
 
 /** One entry of the list: a question, or a thread the reader began, with the entries under it,
@@ -54,20 +55,22 @@ export interface ContentsEntry {
 /**
  * The entries of the list, read off the tree the outline draws: each node the Contents rule
  * makes an entry (`isContentsEntry`) - an ask, and a comment or message the reader wrote that
- * begins a thread - each under the nearest such entry above it in the tree, in the tree's own
- * order, so the list holds as many entries as the view row's Conversation count says
- * (`contentsEntries`). The issue itself is no entry: the header is the issue, as the outline
- * draws no row of it. A node drawn under a second parent is listed once, at its own place, and
- * counted once: a transcluded copy and the branch under it are the same nodes as at the edited
- * place, so they are neither listed nor counted again.
+ * begins a thread - and that stands at or under no overtaken node (`closed`), each under the
+ * nearest such entry above it in the tree, in the tree's own order, so the list holds as many
+ * entries as the view row's Conversation count says (`contentsEntries`). The issue itself is no
+ * entry: the header is the issue, as the outline draws no row of it. A node drawn under a second
+ * parent is listed once, at its own place, and counted once: a transcluded copy and the branch
+ * under it are the same nodes as at the edited place, so they are neither listed nor counted
+ * again.
  *
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
- * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
- * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
- * issues, and its statements a check under them failed. A statement and a check are what the
- * filter row counts as one (`isStatement`, `isCheck`): a `requirement` or `check` block of any
- * other document is counted as neither. What sits under the issue and under no entry is counted
- * on none, since the issue has no entry; the filter row's signals count it.
+ * to it, and at or under no overtaken node, so a node counts once, on the entry whose branch it
+ * is read in (the prototype's `branchCounts`): its statements, its decisions waiting for the
+ * reader's review, its child issues, and its statements a check under them failed, of the checks
+ * a count reads (`outOfCounts`). A statement and a check are what the filter row counts as one
+ * (`isStatement`, `isCheck`): a `requirement` or `check` block of any other document is counted
+ * as neither. What sits under the issue and under no entry is counted on none, since the issue
+ * has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
   const tally = (): Record<ContentsMark, number> => ({
@@ -77,6 +80,16 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     statements: 0,
   });
   const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
+    // A check no count reads - proposed, or at or under an overtaken node - marks no statement
+    // failing, nor does any check of a statement no count reads - a proposed one - as the
+    // Verification view and the failing flag leave them out: the statement is read once more with
+    // the checks a count reads alone. It is still one of the entry's statements.
+    const counted = (child: TreeNode): boolean =>
+      !isCheck(child) || !(treeFold.outOfCounts(node) || treeFold.outOfCounts(child));
+    if (isStatement(node) && !node.children.every(counted)) {
+      count({ ...node, children: node.children.filter(counted) }, marks);
+      return;
+    }
     if (isStatement(node)) {
       marks.statements += 1;
       if (node.children.some((child) => isCheck(child) && child.state === "failed")) {

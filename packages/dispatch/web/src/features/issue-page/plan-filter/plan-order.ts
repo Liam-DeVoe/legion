@@ -325,10 +325,11 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  *
  * The chart names each need by this chip's own name, as the tree names it (`buildIssueTree`):
  * the needed task's first line, and the page's word for its kind where that task holds no
- * words. The steps' rows draw the same chip through `NodeRow.tsx`'s `Chip`, so the switch
- * changes the drawing alone and no edge is named twice: the view gives the rows no chips
- * renamed by the chart's line for the task, which would be a second naming of what the tree
- * already names.
+ * words. The steps' rows draw the same chip through `NodeRow.tsx`'s `Chip`, so no edge is named
+ * twice: the view gives the rows no chips renamed by the chart's line for the task, which would
+ * be a second naming of what the tree already names. The switch changes the drawing alone, but
+ * for a need on an overtaken task: the plan's order holds no such task (`planOrder`), so the
+ * chart places none and no bar names a need on one, while the step's row under the steps does.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
   return task.chips.find((chip) => neededId(task, chip) === needed.id);

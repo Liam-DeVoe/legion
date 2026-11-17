@@ -182,8 +182,9 @@ export function VerificationFilterBody({
   /** The Verification view with no words query: what the issue holds, whatever a query left of
    *  it. The summary, the chips' counts, each statement's state and its count of checks
    *  elsewhere, and every check drawn are read from it. Where no query is typed it is `view`
-   *  itself, the same object, so the two readings are one and no result counts as kept by a
-   *  query. */
+   *  itself, the same object; the body's lines of overtaken nodes and a pressed chip can still
+   *  narrow `view` into another one, which then holds no result of its own (`withoutResults`),
+   *  so no result counts as kept by a query. */
   whole: TreeNode;
 }): ReactNode {
   // The lines of overtaken nodes, each by the id of the node whose overtaken children it folds: the
@@ -250,8 +251,8 @@ export function VerificationFilterBody({
   );
   view = narrowed;
   // The query's reading, which says which rows the body draws, and the issue's, which every row
-  // drawn is read from and which says how the issue stands. With no query typed the two are one
-  // reading.
+  // drawn is read from and which says how the issue stands. With no query typed, and no line or
+  // chip that narrows the view, the two are one reading.
   const read = useMemo(() => verificationReading({ checks, view }), [checks, view]);
   const issue = useMemo(
     () => (whole === view ? read : verificationReading({ checks, view: whole })),
@@ -698,9 +699,10 @@ interface DrawnStatement extends StatementReading {
  * state, with its checks as `keptChecks` draws them. Its count of checks elsewhere is the checks
  * the coverage read counts for it less the distinct checks the issue's reading draws under it,
  * so a query never calls this issue's own checks "elsewhere". A statement the issue's reading
- * does not hold is read from the query's reading alone. With no query typed the two readings are
- * one, which keeps no result: every result is a child of its check there, and counted as kept
- * each would be drawn.
+ * does not hold is read from the query's reading alone. With no query typed the query's reading
+ * keeps no result: the two readings are one, or, where a line or a chip narrows the view, the
+ * query's holds no result (`withoutResults`). In the issue's reading every result is a child of
+ * its check, and counted as kept each would be drawn.
  */
 function drawnStatements(read: VerificationReading, issue: VerificationReading): DrawnStatement[] {
   const standing = new Map(issue.statements.map((statement) => [statement.node.id, statement]));
@@ -740,8 +742,9 @@ interface DrawnTable {
  * holds them: the query's own, and each one a result the query kept alone is lifted from. Such
  * a result stands at the top of the query's view with its check as its parent line, where the
  * query's reading holds it among its other rows; it is drawn with its check instead, and not as
- * a row of its own. With no query typed the two readings are one, and the rows are drawn as they
- * read.
+ * a row of its own. With no query typed the rows are drawn as they read: the two readings are
+ * one, or, where a line or a chip narrows the view, the query's holds no result to keep or lift
+ * (`withoutResults`).
  */
 function drawnTable(read: VerificationReading, issue: VerificationReading): DrawnTable {
   if (read === issue) return { kept: NO_KEPT_CHECKS, loose: read.loose, others: read.others };

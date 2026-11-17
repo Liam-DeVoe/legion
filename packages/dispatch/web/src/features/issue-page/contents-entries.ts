@@ -2,10 +2,12 @@ import { isViewer } from "../refs/actor";
 import type { TreeNode } from "./issue-tree";
 
 /**
- * Whether `child`, drawn under `parent`, is an entry of the Contents list: an ask, or a comment
- * or message the reader wrote that begins a thread, which a comment or a message it answers does
- * not. A transcluded copy is never one: a node drawn under a second parent is an entry at its
- * own place alone. The list that draws the entries and the count below read this one rule.
+ * Whether `child`, drawn under `parent`, is of the kind the Contents list makes an entry: an
+ * ask, or a comment or message the reader wrote that begins a thread, which a comment or a
+ * message it answers does not. A transcluded copy is never one: a node drawn under a second
+ * parent is an entry at its own place alone. The list that draws the entries and the count below
+ * read this one rule, and each leaves out a node at or under an overtaken one (`closed`) before
+ * it asks, so an overtaken ask is no entry.
  */
 export function isContentsEntry(
   parent: TreeNode,

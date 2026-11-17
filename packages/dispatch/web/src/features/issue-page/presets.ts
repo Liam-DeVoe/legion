@@ -616,7 +616,14 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
     // `matches`, keeps both: it counts the query's every node.
     if (node.closed === true) return;
     if (outOfCounts(node)) {
-      for (const child of node.children) walk(child);
+      for (const child of node.children) {
+        // A check under a proposed statement serves that statement, which no count reads, so no
+        // flag counts it there, as the Verification summary counts a check only under a statement
+        // it counts or under none (`inCounts`). One that serves a counted statement too is drawn
+        // under that one as well (`filterView`'s `everyPlacement`), and is counted there.
+        if (isStatement(node) && kindOf(child) === "check") continue;
+        walk(child);
+      }
       return;
     }
     if (kindOf(node) === type && counts(node)) found.add(node.id);
@@ -672,8 +679,9 @@ export function filterSignals(
   const verification = view("verification");
   const decisions = view("decisions");
   // A check's state is the page's one reading of it, as the server reads its results
-  // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
-  // checks as failed.
+  // (`tree-drafts.ts`'s `checkStanding`), and neither a check no count reads nor one that serves
+  // only statements no count reads is counted (`countOf`), so this flag and the Verification body
+  // count the same checks as failed.
   const failing = countOf(verification.root, "check", (node) => node.state === "failed");
   // The decisions of the review list (R35): an agent's decision that waits and that a link ties
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s

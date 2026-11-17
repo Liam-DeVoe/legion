@@ -91,6 +91,7 @@ import {
   type SpecGroup,
   type SpecMark,
   type SpecParent,
+  type SpecRun,
   type SpecSaid,
   type SpecStatement,
   specDecidedBy,
@@ -202,7 +203,7 @@ export function SpecFilterBody({
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read is
   // watched by an observer that is never enabled, under the key the page reads it by
   // (`ViewReadProvider`). A change of the issue marks the view stale and reads it again with its
-  // answer kept (`subscribeTreeFreshness`); a new load, a Keep and a Change drop it
+  // answer kept (`subscribeTreeFreshness`); a new load, a Keep, a Change and a Settle drop it
   // (`dropViews`), and the column then draws the answer it last held (`last`) until the next one
   // lands. A read again that fails keeps its answer, which leaves the body an answer to draw too.
   const specRead = useQuery({ ...viewQuery(issue.key, "spec"), enabled: false });
@@ -281,12 +282,69 @@ export function SpecFilterBody({
       }),
     [asksHeld, decisions, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
   );
-  // The id of each node of the tree at or under an overtaken node: a decision among them is drawn
-  // beside no run (`withoutClosedDecisions`).
+  // The id of each node of the tree at or under an overtaken node, which shaped nothing that still
+  // stands: a later node took its place.
   const closedIds = useMemo(
     () => new Set(nodesInOrder(root).flatMap((node) => (node.closed === true ? [node.id] : []))),
     [root]
   );
+  // Each group of `groups` as the body draws it: read again with each decision at or under an
+  // overtaken node left out before any run is headed, so no cell draws one and no statement
+  // names one. A decision stands where the node its cell is drawn as stands (`decisionOf` in
+  // `spec-decided-by.ts`): its own node where the tree holds it, else, for a person's, the answered
+  // question it is drawn by. A statement such a decision would have headed is headed by its next
+  // tie, as `specDecidedBy` picks it - a person's decision that waits on the asks read keeps its
+  // place - or by none. A group is the statements under one parent, whatever shaped them, so the
+  // groups of the two readings are one for one; each is itself where no decision is closed.
+  const drawnGroups = useMemo((): ReadonlyMap<SpecGroup, SpecGroup> => {
+    if (closedIds.size === 0) return new Map(groups.map((group) => [group, group]));
+    // Every node of the tree, and each ask by the id a decision names it with (`Decision.asks`),
+    // the first placement of each, as `specDecidedBy` reads them.
+    const held = new Set<string>();
+    const asked = new Map<string, TreeNode>();
+    for (const node of nodesInOrder(root)) {
+      held.add(node.id);
+      const route =
+        node.type === "ask" && node.reference !== undefined
+          ? parseNodeReference(node.reference)
+          : undefined;
+      if (route?.kind === "ask" && !asked.has(route.id)) asked.set(route.id, node);
+    }
+    const standing = decisions.filter((made) => {
+      const own = nodeIdOf(made.ref);
+      if (own !== undefined && held.has(own)) return !closedIds.has(own);
+      if (made.kind !== "person") return true;
+      const answered = (made.asks ?? [])
+        .map((ask) => asked.get(ask))
+        .find((ask) => ask?.answer !== undefined);
+      return answered === undefined || !closedIds.has(answered.id);
+    });
+    const read =
+      standing.length === decisions.length
+        ? groups
+        : specDecidedBy({
+            asksHeld,
+            checks: resultsRead.data?.checks ?? [],
+            decisions: standing,
+            nameOf,
+            nodeIdOf,
+            reader,
+            root,
+            view,
+          }).groups;
+    return new Map(groups.map((group, at) => [group, read[at] ?? group]));
+  }, [
+    asksHeld,
+    closedIds,
+    decisions,
+    groups,
+    nameOf,
+    nodeIdOf,
+    reader,
+    resultsRead.data,
+    root,
+    view,
+  ]);
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const setFocusedNode = useSetFocusedNode();
@@ -464,7 +522,10 @@ export function SpecFilterBody({
     (key: string, open: boolean) => setLines((held) => toggledLines(held, key, open, holdsWords)),
     [holdsWords]
   );
-  const folded = useMemo(() => foldedLines(groups, root), [groups, root]);
+  const folded = useMemo(
+    () => foldedLines(drawnGroups, closedIds, root),
+    [closedIds, drawnGroups, root]
+  );
   const folds = useMemo(
     () => openedRows(folded, groups, others, (key) => lineIsOpen(lines, holdsWords, key)),
     [folded, groups, holdsWords, lines, others]
@@ -549,8 +610,9 @@ export function SpecFilterBody({
   }, [firstUnreadable]);
   // Whether the reader pressed a Retry while it held the focus, until the reads are held. The
   // Retry is drawn no more once its read answers, which leaves the focus on nothing, so the
-  // view's first row - the tree's one tab stop - takes it, and the tree itself where the view
-  // draws no row, as a focus on the tree rests there; unless something else holds it by then.
+  // statement that holds the tree's one tab stop takes it; where a line of overtaken statements
+  // holds the stop, or the view draws no row, the tree itself takes it, which hands it on to that
+  // line (its `onFocus`) and keeps it where there is none; unless something else holds it by then.
   const retried = useRef(false);
   useEffect(() => {
     if (!readsHeld || !retried.current) return;
@@ -723,8 +785,8 @@ export function SpecFilterBody({
       >
         {groups.map((group) => (
           <Group
-            closed={closedIds}
             context={context}
+            drawn={drawnGroups.get(group)}
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
@@ -777,8 +839,9 @@ const CELL_STEPS: Readonly<Partial<Record<string, 1 | -1>>> = {
   k: -1,
 };
 
-/** The row of the view's tree that holds its one tab stop, which takes the focus once the reads
- *  a pressed Retry asked for are held. */
+/** The statement of the view's tree that holds its one tab stop, which takes the focus once the
+ *  reads a pressed Retry asked for are held. It finds no line of overtaken statements: where one
+ *  holds the stop the tree takes the focus, and its `onFocus` hands it to the line. */
 const TAB_STOP_ROW = '[data-node-row][tabindex="0"]';
 
 /** Whether `read` failed with no answer held: a read asked again that fails keeps the answer it
@@ -829,27 +892,28 @@ const NO_FOLDS: FoldedLines = { holding: new Map(), lines: new Map() };
  * statement (`line:` and its id), so two groups under one parent draw two lines, and the line
  * counts the overtaken nodes its statements fold with: "1 overtaken", "N overtaken". Its row
  * carries the key as its `of`'s id too, which the keys hand back to open or close it
- * (`useTreeKeymap.ts`'s `onOvertaken`).
+ * (`useTreeKeymap.ts`'s `onOvertaken`). The statements are read from each group as the body
+ * draws it (`drawn`, by the group it stands for), and the line holds them run by run as their
+ * runs there are headed, a run that waits on the asks read included; `closed` is the ids of the
+ * tree's nodes at or under an overtaken node.
  */
 function foldedLines(
-  groups: readonly SpecGroup[],
+  drawn: ReadonlyMap<SpecGroup, SpecGroup>,
+  closed: ReadonlySet<string>,
   root: TreeNode
 ): ReadonlyMap<SpecGroup, GroupLine> {
   const lines = new Map<SpecGroup, GroupLine>();
   const groupOf = new Map<string, SpecGroup>();
-  for (const group of groups) {
-    for (const run of group.runs) {
+  for (const [group, { runs }] of drawn) {
+    for (const run of runs) {
       for (const statement of run.statements) groupOf.set(statement.node.id, group);
     }
   }
-  // What each group's line holds: its folded statements, each with the decision of its run, in
-  // the order the view draws them, and the overtaken nodes they fold with.
-  const held = new Map<
-    SpecGroup,
-    { counted: Set<string>; folded: { decision?: SpecDecision; statement: SpecStatement }[] }
-  >();
-  for (const group of groups) {
-    for (const run of group.runs) {
+  // What each group's line holds: its folded statements, each with the head of its run, in the
+  // order the view draws them, and the overtaken nodes they fold with.
+  const held = new Map<SpecGroup, { counted: Set<string>; folded: Headed[] }>();
+  for (const [group, { runs }] of drawn) {
+    for (const run of runs) {
       for (const statement of run.statements) {
         if (statement.node.closed !== true) continue;
         const top = statement.node.closedBy ?? statement.node.id;
@@ -857,23 +921,28 @@ function foldedLines(
         const into = held.get(owner) ?? { counted: new Set<string>(), folded: [] };
         held.set(owner, into);
         into.counted.add(top);
-        into.folded.push({
-          ...(run.decision === undefined ? {} : { decision: run.decision }),
-          statement,
-        });
+        // The answered question the statements hang under heads their run, whatever else shaped
+        // them (`specDecidedBy`); where that question stands at or under an overtaken node, and so
+        // do they, it shaped nothing that still stands, and the statement is headed by the next
+        // decision that shaped it, or by none. The tree takes an answer from the asks read alone
+        // (`tree-read/tree-nodes.ts`), so no such run waits on that read.
+        const asked = run.decision;
+        if (asked !== undefined && closed.has(asked.node ?? asked.id)) {
+          const [next, ...rest] = statement.alsoShapedBy;
+          into.folded.push({
+            head: next === undefined ? {} : { decision: next },
+            statement: { ...statement, alsoShapedBy: rest },
+          });
+        } else {
+          into.folded.push({ head: run, statement });
+        }
       }
     }
   }
-  for (const group of groups) {
+  for (const group of drawn.keys()) {
     const into = held.get(group);
     if (into === undefined) continue;
     const key = `line:${group.runs[0]?.statements[0]?.node.id ?? ""}`;
-    const runs: { decision?: SpecDecision; statements: SpecStatement[] }[] = [];
-    for (const { decision, statement } of into.folded) {
-      const last = runs.at(-1);
-      if (last !== undefined && last.decision?.id === decision?.id) last.statements.push(statement);
-      else runs.push({ ...(decision === undefined ? {} : { decision }), statements: [statement] });
-    }
     const line: GroupLine = {
       key,
       row: {
@@ -884,7 +953,7 @@ function foldedLines(
         open: false,
         trail: [],
       },
-      runs,
+      runs: runsOf(into.folded),
     };
     lines.set(group, line);
   }
@@ -932,51 +1001,30 @@ function openedRows(
   return { holding, lines, rows: [...rows, ...others.map(rowOf)] };
 }
 
-/**
- * `group` with no decision at or under an overtaken node (`closed`, the ids of the tree's closed
- * nodes, matched against the node the decision's cell is drawn as): a later node took its place,
- * so it shaped nothing that still stands. A statement it headed is headed by the next decision
- * that shaped it, or by none, and no statement names it among the others that shaped it; the
- * statements are run again by the decision that now heads each, as `specDecidedBy` runs them, so
- * the run is drawn as a run no decision shaped where none is left. A run whose head waits on the
- * asks read (`SpecRun.waiting`) keeps that head, as `specDecidedBy` keeps it: no later decision
- * moves up in its place. `group` itself where no decision of it is closed.
- */
-function withoutClosedDecisions(group: SpecGroup, closed: ReadonlySet<string>): SpecGroup {
-  const isClosed = (decision: SpecDecision): boolean => closed.has(decision.node ?? decision.id);
-  const holds = group.runs.some(
-    (run) =>
-      (run.decision !== undefined && isClosed(run.decision)) ||
-      run.statements.some((statement) => statement.alsoShapedBy.some(isClosed))
-  );
-  if (!holds) return group;
+/** A statement with the head of its run: the decision that heads it, or the person's decision it
+ *  waits on (`SpecRun.waiting`), or neither, where no decision shaped it. */
+interface Headed {
+  readonly head: Pick<SpecRun, "decision" | "waiting">;
+  readonly statement: SpecStatement;
+}
+
+/** `headed` run as `specDecidedBy` runs statements: the statements side by side that one head
+ *  heads are one run, so two runs of one decision with nothing drawn between them are one. */
+function runsOf(headed: readonly Headed[]): SpecRun[] {
   const runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: string }[] = [];
-  for (const run of group.runs) {
-    for (const statement of run.statements) {
-      const ties = [
-        ...(run.decision === undefined ? [] : [run.decision]),
-        ...statement.alsoShapedBy,
-      ].filter((made) => !isClosed(made));
-      const waits = run.waiting !== undefined;
-      const decision = waits ? undefined : ties.at(0);
-      const kept: SpecStatement = { ...statement, alsoShapedBy: waits ? ties : ties.slice(1) };
-      const last = runs.at(-1);
-      if (
-        last !== undefined &&
-        last.decision?.id === decision?.id &&
-        last.waiting === run.waiting
-      ) {
-        last.statements.push(kept);
-      } else {
-        runs.push({
-          ...(decision === undefined ? {} : { decision }),
-          statements: [kept],
-          ...(run.waiting === undefined ? {} : { waiting: run.waiting }),
-        });
-      }
+  for (const { head, statement } of headed) {
+    const last = runs.at(-1);
+    if (
+      last !== undefined &&
+      last.decision?.id === head.decision?.id &&
+      last.waiting === head.waiting
+    ) {
+      last.statements.push(statement);
+    } else {
+      runs.push({ ...head, statements: [statement] });
     }
   }
-  return { ...group, runs };
+  return runs;
 }
 
 /** How far below the view's column heads a statement or cell is put where it has to be scrolled
@@ -1193,8 +1241,8 @@ function dotted(parts: readonly LinePart[]): ReactNode {
 /** The statements under one parent: that parent's own line as the group's heading, then one row
  *  of the grid per run of statements one decision shaped. */
 function Group({
-  closed,
   context,
+  drawn,
   focused,
   group,
   known,
@@ -1209,9 +1257,11 @@ function Group({
   tabStop,
   underLine,
 }: {
-  /** The ids of the tree's nodes at or under an overtaken node, whose decisions draw no cell. */
-  closed: ReadonlySet<string>;
   context: ReadonlySet<string>;
+  /** The group as the body draws it, in place of `group` (`SpecFilterBody`'s `drawnGroups`): the
+   *  same statements, with no decision at or under an overtaken node heading a run of live
+   *  statements or named by a statement. */
+  drawn?: SpecGroup;
   focused: string | undefined;
   group: SpecGroup;
   /** Whether the Spec view read the decisions come from and the asks read hold an answer, which
@@ -1249,22 +1299,22 @@ function Group({
   // The marks of the node the statements hang under, which its heading's line carries: each of
   // its statements names it by that line.
   const parentLine = group.runs[0]?.statements[0]?.node.parentLine;
-  // A decision at or under an overtaken node shaped nothing that still stands: no cell draws it,
-  // and no statement names it.
-  group = withoutClosedDecisions(group, closed);
+  group = drawn ?? group;
   // Each statement at or under an overtaken node folds out of its run: the line drawn after the
   // group's other statements holds it, with every other statement that folds with the same
   // overtaken node, and draws them under it, run by run as their decisions shaped them, once it is
-  // open (`foldedLines`).
+  // open (`foldedLines`). The statements left are run again (`runsOf`), so two runs of one
+  // decision that a folded statement stood between are one run, as with no statement between.
   if (underLine !== true) {
     group = {
       ...group,
-      runs: group.runs
-        .map((run) => ({
-          ...run,
-          statements: run.statements.filter((statement) => statement.node.closed !== true),
-        }))
-        .filter((run) => run.statements.length > 0),
+      runs: runsOf(
+        group.runs.flatMap((run) =>
+          run.statements.flatMap((statement) =>
+            statement.node.closed === true ? [] : [{ head: run, statement }]
+          )
+        )
+      ),
     };
   }
   if (group.runs.length === 0 && line === undefined) return null;
@@ -1341,7 +1391,6 @@ function Group({
       )}
       {line?.row.open === true && line.runs.length > 0 ? (
         <Group
-          closed={closed}
           context={context}
           focused={focused}
           group={{ runs: line.runs }}

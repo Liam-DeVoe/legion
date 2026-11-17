@@ -161,11 +161,12 @@ export function treeEnterKey({
 
 /**
  * The move a key makes to `target`, one row of a tree drawn as one tab stop: the focus goes to
- * it, with `options`, and the row places itself on screen as it takes the focus. Where the row
- * already holds the focus or a control inside it does - a key that moves no focus, Home on the
- * first row or End on the last, or one pressed from a link `f` stopped on - the row's own
- * placing may not run, and a row the reader scrolled off would stay off, so it is brought on
- * screen here.
+ * it, with `options`, and a node row places itself on screen as it takes the focus
+ * (`NodeRow.tsx`'s `useRowOnScreen`); a line of overtaken nodes `OvertakenLine` draws has no
+ * placing of its own, and is left where the browser's focus puts it. Where the row already
+ * holds the focus or a control inside it does - a key that moves no focus, Home on the first row
+ * or End on the last, or one pressed from a link `f` stopped on - the row's own placing may not
+ * run, and a row the reader scrolled off would stay off, so it is brought on screen here.
  *
  * It is exported so another drawing of the page moves to its rows as the outline does.
  */

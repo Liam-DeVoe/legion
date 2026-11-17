@@ -278,8 +278,9 @@ export function PlanFilterBody({
     []
   );
   /** Where the focus goes on from the empty tree, or from a line that left: to the first failed
-   *  read's Retry, else, where the rows are drawn, to the row that holds the tree's tab stop
-   *  (under the chart the first bar's row), else nowhere. */
+   *  read's Retry, else, where the rows are drawn, to the row that holds the tree's tab stop, or
+   *  the line of overtaken tasks where it holds it (under the chart, where the reader stood on
+   *  none, the first bar's row, and the line where every task is overtaken), else nowhere. */
   const onward = (): HTMLElement | null =>
     box.current?.querySelector<HTMLElement>(UNREADABLE_RETRY) ??
     box.current?.querySelector<HTMLElement>(TAB_STOP_ROW) ??
@@ -416,9 +417,11 @@ const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
 /** The Retry of a failed read's line; the first in the page is the first failed read's. */
 const UNREADABLE_RETRY = "[data-plan-unreadable] button";
 
-/** The row of the view's tree that holds its one tab stop, under the chart the first bar's row:
- *  the stage's own selector (`slots/stage.tsx`'s `TAB_STOP_ROW`), which this file cannot import,
- *  since the stage imports the Plan view's slot, which imports this file. */
+/** The row of the view's tree that holds its one tab stop, or the line of overtaken tasks where
+ *  it holds it (under the chart, where the reader stood on none, the first bar's row, and the
+ *  line where every task is overtaken): the stage's own selector (`slots/stage.tsx`'s
+ *  `TAB_STOP_ROW`), which this file cannot import, since the stage imports the Plan view's slot,
+ *  which imports this file. */
 const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** Whether nothing holds the focus that the view is to keep from it, by the outline's rule
@@ -655,15 +658,19 @@ function PlanChart({
   const lineOpen = lineIsOpen(lines, holdsWords, OVERTAKEN_KEY);
   // The line, and each task's row it holds open, take the chart's one tab stop as a row does:
   // where the reader last stood on one of them, and on the line where the chart draws no other
-  // row. While one of them holds it, no bar or cycle does.
+  // row. While one of them holds it, no bar or cycle does. A task's row that held it and that the
+  // line folds again - the words that drew the line open cleared, with no press - is no row, so it
+  // hands the stop to the line, as the outline's and the Spec view's rows do, and not to the first
+  // bar.
   const lined = [
     OVERTAKEN_KEY,
     ...(lineOpen ? overtaken.map((task) => `${OVERTAKEN_KEY}${task.id}`) : []),
   ];
+  const folded = overtaken.some((task) => stop === `${OVERTAKEN_KEY}${task.id}`);
   const lineStop =
     overtaken.length > 0 && stop !== undefined && lined.includes(stop)
       ? stop
-      : overtaken.length > 0 && tabStop === undefined
+      : overtaken.length > 0 && (tabStop === undefined || folded)
         ? OVERTAKEN_KEY
         : undefined;
 
