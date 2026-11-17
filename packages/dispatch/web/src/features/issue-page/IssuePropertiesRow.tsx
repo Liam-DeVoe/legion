@@ -83,8 +83,8 @@ export function IssuePropertiesRow({
   // header and Details read one status, the newest one held (decision 47 of
   // dispatch://INFRA-1196/artifact/part-decisions-md). No write disables the select, not even its
   // own: only a closed issue does. The browser moves the focus off a control that turns disabled,
-  // so a select disabled while its pick saved left a keyboard pick's focus on the page's body
-  // (decision 132).
+  // so disabling the select while its pick saves would leave a keyboard pick's focus on the
+  // page's body (decision 132).
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
@@ -203,10 +203,9 @@ export function IssuePropertiesRow({
           ))}
         </select>
       </label>
-      {/* The status, the priority and the assignee all stay enabled while a write of the issue is
-          in flight, the status's own included, and queue a pick behind it: a press straight out
-          of the title's editor lands on them, and a keyboard pick of the status keeps the focus
-          on the select while it saves (decision 132). */}
+      {/* The priority and the assignee stay enabled while another write is in flight and queue a
+          pick behind it, as the status does and as their own controls say: a press straight out
+          of the title's editor lands on them. */}
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}
