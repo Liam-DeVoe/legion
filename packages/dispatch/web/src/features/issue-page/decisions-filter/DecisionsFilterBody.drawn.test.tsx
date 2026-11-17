@@ -730,6 +730,78 @@ test("Retry on the decisions' failed line reads them again and draws what they h
   }
 });
 
+// R2 and decision 98: the view's first part is the open questions, which come from the issue's
+// asks read, as a person's decisions do. Where that read failed with nothing held, the view can
+// draw the decisions the tree holds but not one question, so it says its decisions could not be
+// read, with a Retry that reads the asks again, and never draws the decisions alone as though no
+// question waited. Its seam names the asks read as one of its three reads
+// (`decisions-entries.ts`), and `known` already waits for it.
+test("the view says its decisions could not be read where the asks read failed, and Retry reads the asks again", async () => {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const made = [decision("first", { links: [shaped(specRef("s1"))] })];
+  treeReads ??= spyOn(api, "getIssueTree");
+  treeReads.mockImplementation(async () => treeAnswer(made));
+  client.setQueryData(issueTreeKey(KEY), treeAnswer(made));
+  client.setQueryData(viewKey(KEY, "decisions"), treeAnswer(made));
+  client.setQueryData(["comments", KEY], []);
+  // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+  await client.prefetchQuery({
+    queryFn: () => Promise.reject(new ApiError(503, { code: "UNAVAILABLE", error: "down" })),
+    queryKey: ["asks", KEY],
+  });
+  const asksRead = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const issue = issueDetails();
+  const root = issueTree([statement("s1"), decisionNode("first")]);
+  const view = presetView(root, "decisions", "", new Set()).root;
+  const drawn = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <IssueScope />
+            <NoTooltips>
+              <HeldReads root={root}>
+                {(held) => (
+                  <DecisionsFilterBody
+                    artifacts={artifactsBySlug(issue)}
+                    emptyLine={EMPTY_LINE}
+                    holdsEscape={false}
+                    isClosed={false}
+                    issue={issue}
+                    reader={READER}
+                    root={held}
+                    view={view}
+                  />
+                )}
+              </HeldReads>
+            </NoTooltips>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(
+      () =>
+        expect(
+          drawn.queryByText(ANSWER_LINES.decisions_unreadable),
+          "the view does not say its decisions could not be read where the asks read failed"
+        ).not.toBeNull(),
+      { timeout: 3000 }
+    );
+    await user.click(drawn.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(asksRead, "Retry did not read the asks again").toHaveBeenCalledTimes(1)
+    );
+  } finally {
+    drawn.unmount();
+    asksRead.mockRestore();
+  }
+});
+
 // R2: wherever a decision is drawn, one waiting for a person's review reads "Waiting for
 // review", one a person kept "Kept by" with their name, and a replaced one "Replaced", each by
 // a word and a shape (R6).
