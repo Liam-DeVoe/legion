@@ -20,6 +20,7 @@ import {
   expectSeedDrawn,
   focusRow,
   focusThePage,
+  LONG_ROWS,
   nodeRow,
   nodeRows,
   ONE_LINE_WORDS,
@@ -37,7 +38,9 @@ import {
   rowMore,
   rowOf,
   rowWords,
+  seedLongRows,
   seedRows,
+  unfoldEveryBranch,
 } from "./issue-page-g";
 import { expect, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
@@ -142,7 +145,22 @@ test("a node draws its kind at the right of its row and every node starts at one
       await expect
         .poll(() => nodeRows(page).count(), { message: `${where} draws no row` })
         .toBeGreaterThan(0);
-      expectRowLayouts(await rowLayouts(page), where, true, size.width);
+      const layouts = await rowLayouts(page, seeded.slugs.spec);
+      expectRowLayouts(layouts, where, true, size.width);
+      // Decision 246: the spec's requirement is a statement and the decisions document's is a
+      // block, so the view draws a bullet of each colour, each on its own row, for the check
+      // above to read.
+      expect(
+        layouts
+          .filter((row) => row.type === "requirement" && !row.context)
+          .map((row) => [row.id, row.statement]),
+        `${where} draws no statement beside a requirement of another document`
+      ).toEqual(
+        expect.arrayContaining([
+          [`${seeded.slugs.spec}#b-r-one`, true],
+          [`${seeded.slugs.decisions}#b-r1`, false],
+        ])
+      );
       expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));
       // R17 of the root, F17: the rows name what their words cite from the one batched read.
       expect(
@@ -166,7 +184,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       "the body draws the issue's own row"
     ).toEqual([]);
     // A one-line statement with no state is 29 px tall at 1440 px (R1).
-    const oneLine = (await rowLayouts(page)).find(
+    const oneLine = (await rowLayouts(page, seeded.slugs.spec)).find(
       (row) => row.id === `${seeded.slugs.spec}#b-r-one`
     );
     expect(
@@ -383,11 +401,13 @@ test("an agent message and an answered question are cut at six lines, and the wo
     const cutOf = async (id: string) => {
       await nodeRow(page, id).first().scrollIntoViewIfNeeded();
       await expect
-        .poll(async () => (await rowLayouts(page)).find((row) => row.id === id)?.more ?? "", {
-          message: `${id} draws no more`,
-        })
+        .poll(
+          async () =>
+            (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id)?.more ?? "",
+          { message: `${id} draws no more` }
+        )
         .toMatch(/^more · [\d,]+ words$/u);
-      return (await rowLayouts(page)).find((row) => row.id === id);
+      return (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === id);
     };
     const cut = await cutOf(seeded.longMessage);
     expect(
@@ -400,10 +420,12 @@ test("an agent message and an answered question are cut at six lines, and the wo
     await focusRow(page, seeded.longMessage);
     await focusRow(page, seeded.comment);
     await expect
-      .poll(async () => (await rowLayouts(page)).find((row) => row.id === seeded.longMessage))
+      .poll(async () =>
+        (await rowLayouts(page, seeded.slugs.spec)).find((row) => row.id === seeded.longMessage)
+      )
       .toMatchObject({ more: CONTROL_LABELS.read_less, wordsHidden: 0 });
 
-    const layouts = await rowLayouts(page);
+    const layouts = await rowLayouts(page, seeded.slugs.spec);
     expect(
       layouts.find((row) => row.id === seeded.longComment),
       "the reader's own long comment is cut"
@@ -463,6 +485,102 @@ test("an agent message and an answered question are cut at six lines, and the wo
 
     // No element of a row carries a `title` (R6).
     expect(await nodeRows(page).locator("[title]").count()).toBe(0);
+  });
+});
+
+/** What the jump into the middle of the conversation read, before any row there was measured. */
+interface Jump {
+  /** The row whose words cross the view's top, and the top of those words. */
+  readonly crossing: string;
+  readonly crossingTop: number;
+  /** Whether that row or `first` was drawn cut already. */
+  readonly cut: boolean;
+  /** The first row wholly in view, and its top. */
+  readonly first: string | null;
+  readonly top: number;
+}
+
+// Decision 252: a long jump into the middle of the page - a fast drag of the scrollbar - lands
+// on rows no batch measured, which are cut a frame later, and the browser's own scroll anchoring
+// holds the view only while the rows that shrink are outside it. At each width the row scrolls a
+// conversation of long rows to its foot, so the rows there are cut, then jumps to 40 px above
+// the foot of the words of the row that holds the page's middle: that row crosses the view's
+// top, and the one under it is the first row wholly in view. Once both draw their cuts, the
+// first row wholly in view stands where it stood, within a pixel. It carries `@phone` because the
+// phone project lays the page out at three device pixels to the CSS pixel, where the scroll that
+// holds the row snaps to a device pixel.
+// SLOW(>=2s): sixty long rows seeded, loaded at two widths, scrolled to their foot and to their
+// middle, each scroll waited out until the rows there are cut.
+test("a long jump into the middle of the page keeps the first row wholly in view where it stood as the rows there are cut @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedLongRows, async (page, seeded) => {
+    const last = seeded.rows.at(-1) ?? "";
+    for (const size of [DESKTOP, PHONE]) {
+      const where = `at ${size.width} px`;
+      await page.setViewportSize(size);
+      await openIssue(page, seeded.key);
+      await expect
+        .poll(
+          async () => {
+            await unfoldEveryBranch(page);
+            return nodeRows(page).count();
+          },
+          { message: `${where} the page never drew every long row` }
+        )
+        .toBeGreaterThan(LONG_ROWS);
+      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+      await expect(rowMore(nodeRow(page, last)), `${where} the last row was not cut`).toHaveCount(
+        1
+      );
+      // The jump, and the first row wholly in view read in the same task, before the page can
+      // have measured any row it lands on.
+      const jump = await page.evaluate((rows): Jump => {
+        const drawn = rows.flatMap((id) => {
+          const row = document.querySelector<HTMLElement>(`[data-node-row][data-node-id="${id}"]`);
+          const words = row?.querySelector("[data-node-words]");
+          return row === null || words == null ? [] : [{ id, row, words }];
+        });
+        const middle = document.documentElement.scrollHeight / 2;
+        const crossing = drawn.find(
+          ({ words }) => words.getBoundingClientRect().bottom + window.scrollY >= middle
+        );
+        if (crossing === undefined) throw new Error("no long row holds the page's middle");
+        window.scrollTo(0, crossing.words.getBoundingClientRect().bottom + window.scrollY - 40);
+        const first = [...document.querySelectorAll<HTMLElement>("[data-node-row]")].find((row) => {
+          const box = row.getBoundingClientRect();
+          return box.top >= 0 && box.bottom <= window.innerHeight;
+        });
+        return {
+          crossing: crossing.id,
+          crossingTop: crossing.words.getBoundingClientRect().top,
+          cut: [crossing.row, first].some((row) => row?.querySelector("[data-node-more]") != null),
+          first: first?.getAttribute("data-node-id") ?? null,
+          top: first?.getBoundingClientRect().top ?? Number.NaN,
+        };
+      }, seeded.rows);
+      const next = seeded.rows[seeded.rows.indexOf(jump.crossing) + 1];
+      expect(
+        jump,
+        `${where} the jump did not land with a whole row crossing the view's top above the first row wholly in view`
+      ).toMatchObject({ cut: false, first: next });
+      expect(jump.crossingTop, `${where} the crossing row's words start in view`).toBeLessThan(0);
+      const first = nodeRow(page, jump.first ?? "");
+      await expect(
+        rowMore(nodeRow(page, jump.crossing)),
+        `${where} the crossing row was not cut`
+      ).toHaveCount(1);
+      await expect(rowMore(first), `${where} the first row wholly in view was not cut`).toHaveCount(
+        1
+      );
+      await nextFrames(page);
+      const top = await first.evaluate((row) => row.getBoundingClientRect().top);
+      expect(
+        Math.abs(top - jump.top),
+        `${where} the first row wholly in view moved from ${jump.top} px to ${top} px`
+      ).toBeLessThanOrEqual(1);
+    }
   });
 });
 

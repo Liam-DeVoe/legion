@@ -2,6 +2,7 @@ import type { IssuePriority } from "../../api/types";
 import { outsideAskCard } from "../inbox/ask-card";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { useKeymap } from "../shell/keymap";
+import type { FocusLoss } from "./focus-keeper";
 import { PROPERTY_LABELS } from "./page-structure";
 
 /**
@@ -47,6 +48,23 @@ const ACTION_WORDS = {
   "request-changes": /^Request changes$/,
 } as const;
 
+/** The nearest box from `from` up to `top`, `top` left out, that holds an approval chip as its own
+ *  child, with that chip, or `null` when no such box is there. That box is the one `ApprovalChip`
+ *  draws a chip and its two actions in, so the chip found is always the document's that `from`
+ *  belongs to, never the one of another entry on the line. */
+function chipBox(
+  from: HTMLElement | null,
+  top: Element
+): { readonly box: HTMLElement; readonly chip: HTMLElement } | null {
+  for (let box = from; box !== null && box !== top; box = box.parentElement) {
+    const chip = box.querySelector<HTMLElement>(`:scope > ${APPROVAL_CHIP}`);
+    if (chip !== null) {
+      return { box, chip };
+    }
+  }
+  return null;
+}
+
 /**
  * The `action` of the approval chip that holds the focus, or `null` when the focus is on no chip
  * of the header and on neither of a chip's two actions, when the chip draws no such action - no
@@ -54,9 +72,6 @@ const ACTION_WORDS = {
  * Approve - or when the action refuses a press while its review is written: Approve is `disabled`
  * then, and Request changes `aria-disabled`. Like `usableControl`, the one fact a key's `run` and
  * its `when` both read.
- *
- * The chip's box is the nearest box around the focus that holds a chip of its own, so the action
- * found is always the focused document's, never the one of another entry on the line.
  */
 function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
   const header = document.querySelector(HEADER);
@@ -64,25 +79,39 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
   if (header == null || !(active instanceof HTMLElement) || !header.contains(active)) {
     return null;
   }
-  let box: HTMLElement | null = active;
-  while (box !== null && box !== header) {
-    const chip = box.querySelector(`:scope > ${APPROVAL_CHIP}`);
-    if (chip !== null) {
-      const actions = [...box.querySelectorAll<HTMLButtonElement>(CHIP_ACTIONS)].filter(
-        (button) => button !== chip
-      );
-      if (active !== chip && !actions.some((button) => button === active)) {
-        return null;
-      }
-      const button = actions.find((each) => ACTION_WORDS[action].test(each.textContent ?? ""));
-      if (button === undefined) {
-        return null;
-      }
-      return button.disabled || button.getAttribute("aria-disabled") === "true" ? null : button;
-    }
-    box = box.parentElement;
+  const found = chipBox(active, header);
+  if (found === null) {
+    return null;
   }
-  return null;
+  const { box, chip } = found;
+  const actions = [...box.querySelectorAll<HTMLButtonElement>(CHIP_ACTIONS)].filter(
+    (button) => button !== chip
+  );
+  if (active !== chip && !actions.some((button) => button === active)) {
+    return null;
+  }
+  const button = actions.find((each) => ACTION_WORDS[action].test(each.textContent ?? ""));
+  if (button === undefined) {
+    return null;
+  }
+  return button.disabled || button.getAttribute("aria-disabled") === "true" ? null : button;
+}
+
+/**
+ * Where the header's focus keeper (`useFocusKeeper`) puts the focus when the control it lost is
+ * one of an approval chip's two actions: that action's own chip, or `null` when the lost control
+ * is no such action. Approve is disabled while its review is written and both actions go once
+ * the request is answered, so a reader who pressed one stays on the document they reviewed, and
+ * the chip is what stays of its approval control. The lost action may already be out of the
+ * page, so its chip is found from where it stood (`FocusLoss.place`), and the action by the
+ * words it draws.
+ */
+export function chipOfLostAction({ lost, place, root }: FocusLoss): HTMLElement | null {
+  const words = lost.textContent ?? "";
+  if (!Object.values(ACTION_WORDS).some((action) => action.test(words))) {
+    return null;
+  }
+  return chipBox(place, root)?.chip ?? null;
 }
 
 /**

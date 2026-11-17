@@ -1,3 +1,5 @@
+import { flushSync } from "react-dom";
+
 /** The prototype's `CUT_LINES`: how many lines of an agent's words or an answered question a row
  *  draws before it cuts them. */
 const CUT_LINES = 6;
@@ -28,13 +30,27 @@ export interface Clamp {
 /** What a row is told of its words: their cut, or `undefined` where they are drawn whole. */
 type Report = (clamp: Clamp | undefined) => void;
 
+/** One row a slice read: its words, their cut, and the top of their box as the slice read it. */
+interface Measured {
+  readonly clamp: Clamp | undefined;
+  readonly element: HTMLElement;
+  readonly top: number;
+}
+
+/** The row whose top a slice holds in place, and that top as the slice read it before writing. */
+interface Anchor {
+  readonly element: HTMLElement;
+  readonly top: number;
+}
+
 /** One row's words, as the measurer holds them. */
 interface Watched {
   /** The words' box and the children it held when the row was handed over: the boxes whose
    *  size the measurer watches for this row. */
   readonly boxes: readonly Element[];
-  /** Whether the words were cut when last measured. */
-  cut: boolean;
+  /** The cut the row was last told, or `undefined` while its words are drawn whole or before
+   *  they are first measured. */
+  clamp: Clamp | undefined;
   /** Whether the words stand within `NEAR_BAND` of the viewport. */
   near: boolean;
   readonly report: Report;
@@ -56,6 +72,16 @@ interface Watched {
  * block of them changes size, or their box changes width or grows while they are whole (one
  * `ResizeObserver`), or the page's typeface arrives (one `loadingdone` listener). Words that come
  * near are measured in the next batch; words that go away keep the cut they last had.
+ *
+ * Words are measured a frame after they come near, never in the frame they arrive in. A long
+ * jump into the middle of the page, such as a fast drag of the scrollbar, lands on rows not
+ * measured yet, and their cuts the frame after moved the content in view (-1,141 px once in five
+ * jumps from 60,000 px to 15,000 px): the browser's own scroll anchoring holds the view only
+ * while the rows that shrink are outside it. So a slice whose cuts change a row in view or above
+ * the view reads the top of the first row wholly in view among its reads, writes its cuts at once
+ * (`flushSync`) rather than in a later render, and then scrolls the page by however far that row
+ * moved, in the same frame: that scroll is its last write. A slice that changes only rows below
+ * the view does none of it.
  */
 class ClampMeasurer {
   readonly #rows = new Map<Element, Watched>();
@@ -97,7 +123,7 @@ class ClampMeasurer {
                 const { width } = entry.contentRect;
                 const widened = width !== watched.width;
                 watched.width = width;
-                if (!widened && watched.cut) continue;
+                if (!widened && watched.clamp !== undefined) continue;
               }
               this.#queue(element);
             }
@@ -116,7 +142,7 @@ class ClampMeasurer {
     const boxes = [element, ...element.children];
     this.#rows.set(element, {
       boxes,
-      cut: false,
+      clamp: undefined,
       near: this.#near === undefined,
       report,
       width: undefined,
@@ -170,30 +196,66 @@ class ClampMeasurer {
   };
 
   /** One slice of the batch: reads for at most `SLICE_MS`, then every write of what it read,
-   *  so the page is laid out once for all of them; the rest of the batch goes on next frame. */
+   *  so the page is laid out once for all of them; the rest of the batch goes on next frame.
+   *  Where those writes change a row in view or above it, the first row wholly in view is read
+   *  before them and held where it stood after them (`#anchorOf`). */
   readonly #measure = (): void => {
     this.#frame = undefined;
     const until = performance.now() + SLICE_MS;
-    const read: (readonly [HTMLElement, Clamp | undefined])[] = [];
+    const read: Measured[] = [];
     let taken = 0;
     for (const element of this.#due) {
       if (taken > 0 && performance.now() >= until) break;
       taken += 1;
       this.#due.delete(element);
+      const box = element.getBoundingClientRect();
       // With no observer to say which rows come near as the page scrolls, nothing would queue
       // a far row again, so every row is measured.
-      if (this.#near === undefined || withinBand(element)) {
-        read.push([element, measureClamp(element)]);
+      if (this.#near === undefined || withinBand(box)) {
+        read.push({ clamp: measureClamp(element, box.top), element, top: box.top });
       }
     }
-    for (const [element, clamp] of read) {
-      const watched = this.#rows.get(element);
-      if (watched === undefined) continue;
-      watched.cut = clamp !== undefined;
-      watched.report(clamp);
+    const anchor = this.#anchorOf(read);
+    const write = () => {
+      for (const { clamp, element } of read) {
+        const watched = this.#rows.get(element);
+        if (watched === undefined) continue;
+        watched.clamp = clamp;
+        watched.report(clamp);
+      }
+    };
+    if (anchor === undefined) write();
+    else {
+      // The rows draw their cuts now, in this frame, so the anchor's new top can be read and the
+      // page scrolled before the frame is painted.
+      flushSync(write);
+      if (anchor.element.isConnected) {
+        const moved = anchor.element.getBoundingClientRect().top - anchor.top;
+        if (moved !== 0) window.scrollBy({ behavior: "instant", top: moved });
+      }
     }
     if (this.#due.size > 0) this.#frame = window.requestAnimationFrame(this.#measure);
   };
+
+  /** The row a slice that read `read` holds in place: the first row wholly in view, its top read
+   *  before the slice writes anything, where one of the slice's cuts changes a row whose top is
+   *  in view or above it; `undefined` where every change is below the view, which moves nothing
+   *  in it, or no row it watches stands wholly in view. */
+  #anchorOf(read: readonly Measured[]): Anchor | undefined {
+    const screen = window.innerHeight;
+    const shifts = read.some(
+      ({ clamp, element, top }) => top < screen && !sameClamp(this.#rows.get(element)?.clamp, clamp)
+    );
+    if (!shifts) return undefined;
+    let anchor: Anchor | undefined;
+    for (const [element, watched] of this.#rows) {
+      if (!watched.near || !(element instanceof HTMLElement)) continue;
+      const box = element.getBoundingClientRect();
+      if (box.height === 0 || box.top < 0 || box.bottom > screen) continue;
+      if (anchor === undefined || box.top < anchor.top) anchor = { element, top: box.top };
+    }
+    return anchor;
+  }
 }
 
 /** The measurer while a row is watched: made by the first row and stopped after the last. */
@@ -213,24 +275,32 @@ export function watchClamp(element: HTMLElement, report: Report): () => void {
   };
 }
 
-/** Whether the words' box is laid out within `NEAR_BAND` of the viewport as the slice reads it.
+/** Whether the words' box, as the slice read it, is laid out within `NEAR_BAND` of the viewport.
  *  The intersection observer's word is from the frame it was computed in: words drawn before the
  *  page laid them out where they stand, or not laid out at all, can be reported near there. A
  *  box with no size is measured once it has one, which the size observer reports. */
-function withinBand(element: HTMLElement): boolean {
-  const box = element.getBoundingClientRect();
+function withinBand(box: DOMRect): boolean {
   if (box.width === 0 && box.height === 0) return false;
   const screen = window.innerHeight;
   return box.bottom >= -screen && box.top <= 2 * screen;
 }
 
-/** The cut of the words `element` holds, as the prototype's `measureClamps` reads it: layout
- *  reads alone. */
-function measureClamp(element: HTMLElement): Clamp | undefined {
+/** Whether two cuts draw a row alike: the same height, the same words held back and the same
+ *  place of the cut, or both whole. */
+export function sameClamp(one: Clamp | undefined, other: Clamp | undefined): boolean {
+  return (
+    one?.height === other?.height &&
+    one?.hidden === other?.hidden &&
+    one?.pictures === other?.pictures
+  );
+}
+
+/** The cut of the words `element` holds, whose box's top the slice read at `top`, as the
+ *  prototype's `measureClamps` reads it: layout reads alone. */
+function measureClamp(element: HTMLElement, top: number): Clamp | undefined {
   const pitch = Number.parseFloat(getComputedStyle(element).lineHeight);
   const limit = CUT_LINES * (Number.isFinite(pitch) ? pitch : 24);
   if (element.scrollHeight <= limit + CUT_SLACK) return undefined;
-  const top = element.getBoundingClientRect().top;
   // The words a cut would hide, block by block: a block below the line whole, and of a block the
   // line crosses the share of its words below it.
   let hidden = 0;
