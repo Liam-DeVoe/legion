@@ -403,12 +403,18 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // (api/replies.go), the dismiss route (api/inbox_dismiss.go), the lock statements above, the
 // race tests and packages/envoy/AGENTS.md point here rather than saying it again.
 //
-// The order is owner, then the root of every Agent thread a dismissal writes a mark for, then
-// the caller's rows, then the agent rows it writes, then the project its events name. Steps 2
-// and 4 are the dismiss route's alone - this button writes no dismissal - and they are numbered
-// here rather than there because one order written in two places is two orders as soon as one
-// of them is edited:
+// The order is the person's marks lock, then owner, then the root of every Agent thread a
+// dismissal writes a mark for, then the caller's rows, then the agent rows it writes, then the
+// project its events name. Steps 2 and 4 are the dismiss route's alone - this button writes no
+// dismissal - and they are numbered here rather than there because one order written in two
+// places is two orders as soon as one of them is edited:
 //
+//  0. the advisory lock of the caller's marks, beside every other mark-all and dismissal
+//     (lockPersonMarks, marksBesideTheInbox), which every other write of more than one of a
+//     person's mark rows - a conversation's state, a write of several marks under /api/v2 -
+//     takes alone: those take the person's rows in orders of their own, so they run before or
+//     after this transaction rather than beside it, and the steps below order this one against
+//     every other mark-all and dismissal;
 //  1. the owner row of every thread it marks, `for share`, documents then issues, in ascending
 //     owner-key order (lockInboxReadOwners, inboxReadLockDocuments);
 //  2. the root message of every Agent thread a dismissal writes a mark for, `for update`, in
@@ -479,6 +485,9 @@ func (s *server) markInboxReadThreads(
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
+	}
+	if err := lockPersonMarks(ctx, tx, login, marksBesideTheInbox); err != nil {
+		return 0, nil, err
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,
 		inboxReadReplyThreads, inboxReadAgentThreads, readThrough, scope)

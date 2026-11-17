@@ -30,16 +30,26 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	tokens, err := s.agentTokensOf(r.Context(), actor.ID)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, tokens)
+}
 
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
+// agentTokensOf is every personal agent token owner holds, newest first, the revoked ones among
+// them with their revoked_at: what GET /api/v1/me/agent-tokens answers whole and GET
+// /api/v2/me/agent-tokens pages.
+func (s *server) agentTokensOf(ctx context.Context, owner string) ([]model.AgentToken, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select id::text, name, prefix, scopes, created_at, last_used_at, revoked_at
 		from agent_tokens
 		where owner = $1
 		order by created_at desc
-	`, actor.ID)
+	`, owner)
 	if err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("list agent tokens: %w", err))
-		return
+		return nil, fmt.Errorf("list agent tokens: %w", err)
 	}
 	defer rows.Close()
 
@@ -47,16 +57,14 @@ func (s *server) listAgentTokens(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		token, err := scanAgentToken(rows)
 		if err != nil {
-			s.writeHandlerError(w, r, err)
-			return
+			return nil, err
 		}
 		tokens = append(tokens, token)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("iterate agent tokens: %w", err))
-		return
+		return nil, fmt.Errorf("iterate agent tokens: %w", err)
 	}
-	WriteJSON(w, http.StatusOK, tokens)
+	return tokens, nil
 }
 
 // createAgentTokenInput is the body of POST /api/v1/me/agent-tokens.
@@ -82,6 +90,13 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createAgentTokenFrom(w, r, actor, input)
+}
+
+// createAgentTokenFrom mints the token input asks for as actor and answers it, the plaintext with
+// it: the work of POST /api/v1/me/agent-tokens and POST /api/v2/me/agent-tokens once each has read
+// its body.
+func (s *server) createAgentTokenFrom(w http.ResponseWriter, r *http.Request, actor model.Actor, input createAgentTokenInput) {
 	input.Name = strings.TrimSpace(input.Name)
 	if input.Name == "" {
 		writeError(w, r, apicode.AgentTokenInput, "name is required")
@@ -144,6 +159,14 @@ func (s *server) updateAgentTokenScopes(w http.ResponseWriter, r *http.Request) 
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.updateAgentTokenScopesFrom(w, r, actor, input)
+}
+
+// updateAgentTokenScopesFrom gives the caller's token the path's {id} names the set input holds
+// and answers the token: the work of PATCH /api/v1/me/agent-tokens/{id} and PATCH
+// /api/v2/me/agent-tokens/{id} once each has read its body. A token of another person's, or
+// none, is 404 NOT_FOUND; the /api/v2 route has answered its own 404 for one already.
+func (s *server) updateAgentTokenScopesFrom(w http.ResponseWriter, r *http.Request, actor model.Actor, input updateAgentTokenScopesInput) {
 	if input.Scopes == nil {
 		writeError(w, r, apicode.TokenScopesInput,
 			"scopes is required: it is the whole set the token is to hold")
@@ -239,21 +262,43 @@ func (s *server) revokeAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !requireUUIDPath(w, r, "token", apicode.TokenIDInput) {
 		return
 	}
-
-	result, err := s.deps.Store.Pool.Exec(r.Context(), `
-		update agent_tokens
-		set revoked_at = coalesce(revoked_at, now())
-		where id = $1 and owner = $2
-	`, r.PathValue("id"), actor.ID)
+	revoked, err := s.revokeAgentTokenOf(r.Context(), r.PathValue("id"), actor.ID)
 	if err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("revoke agent token: %w", err))
+		s.writeHandlerError(w, r, err)
 		return
 	}
-	if result.RowsAffected() == 0 {
+	if !revoked {
 		writeError(w, r, apicode.NotFound, "not found")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// revokeAgentTokenOf marks the token id names revoked, where owner holds it, and reports whether
+// owner holds it at all. A token revoked already keeps its first revoked_at and still counts as
+// held. The update runs in a transaction of the shared pool, so a keyed DELETE of /api/v2 marks its
+// key committed with it (markRequestKeyCommitted).
+func (s *server) revokeAgentTokenOf(ctx context.Context, id, owner string) (bool, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `
+		update agent_tokens
+		set revoked_at = coalesce(revoked_at, now())
+		where id = $1 and owner = $2
+	`, id, owner)
+	if err != nil {
+		return false, fmt.Errorf("revoke agent token: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("revoke agent token: %w", err)
+	}
+	return true, nil
 }
 
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {

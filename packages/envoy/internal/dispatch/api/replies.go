@@ -861,66 +861,73 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	login := model.CanonicalLogin(actor.ID)
-	threadID := r.PathValue("id")
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
+	event, err := s.moveThreadReadIn(r.Context(), tx, actor, r.PathValue("id"), *input.ReadThrough)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if event != nil {
+		written, err := s.appendEvent(r.Context(), tx, *event)
+		if err == nil {
+			err = tx.Commit(r.Context())
+		}
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
+		s.publish(r.Context(), written)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// moveThreadReadIn moves, in tx, actor's read mark on one thread forward to readThrough, the
+// caller's own RFC3339 text, already checked, and answers, where it moved, the event that
+// announces it, for its caller to append: the work of PUT /api/v1/me/threads/{id}/read and of a
+// thread mark's write under /api/v2. A thread the caller has no row for writes nothing, and
+// neither does a mark already at or past readThrough.
+func (s *server) moveThreadReadIn(ctx context.Context, tx pgx.Tx, actor model.Actor, threadID, readThrough string) (*model.Event, error) {
+	login := model.CanonicalLogin(actor.ID)
 	var project string
 	var issueKey, artifactID *string
-	err = tx.QueryRow(r.Context(), `
+	err := tx.QueryRow(ctx, `
 		select project_key, issue_key, artifact_id::text from user_threads where login = $1 and thread_id = $2
 	`, login, threadID).Scan(&project, &issueKey, &artifactID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		w.WriteHeader(http.StatusNoContent)
-		return
+		return nil, nil
 	}
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
 	// A closed issue is not refused: reading a thread on a closed issue is reading it.
 	if issueKey != nil {
-		_, err = tx.Exec(r.Context(), `select 1 from issues where key = $1 for share`, *issueKey)
+		_, err = tx.Exec(ctx, `select 1 from issues where key = $1 for share`, *issueKey)
 	} else if artifactID != nil {
-		_, err = tx.Exec(r.Context(), `select 1 from artifacts where id = $1 for share`, *artifactID)
+		_, err = tx.Exec(ctx, `select 1 from artifacts where id = $1 for share`, *artifactID)
 	}
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return nil, err
 	}
 	// read_through is cast by Postgres from the caller's own text rather than bound as a parsed
 	// time: an answer's time carries nanoseconds, which the trigger's cast of the answer rounds to
 	// the microsecond while pgx truncates a bound time, so a mark through the answer's own time
 	// would otherwise fall a microsecond short of the answer and leave the thread unread.
-	moved, err := tx.Exec(r.Context(), `
+	moved, err := tx.Exec(ctx, `
 		update user_threads set read_through = least($3::text::timestamptz, now())
 		where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
-	`, login, threadID, *input.ReadThrough)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
+	`, login, threadID, readThrough)
 	// A revisit that moves nothing announces nothing: the thread on screen marks itself on every
 	// visit, and each event would refetch the count in every tab the viewer has open.
-	if moved.RowsAffected() == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
+	if err != nil || moved.RowsAffected() == 0 {
+		return nil, err
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
+	event := projectOwner(project).event(
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
-	))
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	s.publish(r.Context(), event)
-	w.WriteHeader(http.StatusNoContent)
+	)
+	return &event, nil
 }

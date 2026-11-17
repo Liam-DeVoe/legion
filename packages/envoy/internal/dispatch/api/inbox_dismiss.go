@@ -667,7 +667,6 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 func (s *server) dismissInboxThreads(
 	ctx context.Context, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {
-	login := model.CanonicalLogin(actor.ID)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return 0, nil, err
@@ -676,6 +675,28 @@ func (s *server) dismissInboxThreads(
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
 		return 0, nil, fmt.Errorf("bound the dismissal's statements: %w", err)
 	}
+	// Step 0 of the lock order (markInboxReadThreads): the caller's marks lock, beside every other
+	// mark-all and dismissal.
+	if err := lockPersonMarks(ctx, tx, model.CanonicalLogin(actor.ID), marksBesideTheInbox); err != nil {
+		return 0, nil, err
+	}
+	changed, events, err := s.dismissInboxThreadsIn(ctx, tx, actor, plan, rows, scope)
+	if err != nil {
+		return 0, nil, err
+	}
+	return s.commitInboxMarks(ctx, tx, changed, events)
+}
+
+// dismissInboxThreadsIn is the dismissal's work in tx, up to the events it appends: it reads the
+// rows it changes, takes their owners and the roots of the Agent threads it marks, and writes the
+// marks, answering how many threads it changed and the events, not yet appended, that announce
+// them. Its caller appends them in the lock order's last step and commits (commitInboxMarks):
+// dismissInboxThreads in a transaction of its own, and a write of several of the caller's marks
+// under /api/v2 in the one transaction of all of them.
+func (s *server) dismissInboxThreadsIn(
+	ctx context.Context, tx pgx.Tx, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
+) (int, []model.Event, error) {
+	login := model.CanonicalLogin(actor.ID)
 	read, err := readInboxDismissThreads(ctx, tx, actor, login, plan, rows, scope)
 	if err != nil {
 		return 0, nil, err
@@ -732,7 +753,7 @@ func (s *server) dismissInboxThreads(
 			events = append(events, userAgentStateEvent(actor, session))
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, changed, events)
+	return changed, events, nil
 }
 
 // readInboxDismissThreads reads both kinds of row this request changes, each list sorted so the

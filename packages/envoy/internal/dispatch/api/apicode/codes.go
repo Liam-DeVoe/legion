@@ -482,6 +482,9 @@ var (
 	CredentialGrantNotFound   = v2Only("CREDENTIAL_GRANT_NOT_FOUND", http.StatusNotFound)
 	MachineLoginNotFound      = v2Only("MACHINE_LOGIN_NOT_FOUND", http.StatusNotFound)
 	SigninNotFound            = v2Only("SIGNIN_NOT_FOUND", http.StatusNotFound)
+	// ThreadNotFound is a thread mark's {id} that names no ask, root comment or root message
+	// (ThreadMissing): /api/v1 wrote nothing for such an id and answered 204.
+	ThreadNotFound = v2Only("THREAD_NOT_FOUND", http.StatusNotFound)
 )
 
 // The codes only /api/v1 answers.

@@ -43,6 +43,10 @@ var (
 	CredentialGrantMissing   = Condition{"credential grant missing"}
 	MachineLoginMissing      = Condition{"machine login missing"}
 	SigninMissing            = Condition{"sign-in missing"}
+	// ThreadMissing is the {id} of a thread mark (PATCH and GET /api/v2/me/marks/thread/{id})
+	// that names no thread's root: no ask, no root comment and no root message. A thread is one
+	// of the three by its root's id, so an id that names none of them names no thread.
+	ThreadMissing = Condition{"thread missing"}
 )
 
 // The conditions every v2 route can meet in its query or its loops (decision 5).

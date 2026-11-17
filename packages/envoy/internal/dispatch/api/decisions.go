@@ -938,17 +938,29 @@ func (s *server) putDocumentRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	read := model.DocumentRead{ArtifactID: document.ID}
-	var version int
-	var at time.Time
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-		insert into user_document_reads (login, artifact_id, version) values ($1, $2::uuid, $3)
-		on conflict (login, artifact_id) do update set version = excluded.version, read_at = now()
-		returning version, read_at
-	`, model.CanonicalLogin(actor.ID), document.ID, *input.Version).Scan(&version, &at); err != nil {
+	read, err := writeDocumentRead(r.Context(), s.deps.Store.Pool, model.CanonicalLogin(actor.ID), document.ID, *input.Version)
+	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	read.Version, read.ReadAt = &version, &at
 	WriteJSON(w, http.StatusOK, read)
+}
+
+// writeDocumentRead records, through q, that login has read the document artifactID names through
+// version, replacing the read it held, and answers the read as stored: the work of PUT
+// /api/v1/me/documents/{id}/read, through the pool, and of a document mark's write under /api/v2,
+// in the transaction of the request's every mark.
+func writeDocumentRead(ctx context.Context, q queryer, login, artifactID string, version int) (model.DocumentRead, error) {
+	read := model.DocumentRead{ArtifactID: artifactID}
+	var stored int
+	var at time.Time
+	if err := q.QueryRow(ctx, `
+		insert into user_document_reads (login, artifact_id, version) values ($1, $2::uuid, $3)
+		on conflict (login, artifact_id) do update set version = excluded.version, read_at = now()
+		returning version, read_at
+	`, login, artifactID, version).Scan(&stored, &at); err != nil {
+		return model.DocumentRead{}, err
+	}
+	read.Version, read.ReadAt = &stored, &at
+	return read, nil
 }

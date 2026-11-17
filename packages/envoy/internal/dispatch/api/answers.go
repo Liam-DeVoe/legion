@@ -47,7 +47,19 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	response, err := s.readMyAnswers(r, caller, limit, offset)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, response)
+}
 
+// readMyAnswers reads limit of the caller's answers and replies from offset, newest first, with
+// the display trees of their texts where the request asks for them (Dispatch-Trees): the page GET
+// /api/v1/me/answers answers and GET /api/v2/me/answers answers in the envelope. Total is the count
+// of the whole list as the page's rows carry it, so a page past the end carries none.
+func (s *server) readMyAnswers(r *http.Request, caller model.Actor, limit, offset int) (model.MyAnswersResponse, error) {
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		with answered as (
 			`+answerEventsQuery(`e.created_at as at, 'answer' as kind, e.payload->>'id' as ask_id,
@@ -72,8 +84,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		limit $2 offset $3
 	`, model.CanonicalLogin(caller.ID), limit, offset)
 	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
+		return model.MyAnswersResponse{}, err
 	}
 	defer rows.Close()
 
@@ -109,8 +120,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			&name,
 			&total,
 		); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("scan my answer: %w", err))
-			return
+			return model.MyAnswersResponse{}, fmt.Errorf("scan my answer: %w", err)
 		}
 		row.EditedAt = timestampPtr(editedAt)
 		if issueKey != nil {
@@ -120,8 +130,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		}
 		if row.Kind == "answer" {
 			if err := json.Unmarshal(answer, &row.Answer); err != nil {
-				s.writeHandlerError(w, r, fmt.Errorf("decode my answer: %w", err))
-				return
+				return model.MyAnswersResponse{}, fmt.Errorf("decode my answer: %w", err)
 			}
 		} else {
 			row.Reply = &model.MyAnswerReply{ID: *replyID, Body: *body}
@@ -130,8 +139,7 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		response.Rows = append(response.Rows, row)
 	}
 	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("list my answers: %w", err))
-		return
+		return model.MyAnswersResponse{}, fmt.Errorf("list my answers: %w", err)
 	}
 	// Each row's texts are registered once the page is whole: the question the answer was given
 	// to, the text written with it and the body of a reply, all of them stored texts the table
@@ -148,5 +156,5 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reader.resolve()
-	WriteJSON(w, http.StatusOK, response)
+	return response, nil
 }
