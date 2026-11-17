@@ -1,4 +1,4 @@
-import { useQueries, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { IssueDetails } from "../../../api/types";
@@ -10,6 +10,7 @@ import {
   dropViews,
   subscribeTreeFreshness,
   TREE_FILTERS,
+  type TreeFilter,
   useTreeRead,
   viewQuery,
 } from "./tree-read";
@@ -17,9 +18,12 @@ import {
 /**
  * The filters' view reads of one load of the issue, around the stage. Each of Spec, Verification
  * and Plan is read the first time its filter is on in a load, and then held for the rest of it,
- * never stale by age and kept by this provider's observers, which stay mounted for the load, so
- * a filter turned off and on again finds its answer held and sends nothing; once the stage goes,
- * they are collected as any query nothing observes is.
+ * never stale by age. A filter's observer here watches its view only while the filter is on
+ * (`ViewRead`), and `useIssueTree`'s, which never read, keep every view in the cache for the
+ * load, so a filter turned off and on again finds its answer held and sends nothing; it finds a
+ * refused view refused, and sends nothing either, unless a refresh asked for that view again
+ * while the filter was off (`viewQuery`). Once the stage goes, the views are collected as any
+ * query nothing observes is.
  * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
  * tree's root (`TreeNode.views`), which is what each filter draws from.
  *
@@ -28,7 +32,8 @@ import {
  * older than its own tree. It holds the subscription that keeps the tree and its views fresh
  * (`subscribeTreeFreshness`): a write marks every held view stale, so the open one is read again
  * and draws what it held until its new answer lands, and another is read again when its filter
- * is next on.
+ * is next on; a write or an event asks for a refused view again, which reads the open one again
+ * and another when its filter is next on.
  */
 export function ViewReadProvider({
   children,
@@ -49,14 +54,35 @@ export function ViewReadProvider({
     setDropped(true);
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
-  useQueries({
-    queries: TREE_FILTERS.map((filter) => ({
-      ...viewQuery(key, filter),
-      enabled: dropped && preset === filter,
-      staleTime: Number.POSITIVE_INFINITY,
-    })),
-  });
-  return children;
+  return (
+    <>
+      {dropped &&
+        TREE_FILTERS.map((filter) => (
+          <ViewRead filter={filter} issueKey={key} key={filter} on={preset === filter} />
+        ))}
+      {children}
+    </>
+  );
+}
+
+/**
+ * One filter's view read, watched while the filter is on: its observer is subscribed then and
+ * unsubscribed while the filter is off, rather than enabled and disabled. An observer enabled
+ * again reads its view wherever the view holds no answer, since TanStack reads a stale query
+ * then and a query that holds none is always stale, so a refused view would be read on every
+ * press of its filter. A subscribed one reads it as a new observer does (`viewQuery`).
+ */
+function ViewRead({
+  filter,
+  issueKey,
+  on,
+}: {
+  filter: TreeFilter;
+  issueKey: string;
+  on: boolean;
+}): null {
+  useQuery({ ...viewQuery(issueKey, filter), subscribed: on });
+  return null;
 }
 
 /**
@@ -144,13 +170,33 @@ function focusOn(to: HTMLElement): void {
 
 /** Puts the focus on the outline's tree, which takes none of its own (`IssueTree.tsx`): it takes
  *  it while it holds it, as the Plan view's empty tree does (`PlanFilterBody.tsx`), and no more
- *  once the focus leaves it, so Tab never stops on it beside its rows. Answers the tree, or null
- *  where none is drawn. */
+ *  once the focus leaves it, so Tab never stops on it beside its rows. A blur that puts the
+ *  focus somewhere else - another control, or nothing - makes the tree take none from then on,
+ *  at once. A blur that leaves the tree the focused element - the window going, as the reader
+ *  switches to another, or a browser that moves the focus only after the blur - is no focus
+ *  leaving it yet: the tree stays focusable, since a browser moves the focus to the body as soon
+ *  as the focused element stops being focusable, and it looks again one task later, once every
+ *  browser has finished the focus move the blur belongs to. Answers the tree, or null where none
+ *  is drawn. */
 function holdFocus(tree: HTMLElement | null): HTMLElement | null {
   if (tree === null) return null;
   if (!tree.hasAttribute("tabindex")) {
     tree.tabIndex = -1;
-    tree.addEventListener("blur", () => tree.removeAttribute("tabindex"), { once: true });
+    // The focus has left the tree: it takes it no more, and no later blur needs a look.
+    const letGo = () => {
+      tree.removeAttribute("tabindex");
+      tree.removeEventListener("blur", onBlur);
+    };
+    const onBlur = () => {
+      if (document.activeElement !== tree) {
+        letGo();
+        return;
+      }
+      setTimeout(() => {
+        if (document.activeElement !== tree) letGo();
+      }, 0);
+    };
+    tree.addEventListener("blur", onBlur);
   }
   focusOn(tree);
   return tree;

@@ -149,10 +149,10 @@ export interface LiveSocket {
   /** Subscribes session `sessionId`'s agent stream; returns the unsubscribe. */
   subscribeAgent(sessionId: string, handlers: AgentHandlers): () => void;
   state(): LiveSocketState;
-  /** Whether the event feed is up: the socket open, and an events subscription on it that
-   *  Dispatch has neither refused nor ended with no start since the page last sent it. Dispatch
-   *  that cannot start the feed - its database not answering - ends each send a second later with
-   *  the socket still open, and the feed is down while the page waits out its backoff. */
+  /** Whether the event feed is up: the socket open, and an events subscription on it started by
+   *  Dispatch (`events_start`) since the page last sent it. Dispatch that cannot start the feed -
+   *  its database not answering - ends each send a second later with the socket still open: the
+   *  feed is down from each send until its start, and while the page waits out its backoff. */
   eventsUp(): boolean;
   /** Calls `listener` with `state()` whenever it changes; returns the unsubscribe. */
   onState(listener: (state: LiveSocketState) => void): () => void;
@@ -485,6 +485,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
         sub.started = true;
         const afterGap = sub.gap;
         sub.gap = false;
+        if (afterGap)
+          for (const listener of feedBacks.get(queryClient) ?? []) listener(frame.replay_complete);
         return sub.handlers.onStart(frame.since, afterGap, frame.replay_complete);
       }
       case "event":
@@ -769,7 +771,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     eventsUp() {
       if (!isOpen) return false;
       for (const sub of subs.values()) {
-        if (sub.kind === "events" && sub.cancelRetry === undefined) return true;
+        if (sub.kind === "events" && sub.started) return true;
       }
       return false;
     },
@@ -803,12 +805,38 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
 }
 
 /** Whether `queryClient`'s live feed is up: its socket open and the event feed's subscription on
- *  it standing (`LiveSocket.eventsUp`). False where it has no socket, which this makes none of,
- *  as `liveSocketFor` would: a reader asking how the feed stands - the issue page's tree read, on
- *  a window focus and on a write the page puts in the cache (`subscribeTreeFreshness`) - opens
- *  nothing. */
+ *  it started by Dispatch (`events_start`) since the page last sent it (`LiveSocket.eventsUp`).
+ *  False where it has no socket, which this makes none of, as `liveSocketFor` would: a reader
+ *  asking how the feed stands - the issue page's tree read, on a window focus, on a write the
+ *  page puts in the cache, and on a refresh, which it holds back while a write is out
+ *  (`subscribeTreeFreshness`) - opens nothing. */
 export function liveFeedUp(queryClient: QueryClient): boolean {
   return sockets.get(queryClient)?.eventsUp() === true;
+}
+
+/** Each client's listeners for its live feed coming back (`onLiveFeedBack`). */
+const feedBacks = new WeakMap<QueryClient, Set<(replayComplete: boolean) => void>>();
+
+/** Calls `listener` each time an events subscription of `queryClient`'s socket starts again after
+ *  a gap - Dispatch's `events_start` after the socket was lost, or after Dispatch ended or refused
+ *  the subscription - with whether Dispatch replayed the whole gap (`replay_complete`); not at a
+ *  start that follows no gap, the subscription's first or the one after a 4001
+ *  (`EventsHandlers.onStart`). Answers the listener's removal. It opens no socket, as `liveFeedUp`
+ *  opens none: a reader that listens while the client has no socket hears the feed come back once
+ *  a socket made for it carries one. */
+export function onLiveFeedBack(
+  queryClient: QueryClient,
+  listener: (replayComplete: boolean) => void
+): () => void {
+  let listeners = feedBacks.get(queryClient);
+  if (listeners === undefined) {
+    listeners = new Set();
+    feedBacks.set(queryClient, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
 }
 
 /** The live socket's whole state, for the freshness row, which shows the last change time. */
