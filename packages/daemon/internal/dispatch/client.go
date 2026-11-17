@@ -221,21 +221,33 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 // route takes a record of the issue from. A write naming a rating is the rating a retro gave the
 // plan, and goes to the record's rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, which
 // takes the same body with the rating and its reason: the step route ignores a member it does not
-// declare, so a rating sent there would be answered 200 and lost. Either write appends no event
-// and notifies nobody. Dispatch answers 400 STEP_INPUT for a value it will not take, 403
-// STEP_WRITER for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
-// STEP_OTHER_ISSUE for an id that is a record of another issue; a Dispatch older than the route
-// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release that
-// has it.
+// declare, so a rating sent there would be answered 200 and lost. A write naming the experiment and
+// the variant of its issue is two requests, for the same reason: first the record's own write, on
+// the step route or the rating route, without the pair; then the run's identity and the pair alone,
+// on the record's experiment route, PUT /api/v1/issues/{key}/steps/{id}/experiment, which no other
+// route declares. The record goes first, so a Dispatch older than the experiment route still takes
+// it and only the variant waits. The write is done once Dispatch has taken both, and an error of
+// either ends it, so the record's write is not followed by the variant's where Dispatch did not
+// take it, and a write sent again because the variant waited sends the record again, which changes
+// nothing Dispatch holds. No write appends an event or notifies anybody. Dispatch answers 400
+// STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a record
+// of another issue; a Dispatch older than a route answers its router's 404 (NoRoute), which the
+// outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/steps/" + url.PathEscape(id)
+	route := path
 	if write.PlanRating != nil {
-		path += "/rating"
+		route += "/rating"
 	}
-	return c.request(ctx, http.MethodPut, path, stepWrite{
-		StepWrite: write,
-		Actor:     daemonActor(key),
-	}, nil)
+	own := write
+	own.StepExperiment = nil
+	if err := c.request(ctx, http.MethodPut, route, stepWrite{StepWrite: own, Actor: daemonActor(key)}, nil); err != nil || write.StepExperiment == nil {
+		return err
+	}
+	variant := StepWrite{Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role, Type: write.Type,
+		Agent: write.Agent, Generation: write.Generation, StepExperiment: write.StepExperiment}
+	return c.request(ctx, http.MethodPut, path+"/experiment", stepWrite{StepWrite: variant, Actor: daemonActor(key)}, nil)
 }
 
 // PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that

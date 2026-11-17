@@ -97,7 +97,9 @@ type RoleHolder struct {
 // because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
 // StepRecord, because this package imports no record of the daemon's. PlanRating is the rating a
 // retro gave the plan, which only the record's rating route takes (HTTPClient.PutStep sends a
-// write naming a rating there) and every other write leaves out.
+// write naming a rating there) and every other write leaves out. StepExperiment is the experiment
+// and the variant of the record's issue, which only the record's experiment route takes
+// (HTTPClient.PutStep sends them there, after the record's own write, which leaves them out).
 type StepWrite struct {
 	Task       string     `json:"task"`
 	Step       int        `json:"step"`
@@ -114,6 +116,7 @@ type StepWrite struct {
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
 	*PlanRating
+	*StepExperiment
 }
 
 // PlanRating is a retro's rating of the plan, from 1 to 5, and its reason, as the record's rating
@@ -124,6 +127,16 @@ type StepWrite struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// StepExperiment is the experiment a draw put an issue in and the variant it drew there, as the
+// record's experiment route takes them: embedded in StepWrite, its members are members of the
+// body, both written or neither. It mirrors the record's own StepExperiment, which
+// publishStepRecord converts to it, because this package imports no record of the daemon's;
+// internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type StepExperiment struct {
+	Experiment string `json:"experiment"`
+	Variant    string `json:"variant"`
 }
 
 // PlanWrite is the body of a plan's write, as Dispatch's route takes it, the actor aside: the run
@@ -497,8 +510,8 @@ func PermanentRefusal(err error) (*Error, bool) {
 // name: a hand-over's labels_add and expected_sequence. Since #2461 Dispatch ignores a body member
 // it does not declare (decodeJSON in its api package) and refuses no field by name, so this retry
 // serves only a Dispatch from before that change; a field whose loss would change a write ships as
-// a route of its own instead (the record's rating route, HTTPClient.PutStep). Any other malformed
-// body stays a permanent refusal.
+// a route of its own instead (the record's rating route and its experiment route,
+// HTTPClient.PutStep). Any other malformed body stays a permanent refusal.
 var newerFields = []string{"labels_add", "expected_sequence"}
 
 func unknownNewerField(message string) bool {

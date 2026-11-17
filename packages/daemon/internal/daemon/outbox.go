@@ -1259,11 +1259,13 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
 // row's issue and the record's own id, or the rating a retro gave the plan onto the retro's record,
-// which the client sends to the record's rating route. Dispatch writes each field once and keeps
-// what the write leaves out, so the start, the end and the rating land in any order, and a write
-// that runs again after a lost answer changes nothing.
+// which the client sends to the record's rating route, with the experiment and the variant of the
+// record's issue where the record names them, which the client sends after the record, to the
+// record's experiment route. Dispatch writes each field once and keeps what the write leaves out,
+// so the start, the end, the rating and the variant land in any order, and a write that runs again
+// after a lost answer, or after its variant waited, changes nothing.
 //
-// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
+// A Dispatch that has not got a route yet answers its router's 404, which execute makes a wait,
 // so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
 // next run writes the record and ends it. Every other answer is decided by recordRefused: a refusal
 // its route makes for good ends the row, and anything else is a failure retried on the row's
@@ -1275,7 +1277,8 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 	write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
 		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
 		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
-		ReturnedTo: payload.ReturnedTo, Report: payload.Report, PlanRating: (*dispatch.PlanRating)(payload.PlanRating)}
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report, PlanRating: (*dispatch.PlanRating)(payload.PlanRating),
+		StepExperiment: (*dispatch.StepExperiment)(payload.StepExperiment)}
 	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
 		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
 	}
@@ -1302,13 +1305,14 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 	return nil
 }
 
-// recordRefused is whether Dispatch refused a step record, a rating or a plan in a way no retry
-// changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
-// the shared rule calls final, which leaves out the refusal of a field this daemon added by a
-// Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
-// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which both routes
-// answer: the daemon names its own session on every write, so the route's rule and the daemon's
-// disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or PLAN_OTHER_ISSUE for a plan).
+// recordRefused is whether Dispatch refused a step record, a rating, a variant or a plan in a way
+// no retry changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a
+// coded 400 the shared rule calls final, which leaves out the refusal of a field this daemon added
+// by a Dispatch from before #2461; a refusal naming the rating is no such refusal, since no
+// Dispatch refused the rating by name), a writer its route refuses (403 STEP_WRITER, which each of
+// those routes answers: the daemon names its own session on every write, so the route's rule and
+// the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or PLAN_OTHER_ISSUE for
+// a plan).
 // Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
 // ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
 // restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute

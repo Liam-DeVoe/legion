@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -431,6 +432,137 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 		if raw, ok := body[name]; ok {
 			t.Errorf("the body writes %s as %s, want it left out", name, raw)
 		}
+	}
+}
+
+// A write that names the experiment and the variant of its issue reaches Dispatch as two
+// requests, in this order: the record's own write, on the route it takes without them (the step
+// route, or the rating route for a retro's rating), with neither member; then the variant's write,
+// on the record's experiment route, PUT /api/v1/issues/{key}/steps/{id}/experiment, with the run's
+// identity and the pair alone. Dispatch ignores a body member its route does not declare, so a
+// pair sent on either earlier route would be answered 200 and lost by a Dispatch from before the
+// experiment route, which answers that route its router's NOT_FOUND instead; and the record goes
+// first, so such a Dispatch still takes the record while the variant waits. A write that names no
+// pair is the one request it was, and a record's write that Dispatch does not take ends the write
+// there, so no variant is sent ahead of its record.
+func TestPutStepWritesTheExperimentOnItsOwnRoute(t *testing.T) {
+	const id = "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b"
+	const step = "/api/v1/issues/LEG-1/steps/" + id
+	actor := `{"kind":"session","id":"legion-daemon:LEG"}`
+	started := time.Date(2026, 11, 16, 23, 0, 0, 0, time.UTC)
+	session := "ses-implementer"
+	pair := &StepExperiment{Experiment: "planning", Variant: "b"}
+	start := StepWrite{Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+		Agent: "legion-leg-leg-1-implementer", Generation: 1, Session: &session, StartedAt: &started}
+	startIdentity := map[string]string{"task": `"default"`, "step": "2", "kind": `"step"`, "role": `"implementer"`,
+		"type": `"implementation"`, "agent": `"legion-leg-leg-1-implementer"`, "generation": "1", "actor": actor}
+	rating := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
+		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan fit the work."}}
+	ratingIdentity := map[string]string{"task": `"default"`, "step": "0", "kind": `"retro"`, "role": `"implementer"`,
+		"type": `""`, "agent": `"legion-leg-leg-1-implementer"`, "generation": "2", "actor": actor}
+	// with is a copy of fields with more added.
+	with := func(fields, more map[string]string) map[string]string {
+		all := maps.Clone(fields)
+		maps.Copy(all, more)
+		return all
+	}
+	named := func(write StepWrite) StepWrite {
+		write.StepExperiment = pair
+		return write
+	}
+	theVariant := map[string]string{"experiment": `"planning"`, "variant": `"b"`}
+	noPair := []string{"id", "experiment", "variant"}
+	onlyThePair := []string{"id", "session", "model", "started_at", "ended_at", "result", "returned_to", "report", "rating", "rating_reason"}
+	type request struct {
+		path    string
+		present map[string]string
+		absent  []string
+	}
+	for _, tc := range []struct {
+		name  string
+		write StepWrite
+		// refused is whether the server answers the record's own write 500.
+		refused bool
+		want    []request
+	}{
+		{
+			name:  "a start that names the pair",
+			write: named(start),
+			want: []request{
+				{path: step, present: with(startIdentity, map[string]string{"session": `"ses-implementer"`, "started_at": `"2026-11-16T23:00:00Z"`}), absent: noPair},
+				{path: step + "/experiment", present: with(startIdentity, theVariant), absent: onlyThePair},
+			},
+		},
+		{
+			name:  "a retro's rating that names the pair",
+			write: named(rating),
+			want: []request{
+				{path: step + "/rating", present: with(ratingIdentity, map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`}), absent: noPair},
+				{path: step + "/experiment", present: with(ratingIdentity, theVariant), absent: onlyThePair},
+			},
+		},
+		{
+			name:  "a start that names no pair",
+			write: start,
+			want:  []request{{path: step, present: startIdentity, absent: []string{"id", "experiment", "variant", "rating", "rating_reason"}}},
+		},
+		{
+			name:    "a start that names the pair, whose record Dispatch does not take",
+			write:   named(start),
+			refused: true,
+			want:    []request{{path: step, present: startIdentity, absent: noPair}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			var bodies []map[string]json.RawMessage
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("request = %s %s, want a PUT", r.Method, r.URL.EscapedPath())
+				}
+				assertBearer(t, r)
+				var body map[string]json.RawMessage
+				decodeJSON(t, r, &body)
+				paths = append(paths, r.URL.EscapedPath())
+				bodies = append(bodies, body)
+				if tc.refused && r.URL.EscapedPath() == step {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = w.Write([]byte(`{"code":"INTERNAL","error":"the store is down"}`))
+					return
+				}
+				writeJSON(t, w, map[string]any{"id": id, "issue": "LEG-1"})
+			}))
+			defer server.Close()
+
+			err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, tc.write)
+			var refusal *Error
+			if tc.refused && (!errors.As(err, &refusal) || refusal.Status != http.StatusInternalServerError) {
+				t.Fatalf("PutStep = %v, want Dispatch's 500 to the record's write", err)
+			}
+			if !tc.refused && err != nil {
+				t.Fatalf("PutStep = %v, want the write taken", err)
+			}
+			var want []string
+			for _, request := range tc.want {
+				want = append(want, request.path)
+			}
+			if !slices.Equal(paths, want) {
+				t.Fatalf("the write was sent to %q, want %q", paths, want)
+			}
+			for i, request := range tc.want {
+				for name, value := range request.present {
+					if got := string(bodies[i][name]); got != value {
+						t.Errorf("the body sent to %s writes %s as %q, want %s", request.path, name, got, value)
+					}
+				}
+				for _, name := range request.absent {
+					if raw, ok := bodies[i][name]; ok {
+						t.Errorf("the body sent to %s writes %s as %s, want it left out", request.path, name, raw)
+					}
+				}
+			}
+		})
 	}
 }
 

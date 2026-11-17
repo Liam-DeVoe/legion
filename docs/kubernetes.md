@@ -2085,6 +2085,27 @@ A rating row left in place is not harmless in the same way: the release that rec
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
+#### Rolling back the release that names the variant on each step record
+
+This release adds no outbox kind and no migration.
+It writes the experiment a draw put an issue in and the variant it drew there as two more members, `experiment` and `variant`, of that issue's `step_record` rows, and the daemon sends the two after the record, on the record's experiment route (`PUT /api/v1/issues/{key}/steps/{id}/experiment`), from the same row.
+The daemon and Dispatch deploy in either order: a Dispatch without the experiment route takes the record on its step route or its rating route, answers the experiment route `404 NOT_FOUND` "no route for …", and the row waits as a role holders' publication does ([Rolling back the release that publishes each issue's role sessions to Dispatch](#rolling-back-the-release-that-publishes-each-issues-role-sessions-to-dispatch)), logging `outbox row waits` and no ERROR line, until Dispatch has the route.
+Each run of a waiting row sends the record again before the variant, which changes nothing Dispatch holds, since Dispatch keeps each field a record already holds.
+
+**A queued row must lose the pair before the earlier image is pinned.**
+The release before this one ([Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan)) decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `experiment` nor `variant`, so a `step_record` row still carrying them fails its decode at every attempt, logs the failure each time and is retried on its backoff until the roll forward, and its record reaches Dispatch only where this release's run had already written it.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The experiment and the variant of the step records still queued.
+update outbox set payload = payload - 'experiment' - 'variant'
+where kind = 'step_record' and (payload ? 'experiment' or payload ? 'variant');
+```
+
+The statement deletes no row and changes no other member of a payload, so each row keeps its retry state and then writes its record, with its rating where it carries one, under the earlier release.
+What it costs is the variant of each of those records that had not reached Dispatch: the read of that issue's steps and the read of the project's finished issues name no variant for that run, and nothing else of the issue changes.
+A variant that reached Dispatch before the rollback stays there; its row can still be queued when the daemon stopped, or failed to record the row as done, after the write (it runs such a row again when its lease expires, `settle` in `daemon/outbox.go`).
+
 #### Rolling back the release whose update round ends at its bound
 
 This release's migration `20261113110610_drop_claim_update_answer_marks` takes two columns off `claims`: `update_answered_by_turn_end` and `update_reasked_for_push_check`, which the two `alter` statements below add back.

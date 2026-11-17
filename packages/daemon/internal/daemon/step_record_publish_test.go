@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -281,18 +284,147 @@ func TestAStepRecordWaitsForADispatchThatHasNoRouteForIt(t *testing.T) {
 	}
 }
 
+// A Dispatch from before the experiment route serves the step route, which drops a member it does
+// not declare, and answers the experiment route its router's 404 NOT_FOUND "no route for …". A
+// step record that names its issue's variant still lands there, and only the variant waits: the
+// client writes the record first and the variant second, and execute makes the experiment
+// route's NOT_FOUND a wait (TestAStepRecordWaitsForADispatchThatHasNoRouteForIt). So after the
+// first run of the start and of the end of one step, two rows, Dispatch holds the record with every
+// field of both and no experiment or variant, both rows are still queued, and each logged `outbox
+// row waits` at INFO and no ERROR line. A later run sends each record again ahead of its variant,
+// which changes nothing Dispatch holds, since Dispatch keeps each field a record already holds.
+// Once Dispatch serves the route, the next run writes the variant and ends both rows. The stand-in
+// is the live proofs' board (liveDispatch), which takes each route as Dispatch does, behind a
+// router that answers the experiment route as an older Dispatch does until the test serves it; the
+// runner's client is the daemon's real HTTP client, so its requests and their order decide.
+func TestAStepRecordLandsWhileItsVariantWaitsForItsRoute(t *testing.T) {
+	started := time.Date(2026, 11, 16, 22, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Hour)
+	session, model, result, report := "ses-implementer", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	start := record.StepRecord{ID: stepRecordID, Task: "default", Step: 2, Kind: "step", Role: "implementer",
+		Type: "implementation", Agent: "legion-legion-legion-1-implementer", Generation: 1,
+		StepExperiment: &record.StepExperiment{Experiment: "planning", Variant: "b"}}
+	end := start
+	start.Session, start.StartedAt = &session, &started
+	end.Session, end.Model, end.EndedAt, end.Result, end.Report = &session, &model, &ended, &result, &report
+	rig := newStepRecordRigOf(t, start, nil)
+	rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	enqueueOutbox(t, rig.pool, record.NewStore(), mustOutboxRow(t, stepIssue, end, rig.clock.Now()))
+
+	board := newLiveDispatch(t, "LEGION")
+	stepRoute := "/api/v1/issues/" + stepIssue + "/steps/" + stepRecordID
+	experimentRoute := stepRoute + "/experiment"
+	var mu sync.Mutex
+	served := false
+	taken := map[string][]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Errorf("read the write to %s: %v", req.URL.Path, err)
+			return
+		}
+		mu.Lock()
+		taken[req.URL.Path] = append(taken[req.URL.Path], string(body))
+		routed := served
+		mu.Unlock()
+		if req.URL.Path == experimentRoute && !routed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code": "NOT_FOUND", "error": "no route for " + req.Method + " " + req.URL.Path, "hint": "GET /api/v1 lists every route",
+			})
+			return
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		board.ServeHTTP(w, req)
+	}))
+	t.Cleanup(server.Close)
+	rig.runner.dispatch = dispatch.New(server.URL, "agent-token")
+	held := func() map[string]any {
+		board.mu.Lock()
+		defer board.mu.Unlock()
+		return maps.Clone(board.steps[stepRecordID])
+	}
+	stepBodies := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(taken[stepRoute])
+	}
+	want := map[string]any{"id": stepRecordID, "issue": stepIssue, "task": "default", "step": float64(2), "kind": "step",
+		"role": "implementer", "type": "implementation", "agent": "legion-legion-legion-1-implementer", "generation": float64(1),
+		"session": session, "model": model, "started_at": "2026-11-16T22:00:00Z", "ended_at": "2026-11-16T23:00:00Z",
+		"result": result, "report": report}
+
+	rig.run()
+	if got := held(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the first run Dispatch holds the record %v, want every field of the start and the end and no variant, %v", got, want)
+	}
+	if left := rig.left(); left != 2 {
+		t.Fatalf("after the first run the issue has %d rows left, want the start and the end kept for their variant", left)
+	}
+	logs := rig.logs.String()
+	var levels []string
+	for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
+		level, _ := line["level"].(string)
+		levels = append(levels, level)
+	}
+	if !slices.Equal(levels, []string{"INFO", "INFO"}) {
+		t.Fatalf("the first run logged its waits at %v, want one INFO wait for each row:\n%s", levels, logs)
+	}
+	if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
+		t.Fatalf("logged %d ERROR lines while the variant waited for its route, want none: %s", len(errored), logs)
+	}
+
+	before := held()
+	rig.run()
+	if left := rig.left(); left != 2 {
+		t.Fatalf("after the second run the issue has %d rows left, want both still waiting for their variant", left)
+	}
+	counts := map[string]int{}
+	for _, body := range stepBodies() {
+		counts[body]++
+	}
+	twice := len(counts) == 2
+	for _, n := range counts {
+		twice = twice && n == 2
+	}
+	if !twice {
+		t.Fatalf("the step route took %q, want each of the two writes twice with the same body", stepBodies())
+	}
+	if got := held(); !reflect.DeepEqual(got, before) {
+		t.Fatalf("the writes sent again changed the record Dispatch holds from %v to %v", before, got)
+	}
+
+	mu.Lock()
+	served = true
+	mu.Unlock()
+	rig.run()
+	if left := rig.left(); left != 0 {
+		t.Fatalf("once Dispatch served the route the issue has %d rows left, want none", left)
+	}
+	want["experiment"], want["variant"] = "planning", "b"
+	if got := held(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("once Dispatch served the route it holds the record %v, want %v", got, want)
+	}
+	if dropped := loggedLines(t, rig.logs.String(), stepRefusedLine); len(dropped) != 0 {
+		t.Errorf("logged a record dropped %d times, want never: %s", len(dropped), rig.logs.String())
+	}
+}
+
 // A step record and the write Dispatch gets are the same fields, the record's id aside, and the
 // publication copies them one by one (publishStepRecord), since the dispatch package imports no
 // record of the daemon's. A field added to both types and left out of the copy compiles and drops
 // that field from every write. So the two types are held to one set of fields, each of the same
 // type under the same JSON name, but for a struct of the record's that the write holds as its
-// mirror in dispatch (record.PlanRating and dispatch.PlanRating), which the copy converts: the two
-// structs have the same fields, each of the same type under the same JSON name, so a field added
-// to one alone fails here or stops the build; the fixtures, the two writes production makes, to a
-// value in every field between them, which a new field must get in the write that carries it: the
-// end of a step carries every field but the rating and its reason, and the retro's rating
-// (workflow's rateRetro) carries the step's identity, the rating and its reason; and each write to
-// its own record's value of each field, a mirrored struct's converted to the write's type.
+// mirror in dispatch (record.PlanRating and dispatch.PlanRating, record.StepExperiment and
+// dispatch.StepExperiment), which the copy converts: the two structs have the same fields, each of
+// the same type under the same JSON name, so a field added to one alone fails here or stops the
+// build; the fixtures, the two writes production makes, to a value in every field between them,
+// which a new field must get in the write that carries it: the end of a step carries every field
+// but the rating and its reason, the retro's rating (workflow's rateRetro) carries the step's
+// identity, the rating and its reason, and each of the two of an issue in an experiment carries
+// the experiment and the variant; and each write to its own record's value of each field, a
+// mirrored struct's converted to the write's type.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
@@ -335,12 +467,17 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
 		}
 	}
+	// Each write of a record of an issue a draw put in an experiment names the pair, the end and
+	// the rating alike.
+	end, rating := stepRecordOf(), ratingRecordOf()
+	end.StepExperiment = &record.StepExperiment{Experiment: "planning", Variant: "b"}
+	rating.StepExperiment = &record.StepExperiment{Experiment: "planning", Variant: "a"}
 	fixtures := []struct {
 		name string
 		rec  record.StepRecord
 	}{
-		{"the end of a review that asked for changes", stepRecordOf()},
-		{"the rating of a retro", ratingRecordOf()},
+		{"the end of a review that asked for changes", end},
+		{"the rating of a retro", rating},
 	}
 	for i := range recordType.NumField() {
 		set := false
