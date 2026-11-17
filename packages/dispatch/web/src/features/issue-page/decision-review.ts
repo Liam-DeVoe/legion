@@ -3,15 +3,16 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * Which of an issue's decisions wait for the reader's review, and which a reader asked to
  * change (dispatch://INFRA-1196 R7, R13, R35).
  *
- * This module is pure and imports no code of the tree, only the type of a document's blocks, so
- * the tree (`tree-drafts.ts`), the Decisions filter (`decisions-filter/decisions-parts.ts`) and
- * the header's count of what waits on the reader (`waiting.ts`) read one rule each and cannot
- * disagree.
+ * This module is pure and imports no code of the tree, only the types of a document's blocks and
+ * of the tree read, so the tree (`issue-tree.ts`, `tree-read/tree-nodes.ts`), the Decisions
+ * filter (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the
+ * reader (`waiting.ts`) read one rule each and cannot disagree.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the decisions
  * document (`DecisionActions.tsx`), which is the write the old Decisions tab made; `changeAnchor`
@@ -27,10 +28,19 @@ import type { DocumentBlocks } from "./issue-tree";
  * agent edits the decision, every change is older than its words and the decision waits for
  * review again.
  *
- * A decision's section is its own block (`Decision.block_id`, its heading) and every block after
- * it up to the next decision's, in the decisions document's blocks (`DocumentBlocks`). The block
- * an anchor was written in (`Anchor.block_id`) names the section, and so the decision: the quote
- * alone cannot, since two decisions can hold the same words.
+ * A decision node of the tree read (dispatch://INFRA-1253 R8) is placed by the read, and so is
+ * its Change: a comment anchored inside the decision's words hangs under its node, so its
+ * Changes are the comments a person wrote that the read hangs under it, made since it last
+ * changed and was last kept (`decisionNodeChanges`), and no quote is matched for it. A decision
+ * the read holds no node for - a section of the decisions document, until part U - is found by
+ * its section where the decisions document's blocks are read, which the Decisions filter reads
+ * (`decisions-entries.ts`), and by its words alone where they are not, which is how the outline
+ * and the header's count read it (decision 65). A section is a decision's own block
+ * (`Decision.block_id`, its heading) and every block after it up to the next decision's, in the
+ * decisions document's blocks (`DocumentBlocks`). The block an anchor was written in
+ * (`Anchor.block_id`) names the section, and so the decision: the quote alone cannot, since two
+ * decisions can hold the same words, and where it decides, the change is the first decision's
+ * whose words hold the quote.
  */
 
 /** The fields of a comment this module reads. */
@@ -81,30 +91,111 @@ export function decisionsDocumentId(
 }
 
 /**
+ * The decision node of the tree read each decision of the decisions read is, by the decision's
+ * address (`Decision.ref`): a decision node of this issue whose id is the decision's block
+ * (`Decision.block_id`), in the document the address names where the node names its document. A
+ * decision no node is is not held: a section of the decisions document, until part U.
+ */
+export function decisionNodes(
+  decisions: readonly Pick<Decision, "block_id" | "ref">[],
+  tree: TreeAnswer | undefined
+): ReadonlyMap<string, TreeAnswerNode> {
+  const nodes = new Map<string, TreeAnswerNode>();
+  for (const node of tree?.nodes ?? []) {
+    if (node.supertag === "decision" && node.issue === undefined) nodes.set(node.id, node);
+  }
+  const held = new Map<string, TreeAnswerNode>();
+  for (const decision of decisions) {
+    const node = nodes.get(decision.block_id);
+    if (node === undefined) continue;
+    const route = parseNodeReference(decision.ref);
+    const slug = route?.kind === "artifact" ? route.slug : undefined;
+    if (node.document === undefined || node.document.slug === slug) held.set(decision.ref, node);
+  }
+  return held;
+}
+
+/**
+ * Each Change of a decision node, by the comment's id, to the node's id: every comment a person
+ * wrote that the read hangs under a decision node that was not replaced, made after the decision
+ * last changed and after it was last kept. An agent's comment under it is no Change, and neither
+ * is one older than its words, which asked for a change the words have since had.
+ */
+function nodeChangeComments(tree: TreeAnswer | undefined): Map<string, string> {
+  const decisions = new Map<string, TreeAnswerNode>();
+  for (const node of tree?.nodes ?? []) {
+    if (node.supertag === "decision" && node.replaced !== true) decisions.set(node.id, node);
+  }
+  const changes = new Map<string, string>();
+  for (const node of tree?.nodes ?? []) {
+    const decision = node.parent === null ? undefined : decisions.get(node.parent);
+    if (
+      decision !== undefined &&
+      node.supertag === "comment" &&
+      node.author?.kind === "user" &&
+      after(node.made_at, decision)
+    ) {
+      changes.set(node.id, decision.id);
+    }
+  }
+  return changes;
+}
+
+/**
+ * The Change each decision node waits on, by the node's id: the newest of the Changes the read
+ * hangs under it (`nodeChangeComments`). The outline (`tree-read/tree-nodes.ts`) and the
+ * header's count (`waiting.ts`, through `decisionChangeComments`) read this one rule.
+ */
+export function decisionNodeChanges(answer: TreeAnswer): ReadonlyMap<string, TreeAnswerNode> {
+  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+  const changes = new Map<string, TreeAnswerNode>();
+  for (const [id, decision] of nodeChangeComments(answer)) {
+    const comment = nodes.get(id);
+    const held = changes.get(decision);
+    if (
+      comment !== undefined &&
+      (held === undefined || compareTimestamps(comment.made_at, held.made_at) > 0)
+    ) {
+      changes.set(decision, comment);
+    }
+  }
+  return changes;
+}
+
+/**
  * Each change a person asked of a decision, by the comment's id, to the decision's own address
- * (`Decision.ref`): every comment a person wrote, anchored in the decisions document (the issue's
- * document at the read's address, `decisionsDocumentId`) on the words of the decision whose
- * section holds the anchor's block (`sectionsOf`), made after the decision last changed and
- * after it was last kept. A decision that was replaced takes no change: nothing waits on it any
- * longer. A quote is matched against the decision's words as the server matches quotes
- * (`pmdoc.FindQuote`), on its text and not its markdown, where the read carried its text's
- * reading (`decisionWords`).
+ * (`Decision.ref`). A decision a node of the tree read holds (`decisionNodes`) takes the Changes
+ * the read hangs under that node (`nodeChangeComments`). Any other takes every comment a person
+ * wrote, anchored in the decisions document (the issue's document at the read's address,
+ * `decisionsDocumentId`) on the words of the decision whose section holds the anchor's block
+ * (`sectionsOf`), made after the decision last changed and after it was last kept. A decision
+ * that was replaced takes no change: nothing waits on it any longer. A quote is matched against
+ * the decision's words as the server matches quotes (`pmdoc.FindQuote`), on its text and not its
+ * markdown, where the read carried its text's reading (`decisionWords`).
  *
  * The section is read from `documents`, the blocks of the issue's documents the page has read.
  * Only where the anchor stores no block, or the decisions document's blocks are not read or do not
  * hold the anchor's block yet, does the quote alone decide: the change is the first decision's
- * whose words hold it. A block above the first decision belongs to no decision, and a comment
- * anchored there is no change. Every comment it holds is drawn under its decision; one older than
- * the decision's words is no change and is not held.
+ * whose words hold it (decision 65). A block above the first decision belongs to no decision, and
+ * a comment anchored there is no change. Every comment it holds is drawn under its decision; one
+ * older than the decision's words is no change and is not held.
  */
 export function decisionChangeComments(
   decisions: Pick<IssueDecisions, "decisions" | "document"> | undefined,
   comments: readonly ChangeComment[] | undefined,
   artifacts: readonly Pick<Artifact, "id" | "slug">[] | null | undefined,
-  documents: readonly DocumentBlocks[] | undefined
+  documents: readonly DocumentBlocks[] | undefined,
+  tree?: TreeAnswer
 ): ReadonlyMap<string, string> {
   const changes = new Map<string, string>();
-  const rows = (decisions?.decisions ?? []).filter((row) => !row.replaced);
+  const standing = (decisions?.decisions ?? []).filter((row) => !row.replaced);
+  const held = decisionNodes(standing, tree);
+  const byNode = new Map([...held].map(([ref, node]) => [node.id, ref]));
+  for (const [comment, node] of nodeChangeComments(tree)) {
+    const ref = byNode.get(node);
+    if (ref !== undefined) changes.set(comment, ref);
+  }
+  const rows = standing.filter((row) => !held.has(row.ref));
   const document = decisionsDocumentId(artifacts, decisions);
   if (rows.length === 0 || document === undefined) return changes;
   // A decision's whole words as a quote is matched against them (`decisionWords`).
@@ -353,8 +444,9 @@ function flat(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
 }
 
-/** Whether a comment made at `at` is newer than the decision's words and its last Keep. */
-function after(at: string, row: ChangedDecision): boolean {
+/** Whether a comment made at `at` is newer than the decision's words and its last Keep: a row of
+ *  the decisions read, or a decision node, which answers both by the same names. */
+function after(at: string, row: Partial<Pick<Decision, "changed_at" | "kept">>): boolean {
   const since = [row.changed_at, row.kept?.kept_at].filter(
     (moment): moment is string => typeof moment === "string"
   );

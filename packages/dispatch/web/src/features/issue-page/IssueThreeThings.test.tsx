@@ -5,7 +5,7 @@ import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
-import type { Artifact, ArtifactBlock, Decision, IssueDetails } from "../../api/types";
+import type { Artifact, Decision, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
@@ -18,6 +18,7 @@ import { useReferenceNames } from "./one-line";
 import { EMPTY_STATE_LINES, type NodeType } from "./page-words";
 import { specSummary } from "./spec-summary";
 import { blockNodeId, blockWords, treeContext } from "./tree-drafts";
+import type { TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The head of the page draws the issue in plain language: at most three bullets, each one spoken
@@ -544,14 +545,20 @@ const decision: Decision = {
 /** The issue the drawn-gap case reads: a spec with a summary and one requirement no check
  *  serves, and a decisions document with one decision, as the page's reads answer them. */
 function fullyReadIssue(): TreeNode {
-  const block = (id: string, type: string): ArtifactBlock => ({
-    attributes: [],
-    from: 0,
+  // A typed block of the spec as the tree read answers it, under the issue, at `position`.
+  const block = (id: string, type: string, position: number, text: string): TreeAnswerNode => ({
+    attributes: {},
+    author: null,
+    document: { artifact_id: specDocument.id, position, slug: "spec" },
     id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type,
+    made_at: "2026-11-05T00:00:00Z",
+    parent: KEY,
+    rank: null,
+    state: "live",
+    supertag: type,
+    text,
+    text_tree: displayTree(text),
+    visibility: "project",
   });
   return buildIssueTree({
     coverage: {
@@ -575,12 +582,22 @@ function fullyReadIssue(): TreeNode {
       document: decisionsDocument.id,
       open_questions: [],
     },
-    documents: [
-      {
-        artifactId: specDocument.id,
-        blocks: [block("summary", "callout"), block("r1", "requirement")],
-      },
-    ],
+    tree: {
+      converted: false,
+      cursor: null,
+      nodes: [
+        block(
+          "summary",
+          "callout",
+          0,
+          "What this is. Why it matters. What is different when done."
+        ),
+        block("r1", "requirement", 1, "The page draws the whole issue in one reading."),
+      ],
+      tree: null,
+      tuples: [],
+      view_of: null,
+    },
     issue: issueDetails(),
     targets: [
       {

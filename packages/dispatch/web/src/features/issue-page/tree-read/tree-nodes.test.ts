@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import { QueryClient } from "@tanstack/react-query";
 
+import { api } from "../../../api/client";
 import type {
   Artifact,
   Ask,
@@ -11,9 +13,10 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { decisionChanges } from "../decision-review";
+import { decisionChanges, decisionNodeChanges } from "../decision-review";
 import {
   assemble,
+  buildIssueTree,
   drawnLine,
   firstLineOf,
   type IssueTreeReads,
@@ -24,14 +27,13 @@ import {
 import { blockNodeId, treeContext } from "../tree-drafts";
 import {
   blocksOfRole,
-  decisionNodeChanges,
   type TreeDraftMark,
   type TreeWords,
   treeDraftMarks,
   treeDraftsFrom,
   treeIdOf,
 } from "./tree-nodes";
-import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
+import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode, type TreeTuple } from "./tree-read";
 
 /**
  * The tree read's answer as F's drafts (`dispatch://INFRA-4062/artifact/plan-md#b-t4`). Each case
@@ -42,6 +44,11 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  */
 
 const KEY = "CORE-1";
+
+/** A supertag no part's step drafts, so a node of it is drawn by no row whatever later parts add
+ *  to `treeDraftSteps` (a lens, a finding, a risk and a constraint are part W's, a criterion and
+ *  a reading part Y's). */
+const UNDRAWN = "unknown_kind";
 
 function artifact(id: string, slug: string, name: string, primary = false): Artifact {
   return {
@@ -223,8 +230,8 @@ function placementsOf(root: TreeNode, id: string): { parent: string; node: TreeN
 }
 
 /** Every node of the tree, the root first, each before its children. */
-function idsOf(root: TreeNode): string[] {
-  return [root.id, ...root.children.flatMap(idsOf)];
+function nodesOf(root: TreeNode): TreeNode[] {
+  return [root, ...root.children.flatMap(nodesOf)];
 }
 
 function requirement(id: string): RequirementCoverage {
@@ -387,17 +394,17 @@ test("an unconverted issue's typed block stands under the parent the read answer
   ]);
 });
 
-// R2: a node whose parent is a kind the page does not draw - a risk under a lens, a criterion -
+// R2: a node whose parent is a kind the page does not draw - here a kind no part's step drafts -
 // stands under its nearest ancestor the page draws, and under the issue where it has none.
 test("a node whose parent is not drawn stands under its nearest drawn ancestor", () => {
   const { root } = drawn(
     answer([
       block("r1", "requirement", KEY, SPEC, 0),
-      node("lens-1", "lens", "r1"),
-      node("risk-1", "risk", "lens-1"),
-      personsComment("c1", "risk-1", "2026-11-05T00:00:00Z"),
-      node("criterion-1", "criterion", KEY),
-      personsComment("c2", "criterion-1", "2026-11-05T00:00:00Z"),
+      node("other-1", UNDRAWN, "r1"),
+      node("other-2", UNDRAWN, "other-1"),
+      personsComment("c1", "other-2", "2026-11-05T00:00:00Z"),
+      node("other-3", UNDRAWN, KEY),
+      personsComment("c2", "other-3", "2026-11-05T00:00:00Z"),
     ])
   );
 
@@ -467,45 +474,38 @@ test("a tuple between two nodes becomes F's chip and placement", () => {
   ]);
 });
 
-// R7: a criterion, a reading, a lens, a finding, a risk and the catalogue's context make no
-// draft and no row, and the answer the page keeps (`reads.tree`) still holds each of them whole,
-// its state and its visibility with it, for the parts that draw them.
+// R7: a node of a kind no step drafts makes no draft and no row, and the answer the page keeps
+// (`reads.tree`) still holds every node whole - a lens, a risk under it and the catalogue's
+// constraint among them, each with its state and its visibility - for the parts that draw them.
 test("a node of a kind the page does not draw reaches reads.tree and draws no row", () => {
-  const reads = {
+  const reads: IssueTreeReads & { readonly tree: TreeAnswer } = {
     issue: issueDetails(),
     tree: answer(
       [
         block("r1", "requirement", KEY, SPEC, 0),
-        node("criterion-1", "criterion", KEY),
-        node("reading-1", "reading", KEY),
+        node("other-1", UNDRAWN, "r1", { state: "overtaken", visibility: "author" }),
         node("lens-1", "lens", "r1", { visibility: "author" }),
-        node("finding-1", "block", "lens-1"),
         node("risk-1", "risk", "lens-1", { state: "proposed" }),
         node("constraint-1", "constraint", null, { mark: "context" }),
-        node("lens-kind-1", "lens_kind", null, { mark: "context" }),
-        node("interaction-1", "interaction", null, { mark: "context" }),
       ],
-      [
-        tuple("constrained_by", "r1", "constraint-1"),
-        tuple("has_kind", "lens-1", "lens-kind-1"),
-        tuple("changed_by_run", "r1", "interaction-1"),
-      ]
+      [tuple("constrained_by", "r1", "constraint-1")]
     ),
   };
   const held = structuredClone(reads.tree);
-  const context = naming(reads);
-  const drafts = treeDraftsFrom(reads.tree, reads, context);
-  const root = assemble(reads.issue, [...drafts.values()], context.chipOf);
+  const root = buildIssueTree(reads);
 
-  expect([...drafts.values()].map((draft) => draft.readId)).toEqual(["r1"]);
-  expect(idsOf(root)).toEqual([KEY, blockNodeId("spec", "r1")]);
+  expect(nodesOf(root).filter((one) => one.readId === "other-1" || one.id === "other-1")).toEqual(
+    []
+  );
   expect(reads.tree).toEqual(held);
-  expect(
-    reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])
-  ).toContainEqual(["risk-1", "risk", "proposed", "project"]);
-  expect(
-    reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])
-  ).toContainEqual(["lens-1", "lens", "live", "author"]);
+  expect(reads.tree.nodes.map((one) => [one.id, one.supertag, one.state, one.visibility])).toEqual(
+    expect.arrayContaining([
+      ["other-1", UNDRAWN, "overtaken", "author"],
+      ["lens-1", "lens", "live", "author"],
+      ["risk-1", "risk", "proposed", "project"],
+      ["constraint-1", "constraint", "live", "project"],
+    ])
+  );
 });
 
 // R1 (plan's map, `id`): a typed block of this issue keeps F's `<slug>#b-<id>` from its
@@ -626,11 +626,13 @@ test("a Change is the comment the read hangs under its decision", () => {
 });
 
 // R2's second difference (decision 128): an ask block carrying `shaped` ties draws them as chips
-// on its row, each naming a node the ask shaped by that node's line, beside how the asks read
-// says it stands.
+// on its row in the outline `buildIssueTree` draws, each naming a node the ask shaped by that
+// node's line, beside how the asks read says it stands.
 test("an ask's shaped ties are chips on its row, each naming a node the ask shaped", () => {
-  const { root } = drawn(
-    answer(
+  const root = buildIssueTree({
+    asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q1", state: "answered" })],
+    issue: issueDetails(),
+    tree: answer(
       [
         block("q1", "ask", KEY, SPEC, 0),
         block("r1", "requirement", KEY, SPEC, 1),
@@ -638,11 +640,7 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
       ],
       [tuple("shaped", "q1", "r1"), tuple("shaped", "q1", "r2")]
     ),
-    {
-      asks: [question("ask-1", { artifact_id: SPEC.id, block_id: "q1", state: "answered" })],
-      issue: issueDetails(),
-    }
-  );
+  });
 
   expect(nodeOf(root, blockNodeId("spec", "q1"))).toMatchObject({
     chips: [
@@ -666,8 +664,10 @@ test("an ask's shaped ties are chips on its row, each naming a node the ask shap
 
 // R3, decision 65: a decision of today's decisions read - a section of `decisions.md`, which no
 // node of the answer holds - finds its Change by its words, with no block of the decisions
-// document read: the change is the first decision whose words hold the anchor's quote, and a
-// comment quoting words no decision holds is no change.
+// document read: the change is the first decision whose words hold the anchor's quote. The read
+// hangs the comment under the issue, since no node holds the decision, and the outline draws it
+// under the decision it changes, which reads Change requested; a comment quoting words no
+// decision holds is no change and stays where the read hangs it.
 test("a decisions.md section finds its Change by its words", () => {
   const section = (id: string, heading: string, words: string): Decision => ({
     asks: [],
@@ -715,21 +715,39 @@ test("a decisions.md section finds its Change by its words", () => {
   });
   const keep = section("d1", "Keep it", "Keep the model pure.");
   const draw = section("d2", "Draw it", "Draw it once.");
+  const comments = [
+    anchored("c-change", "Draw it once."),
+    anchored("c-stray", "Words no decision holds."),
+  ];
+  const decisions = {
+    decisions: [keep, draw],
+    document: `dispatch://${KEY}/artifact/decisions-md`,
+  };
 
-  const changes = decisionChanges(
-    { decisions: [keep, draw], document: `dispatch://${KEY}/artifact/decisions-md` },
-    [anchored("c-change", "Draw it once."), anchored("c-stray", "Words no decision holds.")],
-    issueDetails().artifacts,
-    undefined
-  );
+  const changes = decisionChanges(decisions, comments, issueDetails().artifacts, undefined);
   expect([...changes].map(([ref, comment]) => [ref, comment.id])).toEqual([[draw.ref, "c-change"]]);
+  const root = buildIssueTree({
+    comments,
+    decisions: { ...decisions, open_questions: [] },
+    issue: issueDetails(),
+    tree: answer(
+      comments.map((one) =>
+        node(one.id, "comment", KEY, { author: one.author, made_at: one.created_at })
+      )
+    ),
+  });
+  expect(
+    ["c-change", "c-stray"].map((id) => placementsOf(root, id).map((one) => one.parent))
+  ).toEqual([[blockNodeId("decisions-md", "d2")], [KEY]]);
+  expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.state).toBe("change_requested");
+  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.state).toBe("waiting_review");
 });
 
 // R5: a role's blocks come from the tree read in the shape the blocks read answered them: the
-// blocks of that role's document in their `document.position` order, each with its attributes as
-// the schema declares them and the asks and comments the read hangs under it; and, on an issue
-// that has converted whose blocks name no document, the nodes of this issue the role's query
-// takes, in the walk's order.
+// blocks of that role's document in their `document.position` order, each with its attributes -
+// a list of pointers as `block[]` - and the asks and comments the read hangs under it; and, on an
+// issue that has converted whose blocks name no document, the nodes of this issue the role's
+// query takes, in the walk's order.
 test("blocksOf answers a role's typed blocks in the blocks read's shape", () => {
   const issue = issueDetails();
   const unconverted = answer(
@@ -792,8 +810,8 @@ test("a draft carries its read id, and the context answers its tree id and its l
     block("r1", "requirement", KEY, SPEC, 0, {
       text_tree: reading("R1. Draw the tree from one read. Then the rest."),
     }),
-    node("lens-1", "lens", "r1"),
-    personsComment("c1", "lens-1", "2026-11-05T00:00:00Z"),
+    node("other-1", UNDRAWN, "r1"),
+    personsComment("c1", "other-1", "2026-11-05T00:00:00Z"),
   ]);
   const seen: unknown[][] = [];
   const probe: TreeDraftMark = (draft, read, _answer, context) => {
@@ -805,10 +823,10 @@ test("a draft carries its read id, and the context answers its tree id and its l
     ]);
     if (read.id === "c1") {
       seen.push([
-        context.nodeOf("lens-1")?.supertag,
-        context.treeIdOf("lens-1"),
-        context.lineOf("lens-1"),
-        context.drafted("lens-1"),
+        context.nodeOf("other-1")?.supertag,
+        context.treeIdOf("other-1"),
+        context.lineOf("other-1"),
+        context.drafted("other-1"),
       ]);
     }
   };
@@ -821,7 +839,7 @@ test("a draft carries its read id, and the context answers its tree id and its l
     expect(seen).toEqual([
       ["r1", blockNodeId("spec", "r1"), "R1. Draw the tree from one read. Then the rest.", true],
       ["c1", "c1", "Words of c1.", true],
-      ["lens", "lens-1", undefined, false],
+      [UNDRAWN, "other-1", undefined, false],
     ]);
     expect([nodeOf(root, blockNodeId("spec", "r1"))?.readId, nodeOf(root, "c1")?.readId]).toEqual([
       "r1",
@@ -829,5 +847,60 @@ test("a draft carries its read id, and the context answers its tree id and its l
     ]);
   } finally {
     marks.splice(marks.indexOf(probe), 1);
+  }
+});
+
+// R1: the tree read asks for its first page, then for the page its cursor names, in turn, and
+// answers once the last page has answered, the pages merged, so the tree is built once and never
+// from part of the walk: while the second page is out the read holds no answer. The tree then
+// holds each node of both pages once, a node of the second page under its parent on the first,
+// and a tuple whose near end is on the second page places it.
+test("the cursor's pages are read in turn and the tree is built once", async () => {
+  const first: TreeAnswer = {
+    ...answer([block("r1", "requirement", KEY, SPEC, 0), node("c1", "comment", "r1")]),
+    cursor: "page-2",
+  };
+  const second: TreeAnswer = {
+    converted: true,
+    cursor: null,
+    nodes: [
+      block("t1", "plan_task", "r1", PLAN, 0),
+      node("c2", "comment", "r1", { made_at: "2026-11-06T00:00:00Z" }),
+    ],
+    tree: "artifact-tree",
+    tuples: [tuple("serves", "t1", "r1")],
+    view_of: null,
+  };
+  // The second page answers when the case releases it, and says when it was asked for.
+  const later = Promise.withResolvers<TreeAnswer>();
+  const asked = Promise.withResolvers<void>();
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) => {
+    if (page?.cursor === undefined) return first;
+    asked.resolve();
+    return later.promise;
+  });
+  try {
+    const client = new QueryClient();
+    const query = issueTreeQuery(KEY);
+    const reading = client.fetchQuery(query);
+    await asked.promise;
+    expect(read.mock.calls).toEqual([
+      [KEY, {}],
+      [KEY, { cursor: "page-2" }],
+    ]);
+    expect(client.getQueryData(query.queryKey)).toBeUndefined();
+
+    later.resolve(second);
+    const root = buildIssueTree({ issue: issueDetails(), tree: await reading });
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(nodesOf(root).map((one) => one.id)).toEqual([
+      KEY,
+      blockNodeId("spec", "r1"),
+      "c1",
+      blockNodeId("plan-md", "t1"),
+      "c2",
+    ]);
+  } finally {
+    read.mockRestore();
   }
 });
