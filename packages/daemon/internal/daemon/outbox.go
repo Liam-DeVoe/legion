@@ -408,19 +408,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// never take, a writer its route refuses or an id of another issue, and the work the
 		// record is of went on without it. The line is what says the record is not in Dispatch,
 		// since nothing else would. The refusal is read as Dispatch's own error, not through
-		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER. settle
-		// comes here only with one (recordRefused finds it first), so dispatchRefusal's empty error
-		// is no path of its own: it keeps this line from a nil error should those two rules ever
-		// part. The other arms need no such guard, since one function there both decides and answers.
-		refusal := dispatchRefusal(cause)
+		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER.
+		// recordRefused ended the row only on a *dispatch.Error, so refusal is set.
+		var refusal *dispatch.Error
+		errors.As(cause, &refusal)
 		told = func() {
 			r.log.Warn("outbox step record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"step", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
 	case record.PlanRecord:
 		// Nobody is told, for the step record's reasons: the plan is history of a run that went
-		// on without it, and the line is what says Dispatch does not hold it.
-		refusal := dispatchRefusal(cause)
+		// on without it, and the line is what says Dispatch does not hold it. Its refusal is read
+		// as the step record's is, and for the same reason.
+		var refusal *dispatch.Error
+		errors.As(cause, &refusal)
 		told = func() {
 			r.log.Warn("outbox plan record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"plan", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
@@ -646,11 +647,14 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
 		// is one it will not know on the retry either, and nothing an operator does here would
 		// land that set. dispatch.PermanentRefusal is deliberately not used, because it calls
-		// every coded 4xx permanent, which would end every publication against a Dispatch older
-		// than the route: that server's router answers the unknown path 404 under the code
-		// NOT_FOUND, a coded refusal that is not this one, which execute makes a wait before this
-		// is reached. A 5xx and a transport failure end on their own, and the set is sent again
-		// when they do.
+		// every coded 4xx permanent, and every other coded 4xx this publication can meet is one
+		// the retry may still land: the route's own 400 INVALID_ISSUE, which an operator repairs
+		// by changing the gate whose document is missing, and a coded 404 or 400 from whatever
+		// stands in front of Dispatch. Retrying costs no staleness, since the issue's next gate
+		// change replaces this row's payload rather than queueing beside it (the store's
+		// EnqueueDesignGates), so the row carries the newest set whenever it runs. The router's
+		// 404 of a Dispatch older than the route reaches none of this: execute makes it a wait. A
+		// 5xx and a transport failure end on their own, and the set is sent again when they do.
 		var refusal *dispatch.Error
 		return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound
 	case record.OutboxKindRoleHoldersPublish:
@@ -1306,9 +1310,10 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 // changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
 // the shared rule calls final, which leaves out the refusal of a field this daemon added by a
 // Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
-// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which both routes
-// answer: the daemon names its own session on every write, so the route's rule and the daemon's
-// disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or PLAN_OTHER_ISSUE for a plan).
+// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the step, the
+// rating and the plan routes all answer: the daemon names its own session on every write, so the
+// route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or
+// PLAN_OTHER_ISSUE for a plan).
 // Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
 // ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
 // restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute
@@ -1330,16 +1335,6 @@ func recordRefused(err error) bool {
 		return refusal.Code == dispatch.StepOtherIssue || refusal.Code == dispatch.PlanOtherIssue
 	}
 	return false
-}
-
-// dispatchRefusal is the refusal Dispatch made that cause carries, or an empty one where cause
-// carries none, for a Warn line that names its status and code.
-func dispatchRefusal(cause error) *dispatch.Error {
-	var refusal *dispatch.Error
-	if !errors.As(cause, &refusal) {
-		return &dispatch.Error{}
-	}
-	return refusal
 }
 
 // consumeHandover applies the hand-over to the record once Dispatch shows it: the row's hand-over

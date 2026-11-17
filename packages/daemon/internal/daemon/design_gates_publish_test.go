@@ -491,14 +491,17 @@ func TestClearedGenerationPublishesTheEmptySetPerIssue(t *testing.T) {
 }
 
 // The executor writes the issue's whole set onto the issue's Dispatch row, and what becomes of the
-// row is decided by Dispatch's answer alone (the outbox's publishDesignGates, permanentRefusal).
+// row is decided by Dispatch's answer alone (the outbox's publishDesignGates, permanentRefusal,
+// execute).
 //
 // Only the route's own 404 ISSUE_NOT_FOUND ends the row: an issue Dispatch does not know is one it
-// will not know on the retry either. Every other answer is an outage the row rides out, and the
-// 404 a Dispatch whose release has no design-gates route answers is the one that matters most:
-// its router writes that refusal under the code NOT_FOUND, so a rule reading the status alone, or
-// reading every coded 4xx as final, would drop every publication of a deployment whose daemon came
-// up first, which is exactly what the retry lets happen in either order.
+// will not know on the retry either. Every other answer is one the row rides out, a coded refusal
+// among them, since a rule reading every coded 4xx as final would drop a publication for an answer
+// a retry may still land. The 404 a Dispatch whose release has no design-gates route answers is a
+// wait of its own: its router writes it under the code NOT_FOUND with "no route for …", which the
+// outbox's execute reads (dispatch.NoRoute) before this rule is reached, so the row keeps its
+// place and the two deploy in either order. The rows here are judged by what each answer leaves:
+// the router's 404, a 404 with no code at all, and a Dispatch that is down each keep the row.
 func TestGatePublicationExecutorSendsTheSetAndRetriesARefusal(t *testing.T) {
 	const issue = "LEGION-208"
 	r := newGatePublishRig(t, 1)
