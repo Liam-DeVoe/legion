@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -279,11 +280,23 @@ func quietLogger() *slog.Logger {
 // row's next_at — still comes due as the run goes on. Its Sleep returns at once: a machine backs
 // off inside a decision the test is waiting on, where a wait for a move nobody makes would never
 // end.
-type stillClock struct{ *clocktest.Fake }
+//
+// It is an interface, so a test cannot write an empty one: `stillClock{}`, which compiled while it
+// was an empty struct, does not compile now, where a struct wrapping the fake would compile it with
+// no fake inside and panic at its first Now. newStillClock is the one way to make one.
+type stillClock interface {
+	clock.Clock
+	Advance(d time.Duration)
+	Set(at time.Time)
+	Armed() []time.Time
+}
 
-func newStillClock() stillClock { return stillClock{clocktest.Held()} }
+// heldStill is stillClock's one implementation.
+type heldStill struct{ *clocktest.Fake }
 
-func (stillClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+func newStillClock() stillClock { return heldStill{clocktest.Held()} }
+
+func (heldStill) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 // built is what the daemon handed the runtime it built: the connection directory, the address
 // every pane's shim dials, the workflow's App tokens and repository rule, the store it reads, and

@@ -29,6 +29,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -1925,7 +1926,7 @@ func loggedSandboxMachine(
 	store := &supervisedSandboxStore{claim: c}
 	specs := &sandboxMachineSpecs{spec: spec}
 	machine, err := supervise.NewMachine(g.ctx, supervise.Deps{
-		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: sandboxMachineClock{clocktest.New(rigNow)},
+		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: newSandboxMachineClock(),
 		Log:    slog.New(slog.NewTextHandler(w, nil)),
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1},
 		Timeouts: supervise.Timeouts{
@@ -1959,10 +1960,17 @@ func (s *sandboxMachineSpecs) SpawnSpec(context.Context, supervise.Claim) (runti
 // sandboxMachineClock is the machine's time: a clocktest.Fake standing at rigNow that nothing
 // moves, so its timers never fire. Its Sleep returns at once, because the machine backs off inside
 // the decision the test drives on its own goroutine, where a wait for a move nobody makes would
-// never end.
-type sandboxMachineClock struct{ *clocktest.Fake }
+// never end. It is an interface, so a test cannot write an empty one (`sandboxMachineClock{}` does
+// not compile, where a struct wrapping the fake would compile it with no fake inside and panic at
+// its first Now); newSandboxMachineClock is the one way to make one.
+type sandboxMachineClock interface{ clock.Clock }
 
-func (sandboxMachineClock) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+// sandboxStill is sandboxMachineClock's one implementation.
+type sandboxStill struct{ *clocktest.Fake }
+
+func newSandboxMachineClock() sandboxMachineClock { return sandboxStill{clocktest.New(rigNow)} }
+
+func (sandboxStill) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 type supervisedSandboxStore struct{ claim supervise.Claim }
 

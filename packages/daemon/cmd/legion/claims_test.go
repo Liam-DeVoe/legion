@@ -24,6 +24,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -42,14 +43,20 @@ const (
 
 // stillTime is a clocktest.Fake nothing moves: a machine's timers are armed and never fire, so a
 // test sees only what its own requests did. Its Sleep returns at once: a machine backs off inside
-// the decision a request drives, where a wait for a move nobody makes would never end.
-type stillTime struct{ *clocktest.Fake }
+// the decision a request drives, where a wait for a move nobody makes would never end. It is an
+// interface, so a test cannot write an empty one (`stillTime{}` does not compile, where a struct
+// wrapping the fake would compile it with no fake inside and panic at its first Now); newStillTime
+// is the one way to make one.
+type stillTime interface{ clock.Clock }
+
+// stillAt is stillTime's one implementation.
+type stillAt struct{ *clocktest.Fake }
 
 func newStillTime() stillTime {
-	return stillTime{clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
+	return stillAt{clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))}
 }
 
-func (stillTime) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+func (stillAt) Sleep(ctx context.Context, _ time.Duration) error { return ctx.Err() }
 
 // anyLaunch is a launch the fake runtime accepts: the machine fills in who it is for.
 type anyLaunch struct{}

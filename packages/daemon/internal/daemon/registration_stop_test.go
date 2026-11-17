@@ -181,7 +181,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 	}})
 	sup := newSupervisor(ctx, nil, "legion", t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: newStillClock(), Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: rpc, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion,
