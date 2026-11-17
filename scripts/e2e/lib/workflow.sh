@@ -1356,15 +1356,17 @@ worker_sessions() {
   done < <(find "$1" -type f -name '*.jsonl' | sort)
 }
 # worker_notices SESSIONS prints one line for each workflow notice delivered into a phase-worker
-# session under SESSIONS: the session file, the role it claims, and the delivery's summary. Every
-# notice kind is for the architect that owns its issue, published on that architect's role topic, so
-# a phase worker's session holds none.
+# session under SESSIONS: the session file, the role it claims, and the delivery's summary. The
+# kinds are every kind the daemon publishes (record.validNoticeKinds). A notice goes to the role
+# it names: most kinds name the architect that owns the issue, review-stuck names the reviewer of
+# a round that has not ended, and task-stopped the worker of a step that a stop ended. So a phase
+# worker's session holds a notice only after one of those two.
 worker_notices() {
   local f role
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|worker-stalled|worker-silent|worker-background-stalled|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|message-refused|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|children-first|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault|task-stopped|plan-not-taken) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }
