@@ -34,7 +34,7 @@ func seedTaskPlan(t *testing.T, h *harness, key string, standings ...taskStandin
 		tasks = append(tasks, record.PlanTask{Issue: key, Generation: 1, Task: s.task, PlanVersion: 1, BlockText: "Task " + s.task + ".", State: record.TaskWaiting})
 		steps = append(steps,
 			record.PlanStep{Issue: key, Generation: 1, Task: s.task, Position: 1, Role: "implementer", Type: "implementation"},
-			record.PlanStep{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "test"})
+			record.PlanStep{Issue: key, Generation: 1, Task: s.task, Position: 2, Role: "tester", Type: "testing"})
 	}
 	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
 		if err := records.PutPlan(ctx, tx, v, tasks, steps); err != nil {
@@ -73,11 +73,30 @@ func seedImplementerPass(t *testing.T, h *harness, key string, pass int) {
 	}
 }
 
+// holdForTheStop holds key from testing for its stopped task, as the owner's stop leaves it
+// (workflow's stopTask holds the issue from the phase the task stood in).
+func holdForTheStop(t *testing.T, h *harness, key string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
+		records := record.NewStore()
+		issue, err := records.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}
+		return records.PutIssue(ctx, tx, *issue)
+	}); err != nil {
+		t.Fatalf("hold %s for its stopped task: %v", key, err)
+	}
+}
+
 // The completion of an issue with plan rows names the issue's running task in its key, and its
 // pass is that task's count of returns, never the implementer's phases row's: a new task at pass 0
 // takes no key an earlier task of the issue used. The running task is the task whose state is
-// running, and the plan's only task while none runs (a stopped one). An issue with no plan rows
-// keeps today's key byte for byte, its pass read from its implementer's row (the control).
+// running, and the plan's only task while none runs (a stopped one, whose issue is held for the
+// stop). An issue with no plan rows keeps today's key byte for byte, its pass read from its
+// implementer's row (the control).
 func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 	h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 	for _, tc := range []struct {
@@ -98,14 +117,19 @@ func TestTheCompletionKeyNamesTheTaskOfAnIssueWithPlanRows(t *testing.T) {
 			want: func(record string) string { return "handoff:LEGION-208:1:1:1:tester:testing:a:2:" + record + ":pass" },
 		},
 		{
-			name:  "the plan's one task, stopped by its owner",
+			name:  "the plan's one task, stopped by its owner, its issue held for the stop",
 			issue: "LEGION-210",
 			seed: func(t *testing.T) {
 				seedTaskPlan(t, h, "LEGION-210", taskStanding{task: "a", state: record.TaskStopped, place: 2, pass: 4})
+				holdForTheStop(t, h, "LEGION-210")
 			},
-			want: func(record string) string { return "handoff:LEGION-210:1:1:1:tester:testing:a:4:" + record + ":pass" },
+			// The issue is held for the stop, so the key names the phase it stands in, held.
+			want: func(record string) string { return "handoff:LEGION-210:1:1:1:tester:held:a:4:" + record + ":pass" },
 		},
 		{
+			// A plan of two tasks is one no plan of this release holds (plan.Supported refuses more
+			// than one), so this case holds runningTask's own rule, which reads every task, and no
+			// state production writes.
 			name:  "the running one of two tasks",
 			issue: "LEGION-211",
 			seed: func(t *testing.T) {
