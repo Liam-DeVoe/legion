@@ -1,4 +1,4 @@
-import { INBOX_THREAD_KINDS } from "@legion/contracts";
+import { INBOX_DISMISSED_PAGE, INBOX_THREAD_KINDS } from "@legion/contracts";
 
 import {
   infiniteQueryOptions,
@@ -22,6 +22,7 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  MeInboxResponse,
   MyRepliesResponse,
 } from "./types";
 
@@ -153,8 +154,9 @@ export const userAgentStateQuery = () =>
     queryFn: () => api.getMyAgentState(),
   });
 
-/** The prefix every thread query shares: the Inbox's own rows, the unread count, and each
- *  owner's unread set. One invalidation of it refreshes them all. */
+/** The prefix every thread query shares: the Inbox's own rows, the unread count, each owner's
+ *  unread set, and the one read the Inbox draws those rows from behind its opt-in (`meInboxKey`).
+ *  One invalidation of it refreshes them all. */
 export const myRepliesKey = ["me", "replies"] as const;
 
 /** One Inbox thread's ask, with its replies and its answer: the row's body in the list and in
@@ -216,6 +218,46 @@ export const myRepliesOwnerQuery = (
   queryOptions({
     queryKey: [...myRepliesKey, owner],
     queryFn: () => api.listMyReplies({ ...owner, limit: 200 }),
+  });
+
+/** The prefix of every read of the one read, `GET /api/v1/me/inbox`, that the Inbox makes behind
+ *  its opt-in (`useOneRead`, `features/inbox/one-read.ts`). It sits under the threads' own prefix,
+ *  so whatever refreshes the reader's threads - a reply, a read mark, a dismissal, an event that
+ *  names them - refreshes it too; what refreshes the open asks or an Agent row's conversation
+ *  reaches it through `event-refresh.ts`, since it holds the reader's half of those as well. */
+export const meInboxKey = [...myRepliesKey, "one-read"] as const;
+
+/** Every row of the reader's own Inbox from the one read, in one unpaged read of its `inbox`
+ *  state: the open asks that wait on them, and their Reply and Agent rows, read or not, less what
+ *  they have dismissed. The page, its drawer and the Needs-you count read this one key. */
+export const meInboxQuery = () =>
+  queryOptions({
+    queryKey: [...meInboxKey, "inbox"],
+    queryFn: () => api.getMeInbox({ state: "inbox" }),
+  });
+
+/** The reader's count of unread threads from the one read, the `total` of its `unread` state on
+ *  a one-entry page, as `myRepliesCountQuery` reads it of the threads' read. */
+export const meInboxCountQuery = () =>
+  queryOptions({
+    queryKey: [...meInboxKey, "count"],
+    queryFn: async () => (await api.getMeInbox({ limit: 1, state: "unread" })).total,
+  });
+
+/** What the reader has dismissed, from the one read's `dismissed` state, paged as
+ *  `dismissedThreadsQuery` pages it: `INBOX_DISMISSED_PAGE` entries a page, each next page read
+ *  from the last one's `next_cursor`. */
+export const meInboxDismissedQuery = () =>
+  infiniteQueryOptions({
+    queryKey: [...meInboxKey, "dismissed"],
+    queryFn: ({ pageParam }) =>
+      api.getMeInbox({
+        limit: INBOX_DISMISSED_PAGE,
+        state: "dismissed",
+        ...(pageParam === undefined ? {} : { cursor: pageParam }),
+      }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last: MeInboxResponse) => last.next_cursor,
   });
 
 /** One session's stored conversations: the direct messages and issue messages sent to it, with

@@ -34,6 +34,7 @@ import {
   INBOX_COMPARISON_PATH,
   liveViewSessionOf,
   PERSON_PATH,
+  parseInboxSearch,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -904,10 +905,17 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
                 <Route element={<ComparisonPage />} path={INBOX_COMPARISON_PATH} />
-                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
+                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them,
+                    keeping the address's opt-in to the one read where it carries one. */}
                 <Route
                   element={
-                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
+                    <Navigate
+                      replace
+                      to={buildInboxPath({
+                        filters: { type: ["reply"] },
+                        one: parseInboxSearch(location.search).one,
+                      })}
+                    />
                   }
                   path="/replies"
                 />

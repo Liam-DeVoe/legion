@@ -66,6 +66,7 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { agentConversation } from "./one-read-rows";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -514,6 +515,10 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
  * own follow-ups included, and a reply the session took as a turn of its live conversation saying
  * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
  * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
+ *
+ * A row of the one read carries its conversation (`agentConversation`), and the thread is drawn
+ * from that, the same fields of the same shape; a row of the threads' read carries none, and the
+ * thread is read out of the session's conversations.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -523,19 +528,21 @@ function AgentThreadBody({
   thread: MyReplyAgentRow;
 }): ReactNode {
   const sessionId = thread.session.id;
-  const messages = useQuery(agentMessagesQuery(sessionId));
+  const carried = agentConversation(thread);
+  const messages = useQuery({ ...agentMessagesQuery(sessionId), enabled: carried === undefined });
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
   const sendKey = agentSendKey(sessionId);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
-  const read: MessageRead | undefined = messages.data?.find(
-    (candidate) => candidate.message.id === thread.thread_id
-  );
+  const read: MessageRead | undefined =
+    carried ?? messages.data?.find((candidate) => candidate.message.id === thread.thread_id);
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
-  if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
-  if (messages.isError) {
+  if (carried === undefined && messages.isPending) {
+    return <LoadingSkeleton label="Opening the conversation" />;
+  }
+  if (carried === undefined && messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
   const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);

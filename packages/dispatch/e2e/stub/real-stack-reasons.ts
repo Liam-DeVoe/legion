@@ -167,6 +167,8 @@ export const realStackReasons: Record<string, string> = {
     "opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay",
   "inbox-threads.e2e.ts":
     "the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry",
+  "inbox-unchanged.e2e.ts":
+    "boots the base build and this build over a database of their own and compares the pages both serve over the same rows",
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
@@ -216,6 +218,8 @@ export const realStackReasons: Record<string, string> = {
   "nested-directive.e2e.ts":
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
+  "one-inbox.e2e.ts":
+    "the one read answers from the tuples the server's writers append; the comparison page reads a run the comparison command makes against the base build booted beside the server",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
   "parse-count.e2e.ts":
     "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",

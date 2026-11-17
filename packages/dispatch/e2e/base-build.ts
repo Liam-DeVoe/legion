@@ -1,7 +1,7 @@
-/** The build of the release before, booted beside a stack's own server over that stack's
- *  database, for the rows that read both builds at once (dispatch://INFRA-1152's c-gate-page):
- *  the commit `BASELINE_SHA` names, built once per run, and the commands of this checkout's own
- *  build that such a row runs against the two.
+/** The build of the release before, booted beside a stack's own server, for the rows that read
+ *  both builds at once (dispatch://INFRA-1152's c-gate-page and c-inbox-unchanged): the commit
+ *  `BASELINE_SHA` names, built once per run, its dashboard where a row opens its pages, and this
+ *  checkout's own build, which such a row runs commands of or boots beside it.
  *
  *  The base is `BASELINE_BINARY` where the run gives one (a prebuilt `./cmd/dispatch` of that
  *  commit), and otherwise the commit's tree taken out of the repository with `git archive` - no
@@ -10,15 +10,19 @@
  *  build goes to `$TMPDIR/dispatch-e2e-base-<commit>/dispatch` under `flock`, written whole and
  *  renamed, so the workers of a run build it once between them and a later run reuses it. A
  *  machine with neither that binary nor `go` and `git` cannot build it, and the row says so
- *  (`baseBuild`'s `skip`): CI's browser lane runs in a container with no Go.
+ *  (`baseBuild`'s `skip`): CI's browser lane runs in a container with no Go. The base's dashboard
+ *  is built the same way, from the same commit's tree, where a row names a directory for it
+ *  (`baseWebBuild`).
  *
- *  The base serves the stack's own database beside the stack's server, so both answer with one
- *  set of ids, and it signs its cookies with the stack's dev sign-in key: a server process refuses
- *  to start beside a live one whose keys it does not hold, and `e2e/run-server.sh` gives every
- *  one-process stack `DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY`, or the fixed `e2e-dev-signin` where the
- *  run names none. It gets the stack's fake Envoy, so a delivery it attempts meets the listener
- *  the stack's server meets, and none of the caller's own environment. */
+ *  A build serves the stack's own database unless the row names one of its own, so both builds
+ *  answer with one set of ids, and it signs its cookies with the stack's dev sign-in key: a
+ *  server process refuses to start beside a live one whose keys it does not hold, and
+ *  `e2e/run-server.sh` gives every one-process stack `DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY`, or the
+ *  fixed `e2e-dev-signin` where the run names none. It gets the stack's fake Envoy, so a delivery
+ *  it attempts meets the listener the stack's server meets, and none of the caller's own
+ *  environment. */
 import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { generateKeyPairSync } from "node:crypto";
 import { accessSync, constants, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
@@ -60,7 +64,7 @@ export type BaseBuild =
 
 /** The commit `BASELINE_SHA` names, in full; unset or empty it is `git merge-base origin/main
  *  HEAD`, the commit of main this branch was built on, as lib-baseline.sh reads it. */
-async function baselineCommit(): Promise<string> {
+export async function baselineCommit(): Promise<string> {
   const given = (process.env.BASELINE_SHA ?? "").trim();
   const revision =
     given !== ""
@@ -120,19 +124,66 @@ export async function baseBuild(): Promise<BaseBuild> {
   return { binary, commit };
 }
 
-/** The base build serving on a loopback port. */
+/** The dashboard of the commit `BASELINE_SHA` names, built in `directory`, or why this machine
+ *  cannot build it. */
+export type BaseWebBuild = { readonly webDist: string } | { readonly skip: string };
+
+/** Builds the dashboard (`packages/dispatch/web/dist`) of the commit `BASELINE_SHA` names, in
+ *  `directory`, once per commit: the commit's tree taken out with `git archive`, its packages
+ *  installed from the lockfile it carries, and its contracts and dashboard built with its own
+ *  scripts, under `flock`, with a stamp naming the commit written last, so the workers of a run
+ *  build it once between them and a later run reuses it. A machine with no `git`, `bun` or
+ *  `flock` cannot build it, and the row says so. */
+export async function baseWebBuild(directory: string): Promise<BaseWebBuild> {
+  for (const tool of ["git", "tar", "bun", "flock"]) {
+    if (!onPath(tool)) {
+      return {
+        skip:
+          `no ${tool} on PATH: this row opens the dashboard of BASELINE_SHA beside this ` +
+          "checkout's, and this machine cannot build it",
+      };
+    }
+  }
+  const commit = await baselineCommit();
+  mkdirSync(directory, { recursive: true });
+  const build = [
+    "set -euo pipefail",
+    'directory="$1" commit="$2" repository="$3"',
+    '[ -f "$directory/built-$commit" ] && exit 0',
+    'rm -rf "$directory/tree" "$directory"/built-* && mkdir "$directory/tree"',
+    'git -C "$repository" archive "$commit" | tar -x -C "$directory/tree"',
+    'cd "$directory/tree" && bun install --frozen-lockfile',
+    "cd packages/dispatch && bun run build:contracts && bun run build:web",
+    'touch "$directory/built-$commit"',
+  ].join("\n");
+  await execFileAsync(
+    "flock",
+    [`${directory}.lock`, "bash", "-c", build, "base-web-build", directory, commit, repository],
+    { maxBuffer: 64 * 1024 * 1024 }
+  );
+  return { webDist: join(directory, "tree/packages/dispatch/web/dist") };
+}
+
+/** A build serving on a loopback port. */
 export interface BaseServer {
   readonly url: string;
   stop(): Promise<void>;
 }
 
-/** Boots `binary` over the stack's own database on a port `scripts/e2e/lib/held-port.py` holds
- *  from the kernel's choice until the server serves on it, and returns once the server has said
- *  it listens and `/healthz` answers 200. */
-export async function bootBaseBuild(binary: string): Promise<BaseServer> {
-  const databaseUrl = stackValue(process.env, "DATABASE_URL");
+/** Boots `binary` - the base build, or this checkout's own (`stackBinary`) - on a port
+ *  `scripts/e2e/lib/held-port.py` holds from the kernel's choice until the server serves on it,
+ *  and returns once the server has said it listens and `/healthz` answers 200. It serves
+ *  `databaseUrl`, the stack's own database unless a row names one of its own, and the dashboard
+ *  in `webDist`, or none: a row that reads only the API boots a server with an empty one. */
+export async function bootBuild(
+  binary: string,
+  {
+    databaseUrl = stackValue(process.env, "DATABASE_URL"),
+    webDist,
+  }: { readonly databaseUrl?: string; readonly webDist?: string } = {}
+): Promise<BaseServer> {
   if (databaseUrl === undefined || databaseUrl.trim() === "") {
-    throw new Error("the stack names no DATABASE_URL, which the base build must serve");
+    throw new Error("the stack names no DATABASE_URL, which the build must serve");
   }
   const fakeEnvoy = stackValue(process.env, harnessVariables.fakeEnvoy);
   if (fakeEnvoy === undefined) throw new Error("the stack names no fake Envoy port");
@@ -157,6 +208,15 @@ export async function bootBaseBuild(binary: string): Promise<BaseServer> {
       env: {
         DATABASE_URL: databaseUrl,
         DISPATCH_AGENT_TOKEN: "e2e-token",
+        // The fake GitHub App `e2e/run-server.sh` gives the stack's server: without an App's
+        // credentials a server answers its dashboard 503 until one is configured.
+        DISPATCH_APP_CLIENT_ID: "Iv1.e2efake",
+        DISPATCH_APP_PEM_B64: generateKeyPairSync("rsa", {
+          modulusLength: 2048,
+          privateKeyEncoding: { format: "pem", type: "pkcs1" },
+          publicKeyEncoding: { format: "pem", type: "spki" },
+        }).privateKey,
+        DISPATCH_GITHUB_API_BASE: `http://127.0.0.1:${stackValue(process.env, harnessVariables.fakeGithub) ?? ""}`,
         DISPATCH_DEV_SIGNIN: "1",
         DISPATCH_DEV_SIGNIN_SHARED_KEY:
           stackValue(process.env, "DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY") || harnessDevSignInKey,
@@ -164,7 +224,7 @@ export async function bootBaseBuild(binary: string): Promise<BaseServer> {
         DISPATCH_INSECURE_COOKIE: "1",
         DISPATCH_LISTEN_HOST: "127.0.0.1",
         DISPATCH_NATS_DISABLED: "1",
-        DISPATCH_WEB_DIST: join(home, "web-dist"),
+        DISPATCH_WEB_DIST: webDist ?? join(home, "web-dist"),
         ENVOY_URL: `http://127.0.0.1:${fakeEnvoy}`,
         HOME: home,
         PATH: process.env.PATH ?? "",
@@ -198,7 +258,7 @@ export async function bootBaseBuild(binary: string): Promise<BaseServer> {
   try {
     while (Date.now() < deadline) {
       if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error(`the base build exited before it served:\n${output}`);
+        throw new Error(`the build exited before it served:\n${output}`);
       }
       const listening = /msg="dispatch: listening" addr=(127\.0\.0\.1:\d+)/.exec(output);
       if (listening !== null) {
@@ -206,9 +266,11 @@ export async function bootBaseBuild(binary: string): Promise<BaseServer> {
         const health = await fetch(`${url}/healthz`).catch(() => undefined);
         if (health?.status === 200) return { stop, url };
       }
+      // A server process, not a page, is booting: nothing to poll but its output and /healthz, so
+      // the loop reads both four times a second until the boot deadline above.
       await sleep(250);
     }
-    throw new Error(`the base build did not answer /healthz within ${bootMs / 1000} s:\n${output}`);
+    throw new Error(`the build did not answer /healthz within ${bootMs / 1000} s:\n${output}`);
   } catch (error) {
     await stop();
     throw error;
@@ -222,14 +284,17 @@ export interface CommandRun {
   readonly stderr: string;
 }
 
-/** Runs this checkout's own `envoy-dispatch` - the binary `e2e/run-server.sh` built for the
- *  stack's server, or the one `DISPATCH_E2E_SERVER_BIN` names - with `args`, over the stack's
+/** This checkout's own `envoy-dispatch`: the binary `e2e/run-server.sh` built for the stack's
+ *  server, or the one `DISPATCH_E2E_SERVER_BIN` names. */
+export function stackBinary(): string {
+  const given = (process.env.DISPATCH_E2E_SERVER_BIN ?? "").trim();
+  return given !== "" ? resolve(dispatchPackage, given) : join(envoyPackage, "dispatch-e2e");
+}
+
+/** Runs this checkout's own `envoy-dispatch` (`stackBinary`) with `args`, over the stack's
  *  database, and answers its exit code and its output. */
 export async function stackCommand(args: readonly string[]): Promise<CommandRun> {
-  const given = (process.env.DISPATCH_E2E_SERVER_BIN ?? "").trim();
-  const binary =
-    given !== "" ? resolve(dispatchPackage, given) : join(envoyPackage, "dispatch-e2e");
-  const child = spawn(binary, args, {
+  const child = spawn(stackBinary(), args, {
     env: {
       DATABASE_URL: stackValue(process.env, "DATABASE_URL") ?? "",
       HOME: tmpdir(),

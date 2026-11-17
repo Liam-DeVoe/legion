@@ -1032,6 +1032,15 @@ test("the inbox's view and filters round-trip and leave their defaults out of th
   });
 });
 
+// The opt-in to the one read rides the route, so a narrowing the page writes back keeps it.
+test("the inbox's opt-in to the one read round-trips beside the filters", () => {
+  const route = { filters: { type: ["reply"] }, one: true } as const;
+  expect(buildInboxPath(route)).toBe("/?type=reply&one=1");
+  expect(parseInboxSearch("?one=1&type=reply")).toEqual(route);
+  expect(parseInboxSearch("?one=0")).toEqual({});
+  expect(buildInboxPath({})).toBe("/");
+});
+
 // A word this build does not know is dropped rather than refused: an older link still opens.
 test("the inbox drops filter values, sorts and groupings it does not know", () => {
   expect(parseInboxSearch("?sort=sideways&group=colour&show=everything")).toEqual({});

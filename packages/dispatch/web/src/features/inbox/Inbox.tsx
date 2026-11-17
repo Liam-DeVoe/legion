@@ -78,6 +78,7 @@ import {
 } from "./list-row";
 import { useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
+import { useInboxAsks } from "./one-read";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
@@ -672,8 +673,10 @@ export function Inbox({
   const columnsRef = useRef<HTMLDivElement>(null);
   /** How much of that grid the reading column takes, kept for the reader's browser. */
   const [paneWidth, setPaneWidth] = usePaneWidth();
-  // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
-  const adoptedInbox = useMotionHold(inbox.data, listRef);
+  // The asks this list holds, from the read the opt-in names (`useInboxAsks`, `one-read.ts`, which
+  // `useInboxThreadRows` below follows for the threads); a refetch can land while a pointer
+  // travels between rows, so it is adopted once that pointer settles.
+  const adoptedInbox = useMotionHold(useInboxAsks(inbox.data), listRef);
   // The credential requests the Inbox lists above its asks: the section, the banner and the empty
   // state all read this one answer.
   const credentials = useCredentialRequests();
@@ -1471,7 +1474,12 @@ export function Inbox({
           <Link
             aria-label="Clear agent filter"
             className="inline-flex min-h-11 items-center rounded-full"
-            to={buildInboxPath({ assignees: filter.assignees, item: filter.item, q: filter.q })}
+            to={buildInboxPath({
+              assignees: filter.assignees,
+              item: filter.item,
+              one: filter.one,
+              q: filter.q,
+            })}
           >
             <LabelPill selected>
               Asks from {name}

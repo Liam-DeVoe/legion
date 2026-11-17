@@ -1227,6 +1227,16 @@ export class DispatchApiClient {
     return this.read("/api/v1/inbox/comparison", {});
   }
 
+  /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
+   *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
+   *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own
+   *  rows in that state - `unread`, `inbox` or `dismissed` - an absent `limit` answers every
+   *  entry, and `cursor` reads on from a page's `next_cursor`. Any key the route does not declare
+   *  is refused by name. Needs the `person` scope. */
+  getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
+    return this.read("/api/v1/me/inbox", {}, query);
+  }
+
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
    *  `snoozedUntil` (RFC3339). Needs the `person` scope, like the inbox itself. */
   async snoozeAsk(id: string, snoozedUntil: string, bounds: WriteBounds) {

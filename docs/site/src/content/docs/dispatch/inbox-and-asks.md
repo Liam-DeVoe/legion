@@ -101,7 +101,7 @@ Type, Project and Assignee. Each opens a list you can search, and every value in
 many rows it holds, counted inside what the other four fields have already narrowed — so a value
 that reads 3 has three rows behind it, and picking it never empties the list.
 
-Type is the field that tells the kinds apart: Question, Decision, Approval, Reply and Agent
+Type is the field that tells the kinds apart: Question, Decision, Approval, Threads and Agent
 message.
 
 Each value you pick becomes a chip under the bar. Remove one with its ×, or all of them with
@@ -221,7 +221,7 @@ focused to drop every tick.
 
 Two kinds of row in the Inbox are threads rather than questions:
 
-- A **Reply** row is a thread you wrote in — an ask, a comment thread, a message thread on an
+- A **Threads** row is a thread you wrote in — an ask, a comment thread, a message thread on an
   issue — that somebody else has written in since you last read it.
 - An **Agent message** row is a one-off message you sent an agent session that the session has
   answered.
@@ -250,7 +250,7 @@ control reads **Move to Inbox** and one press puts the thread back. Somebody els
 thread you dismissed brings it back to the Inbox, unread, on its own; a reply you send from the
 **Dismissed** view leaves the thread where it is.
 
-The **Type** filter has a value for each kind, so **Reply** narrows the list to those threads
+The **Type** filter has a value for each kind, so **Threads** narrows the list to those threads
 alone, which is also what the address `/replies` opens.
 
 Where there is no second column each thread row is a card, with **Open**, which goes to the

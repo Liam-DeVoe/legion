@@ -556,6 +556,12 @@ export function getInbox(options: ApiOptions = {}) {
   return get("/api/v1/inbox", {}, options);
 }
 
+/** `GET /api/v1/me/inbox`, the one read, as the caller asks it: every node tied to their person,
+ *  with the relation kinds that tie it to them, and the row the Inbox draws where it draws one. */
+export function getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}, options: ApiOptions = {}) {
+  return get("/api/v1/me/inbox", { query }, options);
+}
+
 /** `GET /api/v1/search`: the palette's own read, so a row's `href` here is the path a reader
  *  lands on by clicking that hit. */
 export function search(query: string, options: ApiOptions = {}) {
@@ -731,6 +737,15 @@ export function resolveAsk(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/asks/{id}/resolve", { body: input, params: { id } }, options);
+}
+
+/** `POST /api/v1/asks/{id}/decline`: closes an open question with no answer, keeping the note. */
+export function declineAsk(
+  id: string,
+  input: Body<"/api/v1/asks/{id}/decline", "post">,
+  options: ApiOptions = {}
+) {
+  return post("/api/v1/asks/{id}/decline", { body: input, params: { id } }, options);
 }
 
 export function createComment(
