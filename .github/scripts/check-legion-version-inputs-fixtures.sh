@@ -51,6 +51,22 @@ elif kind == "job-head":
         lines.append(f"    needs: {json.dumps(list(plan.JOB_NEEDS[key]))}")
     print("\n".join(lines))
     sys.exit(0)
+elif kind == "chain":
+    # Each job of the workflow whose DECISION_READERS entry is its own if: alone (the jobs the
+    # decision jobs need, and the jobs that read a published decision), as a whole job with its
+    # pinned if: and needs: and one step.
+    path = {"release": plan.RELEASE, "listener": plan.LISTENER}[name]
+    out = []
+    for (workflow, job), readers in plan.DECISION_READERS.items():
+        if workflow != path or any(r.position != 0 for r in readers):
+            continue
+        out.append(f"  {job}:\n    runs-on: ubuntu-24.04")
+        out += [f"    if: {json.dumps(r.if_)}" for r in readers if r.if_]
+        if plan.JOB_NEEDS.get((workflow, job)):
+            out.append(f"    needs: {json.dumps(list(plan.JOB_NEEDS[(workflow, job)]))}")
+        out.append('    steps:\n      - run: "true"')
+    print("\n".join(out))
+    sys.exit(0)
 elif kind == "readers":
     workflow, job = name.split(":")
     readers = plan.DECISION_READERS[({"release": plan.RELEASE, "listener": plan.LISTENER}[workflow], job)]
@@ -104,6 +120,8 @@ legion_job_head=$(step job-head release:legion_build)
 publish_job_head=$(step job-head release:publish)
 envoy_build_job_head=$(step job-head listener:release_build)
 envoy_publish_job_head=$(step job-head listener:release_publish)
+release_chain=$(step chain release)
+listener_chain=$(step chain listener)
 login_uses=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c 'import release_version_inputs as p; print(p.LOGIN)')
 confirm_version='          VERSION: "${{ needs.release_build.outputs.version }}"'
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
@@ -112,6 +130,9 @@ envoy_args='    -- :(exclude)packages/envoy/infra packages/envoy/ .github/go-rel
 envoy_modules='    go.work go.work.sum packages/daemon/go.mod packages/daemon/go.sum'
 
 # fixture <name>: a tree whose block is still empty, so `write` fills it. Echoes its root.
+# Each workflow's build job comes first, its chain jobs next and its publish job last, so a case
+# that changes the first `runs-on:` or `steps:` changes the build job, and one that appends a step
+# with `>>` appends it to publish or release_publish.
 fixture() {
   local root="$work/$1"
   if [ -e "$root" ]; then
@@ -167,6 +188,7 @@ $envoy_build_outputs
 $checkout_step
 $envoy_build_step
 $envoy_build_readers
+$listener_chain
   release_publish:
     runs-on: ubuntu-24.04
 $envoy_publish_job_head
@@ -198,6 +220,7 @@ $legion_outputs
 $checkout_step
 $legion_step
 $legion_readers
+$release_chain
   publish:
     runs-on: ubuntu-24.04
 $publish_job_head

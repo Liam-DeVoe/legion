@@ -623,12 +623,13 @@ def decision_readers(path, doc):
            "a job output `skip: \"true\"` does")
     for (job_name, selector), want in sorted(listed.items()):
         name = described(selector)
+        pinned = f"`{want}`" if want is not None else "nothing"
         if (job_name, selector) not in held:
-            problem(f"in {path}'s job {job_name}, {name}, which {PLAN}'s DECISION_READERS names with the if: `{want}`, "
+            problem(f"in {path}'s job {job_name}, {name}, which {PLAN}'s DECISION_READERS names with the if: {pinned}, "
                     f"is not there: {why}; a step that moved or was renamed needs its entry changed too", path)
         elif held[(job_name, selector)] != want:
             problem(f"{name} of {job_name} has the if: {rendered(held[(job_name, selector)])}, where {PLAN}'s "
-                    f"DECISION_READERS names `{want}` for it: {why}", path)
+                    f"DECISION_READERS names {pinned} for it: {why}", path)
         if "continue-on-error" in keys.get((job_name, selector), ()):
             problem(f"{name} of {job_name} sets continue-on-error:, which a listed reader does not: a reader that "
                     f"fails then leaves its outcome failure with its job green, and every reader after it skips "

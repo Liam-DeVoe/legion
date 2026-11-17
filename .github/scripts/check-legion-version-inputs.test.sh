@@ -450,6 +450,28 @@ replace "$root/.github/workflows/release.yaml" '"claude_envoy_build", "legion_bu
 run_check "$root"
 check "passes publish's needs in another order" "$(is "$status" 0)"
 
+# The jobs the decision jobs need, which a decision job's own if: reads or which run before it:
+# their own if: and needs: are pinned as the decision jobs' are (the round-8 review's N6).
+echo "case: a job the decision jobs need skips on main (N6a, N6b)"
+root=$(written chain-targets-if)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'  targets:\n    runs-on: ubuntu-24.04\n' \
+  $'  targets:\n    runs-on: ubuntu-24.04\n    if: github.ref != \'refs/heads/main\'\n'
+run_check "$root"
+check "exits 1 on targets given an if: false on main (N6a)" "$(is "$status" 1)"
+check "names the job's if: and the module's nothing" \
+  "$(contains "$out" "the job's own if: of targets has the if: \`github.ref != 'refs/heads/main'\`, where $plan_file's DECISION_READERS names nothing for it")"
+root=$(written chain-plugin-if)
+replace "$root/.github/workflows/release.yaml" $'  pi_envoy_build:\n    runs-on: ubuntu-24.04\n    if: "github.ref == \'refs/heads/main\'"\n' \
+  $'  pi_envoy_build:\n    runs-on: ubuntu-24.04\n    if: false\n'
+run_check "$root"
+check "exits 1 on a plugin build's if: false (N6b)" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the job's own if: of pi_envoy_build has the if: \`false\`, where $plan_file's DECISION_READERS names \`github.ref == 'refs/heads/main'\` for it")"
+root=$(written chain-needs)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    needs: ["build", "targets"]\n' $'    needs: ["targets"]\n'
+run_check "$root"
+check "exits 1 on docker's needs changed" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "docker's needs: is \`\[\"targets\"\]\`, $needs_rule \`\[\"build\", \"targets\"\]\` for it")"
+
 # The four decision jobs' own if: (position 0), which the fixtures render on each job: one `if:
 # false` there skips every reader of the job at once.
 echo "case: a decision job's own if: false"

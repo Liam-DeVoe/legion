@@ -111,21 +111,31 @@ DECISION = {
 
 # What each job that carries a checked decision needs, order aside (a string need is a list of
 # one): a need taken away lets the job run without the decision it reads, or start before it, and
-# a need added on a job that skips on main skips the decision job with it.
+# a need added on a job that skips on main skips the decision job with it. The jobs those needs
+# name, which a decision job's own if: reads (release_publish's reads build, image_index and
+# targets) or which run before it, are pinned the same way, own if: and needs:, since one of
+# them skipped on main skips the decision job too.
 JOB_NEEDS = {
     (RELEASE, "legion_build"): (),
     (RELEASE, "publish"): ("claude_envoy_build", "legion_build", "pi_envoy_build", "pi_legion_build"),
+    (RELEASE, "pi_envoy_build"): (),
+    (RELEASE, "pi_legion_build"): (),
+    (RELEASE, "claude_envoy_build"): (),
     (LISTENER, "release_build"): (),
     (LISTENER, "release_publish"): ("build", "image_index", "release_build", "targets"),
+    (LISTENER, "targets"): (),
+    (LISTENER, "build"): ("targets",),
+    (LISTENER, "docker"): ("build", "targets"),
+    (LISTENER, "image_index"): ("docker", "targets"),
 }
 
 
 class Reader(NamedTuple):
     """An if: that reads a decision, and what holds it: a step by its id:, else its name:, else its
-    1-based position among its job's steps; position 0 is the job's own if:, which no job of the
-    two workflows reads the decision in today."""
+    1-based position among its job's steps; position 0 is the job's own if:, and None there is a
+    job with no if: of its own."""
 
-    if_: str
+    if_: str | None
     id: str | None = None
     name: str | None = None
     position: int | None = None
@@ -187,6 +197,14 @@ DECISION_READERS = {
         Reader("steps.release.outcome == 'success' && needs.release_build.outputs.notes == 'true'", id="notes"),
         Reader("steps.notes.outcome == 'success'", name="Write the changelog into the release body"),
     ),
+    # The jobs JOB_NEEDS names beyond the four: their own if: alone, None where they have none.
+    (RELEASE, "pi_envoy_build"): (Reader(ON_MAIN, position=0),),
+    (RELEASE, "pi_legion_build"): (Reader(ON_MAIN, position=0),),
+    (RELEASE, "claude_envoy_build"): (Reader(ON_MAIN, position=0),),
+    (LISTENER, "targets"): (Reader(None, position=0),),
+    (LISTENER, "build"): (Reader(None, position=0),),
+    (LISTENER, "docker"): (Reader(None, position=0),),
+    (LISTENER, "image_index"): (Reader(None, position=0),),
 }
 
 
