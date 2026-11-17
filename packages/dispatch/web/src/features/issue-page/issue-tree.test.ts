@@ -29,6 +29,7 @@ import {
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
+  firstBlockWordsRaw,
   firstLineOf,
   lineWords,
   nodeWords,
@@ -36,7 +37,7 @@ import {
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { addressesAsShortForms, blockNodeId, plainWords } from "./tree-drafts";
+import { addressesAsShortForms, blockNodeId, plainWords, plainWordsRaw } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -2763,4 +2764,19 @@ test("a string that only looks like an address stays as written in a node's line
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : lineWords(task), sent).toBe(line);
   }
+});
+
+// Decision 140: a caller that names each reference itself, by the name the page publishes for
+// it, reads a node's words before any address in them is written short, or it finds no address
+// left to name. The first block of a reading (`firstBlockWordsRaw`) and a stored text read to
+// plain words (`plainWordsRaw`) keep each bare address and each autolink's URL as written, and
+// the marks still go; a node's line and `plainWords` read the same words short, as they did.
+test("the raw words of a reading and of a stored text keep each address as written", () => {
+  const reading = "Do it as dispatch://CORE-2 says.";
+  const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
+  expect(task?.tree === undefined ? "" : firstBlockWordsRaw(task.tree)).toBe(reading);
+  expect(task === undefined ? "" : lineWords(task)).toBe("Do it as CORE-2 says.");
+  const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
+  expect(plainWordsRaw(stored)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
+  expect(plainWords(stored)).toBe("Do it as CORE-2 says, see CORE-3.");
 });

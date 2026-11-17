@@ -420,9 +420,24 @@ const NO_WORDS = /^[\s*_-]*$/u;
  *  address outside code in them written as its target's short form (`withShortAddresses`); `""`
  *  for a reading none of whose blocks holds a word. */
 function firstBlockWords(reading: DisplayTree): string {
+  return firstBlockRead(reading, (block) => wordsOf(withShortAddresses(block)));
+}
+
+/** The words of the first top-level block of a reading that holds any, as `firstBlockWords`
+ *  reads them but with no address written short (`wordsOf`): a bare address stays as written
+ *  (dispatch://INFRA-1196 decision 140). A caller that names each reference itself reads these,
+ *  since a short form leaves it no address to name. `""` for a reading none of whose blocks
+ *  holds a word. */
+export function firstBlockWordsRaw(reading: DisplayTree): string {
+  return firstBlockRead(reading, wordsOf);
+}
+
+/** The words of the first top-level block of `reading` that holds any, each block read to words
+ *  by `read`; `""` for a reading none of whose blocks holds a word. */
+function firstBlockRead(reading: DisplayTree, read: (block: DisplayTree) => string): string {
   const content = reading.content;
   for (const block of Array.isArray(content) ? (content as DisplayTree[]) : []) {
-    const words = wordsOf(withShortAddresses(block));
+    const words = read(block);
     if (words.trim() !== "") return words;
   }
   return "";
