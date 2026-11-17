@@ -1724,12 +1724,13 @@ type Store interface {
 	// Dispatch holds for that issue is the one those rows recorded.
 	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
-	// RaiseStepStarts counts one more start of place on issue, with the agent that start names and
-	// the moment it writes, marks its run open, and answers the count with it: the start of a
-	// step's record raises it in its own transaction (workflow's startStep). ClearGeneration and
-	// ClearTreeGeneration leave the count: the generation is part of the record's id already, and
-	// the count only rises.
-	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) (int64, error)
+	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
+	// the write of that start's record, which run builds from the count with that start in it:
+	// the start of a step's record raises it in its own transaction (workflow's startStep), and
+	// the row keeps the agent, the moment and the identity that write carries. ClearGeneration
+	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
+	// and the count only rises.
+	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
 	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
 	// of the latest, unchanged: the zero StepStart where the place has no row, no start counted
 	// and no uncounted end written.

@@ -11,11 +11,15 @@
 -- moment and result where it was still open. The rollback keeps, for each issue with a row,
 -- step_run_witness of the issue (20261117004117_step_starts, which says what it reads); this
 -- compares it with the witness now. Where they differ the earlier release ended or started a run
--- of the issue, and each row of the issue reads 'uncounted': an end of a run there writes a record
--- of its own at the next count (record.Store.EndUncountedStep), and a start counts on as before.
--- Where they agree the earlier release did nothing this release counts as a run, so a run still
--- open stands as the one the row counted and ends under its own id. The kept witnesses go, so a
--- later rollback keeps its own.
+-- of the issue. A run the row held open at the rollback is over, ended by that release, which
+-- wrote no end: its record gets one here, stopped, at the moment of the rollback, when Legion
+-- stopped recording it, as one step_record row of the identity the row kept (record) — the
+-- moment the run really ended is nowhere to be read, and a record left without an end would read
+-- running for good. Then each row of the issue reads 'uncounted': an end of a run there writes a
+-- record of its own at the next count (record.Store.EndUncountedStep), and a start counts on as
+-- before. Where the witnesses agree the earlier release did nothing this release counts as a run,
+-- so a run still open stands as the one the row counted and ends under its own id. The kept
+-- witnesses go, so a later rollback keeps its own.
 --
 -- On a database no rollback touched step_starts_rollback is empty and this changes nothing. The
 -- way back below is what makes it run again: it keeps the witnesses and deletes this migration's
@@ -25,11 +29,17 @@
 -- moved since. docs/kubernetes.md, "Rolling back the release that records each step", carries the
 -- same block, and internal/textcheck holds the two to one text.
 --
--- insert into step_starts_rollback (issue, tree, witness)
--- select key, tree, step_run_witness(key, tree) from issues
+-- insert into step_starts_rollback (issue, tree, witness, taken_at)
+-- select key, tree, step_run_witness(key, tree), now() from issues
 -- where key in (select issue from step_starts)
 -- on conflict (issue) do nothing;
 -- delete from schema_version where version = 20261117064152;
+insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+select 'step_record', s.issue, s.record || jsonb_build_object('ended_at', r.taken_at, 'result', 'stopped'), 0, now(), ''
+from step_starts s join step_starts_rollback r on r.issue = s.issue
+where s.run = 'open' and s.record is not null
+  and step_run_witness(r.issue, r.tree) is distinct from r.witness;
+
 update step_starts s set run = 'uncounted'
 from step_starts_rollback r
 where s.issue = r.issue and s.run <> 'uncounted'

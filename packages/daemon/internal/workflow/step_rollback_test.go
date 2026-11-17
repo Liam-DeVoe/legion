@@ -22,7 +22,9 @@ import (
 // its end after the roll forward is a record of its own, at the next count, with the start its
 // role's entry recorded, whether the run this release counted there had ended before the rollback
 // or was still open at it. The run this release counted keeps its own id, and no write after the
-// roll forward names it.
+// roll forward names it. A run still open at the rollback that the earlier release ended gets its
+// end from the roll forward itself, stopped at the moment of the rollback, when Legion stopped
+// recording it, so its record reads ended whether or not its place runs again.
 func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -40,7 +42,11 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			if !tc.open {
 				move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterFailed, "", record.PhaseRow{})
 			}
+			before := len(stepWrites(t, pool, "LEGION-208"))
+			// The rollback's moment is the database's clock when the way back runs.
+			rollBackFrom := databaseNow(t, pool)
 			rollBackStepRecords(t, pool)
+			rollBackTo := databaseNow(t, pool)
 			// The earlier release runs the tester again, from its own transitions: the tester's
 			// second entry, raised at secondRun, and for the run still open at the rollback, its
 			// fail and the implementer's round that brought the work back to testing first, the
@@ -55,11 +61,29 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			execSQL(t, pool, `update issues set phase = 'testing' where key = 'LEGION-208'`)
 			execSQL(t, pool, `update phases set entry = entry + 1, entry_raised_at = $1 where issue = 'LEGION-208' and role = 'tester'`, secondRun)
 			rollForwardStepRecords(t, pool)
+			// The run open at the rollback is the one the earlier release ended first: the
+			// implementer's, which the tester's fail had started, where the tester's run had
+			// ended, and the tester's own where it was still open. The roll forward ends it.
+			counted := StepID("LEGION-208", 1, "default", "step", 3, 1)
+			abandoned, abandonedStep, abandonedRole := counted, 3, claim.RoleTester
+			if !tc.open {
+				abandoned, abandonedStep, abandonedRole = StepID("LEGION-208", 1, "default", "step", 2, 1), 2, claim.RoleImplementer
+			}
+			ended := stepWrites(t, pool, "LEGION-208")[before:]
+			if len(ended) != 1 {
+				t.Fatalf("the roll forward wrote %+v, want the end of the run open at the rollback, which the earlier release ended", ended)
+			}
+			assertEnd(t, ended[0], "step", abandonedStep, 1, "stopped", nil)
+			if at := ended[0].EndedAt; ended[0].ID != abandoned || at == nil || at.Before(rollBackFrom) || at.After(rollBackTo) ||
+				ended[0].Agent != treeRoleToken(t, "LEGION-208", abandonedRole) || ended[0].StartedAt == nil || !ended[0].StartedAt.Equal(stepClock) {
+				t.Fatalf("the roll forward's end = %+v, want the record %s, its %s and its start at %s, stopped at the rollback, between %s and %s",
+					ended[0], abandoned, abandonedRole, stepClock, rollBackFrom, rollBackTo)
+			}
 
-			before := len(stepWrites(t, pool, "LEGION-208"))
+			before = len(stepWrites(t, pool, "LEGION-208"))
 			move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
 			after := stepWrites(t, pool, "LEGION-208")[before:]
-			counted := StepID("LEGION-208", 1, "default", "step", 3, 1)
+			// The run this release counted has its end; nothing after the roll forward names it.
 			for _, w := range after {
 				if w.ID == counted {
 					t.Fatalf("a write after the roll forward names the run this release counted (%s): %+v", counted, w)
@@ -84,6 +108,16 @@ func execSQL(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) {
 	if _, err := pool.Exec(t.Context(), sql, args...); err != nil {
 		t.Fatalf("%s: %v", sql, err)
 	}
+}
+
+// databaseNow is the database's clock, which the way back stamps the rollback's moment with.
+func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
 }
 
 // stepRecordsRollForward is the version of the migration whose header carries the step records'

@@ -125,12 +125,14 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 		return nil
 	}
 	now := e.now()
-	starts, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, place, string(agent), now)
+	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, place, func(starts int64) record.StepRecord {
+		write := stepWrite(issue, place, role, typ, string(agent), starts)
+		write.StartedAt = new(now)
+		return write
+	})
 	if err != nil {
 		return err
 	}
-	write := stepWrite(issue, place, role, typ, string(agent), starts)
-	write.StartedAt = new(now)
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
 

@@ -19,7 +19,7 @@ const (
 	// stepRecordsRollForward is the version of the roll forward whose header carries the block.
 	stepRecordsRollForward = 20261117064152
 	// stepRecordsWayBackFirst opens the block in the header and in the guide.
-	stepRecordsWayBackFirst = "insert into step_starts_rollback (issue, tree, witness)"
+	stepRecordsWayBackFirst = "insert into step_starts_rollback (issue, tree, witness, taken_at)"
 )
 
 // stepRecordsWayBackMark is the line that deletes the roll forward's version row, which closes the

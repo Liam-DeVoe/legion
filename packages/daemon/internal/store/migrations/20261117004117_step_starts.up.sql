@@ -19,7 +19,11 @@
 -- its end. 'uncounted': the run the row counted is over, and a run the place holds now started
 -- under an earlier release, which counts no start: its end is a record of its own at the next
 -- count. Only the roll forward of a rollback writes it (20261117064152_step_starts_roll_forward).
--- The next start of the place sets 'open' whatever stood before.
+-- The next start of the place sets 'open' whatever stood before. record is the identity of the
+-- latest start's record — the fields each write of it carries, its id among them, as the start
+-- wrote them (record.Store.RaiseStepStarts) — kept for the roll forward of a rollback, which
+-- writes that record's end where an earlier release ended its run; null on a row only an end of an
+-- uncounted run wrote, which is ended.
 --
 -- The count is keyed by task (slice 1 writes the one task, default, of today's fixed phases), and a
 -- re-admission does not clear it (record.Store.ClearGeneration keeps it): the generation is part of
@@ -30,10 +34,11 @@
 -- An earlier release reads and writes none of this, so after a rollback it moves issues, and starts
 -- and ends their steps, with each row standing as this release left it. step_starts_rollback is
 -- what the rollback keeps of each issue with a row, run with the daemon stopped
--- (docs/kubernetes.md, "Rolling back the release that records each step"): the issue's tree and
--- step_run_witness of the issue then. At the roll forward 20261117064152 reads the witness again;
--- an issue whose witness changed had a run of this release ended under it, or a run started that
--- this release did not count, and its rows read 'uncounted' from then on.
+-- (docs/kubernetes.md, "Rolling back the release that records each step"): the issue's tree,
+-- step_run_witness of the issue then, and the moment of the rollback. At the roll forward
+-- 20261117064152 reads the witness again; an issue whose witness changed had a run of this release
+-- ended under it, or a run started that this release did not count: a run open at the rollback
+-- gets its end, stopped at that moment, and its rows read 'uncounted' from then on.
 --
 -- step_run_witness is what this release's own model ends or starts a run on, read from the
 -- columns every earlier release writes as it does those things:
@@ -59,13 +64,15 @@ create table step_starts (
   agent text not null,
   started_at timestamptz,
   run text not null check (run in ('open', 'ended', 'uncounted')),
+  record jsonb,
   primary key (issue, task, kind, place)
 );
 
 create table step_starts_rollback (
   issue text primary key,
   tree text not null,
-  witness jsonb
+  witness jsonb,
+  taken_at timestamptz not null
 );
 
 create function step_run_witness(issue_key text, tree_key text) returns jsonb language sql stable as $$

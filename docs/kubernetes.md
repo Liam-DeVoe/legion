@@ -1996,21 +1996,22 @@ An earlier release starts and ends steps and counts none of them, so the rollbac
 Run this too, with the daemon stopped, before the earlier image is pinned:
 
 ```sql
-insert into step_starts_rollback (issue, tree, witness)
-select key, tree, step_run_witness(key, tree) from issues
+insert into step_starts_rollback (issue, tree, witness, taken_at)
+select key, tree, step_run_witness(key, tree), now() from issues
 where key in (select issue from step_starts)
 on conflict (issue) do nothing;
 delete from schema_version where version = 20261117064152;
 ```
 
-The `insert` keeps, for each issue with a counted step, what this release ends or starts a step on (`step_run_witness`, whose definition and reasons stand in the header of `20261117004117_step_starts`): the phase the issue stands in, its generation, its implementer's pass, the generation of its tree's root, and whether that root lingers while the issue stands outside merging.
+The `insert` keeps, for each issue with a counted step, the moment of the rollback and what this release ends or starts a step on (`step_run_witness`, whose definition and reasons stand in the header of `20261117004117_step_starts`): the phase the issue stands in, its generation, its implementer's pass, the generation of its tree's root, and whether that root lingers while the issue stands outside merging.
 A second run before any roll forward keeps what the first kept.
 The `delete` re-arms `20261117064152_step_starts_roll_forward`, so the newer image's `Migrate` applies it again at the roll forward, before the daemon serves; where that file carries another identifier in the release you roll back from, use that one.
 
 The roll forward reads each issue again, and each row of an issue the earlier release moved reads `uncounted` from then on; every other row stands as it was.
+A step that was running at the rollback on such an issue ended under the earlier release, which wrote no end, so the roll forward ends its record `stopped`, at the moment of the rollback, when Legion stopped recording it: the moment it really ended is nowhere to be read, and a record with no end would read `running` for good.
 A step the earlier release started gets a record of its own when it ends under this release: the count after its place's last, or 0 where its place has no row, with the agent its start would have named and the start time its role's entry records (`upgradedStart` in `internal/workflow/steps.go`).
 A step running at the rollback on an issue the earlier release did not move is still the step this release counted, and its end ends the record its start wrote.
-What the rollback costs is the record of each step that both starts and ends under the earlier release, and the end of each step running at the rollback that ends under it: that record reads `running`.
+What the rollback costs is the record of each step that both starts and ends under the earlier release, and the true end of each step running at the rollback that ends under it.
 
 #### Rolling back the release whose update round ends at its bound
 

@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -62,17 +63,33 @@ const (
 	NotCounted
 )
 
-// RaiseStepStarts counts one more start of place on issue, keeps the agent and the moment that
-// start writes, marks its run open whatever the run before it stood at, and answers the count with
-// that start in it. It is called in the transaction that writes the start's record.
-func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, agent string, at time.Time) (int64, error) {
+// RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
+// before it stood at, and answers that start's write: run, given the count with that start in it,
+// is the write of the start's record (workflow's startStep). The row keeps the agent and the
+// moment that write names, which the run's end writes again, and the identity it carries — the
+// fields each write of the record carries, its id among them — which the roll forward of a
+// rollback ends the record under where an earlier release ended the run (store migration
+// 20261117064152_step_starts_roll_forward). It is called in the transaction that writes the
+// start's record.
+func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
-	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, started_at, run) values ($1, $2, $3, $4, 1, $5, $6, 'open')
-		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, agent = excluded.agent, started_at = excluded.started_at, run = 'open'
-		returning starts`, issue, place.Task, place.Kind, place.Place, agent, at).Scan(&starts); err != nil {
-		return 0, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
+		on conflict (issue, task, kind, place) do update set starts = step_starts.starts + 1, run = 'open'
+		returning starts`, issue, place.Task, place.Kind, place.Place).Scan(&starts); err != nil {
+		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
-	return starts, nil
+	write := run(starts)
+	identity, err := json.Marshal(StepRecord{ID: write.ID, Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role,
+		Type: write.Type, Agent: write.Agent, Generation: write.Generation, StartedAt: write.StartedAt})
+	if err != nil {
+		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	if _, err := tx.Exec(ctx, `update step_starts set agent = $5, started_at = $6, record = $7
+		where issue = $1 and task = $2 and kind = $3 and place = $4`,
+		issue, place.Task, place.Kind, place.Place, write.Agent, write.StartedAt, identity); err != nil {
+		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
+	}
+	return write, nil
 }
 
 // StepStarts is the count of starts of place on issue, with the agent, the moment and the run of
@@ -130,7 +147,7 @@ func (s *Postgres) EndUncountedStep(ctx context.Context, tx pgx.Tx, issue string
 		at = &startedAt
 	}
 	var starts int64
-	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, agent = $5, started_at = $6, run = 'ended'
+	err := tx.QueryRow(ctx, `update step_starts set starts = starts + 1, agent = $5, started_at = $6, run = 'ended', record = null
 		where issue = $1 and task = $2 and kind = $3 and place = $4 and run = 'uncounted'
 		returning starts`, issue, place.Task, place.Kind, place.Place, agent, at).Scan(&starts)
 	if err == nil {
