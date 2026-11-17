@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -19,9 +19,13 @@ import { DecisionActions, rowActionSelector } from "../DecisionActions";
 import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
+  BodyAuthor,
+  MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
   RowActs,
+  type Tone,
+  UNTYPED,
   useClamp,
   useRowOnScreen,
 } from "../NodeRow";
@@ -37,7 +41,6 @@ import {
   GLYPH_TOKENS,
   isReader,
   NODE_TYPE_NAMES,
-  type NodeType,
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
@@ -97,7 +100,6 @@ export function DecisionsRow({
   level,
   onFocus,
   onPin,
-  onRefused,
   onReviewed,
   pinned,
   reader,
@@ -120,12 +122,10 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
-  /** Says the server refused a Keep or a Change the reader made on this row, which is then no
-   *  review of theirs. */
-  onRefused: () => void;
-  /** Says the reader reviewed this decision on its row: they pressed Keep, or sent a Change
-   *  with words in it. Either takes it off the review list, and only the reader's own review
-   *  moves the focus on to the next decision there. */
+  /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
+   *  alone is no review: the list reads the decision the server writes back to tell whether
+   *  the reader kept it or asked to change it, and only that review takes it off the review
+   *  list and moves the focus on to the next decision there. */
   onReviewed: () => void;
   pinned: boolean;
   /** Who is reading, whose own name is drawn in the ink and whose own words carry the ink rule
@@ -181,29 +181,6 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
-  // `DecisionActions.tsx` says that the server refused a Keep or a Change by drawing an alert
-  // among the row's actions, and tells its row nothing else, so the row watches its actions for
-  // one while it draws the two controls, and says so to the list. The latest `onRefused` is the
-  // one called, so a render does not start the watch again.
-  const actions = useRef<HTMLDivElement | null>(null);
-  const refused = useRef(onRefused);
-  refused.current = onRefused;
-  useEffect(() => {
-    const element = actions.current;
-    if (!review || element === null) return;
-    const watch = new MutationObserver((records) => {
-      const alerted = records.some((record) =>
-        [...record.addedNodes].some(
-          (added) =>
-            added instanceof Element &&
-            (added.matches(REFUSAL) || added.querySelector(REFUSAL) !== null)
-        )
-      );
-      if (alerted) refused.current();
-    });
-    watch.observe(element, { childList: true, subtree: true });
-    return () => watch.disconnect();
-  }, [review]);
   return (
     <div
       aria-level={level}
@@ -245,29 +222,16 @@ export function DecisionsRow({
               />
             ) : null}
           </div>
-          {/* A press on it leaves the focus where it is, so the control does not move under
-              the pointer before the press ends. It opens the rest in place, and closes it. The
-              body draws the words whole, so it offers nothing to open there. */}
+          {/* G's control under cut words, the one every view that cuts a node's words draws,
+              so it opens and closes the rest as the outline's rows do. The body draws the words
+              whole, so it offers nothing to open there. */}
           {clamp === undefined || body ? null : (
-            <button
-              className={`dispatch-inline-link text-xs leading-[22px] font-medium underline decoration-page-hair underline-offset-[3px] ${pageQuietText}`}
-              data-node-more=""
-              onClick={() => setOpened((held) => !held)}
-              onMouseDown={(event) => event.preventDefault()}
-              tabIndex={-1}
-              type="button"
-              {...pageChrome}
-            >
-              {opened ? (
-                CONTROL_LABELS.read_less
-              ) : (
-                <>
-                  {CONTROL_LABELS.read_more} ·{" "}
-                  <span {...authorText}>{clamp.hidden.toLocaleString()}</span>{" "}
-                  {CONTROL_LABELS.read_more_words}
-                </>
-              )}
-            </button>
+            <MoreWords
+              hidden={clamp.hidden}
+              onToggle={() => setOpened((held) => !held)}
+              opened={opened}
+              tabStops={false}
+            />
           )}
           {node.options === undefined ? null : (
             <NodeOptions body={body} node={node} writer={writer} />
@@ -294,8 +258,7 @@ export function DecisionsRow({
               <span className="shrink-0" {...pageChrome}>
                 {NODE_TYPE_NAMES[entry.parent.type]}
               </span>
-              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ||
-              entry.parent.line === entry.parent.id ? null : (
+              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ? null : (
                 <span className="min-w-0 break-words" {...authorText}>
                   {entry.parent.line}
                 </span>
@@ -342,9 +305,10 @@ export function DecisionsRow({
               press of either, as a press anywhere on a row, gives the row the focus once the
               press is over (`DecisionsFilterBody.tsx`'s `focusRow`), so nothing moves under
               the pointer before the click lands. A Keep, by a press or by `Shift+K`, which
-              presses it, and a Change sent with words are the reader's own review of the
-              decision, which the row says to the list: a Change sent empty writes nothing
-              (`DecisionActions.tsx`). */}
+              presses it, and a send of the Change form are a press of the reader's on this
+              row, which the row says to the list. Whether it wrote anything is the server's to
+              say, on the decision itself: a refused write and a Change sent empty write
+              nothing (`DecisionActions.tsx`), so the list reads the decision, not this row. */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
@@ -352,12 +316,7 @@ export function DecisionsRow({
               if (event.target instanceof Element && event.target.closest(KEEP) !== null)
                 onReviewed();
             }}
-            onSubmitCapture={(event) => {
-              const field =
-                event.target instanceof Element ? event.target.querySelector("textarea") : null;
-              if (field !== null && field.value.trim() !== "") onReviewed();
-            }}
-            ref={actions}
+            onSubmitCapture={onReviewed}
           >
             {review ? (
               <DecisionActions
@@ -391,30 +350,15 @@ export function DecisionsRow({
               data-node-body=""
               data-pinned={pinned ? "" : undefined}
             >
-              {author.kind === "unknown" ? (
-                <p
-                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-                  data-author-kind={author.kind}
-                  data-node-author=""
-                >
-                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.unknown} />
-                  <span {...pageChrome}>{author.name}</span>
-                </p>
-              ) : author.kind === "agent" && agentRoleWord(author.name) !== author.name ? (
-                <p
-                  className={`flex min-w-0 items-center gap-1 text-xs leading-5 ${pageQuietText}`}
-                  data-node-author-title=""
-                >
-                  <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.authors.agent} />
-                  <span className="min-w-0 break-words" {...authorText}>
-                    {author.name}
-                  </span>
-                </p>
-              ) : null}
+              <BodyAuthor author={author} />
               <p>
+                {/* A press moves no focus: the body this closes would take it to the page. G's
+                    `KeepOpen` has no such guard yet, so this row keeps its own button until
+                    decision 141 gives G's one and that change is under this row. */}
                 <button
                   className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
                   onClick={onPin}
+                  onMouseDown={(event) => event.preventDefault()}
                   tabIndex={-1}
                   type="button"
                   {...pageChrome}
@@ -448,16 +392,6 @@ export function DecisionsRow({
 /** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
-
-/** What `DecisionActions.tsx` draws where the server refused a Keep or a Change. */
-const REFUSAL = '[role="alert"]';
-
-/** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
-type Tone = "context" | "decision" | "question";
-
-/** The kinds of node that draw no tag, as G's outline row draws none for them (`NodeRow.tsx`'s
- *  `UNTYPED`): what somebody said is the conversation's own words, not a typed kind. */
-const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: true, message: true };
 
 /** A question's colour and a decision's; and for the node an address names, which is no entry
  *  of the list, the grey G's outline gives a node it draws for its context (`NodeRow.tsx`). */

@@ -384,7 +384,9 @@ export function firstLineOf(text: string): {
  * reads as four dots. What follows a whole sentence is the node's next sentence, which its row
  * or its body holds. Whether the line ends at a sentence end is `firstLineOf`'s `sentence`,
  * since a line cut inside a sentence can end on a `.`, `!` or `?` that ends none; a line handed
- * in without it is read by its last character, a sentence's mark ending a whole sentence.
+ * in without it is read by its last character, a sentence's mark ending a whole sentence. A line
+ * cut just after an ellipsis of the author's own (`wait…`), which `firstLineOf` reads as no
+ * sentence end since it often stands inside one, draws no second: `wait……` reads as six dots.
  */
 export function drawnLine({
   cut,
@@ -395,7 +397,7 @@ export function drawnLine({
   readonly line: string;
   readonly sentence?: boolean;
 }): string {
-  return cut && !sentence ? `${line}…` : line;
+  return cut && !sentence && !line.endsWith("…") ? `${line}…` : line;
 }
 
 /** The node's own words as a reader reads them: the words of the server's reading of its text

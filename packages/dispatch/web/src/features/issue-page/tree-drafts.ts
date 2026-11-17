@@ -441,23 +441,91 @@ const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
  *  `snake_case_name` is one word. */
 const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
 
-/**
- * The private-use stand-ins `LITERAL`'s characters are held as while the marks are taken off,
- * each ASCII punctuation character as its range's start plus its code, in two ranges that
- * `plainWords` puts back at two times. An escaped character (`escaped`, U+E000 plus its code) is
- * put back before bare addresses are written short, so `see dispatch://CORE-2\.` reads
- * `see CORE-2.`. A code span's content and an autolink's URL (`verbatim`, U+E100 plus its code)
- * are put back after, so an address in code stays as its author wrote it, and an autolink's,
- * written short as it is read, is not read again.
- */
-const KEPT = {
-  escaped: { held: /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu, start: 0xe000 },
-  verbatim: { held: /[\ue121-\ue12f\ue13a-\ue140\ue15b-\ue160\ue17b-\ue17e]/gu, start: 0xe100 },
-} as const;
+/** Each ASCII punctuation character, in code order, as `PUNCTUATION` picks them out of the
+ *  printable ASCII characters but the space: the 32 each hold of `Holds` has a stand-in for. */
+const PUNCTUATION_CHARACTERS: readonly string[] =
+  String.fromCharCode(...Array.from({ length: 0x7f - 0x21 }, (_, at) => 0x21 + at)).match(
+    PUNCTUATION
+  ) ?? [];
 
-/** `text` with each stand-in in one range of `KEPT` the ASCII character it is held for. */
-function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string {
-  return text.replace(range.held, (kept) => String.fromCharCode(kept.charCodeAt(0) - range.start));
+/** The private-use code points, in the order a text's stand-ins are taken from them: the Basic
+ *  Multilingual Plane's area, U+E000 to U+F8FF, then plane 15's and plane 16's. */
+const PRIVATE_USE: readonly (readonly [first: number, last: number])[] = [
+  [0xe000, 0xf8ff],
+  [0xf0000, 0xffffd],
+  [0x100000, 0x10fffd],
+];
+
+/** One private-use character a text holds: an author's own, or a stand-in `Holds` chose. */
+const PRIVATE_USE_CHARACTER = /\p{Co}/gu;
+
+/** One hold's stand-ins: each ASCII punctuation character's (`held`), and the character each
+ *  stand-in is held for (`back`). */
+interface Hold {
+  readonly back: ReadonlyMap<string, string>;
+  readonly held: ReadonlyMap<string, string>;
+}
+
+/**
+ * The private-use stand-ins one text's `LITERAL` characters are held as while the marks are
+ * taken off, in two holds that `plainWords` puts back at two times. An escaped character
+ * (`escaped`) is put back before bare addresses are written short, so `see dispatch://CORE-2\.`
+ * reads `see CORE-2.`. A code span's content and an autolink's URL (`verbatim`) are put back
+ * after, so an address in code stays as its author wrote it, and an autolink's, written short as
+ * it is read, is not read again.
+ */
+interface Holds {
+  readonly escaped: Hold;
+  readonly verbatim: Hold;
+}
+
+/** The holds of a text `LITERAL` reads nothing of, which hold nothing and put nothing back. */
+const NO_HOLDS: Holds = {
+  escaped: { back: new Map(), held: new Map() },
+  verbatim: { back: new Map(), held: new Map() },
+};
+
+/**
+ * The holds of `text`, their stand-ins chosen for it alone: the private-use code points in order
+ * (`PRIVATE_USE`), skipping each one the text holds, the escaped hold's 32 first and the verbatim
+ * hold's 32 next. A stand-in is so never a character the author wrote, and an author's own
+ * private-use character - an icon font's, a pasted terminal glyph - reads as written. Undefined
+ * for a text that holds so many private-use characters that fewer than 64 are left free.
+ */
+function holdsFor(text: string): Holds | undefined {
+  const free = freePrivateUse(new Set(text.match(PRIVATE_USE_CHARACTER)));
+  const hold = (): Hold | undefined => {
+    const back = new Map<string, string>();
+    const held = new Map<string, string>();
+    for (const character of PUNCTUATION_CHARACTERS) {
+      const standIn = free.next();
+      if (standIn.done === true) return undefined;
+      back.set(standIn.value, character);
+      held.set(character, standIn.value);
+    }
+    return { back, held };
+  };
+  const escaped = hold();
+  const verbatim = hold();
+  return escaped === undefined || verbatim === undefined ? undefined : { escaped, verbatim };
+}
+
+/** Each private-use character, in `PRIVATE_USE`'s order, that is none of `taken`. */
+function* freePrivateUse(taken: ReadonlySet<string>): Generator<string, void> {
+  for (const [first, last] of PRIVATE_USE) {
+    for (let point = first; point <= last; point += 1) {
+      const character = String.fromCodePoint(point);
+      if (!taken.has(character)) yield character;
+    }
+  }
+}
+
+/** `text` with each stand-in of `hold` the ASCII character it is held for, and every other
+ *  character, an author's own private-use one included, as written. */
+function putBack(text: string, hold: Hold): string {
+  return hold.back.size === 0
+    ? text
+    : text.replace(PRIVATE_USE_CHARACTER, (character) => hold.back.get(character) ?? character);
 }
 
 /**
@@ -468,15 +536,15 @@ function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string 
  * Each paragraph is read on its own, since no mark pairs across a blank line. What markdown
  * reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`), a code span's
  * content, an autolink's URL, which reads as a link's words read, its address written short - is
- * read first, and each ASCII punctuation character of it is held as a private-use stand-in
- * (`KEPT`: U+E000 plus its code for an escaped character, U+E100 plus its code for a code span's
- * and an autolink's) while the marks are taken off, so no mark is read inside it. A character of
- * the text already in either range is no word a reader reads, and reads as the ASCII character it
- * stands in for. Then a blockquote's and a list item's markers at the start of any line go
- * (`BLOCK_MARKER`), and a heading marker after them, an image goes whole, a link reads as its
- * words, and strong, emphasis and struck marks go until none is left, so nested marks
- * (`***x***`) go too. The escaped characters are put back, and white space collapses to single
- * spaces.
+ * read first, and each ASCII punctuation character of it is held as a private-use stand-in while
+ * the marks are taken off, so no mark is read inside it. The stand-ins are chosen for each text
+ * from the private-use code points it does not hold (`holdsFor`) and read back by what each was
+ * chosen for, so an author's own private-use character - an icon font's, a pasted terminal
+ * glyph - is no stand-in and reads as written. Then a blockquote's and a list item's markers at
+ * the start of any line go (`BLOCK_MARKER`), and a heading marker after them, an image goes
+ * whole, a link reads as its words, and strong, emphasis and struck marks go until none is left,
+ * so nested marks (`***x***`) go too. The escaped characters are put back, and white space
+ * collapses to single spaces.
  *
  * Then a bare `dispatch://` address reads as its target's short form (`addressesAsShortForms`,
  * decision 95): every place that reads a stored text to plain words draws it on one line - a
@@ -486,32 +554,39 @@ function putBack(text: string, range: (typeof KEPT)[keyof typeof KEPT]): string 
  * characters of code spans and autolinks are put back, so an address in code reads as its
  * author wrote it, as a rendered body draws it: a code span holding
  * `dispatch read dispatch://CORE-2` keeps its address.
+ *
+ * A text `LITERAL` reads something of that holds so many private-use characters that fewer than
+ * the 64 stand-ins it needs are left free - more than 137,404 of the 137,468 - has nothing to
+ * hold its literal characters as, and reads as its own words with white space collapsed and no
+ * mark taken off: markup shown is less wrong than characters changed.
  */
 export function plainWords(markdown: string): string {
   return plainWordsWith(markdown, addressesAsShortForms);
 }
 
 /** The words of a stored markdown text as `plainWords` reads them, with no address written
- *  short: its marks, markers, links, images, escapes and code spans read as they read there, and
- *  a bare address and an autolink's URL stay as written (dispatch://INFRA-1196 decision 140). A
- *  caller that names each reference itself reads these, since a short form leaves it no address
- *  to name. */
+ *  short: its marks, markers, links, images, escapes and code spans read as they read there, an
+ *  author's own private-use character as written, and a bare address and an autolink's URL stay
+ *  as written (dispatch://INFRA-1196 decision 140). A caller that names each reference itself
+ *  reads these, since a short form leaves it no address to name. */
 export function plainWordsRaw(markdown: string): string {
   return plainWordsWith(markdown, (words) => words);
 }
 
 /** The words `plainWords` reads, each bare address in them and each autolink's URL written by
- *  `shorten` where `plainWords` writes it short (`addressesAsShortForms`). */
+ *  `shorten` where `plainWords` writes it short (`addressesAsShortForms`). A text `LITERAL` reads
+ *  nothing of holds nothing, so no stand-in is chosen for it and none is put back. */
 function plainWordsWith(markdown: string, shorten: (words: string) => string): string {
+  const holds = markdown.search(LITERAL) === -1 ? NO_HOLDS : holdsFor(markdown);
+  if (holds === undefined) return markdown.replace(/\s+/gu, " ").trim();
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
     let words = paragraph
       .replace(LITERAL, (written, escaped?: string, _run?: string, code?: string, url?: string) => {
-        const range = escaped === undefined ? KEPT.verbatim : KEPT.escaped;
+        const hold = escaped === undefined ? holds.verbatim : holds.escaped;
         const literal = escaped ?? code ?? (url === undefined ? undefined : shorten(url));
         return (
-          literal?.replace(PUNCTUATION, (character) =>
-            String.fromCharCode(range.start + character.charCodeAt(0))
-          ) ?? written
+          literal?.replace(PUNCTUATION, (character) => hold.held.get(character) ?? character) ??
+          written
         );
       })
       .replace(BLOCK_MARKER, "")
@@ -527,10 +602,10 @@ function plainWordsWith(markdown: string, shorten: (words: string) => string): s
         .replace(STAR_EMPHASIS, "$1")
         .replace(UNDERSCORE_EMPHASIS, "$1");
     }
-    return putBack(words, KEPT.escaped);
+    return putBack(words, holds.escaped);
   });
   const words = paragraphs.join(" ").replace(/\s+/gu, " ").trim();
-  return putBack(shorten(words), KEPT.verbatim);
+  return putBack(shorten(words), holds.verbatim);
 }
 
 /**
@@ -1324,9 +1399,9 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
 
 /**
  * A check and a plan task sit under each requirement their `serves` names, edited under the
- * first and transcluded under the rest (R4); what their `needs` names is a chip, as every edge
- * that is not the spine is. A `serves` naming no requirement of this issue places nothing, so
- * the block keeps its place under the issue.
+ * first and transcluded under the rest (R4); what their `needs` names is a chip, one per target
+ * (`needsChips`), as every edge that is not the spine is. A `serves` naming no requirement of
+ * this issue places nothing, so the block keeps its place under the issue.
  *
  * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
  *
@@ -1364,12 +1439,47 @@ function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void
     ) {
       draft.gaps = [...draft.gaps, "nobody_asked"];
     }
-    draft.chips = [
-      ...draft.chips,
-      ...(draft.pointers.needs ?? []).map((reference) => ({
-        ...context.chipOf(reference),
-        label: blockAttributeLabel("needs"),
-      })),
-    ];
+    draft.chips = [...draft.chips, ...needsChips(draft.pointers.needs ?? [], context)];
   }
+}
+
+/**
+ * The chips of what a block `needs`, one per target (dispatch://INFRA-1196 decision 143), in the
+ * order its pointers first name each. The server accepts one task needed by a pinned and an
+ * unpinned pointer at once (`#b-a1@v1 #b-a1`), and both need the one task, so the pointers are
+ * told apart by what they name with any version pin dropped (`pinDropped`). A target named both
+ * ways is drawn by its unpinned pointer's chip, which names the block's current words; one only
+ * pinned pointers name, by the first one's.
+ */
+function needsChips(needs: readonly string[], context: TreeContext): NodeChip[] {
+  const needed = new Map<string, { readonly pinned: boolean; readonly reference: string }>();
+  for (const reference of needs) {
+    const { pinned, target } = pinDropped(reference);
+    const held = needed.get(target);
+    if (held === undefined || (held.pinned && !pinned)) needed.set(target, { pinned, reference });
+  }
+  return [...needed.values()].map(({ reference }) => ({
+    ...context.chipOf(reference),
+    label: blockAttributeLabel("needs"),
+  }));
+}
+
+/**
+ * What `reference` names with any version pin dropped, a block's (`#b-a1@v1`) and a document's
+ * (`artifact/plan-md@v1`), as the reference its route writes with none (`target`), and whether
+ * it pinned one (`pinned`). A reference that does not parse is its own target, pinning nothing.
+ */
+function pinDropped(reference: string): { readonly pinned: boolean; readonly target: string } {
+  const route = parseNodeReference(reference);
+  if (route === undefined) return { pinned: false, target: reference };
+  const block = "block" in route ? route.block : undefined;
+  const version = "version" in route ? route.version : undefined;
+  return {
+    pinned: block?.pin !== undefined || version !== undefined,
+    target: buildDispatchReference({
+      ...route,
+      ...(block === undefined ? {} : { block: { id: block.id } }),
+      ...(version === undefined ? {} : { version: undefined }),
+    }),
+  };
 }

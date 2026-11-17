@@ -29,7 +29,7 @@ import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS, DECISIONS_WORDS, PRESET_NAMES } from "../page-words";
+import { CONTROL_LABELS, DECISIONS_WORDS, isReader, PRESET_NAMES } from "../page-words";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -199,9 +199,10 @@ export function DecisionsFilterBody({
   );
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. It
-  // holds only while the reader stays on that row and the write is out or landed: a Keep or a
-  // Change the server refused, a move to another row and the focus leaving the list each let
-  // it go, so it never moves the focus on later.
+  // holds only while the reader stays on that row: a move to another row and the focus leaving
+  // the list each let it go, so it never moves the focus on later. The press is no review of
+  // its own: the decision leaving the review list moves the focus on only where it then stands
+  // kept by the reader or with their change, so a write the server refused moves nothing.
   const ownReview = useRef<string | undefined>(undefined);
   const takeFocus = useCallback(
     (entry: DecisionsEntry | NamedEntry) => {
@@ -231,6 +232,10 @@ export function DecisionsFilterBody({
   // (`IssueTree.tsx`'s `focusRow`); a key's move takes it at once. The press is marked on the
   // whole list, since the foot's rows stand outside the tree element. The latest `takeFocus`
   // takes it, so a render that makes a new one while a press is held does not drop its end.
+  // This is a copy of part I's press logic in `IssueTree.tsx`, with that file's private
+  // `PRESS_ENDS` (below), which decisions 94 and 141 allow only until part I exports the hook
+  // for a press's focus and its `PRESS_ENDS`: once both are under this part's base, this file
+  // imports them and deletes its copy.
   const press = useRef<{
     ending?: number;
     focus: DecisionsEntry | NamedEntry | undefined;
@@ -269,12 +274,12 @@ export function DecisionsFilterBody({
       window.clearTimeout(held.ending);
     };
   }, []);
-  // The focus leaving the list for no control, or Escape once it has left for another control
-  // of the page, closes what it opened and takes away what a key reported and the reader's own
-  // review; a focus gone to another control keeps the row's body drawn until then, so nothing
-  // moves under a press there (`useReleaseFocus`, decision 105). The panel goes back to the
-  // issue's own facts as the focus leaves, unless it went to Details, where a reader reads the
-  // node's. No row of the list is edited in place.
+  // The focus leaving the list with no press under way, by Tab or a script, lets go at once of
+  // what the row opened, what a key reported and the reader's own review. A press on another
+  // control of the page keeps them until that press has ended and its click has landed, or until
+  // Escape, so nothing moves under the pointer (`useReleaseFocus`, decision 105 as amended). The
+  // panel goes back to the issue's own facts as the focus leaves, unless it went to Details,
+  // where a reader reads the node's. No row of the list is edited in place.
   const leave = useCallback(() => {
     setFocused(undefined);
     setReport(undefined);
@@ -415,15 +420,19 @@ export function DecisionsFilterBody({
   // under Your decisions, a decision of the foot that a read ties to a statement comes up to
   // the review list. A reader who kept or asked to change a decision on its row here is working
   // down the review list, so the focus goes to the decision that stood after it, else the one
-  // before it (the prototype's `keepDecision`), else to the decision where it now stands. An
-  // entry that moves by no act of the reader here - a read that says another person kept a
-  // decision or answered a question, that a decision was replaced or ties to a statement, or a
-  // Change sent from another page - keeps the focus where it now stands: the reader asked to go
-  // nowhere, and the focus stays on the entry they were on (R6), the foot unfolded for it where
-  // it is one of the foot's own. An entry the reader is on that is drawn nowhere now - another
-  // person deleted it, or the words filter took it out of the view - takes its row and the
-  // focus away: the focus goes to the entry that stood after it in its part, else the one
-  // before it, else the view's first row (decision 110). A reader who has moved somewhere else
+  // before it (the prototype's `keepDecision`), else to the decision where it now stands. That
+  // it was their review is read from the decision the server wrote back - kept by them, or
+  // with their change - after their press on its row, so a Keep the server refused and a
+  // Change sent empty, which write nothing, are none. An entry that moves by no act of the
+  // reader here - a read that says another person kept a decision or answered a question, that
+  // a decision was replaced or ties to a statement, or a Change sent from another page - keeps
+  // the focus where it now stands: the reader asked to go nowhere, and the focus stays on the
+  // entry they were on (R6), the foot unfolded for it where it is one of the foot's own. An
+  // entry the reader is on that is drawn nowhere now - another person deleted it, or the words
+  // filter took it out of the view - takes its row and the focus away: the focus goes to the
+  // entry that stood after it in its part, else the one before it, else the view's first row,
+  // else, where the list draws no row, the tree, which hands it to the foot's control or keeps
+  // it, so it is never left on the page (decision 110). A reader who has moved somewhere else
   // on the page keeps their place.
   const stood = useRef(partOf);
   useLayoutEffect(() => {
@@ -435,21 +444,34 @@ export function DecisionsFilterBody({
     if (was === undefined || was === now) return;
     const active = document.activeElement;
     if (active !== null && active !== document.body && active.isConnected) return;
-    if (now === undefined) {
-      const next = neighbourOf(focused, was, before, partOf);
-      (next === undefined
-        ? body.current?.querySelector<HTMLElement>("[data-node-row]")
-        : rowOf(body.current, next)
-      )?.focus();
-      return;
-    }
-    if (was !== "review" || ownReview.current !== focused) {
+    // The press is spent once the decision has left the review list, whatever it wrote.
+    const pressedHere = was === "review" && ownReview.current === focused;
+    if (pressedHere) ownReview.current = undefined;
+    const standing: readonly (DecisionsEntry | NamedEntry)[] = now === undefined ? [] : parts[now];
+    const entry = standing.find((held) => held.node.id === focused);
+    const reviewed =
+      pressedHere &&
+      entry?.kind === "decision" &&
+      (isReader(entry.keptBy, reader) || isReader(entry.change?.by, reader));
+    if (now !== undefined && !reviewed) {
       goTo(focused);
       return;
     }
-    ownReview.current = undefined;
-    rowOf(body.current, neighbourOf(focused, "review", before, partOf) ?? focused)?.focus();
-  }, [focused, goTo, partOf]);
+    const next =
+      neighbourOf(focused, was, before, partOf) ?? (now === undefined ? undefined : focused);
+    const row =
+      next === undefined
+        ? body.current?.querySelector<HTMLElement>("[data-node-row]")
+        : rowOf(body.current, next);
+    if (row !== null && row !== undefined) {
+      row.focus();
+      return;
+    }
+    // No row is left to take it: the focus is off every row, so what a row's focus opened goes,
+    // as when the foot's control takes it, and the tree holds it or hands it to that control.
+    footFocused();
+    tree.current?.focus();
+  }, [focused, footFocused, goTo, partOf, parts, reader]);
 
   useTreeKeymap({
     container: body,
@@ -503,9 +525,6 @@ export function DecisionsFilterBody({
         level={part === "agents" ? 2 : 1}
         onFocus={() => focusRow(entry)}
         onPin={() => pin(id)}
-        onRefused={() => {
-          if (ownReview.current === id) ownReview.current = undefined;
-        }}
         // A Keep pressed or a Change sent is the press over: its click has landed, so the row
         // takes the focus at once rather than once the press's end comes, which the write's
         // answer can come before, and the decision would leave the review list from a row the
@@ -678,11 +697,12 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
   );
 }
 
-/** What ends a press in the list, as it ends one in the outline (`IssueTree.tsx`'s own
- *  `PRESS_ENDS`, which that file keeps to itself): its mouseup, which the click follows in the
- *  same task; the drag a press on a picture or a link starts instead, which sends no mouseup; a
- *  pointer the browser cancelled; and a key, since a press released outside the window sends no
- *  mouseup, and a key's move must never wait on a press that is over. */
+/** What ends a press in the list, as it ends one in the outline: a copy of `IssueTree.tsx`'s
+ *  own `PRESS_ENDS`, which that file keeps to itself until part I exports it (decisions 94 and
+ *  141). Its mouseup, which the click follows in the same task; the drag a press on a picture
+ *  or a link starts instead, which sends no mouseup; a pointer the browser cancelled; and a
+ *  key, since a press released outside the window sends no mouseup, and a key's move must
+ *  never wait on a press that is over. */
 const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before

@@ -198,6 +198,8 @@ function summarySentences(
     const whole = runs.map(({ words }) => words).join(" ");
     const label = whole.slice(0, labelLength(whole));
     const first = firstLineOf(whole.slice(label.length));
+    // The label goes before the line and leaves its end where `first` read it, so the line ends
+    // at its sentence's end exactly where `first` says it does (`sentence`).
     const line = drawnLine({ ...first, line: `${label} ${first.line}`.trim() });
     return line === "" ? [] : [references.named(line)];
   }

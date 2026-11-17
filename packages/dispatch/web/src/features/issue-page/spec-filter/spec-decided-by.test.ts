@@ -44,8 +44,7 @@ import {
 const { nodeIdOf } = treeContext({ issue: issueDetails() });
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
- *  is an issue, else by the page's word for a whole document (`documentWord`), else by the word
- *  for a document (`NODE_TYPE_NAMES.document`). */
+ *  is an issue, and else by its short form (`shortForm`, decision 140 of dispatch://INFRA-1196). */
 const NO_NAMES = (): undefined => undefined;
 
 /** The Spec filter's body over `tree`, as the page reads it; `nameOf` is how the page names a
@@ -578,6 +577,19 @@ test("a person's quote is the first sentence of their answer's plain words", () 
   expect(groups[1]?.runs[0]?.decision?.quote).toBe("Keep snake_case as is.");
 });
 
+// R5, of the tester's finding 1's kind, found by J's implementer in test round 2: a person's quote
+// draws a private-use character they wrote of their own - an icon from an icon font or a
+// terminal - as they wrote it, and never as the punctuation that a code span's characters are
+// held as while the marks are taken off.
+test("a private-use character in a person's answer is quoted as written, beside a code span", () => {
+  const groups = bodyOf(
+    issueTree([
+      answeredAsk("ask-1", { text: "Keep \ue02a and \ue05f, and `a*b` too." }, [statement("r1")]),
+    ])
+  );
+  expect(groups[0]?.runs[0]?.decision?.quote).toBe("Keep \ue02a and \ue05f, and a*b too.");
+});
+
 // R5, review finding 4590606160, decision 51: a leading label is no sentence end, so an answer
 // that opens with a numbered label is quoted with the sentence after it, never as the label
 // alone.
@@ -608,7 +620,7 @@ test("a person's quote that cites a labelled statement ends where their sentence
 });
 
 // R1 and R5: the question line is the question's one line, cut from its first block's words
-// (`lineWords`) with each reference unnamed: a second block never runs into it, and a name's
+// (`lineWordsRaw`) with each reference unnamed: a second block never runs into it, and a name's
 // label ends none of it.
 test("a question line is its first block's line, cut before the reference in it is named", () => {
   const ask = {
@@ -620,10 +632,11 @@ test("a question line is its first block's line, cut before the reference in it 
 });
 
 // Review thread 4592007145: `presets.ts` cuts a parent's line by R1's rule with each reference
-// still its address, so the heading is read from the parent node, where each reference is named
-// after the cut and counted as the name it draws. 68 characters, the name's 18 and " says." are
-// 92: the first sentence is the heading. With the address's 27 it is 101, which `presets.ts`'s
-// line cuts inside the sentence; named first, the label ends the sentence at "R2.".
+// written as its short form (`lineWords`), so the heading is read from the parent node, where
+// each reference is named by the page's name after the cut (decision 140 of
+// dispatch://INFRA-1196) and counted as the name it draws. 68 characters, the name's 18 and
+// " says." are 92: the first sentence is the heading. With the address's 27 it would be 101,
+// which cuts the line inside the sentence; named first, the label ends the sentence at "R2.".
 test("a group's heading counts a reference in its parent's line as its name, which ends no sentence", () => {
   const before = "The heading keeps every word its author wrote whole on one line, as ";
   const groups = bodyOf(
@@ -644,7 +657,7 @@ test("a group's heading counts a reference in its parent's line as its name, whi
 });
 
 // R5 and R1: an agent's decision the tree holds no node for is quoted from its own reading, else
-// its stored text, by the first block that holds any words, as `lineWords` reads a node's: its
+// its stored text, by the first block that holds any words, as `lineWordsRaw` reads a node's: its
 // `##` heading never runs into the paragraph under it, and an image or a rule is passed over.
 test("an agent's decision with no node is quoted by the first block of its own words", () => {
   const text = "## Keep it\n\nKeep the model pure.";
