@@ -22,7 +22,11 @@
 #     driver reads that phases.reviewed_head of the reviewer's row holds the head the review read,
 #     clears it in the daemon's database, and the reviewer's task of round 2 holds no
 #     `Last reviewed commit`. The check before it is the same run with the clear left out, so the
-#     control can fail.
+#     control can fail;
+#   - other-session-records-no-commit: on a third issue, after the same first round, the review
+#     App's request for changes at the head comes from a session the reviewer's claim did not
+#     register; it moves the issue back to implementing, phases.reviewed_head of the reviewer's row
+#     stays empty, and the reviewer's task of round 2 holds no `Last reviewed commit`.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
 # to start without them), bun (after `bun install` at the checkout's root), awk and python3, as

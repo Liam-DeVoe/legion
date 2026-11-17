@@ -13,13 +13,18 @@
 // claim registered, and each claim driven over the daemon's worker stream as its pane's shim drives
 // it (handoffClaimant), the task it is prompted with read as the shim reads it. The reviewer's
 // review is the review App's own, published on the ENVOY_NOTIFICATIONS stream as Envoy relays
-// GitHub's webhook (publishReviewAs). It decides the round (workflow's RefusesRound) because its
-// Legion footer names the session the reviewer's claim registered and the pull request's head, a
-// commit id of 40 lowercase hexadecimal characters. The implementer's push and GitHub's synchronize
-// move that head before the second round (publishPushOf, publishSynchronizeOf), so the commit the
-// second round is told is not the head it reviews. GitHub's REST API is reviewRangeGitHub; no agent
-// runs. The two issues and their pull requests are seeded in testing through the store
-// (seedIssues), each with its tester's launch for the boot to relaunch.
+// GitHub's webhook (publishReviewAs), before the reviewer completes, as the reviewer posts it.
+// Its Legion footer names the pull request's head, a commit id of 40 lowercase hexadecimal
+// characters, which is what lets it decide the round (workflow's refusesRound); in a first round
+// the reviewer's row names no claim yet, so the review App's login decides who may (workflow's
+// byReviewer). The footer also names the session the reviewer's claim registered, which is what
+// makes the daemon record the head as the commit the reviewer read (workflow's
+// byReviewersClaim): a review of another session at the same head records none. The
+// implementer's push and GitHub's synchronize move that head before the second round
+// (publishPushOf, publishSynchronizeOf), so the commit the second round is told is not the head it
+// reviews. GitHub's REST API is reviewRangeGitHub; no agent runs. The three issues and their pull
+// requests are seeded in testing through the store (seedIssues), each with its tester's launch for
+// the boot to relaunch.
 //
 // Each check reads the reviewer's task of its round, and first holds that it is that task: it says
 // `Phase: reviewing.` and names the tester's handoff of that round by its version. Without that, a
@@ -52,8 +57,9 @@ type reviewRangeLive struct {
 	*handoffRecordsLive
 	pulls *reviewRangeGitHub
 	// walked is the issue the first two checks walk; control the issue the third walks, with the
-	// commit of its first review cleared from the record between its rounds.
-	walked, control *reviewRangeIssue
+	// commit of its first review cleared from the record between its rounds; and other the issue
+	// the fourth walks, whose first round another review-App session's review decides.
+	walked, control, other *reviewRangeIssue
 	// seq numbers the review envelopes, so no two carry one event id, and reviewID numbers the
 	// reviews, so each is newer than the one before it (record.ReviewOrder).
 	seq, reviewID int64
@@ -70,16 +76,17 @@ type reviewRangeIssue struct {
 	tester, reviewer *handoffClaimant
 }
 
-// TestReviewRangeLive drives the proof's three checks against one booted daemon and one Dispatch.
+// TestReviewRangeLive drives the proof's four checks against one booted daemon and one Dispatch.
 func TestReviewRangeLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newReviewRangeLive(t)
 	r.step("round-1-names-no-commit", r.roundOneNamesNoCommit)
 	r.step("round-2-names-the-commit-of-round-1", r.roundTwoNamesTheCommitOfRoundOne)
 	r.step("control-no-record-no-commit", r.controlNoRecordNoCommit)
+	r.step("other-session-records-no-commit", r.otherSessionRecordsNoCommit)
 }
 
-// newReviewRangeLive starts Dispatch, creates the two issues on it, seeds them in testing on open
+// newReviewRangeLive starts Dispatch, creates the three issues on it, seeds them in testing on open
 // pull requests, and boots the daemon at Dispatch with reviewRangeGitHub as GitHub.
 func newReviewRangeLive(t *testing.T) *reviewRangeLive {
 	t.Helper()
@@ -89,14 +96,16 @@ func newReviewRangeLive(t *testing.T) *reviewRangeLive {
 		t.Fatal(err)
 	}
 	// Dispatch refuses a second issue whose title shares most of a first one's words as a possible
-	// duplicate, so the two are titled apart.
+	// duplicate, so the three are titled apart.
 	r.walked = r.newIssue("walked", "a later review round names the commit the round before it read", int(number)+1)
 	r.control = r.newIssue("control", "the control whose record loses that commit between its rounds", int(number)+2)
-	r.pulls = newReviewRangeGitHub(t, r.walked, r.control)
+	r.other = r.newIssue("other", "another session's verdict leaves no reviewed head behind", int(number)+3)
+	r.pulls = newReviewRangeGitHub(t, r.walked, r.control, r.other)
 	r.github = r.pulls.url
 	r.seedIssues([]dispatchSeed{
 		{key: r.walked.key, phase: phase.Testing, role: claim.RoleTester, pr: r.walked.number, head: r.walked.first},
 		{key: r.control.key, phase: phase.Testing, role: claim.RoleTester, pr: r.control.number, head: r.control.first},
+		{key: r.other.key, phase: phase.Testing, role: claim.RoleTester, pr: r.other.number, head: r.other.first},
 	})
 	r.boot()
 	return r
@@ -165,6 +174,34 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
+// Check other-session-records-no-commit. The third issue walks the same first round; then the
+// review App's REQUEST_CHANGES at its first head comes from a session the reviewer's claim did not
+// register - another Legion role posting under the same login - and phases.reviewed_head of its
+// reviewer stays empty, and the task of round 2 names no reviewed commit. That review still
+// decides round 1 and moves the issue back to implementing: the reviewer's row names no claim
+// before its first completion, so the login decides who may decide the round (workflow's
+// byReviewer), while only the session of the reviewer's claim moves the commit (workflow's
+// byReviewersClaim). The walked issue's second check is the same first round with the reviewer's
+// own session, so this check can fail.
+func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
+	issue := r.other
+	task := r.roundOne(issue)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the other issue's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
+	}
+	r.requestChangesAs(issue, "ses_"+issue.name+"_controller")
+	if got := r.reviewedHead(issue.key); got != "" {
+		r.t.Fatalf("phases.reviewed_head of %s's reviewer after another session's review = %q, want \"\": the reviewer's claim registered %s",
+			issue.key, got, issue.reviewer.session)
+	}
+	r.note("phases.reviewed_head of %s's reviewer reads \"\" after the review of another session", issue.key)
+	task = r.roundTwo(issue)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the other issue's reviewer task of round 2 = %q, want no %q in it: no review of the reviewer's claim read a commit", task, workflow.ReviewedCommitLabel)
+	}
+	r.note("the task names no %q", workflow.ReviewedCommitLabel)
+}
+
 // roundOne walks issue's first review round: the seeded tester, which the boot relaunched, is
 // prompted to resume its phase, writes its handoff and passes; the daemon moves the issue to
 // reviewing, and the reviewer it starts registers and is prompted. It returns that task, held to be
@@ -180,13 +217,19 @@ func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 }
 
 // requestChanges publishes the reviewer's request for changes at issue's first head, its footer
-// naming the session the reviewer's claim registered, and waits for the issue to move back to
-// implementing; the reviewer's turn then ends, as a worker's does after its review.
+// naming the session the reviewer's claim registered (requestChangesAs).
 func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
+	r.requestChangesAs(issue, issue.reviewer.session)
+}
+
+// requestChangesAs publishes the review App's request for changes at issue's first head, its
+// footer naming session, and waits for the issue to move back to implementing; the reviewer's
+// turn then ends, as a worker's does after its review.
+func (r *reviewRangeLive) requestChangesAs(issue *reviewRangeIssue, session string) {
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs(issue.reviewer.session, issue.number, "changes_requested", issue.first, r.seq, r.reviewID)
-	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s and head %s", issue.number, issue.reviewer.session, issue.first)
+	r.publishReviewAs(session, issue.number, "changes_requested", issue.first, r.seq, r.reviewID)
+	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s and head %s", issue.number, session, issue.first)
 	r.waitPhase(issue.key, phase.Implementing)
 	r.note("read back: %s is back in implementing; phases.reviewed_head of its reviewer is %q", issue.key, r.reviewedHead(issue.key))
 	issue.reviewer.endTurn()
