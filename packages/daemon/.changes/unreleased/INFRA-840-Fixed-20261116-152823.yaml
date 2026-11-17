@@ -12,8 +12,9 @@ body: |-
   longer than 255 bytes is refused with `400`, and a registration that would take one claim past
   2,048 held names is refused with `409`: a claim that records a session still resumes it, and one
   that needs a new session starts none until an operator runs the statement the refusal's log line
-  gives, which frees the names of its older sessions once its last session switch is 13 hours past,
-  the broker's default carry window and its longest lease. At every boot the daemon holds, in one
+  gives, which frees the names of its older sessions once its last session switch is 13 hours 5
+  minutes past: the broker's default carry window, its longest lease, and two of its sweeps with
+  room; it must not run while no broker serves. At every boot the daemon holds, in one
   statement, each name a claim records that no row holds, as after a rollback to a release before
   this one, and logs at Error each claim whose current session records a name held for another
   claim or for none, suspending each it can. For each such claim that is not the rightful holder,

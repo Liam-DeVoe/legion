@@ -609,9 +609,15 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		if len(lines) != 1 {
 			t.Fatalf("the refusal was logged %d times, want once", len(lines))
 		}
-		want := switched.Add(13 * time.Hour).UTC().Format(time.RFC3339)
+		// The forget's time plus the window, rounded up to the second, computed here rather than by
+		// ReleaseAfter, so a ReleaseAfter without the window fails it whatever second the clock is on.
+		gate := switched.Add(ReleaseWindow).UTC()
+		if whole := gate.Truncate(time.Second); !whole.Equal(gate) {
+			gate = whole.Add(time.Second)
+		}
+		want := gate.Format(time.RFC3339)
 		if after, ok := lines[0].attr("release_after"); !ok || after.String() != want {
-			t.Fatalf("the refusal's line gives release_after %v, want %s, 13 hours after the forget at %s", after, want, switched.UTC().Format(time.RFC3339))
+			t.Fatalf("the refusal's line gives release_after %v, want %s, the window after the forget at %s", after, want, switched.UTC().Format(time.RFC3339Nano))
 		}
 	})
 

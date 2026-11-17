@@ -44,9 +44,11 @@ var ErrHeldNamesCap = errors.New("the claim would hold more session names than o
 const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one, once release_after has passed"
 
 // ReleaseWindow is how long after a claim's last session switch, and after a hold was written,
-// ReleaseOldNamesStatement waits before it frees a hold: the broker's default carry window plus
-// its longest lease (ReleaseOldNamesStatement says why).
-const ReleaseWindow = 13 * time.Hour
+// ReleaseOldNamesStatement waits before it frees a hold: the broker's default carry window,
+// 12 hours, plus its longest lease, an hour, plus 5 minutes for the two sweeps between a lease's
+// lapse and its carry's end, each at most BROKER_SWEEP_SECONDS' maximum, 60 seconds
+// (ReleaseOldNamesStatement says why).
+const ReleaseWindow = 13*time.Hour + 5*time.Minute
 
 // ReleaseAfter is the earliest time ReleaseOldNamesStatement can free any of the claim's holds: its
 // last session switch plus ReleaseWindow, rounded up to the second so a time written to the second
@@ -69,44 +71,53 @@ func ReleaseAfter(c Claim) time.Time {
 }
 
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
-// start a new session again: it frees the claim's holds recorded more than ReleaseWindow, 13 hours,
-// ago, and only once the claim's last session switch is more than 13 hours ago, except every name
-// of the session it records and of the one it last abandoned. A name of either session is kept when
-// it is that session's id, contains that id, or is a part of that session's recorded file path, so
-// a hold of any of those stays. That keeps the names of the recorded file, and the names of every
-// earlier file of the session whose name contains its id, as an Oh My Pi `<timestamp>_<id>.jsonl`
-// does; an earlier file of the current session whose name contains no id is freed, which frees no
-// grant, since the broker enrolls a session by its id (review round 5 of #4220).
+// start a new session again: it frees the claim's holds recorded more than ReleaseWindow, 13 hours
+// 5 minutes, ago, and only once the claim's last session switch is more than that ago, except
+// every name of the session it records and of the one it last abandoned. A name of either session
+// is kept when it is that session's id, contains that id, or is a part of that session's recorded
+// file path, so a hold of any of those stays. That keeps the names of the recorded file, and the
+// names of every earlier file of the session whose name contains its id, as an Oh My Pi
+// `<timestamp>_<id>.jsonl` does; an earlier file of the current session whose name contains no id
+// is freed, which frees no grant, since the broker enrolls a session by its id (review round 5 of
+// #4220).
 //
-// The hours count from the switch, not from the hold (review R4-1 of #4220): a hold is written
+// The window counts from the switch, not from the hold (review R4-1 of #4220): a hold is written
 // when its session is first registered, and the session may have run long after. A claim changes
 // sessions only by forgetting the one it records (forgetSession), which writes the switch's time
 // into the abandoned session's `at`, and every session before the one it abandoned had ended by
 // then. The broker keeps an ended session's grants for its carry window, which counts from when its
 // enrollment went dormant: that is the daemon's revoke as it lets the process go, or, if that
 // revoke fails, the enrollment's lapse at its lease, at most BROKER_LEASE_SECONDS' maximum, an hour,
-// after the process ended. So 13 hours is the default carry window (BROKER_SESSION_CARRY_SECONDS,
-// 43200) plus the longest lease (review F1 of #4220's round 4): a switch older than that means
-// every session the statement frees went dormant longer ago than the window, and the broker has
-// swept their grants. A claim that later takes a freed name takes no grant of it, and a transcript
+// after the process ended. The broker marks the enrollment dormant at the sweep after that, and
+// ends its carry at a sweep after the carry window, each sweep at most BROKER_SWEEP_SECONDS'
+// maximum, 60 seconds, after its moment. So 13 hours 5 minutes is the default carry window
+// (BROKER_SESSION_CARRY_SECONDS, 43200) plus the longest lease (review F1 of #4220's round 4) plus
+// two sweeps with room (review round 7): a switch older than that means every session the statement
+// frees went dormant, and lost its carry, longer ago than the window, and the broker has swept
+// their grants. A claim that later takes a freed name takes no grant of it, and a transcript
 // within the project is readable to its roles anyway. A claim that has never switched, whose
-// abandoned session is empty, frees by its holds' age alone.
+// abandoned session is empty, frees by its holds' age alone, and never frees a name that contains
+// its session's id: such a claim at the cap needs one forget-session, a second switch, and the
+// window after it.
 //
-// One case the 13 hours do not cover (review rounds 5 and 6 of #4220): a lease does not run while
-// no broker is serving. When a broker serves again, it caps every running lease at its return plus
-// one lease, BROKER_LEASE_SECONDS (envoy's enroll.ServingClock, which logs `broker: gave back the
-// time no broker was serving to every lease still running when the last broker served`), so an
-// enrollment whose revoke the daemon missed goes dormant up to one lease, and a sweep, after the
-// broker's return. If the broker came back later than an hour less one lease after the claim's last
-// switch, the switch plus 13 hours is too soon; the daemon cannot see this, and its own missed
-// revoke may log nothing, since it can exit between tries and its boot does not retry them. So an
-// operator who finds that broker line after the claim's last switch waits 13 hours after the
-// line, not after the switch, before running the statement.
+// Two cases the window does not cover (review rounds 5, 6 and 7 of #4220), both while no broker is
+// serving, since a lease does not run then. During an outage the old leases stay live and the
+// carry has not begun, so the statement must not run at all while no broker serves. When a broker
+// serves again, it caps every running lease at its return plus one lease, BROKER_LEASE_SECONDS
+// (envoy's enroll.ServingClock, which logs `broker: gave back the time no broker was serving to
+// every lease still running when the last broker served`), so an enrollment whose revoke the
+// daemon missed goes dormant up to one lease, and a sweep, after the broker's return; if the broker
+// came back later than an hour less one lease after the claim's last switch, the switch plus the
+// window is too soon. The daemon cannot see either, and its own missed revoke may log nothing,
+// since it can exit between tries and its boot does not retry them. So an operator runs the
+// statement only while a broker serves, and one who finds that broker line after the claim's last
+// switch waits the window after the line, not after the switch.
 //
 // The daemon is not told the broker's settings: they are the broker's own (envoy's broker/config),
 // read by its sweeper and answered on no route the daemon calls, so the statement writes the
-// defaults, and a deployment with a longer carry window puts that window plus an hour in both
-// intervals. The project and token are written as SQL literals, their quotes doubled.
+// defaults, and a deployment with a longer carry window puts that window plus an hour and five
+// minutes in both intervals. The project and token are written as SQL literals, their quotes
+// doubled.
 func ReleaseOldNamesStatement(project string, token claim.Token) string {
 	window := fmt.Sprintf("interval '%d seconds'", int64(ReleaseWindow/time.Second))
 	return "delete from claim_sessions h using claims c" +
@@ -251,7 +262,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
-		releaseAfter := "none: the claim has never switched sessions; the statement frees only holds more than 13 hours old whose names contain no id of its session"
+		releaseAfter := "none: the claim has never switched sessions; the statement frees only holds more than 13 hours 5 minutes old whose names contain no id of its session"
 		if after := ReleaseAfter(m.claim); !after.IsZero() {
 			releaseAfter = after.Format(time.RFC3339)
 		}

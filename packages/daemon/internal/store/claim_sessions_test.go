@@ -438,10 +438,11 @@ func TestAClaimsHeldNamesStopAtTheCap(t *testing.T) {
 // A claim at the cap that needs a new session starts none until an operator frees the names of its
 // older sessions (review F1 of #4220), with the statement the daemon's log gives
 // (supervise.ReleaseOldNamesStatement). Run on a claim at the cap whose last session switch was 14
-// hours ago, it frees the holds recorded more than 13 hours ago, keeps every name of the session
-// the claim records (an earlier file of it too) and of the one it last abandoned, keeps names
-// recorded within the 13 hours, and touches no other claim's, though the other claim holds names
-// as old (review F3 of round 4); then the new session the claim was refused is admitted.
+// hours ago, it frees the holds recorded more than its window, 13 hours 5 minutes, ago, keeps every
+// name of the session the claim records (an earlier file of it too) and of the one it last
+// abandoned, keeps names recorded within the window, and touches no other claim's, though the other
+// claim holds names as old (review F3 of round 4); then the new session the claim was refused is
+// admitted.
 //
 // The controls (the pull request records each run): the statement without its clauses that keep
 // the current and abandoned sessions' names frees them too, and the test fails naming them; the
@@ -477,7 +478,7 @@ func TestTheReleaseStatementLetsAClaimAtTheCapStartANewSession(t *testing.T) {
 	if _, err := store.Pool().Exec(ctx, `update claim_sessions set recorded_at = now() - interval '14 hours' where claim = $1`, string(other)); err != nil {
 		t.Fatal(err)
 	}
-	// Older sessions up to the cap, then one more within the 13 hours.
+	// Older sessions up to the cap, then one more within the window.
 	oldSession := func(i int) (string, string) {
 		return fmt.Sprintf("ses_old_%04d", i), fmt.Sprintf("/state/sessions/--w--/2026-11-01T00-00-00-000Z_ses_old_%04d.jsonl", i)
 	}
@@ -556,23 +557,26 @@ func recordReleaseClaim(t *testing.T, store *Store, token claim.Token, session, 
 	}
 }
 
-// The release statement's 13 hours count from the claim's last session switch, not from when a
-// hold was written (review R4-1 of #4220): a hold is written when its session is first registered,
-// and the session may have run until the switch, while the broker keeps its grants for its carry
-// window, 12 hours by default, from when its enrollment went dormant, which a failed revoke puts up
-// to the longest lease, an hour, after the process ended (review F1 of round 4). A claim that
-// records S3, abandoned S2 an hour ago, or 12 hours 30 minutes ago, and holds S1 from 14 hours ago
-// has its S1 freed by nothing: another claim registering S1 is refused it.
+// The release statement's window, 13 hours 5 minutes, counts from the claim's last session switch,
+// not from when a hold was written (review R4-1 of #4220): a hold is written when its session is
+// first registered, and the session may have run until the switch, while the broker keeps its
+// grants for its carry window, 12 hours by default, from when its enrollment went dormant, which a
+// failed revoke puts up to the longest lease, an hour, after the process ended (review F1 of round
+// 4), and it marks the dormancy and ends the carry each at a sweep, up to 60 seconds late (review
+// round 7). A claim that records S3, abandoned S2 an hour ago, 12 hours 30 minutes ago, or 13 hours
+// 2 minutes ago, and holds S1 from 14 hours ago has its S1 freed by nothing: another claim
+// registering S1 is refused it.
 //
 // The controls (the pull request records each run): the statement without its last-switch clause
-// frees S1's three names in both rows, and the other claim's hold of S1 takes them; the statement
-// with 12 hours for 13 frees them in the 12 hours 30 minutes row.
+// frees S1's three names in every row, and the other claim's hold of S1 takes them; the statement
+// with 12 hours for its window frees them in the 12 hours 30 minutes and 13 hours 2 minutes rows,
+// and with 13 hours, in the 13 hours 2 minutes row alone.
 func TestTheReleaseStatementFreesNothingWithinTheWindowOfTheLastSwitch(t *testing.T) {
 	const holder, other = claim.Token("legion-LEGION-601-implementer"), claim.Token("legion-LEGION-602-implementer")
 	file := func(session string) string {
 		return "/state/sessions/--w--/2026-11-16T00-00-00-000Z_" + session + ".jsonl"
 	}
-	for _, switched := range []string{"1 hour", "12 hours 30 minutes"} {
+	for _, switched := range []string{"1 hour", "12 hours 30 minutes", "13 hours 2 minutes"} {
 		t.Run("the last switch "+switched+" ago", func(t *testing.T) {
 			ctx := context.Background()
 			store := migratedStore(t)
