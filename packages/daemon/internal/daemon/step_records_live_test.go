@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,7 +41,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -68,22 +66,8 @@ type stepRecordsLive struct {
 // and the merge then walk it to done with Dispatch stopped.
 func TestStepRecordsLive(t *testing.T) {
 	fixtureenv.Live(t)
-	// testbuild.RootEnv names the checkout the script runs from, whose packages/envoy the driver
-	// builds Dispatch from and whose packages/envoy-client holds the CLI. The script exports it:
-	// the driver binary runs from the caller's directory, not the package's. Unset (a plain `go
-	// test -tags e2e`, which runs in the package directory), the checkout is four directories up.
-	root := os.Getenv(testbuild.RootEnv)
-	if root == "" {
-		root = filepath.Join("..", "..", "..", "..")
-	}
-	root, err := filepath.Abs(root)
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := liveCLICheckout(t)
 	proof := newLiveProof(t, "scripts/e2e/step-records.sh")
-	if _, err := exec.LookPath("bun"); err != nil {
-		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
-	}
 	l := &stepRecordsLive{stepRecordsRig: newStepRecordsRigOn(t, proof, startHandoffDispatch(t, root).scratchDispatch), root: root, cliHome: t.TempDir()}
 	var minted struct {
 		Token string `json:"token"`
@@ -279,43 +263,13 @@ func (l *stepRecordsLive) writerRefused() {
 	l.note("control: the same body with the daemon's own credential as %s: %d; the read holds record %s", daemon, status, id)
 }
 
-// steps runs `dispatch steps --issue <KEY>` as the person and returns both streams and its exit
-// code.
+// steps runs `dispatch steps --issue <KEY>` as the person, with the personal token Dispatch minted
+// for that person, and returns what it printed on stdout, then on stderr, and its exit code.
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
-	command := exec.Command("bun", filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
-	command.Dir = l.cliHome
-	// A person's own shell running dispatch by hand: the host and a session of their own, the
-	// server and their personal token. Nothing else of the caller's environment reaches it but
-	// PATH, and its home, configuration file (absent) and session state are the run's own.
-	command.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + filepath.Join(l.cliHome, "home"),
-		"TMPDIR=" + l.cliHome,
-		"XDG_CONFIG_HOME=" + filepath.Join(l.cliHome, "config"),
-		"XDG_STATE_HOME=" + filepath.Join(l.cliHome, "state"),
-		"XDG_CACHE_HOME=" + filepath.Join(l.cliHome, "cache"),
-		"ENVOY_CONFIG_FILE=" + filepath.Join(l.cliHome, "envoy.json"),
-		"DISPATCH_STATE_DIR=" + filepath.Join(l.cliHome, "dispatch-state"),
-		"DISPATCH_HOST=omp",
-		"DISPATCH_SESSION_ID=" + stepRecordsReaderSession,
-		"DISPATCH_URL=" + l.dispatch.base,
-		"DISPATCH_TOKEN=" + l.reader,
-	}
-	if err := os.MkdirAll(filepath.Join(l.cliHome, "home"), 0o700); err != nil {
-		l.t.Fatal(err)
-	}
-	var output bytes.Buffer
-	command.Stdout, command.Stderr = &output, &output
-	code := 0
-	if err := command.Run(); err != nil {
-		exit, ok := err.(*exec.ExitError)
-		if !ok {
-			l.t.Fatalf("run `dispatch steps` under bun: %v", err)
-		}
-		code = exit.ExitCode()
-	}
-	return output.String(), code
+	shell := cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
+	out, code := shell.bun(nil, filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
+	return string(out.stdout) + string(out.stderr), code
 }
 
 // putStep sends body to PUT /api/v1/issues/<KEY>/steps/<id> with bearer and returns Dispatch's
