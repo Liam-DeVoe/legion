@@ -313,8 +313,9 @@ func issuePlanText(issue IssuePlan) string {
 // its plan, the rating of its retro, the first start and the last end of its records and its
 // count of failed steps of kind step, all in one statement: a failed retro and a failed merge are
 // no failed step. An issue still open, an issue done with no close, an issue closed that is not
-// done, an issue of another project and a record of another issue are not read into it; a finished
-// issue Legion never ran is listed with no plan, no rating, no time and no failed step.
+// done, an issue of another project, LEGX's among them though its key starts with LEG, and a
+// record of another issue are not read into it; a finished issue Legion never ran is listed with
+// no plan, no rating, no time and no failed step.
 func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closedFirst, closedSecond, closedThird := t0.Add(time.Hour), t0.Add(2*time.Hour), t0.Add(3*time.Hour)
@@ -327,6 +328,7 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		seededIssue{"LEG-6", "in_progress", &closedThird},
 	)
 	seedIssues(t, pool, "OTH", seededIssue{"OTH-1", "done", &closedThird})
+	seedIssues(t, pool, "LEGX", seededIssue{"LEGX-1", "done", &closedSecond})
 
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 1), minute(0))
 	stepRun(t, pool, "LEG-1", StepKindStep, "planner", 1, 1, new(minute(0)), new(minute(5)), ResultPassed)
@@ -346,6 +348,8 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 	stepRun(t, pool, "LEG-3", StepKindStep, "planner", 1, 1, new(minute(80)), new(minute(85)), ResultFailed)
 	putPlan(t, pool, defaultPlan(uuid.NewString(), "OTH-1", 1), minute(80))
 	stepRun(t, pool, "OTH-1", StepKindStep, "reviewer", 4, 1, new(minute(80)), new(minute(85)), ResultFailed)
+	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEGX-1", 1), minute(90))
+	stepRun(t, pool, "LEGX-1", StepKindStep, "reviewer", 4, 1, new(minute(90)), new(minute(95)), ResultFailed)
 
 	counted := &countingQueryer{Queryer: pool}
 	read, err := ProjectPlans(context.Background(), counted, "LEG", nil, nil)
@@ -380,6 +384,14 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 		if issue.Ratings == nil {
 			t.Fatalf("%s lists its ratings as nil, want an empty list", issue.Issue)
 		}
+	}
+
+	other, err := ProjectPlans(context.Background(), pool, "LEGX", nil, nil)
+	if err != nil {
+		t.Fatalf("read the plans of LEGX: %v", err)
+	}
+	if len(other) != 1 || other[0].Issue != "LEGX-1" || other[0].FailedSteps != 1 {
+		t.Fatalf("the read of LEGX lists %+v, want LEGX-1 alone with its failed step", other)
 	}
 }
 
