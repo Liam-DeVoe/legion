@@ -10,7 +10,6 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../../api/types";
-import { compiledBlockSchema } from "../../doc/schema";
 import {
   buildDispatchReference,
   parseDispatchReference,
@@ -165,7 +164,9 @@ export const treeDraftSteps: readonly TreeDraftStep[] = [
 
 /** The marks run on every draft, each in turn, once every node has been offered to the steps.
  *  This part adds none: a member of its drafts is its own step's. */
-export const treeDraftMarks: readonly TreeDraftMark[] = [];
+export const treeDraftMarks: readonly TreeDraftMark[] = [
+  // A later part adds its mark here, one line each.
+];
 
 /**
  * Every draft the answer holds, by its tree id. Each node is offered to `treeDraftSteps` in the
@@ -880,17 +881,19 @@ function attributeText(value: unknown): string | undefined {
   return undefined;
 }
 
-/** A node's attributes as the blocks read lists a block's: each with the kind the block schema
- *  declares it (`block[]` is what a reader follows as pointers), in the order the schema
- *  declares them, then any the schema does not declare, which read as text. */
+/** A node's attributes as the blocks read lists a block's, in the order the node gives them,
+ *  each with its kind read from its value: a list of pointers is `block[]`, which is what a
+ *  reader follows as pointers, and anything else reads as text. This module reads no block
+ *  schema - the e2e helpers reach it through `issue-tree.ts` and cannot load the schema's JSON -
+ *  and no reader of these blocks on the issue page reads any other kind: a drawing that needs
+ *  the schema's own kind reads the schema itself (`typed-block-drawing.ts`,
+ *  `ReferencedBy.tsx`). */
 function attributesOf(node: TreeAnswerNode): BlockAttributeValue[] {
-  const declared = compiledBlockSchema.types.find(
-    (type) => type.name === node.supertag
-  )?.attributes;
-  const names = new Set([...Object.keys(declared ?? {}), ...Object.keys(node.attributes)]);
-  return [...names].flatMap((name) => {
-    const value = attributeText(node.attributes[name]);
-    return value === undefined ? [] : [{ kind: declared?.[name]?.kind ?? "string", name, value }];
+  return Object.entries(node.attributes).flatMap(([name, raw]) => {
+    const value = attributeText(raw);
+    return value === undefined
+      ? []
+      : [{ kind: Array.isArray(raw) ? "block[]" : "string", name, value }];
   });
 }
 
