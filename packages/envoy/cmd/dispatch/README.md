@@ -4551,12 +4551,13 @@ Each item below names a path with its method and identity, then its purpose.
     Dispatch judges each covered document at the version that the request hands the person.
     With no request open, these are the documents that the request names.
     With a request open, they are the documents that the open request names.
-    Dispatch reads the blocks of a document as each other reader does, also in a block quote, a list item or a callout.
-    A block in a code block or in a table cell is no block.
-    Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
     These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
     Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
     The reviewer of R25 reads each text for what these rules cannot refuse.
+
+    - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
+      A block in a code block or in a table cell is no block.
+      Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
 
     - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
       A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
