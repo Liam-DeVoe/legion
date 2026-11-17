@@ -587,17 +587,19 @@ test("a later review round reads from the commit its task names, and the pair re
 // hand-over's promotion entered the reviewer again, names another. A review with no entry still
 // decides its round, so the skill says so rather than leaving the entry to read as a condition of
 // the decision. A comment and another role's review carry none, since no other role's task names
-// one. The daemon's prompts carry the same footer, and their daemon part gives the rule whole;
-// prompts_test.go pins the composed reviewer prompt.
+// one. The entry is a JSON string, so that a placeholder left in it cannot make the footer invalid
+// JSON, which would lose its session and its head too; each file says why, and neither shows the
+// unquoted footer. The daemon's prompts carry the same footer, and their daemon part gives the
+// rule whole; prompts_test.go pins the composed reviewer prompt.
 test("the reviewer's review footer names the entry of its round", () => {
   const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
   const withEntry =
-    '`<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":<entry>} -->`';
+    '`<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`';
   const gaps = [
     ...[
       withEntry,
-      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it",
+      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it, in quotes, because a footer that is not valid JSON loses its session and its head too and is set aside.",
       "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
       "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
       "a review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
@@ -606,15 +608,19 @@ test("the reviewer's review footer names the entry of its round", () => {
       .map((s) => `legion-worker/SKILL.md lacks: ${s}`),
     ...[
       withEntry,
-      "That `entry` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of your session gave you (the daemon part of your role prompt gives the rule whole), written bare, as a JSON number:",
+      "That `entry` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of your session gave you (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits:",
+      "It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.",
       "by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
       "A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
     ]
       .filter((sentence) => !mergeGate.includes(sentence))
       .map((s) => `merge-gate.md lacks: ${s}`),
-    ...['"head":"<the head you reviewed>"} -->`),']
+    ...['"head":"<the head you reviewed>"} -->`),', '"entry":<entry>} -->`']
       .filter((sentence) => mergeGate.includes(sentence))
       .map((s) => `merge-gate.md says: ${s}`),
+    ...['"entry":<entry>} -->`']
+      .filter((sentence) => worker.includes(sentence))
+      .map((s) => `legion-worker/SKILL.md says: ${s}`),
   ];
   expect(gaps).toEqual([]);
 });

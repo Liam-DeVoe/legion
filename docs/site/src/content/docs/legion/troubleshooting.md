@@ -1366,7 +1366,7 @@ These arrive as messages on the Dispatch issue:
   round, so an approval or request for changes from anyone else leaves it undecided too. A review
   from the review App decides a round only when it comes from the reviewer's own session: the
   daemon reads the review's Legion footer
-  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":…} -->`) and requires the
+  (`<!-- legion: {"session":"…","phase":"review","head":"…","entry":"…"} -->`) and requires the
   session it names to match the session recorded on the reviewer's claim. That footer also names
   the head the
   review read, and a review the review App submitted decides the round only when that head is the
@@ -1382,7 +1382,8 @@ These arrive as messages on the Dispatch issue:
   `gh pr view <n> --json headRefOid`. A person's review decides by its webhook on the `commit_id`
   that event carried; read from GitHub's list, where that id has moved, it decides nothing, logged
   as `workflow: a review decides nothing: a person's review read from the list`. A review-App
-  review with no footer at all, or whose
+  review with no footer at all, whose footer is not valid JSON (an unquoted placeholder left in
+  it, say), or whose
   footer names another session (the controller's, an architect's), is set aside and decides
   nothing, logged at warn as `workflow: a review decides nothing: the review App submitted it from
   a session that is not the reviewer's`, with `footer_session`, `reviewer_session` and
@@ -1422,13 +1423,19 @@ These arrive as messages on the Dispatch issue:
   a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
   commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
   footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
-  an entry, and the footer's `entry` is the entry on that row, the number the reviewer's task names
-  as its last sentence, `Review entry: <n>.`. A review whose footer names no entry, or another one,
-  such as a review of a round before a new generation or a carried hand-over's promotion entered
-  the reviewer again, decides its round as any other and leaves the commit where it stands; so
-  does a person's review. The next round then reads from an older commit, or the whole change
-  where none stands, and a new generation clears the commit, so its first round reads the whole
-  change. The footer of the reviewer's newest deciding review on GitHub shows which case holds.
+  an entry, and the footer's `entry` is the entry on that row. Each task the reviewer gets in its
+  round ends with that entry, `Review entry: <n>.`, the task of a wake that brought its pod back
+  included, and the reviewer writes the number of the newest such sentence of its session into the
+  footer in quotes, `"entry":"<n>"`. The daemon reads a positive whole number written as a JSON
+  number (`"entry":7`) or as a string of digits (`"entry":"7"`); any other value, such as an
+  unfilled `"<entry>"`, an empty string, zero or `null`, reads as no entry and costs nothing else,
+  since the footer's session and head are still read. A review whose footer names no entry, or
+  another one, such as a review of a round before a new generation or a carried hand-over's
+  promotion entered the reviewer again, decides its round as any other and leaves the commit where
+  it stands; so does a person's review. The next round then reads from an older commit, or the
+  whole change where none stands, and a new generation clears the commit, so its first round reads
+  the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
+  holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
   `implementing` on its own. And it enqueues nothing on a merge-queue base whose

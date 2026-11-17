@@ -654,12 +654,15 @@ func TestTheComposedPushingPromptsPinTheReadOfThePullRequestHead(t *testing.T) {
 // fault the rule exists to stop — the read that tells the reviewer a push landed under it
 // (`--json headRefOid`), the reason GitHub's own `commit_id` cannot stand in for the footer, and
 // what a wrong head costs. The same footer names the entry of the reviewer's round, the number of
-// the newest ` Review entry: <n>.` sentence that a task or a wake of its session gave it, as a bare
-// JSON number, since only a review whose footer names the entry on the reviewer's row moves the
-// commit a later round reads from: the shape with the entry in both the template and the rule, the
-// rule whole in the daemon part (a message that names no entry changes none, and the field is left
-// out only where nothing in the session named one), and that a review with no entry, or another
-// one, still decides the round. This shows the text is loaded, never that a reviewer follows it.
+// the newest ` Review entry: <n>.` sentence that a task or a wake of its session gave it, since only
+// a review whose footer names the entry on the reviewer's row moves the commit a later round reads
+// from: the shape with the entry in both the template and the rule, the rule whole in the daemon
+// part (a message that names no entry changes none, and the field is left out only where nothing in
+// the session named one), and that a review with no entry, or another one, still decides the round.
+// The entry is a JSON string, `"entry":"<entry>"`, and the prompt says why: a placeholder left
+// unquoted makes the footer invalid JSON, which loses its session and its head too, so the review
+// is set aside, while a quoted value that is no number costs the entry alone. The unquoted footer
+// is gone. This shows the text is loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -667,18 +670,19 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleReviewer, false))
 	for _, phrase := range []string{
-		`"phase":"review","head":"<the head you reviewed>","entry":<entry>} -->`,
-		`\"phase\":\"review\",\"head\":\"<head-sha>\",\"entry\":<entry>} -->`,
-		"beside its session, its phase and its `\"entry\":<entry>`",
+		`"phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`,
+		`\"phase\":\"review\",\"head\":\"<head-sha>\",\"entry\":\"<entry>\"} -->`,
+		"beside its session, its phase and its `\"entry\":\"<entry>\"`",
 		"gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid",
 		"the head whose diff and checks you read",
 		"rather than renaming the footer to a head you have not read",
 		"GitHub rewrites `commit_id` to the pull request's current head",
 		"A review whose footer names another head, or no head, decides no round",
-		"The footer's `entry` is the entry of your round, the number of the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you (the daemon part below gives the rule whole), written bare, as a JSON number:",
+		"The footer's `entry` is the entry of your round, the number of the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you (the daemon part below gives the rule whole), written in quotes as a string of digits, `\"entry\":\"7\"`:",
+		"It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and Legion then sets the review aside, while a quoted value that is no number costs the entry alone.",
 		"by it Legion tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
 		"A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
-		"The `<entry>` is the entry of your round, as the next paragraph says; a review with no entry, or with another one, decides the round as any other, but moves no commit.",
+		"The `<entry>` is the entry of your round, in digits, as the next paragraph says; a review with no entry, or with another one, decides the round as any other, but moves no commit.",
 		"The entry of your round is the number of the newest `Review entry: <n>.` sentence that a task or a wake of this session gave you. A message that names none, such as a notice, a reminder or an Envoy card, does not change it. Leave the `entry` field out of your footer only where nothing in this session named one.",
 	} {
 		if !strings.Contains(text, phrase) {
@@ -688,9 +692,12 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	for _, retired := range []string{
 		`"phase":"review","head":"<the head you reviewed>"} -->`,
 		`\"phase\":\"review\",\"head\":\"<head-sha>\"} -->`,
+		`"entry":<entry>} -->`,
+		`\"entry\":<entry>} -->`,
+		"`\"entry\":<entry>`",
 	} {
 		if strings.Contains(text, retired) {
-			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry", retired)
+			t.Errorf("the composed reviewer prompt still says %q, a footer with no entry or with an entry left unquoted", retired)
 		}
 	}
 }
