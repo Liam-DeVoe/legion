@@ -3936,10 +3936,14 @@ test("a row back after its session left mid-send holds the send it left until it
       within(back).getByRole("button", { name: "Choose issue" }) as HTMLButtonElement;
     const field = () =>
       within(back).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
-    // The composer holds its draft through its control fieldset.
-    const held = () => field().closest("fieldset")?.disabled;
+    // The composer holds its draft through its control fieldset: `aria-disabled`, and a key in
+    // the held box writes nothing.
+    const held = () => field().closest("fieldset")?.getAttribute("aria-disabled") === "true";
     expect(choose().disabled).toBe(true);
     expect(held()).toBe(true);
+    expect(field().value).toBe("Status please");
+    field().focus();
+    await user.keyboard("x");
     expect(field().value).toBe("Status please");
 
     await act(async () => {
@@ -4332,7 +4336,7 @@ test("the session's Agents row shows a live-view send as its own turn and can st
     expect(within(held).getByRole("status").textContent).toBe("Sending…");
     const field = within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement;
     expect(field.value).toBe("");
-    expect(field.closest("fieldset")?.disabled).toBe(false);
+    expect(field.closest("fieldset")?.getAttribute("aria-disabled")).toBeNull();
 
     for (const wait of [2_000, 4_000, 8_000, 15_000]) await jump(wait);
     expect(page.createAgentMessage).toHaveBeenCalledTimes(5);
