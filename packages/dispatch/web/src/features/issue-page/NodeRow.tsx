@@ -42,6 +42,8 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { LensLines } from "./lenses/LensLines";
+import { kindWords } from "./lenses/lens-drafts";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
@@ -56,6 +58,7 @@ import {
   GAP_LINES,
   GAP_WORDS,
   GLYPH_TOKENS,
+  LENS_WORDS,
   NODE_TYPE_NAMES,
   type NodeType,
   nodeStateWord,
@@ -297,9 +300,15 @@ export function NodeRow({
             <p
               className={`text-[15px] leading-6 break-words ${context ? pageQuietText : pageWordsText}`}
             >
-              <span data-node-first-line="" {...authorText}>
-                {drawnLine(first)}
-              </span>
+              {node.type === "lens" && node.text === "" ? (
+                <span data-node-first-line="" {...pageChrome}>
+                  {LENS_WORDS.no_verdict}
+                </span>
+              ) : (
+                <span data-node-first-line="" {...authorText}>
+                  {drawnLine(first)}
+                </span>
+              )}
               {count === null ? null : (
                 <span className={`ml-1.5 text-xs ${pageQuietText}`}>{count}</span>
               )}
@@ -316,12 +325,18 @@ export function NodeRow({
               {editing !== undefined ? (
                 <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
               ) : node.child === undefined ? (
-                <RowText
-                  markdown={node.text}
-                  source={node.source}
-                  tabStops={tabStops}
-                  tree={node.tree}
-                />
+                node.type === "lens" && node.text === "" ? (
+                  <p className="break-words" {...pageChrome}>
+                    {LENS_WORDS.no_verdict}
+                  </p>
+                ) : (
+                  <RowText
+                    markdown={node.text}
+                    source={node.source}
+                    tabStops={tabStops}
+                    tree={node.tree}
+                  />
+                )
               ) : (
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
@@ -388,6 +403,9 @@ export function NodeRow({
               </span>
               <ParentLink line={node.parentLine} tabStops={tabStops} />
             </p>
+          )}
+          {node.lens === undefined || oneLine ? null : (
+            <LensLines body={body} node={node} tabStops={tabStops} />
           )}
           {body ? (
             <NodeBody
@@ -682,7 +700,11 @@ function RowMargin({
             data-node-tag=""
           >
             <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-            <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            {node.lens?.kind === undefined ? (
+              <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            ) : (
+              <span {...authorText}>{chipWords(kindWords(node.lens.kind))}</span>
+            )}
           </span>
         )}
         {!authored && time === "" ? null : (
