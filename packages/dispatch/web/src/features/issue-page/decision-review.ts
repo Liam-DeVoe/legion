@@ -93,71 +93,100 @@ export function decisionsDocumentId(
 /**
  * The decision node of the tree read each decision of the decisions read is, by the decision's
  * address (`Decision.ref`): a decision node of this issue whose id is the decision's block
- * (`Decision.block_id`), in the document the address names where the node names its document. A
- * decision no node is is not held: a section of the decisions document, while decisions are such
- * sections.
+ * (`Decision.block_id`), in the document the address names where the node names its document.
+ * Two documents can each hold a decision block of one id, and each is a decision of its own, so
+ * the other document's is not this decision's node. A decision no node is is not held: a section
+ * of the decisions document, while decisions are such sections.
  */
 export function decisionNodes(
   decisions: readonly Pick<Decision, "block_id" | "ref">[],
   tree: TreeAnswer | undefined
 ): ReadonlyMap<string, TreeAnswerNode> {
-  const nodes = new Map<string, TreeAnswerNode>();
+  const nodes = new Map<string, TreeAnswerNode[]>();
   for (const node of tree?.nodes ?? []) {
-    if (node.supertag === "decision" && node.issue === undefined) nodes.set(node.id, node);
+    if (node.supertag !== "decision" || node.issue !== undefined) continue;
+    const same = nodes.get(node.id);
+    if (same === undefined) nodes.set(node.id, [node]);
+    else same.push(node);
   }
   const held = new Map<string, TreeAnswerNode>();
   for (const decision of decisions) {
-    const node = nodes.get(decision.block_id);
-    if (node === undefined) continue;
     const route = parseNodeReference(decision.ref);
     const slug = route?.kind === "artifact" ? route.slug : undefined;
-    if (node.document === undefined || node.document.slug === slug) held.set(decision.ref, node);
+    const node = nodes
+      .get(decision.block_id)
+      ?.find((one) => one.document === undefined || one.document.slug === slug);
+    if (node !== undefined) held.set(decision.ref, node);
   }
   return held;
 }
 
 /**
- * Each Change of a decision node, by the comment's id, to the node's id: every comment a person
- * wrote that the read hangs under a decision node that was not replaced, made after the decision
- * last changed and after it was last kept. An agent's comment under it is no Change, and neither
- * is one older than its words, which asked for a change the words have since had.
+ * Each Change of a decision node, by the comment's node, to the decision node it changes: every
+ * comment a person wrote that the read hangs under a decision node that was not replaced, made
+ * after the decision last changed and after it was last kept. The node a comment hangs under is
+ * the one its `parent` names by the outline's rule (`parentsIn`), so a comment on a block of
+ * another document that shares the decision's block id is no Change of it. An agent's comment
+ * under it is no Change, and neither is one older than its words, which asked for a change the
+ * words have since had.
  */
-function nodeChangeComments(tree: TreeAnswer | undefined): Map<string, string> {
-  const decisions = new Map<string, TreeAnswerNode>();
-  for (const node of tree?.nodes ?? []) {
-    if (node.supertag === "decision" && node.replaced !== true) decisions.set(node.id, node);
-  }
-  const changes = new Map<string, string>();
-  for (const node of tree?.nodes ?? []) {
-    const decision = node.parent === null ? undefined : decisions.get(node.parent);
+function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, TreeAnswerNode> {
+  const changes = new Map<TreeAnswerNode, TreeAnswerNode>();
+  for (const [node, parent] of parentsIn(tree?.nodes ?? [])) {
     if (
-      decision !== undefined &&
+      parent.supertag === "decision" &&
+      parent.replaced !== true &&
       node.supertag === "comment" &&
       node.author?.kind === "user" &&
-      after(node.made_at, decision)
+      after(node.made_at, parent)
     ) {
-      changes.set(node.id, decision.id);
+      changes.set(node, parent);
     }
   }
   return changes;
 }
 
 /**
- * The Change each decision node waits on, by the node's id: the newest of the Changes the read
- * hangs under it (`nodeChangeComments`). The outline (`tree-read/tree-nodes.ts`) and the
- * header's count (`waiting.ts`, through `decisionChangeComments`) read this one rule.
+ * The node each node of the read hangs under: the nearest node before it in the read's order that
+ * its `parent` names, since a parent comes before its children and two nodes - blocks of two
+ * documents - can share an id; else the first node of that id. The outline places a node by the
+ * same rule (`tree-read/tree-nodes.ts`' `parentsIn`), so a Change is the comment the outline
+ * draws under its decision.
  */
-export function decisionNodeChanges(answer: TreeAnswer): ReadonlyMap<string, TreeAnswerNode> {
-  const nodes = new Map(answer.nodes.map((node) => [node.id, node]));
+function parentsIn(nodes: readonly TreeAnswerNode[]): Map<TreeAnswerNode, TreeAnswerNode> {
+  const first = new Map<string, TreeAnswerNode>();
+  for (const node of nodes) {
+    if (!first.has(node.id)) first.set(node.id, node);
+  }
+  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
+  const latest = new Map<string, TreeAnswerNode>();
+  for (const node of nodes) {
+    const parent =
+      node.parent === null ? undefined : (latest.get(node.parent) ?? first.get(node.parent));
+    if (parent !== undefined) parents.set(node, parent);
+    latest.set(node.id, node);
+  }
+  return parents;
+}
+
+/**
+ * The Change each decision node waits on, by the id `idOf` gives the node: the newest of the
+ * Changes the read hangs under it (`nodeChangeComments`). The outline (`tree-read/tree-nodes.ts`)
+ * names each node by its tree id (`treeIdOfNode`), so two decision nodes of one block id in two
+ * documents are two decisions there; a caller that names no id reads the node's own id in the
+ * read. The outline and the header's count (`waiting.ts`, through `decisionChangeComments`) read
+ * this one rule.
+ */
+export function decisionNodeChanges(
+  answer: TreeAnswer,
+  idOf: (node: TreeAnswerNode) => string = (node) => node.id
+): ReadonlyMap<string, TreeAnswerNode> {
   const changes = new Map<string, TreeAnswerNode>();
-  for (const [id, decision] of nodeChangeComments(answer)) {
-    const comment = nodes.get(id);
-    const held = changes.get(decision);
-    if (
-      comment !== undefined &&
-      (held === undefined || compareTimestamps(comment.made_at, held.made_at) > 0)
-    ) {
-      changes.set(decision, comment);
+  for (const [comment, decision] of nodeChangeComments(answer)) {
+    const id = idOf(decision);
+    const held = changes.get(id);
+    if (held === undefined || compareTimestamps(comment.made_at, held.made_at) > 0) {
+      changes.set(id, comment);
     }
   }
   return changes;
@@ -191,10 +220,10 @@ export function decisionChangeComments(
   const changes = new Map<string, string>();
   const standing = (decisions?.decisions ?? []).filter((row) => !row.replaced);
   const held = decisionNodes(standing, tree);
-  const byNode = new Map([...held].map(([ref, node]) => [node.id, ref]));
+  const byNode = new Map([...held].map(([ref, node]) => [node, ref]));
   for (const [comment, node] of nodeChangeComments(tree)) {
     const ref = byNode.get(node);
-    if (ref !== undefined) changes.set(comment, ref);
+    if (ref !== undefined) changes.set(comment.id, ref);
   }
   const rows = standing.filter((row) => !held.has(row.ref));
   const document = decisionsDocumentId(artifacts, decisions);

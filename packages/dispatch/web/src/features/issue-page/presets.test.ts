@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { DisplayTree } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
-import { filterSignals, presetView } from "./presets";
+import { filterSignals, presetView, rowKindsOf } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
 import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
@@ -526,4 +526,48 @@ test("a view places a node by the parent kind its view names where two documents
       ["plan-md#b-t1", []],
     ],
   });
+});
+
+// The Plan view holds no node of t1's parent's id a1, and the tree holds the plan's task a1
+// before the spec's statement a1, which t1 hangs under. The view names that parent's kind
+// beside its id (`parent_line`), so t1's row carries the statement's line, never the line of the
+// plan's task the tree holds first.
+test("a view's row carries the line of the parent of the kind its view names where the tree holds another node of its id first", () => {
+  const plan: TreeAnswer = {
+    converted: false,
+    cursor: null,
+    nodes: [
+      viewNode("t1", "plan_task", "query", {
+        document: { artifact_id: "artifact-plan-md", position: 1, slug: "plan-md" },
+        parent: "a1",
+        parent_line: { id: "a1", line: "The spec's statement.", supertag: "requirement" },
+      }),
+    ],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node("plan-md#b-a1", "plan_task", [], { readId: "a1", text: "The plan's step." }),
+      node(
+        "spec#b-a1",
+        "requirement",
+        [node("plan-md#b-t1", "plan_task", [], { readId: "t1", text: "The second step." })],
+        { readId: "a1", text: "The spec's statement." }
+      ),
+    ],
+    { views: { plan } }
+  );
+
+  expect(
+    presetView(root, "plan", "").root.children.map((row) => [row.id, row.parentLine?.id])
+  ).toEqual([["plan-md#b-t1", "spec#b-a1"]]);
+});
+
+// Another part draws the Decisions filter's rows itself and reads its kinds from here.
+test("the Decisions filter's row kinds are the asks and the decisions", () => {
+  expect(rowKindsOf("decisions")).toEqual(["ask", "decision"]);
 });

@@ -83,7 +83,8 @@ export interface KeptReads {
   /** Each ask of the issue read's open asks and of the asks read, the asks read's where both
    *  hold it. */
   readonly asks: ReadonlyMap<string, TreeAsk>;
-  /** Each check of the results read, with the results recorded against it. */
+  /** Each check of the results read, with the results recorded against it, a check that names
+   *  no document by its own id (`keptReads`). */
   readonly checks: ReadonlyMap<string, CheckBlock>;
   /** Each child of the issue read, by its key. */
   readonly children: ReadonlyMap<string, IssueChild>;
@@ -106,7 +107,8 @@ export interface KeptReads {
  *  own identity (`treeIdOfNode`, `placeOf`), so each of the two is a row. */
 export interface TreeDraftContext extends TreeWords {
   /** The Change each decision node waits on (`decision-review.ts`' `decisionNodeChanges`), by
-   *  the node's read id. */
+   *  the node's tree id (`treeIdOfNode`), so two decision nodes of one block id in two documents
+   *  are two decisions, each with its own Changes. */
   readonly changes: ReadonlyMap<string, TreeAnswerNode>;
   /** Whether a draft stands for the node `readId` names: a step drafted it, or drafted a node
    *  the tree draws by the same id before it. While the steps run, the nodes offered so far are
@@ -207,21 +209,12 @@ export function treeDraftsFrom(
     return node === undefined ? readId : idOfNode(node);
   };
   const walk = walkOf(answer, reads.issue.key);
-  // Each node's parent: the nearest node before it in the walk that its `parent` names, since a
-  // parent comes before its children and two nodes can share an id; else the node of that id.
-  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
-  const latest = new Map<string, TreeAnswerNode>();
-  for (const node of walk) {
-    const parent =
-      node.parent === null ? undefined : (latest.get(node.parent) ?? nodes.get(node.parent));
-    if (parent !== undefined) parents.set(node, parent);
-    latest.set(node.id, node);
-  }
+  const parents = parentsIn(walk, nodes);
   const drafts = new Map<string, Draft>();
   let offered = false;
   const drafting: TreeDraftContext = {
     ...context,
-    changes: decisionNodeChanges(answer),
+    changes: decisionNodeChanges(answer, idOfNode),
     drafted: (readId) => drafts.has(idOf(readId)),
     kept: keptReads(reads, context, answer, idOfNode),
     lineOf: (readId) => {
@@ -289,6 +282,27 @@ function firstDraft(
     if (draft !== undefined) return draft;
   }
   return undefined;
+}
+
+/**
+ * The node each node of `order` hangs under: the nearest node before it in `order` that its
+ * `parent` names, since a parent comes before its children and two nodes - blocks of two
+ * documents - can share an id; else the answer's node of that id (`nodes`). A decision's Change
+ * is the comment the read hangs under it by the same rule (`decision-review.ts`' `parentsIn`).
+ */
+function parentsIn(
+  order: readonly TreeAnswerNode[],
+  nodes: ReadonlyMap<string, TreeAnswerNode>
+): Map<TreeAnswerNode, TreeAnswerNode> {
+  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
+  const latest = new Map<string, TreeAnswerNode>();
+  for (const node of order) {
+    const parent =
+      node.parent === null ? undefined : (latest.get(node.parent) ?? nodes.get(node.parent));
+    if (parent !== undefined) parents.set(node, parent);
+    latest.set(node.id, node);
+  }
+  return parents;
 }
 
 /** What `treeIdOf` reads beside the answer: the issue, for its key and its documents' slugs, and
@@ -527,7 +541,7 @@ function draftDecision(
     ...chip,
     stale: stale.has(context.nodeIdOf(chip.ref) ?? chip.ref),
   }));
-  const changed = context.changes.has(node.id);
+  const changed = context.changes.has(draft.id);
   draft.state = decisionState(node, changed);
   markKeptAndUnsure(draft, node);
   draft.replaced = node.replaced === true;
@@ -815,22 +829,36 @@ function nodesById(answer: TreeAnswer): Map<string, TreeAnswerNode> {
 }
 
 /** The page's other reads, each row by the tree id of the node it tells about (`KeptReads`). A
- *  decision's row is the one whose node the read answers (`decisionNodes`). */
+ *  decision's row is the one whose node the read answers (`decisionNodes`). A check's row is its
+ *  block in its document; a check of this issue that names no document, a node of its own tree
+ *  once it has converted, plays Verification by its kind (`blocksOfRole`), so the row of its
+ *  block in the Verification document tells about it, by the check's own tree id. */
 function keptReads(
   reads: IssueTreeReads,
   context: TreeContext,
   answer: TreeAnswer,
   idOf: (node: TreeAnswerNode) => string
 ): KeptReads {
-  const checks = reads.results?.checks ?? [];
+  const rows = reads.results?.checks ?? [];
   const decisions = reads.decisions?.decisions ?? [];
   const nodes = decisionNodes(decisions, answer);
+  const verification = roleDocument(reads.issue, "verification")?.id;
+  const checks = indexBy(rows, (check) => {
+    const slug = context.slugOf(check.artifact_id);
+    return slug === undefined ? undefined : blockNodeId(slug, check.block_id);
+  });
+  const verificationSlug = verification === undefined ? undefined : context.slugOf(verification);
+  if (answer.converted && verificationSlug !== undefined) {
+    for (const node of answer.nodes) {
+      if (node.supertag !== "check" || node.document !== undefined) continue;
+      if (isForeign(node, context.key)) continue;
+      const row = checks.get(blockNodeId(verificationSlug, node.id));
+      if (row !== undefined) checks.set(idOf(node), row);
+    }
+  }
   return {
     asks: indexBy([...asksOf(reads).values()], (ask) => askNodeId(ask, context.slugOf)),
-    checks: indexBy(checks, (check) => {
-      const slug = context.slugOf(check.artifact_id);
-      return slug === undefined ? undefined : blockNodeId(slug, check.block_id);
-    }),
+    checks,
     children: indexBy(reads.issue.children ?? [], (child) => child.key),
     decisions: indexBy(decisions, (decision) => {
       const node = nodes.get(decision.ref);
@@ -840,10 +868,10 @@ function keptReads(
       blockNodeId(context.specSlug, requirement.block_id)
     ),
     results: indexBy(
-      checks.flatMap((check) => check.results ?? []),
+      rows.flatMap((check) => check.results ?? []),
       (result) => result.id
     ),
-    verification: roleDocument(reads.issue, "verification")?.id,
+    verification,
   };
 }
 
@@ -920,7 +948,7 @@ export interface TreeBlock extends ArtifactBlock {
 }
 
 /** The node kinds each role's query takes: what plays the role on an issue that has converted,
- *  for a node that names no role document it came from. */
+ *  for a node that names no document. */
 const ROLE_KINDS: Readonly<Record<TreeFilter, readonly string[]>> = {
   plan: ["plan_task"],
   spec: ["criterion", "requirement"],
@@ -978,18 +1006,18 @@ function attributesOf(node: TreeAnswerNode): BlockAttributeValue[] {
  * edit token: both ends of the range are the block's place (its `document.position`, else its
  * place in the walk), which keeps the order a reader sorts the blocks by (`from`), and the token
  * is empty, so a block from here is never an edit's precondition. The comments and asks that
- * reference it are the ones the read hangs under it.
+ * reference it are the ones the read hangs under it (`hungUnder`).
  */
 function blockOf(
   node: TreeAnswerNode,
   place: number,
-  hung: ReadonlyMap<string, { asks: number; comments: number }>
+  hung: ReadonlyMap<TreeAnswerNode, { asks: number; comments: number }>
 ): TreeBlock {
   return {
     attributes: attributesOf(node),
     from: place,
     id: node.id,
-    references: hung.get(node.id) ?? { asks: 0, comments: 0 },
+    references: hung.get(node) ?? { asks: 0, comments: 0 },
     text: node.text,
     text_tree: node.text_tree,
     to: place,
@@ -998,15 +1026,17 @@ function blockOf(
   };
 }
 
-/** How many asks and comments the read hangs under each node, by the node's id. */
-function hungUnder(answer: TreeAnswer): Map<string, { asks: number; comments: number }> {
-  const counts = new Map<string, { asks: number; comments: number }>();
-  for (const node of answer.nodes) {
-    if (node.parent === null || (node.supertag !== "ask" && node.supertag !== "comment")) continue;
-    const count = counts.get(node.parent) ?? { asks: 0, comments: 0 };
+/** How many asks and comments the read hangs under each node, by the node itself: each under
+ *  the node its `parent` names (`parentsIn`), so a comment on one document's block is not counted
+ *  on another document's block of the same id. */
+function hungUnder(answer: TreeAnswer): Map<TreeAnswerNode, { asks: number; comments: number }> {
+  const counts = new Map<TreeAnswerNode, { asks: number; comments: number }>();
+  for (const [node, parent] of parentsIn(answer.nodes, nodesById(answer))) {
+    if (node.supertag !== "ask" && node.supertag !== "comment") continue;
+    const count = counts.get(parent) ?? { asks: 0, comments: 0 };
     if (node.supertag === "ask") count.asks += 1;
     else count.comments += 1;
-    counts.set(node.parent, count);
+    counts.set(parent, count);
   }
   return counts;
 }
@@ -1018,14 +1048,14 @@ function hungUnder(answer: TreeAnswer): Map<string, { asks: number; comments: nu
  * is before it answers.
  *
  * A node's role is read node by node. The tree read answers each typed block of a role document
- * once, with a `document` member naming its document and its place there, so a node whose
- * `document` names a role document of the issue (`roleDocumentId`) plays that document's role.
- * On an issue that has converted, a node of this issue that names none - a criterion, written
- * into the issue's own tree and into no document - plays the role whose query takes its kind
- * (`ROLE_KINDS`), so the spec's blocks hold its criteria beside its statements. The blocks stand
- * in their place's order in the role's document where each names it, and in the walk's order,
- * which is the order the role's query reads them in, where any is a node of the issue's own
- * tree.
+ * once, with a `document` member naming its document and its place there, so a node that names
+ * its `document` plays the role of that document (`roleDocumentId`), and none where that
+ * document plays no role. On an issue that has converted, a node of this issue that names no
+ * document - a criterion, written into the issue's own tree and into no document - plays the role
+ * whose query takes its kind (`ROLE_KINDS`), by that alone, so the spec's blocks hold its
+ * criteria beside its statements. The blocks stand in their place's order in the role's document
+ * where each names it, and in the walk's order, which is the order the role's query reads them
+ * in, where any is a node of the issue's own tree.
  */
 export function blocksOfRole(
   answer: TreeAnswer | undefined,
@@ -1035,19 +1065,15 @@ export function blocksOfRole(
   if (answer === undefined) return undefined;
   const hung = hungUnder(answer);
   const documentId = roleDocumentId(answer, role, issue);
-  const roleDocuments = new Set(
-    (["plan", "spec", "verification"] as const).map((one) => roleDocumentId(answer, one, issue))
-  );
   const kinds = ROLE_KINDS[role];
   const inRoleDocument = (node: TreeAnswerNode): node is PlacedNode =>
     documentId !== undefined && node.document?.artifact_id === documentId;
   const members = answer.nodes.flatMap((node, place) => {
     if (node.issue !== undefined) return [];
-    const document = node.document?.artifact_id;
     const plays =
-      document !== undefined && roleDocuments.has(document)
-        ? document === documentId
-        : answer.converted && kinds.includes(node.supertag);
+      node.document === undefined
+        ? answer.converted && kinds.includes(node.supertag)
+        : inRoleDocument(node);
     return plays ? [{ node, place }] : [];
   });
   const placed = members.flatMap(({ node }) => (inRoleDocument(node) ? [node] : []));

@@ -74,6 +74,12 @@ const ROW_KINDS: Readonly<Record<Filter, readonly NodeType[]>> = {
   verification: ["check", "result"],
 };
 
+/** The kinds `filter` draws as rows of its own (`ROW_KINDS`), for a part that draws a filter's
+ *  rows itself, so it reads them here rather than holding a copy. */
+export function rowKindsOf(filter: Filter): readonly NodeType[] {
+  return ROW_KINDS[filter];
+}
+
 /** The kinds a filter draws as context: rows that place its own, faint and marked, and drawn
  *  whether or not anything of the filter's sits under them (R2's "each requirement as
  *  context"). */
@@ -303,12 +309,18 @@ function heldFilterView(
   // parent. A view's node is matched by its id; a node the view does not hold, by the read's.
   const fromRead = new Map<string, TreeNode>();
   const byRead = new Map<string, TreeNode>();
+  const ofRead = new Map<string, TreeNode[]>();
   const placements = new Map<string, TreeNode>();
   const byId = new Map<string, { readonly node: TreeNode; readonly parent: TreeNode }>();
   const index = (parent: TreeNode): void => {
     for (const child of parent.children) {
       if (child.readId !== undefined) {
-        if (!fromRead.has(child.id)) fromRead.set(child.id, child);
+        if (!fromRead.has(child.id)) {
+          fromRead.set(child.id, child);
+          const same = ofRead.get(child.readId);
+          if (same === undefined) ofRead.set(child.readId, [child]);
+          else same.push(child);
+        }
         if (!byRead.has(child.readId)) byRead.set(child.readId, child);
         placements.set(`${child.id} ${parent.id}`, child);
       }
@@ -321,7 +333,9 @@ function heldFilterView(
   // two nodes of one read id, blocks of two documents, are two; else, for a view node that names
   // no document, the first of its read id. And each one's parent: the nearest node before it that
   // its `parent` names, since a parent comes before its children and two nodes can share a read
-  // id, else the tree's node of that read id.
+  // id, else the tree's node of that read id. Where the view names the parent's kind beside it
+  // (`parent_line`), the parent is a node of that kind: the view may hold another document's
+  // node of the same read id, or the tree hold it first.
   const treeOf = new Map<TreeAnswerNode, TreeNode>();
   const firstOf = new Map<string, TreeNode>();
   for (const node of answer.nodes) {
@@ -335,8 +349,13 @@ function heldFilterView(
   const parentOf = new Map<TreeAnswerNode, TreeNode>();
   const latest = new Map<string, TreeNode>();
   for (const node of answer.nodes) {
-    const parent =
+    const nearest =
       node.parent === null ? undefined : (latest.get(node.parent) ?? treeNodeOf(node.parent));
+    const kind = node.parent_line?.supertag;
+    const parent =
+      node.parent === null || kind === undefined || nearest?.type === kind
+        ? nearest
+        : (ofRead.get(node.parent)?.find((one) => one.type === kind) ?? nearest);
     if (parent !== undefined) parentOf.set(node, parent);
     const tree = treeOf.get(node);
     if (tree !== undefined) latest.set(node.id, tree);

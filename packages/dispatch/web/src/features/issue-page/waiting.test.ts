@@ -658,6 +658,51 @@ test("a comment on a statement is no Change of a decision of another document wi
   ]).toEqual([1, [blockNodeId("decisions-md", "r1")]]);
 });
 
+/** The node `id` under `root`, wherever it sits. */
+function nodeIn(root: TreeNode, id: string): TreeNode | undefined {
+  if (root.id === id) return root;
+  for (const child of root.children) {
+    const found = nodeIn(child, id);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+// Two documents of an issue may each hold a decision block of one id, and each is a decision of
+// its own. The decisions read's decision d1 is the decisions document's node, though the spec's
+// decision block d1 comes later in the read, and a person's Change the read hangs under that
+// node is its Change alone: the decision waits on its agent, in the count as in the tree, and the
+// spec's decision of the same id still waits for review.
+test("a Change of a decision node is no Change of another document's decision of the same block id", () => {
+  const row = waitingDecision("d1", ["r1"]);
+  const read: IssueDecisions = { decisions: [row], document: null, open_questions: [] };
+  const asked: Comment = { ...change, anchor: null, id: "c-on-decision" };
+  const other = treeNode("d1", "decision", {
+    changed_at: row.changed_at,
+    document: { artifact_id: spec.id, position: 1, slug: "spec" },
+    kept: null,
+    replaced: false,
+    waiting_review: true,
+  });
+  const tree = answerOf([statement, decisionNode(row, 0), commentNode(asked, "d1"), other]);
+  const root = buildIssueTree({
+    comments: [asked],
+    coverage,
+    decisions: read,
+    issue,
+    tree,
+    viewer: "alice",
+  });
+
+  expect({
+    count: waitingOnReader(issue, "alice", read, isStatement, [asked], tree).decisions,
+    states: [blockNodeId("decisions-md", "d1"), blockNodeId("spec", "d1")].map(
+      (id) => nodeIn(root, id)?.state
+    ),
+    waiting: waitingIn(root),
+  }).toEqual({ count: 0, states: ["change_requested", "waiting_review"], waiting: [] });
+});
+
 /** An intro of the decisions document that holds none of the quotes below. */
 const PLAIN_INTRO = "The decisions this issue made.";
 
