@@ -94,7 +94,7 @@ func TestASweepWhoseListTheDropCutOffListsAgainOnTheNewConnection(t *testing.T) 
 // and pulls it, rather than restarting it at the ack floor (RestartAtFloor), which deletes the
 // consumer and creates it again. The row sees that through the consumer's creation time.
 func TestARelayListTheDropCutOffListsAgainAndTheRelayKeepsItsConsumer(t *testing.T) {
-	rig, hold, url, _ := heldListener(t)
+	rig, hold, url, client := heldListener(t)
 	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)
@@ -138,6 +138,13 @@ func TestARelayListTheDropCutOffListsAgainAndTheRelayKeepsItsConsumer(t *testing
 		t.Fatal("the relays' list had not answered by the test's deadline")
 	}
 
+	// The restart reads the session's interest row through the listener's own client, which
+	// reconnects on its own one-second wait, apart from the session consumers' client the list
+	// went through. The relay loop would wait for it (relayLost); this row makes one restart, so
+	// it waits for that client first, up to the test's deadline.
+	for !client.Connected() && testnats.Remaining(t) > 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 	defer cancel()
 	_, pull, outcome := relays.restart(ctx, listedRun)
