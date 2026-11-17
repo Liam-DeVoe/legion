@@ -369,8 +369,6 @@ export interface PaintedShape {
    *  behind that mark: 1 where it paints nothing that stands out, an empty or hidden box
    *  included. */
   readonly contrast: number;
-  /** The outline its paths draw, each path's `d`, which is what a reader tells it apart by. */
-  readonly outline: string;
   /** Its `data-glyph` token, which no reader sees. */
   readonly token: string;
 }
@@ -490,9 +488,6 @@ export function shapesPainted(
         id: row.getAttribute("data-node-id"),
         shapes: [...row.querySelectorAll(selectors.nodeGlyph)].map((glyph) => ({
           contrast: standsOut(glyph),
-          outline: [...glyph.querySelectorAll("path")]
-            .map((path) => path.getAttribute("d") ?? "")
-            .join(" "),
           token: glyph.getAttribute("data-glyph") ?? "",
         })),
       })
