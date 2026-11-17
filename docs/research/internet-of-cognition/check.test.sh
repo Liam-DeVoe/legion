@@ -2529,6 +2529,45 @@ else
     case_failed "case_result asked for absence-still-empty fails a run whose record names only predicate-form, though its text prints a FAIL line of absence-still-empty" "case_result printed: $verdict"
 fi
 
+# 98. Dispatch answering that it holds no such node is an answer, in every wording its CLI
+# prints. The CLI of the worker image the issue pod moved to on 2026-11-17 prints the
+# refusal's code before its text, "NOT_FOUND: not found", where it printed "not found"
+# alone. At a829d6d5e8, LIVE_ANSWER_NO read that wording as no answer, so the planted fault
+# of citation-dispatch, a reference to an issue Dispatch does not hold, ended --self-test
+# as a run that could not run instead of failing citation-dispatch. live_read returns 1 on
+# each wording of a no, with the code or without it, and ends the mode as could-not-run on
+# a Dispatch that did not answer or that refused for another reason. Each read runs in a
+# subshell over a scratch of its own, so cannot_run writes nothing into this run's scratch.
+live_answer() {
+    # live_answer <line>; how live_read ends over a source that prints <line> and exits 1:
+    # 0 answered, 1 answered no, 2 could not run.
+    local scratch
+    scratch="$(mktemp -d "$WORK/live.XXXXXX")" || return 3
+    (
+        RUN_SCRATCH="$scratch"
+        MODE=citations
+        live_read "Dispatch, a stub" "$scratch/out" sh -c 'printf "%s\n" "$1"; exit 1' sh "$1"
+    ) >/dev/null 2>&1
+}
+for answer in 'not found' 'NOT_FOUND: not found' 'No block nosuchblock in dispatch://INFRA-3134/artifact/plan-md.' 'document "no-such-document" not found by slug; this issue'"'"'s 11 documents and files include: plan-md (plan.md)'; do
+    live_answer "$answer"
+    status=$?
+    if [ "$status" = 1 ]; then
+        case_passed "live_read reads Dispatch's '$answer' as an answer that it holds no such node"
+    else
+        case_failed "live_read reads Dispatch's '$answer' as an answer that it holds no such node" "live_read ended $status"
+    fi
+done
+for answer in 'Dispatch at http://127.0.0.1:1 is unreachable' 'UNAUTHORIZED: the token is not valid' 'NOT_FOUND: no route POST /api/v1/x'; do
+    live_answer "$answer"
+    status=$?
+    if [ "$status" = 2 ]; then
+        case_passed "live_read reads Dispatch's '$answer' as no answer, so the mode cannot run"
+    else
+        case_failed "live_read reads Dispatch's '$answer' as no answer, so the mode cannot run" "live_read ended $status"
+    fi
+done
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this

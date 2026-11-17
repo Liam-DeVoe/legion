@@ -1106,11 +1106,13 @@ env_rows_judge() {
 # answered. It returns 1 when the source answered that it holds no such thing, which is an
 # answer that judges the deliverable: Dispatch's "not found", "No block", "no version N
 # of", "document ... not found", or its refusal to read a reference it does not take
-# ("dispatch read was not called"), each measured against Dispatch on 2026-11-15. Anything
-# else that fails, a Dispatch that is unreachable, a curl or git transport error, is no
-# answer at all: the mode cannot run, and it ends here, naming the source, exit 2, or exit
-# 1 after a FAIL, by the precedence of the header.
-LIVE_ANSWER_NO='^(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
+# ("dispatch read was not called"), each measured against Dispatch on 2026-11-15, each
+# with or without the refusal's code before it ("NOT_FOUND: not found"), which the CLI of
+# the worker image printed from 2026-11-17. Anything else that fails, a Dispatch that is
+# unreachable, a curl or git transport error, is no answer at all: the mode cannot run,
+# and it ends here, naming the source, exit 2, or exit 1 after a FAIL, by the precedence
+# of the header.
+LIVE_ANSWER_NO='^(NOT_FOUND: )?(not found$|No block |no version [0-9]+ of |document "[^"]*" not found|dispatch [a-z-]+ was not called)'
 live_read() {
     local source="$1" file="$2"
     shift 2
@@ -1407,7 +1409,7 @@ prepare_env() {
 #   ;                                 48  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  5  writes the output to a file
-#   2>                                 5  writes the error output to a file
+#   2>                                 9  writes the error output to a file
 #   2>&1                               5  sends the error output where the output goes
 #   {                                 24  opens a group
 #   }                                 24  closes a group
