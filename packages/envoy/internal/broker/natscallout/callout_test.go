@@ -138,8 +138,8 @@ func TestTheHubAdmitsASessionThroughTheService(t *testing.T) {
 }
 
 // Through the service, a session answers a request asked on a reply subject naming it
-// (bus.SessionReplySubject), as every relay frame, connection probe and agent stream replay asks
-// (dispatch://INFRA-4186), and the server refuses the same answer on another session's reply
+// (bus.SessionReplySubject), as every relay frame, connection probe and agent stream replay asks,
+// and the server refuses the same answer on another session's reply
 // subject and on a requester's own plain inbox, by name. The watcher, a static user subscribed to
 // every reply inbox, hears the one admitted answer and none of the refused ones.
 func TestASessionThroughTheServiceAnswersOnlyUnderItsOwnReplyPrefix(t *testing.T) {

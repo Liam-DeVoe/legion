@@ -277,7 +277,7 @@ func SessionPattern() Permissions {
 // subject: every request a session answers - each relay frame, the listener's connection probe,
 // Dispatch's agent stream replay - asks on a reply subject naming the session it asks
 // (bus.SessionReplySubject), so the session answers all of them and can answer no other session's
-// request, nor publish into a requester's own inbox (dispatch://INFRA-4186). An id that is not one
+// request, nor publish into a requester's own inbox. An id that is not one
 // subject token (SessionToken) is refused naming it, because a dot, a wildcard or a space in it
 // would reach other sessions' subjects.
 func Session(sessionID string) (Permissions, error) {
