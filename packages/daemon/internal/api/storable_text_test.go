@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,12 +24,16 @@ func nulError(place string, at int) string {
 }
 
 // The decoder of every request body refuses a string holding a NUL character wherever it stands:
-// a member at the top, a member of a nested object, an element of an array and a member of an
-// array's object, in strict mode and in lenient. The refusal names the string's place in the body
-// and where in it the NUL stands, counted in code points, and never the string. Lenient mode reads
-// every string the body holds, a member it ignores and a member's name among them, the name written
-// with the six characters \u0000 so the refusal carries no NUL. The controls are taken in both
-// modes: the same members with no NUL, and a string holding the six characters \u0000 as text.
+// a member at the top, a member of a nested object, an element of an array, an element of an
+// array inside an array and a member of an array's object, in strict mode and in lenient. It reads
+// every string the body writes, not the value a decoder keeps: a repeated member's earlier copy is
+// refused whatever the later one holds, since a later null leaves a string field as the earlier
+// copy set it and a later object merges into a struct field, so the route would act on the NUL. The
+// refusal names the string's place in the body and where in it the NUL stands, counted in code
+// points, and never the string. Lenient mode reads every string the body holds, a member it ignores
+// and a member's name among them, the name written with the six characters \u0000 so the refusal
+// carries no NUL. The controls are taken in both modes: the same members with no NUL, repeated
+// members holding none, and a string holding the six characters \u0000 as text.
 func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 	type task struct {
 		Text string `json:"text"`
@@ -38,8 +43,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		Plan       struct {
 			Source string `json:"source"`
 		} `json:"plan"`
-		Labels []string `json:"labels"`
-		Tasks  []task   `json:"tasks"`
+		Labels []string   `json:"labels"`
+		Tasks  []task     `json:"tasks"`
+		Grid   [][]string `json:"grid"`
 	}
 	decode := func(raw string, strict bool) error {
 		var into body
@@ -56,6 +62,10 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 		{name: "a nested object's member", body: `{"plan":{"source":"own\u0000er"}}`, place: "plan.source", at: 4},
 		{name: "an array element", body: `{"labels":["ok","b\u0000"]}`, place: "labels[1]", at: 2},
 		{name: "a member of an array's object", body: `{"tasks":[{"text":"a"},{"text":"é\u0000"}]}`, place: "tasks[1].text", at: 2},
+		{name: "an element of an array in an array", body: `{"grid":[["ok"],["ok","é\u0000"]]}`, place: "grid[1][1]", at: 2},
+		{name: "a member a later null repeats", body: `{"planReason":"fit\u0000","planReason":null}`, place: "planReason", at: 4},
+		{name: "a member a later string repeats", body: `{"planReason":"fit\u0000","planReason":"fit"}`, place: "planReason", at: 4},
+		{name: "an object a later one repeats", body: `{"plan":{"source":"own\u0000er"},"plan":{}}`, place: "plan.source", at: 4},
 		{name: "a member the route does not read", body: `{"ignored":"x\u0000"}`, place: "ignored", at: 2, lenientOnly: true},
 		{name: "a member's name", body: `{"a\u0000b":"x"}`, place: `a\u0000b`, at: 2, lenientOnly: true},
 	} {
@@ -76,8 +86,9 @@ func TestTheBodyDecoderRefusesAStringHoldingANul(t *testing.T) {
 	}
 
 	for _, taken := range []string{
-		`{"planReason":"fit","plan":{"source":"owner"},"labels":["ok","b"],"tasks":[{"text":"a"},{"text":"é"}]}`,
+		`{"planReason":"fit","plan":{"source":"owner"},"labels":["ok","b"],"tasks":[{"text":"a"},{"text":"é"}],"grid":[["ok"],["b"]]}`,
 		`{"planReason":"fit\\u0000"}`,
+		`{"planReason":"fit\\u0000","planReason":null,"plan":{"source":"owner"},"plan":{},"grid":[["ok","b"]]}`,
 	} {
 		for _, strict := range []bool{true, false} {
 			if err := decode(taken, strict); err != nil {
@@ -114,6 +125,45 @@ func TestACompletionSummaryWithANulIsRefusedAsInput(t *testing.T) {
 	completion(t, complete("implemented"))
 	if at, row, _ := handoffRecord(t, h, "LEGION-208"); at != phase.Testing || row == nil || row.Summary != "implemented" {
 		t.Fatalf("after the corrected completion LEGION-208 is in %s with implementer row %+v, want testing with the summary recorded", at, row)
+	}
+}
+
+// A completion that hides a NUL character in the first copy of a member it repeats, followed by a
+// null that leaves the field as that copy set it, is refused as input naming the member, before
+// anything is recorded, and the same completion written once and clean is taken: the route acts
+// on what the typed decode kept, so the decoder's check reads every copy the body writes.
+func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+
+	// Each row at a commit of its own, the commit being in the completion's key: a row the decoder
+	// let through is a completion of its own, and never answered as the row before it.
+	for _, tc := range []struct {
+		name, commit, members, place string
+		at                           int
+	}{
+		{name: "planReason", commit: "c0ffee01", members: `"summary":"retro done","planRating":4,"planReason":"fit\u0000","planReason":null`, place: "planReason", at: 4},
+		{name: "summary", commit: "c0ffee02", members: `"summary":"retro\u0000 done","summary":null,"planRating":4,"planReason":"fit"`, place: "summary", at: 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grant, err := json.Marshal(implementer.grant(t))
+			if err != nil {
+				t.Fatalf("encode the grant: %v", err)
+			}
+			body := fmt.Sprintf(`{"grantId":%s,"verdict":"","commit":%q,%s}`, grant, tc.commit, tc.members)
+			wantRefusal(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", body, nil), http.StatusBadRequest,
+				"invalid request body: "+nulError(tc.place, tc.at))
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("facts after the refusal = %#v, want none applied", got)
+			}
+		})
+	}
+
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee01",
+		PlanRating: new(4), PlanReason: "fit"}))
+	if fact := lastCompletion(t, facts); fact.Summary != "retro done" || fact.PlanReason != "fit" {
+		t.Fatalf("the corrected completion's fact = %+v, want its summary and reason as sent", fact)
 	}
 }
 
