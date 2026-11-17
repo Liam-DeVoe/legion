@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,29 +17,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The place of a phase's step is read from the steps, never stated: the step of each working
-// phase is the step of DefaultSteps whose role works that phase, at one plus its index, under that
-// role. The place logic takes the steps as a parameter, so a list without the tester shows that the
-// place is read: the reviewer moves up to place 3, and testing runs no step of that list. Nothing
-// global is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got
-// changes no later answer.
+// The place of a phase's step is read from the steps, never stated: a list without the tester shows
+// it, since the place logic takes the steps as a parameter: the reviewer moves up to place 3, and
+// testing runs no step of that list. Today's places, each with its role and type, are held by
+// TestStepOfIsTodaysSequence (steps_test.go), which stepOf answers from DefaultSteps. Nothing global
+// is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got changes
+// no later answer.
 func TestStepOfReadsTheDefaultSteps(t *testing.T) {
-	works := map[string]phase.Phase{"planner": phase.Planning, "implementer": phase.Implementing, "tester": phase.Testing,
-		"reviewer": phase.Reviewing, "acceptance": phase.Accepting}
-	steps := DefaultSteps()
-	if want := []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(steps, want) {
+	if steps, want := DefaultSteps(), []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}; !slices.Equal(steps, want) {
 		t.Fatalf("DefaultSteps() = %q, want %q", steps, want)
-	}
-	for i, step := range steps {
-		role, _, _ := strings.Cut(step, ":")
-		at, ok := works[role]
-		if !ok {
-			t.Fatalf("the default step %q names a role that works no phase", step)
-		}
-		place, got, _, ok := stepOf(at)
-		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || got != stepRole(role) {
-			t.Errorf("stepOf(%s) = %+v, role %q, ok %v; want %+v, role %q", at, place, got, ok, want, role)
-		}
 	}
 
 	withoutTester := slices.DeleteFunc(DefaultSteps(), func(step string) bool { return step == "tester" })
@@ -79,6 +64,33 @@ func planWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.PlanRec
 	return got
 }
 
+// defaultPlanNamed is the default plan the test expects for the run named name ("<key>/<generation>")
+// at generation: the oracle of a plan record's id and body, computed apart from PlanID and
+// defaultPlan.
+func defaultPlanNamed(name string, generation uint64) record.PlanRecord {
+	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
+	return record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(name)).String(), Generation: generation, Source: "default",
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+}
+
+// retroPlace is the place of an issue's retro, which no list of steps holds.
+var retroPlace = record.StepPlace{Task: "default", Kind: "retro"}
+
+// retroEndsAndRatings is every end of the retro and every write carrying a rating that issue's
+// outbox holds, each in the order written.
+func retroEndsAndRatings(t *testing.T, pool *pgxpool.Pool, issue string) (ends, rated []record.StepRecord) {
+	t.Helper()
+	for _, write := range stepWrites(t, pool, issue) {
+		if write.Kind == "retro" && isEnd(write) {
+			ends = append(ends, write)
+		}
+		if write.PlanRating != nil {
+			rated = append(rated, write)
+		}
+	}
+	return ends, rated
+}
+
 // The work of an issue starts at its move out of admitted, and that move writes the plan the run
 // carries out: one plan record of the issue, with the source default and one task, default, whose
 // steps are DefaultSteps. Its id is a version 5 uuid of the issue and its run, in the plan records'
@@ -96,12 +108,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 	engine := stepEngine(nil)
 	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect})
 
-	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
-	planOf := func(name string, generation uint64) record.PlanRecord {
-		return record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(name)).String(), Generation: generation, Source: "default",
-			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
-	}
-	first := planOf("LEGION-208/1", 1)
+	first := defaultPlanNamed("LEGION-208/1", 1)
 	if plans := planWrites(t, pool, root.Key); len(plans) != 1 || !reflect.DeepEqual(plans[0], first) {
 		t.Fatalf("the move out of admitted wrote the plans %+v, want the one %+v", plans, first)
 	}
@@ -126,7 +133,7 @@ func TestTheWorkStartsWithTheDefaultPlan(t *testing.T) {
 		})
 	}
 	openTheGate()
-	second := planOf("LEGION-208/2", 2)
+	second := defaultPlanNamed("LEGION-208/2", 2)
 	if plans := planWrites(t, pool, root.Key); !reflect.DeepEqual(plans, []record.PlanRecord{first, second}) {
 		t.Fatalf("the gate of run 2 left the plans %+v, want run 1's %+v and run 2's %+v", plans, first, second)
 	}
@@ -144,12 +151,10 @@ func TestAChildsPlanIsNamedByItsOwnKey(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Implementing)
 	engine := stepEngine(nil)
-	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
 	for _, child := range []struct{ key, name string }{{"LEGION-210", "LEGION-210/3"}, {"LEGION-209", "LEGION-209/3"}} {
 		stepChild(t, pool, child.key, phase.Admitted, nil)
 		move(t, pool, engine, child.key, TriggerGateOpened, "", record.PhaseRow{Issue: child.key, Role: claim.RoleArchitect})
-		want := record.PlanRecord{ID: uuid.NewSHA1(namespace, []byte(child.name)).String(), Generation: 3, Source: "default",
-			Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+		want := defaultPlanNamed(child.name, 3)
 		if plans := planWrites(t, pool, child.key); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
 			t.Errorf("the start of %s's work wrote the plans %+v, want the one %+v, named by %s", child.key, plans, want, child.name)
 		}
@@ -187,18 +192,9 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 				Claim: "implement-claim", Summary: "retro done", Commit: "head", PlanRating: tc.rating})
 			assertPhase(t, pool, phase.Merging)
 
-			var end *record.StepRecord
-			var rated []record.StepRecord
-			for _, write := range stepWrites(t, pool, root.Key) {
-				if write.Kind == "retro" && isEnd(write) {
-					end = &write
-				}
-				if write.PlanRating != nil {
-					rated = append(rated, write)
-				}
-			}
-			if end == nil {
-				t.Fatalf("the retro's completion wrote no end of the retro: %+v", stepWrites(t, pool, root.Key))
+			ends, rated := retroEndsAndRatings(t, pool, root.Key)
+			if len(ends) != 1 {
+				t.Fatalf("the retro's completion wrote the retro ends %+v, want one", ends)
 			}
 			if plans := planWrites(t, pool, root.Key); len(plans) != 0 {
 				t.Fatalf("the retro of a run that started before this release wrote the plans %+v, want none: a plan is written at the start of a run's work alone",
@@ -213,18 +209,12 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			if len(rated) != 1 {
 				t.Fatalf("the retro's completion wrote %d ratings (%+v), want one", len(rated), rated)
 			}
-			rating := rated[0]
-			want := record.StepRecord{ID: end.ID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: end.Agent, Generation: 1, PlanRating: &record.PlanRating{Rating: tc.rating.Score, Reason: tc.rating.Reason}}
-			if !reflect.DeepEqual(rating, want) {
-				t.Fatalf("the rating = %+v (rating %v), want %+v on the retro's record %s", rating, deref(rating.PlanRating),
-					want, end.ID)
-			}
-			if wantID := StepID(root.Key, 1, record.StepPlace{Task: "default", Kind: "retro"}, 1); rating.ID != wantID {
-				t.Fatalf("the rating's id = %s, want %s, the first run of the retro", rating.ID, wantID)
-			}
-			if rating.Agent != treeRoleToken(t, root.Key, claim.RoleImplementer) {
-				t.Fatalf("the rating names the agent %q, want the implementer's claim, which started the retro", rating.Agent)
+			want := record.StepRecord{ID: StepID(root.Key, 1, retroPlace, 1), Task: "default", Step: 0, Kind: "retro", Role: "implementer",
+				Type: "", Agent: treeRoleToken(t, root.Key, claim.RoleImplementer), Generation: 1,
+				PlanRating: &record.PlanRating{Rating: tc.rating.Score, Reason: tc.rating.Reason}}
+			if rating := rated[0]; !reflect.DeepEqual(rating, want) || rating.ID != ends[0].ID {
+				t.Fatalf("the rating = %+v (rating %v), want %+v, the implementer's, on the record of the retro's first run, whose end is %s",
+					rating, deref(rating.PlanRating), want, ends[0].ID)
 			}
 		})
 	}
@@ -259,20 +249,12 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 	assertPhase(t, pool, phase.Accepting)
 	retro(4, "The plan left the migration to its last step.")
 
-	var ends, rated []record.StepRecord
-	for _, write := range stepWrites(t, pool, root.Key) {
-		if write.Kind == "retro" && isEnd(write) {
-			ends = append(ends, write)
-		}
-		if write.PlanRating != nil {
-			rated = append(rated, write)
-		}
-	}
+	ends, rated := retroEndsAndRatings(t, pool, root.Key)
 	agent := treeRoleToken(t, root.Key, claim.RoleImplementer)
 	want := []record.StepRecord{
-		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+		{ID: StepID(root.Key, 3, retroPlace, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
 			Generation: 3, PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}},
-		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
+		{ID: StepID(root.Key, 3, retroPlace, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
 			Generation: 3, PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan left the migration to its last step."}},
 	}
 	if len(ends) != 2 || len(rated) != 2 {
@@ -297,7 +279,7 @@ func TestARetroRunningAtTheDeployRatesTheRecordItsEndMakes(t *testing.T) {
 	root := stepRoot(t, pool, phase.Retro)
 	seedPhase(t, pool, record.PhaseRow{Issue: root.Key, Role: claim.RoleImplementer, Claim: "implement-claim", Entry: 1,
 		EntryRaisedAt: stepClock.Add(-time.Hour)})
-	place := record.StepPlace{Task: "default", Kind: "retro"}
+	place := retroPlace
 	var before record.StepStart
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		var err error
@@ -315,15 +297,7 @@ func TestARetroRunningAtTheDeployRatesTheRecordItsEndMakes(t *testing.T) {
 	assertPhase(t, pool, phase.Merging)
 
 	id, agent := StepID(root.Key, 1, place, 0), treeRoleToken(t, root.Key, claim.RoleImplementer)
-	var ends, rated []record.StepRecord
-	for _, write := range stepWrites(t, pool, root.Key) {
-		if write.Kind == "retro" && isEnd(write) {
-			ends = append(ends, write)
-		}
-		if write.PlanRating != nil {
-			rated = append(rated, write)
-		}
-	}
+	ends, rated := retroEndsAndRatings(t, pool, root.Key)
 	if len(ends) != 1 || ends[0].ID != id || ends[0].Agent != agent {
 		t.Fatalf("the retro's completion wrote the retro ends %+v, want one, of the run counted 0 (%s) under the implementer's agent %s", ends, id, agent)
 	}
