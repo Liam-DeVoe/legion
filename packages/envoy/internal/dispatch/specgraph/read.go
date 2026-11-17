@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/santhosh-tekuri/jsonschema/v6/kind"
@@ -58,6 +59,40 @@ var english = message.NewPrinter(language.English)
 // yamlLine is the line that a message of yaml.v3 names at its start.
 var yamlLine = regexp.MustCompile(`^line ([0-9]+):`)
 
+// readerFaults are the messages of the reader of yaml.v3 (its readerc.go) for a byte that is not
+// UTF-8 and for a character that YAML does not allow. The reader names no line, so such a fault is
+// at the line of the first character that the reader refuses (refusedLine).
+var readerFaults = map[string]bool{
+	"control characters are not allowed": true,
+	"incomplete UTF-8 octet sequence":    true,
+	"invalid leading UTF-8 octet":        true,
+	"invalid length of a UTF-8 sequence": true,
+	"invalid trailing UTF-8 octet":       true,
+	"invalid Unicode character":          true,
+}
+
+// refusedLine is the line of the first character of data that the reader of yaml.v3 refuses: a
+// byte that is not part of a UTF-8 character, or a character outside the set that YAML allows. It
+// is 0 when data has none.
+func refusedLine(data []byte) int {
+	for offset := 0; offset < len(data); {
+		r, width := utf8.DecodeRune(data[offset:])
+		if r == utf8.RuneError && width == 1 || !yamlCharacter(r) {
+			return 1 + bytes.Count(data[:offset], []byte("\n"))
+		}
+		offset += width
+	}
+	return 0
+}
+
+// yamlCharacter reports whether YAML allows r in a stream, as the reader of yaml.v3 checks it: a
+// tab, a line feed, a carriage return, the printable ASCII characters, U+0085, and the rest of
+// Unicode except the C1 controls, the surrogates, U+FFFE and U+FFFF.
+func yamlCharacter(r rune) bool {
+	return r == 0x09 || r == 0x0A || r == 0x0D || 0x20 <= r && r <= 0x7E || r == 0x85 ||
+		0xA0 <= r && r <= 0xD7FF || 0xE000 <= r && r <= 0xFFFD || 0x10000 <= r && r <= 0x10FFFF
+}
+
 // document is one YAML document of a spec file: the line of its "---" (or of its first line, for a
 // document that has none), and its data written as JSON, nil when the reader refused the data.
 type document struct {
@@ -80,7 +115,11 @@ func readDocuments(name string, data []byte) (documents []document, problems []P
 			break
 		}
 		if err != nil {
-			problems = append(problems, yamlProblem(name, err.Error(), 1))
+			line := 1
+			if readerFaults[strings.TrimPrefix(err.Error(), "yaml: ")] {
+				line = max(refusedLine(data), 1)
+			}
+			problems = append(problems, yamlProblem(name, err.Error(), line))
 			stopped = true
 			break
 		}
@@ -363,13 +402,15 @@ func jsonPointer(tokens []string) string {
 
 // firstUnprinted is the first line of data that is not as printNode writes nodes, which the
 // documents at lines hold, and the node whose document holds that line; 0 when data is exactly
-// their documents. Past the end of the shorter text, the line is the one after it.
+// their documents. Past the end of the shorter text, the line is the one after it. A node that
+// printNode refuses is at the line of its document. With no node, the node is nil: a file whose
+// documents give no node is not as Print writes any node.
 func firstUnprinted(data []byte, nodes []any, lines []int) (int, any) {
 	var printed strings.Builder
-	for _, node := range nodes {
+	for i, node := range nodes {
 		document, err := printNode(node)
 		if err != nil {
-			return firstLineOf(lines), node
+			return lines[i], node
 		}
 		printed.WriteString(document)
 	}
@@ -381,6 +422,9 @@ func firstUnprinted(data []byte, nodes []any, lines []int) (int, any) {
 	for line <= len(got) && line <= len(want) && got[line-1] == want[line-1] {
 		line++
 	}
+	if len(nodes) == 0 {
+		return line, nil
+	}
 	holder := 0
 	for i, start := range lines {
 		if start <= line {
@@ -388,14 +432,6 @@ func firstUnprinted(data []byte, nodes []any, lines []int) (int, any) {
 		}
 	}
 	return line, nodes[holder]
-}
-
-// firstLineOf is the first of lines, 1 when there is none.
-func firstLineOf(lines []int) int {
-	if len(lines) == 0 {
-		return 1
-	}
-	return lines[0]
 }
 
 // nodeID is the id of node, a Statement, Check, Component or Term; "" for nil.

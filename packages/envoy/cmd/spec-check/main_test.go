@@ -133,7 +133,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			if want := (result{
 				code:   1,
 				stdout: "spec-check: " + dir + ": 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is refused\n",
-				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.yaml") + ":1: -: " + row.detail + "\n",
+				stderr: "spec-check: " + dir + noList + "spec-check: " + filepath.Join(dir, "bytes.yaml") + ":6: -: " + row.detail + "\n",
 			}); got != want {
 				t.Errorf("%s: exit %d, stdout %q, stderr %q\nwant exit %d, stdout %q, stderr %q", row.name, got.code, got.stdout, got.stderr, want.code, want.stdout, want.stderr)
 			}

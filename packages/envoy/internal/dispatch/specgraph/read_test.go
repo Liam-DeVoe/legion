@@ -109,9 +109,20 @@ func TestReadRefuses(t *testing.T) {
 		{name: "an open flow list", text: "---\ntype: [\n",
 			want: Problem{Position{"x.yaml", 2}, "-", "bad-yaml", "bad-yaml: line 2: did not find expected node content"}},
 		{name: "a byte that is not UTF-8", text: strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1),
-			want: Problem{Position{"x.yaml", 1}, "-", "bad-yaml", "bad-yaml: invalid trailing UTF-8 octet"}},
+			want: Problem{Position{"x.yaml", 4}, "-", "bad-yaml", "bad-yaml: invalid trailing UTF-8 octet"}},
 		{name: "a NUL byte", text: strings.Replace(term, "work unit\n", "work\x00unit\n", 1),
-			want: Problem{Position{"x.yaml", 1}, "-", "bad-yaml", "bad-yaml: control characters are not allowed"}},
+			want: Problem{Position{"x.yaml", 4}, "-", "bad-yaml", "bad-yaml: control characters are not allowed"}},
+		// The reader of yaml.v3 names no line for a byte it refuses; the problem is at the line of
+		// that byte, also in a later document of a file larger than one read of the reader. The
+		// reader reads ahead of the parser, so the tree keeps the 24 nodes the parser had finished.
+		{name: "a byte that is not UTF-8 in the 30th document", text: strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1), nodes: 24,
+			want: Problem{Position{"x.yaml", 178}, "-", "bad-yaml", "bad-yaml: invalid trailing UTF-8 octet"}},
+		{name: "a control character in the 30th document", text: strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "work\x01unit\n", 1), nodes: 24,
+			want: Problem{Position{"x.yaml", 178}, "-", "bad-yaml", "bad-yaml: control characters are not allowed"}},
+		// A fault of the YAML on line 1, which yaml.v3 names with no line, keeps line 1 when a byte
+		// far after it is not UTF-8: only a fault of the reader takes the line of that byte.
+		{name: "a fault on line 1 before a byte that is not UTF-8", text: "@x\n" + strings.Repeat(term, 29) + strings.Replace(term, "work unit\n", "caf\xe9 unit\n", 1),
+			want: Problem{Position{"x.yaml", 1}, "-", "bad-yaml", "bad-yaml: found character that cannot start any token"}},
 		{name: "a key written two times", text: strings.Replace(term, "type: term\n", "type: term\ntype: term\n", 1),
 			want: Problem{Position{"x.yaml", 3}, "-", "bad-yaml", `bad-yaml: line 3: mapping key "type" already defined at line 2`}},
 		{name: "a key that is a number", text: "---\n1: x\n",
@@ -161,6 +172,32 @@ func TestReadRefuses(t *testing.T) {
 				t.Errorf("Parse(%q): the tree holds %d nodes, want %d: %+v", row.text, got, row.nodes, tree)
 			}
 		})
+	}
+}
+
+// firstUnprinted names a line and a node for each file it is given, and never panics: a file
+// whose documents give no node, which no document that the schema takes reaches today, is refused
+// at its first line with no node, and a node that printNode refuses is at the line of its own
+// document, not the file's first.
+func TestFirstUnprintedNamesTheLineAndTheNode(t *testing.T) {
+	t.Parallel()
+	term := Term{ID: "work-unit", Name: "work unit", Definition: "A work unit is work."}
+	unprintable := Term{Name: "no id", Definition: "A term with no id prints as no document."}
+	for _, row := range []struct {
+		name  string
+		data  string
+		nodes []any
+		lines []int
+		line  int
+		node  any
+	}{
+		{"documents that give no node", "---\ntype: term\n", nil, nil, 1, nil},
+		{"a node that printNode refuses, in the second document", "", []any{term, unprintable}, []int{1, 7}, 7, unprintable},
+	} {
+		line, node := firstUnprinted([]byte(row.data), row.nodes, row.lines)
+		if line != row.line || !reflect.DeepEqual(node, row.node) {
+			t.Errorf("%s: firstUnprinted = %d, %+v; want %d, %+v", row.name, line, node, row.line, row.node)
+		}
 	}
 }
 
