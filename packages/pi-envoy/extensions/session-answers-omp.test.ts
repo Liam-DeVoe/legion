@@ -20,6 +20,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
 // (src/session-answers-context.ts), and on none of the other requests its
@@ -31,6 +32,8 @@ import {
 // without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** What the stand-in's answers route does: list `items` (after `delayMs`, at once when unset),
  *  accept and never answer, or answer as a Dispatch build older than the route does. */
@@ -399,7 +402,7 @@ async function runSession(
       home,
       workspace,
       sessions,
-      env: { ENVOY_URL: base, DISPATCH_URL: base, DISPATCH_TOKEN: "session-answers-token" },
+      env: { ENVOY_URL: base, DISPATCH_URL: base, DISPATCH_TOKEN },
       onFrame: (frame) => {
         if (settle?.(frame)) {
           settle = undefined;

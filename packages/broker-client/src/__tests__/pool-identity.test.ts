@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -36,15 +37,16 @@ import {
 } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
-const EXTERNAL_TOKEN = "the.credential.this.machine.holds";
-const FEDERATED_TOKEN = "federated-access-token";
-const MINTED_TOKEN = "google.identity.token.minted.for.the.pool";
+const EXTERNAL_TOKEN = fixtureSecret("external");
+const FEDERATED_TOKEN = fixtureSecret("fed");
+const MINTED_TOKEN = fixtureSecret("minted");
 const POOL_AUDIENCE =
   "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider";
 const SERVICE_ACCOUNT = "example-fleet@example-project.iam.gserviceaccount.com";
 const CLIENT_ID = "example-machine-client-id";
 const PERSON = "ada@example.com";
 const SIGNIN_CLIENT_ID = "example-device-client";
+const SIGNIN_CLIENT_SECRET = fixtureSecret("client");
 
 const makeDirectory = temporaryDirectories("pool-identity");
 
@@ -246,7 +248,7 @@ test("an answer that is not JSON is named without its text, which could be a tok
 // mint as the request built on IAM Credentials' plain base (`requestForText`), and a URL that
 // carries user info by its fixed phrase alone, no part of it.
 test("the security token service and IAM Credentials are named only where their URL is plain", async () => {
-  const password = `canary-pw-${crypto.randomUUID()}`;
+  const password = fixtureSecret("pw");
   const withUser = (url: string) => url.replace("http://", `http://operator:${password}@`);
   const unanswering = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const sts = stubService(federating);
@@ -346,7 +348,7 @@ async function personOnPoolMachine(sts: string, iam: string, brokerUrl: string) 
     subject: personIdentity(record, {
       issuer: issuer.url,
       clientId: SIGNIN_CLIENT_ID,
-      clientSecret: "example-device-client-not-a-secret",
+      clientSecret: SIGNIN_CLIENT_SECRET,
     }),
     actor: await poolAt(sts, iam),
     session: "ses_01a9",

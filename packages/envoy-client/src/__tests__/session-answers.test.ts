@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { SessionAnswer } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type FakeDispatchCall, fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
@@ -36,6 +37,8 @@ const hoursAgo = (hours: number) => new Date(NOW - hours * 3_600_000).toISOStrin
 /** Where a read at `NOW` starts its window: 72 hours before it. */
 const SINCE = hoursAgo(72);
 const stateDir = temporaryDirectories("session-answers");
+/** The Dispatch bearer each test's Dispatch is reached with. */
+const TOKEN = fixtureSecret("dsp");
 
 function message(id: string, at: string, text: string): SessionAnswer {
   return {
@@ -477,7 +480,7 @@ function dispatchAt(): ActiveDispatchConfig {
   return {
     enabled: true,
     url: `http://answers-${dispatchCount}.test`,
-    credential: bearerCredential("test-token"),
+    credential: bearerCredential(TOKEN),
   };
 }
 let sessionCount = 0;

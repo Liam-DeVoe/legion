@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import * as path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
 import {
@@ -126,7 +127,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     });
     const [port] = await freePorts(1);
     const url = `http://127.0.0.1:${port}`;
-    const token = `dispatch-stack-${crypto.randomUUID()}`;
+    const token = fixtureSecret("dsp");
     const home = path.join(work, "home");
     mkdirSync(home);
     const log = path.join(work, "dispatch.log");

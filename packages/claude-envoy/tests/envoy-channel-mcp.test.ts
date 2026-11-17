@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
@@ -54,6 +55,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     },
   })
   const stateDirectory = await mkdtemp(join(tmpdir(), "claude-envoy-mcp-"))
+  const dispatchToken = fixtureSecret("dsp")
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
     command: "bun",
@@ -70,7 +72,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
       // are both resolved from this base (`resolveModSocketPath`).
       XDG_RUNTIME_DIR: stateDirectory,
       DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: dispatchToken,
     },
     stderr: "pipe",
   })

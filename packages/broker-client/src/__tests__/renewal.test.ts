@@ -7,6 +7,7 @@
 
 import { expect, test } from "bun:test";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -23,14 +24,17 @@ import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
+const CLIENT_SECRET = fixtureSecret("client");
 
-/** A source that answers a token of its own at each read, so a renewal is visibly a fresh one. */
-function countingSource(): TokenSource & { reads: number } {
+/** A source that answers a token of its own at each read, so a renewal is visibly a fresh one.
+ *  `tokens` is each token it answered, in order. */
+function countingSource(): TokenSource & { tokens: string[] } {
   const source = {
-    reads: 0,
+    tokens: [] as string[],
     read: async (): Promise<SubjectToken> => {
-      source.reads += 1;
-      return { token: `subject-${source.reads}`, tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+      const token = fixtureSecret("subject");
+      source.tokens.push(token);
+      return { token, tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
     },
     describe: () => "a scripted identity",
   };
@@ -69,8 +73,8 @@ test("the token in hand is reused until the renewal window, then traded again", 
     clock.now += 60_000;
     expect((await client.token()).accessToken).toBe("token-2");
     expect(broker.trades.length).toBe(2);
-    expect(broker.trades[1]?.form.get("subject_token")).toBe("subject-2");
-    expect(source.reads).toBe(2);
+    expect(broker.trades[1]?.form.get("subject_token")).toBe(source.tokens[1] as string);
+    expect(source.tokens).toHaveLength(2);
   } finally {
     broker.stop();
   }
@@ -130,7 +134,7 @@ test.each([
     }),
   ],
 ] as const)("an answer %s names the broker only where its URL is plain, and keeps no cause", async (_, body) => {
-  const password = `canary-pw-${crypto.randomUUID()}`;
+  const password = fixtureSecret("pw");
   const leaked = `canary-token-${crypto.randomUUID()}`;
   const broker = stubBroker(() => ({ body: body(leaked) }));
   const withUser = broker.url.replace("http://", `http://operator:${password}@`);
@@ -308,7 +312,7 @@ test("a sign-in the issuer ended drops the token in hand, while an issuer that i
   const source = personIdentity(await signedIn(PERSON, { client_id: CLIENT_ID }), {
     issuer: issuer.url,
     clientId: CLIENT_ID,
-    clientSecret: "example-device-client-not-a-secret",
+    clientSecret: CLIENT_SECRET,
   });
   const client = await clientAt(broker.url, clock, source);
   try {
@@ -349,7 +353,7 @@ test("a broker's refusal of a person's trade names their sign-in", async () => {
   const source = personIdentity(await signedIn(PERSON), {
     issuer: issuer.url,
     clientId: CLIENT_ID,
-    clientSecret: "example-device-client-not-a-secret",
+    clientSecret: CLIENT_SECRET,
   });
   const client = await clientAt(broker.url, { now: Date.now() }, source);
   try {

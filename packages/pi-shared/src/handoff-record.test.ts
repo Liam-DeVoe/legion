@@ -9,6 +9,7 @@ import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { fakeLatestHandoff } from "@legion/envoy-client/test/fake-dispatch";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   versionControlEnvironment,
@@ -769,10 +770,11 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
     });
     return answers.shift() ?? Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
+  const paneDispatchToken = fixtureSecret("dsp");
   const paneEnv = {
     ...env,
     DISPATCH_URL: "http://dispatch.test",
-    DISPATCH_TOKEN: "pane-dispatch-token",
+    DISPATCH_TOKEN: paneDispatchToken,
   };
   const latestHandoff = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
   const report = () =>
@@ -797,7 +799,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   expect(requests).toEqual([
     {
       url: "http://dispatch.test/api/v1/issues/LEGION-208/handoffs/review/latest",
-      authorization: "Bearer pane-dispatch-token",
+      authorization: `Bearer ${paneDispatchToken}`,
     },
   ]);
 

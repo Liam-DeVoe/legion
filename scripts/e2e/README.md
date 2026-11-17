@@ -5132,7 +5132,7 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
   bash scripts/e2e/nats-callout-sessions.sh [--real-hosts] [--binaries <dir>]     # → "nats-callout-sessions: 9 of 9 checks passed (hosts: plugins)", exit 0
 ```
 
-The live proof of dispatch://INFRA-840's `r-kinds` and `r-refusal` with sessions: its verification's check `c-callout-kinds-plugins` in the default mode, and `c-callout-kinds` with `--real-hosts`.
+The live proof of the NATS auth service's `r-kinds` and `r-refusal` with sessions: its verification's check `c-callout-kinds-plugins` in the default mode, and `c-callout-kinds` with `--real-hosts`.
 An Oh My Pi session and a Claude Code session, each connecting to the hub with its own broker token, are admitted to their own channels and receive a direct message, again after a restart of the listener and again after a restart of the hub's server on the same store;
 and a probe run in one session's own environment is refused the other session's channel by name.
 

@@ -15,6 +15,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
@@ -37,6 +38,8 @@ const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 const skip = (omp === undefined || natsUrl === undefined) && !onActions;
+/** The Dispatch token the session is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** The binary and NATS server a case runs against; throws on GitHub Actions without them. */
 function setup(): { readonly binary: string; readonly nats: string } {
@@ -284,7 +287,7 @@ async function startSession(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         DISPATCH_URL: base,
-        DISPATCH_TOKEN: "session-surface-token",
+        DISPATCH_TOKEN,
         ...env,
       },
       onFrame: (frame) => {

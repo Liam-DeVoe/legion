@@ -61,8 +61,9 @@ export async function writeSignIn(dir: string, record: SignInRecord): Promise<st
   await chmod(dir, 0o700);
   const { enrollment_id, ...rest } = record;
   const path = signInPath(dir, record.person);
-  const written = enrollment_id === "" ? rest : record;
-  await writeFile(path, `${JSON.stringify(written, null, 2)}\n`, { mode: 0o600 });
+  // The record's secrets are random where they are made (`signedIn`, or a caller's override).
+  const json = JSON.stringify(enrollment_id === "" ? rest : record, null, 2);
+  await writeFile(path, `${json}\n`, { mode: 0o600 });
   return path;
 }
 

@@ -27,6 +27,7 @@ import {
   SUBJECT_TOKEN_TYPE_KUBERNETES,
   SUBJECT_TOKEN_TYPE_PERSON,
 } from "@legion/broker-client/wire";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, forgetBrokerClients, forgetBrokerSession } from "../broker-credential";
@@ -44,6 +45,9 @@ afterEach(() => {
 });
 
 const tempDir = temporaryDirectories("broker-credential");
+
+/** The Dispatch token a person holds on the machine, which a session told to trade never uses. */
+const PERSON_TOKEN = fixtureSecret("dsp");
 
 /** The config a caller with no envoy.json reads: the neutral file, which does not exist. */
 function noFile(env: DispatchEnvironment) {
@@ -151,11 +155,11 @@ test("told to hold its credential at the broker, a session reads no person's tok
   // the controller writing Dispatch as the operator; set, the session trades for its own.
   const broker = stubBroker(600);
   const env = podEnvironment(broker.url, "http://dispatch.test");
-  const config = personalFile(env, "http://dispatch.test", "a-person-s-dispatch-token");
+  const config = personalFile(env, "http://dispatch.test", PERSON_TOKEN);
 
   const shadowed = dispatchSettings(env, config, { session: "legion-demo-controller" });
   if (!shadowed.enabled) throw new Error(`Dispatch is off: ${shadowed.error}`);
-  expect(shadowed.credential.secret()).toBe("a-person-s-dispatch-token");
+  expect(shadowed.credential.secret()).toBe(PERSON_TOKEN);
 
   const forced = dispatchSettings({ ...env, DISPATCH_TOKEN_BROKER: "1" }, config, {
     session: "legion-demo-controller",
@@ -169,7 +173,7 @@ test("told to hold its credential at the broker, a session reads no bearer varia
   const broker = stubBroker(600);
   const env = {
     ...podEnvironment(broker.url, "http://dispatch.test"),
-    DISPATCH_TOKEN: "a-person-s-dispatch-token",
+    DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER: "1",
   };
   const resolution = dispatchSettings(env, noFile(env), { session: "legion-demo-controller" });
@@ -183,7 +187,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
   const broker = stubBroker(600);
   const env = {
     ...podEnvironment(broker.url, "http://dispatch.test"),
-    DISPATCH_TOKEN: "a-person-s-dispatch-token",
+    DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER: "1",
   };
 
@@ -316,12 +320,13 @@ test("the listener takes the same credential, and a configured bearer still wins
   if (!brokered.enabled) throw new Error("Envoy is off");
   expect(brokered.credential?.scheme).toBe("DPoP");
 
-  const written = envoySettings({ ...env, ENVOY_TOKEN: "listener-token" }, noFile(env), {
+  const listenerToken = fixtureSecret("listener");
+  const written = envoySettings({ ...env, ENVOY_TOKEN: listenerToken }, noFile(env), {
     nats: false,
   });
   if (!written.enabled) throw new Error("Envoy is off");
   expect(written.credential?.scheme).toBe("Bearer");
-  expect(written.credential?.secret()).toBe("listener-token");
+  expect(written.credential?.secret()).toBe(listenerToken);
 });
 
 /** A broker whose tokens name the session the trade asked to write under, as the real one's do

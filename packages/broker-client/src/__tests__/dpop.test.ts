@@ -8,6 +8,7 @@
 import { expect, test } from "bun:test";
 import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { calculateJwkThumbprint, EmbeddedJWK, type JWK, jwtVerify } from "jose";
 import { type DpopKey, importDpopKey, newDpopKey } from "../dpop";
 
@@ -69,7 +70,7 @@ test("each proof carries a jti of its own", async () => {
 
 test("a request presenting an access token names it in ath, and only then", async () => {
   const key = await newDpopKey();
-  const accessToken = "broker-access-token";
+  const accessToken = fixtureSecret("access");
   const withToken = part(
     await key.proof({ method: "POST", url: "https://dispatch.test/api/v1/comments", accessToken }),
     1

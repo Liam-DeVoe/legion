@@ -9,6 +9,7 @@ import {
   type BrokerNatsCredential,
   brokerNatsCredential,
 } from "@legion/envoy-client/nats-credential"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import {
   type Authenticator,
   type ConnectionOptions,
@@ -82,7 +83,7 @@ test("dialChannelNats keeps the broker token renewed until it is stopped", async
   const broker = shortTokenBroker()
   const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
   const tokenFile = join(home, "token")
-  await writeFile(tokenFile, "projected.service.account.token\n")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(
     {
       HOME: home,

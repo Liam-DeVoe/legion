@@ -84,6 +84,7 @@ import {
 } from "@legion/pi-shared/role-claim-bridge";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -99,6 +100,19 @@ import {
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
+
+/** The Dispatch token a row hands the session in DISPATCH_TOKEN. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
+/** The Dispatch token a row hands the session in its envoy.json's `dispatch.token`. */
+const FILE_DISPATCH_TOKEN = fixtureSecret("dsp");
+/** The listener's bearer a row hands the session in ENVOY_TOKEN. */
+const LISTENER_TOKEN = fixtureSecret("listener");
+/** The listener's bearer a row hands the session in its envoy.json's `envoy.token`. */
+const FILE_LISTENER_TOKEN = fixtureSecret("listener");
+/** The listener's bearer a pane's ENVOY_TOKEN_FILE holds. */
+const PANE_LISTENER_TOKEN = fixtureSecret("listener");
+/** A pod's projected service-account token, which this machine trades at a stub broker. */
+const MACHINE_IDENTITY_TOKEN = fixtureSecret("machine");
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -1175,7 +1189,7 @@ async function bootDirectSession(
 ) {
   process.env.DISPATCH_URL = "http://dispatch.test";
   if (options.dispatchCredential === "broker") delete process.env.DISPATCH_TOKEN;
-  else process.env.DISPATCH_TOKEN = "dispatch-token";
+  else process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
   const accepts: {
     readonly path: string;
     readonly authorization: string | null;
@@ -1349,7 +1363,7 @@ function stubBroker(label: string) {
   const secrets = mkdtempSync(join(tmpdir(), `envoy-${label}-broker-`));
   // A pod's projected service-account token, which is the identity this machine trades.
   const identityFile = join(secrets, "projected-token");
-  writeFileSync(identityFile, "projected.service.account.token\n");
+  writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
   /** The session each trade the stub broker was asked wrote its token under. */
   const traded: string[] = [];
   /** The credential each Dispatch request presented, by the route it was made to. */
@@ -1364,7 +1378,7 @@ function stubBroker(label: string) {
   process.env.AGENT_SECRETS_URL = "http://broker.test";
   process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
   process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
-  process.env.ENVOY_TOKEN = "listener-token";
+  process.env.ENVOY_TOKEN = LISTENER_TOKEN;
   return {
     presented,
     traded,
@@ -3981,7 +3995,7 @@ describe("envoy OMP extension", () => {
     } as unknown as typeof z;
     const fixture = createPi({ zod: injected });
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?injected-zod-identity");
     envoyExtension(fixture.pi);
 
@@ -4013,7 +4027,7 @@ describe("envoy OMP extension", () => {
 
   test("registers every Envoy tool with lenient host validation so execute is the one error surface", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?lenient-arg-validation");
     const fixture = createPi();
     envoyExtension(fixture.pi);
@@ -4516,7 +4530,7 @@ describe("envoy OMP extension", () => {
 
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const { default: envoyExtension } = await import("./envoy.ts?no-dispatch-tools");
     const fixture = createPi();
 
@@ -4689,7 +4703,11 @@ describe("envoy OMP extension", () => {
       process.env.ENVOY_CONFIG_FILE ?? "",
       JSON.stringify({
         ...ASKGATE_OFF,
-        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "title-token" },
+        dispatch: {
+          enabled: true,
+          serverUrl: "https://dispatch.example",
+          token: FILE_DISPATCH_TOKEN,
+        },
       })
     );
     const { default: envoyExtension } = await import("./envoy.ts?title-file-envoy-off");
@@ -4903,7 +4921,7 @@ describe("envoy OMP extension", () => {
             enabled: true,
             url: "http://envoy-from-file.test",
             natsUrls: ["nats://nats-from-file:4222"],
-            token: "file-listener-token",
+            token: FILE_LISTENER_TOKEN,
             natsSeed: new TextDecoder().decode(user.getSeed()),
           },
         })
@@ -4919,7 +4937,7 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
-      expect(new Set(auth)).toEqual(new Set(["Bearer file-listener-token"]));
+      expect(new Set(auth)).toEqual(new Set([`Bearer ${FILE_LISTENER_TOKEN}`]));
       expect(natsState.connects).toEqual([
         { servers: ["nats://nats-from-file:4222"], authenticated: true },
       ]);
@@ -4929,7 +4947,7 @@ describe("envoy OMP extension", () => {
       const user = nkeys.createUser();
       const tokenFile = join(configDirectory, "envoy-token");
       const seedFile = join(configDirectory, "nats-seed");
-      writeFileSync(tokenFile, "pane-listener-token\n");
+      writeFileSync(tokenFile, `${PANE_LISTENER_TOKEN}\n`);
       writeFileSync(seedFile, `${new TextDecoder().decode(user.getSeed())}\n`);
       process.env.ENVOY_TOKEN_FILE = tokenFile;
       process.env.NATS_NKEY_SEED_FILE = seedFile;
@@ -4944,7 +4962,7 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, sessionContext("ses_pane_credentials"));
 
       expect(auth.length).toBeGreaterThan(0);
-      expect(new Set(auth)).toEqual(new Set(["Bearer pane-listener-token"]));
+      expect(new Set(auth)).toEqual(new Set([`Bearer ${PANE_LISTENER_TOKEN}`]));
       expect(natsState.connects).toEqual([
         { servers: ["nats://nats-under-test:4222"], authenticated: true },
       ]);
@@ -4957,7 +4975,11 @@ describe("envoy OMP extension", () => {
       writeFileSync(
         handed,
         JSON.stringify({
-          dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "handed-token" },
+          dispatch: {
+            enabled: true,
+            serverUrl: "https://dispatch.example",
+            token: FILE_DISPATCH_TOKEN,
+          },
         })
       );
       process.env.ENVOY_CONFIG_FILE = handed;
@@ -5104,7 +5126,7 @@ console.log(JSON.stringify(args));
     test("(a) with Dispatch on and no askgate section, a dispatch ask reaches the gate's model and a revise blocks it", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-on");
       const fixture = createPi();
@@ -5139,7 +5161,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       rmSync(file);
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-no-envoy-json");
       const fixture = createPi();
@@ -5170,7 +5192,7 @@ console.log(JSON.stringify(args));
     test("three rules-check failures in a row raise the rules notice, and a new session start does not show it again", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-rules-notice");
       const fixture = createPi();
@@ -5223,7 +5245,7 @@ console.log(JSON.stringify(args));
     const gateOn = () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
     };
     /**
@@ -5379,7 +5401,7 @@ console.log(JSON.stringify(args));
     test("no record is written with the switch off, with Dispatch off, or by a task subagent's instance", async () => {
       // The switch off: this suite's default envoy.json turns AskGate off.
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const off = await import("./envoy.ts?askgate-record-off");
       const offFixture = createPi();
@@ -5968,7 +5990,7 @@ console.log(JSON.stringify(args));
     test("a review deadline under 30 s is said at session start, not only logged", async () => {
       writeFileSync(process.env.ENVOY_CONFIG_FILE ?? "", "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       // The host's own default for a tool_call handler, which a profile that sets nothing gets.
       mock.module("@oh-my-pi/pi-coding-agent/extensibility/settings", () => ({
@@ -6000,7 +6022,7 @@ console.log(JSON.stringify(args));
         );
         writeFileSync(
           process.env.ENVOY_CONFIG_FILE ?? "",
-          `${JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: "dispatch-token" } })}\n`
+          `${JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: FILE_DISPATCH_TOKEN } })}\n`
         );
         process.chdir(checkout);
         standInHost();
@@ -6030,7 +6052,7 @@ console.log(JSON.stringify(args));
 
     test("(b) with askgate.enabled false the gate does not bind: the dispatch ask runs and no model is asked", async () => {
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-off");
       const fixture = createPi();
@@ -6086,7 +6108,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, `${JSON.stringify({ askgate: { enabled: "no" } })}\n`);
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-unparsable");
       const fixture = createPi();
@@ -6110,7 +6132,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
         standInHost();
@@ -6157,7 +6179,7 @@ console.log(JSON.stringify(args));
       const file = process.env.ENVOY_CONFIG_FILE ?? "";
       writeFileSync(file, "{}\n");
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       process.env.OMP_ASKGATE = "block";
       process.env.OMP_ASKGATE_TIMEOUT_MS = "soon";
       try {
@@ -6203,7 +6225,7 @@ console.log(JSON.stringify(args));
       delete process.env.ENVOY_CONFIG_FILE;
       process.env.XDG_CONFIG_HOME = "relative/config";
       process.env.DISPATCH_URL = "http://dispatch.test";
-      process.env.DISPATCH_TOKEN = "dispatch-token";
+      process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       standInHost();
       const { default: envoyExtension } = await import("./envoy.ts?askgate-no-config-path");
       const fixture = createPi();
@@ -12697,7 +12719,7 @@ console.log(JSON.stringify(args));
   });
   test("answers a targeted BTW delivery ephemerally and registers the capability", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const registrations: unknown[] = [];
     const replies: unknown[] = [];
     const replyPosted = Promise.withResolvers<void>();
@@ -12777,7 +12799,7 @@ console.log(JSON.stringify(args));
 
   test("answers a targeted comment BTW through its supplied comment reply address", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: Array<{ readonly path: string; readonly body: unknown }> = [];
     const replyPosted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -13014,7 +13036,7 @@ console.log(JSON.stringify(args));
 
       expect(accepts).toEqual([
         {
-          authorization: "Bearer dispatch-token",
+          authorization: `Bearer ${DISPATCH_TOKEN}`,
           // The accept is a write, so it carries an Idempotency-Key of its own.
           key: expect.stringMatching(/^[A-Za-z0-9._:-]{1,128}$/),
           body: { actor: { id: "ses_delivery", kind: "session" } },
@@ -14812,7 +14834,7 @@ console.log(JSON.stringify(args));
         workDirectories.push(secrets);
         // A pod's projected service-account token, which is the identity this machine trades.
         const identityFile = join(secrets, "projected-token");
-        writeFileSync(identityFile, "projected.service.account.token\n");
+        writeFileSync(identityFile, `${MACHINE_IDENTITY_TOKEN}\n`);
         /** The session each trade the stub broker was asked wrote its token under. */
         const traded: string[] = [];
         /** The credential each Dispatch request presented, by the route it was made to. */
@@ -14828,7 +14850,7 @@ console.log(JSON.stringify(args));
           process.env.AGENT_SECRETS_URL = "http://broker.test";
           process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
           process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = identityFile;
-          process.env.ENVOY_TOKEN = "listener-token";
+          process.env.ENVOY_TOKEN = LISTENER_TOKEN;
           let live = "ses_delivery";
           let switched: Promise<unknown> | undefined;
           const { accepts, agent, fixture, replied, replies } = await bootShellSession(
@@ -17359,7 +17381,7 @@ console.log(JSON.stringify(args));
 
   test("reports an ephemeral delivery rejection to Dispatch without steering it", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -17406,7 +17428,7 @@ console.log(JSON.stringify(args));
   // of one that was answered is still dropped.
   test("runs a BTW side turn again for a Retry of one whose side turn failed", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     let posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -17465,7 +17487,7 @@ console.log(JSON.stringify(args));
 
   test("leaves a BTW that drains in during session_shutdown for the next holder, starting no side turn", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     // The reply Dispatch would be posted if the session took the frame.
     // Deregistration hangs, so the shutdown handler is still running when the frame arrives.
@@ -17509,7 +17531,7 @@ console.log(JSON.stringify(args));
 
   test("fails closed for a malformed targeted frame and reports the error to Dispatch", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const replies: unknown[] = [];
     const posted = Promise.withResolvers<void>();
     globalThis.fetch = async (input, init) => {
@@ -17804,7 +17826,7 @@ console.log(JSON.stringify(args));
     readonly item: SessionAnswer;
   } {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const item: SessionAnswer = {
       kind: "answer",
       relation: "answered_your_ask",
@@ -17880,7 +17902,7 @@ console.log(JSON.stringify(args));
   // answers, the skill stays and the request says the list could not be read.
   test("a Dispatch answering 200 with no list keeps the dispatch-first skill and carries the failure line", async () => {
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     globalThis.fetch = async (input, init) =>
       new URL(input.toString()).host === "dispatch.test"
         ? Response.json({ unexpected: true })
@@ -17907,7 +17929,7 @@ console.log(JSON.stringify(args));
   test("a Dispatch with no answers route adds no line to the model, and the log says so once for the session", async () => {
     const base = "http://dispatch-no-route.test";
     process.env.DISPATCH_URL = base;
-    process.env.DISPATCH_TOKEN = "answers-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     const reads: string[] = [];
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
@@ -19259,7 +19281,7 @@ console.log(JSON.stringify(args));
     // alone, so after a switch the connection presents the new session's token, and is back,
     // before anything of the new session's is subscribed.
     const tokenFile = join(configDirectory, "projected-token");
-    writeFileSync(tokenFile, "projected.service.account.token\n");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
     process.env.AGENT_SECRETS_URL = "http://broker.test";
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
@@ -19307,7 +19329,7 @@ console.log(JSON.stringify(args));
     // agent-stream subject never opens. What the host records next is the new session's, and the
     // old session's control subject must not answer a replay with it.
     const tokenFile = join(configDirectory, "projected-token");
-    writeFileSync(tokenFile, "projected.service.account.token\n");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
     process.env.AGENT_SECRETS_URL = "http://broker.test";
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
@@ -19396,7 +19418,7 @@ console.log(JSON.stringify(args));
     // Two-second tokens, so the keeper renews within the test: each renewal lands a new token,
     // and the connection reconnects to present it before the old one lapses. Shutdown stops it.
     const tokenFile = join(configDirectory, "projected-token");
-    writeFileSync(tokenFile, "projected.service.account.token\n");
+    writeFileSync(tokenFile, `${MACHINE_IDENTITY_TOKEN}\n`);
     process.env.NATS_AUTH = "broker";
     process.env.AGENT_SECRETS_URL = "http://broker.test";
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
@@ -20778,7 +20800,7 @@ describe("consumer delivery", () => {
   ) {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
     process.env.DISPATCH_URL = "http://dispatch.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
     let refusing = options.refuse;
     const registrations: Registration[] = [];
     const dispatchReplies: string[] = [];

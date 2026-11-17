@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
@@ -1801,20 +1802,22 @@ describe("EnvoyClient", () => {
   });
   test("sends the token it is given as a bearer token to the listener", async () => {
     const recorded = recordFetch([new Response(null, { status: 200 })]);
+    const listenerToken = fixtureSecret("listener");
     const client = createEnvoyClient({
       baseUrl: "http://listener",
       fetch: recorded.fetch,
-      credential: bearerCredential("listener-token"),
+      credential: bearerCredential(listenerToken),
     });
 
     await client.unregisterSession({ sessionID: "ses_closed" });
 
-    expect(recorded.requests[0]?.headers.get("Authorization")).toBe("Bearer listener-token");
+    expect(recorded.requests[0]?.headers.get("Authorization")).toBe(`Bearer ${listenerToken}`);
   });
 
   test("sends no Authorization header without a token, whatever ENVOY_TOKEN says", async () => {
     const previous = process.env.ENVOY_TOKEN;
-    process.env.ENVOY_TOKEN = "environment-token";
+    const environmentToken = fixtureSecret("envoy");
+    process.env.ENVOY_TOKEN = environmentToken;
     try {
       const recorded = recordFetch([new Response(null, { status: 200 })]);
       const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });

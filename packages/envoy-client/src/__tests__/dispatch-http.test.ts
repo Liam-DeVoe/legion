@@ -8,6 +8,7 @@ import {
   sleep,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
@@ -806,7 +807,7 @@ describe("DispatchClient", () => {
   // quoted: the client's own bearer wherever it appears (trimmed, as fetch sends it), and the
   // value after `Authorization:` or `Bearer`. The reason phrase is cut to one line like the body.
   test("redacts the bearer and an Authorization or Bearer value from the excerpt and the reason phrase", async () => {
-    const token = "dsp_live_4f9a2c7e";
+    const token = fixtureSecret("dsp");
     const echo =
       `<html><body><h1>401 Unauthorized</h1><pre>token=${token}\r\n` +
       "Authorization: Basic dXNlcjpwYXNz\r\nX-Forwarded: Bearer other.jwt-value</pre></body></html>";

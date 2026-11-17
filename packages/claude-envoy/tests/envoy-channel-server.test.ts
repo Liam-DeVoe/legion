@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import type { Server, Subprocess } from "bun"
 import { nkeys } from "nats"
@@ -43,6 +44,8 @@ const scratchState = useScratchState()
 const temporaryHome = temporaryDirectories("claude-envoy-home")
 /** The plugin's entries in the repository's marketplace, which the two cases below read. */
 const marketplaceEntries = marketplace.plugins.filter((entry) => entry.name === plugin.name)
+/** The Dispatch token the channel answers a rejected frame with. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
 
 /**
  * The listener's relay of one stored frame to this session's consumer, the one path a message
@@ -571,7 +574,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const notifier = new FakeNotifier()
     const delivery = createChannelDelivery({
       identity: new SessionIdentity("ses_claude", process.cwd()),
@@ -587,7 +590,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     expect(replies).toEqual([
       {
         path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
-        auth: "Bearer reply-token",
+        auth: `Bearer ${DISPATCH_TOKEN}`,
         body: {
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,
@@ -625,7 +628,7 @@ test("a Dispatch frame the channel answered with an error is answered again when
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const nats = new FakeNats()
     const notifier = new FakeNotifier()
     const stateDirectory = scratchState()
@@ -681,7 +684,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       },
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
-    process.env["DISPATCH_TOKEN"] = "reply-token"
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
     const notifier = new FakeNotifier()
     const delivery = createChannelDelivery({
       identity: new SessionIdentity("ses_claude", process.cwd()),
@@ -695,7 +698,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     expect(replies).toEqual([
       {
         path: "/api/v1/comments/33333333-3333-4333-8333-333333333333/reply",
-        auth: "Bearer reply-token",
+        auth: `Bearer ${DISPATCH_TOKEN}`,
         body: {
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,
@@ -941,6 +944,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         return Response.json({ error: "not found" }, { status: 404 })
       },
     })
+    const listenerToken = fixtureSecret("listener")
     await writeFile(
       join(configDirectory, "envoy.json"),
       JSON.stringify({
@@ -948,7 +952,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
           enabled: true,
           url: `http://127.0.0.1:${listener.port}`,
           natsUrls: [broker.url],
-          token: "file-token",
+          token: listenerToken,
           natsSeed: new TextDecoder().decode(user.getSeed()),
         },
       }),
@@ -969,7 +973,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
 
     await Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)])
     expect(broker.connects[0]).toMatchObject({ nkey: user.getPublicKey() })
-    expect(new Set(auth)).toEqual(new Set(["Bearer file-token"]))
+    expect(new Set(auth)).toEqual(new Set([`Bearer ${listenerToken}`]))
     // The bundle runs from this checkout, outside Claude Code's plugin cache.
     expect(plugins[0]).toEqual({ plugin: "@sjawhar/claude-envoy", plugin_version: "source" })
     server.kill("SIGTERM")

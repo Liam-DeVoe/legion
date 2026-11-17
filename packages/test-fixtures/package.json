@@ -9,6 +9,10 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./fixture-secret": {
+      "types": "./src/fixture-secret.ts",
+      "bun": "./src/fixture-secret.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"

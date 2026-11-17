@@ -1,6 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
@@ -38,8 +39,8 @@ const inherited = {
   GEMINI_API_KEY: "gemini-key",
   OPENAI_API_KEY: "openai-key",
   LEGION_GRANT: "outer-grant",
-  DISPATCH_TOKEN: "outer-dispatch-token",
-  GH_TOKEN: "outer-github-token",
+  DISPATCH_TOKEN: fixtureSecret("dsp"),
+  GH_TOKEN: fixtureSecret("gh"),
   GH_CONFIG_DIR: "/outer/gh",
   LEGION_GH_PATH: "/outer/gh-binary",
   PATH: `${outerBin}:/usr/bin`,

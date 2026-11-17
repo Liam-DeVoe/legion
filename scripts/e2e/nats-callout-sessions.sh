@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/e2e/nats-callout-sessions.sh — the live proof of dispatch://INFRA-840's r-kinds and
+# scripts/e2e/nats-callout-sessions.sh — the live proof of the NATS auth service's r-kinds and
 # r-refusal with sessions (its verification's checks c-callout-kinds-plugins, the default mode,
 # and c-callout-kinds, --real-hosts): an Oh My Pi session and
 # a Claude Code session, each connecting to the hub with its own broker token (NATS_AUTH=broker),
