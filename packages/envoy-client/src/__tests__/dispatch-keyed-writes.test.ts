@@ -1305,21 +1305,26 @@ describe("DispatchClient's uploads on a real connection", () => {
   };
 
   // The connection takes the body in four steps and stops after each until the row lets it go
-  // on. Each time the connection takes more of the body the client disarms its silence cut and
+  // on. Each time the client hands the connection more of the body it disarms its silence cut and
   // arms another, so the cut counts from the connection's last progress, never from the attempt's
   // start, and however long the body is out it lands in one attempt. At each stop one cut stands,
   // and it is not the one the attempt armed when it began: by the first stop the connection has
-  // taken 1.5 MiB, which the client handed it a chunk at a time, renewing the cut with each. Once
-  // the row lets a stop go, the connection takes more and the client renews the cut that stood
-  // there; the row waits for that renewal rather than reading at the next stop, because how much of
-  // the body the connection's buffers already hold decides whether the client hands it anything
-  // before the next stop, and that is the machine's pace, not the client's. The body is 24 MiB
-  // because what the client counts as progress is the connection taking its bytes: measured in a
-  // 2-CPU pod, the socket buffers swallowed a 4 MiB body whole.
+  // taken 1.5 MiB, which the client handed it a chunk at a time, renewing the cut with each. The
+  // row lets each stop go once it has read it, and waits for no renewal between two stops: the
+  // 1.5 MiB the connection takes from one stop to the next can all be bytes its buffers took
+  // before the earlier stop, and then the client hands it nothing until the row lets the later
+  // stop go. Over ten uploads in a 2-CPU pod, 6 of the 30 gaps between two stops went so, and by
+  // a third stop at 4.8 MiB the client had handed the connection about 11.4 MiB. Once the upload
+  // has landed, when the client arms no more cuts, the row reads that the client renewed its cut
+  // after the last stop: the stops sit in the body's first quarter, so the client still had more
+  // of the body to hand there than the buffers hold. The body is 24 MiB because what the client
+  // counts as progress is the connection taking its bytes: measured in a 2-CPU pod, the socket
+  // buffers swallowed a 4 MiB body whole.
   test("an upload's silence cut counts from the connection's last progress, so it lands in one attempt", async () => {
     const dispatch = await dispatchOn([{ pauses: 4 }]);
     const silence = heldSilenceCuts();
     const sending = upload(dispatch.url, 24 << 20, silence);
+    let armedByLastStop = 0;
     for (let stop = 1; stop <= 4; stop++) {
       const goOn = await until(`the connection's stop ${stop} of 4`, () => dispatch.paused.shift());
       const standing = silence.cuts.filter((cut) => !cut.disarmed);
@@ -1328,12 +1333,8 @@ describe("DispatchClient's uploads on a real connection", () => {
         standing: standing.length,
         renewed: standing[0] !== silence.cuts[0],
       }).toEqual({ stop, standing: 1, renewed: true });
-      const stood = standing[0] as HeldCut;
+      armedByLastStop = silence.cuts.length;
       goOn();
-      await until(
-        `the client to renew its cut as the connection takes the body past stop ${stop}`,
-        () => stood.disarmed
-      );
     }
     await settled("the upload", sending);
 
@@ -1341,6 +1342,8 @@ describe("DispatchClient's uploads on a real connection", () => {
     const only = dispatch.writes[0] as Taken;
     expect(only.pauses).toBe(4);
     expect(only.received).toBe(only.length);
+    // The client renewed its cut as the connection took the body past the last stop.
+    expect(silence.cuts.length).toBeGreaterThan(armedByLastStop);
   });
 
   // The row fires the client's silence cut once the stand-in has stopped taking the first attempt.
