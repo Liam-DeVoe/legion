@@ -648,12 +648,13 @@ func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...
 
 // publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its
 // footer naming mergeWaitReviewerSession, the session the seeded reviewer claim records, so the
-// review is the reviewer's own (workflow's byReviewer).
+// review is the reviewer's own (workflow's byReviewer). The footer names no entry: the review
+// decides its round as before, and this proof reads no commit the reviewer read.
 func (r *mergeWaitReadableLive) publishReview(number int, state, head string) {
 	r.t.Helper()
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs(mergeWaitReviewerSession, number, state, head, r.seq, r.reviewID)
+	r.publishReviewAs(number, state, head, legionFooter(mergeWaitReviewerSession, head), r.seq, r.reviewID)
 }
 
 // publishPush publishes the implementer's push of to onto from on issue's branch (publishPushOf).

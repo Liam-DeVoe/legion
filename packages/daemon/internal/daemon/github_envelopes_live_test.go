@@ -17,27 +17,27 @@ import (
 )
 
 // publishReviewAs publishes a review of the pull request numbered number at head, as Envoy relays
-// a GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, with
-// the Legion footer naming session and head, which is what lets it decide the round at all
-// (workflow's refusesRound): the head is the pull request's current head. The session is held to
-// the one the claims record holds for the claim the daemon starts the reviewer under, in the first
-// round as in every later one (workflow's byReviewer): only a review naming that session decides
-// the round and moves the commit the reviewer read, and while that claim records no session the
-// review waits and decides nothing (workflow's RoundRefusal.Waits). seq numbers the envelope and
-// reviewID the review: each review a run publishes carries an id and a time after the one before
-// it, so none is ordered behind a review already applied (record.ReviewOrder). The time is the
-// next whole second after the publish: GitHub's submitted_at is to the second, and only a review
-// submitted after its round's entry moves the commit the reviewer read (workflow's review), so a
-// time truncated to the second could stand before an entry raised in that same second. A real
-// review comes minutes after its round's entry.
-func (p *liveProof) publishReviewAs(session string, number int, state, head string, seq, reviewID int64) {
+// a GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, its
+// body ending with footer, the Legion footer the caller writes: legionFooter naming a session and
+// head, which is what lets it decide the round at all (workflow's refusesRound) when the head is
+// the pull request's current head, or legionEntryFooter naming the entry of its round too. The
+// session is held to the one the claims record holds for the claim the daemon starts the reviewer
+// under, in the first round as in every later one (workflow's byReviewer): only a review naming
+// that session decides the round, and while that claim records no session the review waits and
+// decides nothing (workflow's RoundRefusal.Waits). Of the reviewer's own reviews, only one whose
+// footer names the entry the reviewer's phases row stands at moves the commit the reviewer read
+// (workflow's review); no time is compared. seq numbers the envelope and reviewID the review: each
+// review a run publishes carries an id above the one before it, and its submitted_at is the moment
+// of the publish to the second, as GitHub's is, so none is ordered behind a review already applied
+// (record.ReviewOrder, which orders two reviews of one second by their ids).
+func (p *liveProof) publishReviewAs(number int, state, head, footer string, seq, reviewID int64) {
 	p.t.Helper()
 	payload, err := json.Marshal(map[string]string{
 		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "action": "submitted",
 		"state": state, "commit_id": head, "head_sha": head, "author": reviewAppLogin,
-		"body":           "the reviewer's " + state + " of " + head + legionFooter(session, head),
+		"body":           "the reviewer's " + state + " of " + head + footer,
 		"body_truncated": "false", "review_id": strconv.FormatInt(1000+reviewID, 10),
-		"submitted_at": time.Now().UTC().Truncate(time.Second).Add(time.Second).Format(time.RFC3339),
+		"submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		p.t.Fatalf("encode the review payload: %v", err)

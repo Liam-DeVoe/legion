@@ -2,10 +2,11 @@
 
 // The live proof's driver for the commit a later review round is told: the task the daemon prompts
 // the reviewer with in its second review round holds ` Last reviewed commit: <sha>.`, the head the
-// reviewer's own deciding review of the first round read (record.PhaseRow.ReviewedHead, which
-// workflow's review writes and workflow's reviewedPart names), and the task of the first round names
-// no commit. scripts/e2e/review-range.sh builds this driver with `-tags e2e` and owns the
-// nats-server and the PostgreSQL it runs against.
+// reviewer's own deciding review of the first round read, a review whose footer names the entry of
+// that round (record.PhaseRow.ReviewedHead, which workflow's review writes and workflow's
+// reviewedPart names), and the task of the first round names no commit.
+// scripts/e2e/review-range.sh builds this driver with `-tags e2e` and owns the nats-server and the
+// PostgreSQL it runs against.
 //
 // The rig is the handoff records proof's (startOnDispatch, in handoff_records_live_test.go): the
 // real Dispatch server of the checkout on a database of its own, the whole daemon booted with
@@ -19,13 +20,15 @@
 // the reviewer's claim registered, which is what makes it the reviewer's own review in the first
 // round as in every later one (workflow's byReviewer, with the session the claims record holds
 // for the claim the daemon starts the reviewer under): only the reviewer's own review decides the
-// round and records its head as the commit the reviewer read, and a review of another session at
-// the same head is set aside and records none. The
-// implementer's push and GitHub's synchronize move that head before the second round
-// (publishPushOf, publishSynchronizeOf), so the commit the second round is told is not the head it
-// reviews. GitHub's REST API is reviewRangeGitHub; no agent runs. The three issues and their pull
-// requests are seeded in testing through the store (seedIssues), each with its tester's launch for
-// the boot to relaunch.
+// round, and a review of another session at the same head is set aside and records none. The
+// footer also names the entry of its round, which the stand-in reviewer reads from the task the
+// daemon delivered its shim, as an agent reads its task (entryNamedIn): only a review that names
+// the entry the reviewer's phases row stands at records its head as the commit the reviewer read,
+// and no time is compared. The implementer's push and GitHub's synchronize move that head before
+// the second round (publishPushOf, publishSynchronizeOf), so the commit the second round is told is
+// not the head it reviews. GitHub's REST API is reviewRangeGitHub; no agent runs. The three issues
+// and their pull requests are seeded in testing through the store (seedIssues), each with its
+// tester's launch for the boot to relaunch.
 //
 // Each check reads the reviewer's task of its round, and first holds that it is that task: it says
 // `Phase: reviewing.` and names the tester's handoff of that round by its version. Without that, a
@@ -75,6 +78,9 @@ type reviewRangeIssue struct {
 	// the head the implementer pushes in the second round.
 	first, second    string
 	tester, reviewer *handoffClaimant
+	// task is the reviewer's task of the round it was last prompted in, as the daemon delivered it
+	// to the reviewer's shim; each review the stand-in reviewer writes names the entry it ends with.
+	task string
 }
 
 // TestReviewRangeLive drives the proof's four checks against one booted daemon and one Dispatch.
@@ -190,11 +196,14 @@ func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
 	if strings.Contains(task, workflow.ReviewedCommitLabel) {
 		r.t.Fatalf("the other issue's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
 	}
+	// The review differs from the reviewer's own in its session alone: it names the entry the
+	// reviewer's task named, so the session is what sets it aside.
 	other := "ses_" + issue.name + "_controller"
+	entry := r.entryNamedIn(issue.task)
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs(other, issue.number, "changes_requested", issue.first, r.seq, r.reviewID)
-	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s and head %s", issue.number, other, issue.first)
+	r.publishReviewAs(issue.number, "changes_requested", issue.first, legionEntryFooter(other, issue.first, entry), r.seq, r.reviewID)
+	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s, head %s and entry %d", issue.number, other, issue.first, entry)
 	if got := r.issue(issue.key).Phase; got != phase.Reviewing {
 		r.t.Fatalf("%s after another session's review is in %s, want reviewing: the review names session %s and the reviewer's claim registered %s, so it decides nothing",
 			issue.key, got, other, issue.reviewer.session)
@@ -210,29 +219,49 @@ func (r *reviewRangeLive) otherSessionRecordsNoCommit() {
 // roundOne walks issue's first review round: the seeded tester, which the boot relaunched, is
 // prompted to resume its phase, writes its handoff and passes; the daemon moves the issue to
 // reviewing, and the reviewer it starts registers and is prompted. It returns that task, held to be
-// the reviewing task naming the tester's handoff of round 1.
+// the reviewing task naming the tester's handoff of round 1, and keeps it as issue's task.
 func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 	issue.tester = r.claimant(claim.RoleTester, issue.key, "ses_"+issue.name+"_tester")
 	issue.tester.awaitPrompt("Phase: testing.", "Resume the existing phase work.")
 	test := r.pass(issue, 1)
 	issue.reviewer = r.claimant(claim.RoleReviewer, issue.key, "ses_"+issue.name+"_reviewer")
-	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
-	r.note("round 1: the reviewer's shim was prompted: %q", task)
-	return task
+	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
+	r.note("round 1: the reviewer's shim was prompted: %q", issue.task)
+	return issue.task
 }
 
 // requestChanges publishes the reviewer's request for changes at issue's first head, its footer
-// naming the session the reviewer's claim registered, and waits for the issue to move back to
-// implementing; the reviewer's turn then ends, as a worker's does after its review.
+// naming the session the reviewer's claim registered and the entry the reviewer's task names, and
+// waits for the issue to move back to implementing; the reviewer's turn then ends, as a worker's
+// does after its review.
 func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
 	session := issue.reviewer.session
+	entry := r.entryNamedIn(issue.task)
 	r.seq++
 	r.reviewID++
-	r.publishReviewAs(session, issue.number, "changes_requested", issue.first, r.seq, r.reviewID)
-	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s and head %s", issue.number, session, issue.first)
+	r.publishReviewAs(issue.number, "changes_requested", issue.first, legionEntryFooter(session, issue.first, entry), r.seq, r.reviewID)
+	r.note("published the review App's REQUEST_CHANGES of #%d, its footer naming session %s, head %s and entry %d, the entry its task named", issue.number, session, issue.first, entry)
 	r.waitPhase(issue.key, phase.Implementing)
 	r.note("read back: %s is back in implementing; phases.reviewed_head of its reviewer is %q", issue.key, r.reviewedHead(issue.key))
 	issue.reviewer.endTurn()
+}
+
+// entryNamedIn is the entry of the round task names, read as an agent reads it: the number of its
+// last sentence, ` Review entry: <n>.` (workflow.ReviewEntryLabel). It fails the proof when task
+// does not end naming a positive entry, since a review written without one moves no commit.
+func (r *reviewRangeLive) entryNamedIn(task string) int64 {
+	r.t.Helper()
+	label := " " + workflow.ReviewEntryLabel + ": "
+	at := strings.LastIndex(task, label)
+	if at >= 0 {
+		if number, last := strings.CutSuffix(task[at+len(label):], "."); last {
+			if entry, err := strconv.ParseInt(number, 10, 64); err == nil && entry > 0 {
+				return entry
+			}
+		}
+	}
+	r.t.Fatalf("the reviewer's task %q does not end naming its %q", task, workflow.ReviewEntryLabel)
+	return 0
 }
 
 // roundTwo walks issue's second round from implementing: the implementer pushes the second head,
@@ -260,9 +289,9 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	r.note("the implementer completed at %s naming %s; read back: %s is in testing", issue.second, implement.line, issue.key)
 	issue.tester.awaitPrompt("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
 	test := r.pass(issue, 2)
-	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
-	r.note("round 2: the reviewer's shim was prompted: %q", task)
-	return task
+	issue.task = issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
+	r.note("round 2: the reviewer's shim was prompted: %q", issue.task)
+	return issue.task
 }
 
 // pass has issue's tester write its handoff of round and complete with a pass, and waits for the
