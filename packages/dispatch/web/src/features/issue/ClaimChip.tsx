@@ -213,6 +213,11 @@ export function ClaimChip({
   // No tooltip on a surface that raises none (the issue page, R21): what the chip means is
   // drawn below instead, down to each instant (`Timestamp`'s `exact`) and to the unjudged
   // running state, which no word of the chip would otherwise carry.
+  //
+  // A pill holds each of its words whole and cuts the name instead. A row's words wrap inside
+  // the row's value column: an instant held whole there ran past Details at 320 px, by 2 to 6 px
+  // as the clock's digits went ("just now (11/17/26, 12:56 PM)" is 186 px).
+  const whole = inRow ? undefined : "shrink-0";
   return (
     <span
       className={
@@ -247,13 +252,13 @@ export function ClaimChip({
       {/* The instant itself where no tooltip carries it: how long a session has held the issue
           is what decides whether its claim is stale, and on the issue page a tooltip saying so
           reaches no reader on a phone or on the keyboard (dispatch://INFRA-1196 R21). */}
-      <Timestamp at={claim.at} className="shrink-0" exact />
+      <Timestamp at={claim.at} className={whole} exact />
       {lapsed ? (
         <>
           <span aria-hidden="true" className="shrink-0" {...pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-lapsed" {...pageChrome}>
+          <span className={whole} data-testid="issue-claim-lapsed" {...pageChrome}>
             {CONTROL_LABELS.not_running}
           </span>
         </>
@@ -263,7 +268,7 @@ export function ClaimChip({
           <span aria-hidden="true" className="shrink-0" {...pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unresponsive" {...pageChrome}>
+          <span className={whole} data-testid="issue-claim-unresponsive" {...pageChrome}>
             {CONTROL_LABELS.unresponsive}
             {heardAt === null ? null : (
               <span data-testid="issue-claim-unresponsive-since">
@@ -303,7 +308,7 @@ export function ClaimChip({
           <span aria-hidden="true" className="shrink-0" {...pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unchecked" {...pageChrome}>
+          <span className={whole} data-testid="issue-claim-unchecked" {...pageChrome}>
             {CONTROL_LABELS.unchecked}
           </span>
         </>

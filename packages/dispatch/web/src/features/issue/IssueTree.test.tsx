@@ -130,7 +130,7 @@ function renderTree(
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
-  const view = render(
+  const draw = (tree: TreeNode) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <KeymapProvider>
@@ -147,7 +147,7 @@ function renderTree(
               onEditing={(artifactId) => edited.push(artifactId)}
               {...(request === undefined ? {} : { request })}
               reveal={undefined}
-              root={root}
+              root={tree}
               rootRow
             />
           </MarginProvider>
@@ -155,7 +155,10 @@ function renderTree(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { edited, ...view };
+  const view = render(draw(root));
+  // The tree again as a read that lands draws it: the same page, a new model.
+  const redraw = (tree: TreeNode) => view.rerender(draw(tree));
+  return { edited, redraw, ...view };
 }
 
 /** What a key reported at the row it was pressed on, or undefined where no row draws one. */
@@ -742,6 +745,137 @@ test("the page opens with the focus on the first open question that waits on the
   });
   const view = renderTree(root);
   await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+});
+
+/** A stand-in for the browser's `ResizeObserver`: `grow(target)` answers every observer watching
+ *  `target`, as a change of that element's size would, and no other. */
+function installResizeObserver(): { grow: (target: Element) => void; restore: () => void } {
+  const original = globalThis.ResizeObserver;
+  const live = new Set<ObserverStub>();
+
+  class ObserverStub {
+    readonly callback: ResizeObserverCallback;
+    readonly targets = new Set<Element>();
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      live.add(this);
+    }
+
+    disconnect(): void {
+      live.delete(this);
+    }
+
+    observe(target: Element): void {
+      this.targets.add(target);
+    }
+
+    unobserve(target: Element): void {
+      this.targets.delete(target);
+    }
+  }
+
+  globalThis.ResizeObserver = ObserverStub as unknown as typeof ResizeObserver;
+  return {
+    grow: (target) => {
+      for (const observer of [...live]) {
+        if (observer.targets.has(target)) {
+          observer.callback([], observer as unknown as ResizeObserver);
+        }
+      }
+    },
+    restore: () => {
+      globalThis.ResizeObserver = original;
+    },
+  };
+}
+
+// R7: the question the page opens on is in the viewport, and stays there while the page lands
+// around it. The outline's other reads arrive after the question's - forty comments above it on
+// the browser suite's seed - and push its row below the screen without changing the row's own
+// size, so the row's own placing never sees it move: the page holds it until the reader acts.
+test("the open question the page opens on is held on screen as the page grows, until the reader acts", async () => {
+  setViewport(1440);
+  const observers = installResizeObserver();
+  const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const root = node({
+      children: [
+        node({ id: "comment-1", text: "The first words.", type: "comment" }),
+        node({ id: "ask-mine", question: true, text: "Yours?", type: "ask", waiting: true }),
+      ],
+      id: KEY,
+      type: "issue",
+    });
+    const view = renderTree(root);
+    await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+    const [question] = rowsFor(view.container, "ask-mine");
+    if (question === undefined) throw new Error("the tree draws no row for ask-mine");
+    // What landed above it put its 28 px row 400 px below the screen's foot.
+    const pushedDown = new DOMRect(0, window.innerHeight + 400, 600, 28);
+    spyOn(question, "getBoundingClientRect").mockReturnValue(pushedDown);
+    scrolled.mockClear();
+    observers.grow(document.body);
+    // Its foot is brought 8 px clear of the screen's (`identity-block.ts`'s `bringOnScreen`).
+    expect(scrolled).toHaveBeenCalledWith({ top: 436 });
+    // A wheel is the reader taking over: the page grows on and moves them no more.
+    window.dispatchEvent(new Event("wheel"));
+    scrolled.mockClear();
+    observers.grow(document.body);
+    expect(scrolled).not.toHaveBeenCalled();
+  } finally {
+    scrolled.mockRestore();
+    observers.restore();
+  }
+});
+
+// R7, as the browser suite measured it: the page put the focus on the outline's first row, and
+// that row was drawn again as the spec's blocks landed above it. The browser leaves the focus on
+// the body then, and the page opened with the focus on no row at all. Until the reader acts, a
+// focus that is nowhere is still the page's to place: on the outline's first row as it now is.
+test("a focus a redraw drops while the page opens goes back to the outline's first row", async () => {
+  setViewport(1440);
+  const comments = [
+    node({ id: "comment-1", text: "The first words.", type: "comment" }),
+    node({ id: "comment-2", text: "The second words.", type: "comment" }),
+  ];
+  const view = renderTree(node({ children: comments, id: KEY, type: "issue" }));
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  (document.activeElement as HTMLElement | null)?.blur();
+  view.redraw(
+    node({
+      children: [
+        node({ id: "comment-0", text: "Words above them.", type: "comment" }),
+        ...comments,
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-0"));
+});
+
+// The same for the question the page opened on, which is where the page stays: a redraw that
+// drops the focus gives it back to the question, and an answer arriving for it moves nothing.
+test("the question the page opened on takes back a focus a redraw drops, and keeps it", async () => {
+  setViewport(1440);
+  const tree = (waiting: boolean) =>
+    node({
+      children: [
+        node({ id: "comment-1", text: "The first words.", type: "comment" }),
+        node({ id: "ask-mine", question: true, text: "Yours?", type: "ask", waiting }),
+      ],
+      id: KEY,
+      type: "issue",
+    });
+  const view = renderTree(tree(true));
+  await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+  (document.activeElement as HTMLElement | null)?.blur();
+  view.redraw(tree(true));
+  await waitFor(() => expect(focusedRow(view.container)).toBe("ask-mine"));
+  view.redraw(tree(false));
+  await waitFor(() => expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(2));
+  expect(focusedRow(view.container)).toBe("ask-mine");
 });
 
 // The tester's F16: what a key reports when it has nowhere to go is drawn at the row it was

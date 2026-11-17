@@ -395,13 +395,39 @@ export function IssueTree({
   // reader - or anything else on the page - has the focus, it is theirs: the effect leaves it
   // alone until another address names another node.
   const taken = useRef<string | undefined>(undefined);
-  // The rows around a landed node are still arriving when it takes the focus - the outline's
-  // other reads - and each pushes it down the page, out of sight: the node an address names is
-  // focused *and on screen* (R20). Until the reader acts, the page puts it back on screen
-  // whenever the page grows (`bringOnScreen`); a key, a press, a wheel or a touch is the reader
-  // taking over, and a focus that has moved off it ends the hold.
-  const landingHold = useRef<AbortController | undefined>(undefined);
-  useEffect(() => () => landingHold.current?.abort(), []);
+  // A row the page focuses itself - the node an address names (R19, R20) and the open question
+  // the page opens on (R7) - takes the focus while the rows around it are still arriving: the
+  // outline's other reads, the names of the one batched reference read, a six-line cut measured
+  // again once the typeface lands. Each one above the row pushes it down the page, out of sight
+  // (measured: a question focused at 345 px with eight rows drawn, then the documents' blocks
+  // landed 78 rows above it and left it at 2,945 px). The row's own placing (`useRowOnScreen`)
+  // sees only the row growing, and the browser's scroll anchoring holds what stands at the top
+  // of the viewport, which is above the rows that land. So until the reader acts, the page puts
+  // the row back on screen whenever the page's size changes (`bringOnScreen`); a key, a press, a
+  // wheel or a touch is the reader taking over, and a focus that has moved off the row ends the
+  // hold. One row is held at a time: a new hold ends the one before it, and holding the row that
+  // is held already changes nothing.
+  const screenHold = useRef<
+    { readonly hold: AbortController; readonly row: HTMLElement } | undefined
+  >(undefined);
+  useEffect(() => () => screenHold.current?.hold.abort(), []);
+  const holdOnScreen = useCallback((row: HTMLElement) => {
+    const held = screenHold.current;
+    if (held?.row === row && !held.hold.signal.aborted) return;
+    held?.hold.abort();
+    const hold = new AbortController();
+    screenHold.current = { hold, row };
+    for (const type of READER_ACTS) {
+      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(() => {
+      if (document.activeElement === row) bringOnScreen(row);
+      else hold.abort();
+    });
+    grown.observe(document.body);
+    hold.signal.addEventListener("abort", () => grown.disconnect());
+  }, []);
   const targetId = target?.id;
   useEffect(() => {
     if (targetId === undefined || !focusReveal) return;
@@ -417,20 +443,8 @@ export function IssueTree({
     // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not.
     const box = row.getBoundingClientRect();
     row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
-    landingHold.current?.abort();
-    const hold = new AbortController();
-    landingHold.current = hold;
-    for (const type of READER_ACTS) {
-      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
-    }
-    if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(() => {
-      if (document.activeElement === row) bringOnScreen(row);
-      else hold.abort();
-    });
-    grown.observe(document.body);
-    hold.signal.addEventListener("abort", () => grown.disconnect());
-  }, [focusReveal, rows, targetId]);
+    holdOnScreen(row);
+  }, [focusReveal, holdOnScreen, rows, targetId]);
 
   // The page opens with the keyboard focus on the first open question that waits on the reader,
   // in the outline's own order, its path unfolded and its row in the viewport; where none waits
@@ -438,8 +452,9 @@ export function IssueTree({
   // address that names no node, before the reader has pressed, scrolled or touched anything and
   // while nothing else holds the focus. The reads arrive one after another, so the first row
   // takes the focus as soon as it is drawn and gives it to the question once the question's
-  // read has answered; the question is where it stays.
-  const opening = useRef<{ done: boolean; on?: string }>({ done: false });
+  // read has answered; the question is where it stays, held on screen while the rest of the
+  // page lands around it (`holdOnScreen`).
+  const opening = useRef<{ done: boolean; on?: string; question?: boolean }>({ done: false });
   useEffect(() => {
     const settle = new AbortController();
     for (const type of READER_ACTS) {
@@ -461,31 +476,45 @@ export function IssueTree({
       held.done = true;
       return;
     }
+    // The focus is the page's to place while it is on the row the page put it on, or nowhere.
+    // Nowhere is where the browser leaves it when that row is drawn again as the rest of the
+    // outline lands (measured: the first row lost it as the spec's blocks landed above it, and
+    // the page was left with the focus on no row). Anywhere else, something else took it.
     const active = document.activeElement;
-    const free =
-      held.on === undefined
-        ? active === null || active === document.body
-        : active?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId === held.on;
-    if (!free) {
+    const loose = active === null || active === document.body;
+    if (!loose && active?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId !== held.on) {
       held.done = true;
       return;
     }
-    const question = nodesInOrder(root).find((node) => node.type === "ask" && node.waiting);
+    // Once the page has opened on a question, that question is where it stays.
+    const question = held.question
+      ? held.on
+      : nodesInOrder(root).find((node) => node.type === "ask" && node.waiting)?.id;
     if (question !== undefined) {
-      held.done = true;
-      held.on = question.id;
-      reach(question.id);
+      const row = body.current?.querySelector<HTMLElement>(
+        `[data-node-row][data-node-id="${CSS.escape(question)}"]`
+      );
+      if (row === null || row === undefined) {
+        // Its path is folded, or outside the zoom: going to it unfolds it and focuses its row
+        // once drawn (`wanted`), and the drawing after that finds it here.
+        if (!held.question) goToNode(question);
+      } else {
+        if (!row.contains(document.activeElement)) row.focus();
+        holdOnScreen(row);
+      }
+      held.on = question;
+      held.question = true;
       return;
     }
     const first = rows.find((row) => row.kind === "node");
-    if (first?.kind !== "node" || first.node.id === held.on) return;
+    if (first?.kind !== "node") return;
     const row = body.current?.querySelector<HTMLElement>(
       `[data-node-row][data-row-key="${CSS.escape(rowKeyOf(first))}"]`
     );
-    if (row === null || row === undefined) return;
+    if (row === null || row === undefined || row.contains(document.activeElement)) return;
     held.on = first.node.id;
     row.focus({ preventScroll: true });
-  }, [reach, root, rootRow, rows, targetId]);
+  }, [goToNode, holdOnScreen, root, rootRow, rows, targetId]);
 
   // A write from the line at the foot takes the reader to what they wrote (R16): their newest
   // node under what the write answered - the reply, the comment, the question - its branch

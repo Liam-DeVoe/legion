@@ -378,6 +378,35 @@ test("the moment the issue comes free is drawn as a date and a time, so the chip
   }
 });
 
+// R17 at 320 px: Details' claim row is words that wrap inside the row's value column, so no
+// word of it is held whole against the column. The instant was held whole, and "just now
+// (11/17/26, 12:56 PM)" drew 186 px wide from x = 139, past the drawer at 320 px: Details
+// scrolled sideways by 2 to 6 px from one run to the next, as the clock's digits went.
+test("in Details' row every word of the claim wraps, and none is held whole against the row", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  // Six minutes of silence: the holder reads unresponsive since a moment and takeable from one,
+  // the most words the chip draws.
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    unresponsive("session-one", "Implementer", Date.now() - 6 * 60_000),
+  ]);
+  const view = header({ ...base, claim });
+  try {
+    await screen.findByTestId("issue-claim-unresponsive");
+    const chip = screen.getByTestId("issue-claim");
+    expect(chip.querySelector(":scope > time")).not.toBeNull();
+    // Only the separators, one character each, are held whole.
+    const heldWhole = [...chip.children].filter(
+      (piece) =>
+        piece.getAttribute("aria-hidden") !== "true" && piece.classList.contains("shrink-0")
+    );
+    expect(heldWhole.map((piece) => piece.textContent)).toEqual([]);
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
 // The issue read judged the holder against its own record, by id; the agent list is a cache
 // that can be missing a session it still holds. When the two disagree the read wins, or the
 // page would call a stalled holder gone the moment the list dropped it.
