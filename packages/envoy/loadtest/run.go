@@ -115,7 +115,10 @@ type runConfig struct {
 	// boxBusyBefore is the box's busy fraction read before Dispatch started (run-step.sh reads it
 	// with `loadgen box-busy` before its reset); negative means collectMeta reads it itself.
 	boxBusyBefore float64
-	editors       editorConfig
+	// busyGate is what run-step.sh's quiet-box gate read before the step (-box-busy-gate,
+	// -box-busy-gate-max); no readings for a step run without the gate.
+	busyGate busyGate
+	editors  editorConfig
 	// args are the run's flags as meta.json records them: the normalized flag list, the token
 	// values redacted and the URL passwords removed (recordedArgs).
 	args []string
@@ -189,6 +192,8 @@ func runLoad(args []string) error {
 	buildCommit := fs.String("build-commit", "", "commit Dispatch was built from, for meta.json")
 	buildDirty := fs.Bool("build-dirty", false, "the build's tree had uncommitted changes, for meta.json")
 	boxBusyBefore := fs.Float64("box-busy-before", -1, "the box's busy fraction read before Dispatch started (loadgen box-busy); default: read it now")
+	boxBusyGate := fs.String("box-busy-gate", "", "the readings of the box's busy fraction that run-step.sh's quiet-box gate took before the step (loadgen box-busy), comma separated, the last the one the step started on; default: no gate ran")
+	boxBusyGateMax := fs.Float64("box-busy-gate-max", -1, "the busy fraction the quiet-box gate held its readings to (LOADTEST_MAX_BUSY_BEFORE); required with -box-busy-gate")
 	editors := fs.Int("editors", 0, "browser editors on document websockets (0: none)")
 	editorRate := fs.Float64("editor-rate", 2, "updates per second per editor")
 	editorDocs := fs.Int("editor-docs", 10, "documents the editors share: the first N seeded specs in key order")
@@ -332,6 +337,10 @@ func runLoad(args []string) error {
 	if err != nil {
 		return err
 	}
+	gate, err := parseBusyGate(*boxBusyGate, *boxBusyGateMax, given["box-busy-gate-max"])
+	if err != nil {
+		return err
+	}
 	stackSh := os.Getenv("LOADTEST_STACK_SH")
 	if *restartAt > 0 && (ef.allowForeign || stackSh == "") {
 		return fmt.Errorf("-restart-at restarts the local stack's Dispatch through stack.sh: run loadgen under `stack.sh loadgen` (it sets LOADTEST_STACK_SH), without -allow-foreign")
@@ -434,7 +443,7 @@ func runLoad(args []string) error {
 		rngSeed: *rngSeed, natsConns: *natsConns, schedule: sched, recoveryRefP99: refP99,
 		heapSamples: *heapSamples, unitStarts: *unitStarts, unitLife: *unitLife,
 		loopListeners: loopEndpoints, driverTopics: *driverTopics, receiptDeadline: *receiptDeadline,
-		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore,
+		buildCommit: *buildCommit, buildDirty: *buildDirty, boxBusyBefore: *boxBusyBefore, busyGate: gate,
 		serverCPUs: serverCPUs, serverCPUCount: serverCPUCount, generatorCPUs: os.Getenv("LOADTEST_GENERATOR_CPUS"),
 		// Fewer editors than documents edit only as many documents as there are editors.
 		editors:  editorConfig{editors: *editors, rate: *editorRate, docs: min(*editorDocs, max(*editors, 1))},
@@ -656,6 +665,12 @@ type summary struct {
 	CommitOrderLock lockSummary         `json:"commit_order_lock"`
 	UngrantedLocks  ungrantedSummary    `json:"ungranted_locks"`
 	Sessions        sessionsSummary     `json:"sessions"`
+	// BoxBusyBefore and BoxBusyGate are meta.json's box_busy_before and box_busy_gate side by
+	// side: the box's busy fraction just before the step, and the reading of run-step.sh's
+	// quiet-box gate the step started on. Each is null when it was not read, the gate's for a step
+	// run without the gate, and both in a summary.json from before them.
+	BoxBusyBefore *float64 `json:"box_busy_before"`
+	BoxBusyGate   *float64 `json:"box_busy_gate"`
 	// LoopSessions is how the spec loop's own sessions went (-unit-starts), absent for a step
 	// that ran the flat population alone; what each of their classes was owed and what it got is
 	// under events.by_class (classDelivery).
@@ -725,6 +740,15 @@ type metaFile struct {
 	// step, from /proc/stat; null when /proc/stat gave no ticks.
 	BoxBusyBefore        *float64 `json:"box_busy_before"`
 	BoxBusyBeforeWindowS float64  `json:"box_busy_before_window_s"`
+	// BoxBusyGate is the reading of run-step.sh's quiet-box gate (common.sh wait_for_quiet_box)
+	// the step started on, measured as BoxBusyBefore is and before it, and at or under
+	// BoxBusyGateMax, the bar (LOADTEST_MAX_BUSY_BEFORE). BoxBusyGateReadings is every reading the
+	// gate took, in order, the last of them BoxBusyGate: more than one when the box was busy and
+	// the step waited for it. All three are null for a step run without the gate (loadgen run on
+	// its own) and in a meta.json from before it.
+	BoxBusyGate         *float64  `json:"box_busy_gate"`
+	BoxBusyGateReadings []float64 `json:"box_busy_gate_readings"`
+	BoxBusyGateMax      *float64  `json:"box_busy_gate_max"`
 	// GOMAXPROCS is the GOMAXPROCS Dispatch runs with, read back from the running process's
 	// /proc/<pid>/environ (readDispatchGOMAXPROCS): "unset" when its environment holds none, and
 	// Go's own default holds; "" when it could not be read, and GOMAXPROCSError says why.
@@ -906,6 +930,7 @@ func execute(cfg runConfig, sf seedFile) error {
 	}
 
 	sum := st.buildSummary(ns, lp, reg, live, ed, pr)
+	sum.BoxBusyBefore, sum.BoxBusyGate = meta.BoxBusyBefore, meta.BoxBusyGate
 	writeJSONFile(filepath.Join(cfg.out, "summary.json"), sum, 0o644, lg)
 	end := readPGClock(context.Background(), cfg.ep.pg)
 	logPGClock(lg, "end", end)
@@ -1790,11 +1815,52 @@ func summarizeRequests(reqs []reqRec, dropped int, target, durationS float64) re
 // boxBusyBeforeWindow is the interval of the box-busy reading before a step, and
 // boxBusyBeforeWarn the busy fraction above which run.log warns that the box is not idle. On
 // gVisor /proc/loadavg always reads 0.00 and each Legion role has its own PID namespace, so only
-// /proc/stat shows another role's CPU use.
+// /proc/stat shows another role's CPU use. run-step.sh's quiet-box gate holds a step to the same
+// 10% by default (busyGate), so the warning is for a box that got busy between the gate and
+// box_busy_before, or for a bar raised above it.
 const (
 	boxBusyBeforeWindow = 5 * time.Second
 	boxBusyBeforeWarn   = 0.10
 )
+
+// busyGate is what run-step.sh's quiet-box gate (common.sh wait_for_quiet_box) read before the
+// step: readings, every reading it took of the box's busy fraction, in order, each measured as
+// box_busy_before is (loadgen box-busy, over boxBusyBeforeWindow); and bar, the most it let a
+// reading be (LOADTEST_MAX_BUSY_BEFORE). The gate starts a step only on a reading at or under the
+// bar, so the last reading is the one the step started on. No readings: the step ran without the
+// gate.
+type busyGate struct {
+	readings []float64
+	bar      float64
+}
+
+// parseBusyGate reads -box-busy-gate, the gate's readings separated by commas, and
+// -box-busy-gate-max, the bar (barGiven says that flag was given): neither flag is no gate. The
+// two come together, every reading and the bar are fractions between 0 and 1, and the last
+// reading is at or under the bar, since that is the reading a gate starts a step on.
+func parseBusyGate(readings string, bar float64, barGiven bool) (busyGate, error) {
+	if readings == "" {
+		if barGiven {
+			return busyGate{}, fmt.Errorf("-box-busy-gate-max needs -box-busy-gate, the readings the quiet-box gate held to it")
+		}
+		return busyGate{}, nil
+	}
+	if !barGiven || bar < 0 || bar > 1 || !finite(bar) {
+		return busyGate{}, fmt.Errorf("-box-busy-gate needs -box-busy-gate-max, a fraction between 0 and 1: the bar the quiet-box gate held its readings to")
+	}
+	g := busyGate{bar: bar}
+	for f := range strings.SplitSeq(readings, ",") {
+		v, err := strconv.ParseFloat(f, 64)
+		if err != nil || v < 0 || v > 1 || !finite(v) {
+			return busyGate{}, fmt.Errorf("-box-busy-gate %q: %q is not a fraction between 0 and 1", readings, f)
+		}
+		g.readings = append(g.readings, v)
+	}
+	if last := g.readings[len(g.readings)-1]; last > bar {
+		return busyGate{}, fmt.Errorf("-box-busy-gate %q ends on %g, above -box-busy-gate-max %g: the quiet-box gate starts a step only on a reading at or under its bar", readings, last, bar)
+	}
+	return g, nil
+}
 
 // collectMeta records the machine, how busy it was over the 5 s before the step, the build and
 // the seed, before the step starts.
@@ -1828,6 +1894,16 @@ func collectMeta(ctx context.Context, cfg runConfig, lg *log.Logger) metaFile {
 		}
 	} else {
 		lg.Printf("meta: box busy before: /proc/stat gave no ticks")
+	}
+	if g := cfg.busyGate; len(g.readings) > 0 {
+		start, bar := g.readings[len(g.readings)-1], g.bar
+		m.BoxBusyGate, m.BoxBusyGateReadings, m.BoxBusyGateMax = &start, g.readings, &bar
+		read := make([]string, len(g.readings))
+		for i, v := range g.readings {
+			read[i] = fmt.Sprintf("%.0f%%", 100*v)
+		}
+		lg.Printf("meta: quiet-box gate: the step started on a box %.0f%% busy, at or under its bar of %.0f%% (LOADTEST_MAX_BUSY_BEFORE); its readings %s",
+			100*start, 100*bar, strings.Join(read, ", "))
 	}
 	m.GOMAXPROCS, m.GOMAXPROCSError = readDispatchGOMAXPROCS(cfg.ep.pids["dispatch"])
 	if cfg.serverCPUs != "" {

@@ -28,14 +28,56 @@ func TestTablesMarkAStepWhoseStackProcessExited(t *testing.T) {
 	if !strings.Contains(md, "\n(<process> exited): ") {
 		t.Fatalf("no note defines the mark:\n%s", md)
 	}
-	if !strings.Contains(md, "| box busy | box busy before |") || !strings.Contains(md, "| 0% | 42% |") {
-		t.Fatalf("the Resources table lacks box busy before 42%%:\n%s", md)
+	if !strings.Contains(md, "| box busy | box busy before / gate |") || !strings.Contains(md, "| 0% | 42% / - |") {
+		t.Fatalf("the Resources table lacks box busy before 42%% beside no gate reading:\n%s", md)
 	}
 	// The killed step has no resources: its row keeps the box busy before column, empty here.
 	if !strings.Contains(section(md, "Resources"), "| killed (dispatch exited) | - | - | - | - | - | - | - | - | - | - | - | - | - | - | - |\n") {
 		t.Fatalf("the killed step's Resources row is not all -:\n%s", md)
 	}
 	checkRowWidths(t, md)
+}
+
+// TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore: the Resources table's box busy before /
+// gate cell gives meta.json's box_busy_before, then the reading of run-step.sh's quiet-box gate the
+// step started on (box_busy_gate), "-" for a reading not taken, and "-" alone for a step with
+// neither; summary.json carries the two readings side by side.
+func TestTablesNameTheQuietGatesReadingBesideBoxBusyBefore(t *testing.T) {
+	before, gate := 0.01, 0.04
+	step := func(name string, meta *metaFile) stepData {
+		return stepData{name: name, sum: summary{Config: summaryConfig{Step: name}, Resources: &resourcesSummary{}}, meta: meta}
+	}
+	md := renderTables([]stepData{
+		step("s-gated", &metaFile{BoxBusyBefore: &before, BoxBusyGate: &gate}),
+		step("s-ungated", &metaFile{BoxBusyBefore: &before}),
+		step("s-gate-only", &metaFile{BoxBusyGate: &gate}),
+		step("s-no-meta", nil),
+	})
+	text := section(md, "Resources")
+	if !strings.Contains(text, "| box busy | box busy before / gate | Dispatch RSS max MiB |") {
+		t.Fatalf("the Resources header does not name the gate's reading beside box busy before:\n%s", text)
+	}
+	const busyBefore = 8
+	for name, want := range map[string]string{"s-gated": "1% / 4%", "s-ungated": "1% / -", "s-gate-only": "- / 4%", "s-no-meta": "-"} {
+		if c := rowCells(text, name); c == nil || c[busyBefore] != want {
+			t.Errorf("%s: the box busy before / gate cell of %q, want %q:\n%s", name, c, want, text)
+		}
+	}
+	if !strings.Contains(text, "\nbox busy before / gate: ") {
+		t.Errorf("no note says what the box busy before / gate cell holds:\n%s", text)
+	}
+	checkRowWidths(t, md)
+
+	b, err := json.Marshal(summary{BoxBusyBefore: &before, BoxBusyGate: &gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"box_busy_before":0.01,"box_busy_gate":0.04`) {
+		t.Errorf("summary.json does not carry box_busy_before and box_busy_gate side by side:\n%s", b)
+	}
+	if b, err = json.Marshal(summary{}); err != nil || !strings.Contains(string(b), `"box_busy_before":null,"box_busy_gate":null`) {
+		t.Errorf("a summary.json without the readings does not carry them as null (%v):\n%s", err, b)
+	}
 }
 
 // section is the text of the markdown section that title opens, up to the next section.

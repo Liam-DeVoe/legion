@@ -73,6 +73,15 @@
 # ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
 # run-series.sh calls it once, before its first step.
 #
+# The quiet-box gate (README.md, "A quiet box before each step"): wait_for_quiet_box reads the box's
+# busy fraction with box_busy_reading (`stack.sh loadgen box-busy`, the measure of meta.json's
+# box_busy_before) and returns once a reading is at or under LOADTEST_MAX_BUSY_BEFORE (default
+# 0.10). A reading above it is noted, and the gate reads again after QUIET_READ_EVERY seconds
+# (quiet_pause), until its pauses add up to LOADTEST_QUIET_WAIT seconds (default 900); past that it
+# dies naming every reading, the bar and the wait. It keeps them in QUIET_READINGS, QUIET_BAR and
+# QUIET_WAIT, which run-step.sh passes to loadgen run and writes into a refused step's not-run
+# record. run-step.sh runs it after the lock and the stack, before its own box_busy_before read.
+#
 # A step's window (README.md, "Acting at a moment of the window"): not_run_record DIR is the path
 # of the not-run record of the step whose directory is DIR, DIR.not-run.json, which run-step.sh
 # writes at every exit before the step's window opens. window_start DIR [AFTER] prints the window
@@ -676,6 +685,82 @@ prepare_stack() {
   fi
   seed_migration_check "$ROOT/seed.meta.json" "$build_versions" "$build_what" "$only_highest"
   BUILD=$("$stack" build-info)
+}
+
+# ---- the quiet box -------------------------------------------------------------------------------
+
+# QUIET_READ_EVERY is the gate's pause between two readings, in seconds (wait_for_quiet_box): the
+# last pause is cut short so that the pauses add up to LOADTEST_QUIET_WAIT. Each reading takes its
+# own 5 s besides.
+QUIET_READ_EVERY=30
+
+# QUIET_READINGS is every reading wait_for_quiet_box took, in order, and QUIET_BAR and QUIET_WAIT
+# the bar and the wait it held them to; empty until it runs. They are globals so that run-step.sh's
+# exit trap reads them after the gate's own die.
+QUIET_READINGS=()
+QUIET_BAR=""
+QUIET_WAIT=""
+
+# box_busy_reading: one reading of the box's busy fraction, four decimals: `stack.sh loadgen
+# box-busy`, the same 5 s /proc/stat measure as meta.json's box_busy_before (loadgen's boxBusy over
+# boxBusyBeforeWindow). A test replaces it.
+box_busy_reading() { "$(dirname -- "${BASH_SOURCE[0]}")/stack.sh" loadgen box-busy; }
+
+# quiet_pause SECONDS: the gate's pause before its next reading. A test replaces it.
+quiet_pause() { sleep "$1"; }
+
+# quiet_fraction VALUE: VALUE is a fraction between 0 and 1 written as a JSON number (0, 0.10, 1,
+# 1.0000), as loadgen box-busy prints one and as loadgen run and the not-run record take it.
+quiet_fraction() { [[ $1 =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]]; }
+
+# quiet_readings: QUIET_READINGS joined by ", ".
+quiet_readings() {
+  local text
+  printf -v text '%s, ' "${QUIET_READINGS[@]}"
+  printf '%s\n' "${text%, }"
+}
+
+# wait_for_quiet_box: return once the box is quiet enough for a step to start, and die when it does
+# not get there in time (README.md, "A quiet box before each step"). Every reading a step takes
+# holds the box's other work, so a step on a busy box measures the box and not Dispatch. A reading
+# (box_busy_reading) at or under LOADTEST_MAX_BUSY_BEFORE (a fraction, default 0.10) returns at
+# once. One above it is noted, and the gate pauses QUIET_READ_EVERY seconds (quiet_pause) and reads
+# again, until its pauses add up to LOADTEST_QUIET_WAIT (whole seconds, default 900: 15 minutes and
+# at most 31 readings; 0 reads once); then it dies, naming every reading, the bar and the wait. A
+# bar or a wait that is not one is refused before the first reading.
+wait_for_quiet_box() {
+  local bar=${LOADTEST_MAX_BUSY_BEFORE:-0.10} wait_s=${LOADTEST_QUIET_WAIT:-900} reading waited=0 pause
+  local n what=readings
+  quiet_fraction "$bar" ||
+    die "LOADTEST_MAX_BUSY_BEFORE='$bar' is not a fraction between 0 and 1 written like 0.10: it is the busiest the box may read (loadgen box-busy) for a step to start"
+  [[ $wait_s =~ ^[0-9]+$ ]] ||
+    die "LOADTEST_QUIET_WAIT='$wait_s' is not a whole number of seconds like 900: it is how long a step waits for a busy box to go quiet"
+  QUIET_READINGS=()
+  QUIET_BAR=$bar
+  QUIET_WAIT=$((10#$wait_s))
+  while :; do
+    reading=$(box_busy_reading) ||
+      die "the quiet-box gate could not read how busy the box is: loadgen box-busy failed (its message above says why)"
+    quiet_fraction "$reading" ||
+      die "the quiet-box gate read '$reading' from loadgen box-busy, which is not a fraction between 0 and 1"
+    QUIET_READINGS+=("$reading")
+    if awk -v r="$reading" -v b="$bar" 'BEGIN { exit !(r + 0 <= b + 0) }'; then
+      if ((waited == 0)); then
+        note "the box is $reading busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=$bar: the step starts"
+      else
+        note "the box is $reading busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=$bar, after $waited s of waiting: the step starts, its readings $(quiet_readings)"
+      fi
+      return 0
+    fi
+    ((waited < QUIET_WAIT)) || break
+    pause=$((QUIET_WAIT - waited < QUIET_READ_EVERY ? QUIET_WAIT - waited : QUIET_READ_EVERY))
+    note "the box is $reading busy (loadgen box-busy), above LOADTEST_MAX_BUSY_BEFORE=$bar: the step waits for it to go quiet, reading again in $pause s ($waited of LOADTEST_QUIET_WAIT=$QUIET_WAIT s waited)"
+    quiet_pause "$pause"
+    waited=$((waited + pause))
+  done
+  n=${#QUIET_READINGS[@]}
+  ((n > 1)) || what=reading
+  die "the box stayed busier than LOADTEST_MAX_BUSY_BEFORE=$bar through LOADTEST_QUIET_WAIT=$QUIET_WAIT s, so the step is not run: $n $what of loadgen box-busy, $(quiet_readings). The box's other work (on a shared node, its other pods) would be in every reading the step takes, making them the box's and not Dispatch's; run the step again once the box is quiet, or on another node"
 }
 
 # ---- a step's window -----------------------------------------------------------------------------

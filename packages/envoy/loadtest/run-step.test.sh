@@ -28,7 +28,14 @@
 # reason and their last lines; (j) a run of a step's name after its not-run record is not refused
 # for it, opens its window and leaves no record; (k) common.sh's wait_for_window on a run-step.sh
 # prints the start of the window it opens, and, for one that the stack.sh setup refuses, returns
-# non-zero within a second of the refusal, giving the record's exit status and reason.
+# non-zero within a second of the refusal, giving the record's exit status and reason; on the
+# quiet-box gate, its readings faked through the faked stack's `loadgen box-busy`: (l) a step whose
+# box reads at or under LOADTEST_MAX_BUSY_BEFORE starts at once, after one reading, and loadgen run
+# gets that reading and the bar beside the step's own box_busy_before, read after it; (m) a step
+# whose box reads busy and then quiet waits, says so, and starts, naming both readings, which
+# loadgen run gets; (n) a step whose box stays busy past LOADTEST_QUIET_WAIT is refused before its
+# reset, and its not-run record carries every reading, the bar and the wait; (o) the bar follows
+# LOADTEST_MAX_BUSY_BEFORE and the wait LOADTEST_QUIET_WAIT (0: one reading, then the refusal).
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -239,11 +246,14 @@ expect_record "a step refused at a flag check before its --out" "${temporary_dir
 # than the server list's CPU count, closes on that refusal, naming both numbers, and not on the
 # generic failure. The stack is faked: run-step.sh and common.sh are copied beside a stack.sh
 # whose every command succeeds but `loadgen run`, which writes that meta.json and exits 1. The fake
-# does what the steps after this one need under two variables: LOADTEST_TEST_SETUP=refuse refuses
+# does what the steps after this one need under three variables: LOADTEST_TEST_SETUP=refuse refuses
 # the setup 1.5 s in, as stack.sh refuses a port that another process holds, and
 # LOADTEST_TEST_LOADGEN=early ends `loadgen run` before it writes meta.json, as a failed dashboard
 # probe does, while LOADTEST_TEST_LOADGEN=window opens a window 1.2 s in and holds it until the test
-# creates end-window in the root (10 s at most).
+# creates end-window in the root (10 s at most); LOADTEST_TEST_BUSY names a file of readings, the
+# Nth `loadgen box-busy` printing its Nth line, and 0 past its end or without it, as an idle box
+# reads. Each `loadgen box-busy` is counted in box-busy-calls in the root, and each `loadgen run`
+# writes its arguments, one a line, to loadgen-run-args there.
 readonly relay_dir="${temporary_dir}/relay"
 readonly relay_root="${temporary_dir}/root-d"
 mkdir -p "$relay_dir" "${relay_root}/replay" "${relay_root}/logs"
@@ -264,9 +274,14 @@ case "$1" in
   build-info) echo "abc123 false" ;;
   loadgen)
     case "$2" in
-      box-busy) echo 0 ;;
+      box-busy)
+        printf 'x\n' >>"${LOADTEST_ROOT}/box-busy-calls"
+        reading=$(sed -n "$(wc -l <"${LOADTEST_ROOT}/box-busy-calls")p" "${LOADTEST_TEST_BUSY:-/dev/null}")
+        echo "${reading:-0}"
+        ;;
       run)
         shift 2
+        printf '%s\n' "$@" >"${LOADTEST_ROOT}/loadgen-run-args"
         while [ "$1" != -out ]; do shift; done
         case ${LOADTEST_TEST_LOADGEN:-gomaxprocs} in
           gomaxprocs)
@@ -299,8 +314,9 @@ chmod +x "${relay_dir}/stack.sh"
 : >"${relay_root}/logs/listener.out"
 : >"${relay_root}/logs/nats.out"
 rc=0
-env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_ROOT="$relay_root" \
-  LOADTEST_REPLAY_ISSUE=INFRA-1 bash "${relay_dir}/run-step.sh" relay-step --replay >"${temporary_dir}/relay-output" 2>&1 || rc=$?
+env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS -u LOADTEST_MAX_BUSY_BEFORE -u LOADTEST_QUIET_WAIT \
+  LOADTEST_ROOT="$relay_root" LOADTEST_REPLAY_ISSUE=INFRA-1 bash "${relay_dir}/run-step.sh" relay-step --replay \
+  >"${temporary_dir}/relay-output" 2>&1 || rc=$?
 last=$(tail -n 1 "${temporary_dir}/relay-output")
 if ((rc == 0)) || grep -q 'failed: loadgen run exited' "${temporary_dir}/relay-output" ||
   [[ $last != "run-step.sh: STEP relay-step IS REFUSED before its window opened, so nothing was measured: Dispatch ran with GOMAXPROCS 32 (meta.json gomaxprocs) pinned to LOADTEST_SERVER_CPUS='0-1', 2 CPUs: "* ]]; then
@@ -311,8 +327,8 @@ fi
 printf 'PASS: a step refused for a GOMAXPROCS other than the server list'"'"'s CPU count closes on that refusal\n'
 
 # The environment of a step on the faked stack.
-relay_env=(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS LOADTEST_ROOT="$relay_root"
-  LOADTEST_REPLAY_ISSUE=INFRA-1)
+relay_env=(env -u LOADTEST_SERVER_CPUS -u LOADTEST_GENERATOR_CPUS -u LOADTEST_GOMAXPROCS -u LOADTEST_MAX_BUSY_BEFORE
+  -u LOADTEST_QUIET_WAIT LOADTEST_ROOT="$relay_root" LOADTEST_REPLAY_ISSUE=INFRA-1)
 
 # A step whose loadgen run ends before its window, writing no meta.json: its record holds the
 # refusal run-step.sh dies with and loadgen run's own line. Then the record of the step above,
@@ -393,3 +409,94 @@ if ((win_rc != 0)) || [[ -e "${relay_root}/runs/win-step.not-run.json" || ! -f "
   exit 1
 fi
 printf 'PASS: a run of a step'"'"'s name after its not-run record is not refused for it, and leaves no record once it opened its window\n'
+
+# The quiet-box gate on the faked stack. gate_step STEP READINGS [NAME=VALUE...]: a --replay step
+# whose `loadgen box-busy` readings are READINGS, space separated (the gate's, then the step's own
+# box_busy_before; 0 past them), its loadgen run opening a window at once, under the NAME=VALUE
+# variables. Sets rc, out (what the step wrote), calls (how many box-busy readings it took), before
+# (the -box-busy-before loadgen run got) and gate (its -box-busy-gate and -box-busy-gate-max), the
+# last two "none" when loadgen run did not run.
+gate_step() {
+  local step=$1 busy
+  local -a readings
+  read -ra readings <<<"$2"
+  shift 2
+  printf '%s\n' "${readings[@]}" >"${temporary_dir}/busy-readings"
+  rm -f "${relay_root}/box-busy-calls" "${relay_root}/loadgen-run-args"
+  : >"${relay_root}/end-window"
+  rc=0
+  "${relay_env[@]}" LOADTEST_TEST_BUSY="${temporary_dir}/busy-readings" LOADTEST_TEST_LOADGEN=window "$@" \
+    bash "${relay_dir}/run-step.sh" "$step" --replay >"${temporary_dir}/gate-output" 2>&1 || rc=$?
+  out=$(<"${temporary_dir}/gate-output")
+  busy="${relay_root}/box-busy-calls"
+  calls=0
+  [[ ! -f $busy ]] || calls=$(wc -l <"$busy")
+  before=none gate=none
+  if [[ -f "${relay_root}/loadgen-run-args" ]]; then
+    before=$(awk 'prev == "-box-busy-before" { print; exit } { prev = $0 }' "${relay_root}/loadgen-run-args")
+    gate=$(awk 'prev == "-box-busy-gate" || prev == "-box-busy-gate-max" { printf "%s%s", sep, $0; sep = " " } { prev = $0 }' \
+      "${relay_root}/loadgen-run-args")
+  fi
+}
+
+# gate_fail WHAT: the gate row WHAT failed: print what the step wrote and what loadgen run got, and
+# stop.
+gate_fail() {
+  printf '%s\n' "$out" >&2
+  printf 'FAIL: %s (exit %d, %s box-busy readings, loadgen run got -box-busy-before %s and the gate %s)\n' \
+    "$1" "$rc" "$calls" "$before" "$gate" >&2
+  exit 1
+}
+
+# (l) A box at or under the bar: one reading, and the step starts at once. loadgen run gets that
+# reading and the bar, and its -box-busy-before is the step's own reading, taken after the gate's.
+gate_step gate-quiet "0.0400 0.0200"
+((rc == 0 && calls == 2)) && [[ $gate == "0.0400 0.10" && $before == 0.0200 &&
+  $out == *"run-step.sh: the box is 0.0400 busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=0.10: the step starts"* &&
+  $out != *"waits for it to go quiet"* && ! -e "${relay_root}/runs/gate-quiet.not-run.json" ]] ||
+  gate_fail "a step on a box 4% busy did not start at once on its one reading, with that reading and the bar passed to loadgen run"
+printf 'PASS: a step on a quiet box starts at once, and loadgen run gets the reading and the bar beside its own box_busy_before\n'
+
+# (m) A box busy, then quiet: the step says it waits, reads again after the pause, and starts,
+# naming both readings, which loadgen run gets.
+gate_step gate-wait "0.4200 0.0400 0.0200" LOADTEST_QUIET_WAIT=1
+((rc == 0 && calls == 3)) && [[ $gate == "0.4200,0.0400 0.10" && $before == 0.0200 &&
+  $out == *"run-step.sh: the box is 0.4200 busy (loadgen box-busy), above LOADTEST_MAX_BUSY_BEFORE=0.10: the step waits for it to go quiet, reading again in 1 s (0 of LOADTEST_QUIET_WAIT=1 s waited)"* &&
+  $out == *"run-step.sh: the box is 0.0400 busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=0.10, after 1 s of waiting: the step starts, its readings 0.4200, 0.0400"* &&
+  ! -e "${relay_root}/runs/gate-wait.not-run.json" ]] ||
+  gate_fail "a step on a box 42% then 4% busy did not wait, say so, and start naming both readings"
+printf 'PASS: a step on a busy box waits for it to go quiet and starts, naming both readings\n'
+
+# (n) A box busy past the wait: the step is refused before its reset and its own box_busy_before
+# read, and its not-run record carries every reading, the bar and the wait.
+gate_step gate-busy "0.4200 0.4300" LOADTEST_QUIET_WAIT=1
+((rc == 1 && calls == 2)) && [[ $gate == none && ! -e "${relay_root}/runs/gate-busy" ]] ||
+  gate_fail "a step on a box busy past LOADTEST_QUIET_WAIT was not refused before its own box_busy_before and its reset"
+expect_record "a step on a box busy past LOADTEST_QUIET_WAIT" "${relay_root}/runs/gate-busy.not-run.json" 1 \
+  "run-step.sh: the box stayed busier than LOADTEST_MAX_BUSY_BEFORE=0.10 through LOADTEST_QUIET_WAIT=1 s, so the step is not run: 2 readings of loadgen box-busy, 0.4200, 0.4300." \
+  "the box is 0.4200 busy (loadgen box-busy), above LOADTEST_MAX_BUSY_BEFORE=0.10: the step waits"
+jq -e '.box_busy_gate_readings == [0.42, 0.43] and .box_busy_gate_max == 0.1 and .box_busy_gate_wait_s == 1' \
+  "${relay_root}/runs/gate-busy.not-run.json" >/dev/null || {
+  out=$(cat "${relay_root}/runs/gate-busy.not-run.json")
+  gate_fail "the not-run record of a step on a box busy past the wait lacks its readings, the bar or the wait"
+}
+printf 'PASS: a step on a box busy past the wait is refused, its not-run record carrying every reading, the bar and the wait\n'
+
+# (o) The bar follows LOADTEST_MAX_BUSY_BEFORE: a box 42% busy starts a step held to 0.50 at once
+# (LOADTEST_QUIET_WAIT=0, so a bar not followed refuses it at once). The wait follows
+# LOADTEST_QUIET_WAIT: under 0 a busy box is read once and refused, its later quiet reading unread.
+gate_step gate-bar "0.4200" LOADTEST_MAX_BUSY_BEFORE=0.50 LOADTEST_QUIET_WAIT=0
+((rc == 0 && calls == 2)) && [[ $gate == "0.4200 0.50" &&
+  $out == *"run-step.sh: the box is 0.4200 busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=0.50: the step starts"* ]] ||
+  gate_fail "a step on a box 42% busy under LOADTEST_MAX_BUSY_BEFORE=0.50 did not start at once, held to that bar"
+gate_step gate-no-wait "0.4200 0.0400" LOADTEST_QUIET_WAIT=0
+((rc == 1 && calls == 1)) && [[ $gate == none ]] ||
+  gate_fail "a step on a busy box under LOADTEST_QUIET_WAIT=0 was not refused on its one reading"
+expect_record "a step on a busy box under LOADTEST_QUIET_WAIT=0" "${relay_root}/runs/gate-no-wait.not-run.json" 1 \
+  "through LOADTEST_QUIET_WAIT=0 s, so the step is not run: 1 reading of loadgen box-busy, 0.4200."
+jq -e '.box_busy_gate_readings == [0.42] and .box_busy_gate_max == 0.1 and .box_busy_gate_wait_s == 0' \
+  "${relay_root}/runs/gate-no-wait.not-run.json" >/dev/null || {
+  out=$(cat "${relay_root}/runs/gate-no-wait.not-run.json")
+  gate_fail "the not-run record of a step refused under LOADTEST_QUIET_WAIT=0 lacks its one reading or the wait"
+}
+printf 'PASS: the gate'"'"'s bar follows LOADTEST_MAX_BUSY_BEFORE and its wait LOADTEST_QUIET_WAIT\n'

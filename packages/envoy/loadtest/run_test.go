@@ -321,6 +321,66 @@ func TestMetaRecordsAFailedPostgresVersionRead(t *testing.T) {
 	}
 }
 
+// TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore: run-step.sh's quiet-box gate passes
+// loadgen run every reading it took and its bar, and meta.json keeps the reading the step started
+// on (the last), every reading and the bar beside box_busy_before, which stays the reading
+// run-step.sh took after the gate; run.log names them. A step run without the gate records null for
+// all three and logs no gate. Flags that describe no gate that started a step are refused.
+func TestMetaKeepsTheQuietGatesReadingsBesideBoxBusyBefore(t *testing.T) {
+	t.Setenv("LOADTEST_ROOT", t.TempDir())
+	gate, err := parseBusyGate("0.4200,0.0400", 0.10, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := func(g busyGate) (string, string) {
+		var logged bytes.Buffer
+		cfg := runConfig{boxBusyBefore: 0.01, busyGate: g, ep: endpoints{pg: unreachablePG, pids: map[string]int{}}}
+		b, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(&logged, "", 0)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b), logged.String()
+	}
+	gated, logged := meta(gate)
+	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":0.04,"box_busy_gate_readings":[0.42,0.04],"box_busy_gate_max":0.1,`; !strings.Contains(gated, want) {
+		t.Errorf("meta.json lacks %s:\n%s", want, gated)
+	}
+	if want := "meta: quiet-box gate: the step started on a box 4% busy, at or under its bar of 10% (LOADTEST_MAX_BUSY_BEFORE); its readings 42%, 4%"; !strings.Contains(logged, want) {
+		t.Errorf("run.log lacks %q:\n%s", want, logged)
+	}
+	ungated, logged := meta(busyGate{})
+	if want := `"box_busy_before":0.01,"box_busy_before_window_s":5,"box_busy_gate":null,"box_busy_gate_readings":null,"box_busy_gate_max":null,`; !strings.Contains(ungated, want) {
+		t.Errorf("meta.json of a step run without the gate lacks %s:\n%s", want, ungated)
+	}
+	if strings.Contains(logged, "quiet-box gate") {
+		t.Errorf("run.log of a step run without the gate names one:\n%s", logged)
+	}
+
+	if g, err := parseBusyGate("", -1, false); err != nil || len(g.readings) != 0 {
+		t.Errorf("no gate flags parsed to %+v, %v; want no gate", g, err)
+	}
+	if g, err := parseBusyGate("0.1000", 0.10, true); err != nil || !slices.Equal(g.readings, []float64{0.1}) {
+		t.Errorf("a reading at the bar parsed to %+v, %v; want the gate that started on it", g, err)
+	}
+	for _, c := range []struct {
+		readings string
+		bar      float64
+		barGiven bool
+		want     string
+	}{
+		{"0.4200", -1, false, "-box-busy-gate needs -box-busy-gate-max"},
+		{"", 0.10, true, "-box-busy-gate-max needs -box-busy-gate"},
+		{"0.0400", 1.5, true, "-box-busy-gate needs -box-busy-gate-max, a fraction between 0 and 1"},
+		{"0.4200,1.5", 0.10, true, `"1.5" is not a fraction between 0 and 1`},
+		{"0.4200,", 0.10, true, `"" is not a fraction between 0 and 1`},
+		{"0.0400,0.4200", 0.10, true, "ends on 0.42, above -box-busy-gate-max 0.1: the quiet-box gate starts a step only on a reading at or under its bar"},
+	} {
+		if _, err := parseBusyGate(c.readings, c.bar, c.barGiven); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("-box-busy-gate %q -box-busy-gate-max %g (given %t): refusal %v, want one with %q", c.readings, c.bar, c.barGiven, err, c.want)
+		}
+	}
+}
+
 // TestMetaRecordsTheDispatchBuildOfEveryStep: a step's meta.json names the Dispatch binary it ran
 // (bin/envoy-dispatch.json), not only the checkout's commit, so a step run with
 // LOADTEST_DISPATCH_COMMIT names the Dispatch it measured. A synthetic step records it too.

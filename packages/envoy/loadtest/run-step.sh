@@ -62,11 +62,22 @@
 # A step that never opens its window leaves a record of that (README.md, "Run one step"): every
 # exit of this script before the window, whatever refuses it (a flag, the lock another run holds, a
 # step directory that already holds a step, the CPU checks, the build, the migration check, the
-# reset, the GOMAXPROCS refusal, `loadgen run` ending before the window, a signal), writes
-# <step dir>.not-run.json beside the step directory (common.sh not_run_record): the step's name and
-# directory, the exit status, the refusal's own message and the last 40 lines the step wrote. An
-# attempt removes the record an earlier one left as it starts, and one that opens its window leaves
-# none. Only a call with no step name, or with a name that is not one, writes no record.
+# quiet-box gate, the reset, the GOMAXPROCS refusal, `loadgen run` ending before the window, a
+# signal), writes <step dir>.not-run.json beside the step directory (common.sh not_run_record): the
+# step's name and directory, the exit status, the refusal's own message and the last 40 lines the
+# step wrote. An attempt removes the record an earlier one left as it starts, and one that opens
+# its window leaves none. Only a call with no step name, or with a name that is not one, writes no
+# record.
+#
+# The quiet-box gate (common.sh wait_for_quiet_box; README.md, "A quiet box before each step"):
+# after the lock and the stack, while Dispatch is stopped, the step reads how busy the box is with
+# `loadgen box-busy`, the measure of meta.json's box_busy_before. Above LOADTEST_MAX_BUSY_BEFORE
+# (default 0.10) it waits for the box to go quiet, reading every 30 s for up to LOADTEST_QUIET_WAIT
+# seconds (default 900), and starts on the first reading at or under the bar; `loadgen run` gets
+# every reading and the bar (-box-busy-gate, -box-busy-gate-max), which meta.json keeps beside the
+# step's own box_busy_before, read after the gate as before. A box still busy past the wait refuses
+# the step, and its not-run record carries every reading (box_busy_gate_readings), the bar
+# (box_busy_gate_max) and the wait (box_busy_gate_wait_s).
 #
 # A step whose generator sent more than a tenth over its schedule in a second of the window, or
 # recorded nothing scheduled of a kind it was to send, is set aside (README.md, "The set-aside
@@ -128,9 +139,9 @@ out=$(realpath -m -- "$out")
 # the attempt's output file too, and every die, here or in a stack.sh it starts, keeps its message
 # in LOADTEST_DIE_FILE (common.sh). The tees ignore the signals that stop a step, so that its last
 # lines still reach the record, and close descriptor 9, so that they never hold the root's lock
-# that a series step inherits. finish reads only not_run_* globals and LOADTEST_DIE_FILE: bash runs
-# it in the scope of the function that exited, whose locals (lock_root's record, prepare_stack's
-# stack) would hide other names.
+# that a series step inherits. finish reads only not_run_* globals, the quiet-box gate's QUIET_*
+# (common.sh) and LOADTEST_DIE_FILE: bash runs it in the scope of the function that exited, whose
+# locals (lock_root's record, prepare_stack's stack) would hide other names.
 not_run_name=$name not_run_dir=$out not_run_file=$(not_run_record "$out")
 rm -f -- "$not_run_file"
 not_run_attempt=$(mktemp -d)
@@ -147,11 +158,12 @@ not_run_step_ours=false not_run_dispatch_up=false
 # finish, on every exit: stop Dispatch and the listener's latency proxy when the reset started them;
 # then, unless this run's window opened, write the not-run record: the step's name and directory,
 # the exit status (null for a signal, which leaves 0 here and no refusal), the refusal's own
-# message (the last die's, else what the status says) and the last 40 lines the step wrote. It
-# writes no line itself, so a refused step still closes on its refusal. A run whose window opened
-# removes any record of its step instead, such as one a run refused at the lock wrote meanwhile.
+# message (the last die's, else what the status says), once the quiet-box gate took a reading its
+# readings, bar and wait, and the last 40 lines the step wrote. It writes no line itself, so a
+# refused step still closes on its refusal. A run whose window opened removes any record of its
+# step instead, such as one a run refused at the lock wrote meanwhile.
 finish() {
-  local status=$? refusal="" opened=false exit_status=null reason lines i
+  local status=$? refusal="" opened=false exit_status=null reason lines i gate='{}'
   set +e
   # Read before the stop below, whose own refusal would take its place.
   [ ! -s "$LOADTEST_DIE_FILE" ] || refusal=$(<"$LOADTEST_DIE_FILE")
@@ -178,11 +190,14 @@ finish() {
       reason="${0##*/} exited $status before the window opened, with no refusal of its own: a command it ran failed (last_lines)"
     fi
     lines=$(tail -n 40 -- "$not_run_attempt/output")
+    # Each reading and the bar are JSON numbers (common.sh quiet_fraction), the wait whole seconds.
+    ((${#QUIET_READINGS[@]} == 0)) ||
+      gate="{\"box_busy_gate_readings\":[$(IFS=,; printf '%s' "${QUIET_READINGS[*]}")],\"box_busy_gate_max\":$QUIET_BAR,\"box_busy_gate_wait_s\":$QUIET_WAIT}"
     mkdir -p -- "$(dirname -- "$not_run_file")" &&
       jq -n --arg name "$not_run_name" --arg dir "$not_run_dir" --argjson status "$exit_status" \
-        --arg reason "$reason" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg lines "$lines" \
-        '{name: $name, step_dir: $dir, exit_status: $status, reason: $reason, at: $at,
-          last_lines: (if $lines == "" then [] else ($lines | split("\n")) end)}' >"$not_run_file.tmp" &&
+        --arg reason "$reason" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson gate "$gate" --arg lines "$lines" \
+        '{name: $name, step_dir: $dir, exit_status: $status, reason: $reason, at: $at} + $gate +
+          {last_lines: (if $lines == "" then [] else ($lines | split("\n")) end)}' >"$not_run_file.tmp" &&
       mv -f -- "$not_run_file.tmp" "$not_run_file"
   fi
   rm -rf -- "$not_run_attempt"
@@ -313,10 +328,18 @@ else
 fi
 read -r commit dirty <<<"$BUILD"
 
+# The quiet-box gate (common.sh wait_for_quiet_box), after the lock and the stack and while Dispatch
+# is stopped: a box above LOADTEST_MAX_BUSY_BEFORE is waited for, up to LOADTEST_QUIET_WAIT, and
+# past that the step is refused, its not-run record carrying every reading and the bar (finish).
+# `loadgen run` gets the readings and the bar, for meta.json.
+wait_for_quiet_box
+gate_args=(-box-busy-gate "$(IFS=,; printf '%s' "${QUIET_READINGS[*]}")" -box-busy-gate-max "$QUIET_BAR")
+
 mkdir -p -- "$out"
 # The box's busy share before this step starts anything: Dispatch is stopped (the last step stopped
 # it) and the rest of the stack is idle, so what it shows is other work on the machine. Read after
-# the reset, it would show Dispatch's own start-up work instead.
+# the reset, it would show Dispatch's own start-up work instead. It stays the step's own reading,
+# taken after the gate's, and meta.json keeps the two side by side.
 box_busy=$("$stack" loadgen box-busy)
 # finish stops Dispatch and the latency proxy on any exit from here to their stop below.
 not_run_dispatch_up=true
@@ -328,7 +351,7 @@ else
   "$stack" reset "$out/dispatch.log"
 fi
 rc=0
-"$stack" loadgen run -name "$name" -out "$out" -build-commit "$commit" -build-dirty="$dirty" -box-busy-before "$box_busy" "${args[@]}" || rc=$?
+"$stack" loadgen run -name "$name" -out "$out" -build-commit "$commit" -build-dirty="$dirty" -box-busy-before "$box_busy" "${gate_args[@]}" "${args[@]}" || rc=$?
 "$stack" stop dispatch envoy_proxy
 not_run_dispatch_up=false
 cp -- "$ROOT/logs/listener.out" "$out/listener.log"

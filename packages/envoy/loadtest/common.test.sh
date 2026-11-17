@@ -42,7 +42,13 @@
 # check (check_cpu_affinity, its timings faked) passes on a try after two that fall short, refuses
 # after three that fall short naming all three, keeps no verdict of a pin that does not bind, keeps
 # one that binds for the later steps of the same boot, which take it without measuring, and
-# measures again on a boot whose id differs or cannot be read.
+# measures again on a boot whose id differs or cannot be read; (p) the quiet-box gate
+# (wait_for_quiet_box, its readings and pauses faked) starts a step at once on a reading at or under
+# LOADTEST_MAX_BUSY_BEFORE (0.10, the bar itself included), pauses 30 s and reads again while the
+# box is busier, starting on a quiet reading and naming the ones before it, refuses once its pauses
+# reach LOADTEST_QUIET_WAIT (900 s: 31 readings), naming every reading, the bar and the wait,
+# follows both variables (75 s: pauses of 30, 30 and 15 s; 0: one reading), and refuses a bar, a
+# wait or a reading that is not one.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -823,6 +829,99 @@ case_wait_for_window() {
   printf 'PASS: wait_for_window prints a window start, never an earlier run'"'"'s, and returns within a second (%s s) of a step that ends without one\n' "$after"
 }
 
+# quiet_with READINGS [NAME=VALUE...]: wait_for_quiet_box under the NAME=VALUE variables (and no
+# other LOADTEST_MAX_BUSY_BEFORE or LOADTEST_QUIET_WAIT), its timings faked as affinity_with fakes
+# the pin's: box_busy_reading prints the Nth of READINGS (space separated; the last again past
+# them) on its Nth call, and quiet_pause records its pause and returns at once. Sets rc, out (what
+# it printed, then, once it returned, a line of QUIET_READINGS, QUIET_BAR and QUIET_WAIT), calls
+# (the readings it took) and pauses (its pauses, space separated).
+quiet_with() {
+  local -a readings
+  read -ra readings <<<"$1"
+  shift
+  printf '%s\n' "${readings[@]}" >"${temporary_dir}/quiet-readings"
+  : >"${temporary_dir}/quiet-calls"
+  : >"${temporary_dir}/quiet-pauses"
+  rc=0
+  out=$(env -u LOADTEST_MAX_BUSY_BEFORE -u LOADTEST_QUIET_WAIT "$@" QUIET_TEST_READINGS="${temporary_dir}/quiet-readings" \
+    QUIET_TEST_CALLS="${temporary_dir}/quiet-calls" QUIET_TEST_PAUSES="${temporary_dir}/quiet-pauses" \
+    bash -c 'source "$1"
+      box_busy_reading() {
+        local n
+        printf "x\n" >>"$QUIET_TEST_CALLS"
+        n=$(wc -l <"$QUIET_TEST_CALLS")
+        awk -v n="$n" "NR == n { print; found = 1 } { last = \$0 } END { if (!found) print last }" "$QUIET_TEST_READINGS"
+      }
+      quiet_pause() { printf "%s\n" "$1" >>"$QUIET_TEST_PAUSES"; }
+      wait_for_quiet_box
+      printf "readings=%s bar=%s wait=%s\n" "${QUIET_READINGS[*]}" "$QUIET_BAR" "$QUIET_WAIT"' quiet "$helper" 2>&1) || rc=$?
+  calls=$(wc -l <"${temporary_dir}/quiet-calls")
+  pauses=$(paste -sd' ' "${temporary_dir}/quiet-pauses")
+}
+
+# case_quiet_box: a step starts only on a box at most LOADTEST_MAX_BUSY_BEFORE busy (default 0.10,
+# the bar itself included), reading every 30 s while the box is busier, for up to
+# LOADTEST_QUIET_WAIT seconds (default 900); past that it is refused, naming every reading, the bar
+# and the wait. A bar or a wait that is not one is refused before any reading, and so is a reading
+# that is not a fraction.
+case_quiet_box() {
+  out=""
+  local all
+  quiet_with "0.0400"
+  ((rc == 0 && calls == 1)) && [[ -z $pauses && $out == *"readings=0.0400 bar=0.10 wait=900"* &&
+    $out == *"the box is 0.0400 busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=0.10: the step starts"* ]] ||
+    { fail "(p) a box 4% busy did not start the step at once on one reading (rc $rc, $calls readings, pauses '$pauses')"; return; }
+  quiet_with "0.1000"
+  ((rc == 0 && calls == 1)) && [[ -z $pauses ]] ||
+    { fail "(p) a box at the bar, 0.1000, did not start the step at once (rc $rc, $calls readings, pauses '$pauses')"; return; }
+
+  # Just over the bar, then quiet: one pause of 30 s, and the step starts naming both readings.
+  quiet_with "0.1001 0.0400"
+  ((rc == 0 && calls == 2)) && [[ $pauses == 30 && $out == *"readings=0.1001 0.0400 bar=0.10 wait=900"* &&
+    $out == *"the box is 0.1001 busy (loadgen box-busy), above LOADTEST_MAX_BUSY_BEFORE=0.10: the step waits for it to go quiet, reading again in 30 s (0 of LOADTEST_QUIET_WAIT=900 s waited)"* &&
+    $out == *"the box is 0.0400 busy (loadgen box-busy), at or under LOADTEST_MAX_BUSY_BEFORE=0.10, after 30 s of waiting: the step starts, its readings 0.1001, 0.0400"* ]] ||
+    { fail "(p) a box just over the bar, then quiet, did not wait 30 s and start naming both readings (rc $rc, $calls readings, pauses '$pauses')"; return; }
+
+  # Busy through the default wait: 30 pauses of 30 s and 31 readings, then the refusal naming each.
+  quiet_with "0.4200"
+  all=$(printf '0.4200, %.0s' {1..31})
+  ((rc != 0 && calls == 31)) && [[ $pauses == "$(printf '30 %.0s' {1..29})30" && $out != *"readings="* &&
+    $out == *"the box stayed busier than LOADTEST_MAX_BUSY_BEFORE=0.10 through LOADTEST_QUIET_WAIT=900 s, so the step is not run: 31 readings of loadgen box-busy, ${all%, }. "* ]] ||
+    { fail "(p) a box busy through the default 900 s was not refused after 31 readings 30 s apart, naming each (rc $rc, $calls readings, pauses '$pauses')"; return; }
+
+  # The wait follows LOADTEST_QUIET_WAIT: 75 s is pauses of 30, 30 and 15 s; 0 is one reading.
+  quiet_with "0.4200" LOADTEST_QUIET_WAIT=75
+  ((rc != 0 && calls == 4)) && [[ $pauses == "30 30 15" &&
+    $out == *"through LOADTEST_QUIET_WAIT=75 s, so the step is not run: 4 readings of loadgen box-busy, 0.4200, 0.4200, 0.4200, 0.4200. "* ]] ||
+    { fail "(p) LOADTEST_QUIET_WAIT=75 did not pause 30, 30 and 15 s before it refused (rc $rc, $calls readings, pauses '$pauses')"; return; }
+  quiet_with "0.4200 0.0400" LOADTEST_QUIET_WAIT=0
+  ((rc != 0 && calls == 1)) && [[ -z $pauses && $out == *"through LOADTEST_QUIET_WAIT=0 s, so the step is not run: 1 reading of loadgen box-busy, 0.4200. "* ]] ||
+    { fail "(p) LOADTEST_QUIET_WAIT=0 did not refuse a busy box on its one reading (rc $rc, $calls readings, pauses '$pauses')"; return; }
+
+  # The bar follows LOADTEST_MAX_BUSY_BEFORE.
+  quiet_with "0.4200" LOADTEST_MAX_BUSY_BEFORE=0.50
+  ((rc == 0 && calls == 1)) && [[ $out == *"at or under LOADTEST_MAX_BUSY_BEFORE=0.50: the step starts"* && $out == *"bar=0.50 "* ]] ||
+    { fail "(p) LOADTEST_MAX_BUSY_BEFORE=0.50 did not start the step at once on a box 42% busy (rc $rc, $calls readings)"; return; }
+  quiet_with "0.0600 0.0400" LOADTEST_MAX_BUSY_BEFORE=0.05
+  ((rc == 0 && calls == 2)) && [[ $pauses == 30 && $out == *"the box is 0.0600 busy (loadgen box-busy), above LOADTEST_MAX_BUSY_BEFORE=0.05"* ]] ||
+    { fail "(p) LOADTEST_MAX_BUSY_BEFORE=0.05 did not hold back a box 6% busy (rc $rc, $calls readings, pauses '$pauses')"; return; }
+
+  # A bar, a wait or a reading that is not one is refused, the first two before any reading.
+  quiet_with "0.0400" LOADTEST_MAX_BUSY_BEFORE=10%
+  ((rc != 0 && calls == 0)) && [[ $out == *"LOADTEST_MAX_BUSY_BEFORE='10%' is not a fraction between 0 and 1 written like 0.10"* ]] ||
+    { fail "(p) LOADTEST_MAX_BUSY_BEFORE=10% was not refused before any reading (rc $rc, $calls readings)"; return; }
+  quiet_with "0.0400" LOADTEST_MAX_BUSY_BEFORE=1.5
+  ((rc != 0 && calls == 0)) || { fail "(p) LOADTEST_MAX_BUSY_BEFORE=1.5 was not refused before any reading (rc $rc, $calls readings)"; return; }
+  quiet_with "0.0400" LOADTEST_QUIET_WAIT=15m
+  ((rc != 0 && calls == 0)) && [[ $out == *"LOADTEST_QUIET_WAIT='15m' is not a whole number of seconds like 900"* ]] ||
+    { fail "(p) LOADTEST_QUIET_WAIT=15m was not refused before any reading (rc $rc, $calls readings)"; return; }
+  quiet_with "busy"
+  ((rc != 0 && calls == 1)) && [[ $out == *"the quiet-box gate read 'busy' from loadgen box-busy, which is not a fraction between 0 and 1"* ]] ||
+    { fail "(p) a reading that is not a fraction was not refused (rc $rc, $calls readings)"; return; }
+  out=""
+  printf 'PASS: the quiet-box gate starts on a reading at or under its bar, waits 30 s a pause up to its wait, refuses past it naming every reading, and follows both variables\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -840,7 +939,8 @@ case_cpu_affinity || failed=$((failed + 1))
 case_affinity_kept_verdict || failed=$((failed + 1))
 case_gomaxprocs || failed=$((failed + 1))
 case_wait_for_window || failed=$((failed + 1))
+case_quiet_box || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 16 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 17 cases failed\n' "$failed" >&2
   exit 1
 fi

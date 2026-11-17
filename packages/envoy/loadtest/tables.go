@@ -452,7 +452,7 @@ func resourcesTable(md *markdown, steps []stepData) {
 	// The working-set column exists only when a step holds cgroup.json.
 	withCgroup := slices.ContainsFunc(steps, func(s stepData) bool { return s.cgroup != nil })
 	columns := []string{"step", "Dispatch cores mean / peak 5 s", "Postgres cores", "listener cores", "NATS cores", "loadgen cores", "proxy cores",
-		"box busy", "box busy before", "Dispatch RSS max MiB"}
+		"box busy", "box busy before / gate", "Dispatch RSS max MiB"}
 	if withCgroup {
 		columns = append(columns, cgroupWorkingSetH)
 	}
@@ -462,13 +462,10 @@ func resourcesTable(md *markdown, steps []stepData) {
 	marked, unread, cgFailed, cgUnmeasured, memStats := false, false, false, false, false
 	for _, s := range steps {
 		unread = unread || s.sum.Events.commitsUnread()
-		busyBefore := "-"
-		if s.meta != nil && s.meta.BoxBusyBefore != nil {
-			busyBefore = num(100**s.meta.BoxBusyBefore, 0) + "%"
-		}
+		busyBefore := boxBusyBeforeCell(s.meta)
 		label := s.commitsLabel()
-		// With no sampler window every cell is "-" but box busy before, which is meta.json's
-		// reading, not the sampler's, and the cells that cgroup.json gives.
+		// With no sampler window every cell is "-" but box busy before / gate, which are meta.json's
+		// readings, not the sampler's, and the cells that cgroup.json gives.
 		dispatch, pgCores, listener, nats, loadgen, proxy, busy, rss := "-", "-", "-", "-", "-", "-", "-", "-"
 		heap, goroutines, pool, pgMax, lockWait, perOp := "-", "-", "-", "-", "-", "-"
 		r := s.sum.Resources
@@ -531,11 +528,28 @@ func resourcesTable(md *markdown, steps []stepData) {
 	failedReadsNote(md, marked, "the 5 s sampler's reads of pg_stat_activity (a failed connect included) and of Dispatch's goroutine and heap profiles",
 		"`resources.pg_read_errors` and `resources.pprof_read_errors`")
 	md.line("\nheap live: the in-use bytes of Dispatch's heap profile (`/debug/pprof/heap`), read every 15 s by a run given -heap-samples, and `-` in a run without it: a sampled estimate of the live heap, not runtime.MemStats HeapInuse.")
+	md.line("\nbox busy before / gate: the box's busy share over 5 s just before the step (`meta.json` `box_busy_before`), then the reading of run-step.sh's quiet-box gate the step started on, at or under `LOADTEST_MAX_BUSY_BEFORE` (`box_busy_gate`); `-` for a reading not taken, as by a step run without the gate.")
 	if memStats {
 		md.line("\n%s: the step ran before the sampler read the heap profile, so its heap cell is runtime.MemStats HeapInuse from `/debug/pprof/heap?debug=1` (summary.json `resources.heap_inuse_mib`), a different metric that is not comparable with a heap live cell.", memStatsHeapMark)
 	}
 	commitsUnreadNote(md, unread, "the Dispatch CPU-s per operation (its operations count the committed writes)", "shows")
 	cgroupNotes(md, withCgroup, cgFailed, cgUnmeasured)
+}
+
+// boxBusyBeforeCell is the Resources table's box busy before / gate cell: meta.json's
+// box_busy_before, then box_busy_gate, the quiet-box gate's reading the step started on, each "-"
+// when not read; "-" alone without meta.json or without either reading.
+func boxBusyBeforeCell(m *metaFile) string {
+	if m == nil || (m.BoxBusyBefore == nil && m.BoxBusyGate == nil) {
+		return "-"
+	}
+	percent := func(v *float64) string {
+		if v == nil {
+			return "-"
+		}
+		return num(100**v, 0) + "%"
+	}
+	return percent(m.BoxBusyBefore) + " / " + percent(m.BoxBusyGate)
 }
 
 // memStatsHeapMark follows the heap cell of an older run's step, whose summary.json holds
