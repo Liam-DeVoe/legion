@@ -83,7 +83,7 @@ func TestAnArchitectsResumeLiftsOnlyAnArchitectsSuspension(t *testing.T) {
 		by   SuspendSource
 	}{
 		{"the controller's resume of an architect's", SuspendedByController},
-		{"the operator's resume of an architect's", ""},
+		{"the operator's resume of an architect's", SuspendedByOperator},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)

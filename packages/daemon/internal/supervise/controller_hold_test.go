@@ -61,7 +61,7 @@ func TestTheControllersResumeLiftsEverySuspensionButTheOperators(t *testing.T) {
 	t.Run("the operator's resume of the controller's", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByController)
-		h.must(RequestResume{Claim: testToken})
+		h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 		h.wantState(StateLaunching)
 	})
 }
@@ -175,9 +175,48 @@ func TestTheControllersStopOfAClaimTheOperatorHoldsIsRefused(t *testing.T) {
 	t.Run("the operator's stop", func(t *testing.T) {
 		h := newHarness(t)
 		suspendedBy(h, SuspendedByOperator)
-		h.must(RequestStop{Claim: testToken})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 		h.wantState(StateRetired)
 	})
+}
+
+// A forget of the session asked by the controller or an architect — the step of its fresh session
+// that drops the session it means to leave behind — is refused, with the session kept, for a
+// claim a suspension above the asker took over after the asker's own suspension (suspendedAgain,
+// RequestForgetSession.By, Claim.ResumeRefusal): the asker's resume would be refused that hold,
+// so a forget let through would drop the session of a claim the asker could then not start. The
+// holder's own forget drops it.
+func TestAForgetIsRefusedForAClaimASuspensionAboveTheAskerTookOver(t *testing.T) {
+	for _, tc := range []struct {
+		asker, holder SuspendSource
+		want          error
+	}{
+		{SuspendedByController, SuspendedByOperator, ErrOperatorHolds},
+		{SuspendedByArchitect, SuspendedByController, ErrControllerHolds},
+		{SuspendedByArchitect, SuspendedByOperator, ErrOperatorHolds},
+	} {
+		t.Run(string(tc.holder)+" over "+string(tc.asker), func(t *testing.T) {
+			h := newHarness(t)
+			suspendedBy(h, tc.asker)
+			h.must(RequestSuspend{Claim: testToken, Reason: "a suspension above the asker takes the claim over", By: tc.holder})
+			recorded := h.claim().Session
+
+			err := h.handle(RequestForgetSession{Claim: testToken, Session: recorded, By: tc.asker})
+			var refused *RefusedError
+			if !errors.As(err, &refused) || !errors.Is(err, tc.want) {
+				t.Fatalf("the %s's forget returned %v, want a refusal naming %v", tc.asker, err, tc.want)
+			}
+			if got := h.store.load(testToken); got.State != StateSuspended || got.SuspendedBy != tc.holder || got.Session != recorded {
+				t.Fatalf("after the refusal the store records %s by %q on session %q, want suspended by %s on %q",
+					got.State, got.SuspendedBy, got.Session, tc.holder, recorded)
+			}
+
+			h.must(RequestForgetSession{Claim: testToken, Session: recorded, By: tc.holder})
+			if got := h.store.load(testToken).Session; got != "" {
+				t.Fatalf("after the holder's forget the store records session %q, want none", got)
+			}
+		})
+	}
 }
 
 // startInFlight places a start in flight on h's claim as far as a suspension can see one: the

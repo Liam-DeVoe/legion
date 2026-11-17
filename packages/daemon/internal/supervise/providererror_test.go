@@ -406,7 +406,7 @@ func TestThePhaseRestartsTaskWaitsBehindTheTaskTheLadderKept(t *testing.T) {
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
 	owed := h.pending()
 
-	h.must(RequestStop{Claim: testToken})
+	h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 	h.wantState(StateRetired)
 	h.must(RequestOperatorRetry{Claim: testToken})
 
@@ -529,7 +529,7 @@ func TestForgettingTheSessionStartsTheRunOfProviderErrorsAgain(t *testing.T) {
 	h.mustQuiet(StreamTurnEnd{Claim: testToken})
 	h.must(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for", By: SuspendedByOperator})
 
-	h.must(RequestForgetSession{Claim: testToken, Session: session})
+	h.must(RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator})
 
 	if got := h.claim().ProviderErrorRun; got != 0 {
 		t.Errorf("the run of provider errors is %d after the session was forgotten, want 0", got)
@@ -592,7 +592,7 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
 	owed := h.pending()
 
-	h.must(RequestStop{Claim: h.token})
+	h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 
 	h.wantState(StateRetired)
 	p := h.pending()
@@ -640,7 +640,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 		t.Fatalf("pending %+v, want the round's question unconfirmed and waiting on the ladder", p)
 	}
 
-	h.must(RequestStop{Claim: testToken})
+	h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 
 	h.wantState(StateRetired)
 	if p := h.claim().Pending; p != nil {

@@ -8,20 +8,22 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // claimOperationRoutes is the controller's four claim operations, each by its route and the
 // words its refusal of the role `controller` gives.
 var claimOperationRoutes = []struct {
-	name             string
-	route            string
-	notTheController string
+	name        string
+	route       string
+	invalidRole string
 }{
-	{"stop", "/legion/v1/claims/stop", stopOp.notTheController},
-	{"retry", "/legion/v1/claims/retry", retryOp.notTheController},
-	{"suspend", "/legion/v1/claims/suspend", suspendOp.notTheController},
-	{"resume", "/legion/v1/claims/resume", resumeOp.notTheController},
+	{"stop", "/legion/v1/claims/stop", stopOp.invalidRole},
+	{"retry", "/legion/v1/claims/retry", retryOp.invalidRole},
+	{"suspend", "/legion/v1/claims/suspend", suspendOp.invalidRole},
+	{"resume", "/legion/v1/claims/resume", resumeOp.invalidRole},
 }
 
 // askClaimOperation posts one of the controller's claim operations with a fresh controller grant.
@@ -116,7 +118,7 @@ func TestTheControllersClaimOperationsNeedAControllerGrantAClaimRoleAndAClaimOfI
 			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleController),
 				http.StatusBadRequest, "INVALID_ROLE",
 				"role must be one of architect, planner, implementer, tester, reviewer, merger; "+
-					"the project's controller is none of them, and "+op.notTheController)
+					"the project's controller is none of them, and "+op.invalidRole)
 
 			// Another project's claim: only an issue this daemon supervises no claim for.
 			assertFailure(t, askClaimOperation(t, h, op.route, "LEGION-777", claim.RoleTester),
@@ -207,7 +209,7 @@ func TestTheControllerStopsAClaimAndRetriesIt(t *testing.T) {
 func TestTheControllersRetryAndResumeRefuseAClaimInATurn(t *testing.T) {
 	for _, op := range []struct {
 		route string
-		op    controllerOp
+		op    claimOp
 	}{
 		{"/legion/v1/claims/retry", retryOp},
 		{"/legion/v1/claims/resume", resumeOp},
@@ -227,33 +229,43 @@ func TestTheControllersRetryAndResumeRefuseAClaimInATurn(t *testing.T) {
 	}
 }
 
+// controllerHoldOperations is the five operations of the controller's door that the operator's
+// own suspension refuses, by route and by the words their refusals name them by: every one but
+// the compaction (compactOp.controllerPassesHold).
+var controllerHoldOperations = []struct {
+	name  string
+	route string
+	as    claimOp
+}{
+	{"resume", "/legion/v1/claims/resume", resumeOp},
+	{"suspend", "/legion/v1/claims/suspend", suspendOp},
+	{"stop", "/legion/v1/claims/stop", stopOp},
+	{"retry", "/legion/v1/claims/retry", retryOp},
+	{"fresh_session", "/legion/v1/claims/fresh-session", freshSessionOp},
+}
+
+// operatorHoldRefusal is the sentence of SUSPENDED_BY_OPERATOR for operation by caller that the
+// operator's suspension refused before it changed anything (api's refuseHold, nothingChanged).
+func operatorHoldRefusal(token claim.Token, operation, caller string) string {
+	return string(token) + " is held by the operator's own suspension, which only the operator lifts, so " + operation +
+		" by " + caller + " is refused and nothing of the claim changed. Ask the operator: `legion claims resume --claim " +
+		string(token) + "` is theirs to run"
+}
+
 // The operator's own suspension is the operator's decision, and only the operator undoes it: the
 // controller's resume would lift it, its suspend would take it over, its stop would retire the
 // claim for its retry to relaunch, its retry would start it, and its fresh session would resume
 // it. Each of the five is refused SUSPENDED_BY_OPERATOR with nothing of the claim changed, and the
 // operator's own resume then lifts the suspension as before.
 func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
-	for _, op := range []struct {
-		name  string
-		route string
-		as    controllerOp
-	}{
-		{"resume", "/legion/v1/claims/resume", resumeOp},
-		{"suspend", "/legion/v1/claims/suspend", suspendOp},
-		{"stop", "/legion/v1/claims/stop", stopOp},
-		{"retry", "/legion/v1/claims/retry", retryOp},
-		{"fresh_session", "/legion/v1/claims/fresh-session", freshSessionOp},
-	} {
+	for _, op := range controllerHoldOperations {
 		t.Run(op.name, func(t *testing.T) {
 			h := freshSessionHarness(t, &phaseRestarter{})
 			token := operatorSuspendedImplementer(t, h)
 			before := h.stored(token)
 
 			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
-				http.StatusConflict, suspendedByOperator,
-				string(token)+" is held by the operator's own suspension, which only the operator lifts, so "+op.as.name+
-					" by the controller is refused and nothing of the claim changed. Ask the operator: `legion claims resume --claim "+
-					string(token)+"` is theirs to run")
+				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the controller"))
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator || after.Session != before.Session {
 				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the operator on %q",
@@ -273,22 +285,69 @@ func TestTheControllerCannotGetPastTheOperatorsSuspension(t *testing.T) {
 	}
 }
 
-// The controller's stop of a claim whose operator's suspension waits for the turn's end is
-// refused as well: the hold is the operator's decision already, and the claim is left working
-// under it.
-func TestTheControllersStopOfAClaimTheOperatorsHeldSuspensionWaitsOnIsRefused(t *testing.T) {
-	h := freshSessionHarness(t, &phaseRestarter{})
-	token := workingImplementer(t, h)
-	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
-		t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
-	}
+// The operator's suspension waiting for the turn's end is the operator's decision already, so the
+// controller's door refuses it as it refuses the landed one: each of the five is refused
+// SUSPENDED_BY_OPERATOR in the same words, and the claim is left working under the hold with the
+// session it had. Left to each operation, the hold would take the code of the claim's state at
+// three of them — the resume's and the retry's claim in a turn, and the fresh session's held
+// suspension — so the controller would read a claim it may ask again for where only the operator
+// can act (claimDoor).
+func TestTheControllerCannotGetPastTheOperatorsHeldSuspension(t *testing.T) {
+	for _, op := range controllerHoldOperations {
+		t.Run(op.name, func(t *testing.T) {
+			h := freshSessionHarness(t, &phaseRestarter{})
+			token := workingImplementer(t, h)
+			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+				t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
+			}
+			calls := len(h.runtime.Calls())
 
-	assertFailure(t, askClaimOperation(t, h, "/legion/v1/claims/stop", "LEGION-209", claim.RoleImplementer),
-		http.StatusConflict, suspendedByOperator)
-	m, _ := h.supervisor.Machine(token)
-	if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld || view.SuspensionHeldBy != supervise.SuspendedByOperator {
-		t.Fatalf("the claim is %s holding a suspension %t by %q, want it working under the operator's", view.State, view.SuspensionHeld, view.SuspensionHeldBy)
+			wantFreshSessionRefusal(t, askClaimOperation(t, h, op.route, "LEGION-209", claim.RoleImplementer),
+				http.StatusConflict, suspendedByOperator, operatorHoldRefusal(token, op.as.name, "the controller"))
+			m, _ := h.supervisor.Machine(token)
+			if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld ||
+				view.SuspensionHeldBy != supervise.SuspendedByOperator || view.Session != "ses_implementer" {
+				t.Fatalf("the claim is %s on session %q holding a suspension %t by %q, want it working on ses_implementer under the operator's",
+					view.State, view.Session, view.SuspensionHeld, view.SuspensionHeldBy)
+			}
+			if asked := h.runtime.Calls()[calls:]; len(asked) != 0 {
+				t.Fatalf("the refused request asked the runtime %+v, want nothing", asked)
+			}
+		})
 	}
+}
+
+// The controller's compaction is the one operation of its door the operator's suspension does not
+// refuse (compactOp.controllerPassesHold): a compaction stops, takes over and lifts nothing, so a
+// claim that suspension holds is answered in the compaction's own words and left as it was — a
+// landed one runs no session to compact, and a held one is the held suspension's refusal.
+func TestTheControllersCompactionIsNotRefusedTheOperatorsSuspension(t *testing.T) {
+	t.Run("landed", func(t *testing.T) {
+		h := freshSessionHarness(t, &phaseRestarter{})
+		token := operatorSuspendedImplementer(t, h)
+
+		wantFreshSessionRefusal(t, askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer),
+			http.StatusConflict, claimNotRunning,
+			string(token)+" is suspended, so it runs no Oh My Pi session to compact; "+freshSessionName+" starts it again instead")
+		if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByOperator {
+			t.Fatalf("the claim is %s suspended by %q, want it suspended by the operator as it was", got.State, got.SuspendedBy)
+		}
+	})
+
+	t.Run("held for the turn's end", func(t *testing.T) {
+		h := freshSessionHarness(t, &phaseRestarter{})
+		token := workingImplementer(t, h)
+		if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+			t.Fatalf("the operator's suspend of a claim in a turn = %d, want 202; body %s", recorder.Code, recorder.Body)
+		}
+
+		wantFreshSessionRefusal(t, askClaimOperation(t, h, "/legion/v1/claims/compact", "LEGION-209", claim.RoleImplementer),
+			http.StatusConflict, claimInATurn, heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
+		m, _ := h.supervisor.Machine(token)
+		if view := m.View(); view.State != supervise.StateWorking || !view.SuspensionHeld || view.SuspensionHeldBy != supervise.SuspendedByOperator {
+			t.Fatalf("the claim is %s holding a suspension %t by %q, want it working under the operator's", view.State, view.SuspensionHeld, view.SuspensionHeldBy)
+		}
+	})
 }
 
 // The operator's door is the operator's, and lifts a suspension of either: the operator's
@@ -341,7 +400,7 @@ func TestTheControllersFreshSessionLiftsItsOwnSuspension(t *testing.T) {
 var claimDoorOperations = []struct {
 	name  string
 	route string
-	as    controllerOp
+	as    claimOp
 }{
 	{"stop", "/legion/v1/claims/stop", stopOp},
 	{"retry", "/legion/v1/claims/retry", retryOp},
@@ -497,6 +556,50 @@ func TestAnArchitectsClaimOperationsRefuseAnotherTreesClaim(t *testing.T) {
 					after.State, after.Session, after.SuspendedBy, before.State, before.Session)
 			}
 		})
+	}
+}
+
+// A sub-architect owns its own issue and the issues under it, never its tree's root or a
+// sibling's subtree (owns), though its grant names the whole tree, and the claim door holds it
+// to what it owns as sign_off and retry_or_escalate do: its stop of the root architect's claim,
+// and of the worker of a sibling issue, is refused 403 ISSUE_NOT_OWNED with nothing of either
+// claim changed, and its stop of the worker of its own issue retires that worker.
+func TestASubArchitectsClaimOperationsReachTheIssuesItOwnsAlone(t *testing.T) {
+	h := freshSessionHarness(t, &phaseRestarter{})
+	root := treeArchitect(t, h)
+	worker := readyImplementer(t, h)
+	parent := "LEGION-208"
+	h.recordIssue(record.Issue{
+		Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208", Project: testProject,
+		Title: "LEGION-210", Parent: &parent, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
+	})
+	sibling, _ := h.launchIn("LEGION-208", "LEGION-210", claim.RoleImplementer)
+	h.ready(sibling, "ses_sibling", 1)
+	subArchitect := newLiveClaimIn(t, h, "LEGION-208", "LEGION-209", claim.RoleArchitect)
+
+	for _, refused := range []struct {
+		issue string
+		role  claim.Role
+		token claim.Token
+	}{
+		{"LEGION-208", claim.RoleArchitect, root.token},
+		{"LEGION-210", claim.RoleImplementer, sibling},
+	} {
+		before := h.stored(refused.token)
+		wantFreshSessionRefusal(t, askAsArchitect(t, h, subArchitect, "/legion/v1/claims/stop", refused.issue, refused.role),
+			http.StatusForbidden, "ISSUE_NOT_OWNED",
+			"a stop of "+refused.issue+" belongs to its own architect or one above it in the tree, not the architect of LEGION-209")
+		if after := h.stored(refused.token); after.State != before.State || after.Session != before.Session {
+			t.Fatalf("the refused stop left %s %s on session %q, want it %s on %q as it found it",
+				refused.token, after.State, after.Session, before.State, before.Session)
+		}
+	}
+
+	wantClaimOperationAnswer(t, askAsArchitect(t, h, subArchitect, "/legion/v1/claims/stop", "LEGION-209", claim.RoleImplementer),
+		http.StatusOK, ClaimOperationResponse{State: "retired"})
+	if got := h.stored(worker); got.State != supervise.StateRetired || got.Session != "ses_implementer" {
+		t.Fatalf("the sub-architect's stop left its own issue's worker %s on session %q, want it retired with its session kept",
+			got.State, got.Session)
 	}
 }
 
@@ -666,7 +769,7 @@ func TestTheControllersResumeLiftsAnArchitectsSuspension(t *testing.T) {
 func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAClaimTheDaemonSuspended(t *testing.T) {
 	for _, op := range []struct {
 		route string
-		as    controllerOp
+		as    claimOp
 	}{
 		{"/legion/v1/claims/resume", resumeOp},
 		{"/legion/v1/claims/suspend", suspendOp},

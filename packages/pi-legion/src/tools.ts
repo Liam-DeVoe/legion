@@ -44,9 +44,33 @@ export interface LegionControllerToolSession {
 
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
+/** The operations on one claim, each naming it by `issue` and `role`: the two recoveries and the
+ * operator's four `legion claims` operations, which the daemon serves the controller for its
+ * project's claims and an architect for the claims of the issues it owns, on routes of their own.
+ * Declared before every other list of the tool's operations, which take them from here: a claim
+ * operation added to this list is offered to both session kinds that have them, takes the claim's
+ * two fields, and reaches its own branch of `execute`, so none can fall through into another
+ * operation's. */
+const CLAIM_OPERATIONS = [
+  "fresh_session",
+  "compact",
+  "stop",
+  "retry",
+  "suspend",
+  "resume",
+] as const;
+
+type ClaimOperation = (typeof CLAIM_OPERATIONS)[number];
+
+const isClaimOperation = (operation: string): operation is ClaimOperation =>
+  CLAIM_OPERATIONS.some((candidate) => candidate === operation);
+
+/** The fields every claim operation takes: the claim, by its issue and its role. */
+const CLAIM_FIELDS = ["issue", "role"] as const;
+
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the six claim
- * operations (`CLAIM_OPERATIONS`), which the daemon serves an architect for its own tree's claims. */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and so are the claim operations
+ * (`CLAIM_OPERATIONS`). */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -61,12 +85,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
-    "fresh_session",
-    "compact",
-    "stop",
-    "retry",
-    "suspend",
-    "resume",
+    ...CLAIM_OPERATIONS,
   ],
   "phase-worker": [
     "request_backward_move",
@@ -75,16 +94,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: [
-    "read_state",
-    "set_status",
-    "fresh_session",
-    "compact",
-    "stop",
-    "retry",
-    "suspend",
-    "resume",
-  ],
+  controller: ["read_state", "set_status", ...CLAIM_OPERATIONS],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -98,30 +108,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   rerun_child: ["issue"],
   read_state: ["issue", "issues", "phase", "settings"],
   set_status: ["issue", "status"],
-  fresh_session: ["issue", "role"],
-  compact: ["issue", "role"],
-  stop: ["issue", "role"],
-  retry: ["issue", "role"],
-  suspend: ["issue", "role"],
-  resume: ["issue", "role"],
+  ...Object.fromEntries(CLAIM_OPERATIONS.map((operation) => [operation, CLAIM_FIELDS])),
 };
-
-/** The operations on one claim, each naming it by `issue` and `role`: the two recoveries and the
- * operator's four `legion claims` operations, which the daemon serves the controller for its
- * project's claims and an architect for its own tree's claims, on routes of their own. */
-const CLAIM_OPERATIONS = [
-  "fresh_session",
-  "compact",
-  "stop",
-  "retry",
-  "suspend",
-  "resume",
-] as const;
-
-type ClaimOperation = (typeof CLAIM_OPERATIONS)[number];
-
-const isClaimOperation = (operation: string): operation is ClaimOperation =>
-  CLAIM_OPERATIONS.some((candidate) => candidate === operation);
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
 
@@ -358,8 +346,9 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller, and the six claim
- * operations to the controller and to an architect, whose reach the daemon limits to its own tree. */
+ * first (`handoffReport`); `read_state` and `set_status` belong to the controller, and the claim
+ * operations (`CLAIM_OPERATIONS`) to the controller and to an architect, whose reach the daemon
+ * limits to the claims of the issues it owns. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -412,9 +401,9 @@ export function createLegionTool(deps: {
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
     // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
-    // the controller's operations, and the architect's own-tree limit on the claim operations:
-    // the exact text tools.test.ts pins, so a change to the shared template cannot reach an Oh My
-    // Pi agent unnoticed.
+    // the controller's operations, and the architect's limit on the claim operations to the
+    // issues it owns: the exact text tools.test.ts pins, so a change to the shared template cannot
+    // reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
@@ -458,11 +447,14 @@ export function createLegionTool(deps: {
         "one that records no process to read, and for one that moved under the request and that a second read " +
         "finds no longer working or gone once more, each left exactly as the request found it " +
         "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
-        "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+        "suspension that does not outrank yours is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-        "wake pacing parked (CLAIM_UNSETTLED) — for a claim the operator suspended, whose " +
-        "suspension only the operator lifts (SUSPENDED_BY_OPERATOR), and for role controller. " +
+        "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses a claim " +
+        "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
+        "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the claim over while the request " +
+        "runs ends it with the same code, after your own suspension of the claim ran: the claim keeps the session it " +
+        "recorded. " +
         "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
         "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
@@ -499,16 +491,22 @@ export function createLegionTool(deps: {
         "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
         "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
         "The daemon refuses resume, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
-        "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
-        "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
+        "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
+        "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first: only the " +
+        "operator lifts the operator's suspension, so ask the operator. The controller's compact is not refused " +
+        "the operator's suspension, and answers such a claim in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
         "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
-        "resume (issue, role), for the claims of its own tree alone. An architect uses them on a claim " +
-        "of its tree that needs action and asks no other session to do it. The daemon refuses an " +
-        "architect another tree's claim (ISSUE_OUTSIDE_TREE) and its own claim (OWN_CLAIM). It refuses " +
+        "resume (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
+        "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
+        "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
+        "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
+        "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own claim " +
+        "(OWN_CLAIM). It refuses " +
         "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
         "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
-        "waits for a turn to end. Nothing of the claim changes: ask the holder to lift its suspension. " +
+        "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
+        "fresh_session's own suspension ran first: ask the holder to lift its suspension. " +
         "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
         "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
         "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
@@ -578,7 +576,10 @@ export function createLegionTool(deps: {
           return await claimOperation(client, operation, { grantId, issue, role });
         }
         if (active.kind === "controller") {
-          // set_status, validated whole before its grant is minted.
+          // set_status, validated whole before its grant is minted. Every other operation of the
+          // controller's is answered above, so one that reaches here is named, never run as this.
+          if (operation !== "set_status")
+            throw new Error(`Unsupported legion operation: ${operation}`);
           const issue = requiredString(parameters, operation, "issue");
           const status = ISSUE_STATUSES.find((candidate) => candidate === parameters.status);
           if (status === undefined) {

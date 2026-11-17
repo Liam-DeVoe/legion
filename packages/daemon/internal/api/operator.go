@@ -559,11 +559,11 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 }
 
 func resumeEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
-	return supervise.RequestResume{Claim: c.Token}, true
+	return supervise.RequestResume{Claim: c.Token, By: supervise.SuspendedByOperator}, true
 }
 
 func stopEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
-	return supervise.RequestStop{Claim: c.Token}, true
+	return supervise.RequestStop{Claim: c.Token, By: supervise.SuspendedByOperator}, true
 }
 
 // readOptionalBody decodes a request body the route reads when there is one: an operator command
@@ -617,7 +617,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	if s.stopped(w, "forget-session") {
 		return
 	}
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: req.Session}); err != nil {
+	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: req.Session, By: supervise.SuspendedByOperator}); err != nil {
 		s.operatorFailure(w, "forget-session", token, err)
 		return
 	}
@@ -791,14 +791,20 @@ func failedOrRetired(state supervise.ClaimState) bool {
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is
 // starting it in a new one (freshSession), and hands back the machine's refusal, if any, for
 // that caller to answer: a claim running the session, which no fresh session reaches, one that
-// recorded another session since the route read it, or a forget the store would not write. What
-// such a refusal means depends on what the caller did before it — a fresh session that had
-// already stopped the claim gives it as a sentence of its answer (notStartedAgain) — so this
-// writes no answer of its own.
-func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, token claim.Token, session string) error {
+// recorded another session since the route read it, one a suspension above by — the caller,
+// whose resume would start the claim — took over since the route read it
+// (supervise.RequestForgetSession.By), or a forget the store would not write. What such a
+// refusal means depends on what the caller did before it — a fresh session that had already
+// stopped the claim gives it as a sentence of its answer (notStartedAgain) — so this writes no
+// answer of its own.
+func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, token claim.Token, session string,
+	by supervise.SuspendSource) error {
+	if s.beforeForgetSessionHandle != nil {
+		s.beforeForgetSessionHandle()
+	}
 	ctx, decided := s.decision(r, token)
 	defer decided()
-	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: session}); err != nil {
+	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: session, By: by}); err != nil {
 		return err
 	}
 	s.log.Info("api: a fresh session left the claim's recorded session behind", "claim", token, "session", session)
@@ -882,7 +888,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 			unstopped = append(unstopped, fmt.Sprintf("%s (the daemon supervises no machine for it, so legion claims stop cannot reach it until the daemon restarts)", other))
 			continue
 		}
-		if err := m.Handle(ctx, supervise.RequestStop{Claim: other}); err != nil {
+		if err := m.Handle(ctx, supervise.RequestStop{Claim: other, By: supervise.SuspendedByOperator}); err != nil {
 			s.logFailure("api: stop a claim of a tree the operator closed", "claim", other, "error", err)
 			unstopped = append(unstopped, fmt.Sprintf("%s (%v)", other, err))
 		}

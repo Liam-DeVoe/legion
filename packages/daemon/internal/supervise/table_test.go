@@ -338,17 +338,17 @@ func fenced(ev Event, c Claim) Event {
 	case RequestSuspend:
 		return RequestSuspend{Claim: c.Token, By: SuspendedByOperator}
 	case RequestResume:
-		return RequestResume{Claim: c.Token}
+		return RequestResume{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRuleResume:
 		return RequestRuleResume{Claim: c.Token, Reason: "it owns its issue's phase"}
 	case RequestStop:
-		return RequestStop{Claim: c.Token}
+		return RequestStop{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRetry:
 		return RequestRetry{Claim: c.Token}
 	case RequestOperatorRetry:
 		return RequestOperatorRetry{Claim: c.Token}
 	case RequestForgetSession:
-		return RequestForgetSession{Claim: c.Token, Session: c.Session}
+		return RequestForgetSession{Claim: c.Token, Session: c.Session, By: SuspendedByOperator}
 	case RequestDeliver:
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:

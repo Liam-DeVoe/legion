@@ -85,8 +85,9 @@ func States() []ClaimState {
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
-// (RequestRuleResume) — unless an operator, the project's controller or an architect of the
-// claim's tree suspended it: that suspension holds until a resume lifts it (SuspendSource.Holds).
+// (RequestRuleResume) — unless an operator, the project's controller or an architect that owns
+// the claim's issue suspended it: that suspension holds until a resume lifts it
+// (SuspendSource.Holds).
 // The boot's resume by rule, which main did not have, acts only on a source ByRule names, so it
 // never overrides a drain recorded before the source existed, and it leaves a released claim to
 // the wake that brings its pod back.
@@ -104,7 +105,7 @@ const (
 	// does; it ranks below the operator's, so the controller can neither take over nor lift a
 	// suspension the operator holds (suspensionRank, ErrOperatorHolds).
 	SuspendedByController SuspendSource = "controller"
-	// SuspendedByArchitect: an architect's suspend of a claim of its own tree, through its
+	// SuspendedByArchitect: an architect's suspend of a claim of an issue it owns, through its
 	// `legion` tool (api's claimSuspend). It holds as the controller's does, and an architect's
 	// resume lifts it; it ranks below the controller's, so the controller's resume lifts it too,
 	// and an architect can neither take over nor lift a suspension the controller or the operator
@@ -153,11 +154,22 @@ func (s SuspendSource) Holds() bool {
 }
 
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
-// for that phase goes with it (settle). Every source does but four: an operator's, the
-// controller's, an architect's, and a release. Each of those resumes this same claim in the same
-// phase — the first three by hand, a released claim's at its role's next wake — so the pending
-// task waits through the suspension and is sent on that resume.
+// for that phase goes with it (settle): a suspension of the daemon's own does (daemonsOwn). Every
+// other source does not — an operator's, the controller's, an architect's, and a release. Each of
+// those resumes this same claim in the same phase — the first three by hand, a released claim's at
+// its role's next wake — so the pending task waits through the suspension and is sent on that
+// resume.
 func (s SuspendSource) RetiresPhaseTask() bool {
+	return s.daemonsOwn()
+}
+
+// daemonsOwn is whether a suspension by this source is one the daemon's own rules placed and
+// lift: every source but the three that hold (Holds) and a release — the workflow's (a park, a
+// linger, a close), a root's exit, and one recorded before sources existed (unknown, or none). It
+// is read off Holds and the release rather than listed again, so a source declared above is
+// placed by those two alone, for the phase's task (RetiresPhaseTask) and for an architect's
+// suspension or stop (Claim.daemonSuspended) alike.
+func (s SuspendSource) daemonsOwn() bool {
 	return !s.Holds() && s != SuspendedByReleased
 }
 
@@ -719,13 +731,13 @@ func (c Claim) HeldAgainst(by SuspendSource) error {
 	}
 }
 
-// ResumeRefusal is the refusal of a resume of this claim asked by by — the operator when by is
-// empty or SuspendedByOperator, the controller, or an architect — and nil when that resume may
-// lift what the claim is suspended by. A suspension outranking the asker refuses it as it refuses
-// every request of that asker (HeldAgainst). An architect's resume lifts only a suspension an
-// architect placed (ErrNotTheArchitectsSuspension): one the daemon placed — the workflow's, a
-// released pod's, a root's exit, or one recorded before sources existed — is lifted by the
-// daemon's own rules, the controller or the operator, and no architect's resume undoes it.
+// ResumeRefusal is the refusal of a resume of this claim asked by by — the operator, the
+// controller or an architect — and nil when that resume may lift what the claim is suspended by.
+// A suspension outranking the asker refuses it as it refuses every request of that asker
+// (HeldAgainst). An architect's resume lifts only a suspension an architect placed
+// (ErrNotTheArchitectsSuspension): one the daemon placed — the workflow's, a released pod's, a
+// root's exit, or one recorded before sources existed — is lifted by the daemon's own rules, the
+// controller or the operator, and no architect's resume undoes it.
 func (c Claim) ResumeRefusal(by SuspendSource) error {
 	if err := c.HeldAgainst(by); err != nil {
 		return err
@@ -756,20 +768,9 @@ func (c Claim) StopOrSuspendRefusal(by SuspendSource) error {
 }
 
 // daemonSuspended is whether the suspension over the claim is one the daemon's own rules placed
-// and lift: the workflow's (a park, a linger, a close), a root's exit, or one recorded before
-// sources existed (unknown, or none), landed — or the daemon's, held for the agent's turn.
+// and lift (SuspendSource.daemonsOwn), landed or held for the agent's turn.
 func (c Claim) daemonSuspended() bool {
-	if c.SuspensionHeld {
-		return c.SuspensionHeldBy == SuspendedByDaemon
-	}
-	if c.State != StateSuspended {
-		return false
-	}
-	switch c.SuspendedBy {
-	case SuspendedByDaemon, SuspendedByExit, SuspendedByUnknown, "":
-		return true
-	}
-	return false
+	return (c.SuspensionHeld || c.State == StateSuspended) && c.holder().daemonsOwn()
 }
 
 // holder is who the suspension over the claim is for: the held one's asker while one is held, the

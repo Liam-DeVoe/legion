@@ -30,7 +30,7 @@ func TestASuspensionRecordsItsSource(t *testing.T) {
 			if got := h.claim().SuspendedBy; got != by {
 				t.Fatalf("after a restart the claim records %q, want %q", got, by)
 			}
-			h.must(RequestResume{Claim: testToken})
+			h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 			if got := h.store.load(testToken).SuspendedBy; got != "" {
 				t.Fatalf("after the resume the store records %q, want nobody", got)
 			}
@@ -61,6 +61,36 @@ func TestASuspensionNamingNoSourceIsRefused(t *testing.T) {
 			}
 			h.wantState(StateIdle)
 			h.wantCalls("Suspend", 0)
+		})
+	}
+}
+
+// A resume, a stop and a forget of the session name who asks, as a suspension does, and one that
+// names none of the three that ask them — the operator, the controller and an architect — is a
+// wiring error refused before anything is asked (askedBy): read as the operator's, whom no
+// suspension refuses, it would get past every hold over the claim.
+func TestAResumeAStopAndAForgetNamingNoAskerAreRefused(t *testing.T) {
+	for _, by := range []SuspendSource{"", SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, "someone"} {
+		t.Run(string(by), func(t *testing.T) {
+			h := newHarness(t)
+			suspendedBy(h, SuspendedByOperator)
+			before := h.claim()
+			for _, ev := range []Event{
+				RequestResume{Claim: testToken, By: by},
+				RequestStop{Claim: testToken, By: by},
+				RequestForgetSession{Claim: testToken, Session: before.Session, By: by},
+			} {
+				if err := h.handle(ev); err == nil || !strings.Contains(err.Error(), "not operator, controller or architect") {
+					t.Fatalf("%T naming %q returned %v, want it refused", ev, by, err)
+				}
+			}
+			h.wantState(StateSuspended)
+			if got := h.store.load(testToken); got.SuspendedBy != SuspendedByOperator || got.Session != before.Session {
+				t.Fatalf("the refused requests left the claim suspended by %q on session %q, want the operator's on %q",
+					got.SuspendedBy, got.Session, before.Session)
+			}
+			h.wantCalls("Resume", 0)
+			h.wantCalls("Release", 0)
 		})
 	}
 }

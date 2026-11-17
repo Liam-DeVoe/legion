@@ -373,7 +373,9 @@ type server struct {
 	drained   context.Context
 	decisions *RouteDecisions
 	log       *slog.Logger
-	// beforeForgetSessionHandle pauses the route's preflight in its concurrency regression test.
+	// beforeForgetSessionHandle pauses a forget before its decision of the machine, in the
+	// concurrency regression tests of the operator's forget-session route (after its preflight) and
+	// of the fresh session's forget (forgetRecordedSession, after the suspension it ran).
 	beforeForgetSessionHandle func()
 }
 

@@ -217,11 +217,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "one that records no process to read, and for one that moved under the request and that a second read " +
   "finds no longer working or gone once more, each left exactly as the request found it " +
   "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
-  "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
+  "suspension that does not outrank yours is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
   "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
   "one queued, one whose launch is in flight, and one left working under a relaunch the " +
-  "wake pacing parked (CLAIM_UNSETTLED) — for a claim the operator suspended, whose " +
-  "suspension only the operator lifts (SUSPENDED_BY_OPERATOR), and for role controller. " +
+  "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. Before any of those it refuses a claim " +
+  "whose suspension outranks yours, landed or waiting for a turn to end: the operator's, which only the operator " +
+  "lifts (SUSPENDED_BY_OPERATOR). A suspension that outranks yours and takes the claim over while the request " +
+  "runs ends it with the same code, after your own suspension of the claim ran: the claim keeps the session it " +
+  "recorded. " +
   "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
   "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
   "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
@@ -258,16 +261,22 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
   "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
   "The daemon refuses resume, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
-  "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), and nothing of the " +
-  "claim changes: only the operator lifts the operator's suspension, so ask the operator. The four " +
+  "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
+  "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first: only the " +
+  "operator lifts the operator's suspension, so ask the operator. The controller's compact is not refused " +
+  "the operator's suspension, and answers such a claim in its own codes. The four " +
   "refuse role controller as fresh_session and compact do. " +
   "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
-  "resume (issue, role), for the claims of its own tree alone. An architect uses them on a claim " +
-  "of its tree that needs action and asks no other session to do it. The daemon refuses an " +
-  "architect another tree's claim (ISSUE_OUTSIDE_TREE) and its own claim (OWN_CLAIM). It refuses " +
+  "resume (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
+  "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
+  "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
+  "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
+  "as the tree's root and a sibling's issues are for a sub-architect (ISSUE_NOT_OWNED), and its own claim " +
+  "(OWN_CLAIM). It refuses " +
   "each of the six for a claim the operator's suspension holds (SUSPENDED_BY_OPERATOR) and for a " +
   "claim the controller's suspension holds (SUSPENDED_BY_CONTROLLER), also while that suspension " +
-  "waits for a turn to end. Nothing of the claim changes: ask the holder to lift its suspension. " +
+  "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
+  "fresh_session's own suspension ran first: ask the holder to lift its suspension. " +
   "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
   "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
   "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
@@ -1943,8 +1952,8 @@ test("the controller stops, retries, suspends and resumes a claim it names by is
 
 // The architect's operation set, pinned whole: every `op` the tool's schema lists that an
 // architect's session is not refused as unavailable. It is the tree's workflow operations, the
-// phase ops, and the six claim operations the daemon serves an architect for its own tree; the
-// controller's read_state and set_status stay the controller's alone.
+// phase ops, and the six claim operations the daemon serves an architect for the issues it owns;
+// the controller's read_state and set_status stay the controller's alone.
 test("an architect's operation set is the tree's operations and the six claim operations", async () => {
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
@@ -1986,8 +1995,9 @@ test("an architect's operation set is the tree's operations and the six claim op
 
 // An architect's claim operations name the claim by issue and role, as the controller's do, and
 // mint the architect's own claim grant rather than a controller grant: the daemon reads the tree
-// from that grant and refuses every claim outside it. Each returns the daemon's answer whole.
-test("an architect acts on a claim of its own tree with its own grant", async () => {
+// and the issue from that grant and refuses every claim of an issue it does not own. Each returns
+// the daemon's answer whole.
+test("an architect acts on a claim of an issue it owns with its own grant", async () => {
   const answers = {
     freshSession: {},
     compact: { compacted: true },
@@ -2043,9 +2053,11 @@ test("an architect acts on a claim of its own tree with its own grant", async ()
   expect(calls).toHaveLength(before);
 
   // The daemon's refusals reach the architect in their own code and words: another tree's claim,
-  // its own claim, and a claim the controller's suspension holds.
+  // a claim of an issue of its tree it does not own, its own claim, and a claim the controller's
+  // suspension holds.
   for (const [route, op, status, code] of [
     ["stopClaim", "stop", 403, "ISSUE_OUTSIDE_TREE"],
+    ["retryClaim", "retry", 403, "ISSUE_NOT_OWNED"],
     ["suspendClaim", "suspend", 403, "OWN_CLAIM"],
     ["resumeClaim", "resume", 409, "SUSPENDED_BY_CONTROLLER"],
   ] as const) {

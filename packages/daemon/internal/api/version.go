@@ -2113,7 +2113,7 @@ package api
 // 156: #4065 -- the project's controller gets the four claim operations the
 // operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
 // each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
-// (claimDoor: a controller grant, or an architect grant for a claim of its own tree, or `403
+// (claimDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
 // CONTROLLER_REQUIRED`, a claim the daemon supervises or `404 NO_CLAIM`, built from the daemon's
 // own project, so another project's claim cannot be named): `POST /legion/v1/claims/stop` runs
 // `legion claims stop`'s effect, `POST /legion/v1/claims/retry` the plain `legion claims retry`
@@ -2130,12 +2130,15 @@ package api
 // resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
 // `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
 // bearer reads. The controller's resume, suspend, stop and retry, and its fresh session, are
-// refused a claim the operator's own suspension holds with `409 SUSPENDED_BY_OPERATOR`, nothing of
-// the claim changed; its retry and resume of a claim stored working are refused `409
-// CLAIM_IN_A_TURN`. An architect gets the same six operations — these four, `fresh-session` and
-// `compact` — for the claims of its own tree alone (#4065): an issue the
-// daemon does not record is `404 ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`,
-// and the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
+// refused a claim the operator's own suspension holds, held for a turn or landed, with `409
+// SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and answers such a
+// claim in its own codes. Its retry and resume of a claim stored working that no such suspension
+// holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six operations — these
+// four, `fresh-session` and `compact` — for the claims of the issues it owns alone (#4065), as
+// sign_off and retry_or_escalate take an issue: an issue the daemon does not record is `404
+// ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`, one of its own tree it does not
+// own — for a sub-architect its tree's root and a sibling's subtree — `403 ISSUE_NOT_OWNED`, and
+// the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
 // further supervise.SuspendSource that `claims.suspended_by` admits from migration
 // 20261115083448, which holds as the controller's does and ranks under it: an architect's resume
 // lifts it, and so do the controller's and the operator's. Each of an architect's operations is

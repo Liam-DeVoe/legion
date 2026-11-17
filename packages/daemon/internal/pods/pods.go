@@ -52,7 +52,7 @@ type IdleClaim struct {
 	// "" for a claim that is not suspended: who stopped this role — the operator, the project's
 	// controller, an architect, the workflow's own close, an idle release. The rule reads it to
 	// tell the suspensions no daemon rule may undo, the operator's, the controller's and an
-	// architect's, from every other (IdleClaim.OperatorSuspended).
+	// architect's, from every other (IdleClaim.SuspensionHolds).
 	SuspendedBy supervise.SuspendSource
 	// ServingGeneration is the run the claim is serving, which tells a phase worker of the
 	// issue's current run from one left over by an older one.
@@ -99,11 +99,11 @@ func (c IdleClaim) Live() bool {
 	return true
 }
 
-// OperatorSuspended is whether a suspension that holds is over this claim: the operator's own, the
+// SuspensionHolds is whether a suspension that holds is over this claim: the operator's own, the
 // project's controller's or an architect's, the suspensions no daemon rule undoes, which only a
-// resume ends (supervise.SuspendSource.Holds). The name, and the hold it decides
-// (workflow.IdleHoldUnownedOperatorSuspended, whose key release records carry), predate the
-// controller's and the architect's suspensions, which hold the pod for the same reason.
+// resume ends (supervise.SuspendSource.Holds). The hold it decides keeps the name it had before
+// the controller's and the architect's suspensions, which hold the pod for the same reason
+// (workflow.IdleHoldUnownedOperatorSuspended), since release records carry that hold's key.
 //
 // The expression is written here rather than called on supervise.Claim because there is no such
 // method on supervise.Claim to call: Claim.RuleHolds and Claim.RuleMayResume are where it lives
@@ -112,7 +112,7 @@ func (c IdleClaim) Live() bool {
 // holds the pod through the rule's own live-claim conjunct, so repeating it here would say
 // nothing the rule does not already read. The view carries the two columns and not a
 // supervise.Claim (IdleClaim), so the predicate is the view's.
-func (c IdleClaim) OperatorSuspended() bool {
+func (c IdleClaim) SuspensionHolds() bool {
 	return c.State == supervise.StateSuspended && c.SuspendedBy.Holds()
 }
 

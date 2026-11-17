@@ -583,7 +583,7 @@ func processReads(h *harness) int {
 
 // recoveryDoor is one of the four doors the two recoveries have, with the words its own
 // operation writes into the refusals both of its doors give (freshSessionDoors, compactDoors,
-// controllerOp). The rows whose answer is the same at every door run through all four.
+// claimOp). The rows whose answer is the same at every door run through all four.
 type recoveryDoor struct {
 	name        string
 	ask         func(t *testing.T, h *harness, issue string, role claim.Role) *httptest.ResponseRecorder
@@ -1151,7 +1151,7 @@ func routeServer(h *harness) *server {
 func TestARecoveryStepThatMeetsAParkRaisedAfterItsViewNamesTheLaunchInFlight(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      claimOp
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1304,7 +1304,7 @@ func TestAFreshSessionsSuspensionRefusedAsWorkingIsAnsweredByASecondRead(t *test
 func TestARecoveryStepRefusesAWorkingClaimThatRecordsNoProcessAsUnsettled(t *testing.T) {
 	for _, door := range []struct {
 		name    string
-		op      controllerOp
+		op      claimOp
 		reaches string
 	}{
 		{"the fresh session", freshSessionOp, wantFreshSessionReaches},
@@ -1579,7 +1579,7 @@ func heldSuspensionCases() []heldSuspensionCase {
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
 // project's own controller — and the asking operation is what reaches a live one, in the
 // states that operation's own set holds (api's refuseHeldSuspension, startsAgainName,
-// controllerOp.liveStates).
+// claimOp.liveStates).
 //
 // The second sentence is of the claims nothing is held over, because the claim in hand is
 // held: a hold over a ready agent is reached by neither door while it stands, and a sentence
@@ -1602,7 +1602,9 @@ func heldSuspensionRefusal(token claim.Token, startsAgain, operation, liveStates
 // operation reaches instead, of the claims nothing is held over, and both recoveries say so
 // of every row (api's refuseHeldSuspension). The code each row takes is the claim's own, so
 // the answer a state was refused with before either door read the hold is the answer it is
-// refused with now.
+// refused with now. The one exception is the hold's own: the controller's fresh session of a
+// claim the operator's suspension is held over is refused that hold first (wantHeldRefusal),
+// while the controller's compaction is let past it (compactOp.controllerPassesHold).
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
@@ -1620,12 +1622,14 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
 				h := compactHarness(t, nil)
 				token := held.start(t, h)
+				m, _ := h.supervisor.Machine(token)
+				heldBy := m.View().SuspensionHeldBy
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
+				door.wantHeldRefusal(t, recorder, token, heldBy, held.code,
 					heldSuspensionRefusal(token, freshSessionName, "a fresh session", wantFreshSessionLive))
-				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
+				if !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
 			})

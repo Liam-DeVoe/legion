@@ -12,8 +12,8 @@ import (
 
 // ClaimRequest is what every operation of the claim door names (claimDoor): the claim on Role of
 // Issue, under the caller's grant — the project's controller's, or an architect's for a claim of
-// its own tree. Role is a workflow role or `architect`; the project controller is no role here,
-// so the controller's own claim cannot be named at all (claim.IsRole, whose six roles the
+// an issue it owns. Role is a workflow role or `architect`; the project controller is no role
+// here, so the controller's own claim cannot be named at all (claim.IsRole, whose six roles the
 // controller is not one of). The six operations take the same three members, so they take one
 // type.
 type ClaimRequest struct {
@@ -99,30 +99,52 @@ const askAgainLater = "Ask again later; `read_state` (`legion claims list`) show
 // freshSessionReason is what the suspension of a live claim records as its cause.
 const freshSessionReason = "a fresh session was asked for"
 
-// controllerOp is one of the two claim recoveries in the words its own refusals name it by,
-// which both of its doors give: name reads inside a sentence about the operation,
-// notTheController is what the refusal of the role `controller` says the operation does not do
-// to the project's own controller (claimDoor), cutsTheTurn is what the refusal of a
-// claim stored working says the operation would do to a turn of that claim that is running
-// (refuseInATurn), and reaches is the states the operation does reach, which every refusal of a
-// claim's state that ends in askAgainLater gives as a sentence of its own: it is the one thing
-// a refused caller can act on, since the claim's state is published and this says which door
-// that state belongs to (askAgainLater).
+// claimOp is one of the six operations of the claim door in the words its own refusals name it
+// by, which every door it has gives; each operation is described in this one place. name reads
+// inside a sentence about the operation, and invalidRole is what the door's refusal of the role
+// `controller` (INVALID_ROLE) says the operation does not do to the project's own controller,
+// which no role names (claimDoor). request is the word for the request one of the operator's
+// four makes as a single event to the claim's machine, which the daemon's stop and the
+// machine's refusals name it by (claimEventOperation, postClaimEvent, operatorFailure), and did
+// is what the log line of one that ran says the caller did to the claim (answerClaimOperation);
+// the two recoveries write their own answers and log lines, and leave both empty.
+//
+// refusesATurn is whether the machine's refusal of the operation in state working is answered
+// as a claim in a turn (refuseClaimOperation, refuseClaimInATurn): the retry's and the resume's
+// are, since neither reaches a claim in a turn, and reaches names the states each does reach.
+// The stop's is not: the machine refuses a stop of a working claim only for a tree's root, and
+// that is the root's own refusal, in the machine's words (operatorFailure). Nor is the
+// suspension's, which is held for a turn rather than refused for it. controllerPassesHold is
+// whether the controller's request is let past a suspension that outranks it at the door
+// rather than refused there (claimDoor, supervise.Claim.HeldAgainst): the compaction's alone,
+// which stops, takes over and lifts no suspension, so a claim the operator's suspension holds
+// is answered by the compaction's own refusals of the claim as it stands (refuseHeldSuspension,
+// refuseState). An architect's request is refused such a suspension whatever the operation.
+//
+// cutsTheTurn is what the refusal of a claim stored working says the operation would do to a
+// turn of that claim that is running (refuseInATurn), and reaches is the states the operation
+// does reach, which every refusal of a claim's state that ends in askAgainLater gives as a
+// sentence of its own: it is the one thing a refused caller can act on, since the claim's state
+// is published and this says which door that state belongs to (askAgainLater).
 //
 // liveStates is the live half of reaches on its own — the states the operation acts on in a
 // claim that runs an agent — for the one refusal that writes its own sentence around it, the
-// held suspension's (refuseHeldSuspension). The two operations take different sets there, so
-// each door carries its own: a registered agent is one the fresh session suspends and the
+// held suspension's (refuseHeldSuspension). The two recoveries take different sets there, so
+// each carries its own: a registered agent is one the fresh session suspends and the
 // compaction has no session to ask yet (agentRunning, supervise's onCompact rows), and a
 // sentence that named one set for both doors would be short by `registered` at one of them.
 // TestEachDoorNamesTheStatesItsOwnPredicatesReach holds both fields to the predicates that
 // decide them.
-type controllerOp struct {
-	name             string
-	notTheController string
-	cutsTheTurn      string
-	reaches          string
-	liveStates       string
+type claimOp struct {
+	name                 string
+	invalidRole          string
+	request              string
+	did                  string
+	refusesATurn         bool
+	controllerPassesHold bool
+	cutsTheTurn          string
+	reaches              string
+	liveStates           string
 }
 
 // freshSessionOp is the fresh session in the words its own refusals name it by, which both of
@@ -134,12 +156,12 @@ type controllerOp struct {
 // (storedWorking, refuseWorkingClaim). That last one is named by what the read found and not
 // by the state alone, because the state alone is true of a claim in a turn as well, which the
 // operation does not reach. liveStates is the first of those three sets alone (agentRunning).
-var freshSessionOp = controllerOp{
-	name:             "a fresh session",
-	notTheController: "its own claim takes no fresh session",
-	cutsTheTurn:      "a fresh session would cut that turn off",
-	reaches:          "A fresh session reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind",
-	liveStates:       "registered, ready or idle",
+var freshSessionOp = claimOp{
+	name:        "a fresh session",
+	invalidRole: "its own claim takes no fresh session",
+	cutsTheTurn: "a fresh session would cut that turn off",
+	reaches:     "A fresh session reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind",
+	liveStates:  "registered, ready or idle",
 }
 
 // claimTarget is the claim an operation of the claim door named, read and authenticated: the
@@ -168,20 +190,30 @@ const ownClaim = "OWN_CLAIM"
 // operator. It answers every refusal of the body, the grant and the lookup itself, and reports
 // false when it has; only the effect behind it differs between the six.
 //
-// The controller reaches every claim of its project. An architect reaches the claims of its own
-// tree alone: the issue is checked against its grant as every architect operation checks it
-// (issueOfTree: 404 ISSUE_NOT_FOUND, 403 ISSUE_OUTSIDE_TREE) before the claim is looked up, its
-// own claim is refused (OWN_CLAIM), and so is a claim a suspension outranking an architect's
-// holds, held or landed — the operator's (SUSPENDED_BY_OPERATOR) and the controller's
-// (SUSPENDED_BY_CONTROLLER) — whatever the operation (supervise.Claim.HeldAgainst, refuseHold).
-// The controller's own requests are refused the operator's hold by each operation itself
-// (claimRetry, the machine's refusal under claimEventOperation, freshSession), not here, and its
-// compaction is not refused it.
+// The controller reaches every claim of its project. An architect reaches the claims of the
+// issues it owns alone, by the rule sign_off, retry_or_escalate and request_backward_move hold it
+// to: the issue is checked against its grant (issueOfTree: 404 ISSUE_NOT_FOUND, 403
+// ISSUE_OUTSIDE_TREE) and then against what the architect owns (architectOwns: 403
+// ISSUE_NOT_OWNED) before the claim is looked up. A tree root's architect owns every issue of
+// its tree, and a sub-architect its own issue and those under it, never the root or a sibling's
+// (owns). A sub-architect holds a grant for the whole tree and can name any issue of it, so the
+// tree alone would let it stop, suspend or restart the root's architect or a sibling subtree's
+// workers. An architect's own claim is refused as well (OWN_CLAIM).
+//
+// A claim a suspension outranking the caller holds, held for a turn or landed, is refused here
+// whoever the caller is and before the operation asks anything (supervise.Claim.HeldAgainst,
+// refuseHold): the operator's for either caller (SUSPENDED_BY_OPERATOR), and the controller's
+// for an architect (SUSPENDED_BY_CONTROLLER). So a held suspension and a landed one take one
+// code at every operation, where the operation's own refusals would give a held one the code of
+// the claim's state (refuseHeldSuspension, refuseClaimInATurn). A suspension that outranks the
+// caller and lands after this read is still the machine's to refuse, and each operation answers
+// that refusal as the hold it is (refuseClaimOperation, freshSession). The one request let past
+// such a suspension is the controller's compaction (claimOp.controllerPassesHold).
 //
 // The controller is refused its own claim here and nowhere else: the token is built from the
 // issue and the role, and no issue's role spells the controller's token (claim.ControllerToken),
 // so a role this check takes can never name it.
-func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op controllerOp) (claimTarget, bool) {
+func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op claimOp) (claimTarget, bool) {
 	var req ClaimRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
 		field{"grantId", req.GrantID}, field{"issue", req.Issue}, field{"role", req.Role}) {
@@ -195,7 +227,7 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op controller
 	if !claim.IsRole(role) {
 		writeFailure(w, http.StatusBadRequest, "INVALID_ROLE", fmt.Sprintf(
 			"role must be one of %s; the project's controller is none of them, and %s",
-			roleList(), op.notTheController))
+			roleList(), op.invalidRole))
 		return claimTarget{}, false
 	}
 	token, err := claim.NewToken(s.project, req.Issue, role)
@@ -208,17 +240,19 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op controller
 	if !ok {
 		return claimTarget{}, false
 	}
-	by := supervise.SuspendedByController
+	var by supervise.SuspendSource
 	switch {
 	case grant.Controller:
+		by = supervise.SuspendedByController
 	case grant.Role == claim.RoleArchitect:
-		if _, ok := s.issueOfTree(w, r, grant, req.Issue); !ok {
+		recorded, ok := s.issueOfTree(w, r, grant, req.Issue)
+		if !ok || !s.architectOwns(w, r, grant, recorded, op.name) {
 			return claimTarget{}, false
 		}
 		by = supervise.SuspendedByArchitect
 	default:
 		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED",
-			op.name+" requires a controller grant, or an architect grant for a claim of its own tree")
+			op.name+" requires a controller grant, or an architect grant for a claim of an issue it owns")
 		return claimTarget{}, false
 	}
 	m, supervised := s.supervisor.Machine(token)
@@ -226,15 +260,15 @@ func (s *server) claimDoor(w http.ResponseWriter, r *http.Request, op controller
 		writeFailure(w, http.StatusNotFound, "NO_CLAIM", "no claim "+string(token))
 		return claimTarget{}, false
 	}
-	if by == supervise.SuspendedByArchitect {
-		if token == grant.Claim {
-			writeFailure(w, http.StatusForbidden, ownClaim, fmt.Sprintf(
-				"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's and the operator's to recover",
-				token, op.name))
-			return claimTarget{}, false
-		}
+	if by == supervise.SuspendedByArchitect && token == grant.Claim {
+		writeFailure(w, http.StatusForbidden, ownClaim, fmt.Sprintf(
+			"%s is the claim of the architect that asks, and %s of it would end or cut off the very turn that asks for it, so it is refused and nothing of the claim changed. An architect's own claim is the controller's and the operator's to recover",
+			token, op.name))
+		return claimTarget{}, false
+	}
+	if by == supervise.SuspendedByArchitect || !op.controllerPassesHold {
 		if err := m.View().HeldAgainst(by); err != nil {
-			refuseHold(w, token, op, by, err)
+			s.refuseHold(w, token, op, by, err, nothingChanged)
 			return claimTarget{}, false
 		}
 	}
@@ -351,24 +385,36 @@ func roleList() string {
 // The suspension this route runs is its caller's: the operator's through `legion claims retry
 // --fresh-session`, and the controller's or an architect's through the claim door's
 // fresh_session (supervise.SuspendedByController, supervise.SuspendedByArchitect), whose resume
-// below is that caller's too (supervise.RequestResume.By). The claim door is refused, before
-// anything is asked, a claim whose resume that caller may not run (supervise.Claim.ResumeRefusal,
-// refuseHold): the operator's own suspension, landed, for either caller (SUSPENDED_BY_OPERATOR),
-// since only the operator undoes it; for an architect the controller's, landed
-// (SUSPENDED_BY_CONTROLLER), and a suspension the daemon placed (SUSPENDED_BY_DAEMON), since an
-// architect's resume lifts an architect's suspension alone. Each is refused before the forget,
-// which would otherwise drop the session of a claim this request then could not start. The
-// machine refuses that resume, and that suspension, to a claim a suspension outranking the
-// caller took over under the request (supervise.ErrOperatorHolds, supervise.ErrControllerHolds).
-// A held one is the held suspension's refusal, as at the operator's door (refuseHeldSuspension).
+// below is that caller's too (supervise.RequestResume.By). The claim door refuses its caller,
+// before anything is asked, a claim a suspension outranking it holds, held or landed (claimDoor,
+// supervise.Claim.HeldAgainst): the operator's for either caller (SUSPENDED_BY_OPERATOR), since
+// only the operator undoes it, and the controller's for an architect (SUSPENDED_BY_CONTROLLER).
+// This route then refuses, before anything is asked, a claim whose resume the caller may not
+// run (supervise.Claim.ResumeRefusal, refuseHold), which adds for an architect a suspension the
+// daemon placed (SUSPENDED_BY_DAEMON), since an architect's resume lifts an architect's
+// suspension alone.
 //
-// A forget or a start the machine refuses after this route has stopped the claim is answered the
-// same way and for the same reason: the suspension ran, and a failure would tell the caller that
-// nothing happened about a claim this request stopped. So that refusal goes into the answer too,
-// in the machine's own words, with the state the claim stands in after it (notStartedAgain,
-// FreshSessionResponse.PhaseNotRestarted), and the caller reads what became of the claim rather
-// than an error that names none. A refusal met before anything was stopped stays the caller's
-// answer: nothing of the claim changed, and a 200 would say something did.
+// Each step after those reads is a decision of its own, so a suspension outranking the caller
+// can still take the claim over under the request (supervise's suspendedAgain). Between the read
+// and the caller's suspension, the machine refuses that suspension (supervise.ErrOperatorHolds,
+// supervise.ErrControllerHolds). Between that suspension, or the read for a claim this route does
+// not suspend, and the forget, the forget reads the hold again in its own decision and is
+// refused for a claim whose resume the caller may not run (supervise.RequestForgetSession.By),
+// so the claim keeps the session it recorded and the caller is answered that hold's refusal,
+// which says whether this request's own suspension ran (refuseHold, itsSuspensionTakenOver).
+// The forget is never sent past such a hold: it would drop the session of a claim whose resume
+// the machine then refuses, under a hold the caller cannot lift. A suspension held over the
+// claim that does not outrank the caller is the held suspension's refusal, as at the operator's
+// door (refuseHeldSuspension).
+//
+// A forget refused for any other reason, and a start the machine refuses, after this route has
+// stopped the claim is answered the same way as each other and for the same reason: the
+// suspension ran, and a failure would tell the caller that nothing happened about a claim this
+// request stopped. So that refusal goes into the answer too, in the machine's own words, with the
+// state the claim stands in after it (notStartedAgain, FreshSessionResponse.PhaseNotRestarted),
+// and the caller reads what became of the claim rather than an error that names none. A refusal
+// met before anything was stopped stays the caller's answer: nothing of the claim changed, and a
+// 200 would say something did.
 //
 // Two states, one hold and one claim are refused, and the first of those states more than one
 // way. A claim stored working whose process the read at the request finds running is refused
@@ -426,14 +472,15 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// stopped is whether the suspension below ran, which decides how a forget or a start the
 	// machine then refuses is answered: by then this request has stopped the claim, so that
 	// refusal is a sentence of the answer rather than the answer itself (notStartedAgain,
-	// FreshSessionResponse.PhaseNotRestarted).
+	// FreshSessionResponse.PhaseNotRestarted), bar a forget a hold above the caller refused, which
+	// is that hold's refusal saying the suspension ran (itsSuspensionTakenOver).
 	stopped := false
 	resumeRefusal := c.ResumeRefusal(by)
 	switch {
 	case view.SuspensionHeld:
 		return 0, "", false, refuseHeldSuspension(w, token, c.State, c.Role, freshSessionOp)
 	case resumeRefusal != nil:
-		refuseHold(w, token, freshSessionOp, by, resumeRefusal)
+		s.refuseHold(w, token, freshSessionOp, by, resumeRefusal, nothingChanged)
 		return 0, "", false, false
 	case storedWorking(c.State):
 		// Every claim stored working comes here, and the read is what tells them apart: the
@@ -465,7 +512,19 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// the retry as well (RequestOperatorRetry.FreshSession, intake.RestartPhase.FreshSession), so
 	// the start the workflow raises spawns rather than resumes whatever the claim still records.
 	if session := m.Claim().Session; session != "" {
-		switch err := s.forgetRecordedSession(r, m, token, session); {
+		switch err := s.forgetRecordedSession(r, m, token, session, by); {
+		case holdRefusal(err):
+			// A suspension above the caller took the claim over since the read at the request,
+			// so the forget kept the session, and the hold is the answer: the caller's resume
+			// would be refused it, and only its holder starts the claim now.
+			outcome := nothingChanged
+			if stopped {
+				outcome = itsSuspensionTakenOver
+			}
+			s.log.Warn("api: a suspension above the caller took the claim over before the fresh session's forget, which kept its session",
+				"claim", token, "session", session, "stopped", stopped, "error", err)
+			s.refuseHold(w, token, freshSessionOp, by, err, outcome)
+			return 0, "", false, false
 		case err != nil && stopped:
 			s.log.Warn("api: a fresh session stopped the claim and the forget of its session was refused",
 				"claim", token, "session", session, "error", err)
@@ -490,7 +549,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			"claim", token, "state", m.Claim().State, "error", err)
 		return http.StatusOK, notStartedAgain(token, m.Claim().State, "the start of it in a new session", err), false, true
 	case holdRefusal(err):
-		refuseHold(w, token, freshSessionOp, by, err)
+		s.refuseHold(w, token, freshSessionOp, by, err, nothingChanged)
 		return 0, "", false, false
 	case err != nil:
 		s.operatorFailure(w, "resume", token, err)
@@ -534,9 +593,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 // What the operation would do to a turn is a fact about the operation, true whether one is
 // running or not, and the sentence gives it as the condition it is. The operation names
 // itself there, so a controller told to compact first is not told to ask for a fresh session
-// instead, and then the states it does reach (controllerOp). It says nothing of the turn's
+// instead, and then the states it does reach (claimOp). It says nothing of the turn's
 // end, which is the machine's to bring and not this answer's to promise (askAgainLater).
-func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) {
+func refuseInATurn(w http.ResponseWriter, token claim.Token, op claimOp) {
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 		"%s is stored working: if a turn of it is running, %s. %s. %s", token, op.cutsTheTurn, op.reaches, askAgainLater))
 }
@@ -584,7 +643,7 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) {
 // claim changed, so a value added to supervise.ProcessRead is decided here by whoever adds it,
 // never by a default that reads it as a turn, and no caller's connection is dropped for it.
 func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *supervise.Machine,
-	token claim.Token, view supervise.ClaimView, op controllerOp) (answered bool) {
+	token claim.Token, view supervise.ClaimView, op claimOp) (answered bool) {
 	switch {
 	case relaunchWaits(view):
 		refuseParkedRelaunch(w, token, op)
@@ -624,13 +683,13 @@ func (s *server) refuseWorkingClaim(w http.ResponseWriter, r *http.Request, m *s
 // refuseParkedRelaunch is the refusal of a claim stored working while a launch the daemon's
 // wake pacing holds waits over it (relaunchWaits), which both recoveries give: such a claim is
 // a claim between states with a launch in flight, which is what claimUnsettled says, and the
-// refusal names that launch and the states the operation does reach (controllerOp). What the
+// refusal names that launch and the states the operation does reach (claimOp). What the
 // launch's turn brings is not in it (askAgainLater).
 //
 // The refusal names no session and no agent, because the claim may still have both: the park
 // can hold over a process that is alive and in a turn of its own (supervise's repoint), and
 // what every such claim has in common is the launch, not what it is running under it.
-func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controllerOp) {
+func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op claimOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s has a relaunch in flight: the daemon is starting its process again, and that relaunch waits its turn in the wake pacing. %s. %s",
 		token, op.reaches, askAgainLater))
@@ -650,7 +709,7 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 // nothing forgotten and nothing started. What the caller does is ask again, once the runtime
 // answers again (askAgainLater); the sentence names no moment for that, as no refusal here
 // does.
-func refuseUnreadableProcess(w http.ResponseWriter, token claim.Token, op controllerOp) {
+func refuseUnreadableProcess(w http.ResponseWriter, token claim.Token, op claimOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s is stored working and the daemon could not read whether its process is running: the runtime did not answer, and nothing of the claim changed. %s. %s",
 		token, op.reaches, askAgainLater))
@@ -662,7 +721,7 @@ func refuseUnreadableProcess(w http.ResponseWriter, token claim.Token, op contro
 // running. It is refused as the unanswered read is and for the same reason — no door acts on a
 // claim it could not read, and no answer states a turn nobody found — in words that say which
 // read was missing (claimUnsettled, refuseUnreadableProcess).
-func refuseUnrecordedProcess(w http.ResponseWriter, token claim.Token, op controllerOp) {
+func refuseUnrecordedProcess(w http.ResponseWriter, token claim.Token, op claimOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s is stored working and records no process for the daemon to read, so nothing says whether a turn of it is running, and nothing of the claim changed. %s. %s",
 		token, op.reaches, askAgainLater))
@@ -676,7 +735,7 @@ func refuseUnrecordedProcess(w http.ResponseWriter, token claim.Token, op contro
 // compaction of a claim it found working and the view read after that refusal no longer shows
 // it working (refuseState). This request does not chase the claim: the caller is told so, that
 // nothing of the claim changed, and to read the state and ask again (askAgainLater).
-func refuseMovedClaim(w http.ResponseWriter, token claim.Token, op controllerOp) {
+func refuseMovedClaim(w http.ResponseWriter, token claim.Token, op claimOp) {
 	writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
 		"%s moved while the request was made, and nothing of it changed. %s. %s",
 		token, op.reaches, askAgainLater))
@@ -704,7 +763,7 @@ func refuseMovedClaim(w http.ResponseWriter, token claim.Token, op controllerOp)
 // the controller at its door. The live states are the asking operation's own, so the refusal
 // names each door's set rather than the pair both share: the fresh session's names the
 // registered agent it suspends, and the compaction's does not, since the machine takes a
-// compaction in two states and the fresh session suspends three (controllerOp.liveStates,
+// compaction in two states and the fresh session suspends three (claimOp.liveStates,
 // agentRunning, supervise's onCompact rows).
 //
 // The second sentence is of the claims nothing is held over, and that scope is what keeps it
@@ -721,7 +780,7 @@ func refuseMovedClaim(w http.ResponseWriter, token claim.Token, op controllerOp)
 // between states, which is what the unsettled default gave a claim still coming up
 // (claimInATurn, claimUnsettled). It always reports false, so a caller returns it as its own
 // answer.
-func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, role claim.Role, op controllerOp) bool {
+func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, role claim.Role, op claimOp) bool {
 	code := claimUnsettled
 	if state == supervise.StateWorking {
 		code = claimInATurn
@@ -841,7 +900,7 @@ func (s *server) suspendForFreshSession(w http.ResponseWriter, r *http.Request, 
 		s.refuseSuspensionRefusedAsWorking(w, r, m, token, m.View())
 		return false
 	case holdRefusal(err):
-		refuseHold(w, token, freshSessionOp, by, err)
+		s.refuseHold(w, token, freshSessionOp, by, err, nothingChanged)
 		return false
 	case err != nil:
 		s.operatorFailure(w, "suspend", token, err)

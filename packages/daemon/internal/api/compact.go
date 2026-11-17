@@ -89,20 +89,27 @@ const compactInstructions = "Write the summary as text. " +
 // whose turn a compaction would abort, and the states a compaction does reach (refuseState).
 // Those states are the two the machine itself takes a compaction in, which is all a compaction
 // reaches live, so reaches and liveStates name the same pair here where the fresh session's
-// differ (supervise.TakesCompaction, controllerOp). The type is the two recoveries' own
-// (controllerOp, freshsession.go).
-var compactOp = controllerOp{
-	name:             "a compaction",
-	notTheController: "the controller does not compact its own session",
-	cutsTheTurn:      "a compaction would abort that turn",
-	reaches:          "A compaction reaches a claim whose agent is ready or idle",
-	liveStates:       "ready or idle",
+// differ (supervise.TakesCompaction, claimOp). The type is every claim operation's own
+// (claimOp, freshsession.go).
+//
+// It is the one operation the claim door lets the controller past a suspension that outranks
+// it (controllerPassesHold): a compaction stops, takes over and lifts no suspension, so the
+// operator's suspension is no refusal of it. A claim that suspension holds is answered by the
+// compaction's own refusals of the claim as it stands: a landed one runs no session to compact,
+// and a held one is the held suspension's refusal (refuseState, refuseHeldSuspension).
+var compactOp = claimOp{
+	name:                 "a compaction",
+	invalidRole:          "the controller does not compact its own session",
+	controllerPassesHold: true,
+	cutsTheTurn:          "a compaction would abort that turn",
+	reaches:              "A compaction reaches a claim whose agent is ready or idle",
+	liveStates:           "ready or idle",
 }
 
 // claimCompact is the claim door's compaction (compact). The effect is the operator's own, and so
 // are its refusals and its answer; only the authentication differs (claimDoor), which refuses an
 // architect a claim the operator's or the controller's suspension holds before the effect is
-// asked.
+// asked, and lets the controller past the operator's (compactOp).
 func (s *server) claimCompact(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.claimDoor(w, r, compactOp)
 	if !ok {

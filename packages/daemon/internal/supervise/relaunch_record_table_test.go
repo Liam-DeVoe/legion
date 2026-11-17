@@ -181,7 +181,7 @@ func relaunchesOntoTheCurrentPlugin(c *letGoCell) {
 // retired (RequestOperatorRetry's row, operatorRetry).
 func stopsForTheOperator(c *letGoCell) {
 	c.h.t.Helper()
-	c.h.must(RequestStop{Claim: c.h.token})
+	c.h.must(RequestStop{Claim: c.h.token, By: SuspendedByOperator})
 }
 
 // backstopsTheStall is the daemon's stall backstop once the claim's last step is past its role's
@@ -272,7 +272,7 @@ func relaunchedToReady(h *harness) {
 // (resume, revive).
 func resumedByTheOperator(h *harness) {
 	h.t.Helper()
-	h.must(RequestResume{Claim: h.token})
+	h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 	h.relaunched()
 }
 

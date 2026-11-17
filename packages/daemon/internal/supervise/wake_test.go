@@ -257,7 +257,7 @@ func TestAWakeDroppedBeforeItsTurnLaunchesNothingAndTheNextKeepsItsMoment(t *tes
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestSpawn{Claim: secondToken})
 	h.mustPostTo(third, RequestSpawn{Claim: thirdToken})
-	h.mustPostTo(second, RequestStop{Claim: secondToken})
+	h.mustPostTo(second, RequestStop{Claim: secondToken, By: SuspendedByOperator})
 
 	h.clock.Advance(2*wakeInterval + 2*wakePart)
 	second.Wait()
@@ -323,7 +323,7 @@ func TestAnExemptResumeOfAWaitingClaimLaunchesAtOnce(t *testing.T) {
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
 	h.wantStarts(secondToken, 0)
 
-	h.mustPostTo(second, RequestResume{Claim: secondToken})
+	h.mustPostTo(second, RequestResume{Claim: secondToken, By: SuspendedByOperator})
 
 	h.wantStarts(secondToken, 1)
 	if state := second.Claim().State; state != StateLaunching {
@@ -347,7 +347,7 @@ func TestAnOperatorsForgetSessionOfAWaitingClaimIsDecidedAndTheWakeKeepsItsTurn(
 
 	h.must(RequestSpawn{Claim: h.token})
 	h.mustPostTo(second, RequestRuleResume{Claim: secondToken, Reason: "it owns its issue's phase"})
-	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: session})
+	h.mustPostTo(second, RequestForgetSession{Claim: secondToken, Session: session, By: SuspendedByOperator})
 
 	if got := second.Claim(); got.Session != "" || got.SessionFile != "" {
 		t.Fatalf("the claim records session %q at %q, want neither", got.Session, got.SessionFile)

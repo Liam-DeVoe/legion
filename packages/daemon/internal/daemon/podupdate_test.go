@@ -1271,7 +1271,7 @@ func (r *podUpdateRig) resumeInPod(role claim.Role) {
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
 	r.rt.ScriptResume(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
-	r.handle(role, supervise.RequestResume{Claim: token})
+	r.handle(role, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator})
 	generation := r.claimOf(role).Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
@@ -2641,12 +2641,12 @@ func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
 		By: supervise.SuspendedByOperator, NeverHold: true})
 	rig.awaitClaim(claim.RoleImplementer, "the fresh session's suspension to let its process go",
 		func(c supervise.Claim) bool { return c.State == supervise.StateSuspended && c.Locator == nil })
-	rig.handle(claim.RoleImplementer, supervise.RequestForgetSession{Claim: token, Session: recorded})
+	rig.handle(claim.RoleImplementer, supervise.RequestForgetSession{Claim: token, Session: recorded, By: supervise.SuspendedByOperator})
 	conn := fake.NewConn()
 	rig.conns.Register(token, conn)
 	rig.workers[claim.RoleImplementer] = conn
 	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdateReplacementPod)})
-	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token})
+	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token, By: supervise.SuspendedByOperator})
 	generation := rig.claimOf(claim.RoleImplementer).Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},

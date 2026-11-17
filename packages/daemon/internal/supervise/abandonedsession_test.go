@@ -112,13 +112,13 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 		event Event
 		why   string
 	}{
-		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session}, "forget-session"},
+		{"the operator forgetting the session", RequestForgetSession{Claim: testToken, Session: session, By: SuspendedByOperator}, "forget-session"},
 		{"a retry asking for a new session", RequestRetry{Claim: testToken, FreshSession: true}, "the retry asked for a new session"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateIdle)
-			h.must(RequestStop{Claim: h.token})
+			h.must(RequestStop{Claim: h.token, By: SuspendedByOperator})
 			h.wantState(StateRetired)
 
 			h.must(tc.event)
