@@ -1011,3 +1011,136 @@ func (c *stepClaimant) answerWith(model string) {
 	}
 	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
 }
+
+// v-records, whose record is whose: each role's agent answers with a model of its own, and the
+// implementer, the tester and the reviewer with another on each later attempt, so a record that
+// took another claim's session or model, or an earlier attempt's model, names the wrong one. The
+// read names, for each of the walk's ten records, the claim token of its agent, that claim's
+// session and the model that answered it last; the merger the merge launches never registers, so
+// the merge names its token and no session and no model. A step that runs names no session yet:
+// its end names the session and the model together.
+func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
+	r := newStepRecordsRig(t)
+	planner := r.worker(claim.RolePlanner)
+	planner.takeAnswering("stand-in/planner")
+	r.waitSteps("the start of planning", func(got stepRecordsRead) error {
+		switch found := got.find("step", 1, 1); {
+		case found.ID == "" || found.StartedAt == nil:
+			return errors.New("no started record of planning")
+		case found.Session != "" || found.Model != "":
+			return fmt.Errorf("planning, still running, names session %q and model %q, want neither", found.Session, found.Model)
+		}
+		return nil
+	})
+	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	implement := func(model string) {
+		c := r.worker(claim.RoleImplementer)
+		c.takeAnswering(model)
+		r.finish(c, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
+	}
+	test := func(model string) {
+		c := r.worker(claim.RoleTester)
+		c.takeAnswering(model)
+		r.finish(c, "test", testCompletion, phase.Reviewing)
+	}
+	implement("stand-in/implementer")
+	test("stand-in/tester")
+	r.reviewAnswering("stand-in/reviewer", "CHANGES_REQUESTED", phase.Implementing)
+	implement("stand-in/implementer-2")
+	test("stand-in/tester-2")
+	r.reviewAnswering("stand-in/reviewer-2", "APPROVED", phase.Accepting)
+	r.acceptAnswering("stand-in/architect")
+	retro := r.worker(claim.RoleImplementer)
+	retro.takeAnswering("stand-in/implementer-3")
+	r.finish(retro, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
+	r.merge()
+
+	own := func(role claim.Role, model string) stepOwner {
+		c := r.claims[r.token(role)]
+		return stepOwner{agent: string(c.token), session: c.session, model: model}
+	}
+	// Index for index with stepRecordsTen.
+	owners := []stepOwner{
+		own(claim.RolePlanner, "stand-in/planner"),
+		own(claim.RoleImplementer, "stand-in/implementer"),
+		own(claim.RoleImplementer, "stand-in/implementer-2"),
+		own(claim.RoleTester, "stand-in/tester"),
+		own(claim.RoleTester, "stand-in/tester-2"),
+		own(claim.RoleReviewer, "stand-in/reviewer"),
+		own(claim.RoleReviewer, "stand-in/reviewer-2"),
+		own(claim.RoleArchitect, "stand-in/architect"),
+		own(claim.RoleImplementer, "stand-in/implementer-3"),
+		{agent: string(r.token(claim.RoleMerger))},
+	}
+	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error {
+		return stepsOwnedBy(got, stepRecordsTen, owners)
+	})
+}
+
+// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
+// model that answered it.
+type stepOwner struct {
+	agent, session, model string
+}
+
+// stepsOwnedBy says whether read holds exactly the records of want, each of the task default,
+// ended with its result and its return, and named for its owner, owners[i] for want[i]: its
+// agent, session and model exactly; the error names the first record that is missing or wrong.
+func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) error {
+	for i, w := range want {
+		got, owner := read.find(w.kind, w.step, w.attempt), owners[i]
+		name := fmt.Sprintf("%s %d attempt %d", w.kind, w.step, w.attempt)
+		switch {
+		case got.ID == "":
+			return fmt.Errorf("the read holds no record of %s", name)
+		case got.Task != "default" || got.Role != w.role || got.EndedAt == nil || got.Result != w.result:
+			return fmt.Errorf("%s is task %q, role %q, ended %v with %q; want task default, role %q, ended with %q", name, got.Task, got.Role, got.EndedAt, got.Result, w.role, w.result)
+		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
+			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
+		case got.Agent != owner.agent || got.Session != owner.session || got.Model != owner.model:
+			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, owner.agent, owner.session, owner.model)
+		}
+	}
+	if got := len(read.records()); got != len(want) {
+		return fmt.Errorf("the read holds %d records, want %d", got, len(want))
+	}
+	return nil
+}
+
+// reviewAnswering is review with the reviewer's model answering as model.
+func (r *stepRecordsRig) reviewAnswering(model, state string, next phase.Phase) {
+	t := r.t
+	t.Helper()
+	c := r.worker(claim.RoleReviewer)
+	c.takeAnswering(model)
+	c.endTurn()
+	r.reviews++
+	payload, err := json.Marshal(map[string]string{
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
+		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
+		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
+	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
+	r.waitPhase(next)
+}
+
+// acceptAnswering is accept with the architect's model answering as model.
+func (r *stepRecordsRig) acceptAnswering(model string) {
+	t := r.t
+	t.Helper()
+	c := r.worker(claim.RoleArchitect)
+	c.send(shimwire.AgentStart{})
+	c.waitState(supervise.StateWorking)
+	c.answerWith(model)
+	c.send(shimwire.AgentEnd{})
+	c.waitState(supervise.StateIdle)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
+	if status != http.StatusOK {
+		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
+	}
+	r.waitPhase(phase.Retro)
+}
