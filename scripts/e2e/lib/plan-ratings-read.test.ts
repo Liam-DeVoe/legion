@@ -127,6 +127,17 @@ describe("plan-ratings-read.sh", () => {
     expect(code).toBe(1);
   });
 
+  test("a read that lists the issue twice, its header counting both, fails, exit 1, naming it", () => {
+    const lines = [...whole.slice(1), line42];
+    const { code, stdout } = read(
+      [`${project}: ${lines.length} finished issues`, ...lines].join("\n") + "\n"
+    );
+    expect(stdout).not.toContain("UNKNOWN");
+    expect(stdout).toContain(`FAIL: the read lists ${key} 2 times`);
+    expect(stdout).not.toContain("PASS");
+    expect(code).toBe(1);
+  });
+
   test("a read that lists no finished issue at all is UNKNOWN, exit 2, never a pass", () => {
     const { code, stdout } = read(`${project}: 0 finished issues\n`);
     expect(stdout).toContain(`UNKNOWN: dispatch plans lists no finished issue of ${project}`);
