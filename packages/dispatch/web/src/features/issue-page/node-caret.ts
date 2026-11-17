@@ -24,23 +24,28 @@ import { bringOnScreen, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from ".
 export const EDITOR_BOX_ATTRIBUTE = "data-editor-box";
 
 /**
- * Places the caret at the start of `blockId`'s block of the editor in `host`, or at the start of
- * the editor where it draws no such block, and answers whether `host` holds an editor ready for
- * it yet. An editor is ready once it has drawn the document's blocks: it is made editable
- * before it has read the document, and holds no block to put the caret in until then. The focus
- * moves the page by nothing: the box the editor scrolls in is `holdEditorAtBlock`'s to place.
- * The editor takes the caret as its own in the task that gives it the focus (`selectInEditor`),
- * so no key reaches it before its selection is the block's. Called again, it puts back a caret
- * the editor dropped or moved as it redrew itself (`useNodeEditing.ts`).
+ * Places the caret at the start of `blockId`'s block of the editor in `host`, and answers whether
+ * it did. An editor that draws no such block gets neither the focus nor a caret: it is made
+ * editable before it has read the document and may draw the document's blocks over more than
+ * one frame after that, and a caret put anywhere else in it - its first text, where it has drawn
+ * other blocks before the node's - sends the keys the reader presses next to the top of the
+ * document, which is saved to the shared document. The focus stays where it was then: on the
+ * row, as Enter left it, where no key edits the document. A block with no text a caret can
+ * enter - an empty paragraph - takes the caret in the block itself, which the editor reads as a
+ * place in that block: an editable given the focus with no caret put in it takes the next key
+ * wherever the browser puts its own caret. The focus moves the page by nothing: the box the
+ * editor scrolls in is `holdEditorAtBlock`'s to place. The editor takes the caret as its own in
+ * the task that gives it the focus (`selectInEditor`), so no key reaches it before its selection
+ * is the block's. Called again, it puts back a caret the editor dropped or moved as it redrew
+ * itself (`useNodeEditing.ts`), in the node's block and nowhere else.
  */
 export function caretInBlock(host: HTMLElement, blockId: string | undefined): boolean {
   const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  if (editable === null || editable.querySelector(`[${BLOCK_ID_ATTRIBUTE}]`) === null) {
-    return false;
-  }
+  const block = editable === null ? null : blockIn(editable, blockId);
+  if (editable === null || block === null) return false;
   editable.focus({ preventScroll: true });
-  const start = firstEditableText(blockIn(editable, blockId) ?? editable);
-  if (start !== null) selectInEditor(start, 0, start, 0);
+  const start = firstEditableText(block) ?? block;
+  selectInEditor(start, 0, start, 0);
   return true;
 }
 
@@ -73,8 +78,8 @@ export function selectInEditor(
 /**
  * Whether the editor in `host` holds the focus with the caret out of `blockId`'s block, where
  * `caretInBlock` put it: the caret moves out with the editable as the editor makes its views
- * again (`useNodeEditing.ts`). False where the editor draws no such block: `caretInBlock` put
- * the caret at the start of the editor then.
+ * again (`useNodeEditing.ts`). False where the editor draws no such block, where `caretInBlock`
+ * puts no caret either.
  */
 export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined): boolean {
   const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
@@ -84,13 +89,6 @@ export function caretOutOfBlock(host: HTMLElement, blockId: string | undefined):
   }
   const anchor = window.getSelection()?.anchorNode;
   return anchor === null || anchor === undefined || !block.contains(anchor);
-}
-
-/** Whether the editor in `host` draws `blockId`'s block, the block `caretInBlock` puts the caret
- *  in: an editor that draws none takes it at its start, outside the node's text. */
-export function drawsBlock(host: HTMLElement, blockId: string | undefined): boolean {
-  const editable = host.querySelector<HTMLElement>('[contenteditable="true"]');
-  return editable !== null && blockIn(editable, blockId) !== null;
 }
 
 /**

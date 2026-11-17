@@ -312,8 +312,9 @@ export function IssueTree({
   // The focus leaving the tree lets go of the row it left: its body, its focused look and its
   // own placing on screen, the opening's row and what a key reported. By Tab or a script it goes
   // at once, and for a press on something else of the page once that press has ended and its
-  // click has landed (`useReleaseFocus`, which keeps them while a row is being edited, and
-  // through a press outside the tree, so nothing moves under it).
+  // click has landed (`useReleaseFocus`, which keeps them while a row is being edited, until the
+  // editing ends with the focus out of the tree, and through a press outside the tree, so nothing
+  // moves under it).
   const leave = useCallback(() => {
     setFocused(undefined);
     setUnplaced(undefined);
@@ -1050,7 +1051,9 @@ export function focusedNodeOf(node: TreeNode): FocusedNode {
  *
  * A row the reader is editing in keeps its body (`editing`): the document's editor moves into
  * it, which drops the focus for a frame as it leaves the page, and that is no reader leaving the
- * tree.
+ * tree. The editing ending with the focus out of the tree all the same - the reader moved on by
+ * Tab or a press elsewhere before the editor had drawn the node's block (`useNodeEditing.ts`) -
+ * is them gone, and lets go of the row then, as a blur to where the focus is would have.
  *
  * The panel goes back to the issue's own facts whenever the focus leaves the tree, except for
  * Details, or the control that opens it: Details is where a reader reads the node's facts, and
@@ -1074,6 +1077,9 @@ export function useReleaseFocus({
   const left = useRef<HTMLElement | null>(null);
   const leave = useRef(onLeave);
   leave.current = onLeave;
+  // The tree a blur left while a row of it was being edited, which let go of nothing then: the
+  // editing ending with the focus out of that tree lets go of its row (`letGo`).
+  const leftEditing = useRef<HTMLElement | null>(null);
   // Whether a press is under way, from its mousedown - whose default is what moves the focus,
   // for a mouse and for a tap's mouse events alike - until the task after it ends, as the tree's
   // own press is held (`usePressFocus`). The blur it causes reads it to tell a press from Tab or
@@ -1114,21 +1120,36 @@ export function useReleaseFocus({
       window.clearTimeout(held.ending);
     };
   }, []);
-  return useCallback(
-    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
-      const to = event.relatedTarget;
-      if (editing) return;
-      if (to instanceof Node && event.currentTarget.contains(to)) return;
+  // Lets go of the row of `tree`, which the focus left for `to`, by the rule above.
+  const letGo = useCallback(
+    (tree: HTMLElement, to: EventTarget | null) => {
+      if (to instanceof Node && tree.contains(to)) return;
       if (!press.current.pressing) {
         left.current = null;
         onLeave();
       } else {
-        left.current = event.currentTarget;
+        left.current = tree;
       }
       if (to instanceof Element && to.closest(`[${DETAILS_ATTRIBUTE}]`) !== null) return;
       setFocusedNode(undefined);
     },
-    [editing, onLeave, setFocusedNode]
+    [onLeave, setFocusedNode]
+  );
+  useEffect(() => {
+    const tree = leftEditing.current;
+    if (editing || tree === null) return;
+    leftEditing.current = null;
+    letGo(tree, document.activeElement);
+  }, [editing, letGo]);
+  return useCallback(
+    (event: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
+      if (editing) {
+        leftEditing.current = event.currentTarget;
+        return;
+      }
+      letGo(event.currentTarget, event.relatedTarget);
+    },
+    [editing, letGo]
   );
 }
 
