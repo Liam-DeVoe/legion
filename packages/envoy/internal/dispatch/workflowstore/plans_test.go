@@ -117,6 +117,47 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	}
 }
 
+// A plan made with the source default holds no document, and a later write of the same id that
+// names the source owner, a document and a version is taken, changes nothing and appends nothing:
+// the write, a second write of the same default plan and the read of the project all answer the
+// default plan with no document.
+func TestADefaultPlanTakesNoDocumentFromALaterWrite(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	closed := t0.Add(time.Hour)
+	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
+	id := uuid.NewString()
+	first := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(0))
+	want := Plan{ID: id, Issue: "LEG-1", Source: PlanSourceDefault, Generation: 1,
+		Tasks: []PlanTask{{ID: "default", Steps: defaultSteps}}}
+	if planText(first) != planText(want) {
+		t.Fatalf("the default plan answers\n%s\nwant\n%s", planText(first), planText(want))
+	}
+	before := wholeLog(t, pool)
+
+	owner := putPlan(t, pool, PlanWrite{
+		ID: id, Issue: "LEG-1", Generation: new(int64(1)), Source: new(PlanSourceOwner),
+		ArtifactID: new(uuid.NewString()), Version: new(3),
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
+	}, minute(1))
+	if planText(owner) != planText(want) {
+		t.Fatalf("a later owner's write answers\n%s\nwant the default plan\n%s", planText(owner), planText(want))
+	}
+	if again := putPlan(t, pool, defaultPlan(id, "LEG-1", 1), minute(2)); planText(again) != planText(want) {
+		t.Fatalf("the default plan written again answers\n%s\nwant\n%s", planText(again), planText(want))
+	}
+	if after := wholeLog(t, pool); len(after) != len(before) {
+		t.Fatalf("the later writes appended %d tuples, want none", len(after)-len(before))
+	}
+
+	read, err := ProjectPlans(context.Background(), pool, "LEG", nil, nil)
+	if err != nil {
+		t.Fatalf("read the plans of LEG: %v", err)
+	}
+	if len(read) != 1 || read[0].Plan == nil || planText(*read[0].Plan) != planText(want) {
+		t.Fatalf("the read lists %+v, want LEG-1 with the default plan\n%s", read, planText(want))
+	}
+}
+
 // A value outside its form is refused ErrPlanInput, naming the field, and writes nothing.
 func TestAPlanWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	pool := storetest.Open(t).Pool

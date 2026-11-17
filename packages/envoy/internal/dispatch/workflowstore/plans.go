@@ -29,9 +29,10 @@ var planSources = []string{PlanSourceDefault, PlanSourceOwner}
 // changes nothing, and a later write of other tasks under the same id leaves the first.
 //
 // Every write names the plan's generation, its source and its tasks, and an owner's plan its
-// document and version, or it is refused ErrPlanInput and writes nothing. The write that makes the
-// node states its `part_of` relation to the issue; an id whose node is part of another issue is
-// refused ErrPlanOtherIssue.
+// document and version, or it is refused ErrPlanInput and writes nothing; a default plan holds its
+// document and version empty, so a later owner's write of its id gives it neither. The write that
+// makes the node states its `part_of` relation to the issue; an id whose node is part of another
+// issue is refused ErrPlanOtherIssue.
 func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor, at time.Time) (Plan, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
@@ -97,6 +98,11 @@ func (write PlanWrite) attributes() (string, []attribute, error) {
 		if versioned {
 			return "", nil, planInputError("version names the version of the document an owner gave, and a plan of source %s has none", source)
 		}
+		// A default plan holds its document and version empty, so a later write of the same id
+		// that names a document finds both held and sets neither.
+		stated = append(stated,
+			attribute{AttributeArtifactID, "", ""},
+			attribute{AttributeVersion, int64(0), "0"})
 	case PlanSourceOwner:
 		if !document {
 			return "", nil, planInputError("artifact_id is required of a plan of source %s: the document its owner gave", source)
