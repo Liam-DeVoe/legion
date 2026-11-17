@@ -11,9 +11,15 @@
 #
 # The fake hub keeps the killed broker's connection in its connection list for 300 ms after the
 # kill, as a real hub does until it reads that connection's close, and a session that connects
-# meanwhile is routed to the killed replica's place in the queue group and refused (measured on the
-# real stack: a session opened at once after the kill was refused at the hub's 2 s authorization
-# timeout, and the remaining broker never saw it).
+# meanwhile is routed to the killed replica's place in the queue group and refused at the hub's
+# 2 s authorization timeout (measured on the real stack: a session opened at once after the kill
+# was refused at 2 s, and the remaining broker never saw it).
+#
+# Time is the fakes' own: callout-check.sh reads it only as `date +%s%N`, and a fake date answers
+# from a clock that only the fakes move (each connection-list read 20 ms, each probe 50 ms, a
+# refused one the hub's 2 s, a slow one 2.5 s). So the verdicts do not depend on how fast this
+# machine starts a process: under a load of about 1000 on 288 CPUs a wall clock let one run in 20
+# take 5 s for the fakes alone.
 #
 # It asserts that: (a) a hub that answers as the auth service does passes all six lines, in order,
 # ending `all 6 assertions passed`, the second broker is killed, and the check waits until the hub
@@ -48,24 +54,55 @@ trap cleanup EXIT
 readonly stack_broker="http://127.0.0.1:7001"
 readonly session="example-worker-session"
 
-# --- The fake hub's view of the second broker: alive while its stand-in runs; once the stand-in is
-# gone, listed while the hub still lists its connection (always with no-drop, else for drop-ms
-# after the stand-in died, which run_check's watcher writes to dead-at.<pid>), then dropped. A
-# reader that finds the stand-in gone before the watcher wrote dead-at reads the death as now. ---
+# --- The fake clock, in milliseconds: date answers `date +%s%N` from it, and tick moves it on;
+# every other date call goes to the real one. The fakes are called one at a time, so a plain
+# write-and-rename is all tick needs. ---
+cat >"${fake_bin_dir}/date" <<EOF
+#!/usr/bin/env bash
+control="${control_dir}"
+real_date="$(command -v date)"
+EOF
+cat >>"${fake_bin_dir}/date" <<'EOF'
+if [ "$#" -eq 1 ] && [ "$1" = +%s%N ]; then
+  echo "$(cat "$control/clock")000000"
+else
+  exec "$real_date" "$@"
+fi
+EOF
+cat >"${fake_bin_dir}/tick" <<EOF
+#!/usr/bin/env bash
+control="${control_dir}"
+EOF
+cat >>"${fake_bin_dir}/tick" <<'EOF'
+printf '%s' "$(($(cat "$control/clock") + $1))" >"$control/clock.next"
+mv "$control/clock.next" "$control/clock"
+EOF
+chmod +x "${fake_bin_dir}/date" "${fake_bin_dir}/tick"
+
+# --- The fake hub's view of the second broker: alive while its stand-in runs (a zombie, which the
+# kill leaves until this test's shell reaps it, is dead); once the stand-in is gone, listed while
+# the hub still lists its connection (always with no-drop, else for drop-ms of the fake clock from
+# the first read that found it gone, which records that time), then dropped. ---
 cat >"${fake_bin_dir}/hub-state" <<EOF
 #!/usr/bin/env bash
 control="${control_dir}"
 EOF
 cat >>"${fake_bin_dir}/hub-state" <<'EOF'
 broker="$(cat "$control/second-broker")"
-if kill -0 "$broker" 2>/dev/null; then
+state="$(cut -d' ' -f3 "/proc/$broker/stat" 2>/dev/null || true)"
+if [ -n "$state" ] && [ "$state" != Z ]; then
   echo alive
-elif [ -e "$control/no-drop" ]; then
+  exit 0
+fi
+now="$(cat "$control/clock")"
+if [ ! -e "$control/dead-at.$broker" ]; then
+  printf '%s' "$now" >"$control/dead-at.$broker.next"
+  mv "$control/dead-at.$broker.next" "$control/dead-at.$broker"
+fi
+if [ -e "$control/no-drop" ] || [ $((now - $(cat "$control/dead-at.$broker"))) -lt "$(cat "$control/drop-ms")" ]; then
   echo listed
 else
-  now="$(date +%s%3N)"
-  dead_at="$(cat "$control/dead-at.$broker" 2>/dev/null || echo "$now")"
-  if [ $((now - dead_at)) -lt "$(cat "$control/drop-ms")" ]; then echo listed; else echo dropped; fi
+  echo dropped
 fi
 EOF
 chmod +x "${fake_bin_dir}/hub-state"
@@ -75,12 +112,13 @@ chmod +x "${fake_bin_dir}/hub-state"
 # session's own channel is served; another session's is refused in nats-server's words, unless the
 # control directory says the service grants every channel (grant-all). While the hub still lists
 # the killed broker's connection, a session is routed to that replica, which never answers, and
-# is not admitted (at the hub's authorization timeout, shortened here). With silent, it prints
-# nothing; with slow, it takes 2.5 s once the second broker is gone. ---
+# is not admitted at the hub's authorization timeout. A probe takes 50 ms of the fake clock; with
+# silent, it prints nothing; with slow, it takes 2.5 s once the second broker is gone. ---
 cat >"${fake_bin_dir}/natsprobe" <<EOF
 #!/usr/bin/env bash
 control="${control_dir}"
 hub_state="${fake_bin_dir}/hub-state"
+tick="${fake_bin_dir}/tick"
 EOF
 cat >>"${fake_bin_dir}/natsprobe" <<'EOF'
 subject="" none=false
@@ -92,14 +130,17 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -e "$control/silent" ] && exit 1
-if [ -e "$control/slow" ] && ! kill -0 "$(cat "$control/second-broker")" 2>/dev/null; then
-  sleep 2.5
+state="$("$hub_state")"
+if [ -e "$control/slow" ] && [ "$state" != alive ]; then
+  "$tick" 2500
+  state="$("$hub_state")"
 fi
-if [ "$("$hub_state")" = listed ]; then
-  sleep 0.2
+if [ "$state" = listed ]; then
+  "$tick" 2000
   echo "not admitted: Authorization Violation"
   exit 4
 fi
+"$tick" 50
 if [ "$none" = true ] || [ "${AGENT_SECRETS_URL:-}" != "$(cat "$control/stack-broker")" ]; then
   echo "not admitted: Authorization Violation"
   exit 4
@@ -117,13 +158,16 @@ chmod +x "${fake_bin_dir}/natsprobe"
 # --- Fake curl: the hub's connection list, naming Dispatch's and the listener's service users and
 # one envoy-broker-callout connection for each broker the hub lists (two, or one with one-broker,
 # and one fewer once the killed broker's is dropped); nothing with no-connections; and no answer
-# at all once the second broker is gone with connz-down-after-kill. ---
+# at all once the second broker is gone with connz-down-after-kill. Each read takes 20 ms of the
+# fake clock, the interval callout-check.sh polls the list at, answered or not. ---
 cat >"${fake_bin_dir}/curl" <<EOF
 #!/usr/bin/env bash
 control="${control_dir}"
 hub_state="${fake_bin_dir}/hub-state"
+tick="${fake_bin_dir}/tick"
 EOF
 cat >>"${fake_bin_dir}/curl" <<'EOF'
+"$tick" 20
 if [ -e "$control/no-connections" ]; then
   echo '{"connections": []}'
   exit 0
@@ -145,15 +189,19 @@ chmod +x "${fake_bin_dir}/curl"
 printf '%s' "$stack_broker" >"${control_dir}/stack-broker"
 : >"${temporary_dir}/exchange-token"
 
+# fail ends the test, printing the last check's whole output after the reason, so a red run in CI
+# says which line failed and how.
 fail() {
   echo "FAIL: $*" >&2
+  if [ -n "${output:-}" ]; then
+    printf 'the check printed:\n%s\n' "$output" >&2
+  fi
   exit 1
 }
 
-# run_check runs the check against the fakes, with the control files named, after a fresh second
-# broker stand-in (the last one ended first, since a case can leave it running) and a watcher that
-# writes the time the stand-in died, which the fake hub's drop is counted from; it sets output and
-# status.
+# run_check runs the check against the fakes, with the control files named and the fake clock at a
+# time of day, after a fresh second broker stand-in (the last one ended first, since a case can
+# leave it running); it sets output and status.
 output=""
 status=0
 run_check() {
@@ -168,6 +216,7 @@ run_check() {
     : >"${control_dir}/${name}"
   done
   printf '300' >"${control_dir}/drop-ms"
+  printf '1700000000000' >"${control_dir}/clock"
   if [ -n "$broker_stand_in" ] && kill -0 "$broker_stand_in" 2>/dev/null; then
     kill "$broker_stand_in" 2>/dev/null || true
   fi
@@ -175,11 +224,6 @@ run_check() {
   broker_stand_in=$!
   disown "$broker_stand_in"
   printf '%s' "$broker_stand_in" >"${control_dir}/second-broker"
-  (
-    while kill -0 "$broker_stand_in" 2>/dev/null; do sleep 0.01; done
-    date +%s%3N >"${control_dir}/dead-at.${broker_stand_in}"
-  ) >/dev/null 2>&1 &
-  disown "$!"
   status=0
   output="$(env PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
     DEV_STACK_CALLOUT=1 \
@@ -213,7 +257,7 @@ line6="$(line 6)"
   fail "line 6 has the hub drop the killed broker's connection after ${BASH_REMATCH[1]} ms and its slowest session at ${BASH_REMATCH[2]} ms: the fake hub keeps that connection for 300 ms, so the check did not wait for the drop, or did not count the first session from the kill"
 [ "$(line 7)" = "all 6 assertions passed" ] && [ "$status" -eq 0 ] || fail "want 'all 6 assertions passed' and exit 0, got exit $status:
 $output"
-! kill -0 "$broker_stand_in" 2>/dev/null || fail "the check did not kill the second broker $broker_stand_in"
+[ "$("${fake_bin_dir}/hub-state")" != alive ] || fail "the check did not kill the second broker $broker_stand_in"
 echo "PASS: a hub that answers as the auth service does passes all six lines, the second broker is killed, and no session is opened before the hub drops its connection"
 
 # (b) The negative control: a service that grants every session's delivery channel.
@@ -270,5 +314,5 @@ run_check one-broker
 [ "$(line 6)" = "UNKNOWN one broker killed and a new session admitted within 2 s: the hub lists 1 connection named envoy-broker-callout before the kill, not one for each of the two brokers" ] ||
   fail "one auth service connection before the kill: line 6 is '$(line 6)'"
 [ "$status" -eq 1 ] || fail "one auth service connection before the kill: exit $status"
-kill -0 "$broker_stand_in" 2>/dev/null || fail "with one auth service connection listed the check killed the second broker anyway"
+[ "$("${fake_bin_dir}/hub-state")" = alive ] || fail "with one auth service connection listed the check killed the second broker anyway"
 echo "PASS: a hub listing one auth service connection before the kill reads UNKNOWN on line 6, and nothing is killed"
