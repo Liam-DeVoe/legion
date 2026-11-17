@@ -51,15 +51,16 @@ func TestTheSaveNamesTheWorkingCopyOfEachTask(t *testing.T) {
 
 // The pod that replaces the released one puts each task's working copy back beside the issue's
 // own before any role starts: at the directory TaskDir names, a workspace of the pod's clone on
-// the commit the save named, holding its agent's edit, its git worktree entry locked as
-// provisioning locks one, and named in the restore's notice. The issue's own working copy is
-// restored as it always was.
+// the commit the save named, holding its agent's edit, its git worktree entry locked by the
+// restore as provisioning locks one, and named in the restore's notice. The issue's own working
+// copy is restored as it always was.
 func TestTheRestorePutsEachTasksWorkingCopyBack(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	f := newTaskBundleFixture(t)
 	saved := f.bundleWorkspaceOne()
 
 	ws := f.secondPod("ws2")
+	jjLeavesAddsUnlocked(t)
 	notice := f.restoreInto(ws, saved, 1)
 	f.requireRestored(ws, saved)
 	f.requireTasksRestored(ws, saved, notice)
@@ -100,6 +101,7 @@ func TestARestoreThroughTheStorePutsBackEachWorkingCopyTheSaveNamed(t *testing.T
 			}
 
 			ws := f.secondPod("ws2")
+			jjLeavesAddsUnlocked(t)
 			notice := f.restoreInto(ws, taken.Wire(), 1)
 			f.requireRestored(ws, answered)
 			if tc.tasks {
@@ -143,7 +145,8 @@ func newTaskBundleFixture(t *testing.T) *bundleFixture {
 
 // requireTasksRestored fails the test unless each task's working copy of saved is back beside
 // the issue's working copy ws, on its saved commit, with its edit, its git worktree entry locked,
-// and its branch named in the restore's notice.
+// and its branch named in the restore's notice. The restore it reads ran behind
+// jjLeavesAddsUnlocked, so the lock is the restore's own.
 func (f *bundleFixture) requireTasksRestored(ws string, saved shimwire.WorkspaceBundle, notice string) {
 	f.t.Helper()
 	worktrees := f.run(ws, "git", "--git-dir="+f.gitDir(ws), "worktree", "list", "--porcelain")
@@ -176,6 +179,35 @@ func lockedWorktree(porcelain, dir string) bool {
 		}
 	}
 	return false
+}
+
+// jjLeavesAddsUnlocked puts a jj first on the process's PATH, where the restore looks its jj up
+// (workspace.RunCommand), that runs the jj after it and then unlocks the git worktree entry of the
+// workspace each `jj workspace add` made. A jj build or wrapper can lock that entry on add, and the
+// restore's own lock (workspace.LockGitWorktree) keeps a lock it finds, so behind such a jj a
+// working copy reads as locked whether the restore locked it or not. Behind this one, a lock the
+// row reads after the restore is the restore's own. A failed unlock fails the add, and with it the
+// put-back of that working copy, which the row reads too.
+func jjLeavesAddsUnlocked(t *testing.T) {
+	t.Helper()
+	path := os.Getenv("PATH")
+	if strings.Contains(path, "'") {
+		t.Fatalf("PATH=%s holds a quote the stand-in jj cannot carry", path)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"PATH='" + path + "' jj \"$@\" || exit\n" +
+		"case \" $* \" in *\" workspace add \"*) ;; *) exit 0 ;; esac\n" +
+		"for added; do :; done\n" +
+		"[ -f \"$added/.git\" ] || exit 0\n" +
+		"out=$(PATH='" + path + "' git -C \"$added\" worktree unlock \"$added\" 2>&1) && exit 0\n" +
+		"case \"$out\" in *\"is not locked\"*) exit 0 ;; esac\n" +
+		"echo \"$out\" >&2\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "jj"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(filepath.ListSeparator)+path)
 }
 
 // taskDir is the directory of the working copy of the task whose branch is branch, beside the
