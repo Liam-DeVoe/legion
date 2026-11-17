@@ -95,32 +95,18 @@ func stepRecordsMigrationNames(t *testing.T) []string {
 	return names
 }
 
-// stepRecordsWayBackOfTheHeader is the block the roll forward's header carries, from its first
-// statement to the mark, without the comment markers. A header with no such block stops the test:
-// an empty block would compare equal to nothing at all.
+// stepRecordsWayBackOfTheHeader is the block the roll forward's header carries, read by the one
+// reader of it (migrations.WayBack) that internal/store's test runs, so the text held to the guide
+// is the text that test runs. A header with no such block stops the test, and so does a block that
+// does not open with stepRecordsWayBackFirst: the guide's block is read from that line on.
 func stepRecordsWayBackOfTheHeader(t *testing.T) string {
 	t.Helper()
-	all, err := migrations.All()
+	block, err := migrations.WayBack(stepRecordsRollForward)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back of the step records' roll forward: %v", err)
 	}
-	for _, migration := range all {
-		if migration.Version != stepRecordsRollForward {
-			continue
-		}
-		var block []string
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			statement, comment := strings.CutPrefix(line, "-- ")
-			if !comment || block == nil && statement != stepRecordsWayBackFirst {
-				continue
-			}
-			block = append(block, statement)
-			if statement == stepRecordsWayBackMark {
-				return strings.Join(block, "\n")
-			}
-		}
-		t.Fatalf("%s carries no way back from %q to %q", migration.Name, stepRecordsWayBackFirst, stepRecordsWayBackMark)
+	if first, _, _ := strings.Cut(block, "\n"); first != stepRecordsWayBackFirst {
+		t.Fatalf("the way back of migration %d opens %q, want %q", stepRecordsRollForward, first, stepRecordsWayBackFirst)
 	}
-	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
-	return ""
+	return block
 }
