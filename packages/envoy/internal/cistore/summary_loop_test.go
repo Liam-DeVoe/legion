@@ -261,11 +261,15 @@ func TestAStaleClaimIsReclaimedWithNoOtherChange(t *testing.T) {
 	if at := published()[0]; at < stale {
 		t.Fatalf("the record settled at %d, while its claim was fresh until %d", at, stale)
 	}
+	// The loop publishes the settlement before its write that marks the record settled and
+	// clears the claim lands, so the row waits for that write rather than reading the record as
+	// the publish leaves it.
+	settled := testwait.Until(t, "the record to read settled with no claim", func() (State, bool) {
+		state := getState(t, store, owner, repo, number, sha)
+		return state, state.SettledEmitted && state.Claim == nil
+	})
 	if got := pub.count(); got != 1 {
-		t.Fatalf("the record published %d settlements, want 1", got)
-	}
-	if settled := getState(t, store, owner, repo, number, sha); !settled.SettledEmitted || settled.Claim != nil {
-		t.Fatalf("final state = %+v, want settled with no claim", settled)
+		t.Fatalf("the record published %d settlements, want 1; final state = %+v", got, settled)
 	}
 }
 
