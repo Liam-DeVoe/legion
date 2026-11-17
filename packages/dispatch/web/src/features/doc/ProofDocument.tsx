@@ -1147,11 +1147,13 @@ export function ProofDocument({
           socket that is not connected shows nothing: its reconnect's admission decides. */}
       {schemaReadOnly && !isClosed && connection === "connected" ? <p>Reload to edit.</p> : null}
       {/* The Open-decisions navigator walks the page's own document; a pane leaves it to the
-          list beside it. */}
+          list beside it. Inside `NoTooltips` no title gives back what an ellipsis cut, and the
+          question is a value, so it breaks anywhere and the row grows to hold it (decision 104 of
+          dispatch://INFRA-1196/artifact/part-decisions-md). */}
       {page && version === undefined && openDecision !== undefined ? (
         <nav
           aria-label="Open decisions"
-          className="flex min-h-11 items-center gap-2 md:h-7 md:min-h-0"
+          className={`flex min-h-11 items-center gap-2 ${tooltips ? "md:h-7 md:min-h-0" : "md:min-h-7"}`}
         >
           <span
             className={`inline-flex h-6 shrink-0 items-center rounded-full px-2 text-xs font-semibold ${countChip}`}
@@ -1172,7 +1174,7 @@ export function ProofDocument({
           >
             {(question) => (
               <a
-                className={`block min-w-0 max-w-[90ch] truncate text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
                 href={blockFragment(openDecision.block_id ?? "")}
                 onClick={(event) => {
                   event.preventDefault();
@@ -1188,7 +1190,11 @@ export function ProofDocument({
                 title={tooltips ? (question ?? openDecision.question) : undefined}
               >
                 {/* The same load state: the reading list's `document-open-decision`. */}
-                <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+                {tooltips ? (
+                  <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+                ) : (
+                  (question ?? openDecision.question)
+                )}
               </a>
             )}
           </PlainText>

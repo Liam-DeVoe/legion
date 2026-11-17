@@ -95,46 +95,52 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, the outline's one line for an issue that holds nothing,
- *  and nothing else but what part L draws at the foot - the box to write in and the read mark -
- *  which its own rows read (`e2e/issue-page-l.e2e.ts`). */
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header that part P fills, which draws the key and the title, the view row that part D fills,
+ *  the outline's one line for an issue that holds nothing, and nothing else but what part L draws
+ *  at the foot - the box to write in and the read mark - which its own rows read
+ *  (`e2e/issue-page-l.e2e.ts`). */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), part I's outline draws its one line for an issue that holds nothing at
-  // the issue's own address, and each other slot drawn so far adds no text or control: a view's
-  // address (`/spec`) draws nothing in the body until part J fills it. Part L's box at the foot
-  // (`[data-testid="issue-composer"]`) and the read mark at the outline's end
-  // (`[data-outline-end]`) are left out of both counts.
+  // The part that fills a slot changes these two: part P fills the header
+  // (`[data-issue-header]`), part D the view row (`[data-filter-row]`), part I's outline draws
+  // its one line for an issue that holds nothing at the issue's own address, and each other slot
+  // drawn so far adds no text or control: a view's address (`/spec`) draws nothing in the body
+  // until part J fills it. Part L's box at the foot (`[data-testid="issue-composer"]`) and the
+  // read mark at the outline's end (`[data-outline-end]`) are left out of both counts.
+  const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
+  await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
   const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
-  const body = atIssue ? ` ${EMPTY_STATE_LINES.conversation}` : "";
+  const body = atIssue ? EMPTY_STATE_LINES.conversation : "";
   const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
   await expect
     .poll(
       () =>
         newPage.evaluate((root, left) => {
           let text = (root as HTMLElement).innerText;
-          for (const part of root.querySelectorAll<HTMLElement>(`[data-filter-row], ${left}`)) {
+          for (const part of root.querySelectorAll<HTMLElement>(
+            `[data-issue-header], [data-filter-row], ${left}`
+          )) {
             text = text.replace(part.innerText, " ");
           }
           return text.replace(/\s+/g, " ").trim();
         }, footSlot),
       { message: "the new page draws text outside its header and its view row" }
     )
-    .toBe(`${issue.key} ${issue.title}${body}`);
+    .toBe(body);
   const controls = "button, a, input, select, textarea";
   expect(
     (await newPage.locator(controls).count()) -
       (await newPage.locator(`:is(${footSlot}) :is(${controls})`).count()),
-    "the new page draws a control outside its view row"
-  ).toBe(await row.locator(controls).count());
+    "the new page draws a control outside its header and its view row"
+  ).toBe((await header.locator(controls).count()) + (await row.locator(controls).count()));
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

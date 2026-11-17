@@ -42,6 +42,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
@@ -454,10 +455,11 @@ export const NODE_ROW_LAYOUT = {
 
 /**
  * Brings the focused row inside the viewport and clear of the sticky identity block after every
- * move, by the one rule the whole page places a target with (R9, `identity-block.ts`), and again
- * whenever the row grows under it: a body draws more once it is open - the editor a reader puts
- * the caret in arrives on the row's stage after the row has the focus (`document-stage.tsx`) -
- * and the text would otherwise push its foot off the screen.
+ * move, by the one rule the whole page places a target with (R9, `identity-block.ts`), then below
+ * everything else that stays at the top of the screen above the rows (`belowWhatStays`); and
+ * again whenever the row grows under it: a body draws more once it is open - the editor a
+ * reader puts the caret in arrives on the row's stage after the row has the focus
+ * (`document-stage.tsx`) - and the text would otherwise push its foot off the screen.
  *
  * Except while a press inside the row is held. A press on an unfocused row focuses it on
  * mousedown, before the press ends, and a scroll then moves what the pointer went down on: the
@@ -498,7 +500,9 @@ export function useRowOnScreen(
     if (!focused || element === null) return;
     const place = () => {
       if (!placing.current) return;
-      if (!pressed.current) bringOnScreen(element);
+      if (pressed.current) return;
+      bringOnScreen(element);
+      belowWhatStays(element);
     };
     place();
     if (typeof ResizeObserver === "undefined") return;
@@ -507,6 +511,30 @@ export function useRowOnScreen(
     return () => grown.disconnect();
   }, [focused, row]);
   return press;
+}
+
+/** How far below what stays a row that lay under it is placed, as `bringOnScreen` places a
+ *  target below the band: enough that it does not sit flush against it. */
+const BELOW_WHAT_STAYS = 8;
+
+/**
+ * Scrolls `element`, which `bringOnScreen` has placed, down below everything that stays at the
+ * top of the screen above the rows where its top still lies under it (decision 113 of
+ * dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
+ * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
+ * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
+ * below, under a header that publishes no band, leaves the view row that stays over the row.
+ * Where the page sets no padding (`auto`), there is nothing more to clear.
+ *
+ * A row in Details' drawer is brought into the drawer's own scroll box, which stands over the
+ * page and nothing of the page's top covers, so it is left where `bringOnScreen` put it.
+ */
+function belowWhatStays(element: HTMLElement): void {
+  if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) return;
+  const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
+  if (!Number.isFinite(stays)) return;
+  const top = element.getBoundingClientRect().top;
+  if (top < stays) window.scrollBy({ top: top - stays - BELOW_WHAT_STAYS });
 }
 
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
@@ -801,16 +829,24 @@ export function NodeOptions({
             {answering ? (
               // Out of the tab order, as every control inside a row is: the line the press sets
               // draws the same options as its own chips, which the keyboard reaches (R9). A
-              // press leaves the focus where it is: focusing the row on mousedown opens its body,
-              // whose options' own words push every option below one that has them down, and
-              // the press would end on another option or on none.
+              // press leaves the focus where it is until it ends: focusing the row on mousedown
+              // opens its body, whose options' own words push every option below one that has
+              // them down, and the press would end on another option or on none. Once the press
+              // has picked, the focus goes to the row, which opens it: one press picks the option
+              // and opens the row it is drawn on (decision 120).
               <button
                 aria-pressed={picks.includes(option.label)}
                 className={`dispatch-inline-link ${pageRowOption} ${
                   node.waiting ? pageStateText.waiting : pageQuietText
                 }`}
                 data-pick-option={option.label}
-                onClick={() => writer.pick(node, option.label)}
+                onClick={(event) => {
+                  writer.pick(node, option.label);
+                  const row = event.currentTarget.closest<HTMLElement>("[data-node-row]");
+                  if (row !== null && !row.contains(document.activeElement)) {
+                    row.focus({ preventScroll: true });
+                  }
+                }}
                 onMouseDown={(event) => event.preventDefault()}
                 tabIndex={tabStops ? undefined : -1}
                 type="button"
@@ -1225,6 +1261,10 @@ export function KeepOpen({
       <button
         className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
         onClick={onPin}
+        // A press leaves the focus where it is, as the row's other press controls do: "Let
+        // close" on a row that does not hold the focus would take it, close the body under the
+        // pointer and drop the focus to the page (decision 141).
+        onMouseDown={(event) => event.preventDefault()}
         tabIndex={tabStops ? undefined : -1}
         type="button"
         {...pageChrome}

@@ -645,6 +645,7 @@ export const ANSWER_LINES = freeze({
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
+  saving_components: "Saving components…",
   saving_field: "Saving…",
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
@@ -798,10 +799,23 @@ export const CONTROL_LABELS = freeze({
   answer_chose: "you chose",
   /** What the line says while it is empty and answers a question. */
   answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
+  /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
+   *  the verification), as the names of that document's Approve and Request changes end with
+   *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
+   *  `actionsOn`): each name begins with its control's own words and says its document,
+   *  "Approve the spec", "Approve v5 of the spec", "Request changes to the verification"
+   *  (WCAG 2.5.3, decision 99 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+  approval_document_criteria: "the verification",
+  approval_document_decisions: "the decisions",
+  approval_document_spec: "the spec",
   /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
    *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`,
    *  dispatch://INFRA-1196 R19, R22). */
   approval_latest: "latest",
+  /** The words between Request changes, or a stale approval's Approve, and the document it
+   *  reviews, in those names: "Request changes to the spec", "Approve v5 of the spec". */
+  approval_request_changes_to: "to",
+  approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Changes the reader's own answer to a question, on its focused row: the line at the foot of

@@ -168,6 +168,12 @@ export function IssuePriorityLine({
   // is the issue's own or an ancestor's.
   const choices = rows.filter((row) => !advances.some((entry) => entry.id === row.id));
   const atCap = own.length >= MAX_ISSUE_ADVANCES;
+  // Inside `NoTooltips` nothing of the line keeps its width, in a row of Details (R4) and in the
+  // header alike: a priority's title and a refusal's reason are values, which keep `max-w-full`
+  // and break rather than push the line past its row (dispatch://INFRA-3935 R4 and R6, decision
+  // 104 of dispatch://INFRA-1196/artifact/part-decisions-md). Outside, each part stays whole, as
+  // on `main`.
+  const wraps = page !== null;
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -178,7 +184,7 @@ export function IssuePriorityLine({
 
   return (
     <div
-      className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
+      className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2 text-sm ${page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText}`}
       data-testid={inDetails ? undefined : "issue-advances"}
     >
       {advances.length === 0 || inDetails ? null : (
@@ -190,13 +196,13 @@ export function IssuePriorityLine({
         const label = labels.get(entry.id) ?? entry.id;
         return (
           <span
-            className={`flex ${inDetails ? "min-w-0" : "shrink-0"} items-center gap-1`}
+            className={`flex ${wraps ? "min-w-0" : "shrink-0"} items-center gap-1`}
             key={entry.id}
           >
-            {/* In a row of Details the priority's title wraps inside the panel rather than
+            {/* Inside `NoTooltips` the priority's title wraps inside its line rather than
                 widening it (dispatch://INFRA-1196 R17); its words are the person's who wrote it. */}
             <Link
-              className={`dispatch-inline-link ${inDetails ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
+              className={`dispatch-inline-link ${wraps ? "min-w-0 break-words" : "shrink-0 whitespace-nowrap"} underline ${page === null ? `${linkText} ${linkHoverText}` : pageInkText}`}
               title={tooltips ? label : undefined}
               to={priorityPath(entry.id)}
               {...page?.authorText}
@@ -223,7 +229,7 @@ export function IssuePriorityLine({
         );
       })}
       {atCap ? (
-        <span className={`${inDetails ? "" : "shrink-0 "}text-xs ${quiet}`} {...page?.pageChrome}>
+        <span className={`${wraps ? "" : "shrink-0 "}text-xs ${quiet}`} {...page?.pageChrome}>
           {page === null ? (
             <>An issue advances at most {MAX_ISSUE_ADVANCES} priorities.</>
           ) : (
@@ -232,7 +238,7 @@ export function IssuePriorityLine({
         </span>
       ) : adding ? (
         <form
-          className={`flex ${inDetails ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
+          className={`flex ${wraps ? "min-w-0 flex-wrap" : "shrink-0"} items-center gap-2`}
           onKeyDown={(event) => {
             if (event.key !== "Escape") return;
             // Escape closes this form and goes no further. The panel the line sits in closes on
@@ -313,7 +319,7 @@ export function IssuePriorityLine({
       )}
       {priorities.isError ? (
         <span
-          className={`${inDetails ? "" : "shrink-0 "}text-xs ${failed}`}
+          className={`${wraps ? "" : "shrink-0 "}text-xs ${failed}`}
           role="alert"
           {...page?.pageChrome}
         >
@@ -322,7 +328,7 @@ export function IssuePriorityLine({
       ) : null}
       {write.error === null ? null : (
         <span
-          className={`${inDetails ? "" : "shrink-0 "}text-xs ${failed}`}
+          className={`${wraps ? "max-w-full [overflow-wrap:anywhere] " : "shrink-0 "}text-xs ${failed}`}
           role="alert"
           {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
         >

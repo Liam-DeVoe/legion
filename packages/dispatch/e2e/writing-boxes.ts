@@ -8,7 +8,7 @@ import {
 import { expect, type Locator, type Page } from "@playwright/test";
 
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { type FakeSession, setLiveSessions } from "./agents";
+import { type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
   createAsk,
   createComment,
@@ -16,6 +16,7 @@ import {
   createIssueArtifact,
   createMessage,
   createProject,
+  getComment,
   putArchitectureSource,
   syncArchitectureSource,
 } from "./api";
@@ -33,6 +34,11 @@ import { sessionIds } from "./session-ids";
  * the line under the box says what a pick does on its write (`hintWords`). One `test()` per
  * covered box, driven from `DISPATCH_WRITING_BOXES`, so a box the list gains with no row of its
  * own, and a row for a box the list no longer holds, are both visible.
+ *
+ * A box whose write delivers is held to its delivery as well (INFRA-1702's
+ * `c-delivery-unchanged`): the party picked in it reaches the write, and the fake Envoy listener
+ * takes one frame for that party, carrying the body the box held, once the box's own send control
+ * is pressed (`expectDeliveryClaim`). The driver of each box hands that control in.
  *
  * The rows the picker finds are the world's own, and the query that finds them (`QUERY`) is a
  * word no party, person or component holds: so every box lists the same three rows whatever it
@@ -65,6 +71,9 @@ export const SESSION: FakeSession = {
   session_id: sessionIds.planner,
   title: "Zephyr bot",
 };
+
+/** What a pick of `SESSION` writes into a box: the link that names the session. */
+export const SESSION_MENTION = `[@${SESSION.title}](dispatch://agent/${SESSION.session_id})`;
 
 /** The agent writes of this world, which are never the reader's own. */
 const AGENT = { actor: { id: SESSION.session_id, kind: "session" as const }, as: "agent" as const };
@@ -340,16 +349,125 @@ async function expectCaretPick(field: Locator, world: BoxWorld): Promise<void> {
   await field.fill("");
 }
 
-/** What a box says it does with a picked party, which is its row's own `delivers`: a box that
- *  delivers lists the party under the field, and one that does not lists nobody. The claim is
+/** The words a delivering box's draft holds after the party picked in it, so the frame its send
+ *  makes is read against the whole body the box held, not the mention alone. */
+const DELIVERED_WORDS = " can you take a look?";
+
+/** Presses a box's own send control: the button the box draws, which its driver names. */
+export type SendBox = () => Promise<void>;
+
+/** The mode a plain write delivers in to the world's session: Send, since the session
+ *  advertises it (`delivery.ts`'s `plainDelivery`, and the server's own default for a write that
+ *  names none, `comment_create.go`). */
+const PLAIN_MODE = "steer";
+
+/** What the fake listener took, read as the three facts a delivery claim is about: who it went
+ *  to, the body it carried, and the mode its frame names (`delivery.mode` of the payload the
+ *  comment's delivery wrote, `comment_delivery.go`). */
+async function framesSince(
+  before: number
+): Promise<{ message: unknown; mode: unknown; target_session: unknown }[]> {
+  return (await getSentMessages()).slice(before).map((sent) => {
+    const payload = typeof sent.payload === "string" ? JSON.parse(sent.payload) : undefined;
+    return {
+      message: sent.message,
+      mode: payload?.delivery?.mode,
+      target_session: sent.target_session,
+    };
+  });
+}
+
+/** The rows of the list the running test's driver has held: a row whose write delivers once its
+ *  send made its one frame (`expectSend`), every other row once its box was seen to tell nobody
+ *  (`expectDeliveryClaim`) or, for a box that draws no party list, once its driver read what its
+ *  write does (`heldRow`). Each box's test compares them with that box's covered rows of the list
+ *  once its driver is done, so a row the list gains that no driver holds fails, and so does a
+ *  delivering row whose hint alone a driver checks. The set is the worker's, so each test starts
+ *  it afresh (`startHolding`). */
+const held = new Set<string>();
+
+/** Empties the record of held rows, for a test about to drive a box. */
+export function startHolding(): void {
+  held.clear();
+}
+
+/** The rows held since `startHolding`, as `<box>/<write>`, sorted. */
+export function heldRows(): string[] {
+  return [...held].sort();
+}
+
+/** Holds a row of a box that draws no party list, whose driver reads what its write does itself:
+ *  the document body, whose pick is read in the document's stored text. A row whose write
+ *  delivers is held only by the frame its send makes, so this refuses one. */
+export function heldRow(box: DispatchWritingBox, write: DispatchWriting): void {
+  if (dispatchWritingBox(box, write).delivers) {
+    throw new Error(`${box} writing ${write} delivers, so only the frame its send makes holds it`);
+  }
+  held.add(`${box}/${write}`);
+}
+
+/** The comment a frame of the fake listener's delivers, from the `delivery.comment_id` of its
+ *  payload (`comment_delivery.go`). */
+function commentOfFrame(sent: Record<string, unknown> | undefined): string {
+  const payload = typeof sent?.payload === "string" ? JSON.parse(sent.payload) : undefined;
+  const id = payload?.delivery?.comment_id;
+  if (typeof id !== "string") throw new Error(`a frame names no comment: ${JSON.stringify(sent)}`);
+  return id;
+}
+
+/** Sends a delivering box's write with `send`, its own control, and holds the send to exactly one
+ *  frame: for the session picked, carrying `body`, in `PLAIN_MODE`. The first poll waits for that
+ *  frame. The server sends after it has answered the write, so the comment the frame names is
+ *  then read until its one delivery has settled as `sent` (`CommentDelivery.State`), and only
+ *  then are the frames read once more: a duplicate that lands after the first frame fails too,
+ *  which a poll that passes the moment one frame is there would let through. */
+export async function expectSend(
+  box: DispatchWritingBox,
+  write: DispatchWriting,
+  body: string,
+  send: SendBox
+): Promise<void> {
+  const one = [{ message: body, mode: PLAIN_MODE, target_session: SESSION.session_id }];
+  const message = `${box} writing ${write}: the frames its send made`;
+  const before = (await getSentMessages()).length;
+  await send();
+  await expect.poll(() => framesSince(before), { message }).toEqual(one);
+  const comment = commentOfFrame((await getSentMessages())[before]);
+  const settled = async () =>
+    ((await getComment(comment)).comment.deliveries ?? []).map((sent) => sent.state);
+  await expect
+    .poll(settled, {
+      message: `${box} writing ${write}: how comment ${comment}'s delivery settled`,
+    })
+    .toEqual(["sent"]);
+  expect(await framesSince(before), `${message}, read again once its delivery settled`).toEqual(
+    one
+  );
+  held.add(`${box}/${write}`);
+}
+
+/** What a box does with a picked party, which is its row's own `delivers`. A box that does not
+ *  deliver lists nobody under the field. A box that delivers lists the party there, and its own
+ *  send then reaches that party: the fake Envoy listener takes one frame, for the session picked,
+ *  carrying the body the box held (a comment's frame carries its body as `message`), in the mode
+ *  the composer's own rule gives for the session's capabilities (`PLAIN_MODE`). The claim is
  *  driven rather than read, because a row that promises a delivery no reader of the write makes
  *  is exactly what misleads the writer: the suggestion Replacement box said a picked party was
- *  told while neither reader of a comment reads `suggestion.replace_with`. */
+ *  told while neither reader of a comment reads `suggestion.replace_with`. So a delivering row
+ *  needs `send`, and a delivering row the list gains with a driver that hands none fails here
+ *  rather than passing unsent. A delivering box's send may close it, so the box is left as the
+ *  send leaves it, and its driver goes on from there. A row is held once its claim is checked
+ *  (`heldRows`). */
 export async function expectDeliveryClaim(
   field: Locator,
   box: DispatchWritingBox,
-  write: DispatchWriting
+  write: DispatchWriting,
+  send?: SendBox
 ): Promise<void> {
+  const sends = dispatchWritingBox(box, write).delivers ? send : null;
+  if (sends === undefined) {
+    throw new Error(`${box} writing ${write} delivers, and its driver passes no send to prove it`);
+  }
   const page = field.page();
   await keyboardOnly(field);
   await field.fill("");
@@ -358,12 +476,18 @@ export async function expectDeliveryClaim(
   await expect.poll(() => pickerRows(list)).toEqual(DOOR_ROWS["@"]);
   await field.press("Enter");
   const targets = page.getByRole("list", { name: "Mention targets" });
-  if (dispatchWritingBox(box, write).delivers) {
-    await expect(targets).toHaveText(`session:${SESSION.session_id}`);
-  } else {
+  if (sends === null) {
     await expect(targets).toHaveCount(0);
+    await field.fill("");
+    held.add(`${box}/${write}`);
+    return;
   }
-  await field.fill("");
+  await expect(targets).toHaveText(`session:${SESSION.session_id}`);
+  await field.press("End");
+  await field.pressSequentially(DELIVERED_WORDS);
+  const body = `${SESSION_MENTION}${DELIVERED_WORDS}`;
+  await expect(field).toHaveValue(body);
+  await expectSend(box, write, body, sends);
 }
 
 /** Everything the box itself is held to, which is every claim but the hint: the three doors,

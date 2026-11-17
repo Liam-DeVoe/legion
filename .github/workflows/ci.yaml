@@ -3313,14 +3313,14 @@ jobs:
       # race lane filters are here, and so is envoy_client, which the first step had no room for
       # once main's new test files grew its generated blocks, and so is private_names_port, whose
       # generated block names every migration test of the daemon's store and grows with each one
-      # main adds. They share no group with a filter of the other steps but ci_router,
-      # go_workspace, bun_install and legion_command, which this string writes again. Seven more
-      # filters moved here when main's growth and the spec-check filters took the second string
-      # to 98,525 bytes, past the margin: broker_multiprocess, airlock_lean, envoy_smoke,
-      # worker_image, ci_filters, tool_fallback and ci_images, which need no group but ci_router
-      # and go_workspace. With them here, each of the three strings had 21,000 bytes or more of
-      # room to rule 18's margin again. dispatch_references is here too, since neither of the
-      # other two strings has the room; it names no group.
+      # main adds. dispatch_references is here too, since neither of the other two strings has
+      # the room, and it names no group. The others share no group with a filter of the other
+      # steps but ci_router, go_workspace, bun_install and legion_command, which this string
+      # writes again. Seven more filters moved here when main's growth and the spec-check filters
+      # took the second string to 98,525 bytes, past the margin: broker_multiprocess,
+      # airlock_lean, envoy_smoke, worker_image, ci_filters, tool_fallback and ci_images, which
+      # need no group but ci_router and go_workspace. With them here, each of the three strings
+      # had 21,000 bytes or more of room to rule 18's margin again.
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter3
         if: github.event_name != 'workflow_dispatch'
