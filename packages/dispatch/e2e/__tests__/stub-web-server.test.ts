@@ -21,10 +21,14 @@
  *  `--pass-with-no-tests`: the hooks still run, so the server starts and stops, and no browser
  *  starts. That run is a bounded child of the `short` bound: it starts no browser and no stack,
  *  and it reads about three seconds. The server serves a directory of this test's own
- *  (`DISPATCH_E2E_STUB_DIST`), so the rows need no build of `web/dist`. */
+ *  (`DISPATCH_E2E_STUB_DIST`), so the rows need no build of `web/dist`. Each run writes its
+ *  output in a directory of its own (`--output`), because Playwright clears a run's output
+ *  directory at its start: the config's own, e2e/test-results, is in the tree that the listing of
+ *  every other file of this directory walks, and `bun test --parallel` runs those listings beside
+ *  this file, so a listing that met the directory as a run removed it failed with `ENOENT`. */
 
 import { afterAll, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,36 +58,49 @@ interface Run {
 }
 
 /** A run of the config with `projects` that runs no row. `env` is all the environment it gets on
- *  top of `HOME` and `PATH`, so a variable of the machine's cannot change what it does. */
+ *  top of `HOME` and `PATH`, so a variable of the machine's cannot change what it does. The run
+ *  writes its output in a directory of its own, which it must hold `.last-run.json` in after. */
 async function runOf(projects: readonly string[], env: Record<string, string> = {}): Promise<Run> {
-  const { code, named, stderr, stdout } = await runBounded({
-    argv: [
-      "bunx",
-      "playwright",
-      "test",
-      "--config",
-      "e2e/playwright.config.ts",
-      ...projects.map((project) => `--project=${project}`),
-      "--grep",
-      "a title no row of this suite holds, 5d4c0a",
-      "--pass-with-no-tests",
-    ],
-    bound: "short",
-    cwd: dispatchPackage,
-    env: {
-      DISPATCH_E2E_STUB_DIST: dist,
-      HOME: process.env.HOME ?? "",
-      PATH: process.env.PATH ?? "",
-      ...env,
-    },
-    from: import.meta.url,
-  });
-  const output = `${named}\n${stdout}${stderr}`;
-  const served = [...output.matchAll(listening)].map((match) => ({
-    dist: match[2].trim(),
-    port: Number(match[1]),
-  }));
-  return { code, output, served };
+  const outputDir = mkdtempSync(join(tmpdir(), "stub-web-server-output-"));
+  try {
+    const { code, named, stderr, stdout } = await runBounded({
+      argv: [
+        "bunx",
+        "playwright",
+        "test",
+        "--config",
+        "e2e/playwright.config.ts",
+        ...projects.map((project) => `--project=${project}`),
+        "--grep",
+        "a title no row of this suite holds, 5d4c0a",
+        "--pass-with-no-tests",
+        "--output",
+        outputDir,
+      ],
+      bound: "short",
+      cwd: dispatchPackage,
+      env: {
+        DISPATCH_E2E_STUB_DIST: dist,
+        HOME: process.env.HOME ?? "",
+        PATH: process.env.PATH ?? "",
+        ...env,
+      },
+      from: import.meta.url,
+    });
+    const output = `${named}\n${stdout}${stderr}`;
+    expect(
+      existsSync(join(outputDir, ".last-run.json")),
+      `the run wrote no .last-run.json in its own output directory ${outputDir}, so it wrote ` +
+        `its output where a listing of another file may be walking:\n${output}`
+    ).toBe(true);
+    const served = [...output.matchAll(listening)].map((match) => ({
+      dist: match[2].trim(),
+      port: Number(match[1]),
+    }));
+    return { code, output, served };
+  } finally {
+    rmSync(outputDir, { force: true, recursive: true });
+  }
 }
 
 /** Asserts that a run of the stubbed layer passed with one static file server, which served this
