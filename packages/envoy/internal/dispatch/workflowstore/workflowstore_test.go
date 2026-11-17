@@ -533,13 +533,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 			return
 		}
 		defer second.Rollback(ctx)
-		var pid uint32
-		if err := second.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
-			backend <- 0
-			answered <- err
-			return
-		}
-		backend <- pid
+		backend <- second.Conn().PgConn().PID()
 		if _, err := PutStep(ctx, second, end(ResultPassed, minute(2)), daemon, minute(2)); err != nil {
 			answered <- err
 			return
