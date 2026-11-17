@@ -140,7 +140,7 @@ test("the Legion phases are each column id of the board route's contract, and no
     components: { schemas: { LegionBoardColumn: { properties: { id: { enum: string[] } } } } };
   };
   const columns = contract.components.schemas.LegionBoardColumn.properties.id.enum;
-  expect(LEGION_PHASES.map(({ id }) => id).sort()).toEqual([...columns].sort());
+  expect(LEGION_PHASES.map(({ id }): string => id).sort()).toEqual([...columns].sort());
 });
 
 test("the time in a phase and the work time read in minutes, hours and minutes, then days", () => {

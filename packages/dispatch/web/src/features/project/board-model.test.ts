@@ -405,7 +405,7 @@ test("by Legion phase only a move within Queue is taken, and every other drop is
     change: { input: { rank: { after: "CORE-2" } } },
     position: { at: 2, of: 2 },
   });
-  const refused = { kind: "refused", text: DAEMON_SETS_PHASE };
+  const refused = { kind: "refused", text: DAEMON_SETS_PHASE } as const;
   expect(
     planMove(phases, rules, "CORE-3", { column: "implementing", lane: undefined, index: 1 })
   ).toEqual(refused);
