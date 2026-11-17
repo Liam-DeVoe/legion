@@ -33,7 +33,7 @@ import { agentRoleWord } from "./agent-role";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
-import { bringOnScreen, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import { bringOnScreen } from "./identity-block";
 import {
   drawnLine,
   firstLineOf,
@@ -514,10 +514,6 @@ export function useRowOnScreen(
   return press;
 }
 
-/** The view row's height while it stays at the top of the screen, which `slots/view-row.tsx`
- *  publishes on the document element under this name, and `0px` while it scrolls away. */
-const VIEW_ROW_HEIGHT_PROPERTY = "--issue-view-row-height";
-
 /** How far below what stays a row that lay under it is placed, as `bringOnScreen` places a
  *  target below the band: enough that it does not sit flush against it. */
 const BELOW_WHAT_STAYS = 8;
@@ -526,24 +522,18 @@ const BELOW_WHAT_STAYS = 8;
  * Scrolls `element`, which `bringOnScreen` has placed, down below everything that stays at the
  * top of the screen above the rows where its top still lies under it (decision 113 of
  * dispatch://INFRA-1196/artifact/part-decisions-md, root R11). That height is the page's
- * `scroll-padding-top`, which `styles.css` makes the larger of the header's band
- * (`IDENTITY_HEIGHT_PROPERTY`) and the view row while it stays (`VIEW_ROW_HEIGHT_PROPERTY`), so
- * this reads the same two properties. `bringOnScreen` clears the band, so only a view row taller
- * than the band leaves more to clear: at 760 px and below, where the view row stays, under a
- * header that publishes no band.
+ * `scroll-padding-top`, which `styles.css` keeps equal to it, so this reads the padding itself
+ * and no height of its own. `bringOnScreen` clears the header's band alone, which at 760 px and
+ * below, under a header that publishes no band, leaves the view row that stays over the row.
+ * Where the page sets no padding (`auto`), there is nothing more to clear.
  *
  * A row in Details' drawer is brought into the drawer's own scroll box, which stands over the
  * page and nothing of the page's top covers, so it is left where `bringOnScreen` put it.
  */
 function belowWhatStays(element: HTMLElement): void {
   if (element.closest(`aside[${DETAILS_ATTRIBUTE}]`) !== null) return;
-  const published = getComputedStyle(document.documentElement);
-  const height = (property: string) => {
-    const value = Number.parseFloat(published.getPropertyValue(property));
-    return Number.isFinite(value) ? value : 0;
-  };
-  const stays = height(VIEW_ROW_HEIGHT_PROPERTY);
-  if (stays <= height(IDENTITY_HEIGHT_PROPERTY)) return;
+  const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
+  if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
   if (top < stays) window.scrollBy({ top: top - stays - BELOW_WHAT_STAYS });
 }
@@ -1264,6 +1254,10 @@ export function KeepOpen({
       <button
         className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
         onClick={onPin}
+        // A press leaves the focus where it is, as the row's other press controls do: "Let
+        // close" on a row that does not hold the focus would take it, close the body under the
+        // pointer and drop the focus to the page (decision 141).
+        onMouseDown={(event) => event.preventDefault()}
         tabIndex={tabStops ? undefined : -1}
         type="button"
         {...pageChrome}
