@@ -54,8 +54,10 @@
 #      command would read in place of the workflow's, which this check holds;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
-#   5. a path go names for either line that an exclude of that line's paths drops, or a path
-#      written with any other pathspec magic, which this check cannot read;
+#   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
+#      inside a package directory go names (a file of the package, an embedded file among them);
+#      an exclude holding a wildcard, which git matches by its own glob rules and this check does
+#      not; or a path written with any other pathspec magic, which this check cannot read;
 #   6. a go command that fails, a package of this repository that go list cannot load, or a
 #      listing that does not name the program it lists, since what that program links is then
 #      unknown and a listing of nothing would pass everything.
@@ -135,6 +137,8 @@ HEAD = [
 ]
 # git's exclude magic, long and short: `:(exclude)X`, `:!X` and `:^X`.
 EXCLUDE = re.compile(r":(?:\(exclude\)|!|\^)(.+)")
+# What git reads as a glob in a pathspec (its wildmatch: `*`, `?`, a `[` class, a `\` escape).
+WILDCARD = re.compile(r"[*?\[\\]")
 REPO = Path.cwd().resolve()
 problems = []
 
@@ -193,7 +197,8 @@ def env_of(path, doc):
 
 def pathspecs(path, doc, key):
     """The paths after `--` in the workflow env's `key`: the plain ones, and each exclude as
-    (its text, the path it drops). Any other magic is refused."""
+    (its text, the path it drops). An exclude holding a wildcard, which git matches with its own
+    glob rules, and any other magic are refused."""
     value = env_of(path, doc).get(key)
     if not isinstance(value, str):
         fatal(f"{path}'s workflow env: holds no {key} string", path)
@@ -204,7 +209,11 @@ def pathspecs(path, doc, key):
     for word in words[words.index("--") + 1:]:
         if not word.startswith(":"):
             plain.append(word)
-        elif match := EXCLUDE.fullmatch(word):
+        elif (match := EXCLUDE.fullmatch(word)) and WILDCARD.search(match.group(1)):
+            problem(f"{key} names `{word}`, an exclude with a wildcard, which git matches by its own glob "
+                    f"rules and this check does not: it cannot say which path the exclude drops; name the "
+                    f"paths it means instead", path)
+        elif match:
             excludes.append((word, match.group(1)))
         else:
             problem(f"{key} names `{word}`, a pathspec with magic this check cannot read: it reads "
@@ -283,11 +292,17 @@ def named(go, listings):
 
 
 def refuse_excluded(path, key, excludes, found):
+    """Rule 5: an exclude that drops a path go names, or that drops something inside a package
+    directory go names, one of that package's files or its embedded ones among them."""
     for path_named, label in sorted(found.items()):
         for spec, dropped in excludes:
             if covers(dropped, path_named):
                 problem(f"{key}'s `{spec}` drops {path_named}, which go names for {label}, from every release "
                         f"whatever else names it; narrow the exclude", path)
+            elif path_named.endswith("/") and covers(path_named, dropped):
+                problem(f"{key}'s `{spec}` drops {dropped.rstrip('/')}, inside {path_named}, a package directory "
+                        f"go names for {label}, from every release whatever else names it; a change there can "
+                        f"change the binary, so drop the exclude", path)
 
 
 def expansion(name):
