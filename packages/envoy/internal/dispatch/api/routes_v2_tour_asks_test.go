@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 )
 
@@ -203,5 +204,181 @@ func TestTheAskListOfASourceAnswersItsQuestionMap(t *testing.T) {
 	malformed := tour.send(t, route, tourRequest{Query: url.Values{"source": {"issue:" + issue.Key}}, As: alice}, "")
 	if code, _ := refusalOf(t, malformed); malformed.Code != http.StatusBadRequest || code != "INVALID_QUERY" {
 		t.Fatalf("a source of no source kind: %d %s, want 400 INVALID_QUERY", malformed.Code, malformed.Body.String())
+	}
+}
+
+// TestAV2AskWhoseAnswerCannotBeReadOpensNothing: both /api/v2 ask creates read the ask row they
+// answer on the write's own transaction before it commits (openAsk's readBack), so a read that
+// fails rolls the ask back - answered 500, with no ask stored - and a retry under the same
+// Idempotency-Key opens the ask once. A trigger makes the read fail: it leaves each new ask with
+// no actor for its author, which no read the write makes before its answer decodes, as the
+// /api/v1 create, which reads nothing back, shows.
+func TestAV2AskWhoseAnswerCannotBeReadOpensNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	document := createProjectDocument(t, handler, "CORE", "Design notes", "# Design notes\n")
+	stored := func(t *testing.T, question string) int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from asks where question = $1`, question).Scan(&count); err != nil {
+			t.Fatalf("count the asks of %q: %v", question, err)
+		}
+		return count
+	}
+	creates := []struct{ name, route, question, key string }{
+		{"the issue's ask", "/api/v2/issues/" + issue.Key + "/asks", "Which way does the issue go?", uuid.NewString()},
+		{"the document's ask", "/api/v2/artifacts/" + document.ID + "/asks", "Which way does the design go?", uuid.NewString()},
+	}
+	seedExec(t, database, "a trigger leaving a new ask's author unreadable", `
+		create function dispatch_test_unreadable_ask_author() returns trigger language plpgsql as $$
+		begin
+			update asks set author = '[]'::jsonb where id = new.id;
+			return null;
+		end $$;
+		create trigger dispatch_test_unreadable_ask_author after insert on asks
+		for each row execute function dispatch_test_unreadable_ask_author();`)
+	for _, create := range creates {
+		failed := keyedRequest(t, handler, http.MethodPost, create.route, map[string]any{"question": create.question}, "alice", create.key)
+		if failed.Code != http.StatusInternalServerError {
+			t.Fatalf("%s, whose answer cannot be read: %d %s, want 500", create.name, failed.Code, failed.Body.String())
+		}
+		if count := stored(t, create.question); count != 0 {
+			t.Fatalf("%s failed and left %d asks, want none", create.name, count)
+		}
+	}
+	control := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
+		map[string]any{"question": "Which way does the control go?"}, "alice")
+	if control.Code != http.StatusCreated {
+		t.Fatalf("the /api/v1 create, which reads nothing back, under the same trigger: %d %s, want 201", control.Code, control.Body.String())
+	}
+
+	seedExec(t, database, "the trigger dropped", `drop trigger dispatch_test_unreadable_ask_author on asks`)
+	for _, create := range creates {
+		retried := keyedRequest(t, handler, http.MethodPost, create.route, map[string]any{"question": create.question}, "alice", create.key)
+		if retried.Code != http.StatusCreated || retried.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
+			t.Fatalf("the retry of %s under its key: %d (replayed %q) %s, want the ask opened afresh, 201", create.name,
+				retried.Code, retried.Header().Get(contracts.IdempotencyReplayedHeader), retried.Body.String())
+		}
+		if count := stored(t, create.question); count != 1 {
+			t.Fatalf("the retry of %s left %d asks, want one", create.name, count)
+		}
+	}
+}
+
+// TestAV2AskStateWriteWhoseAnswerCannotBeReadChangesNothing: PUT /api/v2/asks/{id}/state reads the
+// ask it answers on the transition's transaction before it commits (writtenAskV2), so a read that
+// fails rolls the transition back - answered 500, the ask open still and no ask.resolved event
+// appended - and a retry under the same Idempotency-Key resolves it once. A trigger makes the read
+// fail: once an ask's row is updated it leaves its options no option, which no read the transition
+// makes before its answer decodes, as the /api/v1 resolve, which reads nothing back, shows.
+func TestAV2AskStateWriteWhoseAnswerCannotBeReadChangesNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	open := func(t *testing.T, question string) string {
+		t.Helper()
+		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{"question": question}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("open %q: %d %s", question, created.Code, created.Body.String())
+		}
+		return decodeBody[struct {
+			ID string `json:"id"`
+		}](t, created).ID
+	}
+	asked, control := open(t, "Which way does the issue go?"), open(t, "Which way does the control go?")
+	held := func(t *testing.T) (state string, resolutions int) {
+		t.Helper()
+		if err := database.Pool.QueryRow(t.Context(), `
+			select (select state from asks where id = $1),
+			       (select count(*) from events where issue_key = $2 and type = 'ask.resolved')
+		`, asked, issue.Key).Scan(&state, &resolutions); err != nil {
+			t.Fatalf("read the ask's state and the issue's resolutions: %v", err)
+		}
+		return state, resolutions
+	}
+	seedExec(t, database, "a trigger leaving an updated ask's options unreadable", `
+		create function dispatch_test_unreadable_ask_options() returns trigger language plpgsql as $$
+		begin
+			if new.options <> '[1]'::jsonb then
+				update asks set options = '[1]'::jsonb where id = new.id;
+			end if;
+			return null;
+		end $$;
+		create trigger dispatch_test_unreadable_ask_options after update on asks
+		for each row execute function dispatch_test_unreadable_ask_options();`)
+	resolve := map[string]any{"state": "resolved", "reason": "Settled on the issue."}
+	key := uuid.NewString()
+	route := "/api/v2/asks/" + asked + "/state"
+	if failed := keyedRequest(t, handler, http.MethodPut, route, resolve, "alice", key); failed.Code != http.StatusInternalServerError {
+		t.Fatalf("the state write whose answer cannot be read: %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if state, resolutions := held(t); state != "open" || resolutions != 0 {
+		t.Fatalf("the failed state write left the ask %s and the issue %d ask.resolved events, want open and none", state, resolutions)
+	}
+	if resolved := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+control+"/resolve",
+		map[string]any{"kind": "resolved", "reason": "Settled on the issue."}, "alice"); resolved.Code != http.StatusOK {
+		t.Fatalf("the /api/v1 resolve, which reads nothing back, under the same trigger: %d %s, want 200", resolved.Code, resolved.Body.String())
+	}
+
+	seedExec(t, database, "the trigger dropped", `drop trigger dispatch_test_unreadable_ask_options on asks`)
+	retried := keyedRequest(t, handler, http.MethodPut, route, resolve, "alice", key)
+	if retried.Code != http.StatusOK || retried.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
+		t.Fatalf("the retry under the failed write's key: %d (replayed %q) %s, want the ask resolved afresh, 200",
+			retried.Code, retried.Header().Get(contracts.IdempotencyReplayedHeader), retried.Body.String())
+	}
+	if state, resolutions := held(t); state != "resolved" || resolutions != 2 {
+		t.Fatalf("the retry left the ask %s and the issue %d ask.resolved events, want resolved and two (the control's and its own)", state, resolutions)
+	}
+}
+
+// TestAV2ApprovalRequestWhoseAnswerCannotBeReadOpensNothing: POST
+// /api/v2/artifacts/{id}/approval-requests reads the ask it answers on the request's transaction
+// before it commits (writtenAskV2), so a read that fails rolls the request back - answered 500,
+// no approval request opened - and a retry under the same Idempotency-Key opens it once. A trigger
+// makes the read fail: it leaves each new ask's options no option, which no read the request makes
+// before its answer decodes, as the /api/v1 request, which reads nothing back, shows.
+func TestAV2ApprovalRequestWhoseAnswerCannotBeReadOpensNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "APPRF", "Request the spec's approval", "A spec the human approves.")
+	control := createInteractionIssue(t, handler, "APPRC", "Request the control's approval", "A spec the control asks about.")
+	requests := func(t *testing.T, key string) int {
+		t.Helper()
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from asks where issue_key = $1 and kind = 'approval'`, key).Scan(&count); err != nil {
+			t.Fatalf("count the approval requests of %s: %v", key, err)
+		}
+		return count
+	}
+	seedExec(t, database, "a trigger leaving a new ask's options unreadable", `
+		create function dispatch_test_unreadable_new_ask_options() returns trigger language plpgsql as $$
+		begin
+			update asks set options = '[1]'::jsonb where id = new.id;
+			return null;
+		end $$;
+		create trigger dispatch_test_unreadable_new_ask_options after insert on asks
+		for each row execute function dispatch_test_unreadable_new_ask_options();`)
+	body := map[string]any{"summary": "The spec as it stands."}
+	key := uuid.NewString()
+	route := "/api/v2/artifacts/" + issue.PrimaryArtifactID + "/approval-requests"
+	if failed := keyedRequest(t, handler, http.MethodPost, route, body, "alice", key); failed.Code != http.StatusInternalServerError {
+		t.Fatalf("the approval request whose answer cannot be read: %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if count := requests(t, issue.Key); count != 0 {
+		t.Fatalf("the failed approval request left %d approval asks, want none", count)
+	}
+	if requested := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+control.PrimaryArtifactID+"/approval-requests",
+		body, "alice"); requested.Code != http.StatusCreated {
+		t.Fatalf("the /api/v1 request, which reads nothing back, under the same trigger: %d %s, want 201", requested.Code, requested.Body.String())
+	}
+
+	seedExec(t, database, "the trigger dropped", `drop trigger dispatch_test_unreadable_new_ask_options on asks`)
+	retried := keyedRequest(t, handler, http.MethodPost, route, body, "alice", key)
+	if retried.Code != http.StatusCreated || retried.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
+		t.Fatalf("the retry under the failed request's key: %d (replayed %q) %s, want the request opened afresh, 201",
+			retried.Code, retried.Header().Get(contracts.IdempotencyReplayedHeader), retried.Body.String())
+	}
+	if count := requests(t, issue.Key); count != 1 {
+		t.Fatalf("the retry left %d approval asks, want one", count)
 	}
 }

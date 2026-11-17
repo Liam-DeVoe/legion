@@ -3,16 +3,22 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
+	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -484,8 +490,9 @@ func (tour *routeTour) unloadableDocument(t *testing.T) string {
 
 // sameDocumentRow reports what differs between a /api/v1 read of an artifact, v1 as that read
 // answers it, and the /api/v2 row of the same artifact: every member of v1 but versions, which the
-// /api/v2 row answers as latest_version, the number of the newest of them. members are the members
-// of v1 to compare, every one where nil.
+// /api/v2 row answers as latest_version, latest_version_at and latest_version_size, the number,
+// the time and the size of the newest of them, and version_count, how many they are. members are
+// the members of v1 to compare, every one where nil.
 func sameDocumentRow(t *testing.T, v1, v2 map[string]json.RawMessage, members []string) {
 	t.Helper()
 	var versions []model.Version
@@ -493,12 +500,23 @@ func sameDocumentRow(t *testing.T, v1, v2 map[string]json.RawMessage, members []
 		if err := json.Unmarshal(raw, &versions); err != nil {
 			t.Fatalf("read the /api/v1 versions: %v", err)
 		}
-		latest := 0
-		for _, version := range versions {
-			latest = max(latest, version.Number)
+		var newest *model.Version
+		for index := range versions {
+			if newest == nil || versions[index].Number > newest.Number {
+				newest = &versions[index]
+			}
 		}
-		if got := string(v2["latest_version"]); got != strconv.Itoa(latest) {
-			t.Errorf("the /api/v2 row's latest_version is %s, want %d, the newest of the /api/v1 read's versions", got, latest)
+		if newest == nil {
+			t.Fatalf("the /api/v1 read answers no version: %s", v1["versions"])
+		}
+		if got := string(v2["latest_version"]); got != strconv.Itoa(newest.Number) {
+			t.Errorf("the /api/v2 row's latest_version is %s, want %d, the newest of the /api/v1 read's versions", got, newest.Number)
+		}
+		facts := newestVersionFactsOf(t, v2)
+		if facts.At == nil || !facts.At.Equal(newest.CreatedAt) || !reflect.DeepEqual(facts.Size, newest.Size) || *facts.Count != len(versions) {
+			t.Errorf("the /api/v2 row says latest_version_at %s, latest_version_size %s and version_count %s; the /api/v1 read "+
+				"answers %d versions, the newest written at %s storing %v bytes", v2["latest_version_at"], v2["latest_version_size"],
+				v2["version_count"], len(versions), newest.CreatedAt, newest.Size)
 		}
 		if _, still := v2["versions"]; still {
 			t.Errorf("the /api/v2 row carries versions[], which GET /api/v2/artifacts/{id}/versions lists")
@@ -646,4 +664,269 @@ func TestEachV2ArtifactListAnswersTheDocumentItsV1SlugReadAnswers(t *testing.T) 
 			t.Fatalf("the file's version 1 by slug answered %q, and by id under /api/v2 %q", v1, v2)
 		}
 	})
+}
+
+// newestVersionFacts are what a /api/v2 artifact row says of the artifact's versions: the number,
+// the time and the size of the newest, and how many there are.
+type newestVersionFacts struct {
+	Number *int
+	At     *time.Time
+	Size   *int
+	Count  *int
+}
+
+// newestVersionFactsOf reads newestVersionFacts from row, failing where one of its members is
+// absent, since each is on every row (R6), or where version_count is null.
+func newestVersionFactsOf(t *testing.T, row map[string]json.RawMessage) newestVersionFacts {
+	t.Helper()
+	var facts newestVersionFacts
+	for member, into := range map[string]any{
+		"latest_version": &facts.Number, "latest_version_at": &facts.At, "latest_version_size": &facts.Size, "version_count": &facts.Count,
+	} {
+		raw, held := row[member]
+		if !held {
+			t.Fatalf("the row %s carries no %s", row["id"], member)
+		}
+		if err := json.Unmarshal(raw, into); err != nil {
+			t.Fatalf("read %s of the row %s: %v", member, row["id"], err)
+		}
+	}
+	if facts.Count == nil {
+		t.Fatalf("the row %s answers version_count null", row["id"])
+	}
+	return facts
+}
+
+// TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion: a reader shows an artifact's newest
+// version - its number, when it was written, its size - and how many versions it has from the row
+// alone, reading none of the versions. Each row of an issue's /api/v2 list carries them as
+// artifact_versions holds them: a document's second version, a file's bytes, a version that
+// records no size (its size null), and an artifact with no version at all (null, null, null and
+// 0), which the read by id and a document citing it (GET /api/v2/artifacts/{id}/references,
+// direction=out) answer alike. The upload of a version answers the row counting the version it
+// wrote, and a reference closure's member the facts the list answers of it.
+func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	artifacts := "/api/v1/issues/" + issue.Key + "/artifacts"
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md", "# Notes\n\nThe first draft.\n")
+	secondDraft := dispatchRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "notes.md", "content": "# Notes\n\nThe second draft, which says a good deal more than the first.\n",
+	}, "alice")
+	if secondDraft.Code != http.StatusCreated {
+		t.Fatalf("upload the second draft under /api/v2: %d %s", secondDraft.Code, secondDraft.Body.String())
+	}
+	uploaded := decodeBody[struct {
+		Artifact map[string]json.RawMessage `json:"artifact"`
+		Version  model.Version              `json:"version"`
+	}](t, secondDraft)
+	var notes string
+	if err := json.Unmarshal(uploaded.Artifact["id"], &notes); err != nil {
+		t.Fatalf("read the uploaded document's id: %v", err)
+	}
+	if facts := newestVersionFactsOf(t, uploaded.Artifact); uploaded.Version.Number != 2 || facts.Number == nil ||
+		*facts.Number != 2 || *facts.Count != 2 || facts.At == nil || !facts.At.Equal(uploaded.Version.CreatedAt) ||
+		!reflect.DeepEqual(facts.Size, uploaded.Version.Size) {
+		t.Fatalf("the upload of version %d answers the row %v, want it newest and the second", uploaded.Version.Number, uploaded.Artifact)
+	}
+	content := []byte("A log the issue keeps, its bytes counted.\n")
+	logged := multipartRequest(t, handler, artifacts, map[string]string{"name": "log.txt"}, "log.txt", "text/plain", content, "alice")
+	if logged.Code != http.StatusCreated {
+		t.Fatalf("upload the log: %d %s", logged.Code, logged.Body.String())
+	}
+	file := decodeBody[uploadedArtifact](t, logged).Artifact.ID
+	stored := func(slug string) string {
+		t.Helper()
+		var id string
+		if err := database.Pool.QueryRow(t.Context(), `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ($1, 'CORE', $2, $2, 'file', '{"kind":"human","id":"alice"}') returning id::text`, issue.Key, slug).Scan(&id); err != nil {
+			t.Fatalf("store the file %s: %v", slug, err)
+		}
+		return id
+	}
+	unsized, none := stored("unsized-bin"), stored("unversioned-bin")
+	seedExec(t, database, "a version that records no size", `insert into artifact_versions (artifact_id, number) values ($1, 1)`, unsized)
+
+	listed := decodeBody[page[map[string]json.RawMessage]](t, dispatchRequest(t, handler, http.MethodGet, "/api/v2/issues/"+issue.Key+"/artifacts", nil, "alice"))
+	rows := map[string]newestVersionFacts{}
+	for _, row := range listed.Items {
+		var id string
+		if err := json.Unmarshal(row["id"], &id); err != nil {
+			t.Fatalf("read a row's id: %v", err)
+		}
+		rows[id] = newestVersionFactsOf(t, row)
+		var count int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from artifact_versions where artifact_id = $1`, id).Scan(&count); err != nil {
+			t.Fatalf("count the versions of %s: %v", id, err)
+		}
+		var number *int
+		var at *time.Time
+		var size *int
+		err := database.Pool.QueryRow(t.Context(), `
+			select v.number, v.created_at, `+model.VersionSize+` from artifact_versions v
+			where v.artifact_id = $1 order by v.number desc limit 1`, id).Scan(&number, &at, &size)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("read the newest version of %s: %v", id, err)
+		}
+		facts := rows[id]
+		if !reflect.DeepEqual(facts.Number, number) || !reflect.DeepEqual(facts.Size, size) || *facts.Count != count ||
+			(facts.At == nil) != (at == nil) || (at != nil && !facts.At.Equal(*at)) {
+			t.Errorf("the row of %s says latest_version %s, latest_version_at %s, latest_version_size %s and version_count %s; "+
+				"artifact_versions holds %d, the newest %v written at %v storing %v bytes", id, row["latest_version"],
+				row["latest_version_at"], row["latest_version_size"], row["version_count"], count, number, at, size)
+		}
+	}
+	for id, want := range map[string]struct {
+		count int
+		sized bool
+	}{notes: {2, true}, file: {1, true}, unsized: {1, false}, none: {0, false}} {
+		facts, held := rows[id]
+		switch {
+		case !held:
+			t.Errorf("the issue's list holds no row of %s", id)
+		case *facts.Count != want.count || (facts.Number == nil) != (want.count == 0) || (facts.At == nil) != (want.count == 0) ||
+			(facts.Size != nil) != want.sized:
+			t.Errorf("the row of %s says %d versions, the newest %v at %v of %v bytes; want %d versions, a size %t",
+				id, *facts.Count, facts.Number, facts.At, facts.Size, want.count, want.sized)
+		}
+	}
+	if size := rows[file].Size; size == nil || *size != len(content) {
+		t.Errorf("the log's row says latest_version_size %v, want the %d bytes it stores", size, len(content))
+	}
+	read := decodeBody[map[string]json.RawMessage](t, dispatchRequest(t, handler, http.MethodGet, "/api/v2/artifacts/"+none, nil, "alice"))
+	if facts := newestVersionFactsOf(t, read); facts.Number != nil || facts.At != nil || facts.Size != nil || *facts.Count != 0 {
+		t.Errorf("GET /api/v2/artifacts/{id} of an artifact with no version answers %v, want null, null, null and 0", read)
+	}
+
+	// The citing issue is another project's, where no issue of the same title asks to be read first.
+	createReferenceAPIProject(t, handler, "OPS")
+	citing := createReferenceAPIIssue(t, handler, "OPS")
+	var slug string
+	if err := database.Pool.QueryRow(t.Context(), `select slug from artifacts where id = $1`, notes).Scan(&slug); err != nil {
+		t.Fatalf("read the document's slug: %v", err)
+	}
+	createReferenceAPIComment(t, handler, citing.Key, "dispatch://"+issue.Key+"/artifact/"+slug)
+	closure := decodeBody[page[struct {
+		Artifact map[string]json.RawMessage `json:"artifact"`
+	}]](t, dispatchRequest(t, handler, http.MethodGet, "/api/v2/issues/"+citing.Key+"/references", nil, "alice"))
+	if len(closure.Items) != 1 {
+		t.Fatalf("the citing issue's closure holds %d members, want the document", len(closure.Items))
+	}
+	member := closure.Items[0].Artifact
+	if facts := newestVersionFactsOf(t, member); !reflect.DeepEqual(facts.Number, rows[notes].Number) ||
+		!reflect.DeepEqual(facts.Size, rows[notes].Size) || *facts.Count != *rows[notes].Count || facts.At == nil ||
+		!facts.At.Equal(*rows[notes].At) {
+		t.Errorf("the closure's member says %v, and the issue's list %+v", member, rows[notes])
+	}
+	if _, still := member["versions"]; still {
+		t.Errorf("the closure's member carries versions[], which GET /api/v2/artifacts/{id}/versions lists")
+	}
+
+	// refs.Outgoing answers a cited artifact with no version as holding one numbered 0, which GET
+	// /api/v1/artifacts/{id}/references keeps answering; the /api/v2 row counts no version.
+	citation := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "citation.md",
+		"# Citation\n\nSee dispatch://"+issue.Key+"/artifact/unversioned-bin for the file.\n").Artifact.ID
+	out := decodeBody[page[struct {
+		Artifact map[string]json.RawMessage `json:"artifact"`
+	}]](t, dispatchRequest(t, handler, http.MethodGet, "/api/v2/artifacts/"+citation+"/references?direction=out", nil, "alice"))
+	var cited map[string]json.RawMessage
+	for _, item := range out.Items {
+		var id string
+		if json.Unmarshal(item.Artifact["id"], &id) == nil && id == none {
+			cited = item.Artifact
+		}
+	}
+	if cited == nil {
+		t.Fatalf("the citation's references answer %d items, none the artifact with no version", len(out.Items))
+	}
+	if facts := newestVersionFactsOf(t, cited); facts.Number != nil || facts.At != nil || facts.Size != nil || *facts.Count != 0 {
+		t.Errorf("the citation's reference to an artifact with no version answers %v, want null, null, null and 0", cited)
+	}
+	v1 := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+citation+"/references", nil, "alice"))
+	for _, edge := range v1.Outgoing {
+		if edge.Artifact != nil && edge.Artifact.ID == none && (len(edge.Artifact.Versions) != 1 || edge.Artifact.Versions[0].Number != 0) {
+			t.Errorf("the /api/v1 references answer the artifact with no version as %+v, where they answered one version numbered 0", edge.Artifact.Versions)
+		}
+	}
+}
+
+// TestAV2UploadWhoseAnswerCannotBeReadStoresNothing: a /api/v2 upload reads the row it answers on
+// its own transaction before it commits, so a read that fails rolls the upload back - answered
+// 500, with no version stored and no event appended - and a retry under the same Idempotency-Key
+// runs the upload afresh and stores the version once. A trigger makes the read fail: once a
+// version is written it leaves the artifact's row with no actor for its author, which no read the
+// upload makes before its answer decodes, as the /api/v1 upload, which reads nothing back, shows.
+func TestAV2UploadWhoseAnswerCannotBeReadStoresNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	v1Uploads := "/api/v1/issues/" + issue.Key + "/artifacts"
+	first := multipartRequest(t, handler, v1Uploads, map[string]string{"name": "log.txt"}, "log.txt", "text/plain", []byte("The log's first day.\n"), "alice")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("upload the log: %d %s", first.Code, first.Body.String())
+	}
+	log := decodeBody[uploadedArtifact](t, first).Artifact.ID
+	upload := func(t *testing.T, key string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, bodyType, err := apitest.MultipartUpload(map[string]string{"name": "log.txt"}, "log.txt", "text/plain", []byte("The log's second day.\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodPost, "/api/v2/issues/"+issue.Key+"/artifacts", body)
+		request.Header.Set("Content-Type", bodyType)
+		request.Header.Set("X-Dispatch-User", "alice")
+		request.Header.Set(contracts.IdempotencyKeyHeader, key)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	stored := func(t *testing.T) (versions, events int) {
+		t.Helper()
+		if err := database.Pool.QueryRow(t.Context(), `
+			select (select count(*) from artifact_versions where artifact_id = $1),
+			       (select count(*) from events where type = 'artifact.version' and payload->>'artifact_id' = $1::text)
+		`, log).Scan(&versions, &events); err != nil {
+			t.Fatalf("count the log's versions and version events: %v", err)
+		}
+		return versions, events
+	}
+	seedExec(t, database, "a trigger leaving the artifact's author unreadable once a version is written", `
+		create function dispatch_test_unreadable_author() returns trigger language plpgsql as $$
+		begin
+			update artifacts set created_by = '[]'::jsonb where id = new.artifact_id;
+			return null;
+		end $$;
+		create trigger dispatch_test_unreadable_author after insert on artifact_versions
+		for each row execute function dispatch_test_unreadable_author();`)
+
+	key := uuid.NewString()
+	if failed := upload(t, key); failed.Code != http.StatusInternalServerError {
+		t.Fatalf("the upload whose answer cannot be read: %d %s, want 500", failed.Code, failed.Body.String())
+	}
+	if versions, events := stored(t); versions != 1 || events != 0 {
+		t.Fatalf("the failed upload left the log %d versions and %d version events, want 1 and 0", versions, events)
+	}
+	if control := multipartRequest(t, handler, v1Uploads, map[string]string{"name": "other.txt"}, "other.txt", "text/plain",
+		[]byte("Another log.\n"), "alice"); control.Code != http.StatusCreated {
+		t.Fatalf("the /api/v1 upload, which reads nothing back, under the same trigger: %d %s, want 201", control.Code, control.Body.String())
+	}
+
+	seedExec(t, database, "the trigger dropped", `drop trigger dispatch_test_unreadable_author on artifact_versions`)
+	retried := upload(t, key)
+	if retried.Code != http.StatusCreated || retried.Header().Get(contracts.IdempotencyReplayedHeader) != "" {
+		t.Fatalf("the retry under the failed upload's key: %d (replayed %q) %s, want the upload run afresh, 201",
+			retried.Code, retried.Header().Get(contracts.IdempotencyReplayedHeader), retried.Body.String())
+	}
+	answered := decodeBody[struct {
+		Artifact map[string]json.RawMessage `json:"artifact"`
+		Version  model.Version              `json:"version"`
+	}](t, retried)
+	if facts := newestVersionFactsOf(t, answered.Artifact); answered.Version.Number != 2 || facts.Number == nil || *facts.Number != 2 || *facts.Count != 2 {
+		t.Fatalf("the retry answers version %d and the row %v, want the log's second version", answered.Version.Number, answered.Artifact)
+	}
+	if versions, events := stored(t); versions != 2 || events != 1 {
+		t.Fatalf("the retry left the log %d versions and %d version events, want 2 and 1", versions, events)
+	}
 }

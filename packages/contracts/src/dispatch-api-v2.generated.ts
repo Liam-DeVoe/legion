@@ -265,10 +265,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or <>"'`[]| is 400 INVALID_SESSION_ID. */
+    /** @description List the files and images of an agent's conversation, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug> keeps the one at ref_key agent/<session_id>/<slug>, as dispatch://agent/<session_id>/artifact/<slug> names it; a conversation holds no document, so no file name is matched. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. A session Dispatch holds no file of answers the empty list; a session_id that is empty or holds /, ?, #, whitespace, a control character or <>"'`[]| is 400 INVALID_SESSION_ID. */
     get: operations["getApiV2AgentsBySessionIdArtifacts"];
     put?: never;
-    /** @description Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact as /api/v1 writes it (with every version), for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. A conversation holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID. */
+    /** @description Upload a file or image to an agent's conversation: ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. A conversation holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE; a session_id that is no session id is 400 INVALID_SESSION_ID. */
     post: operations["postApiV2AgentsBySessionIdArtifacts"];
     delete?: never;
     options?: never;
@@ -301,7 +301,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Read one artifact, of any owner and any kind, as every list of artifacts answers it. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. 404 ARTIFACT_NOT_FOUND. */
+    /** @description Read one artifact, of any owner and any kind, as every list of artifacts answers it. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. 404 ARTIFACT_NOT_FOUND. */
     get: operations["getApiV2ArtifactsById"];
     put?: never;
     post?: never;
@@ -1061,10 +1061,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's documents, files and images, its spec among them, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or two where one document's file name is another's slug or two documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
+    /** @description List an issue's documents, files and images, its spec among them, oldest first. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or two where one document's file name is another's slug or two documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist. */
     get: operations["getApiV2IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact as /api/v1 writes it (with every version), for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one that does not exist, both answered before the body is read. */
+    /** @description Upload an issue document or file. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. The write's advice rides the answer. 409 ISSUE_CLOSED for a closed issue and 404 ISSUE_NOT_FOUND for one that does not exist, both answered before the body is read. */
     post: operations["postApiV2IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1271,7 +1271,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references, each member {artifact, depth, via}: a document in the closure with every version, its depth and the node it was reached via. versions=latest leaves each member's artifact.versions holding only its latest version; all, the default, every version. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, truncated}, truncated where the closure was cut at its bound. The answer carries an ETag, which moves with the issue's events, the members, their versions and the page; If-None-Match answers 304. 404 ISSUE_NOT_FOUND. */
+    /** @description The eight-hop closure of documents the issue's content references, each member {artifact, depth, via}: artifact the document's row (its own fields, latest_version, latest_version_at, latest_version_size and version_count, and no approval; its versions are GET /api/v2/artifacts/{id}/versions), its depth and the node it was reached via. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, truncated}, truncated where the closure was cut at its bound. The answer carries an ETag, which moves with the issue's events, each member's newest version and the page; If-None-Match answers 304. 404 ISSUE_NOT_FOUND. */
     get: operations["getApiV2IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -1841,10 +1841,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a project's documents, files and images, oldest first: its own and every one of its issues' but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or two where one document's file name is another's slug or two documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description List a project's documents, files and images, oldest first: its own and every one of its issues' but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each null for an artifact with no version, and the size null for a version that records none), version_count, how many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are GET /api/v2/artifacts/{id}/versions. slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact file name, as dispatch://<owner>/artifact/<slug> names one: one row, or two where one document's file name is another's slug or two documents share a file name. include=text adds to each document its canonical markdown, its whole-document token, its version, the newest version whose stored markdown is that markdown, and unsettled, false there; unsettled is true when the markdown answered equals no stored version's markdown: the document holds edits no version holds yet, or its newest version was rendered by an older build; version is then the newest version, not the version of this text (unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither. limit 1 to 200 (default 50) and offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV2ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact as /api/v1 writes it (with every version), for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    /** @description Upload a project document or file, which no issue holds; its events are its own. JSON {name, content?, summary?, actor?} stores a markdown document, or multipart with a file part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB. 404 PROJECT_NOT_FOUND for a project that does not exist. */
     post: operations["postApiV2ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2481,39 +2481,6 @@ export interface components {
       retired_links: number;
       unassigned: number;
     };
-    Artifact: {
-      approval?: components["schemas"]["ArtifactApproval"];
-      /** Format: date-time */
-      created_at: string;
-      created_by: components["schemas"]["Actor"];
-      id: string;
-      issue_key: null | string;
-      kind: string;
-      name: string;
-      primary: boolean;
-      project: string;
-      ref_key: string;
-      role?: string;
-      session_id: null | string;
-      slug: string;
-      versions: components["schemas"]["Version"][] | null;
-    };
-    ArtifactApproval: {
-      ask_id?: string;
-      at?: string;
-      by?: components["schemas"]["Actor"];
-      content_sha256?: string;
-      content_sha256_source?: string;
-      documents?: components["schemas"]["AskApprovalDocument"][];
-      kind?: string;
-      latest_version: number;
-      reason?: string;
-      requested_by?: components["schemas"]["Actor"];
-      seq?: number;
-      state: string;
-      version?: number;
-      waiting_on?: string;
-    };
     ArtifactApprovalWithTrees: {
       ask_id?: string;
       at?: string;
@@ -2608,18 +2575,18 @@ export interface components {
       state: string;
       version?: null | number;
     };
-    ArtifactUploadResponse: {
-      artifact: components["schemas"]["Artifact"];
+    ArtifactUploadV2: {
+      artifact: components["schemas"]["ArtifactV2"];
       version: components["schemas"]["Version"];
     };
-    ArtifactUploadResponseWithDocumentWriteAdvice: {
+    ArtifactUploadV2WithDocumentWriteAdvice: {
       advice?: components["schemas"]["DocumentWriteAdvice"];
-      artifact: components["schemas"]["Artifact"];
+      artifact: components["schemas"]["ArtifactV2"];
       version: components["schemas"]["Version"];
     };
-    ArtifactUploadResponseWithWriteAdviceOrDocumentWriteAdvice: {
+    ArtifactUploadV2WithWriteAdviceOrDocumentWriteAdvice: {
       advice?: components["schemas"]["WriteAdvice"] | components["schemas"]["DocumentWriteAdvice"];
-      artifact: components["schemas"]["Artifact"];
+      artifact: components["schemas"]["ArtifactV2"];
       version: components["schemas"]["Version"];
     };
     ArtifactV2: {
@@ -2632,6 +2599,9 @@ export interface components {
       issue_key: null | string;
       kind: string;
       latest_version: null | number;
+      /** Format: date-time */
+      latest_version_at: null | string;
+      latest_version_size: null | number;
       markdown?: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       markdown_tree?: {
@@ -2649,6 +2619,7 @@ export interface components {
       token?: string;
       unsettled: null | boolean;
       version?: number;
+      version_count: number;
     };
     ArtifactVersionText: {
       authors: components["schemas"]["Actor"][] | null;
@@ -4426,7 +4397,7 @@ export interface components {
       verification_artifact_id: string;
     };
     IssueReferencesV2: {
-      items: components["schemas"]["ReferenceMember"][] | null;
+      items: components["schemas"]["ReferenceMemberV2"][] | null;
       limit: number;
       offset: number;
       total: number;
@@ -5373,8 +5344,8 @@ export interface components {
       session: components["schemas"]["CredentialSession"];
       state: string;
     };
-    ReferenceMember: {
-      artifact: components["schemas"]["Artifact"];
+    ReferenceMemberV2: {
+      artifact: components["schemas"]["ArtifactV2"];
       depth: number;
       via: components["schemas"]["ReferenceVia"];
     };
@@ -6541,7 +6512,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactUploadResponse"];
+          "application/json": components["schemas"]["ArtifactUploadV2"];
         };
       };
       /** @description Bad Request */
@@ -9482,7 +9453,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactUploadResponseWithWriteAdviceOrDocumentWriteAdvice"];
+          "application/json": components["schemas"]["ArtifactUploadV2WithWriteAdviceOrDocumentWriteAdvice"];
         };
       };
       /** @description Bad Request */
@@ -10328,7 +10299,6 @@ export interface operations {
       query?: {
         limit?: number;
         offset?: number;
-        versions?: "all" | "latest";
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12430,7 +12400,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactUploadResponseWithDocumentWriteAdvice"];
+          "application/json": components["schemas"]["ArtifactUploadV2WithDocumentWriteAdvice"];
         };
       };
       /** @description Bad Request */
@@ -13469,8 +13439,6 @@ export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"]
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
-export type Artifact = components["schemas"]["Artifact"];
-export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
 export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
@@ -13478,11 +13446,11 @@ export type ArtifactReferenceV2 = components["schemas"]["ArtifactReferenceV2"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
 export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
 export type ArtifactReviewV2Input = components["schemas"]["ArtifactReviewV2Input"];
-export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
-export type ArtifactUploadResponseWithDocumentWriteAdvice =
-  components["schemas"]["ArtifactUploadResponseWithDocumentWriteAdvice"];
-export type ArtifactUploadResponseWithWriteAdviceOrDocumentWriteAdvice =
-  components["schemas"]["ArtifactUploadResponseWithWriteAdviceOrDocumentWriteAdvice"];
+export type ArtifactUploadV2 = components["schemas"]["ArtifactUploadV2"];
+export type ArtifactUploadV2WithDocumentWriteAdvice =
+  components["schemas"]["ArtifactUploadV2WithDocumentWriteAdvice"];
+export type ArtifactUploadV2WithWriteAdviceOrDocumentWriteAdvice =
+  components["schemas"]["ArtifactUploadV2WithWriteAdviceOrDocumentWriteAdvice"];
 export type ArtifactV2 = components["schemas"]["ArtifactV2"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];
 export type AskAnchorArtifact = components["schemas"]["AskAnchorArtifact"];
@@ -13774,7 +13742,7 @@ export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInp
 export type RecordDecisionResp = components["schemas"]["RecordDecisionResp"];
 export type RecordEnrollmentResp = components["schemas"]["RecordEnrollmentResp"];
 export type RecordResponse = components["schemas"]["RecordResponse"];
-export type ReferenceMember = components["schemas"]["ReferenceMember"];
+export type ReferenceMemberV2 = components["schemas"]["ReferenceMemberV2"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencesV2 = components["schemas"]["ReferencesV2"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];

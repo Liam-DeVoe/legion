@@ -45,8 +45,10 @@ var (
 // artifactRowText is what every description of a route answering artifacts says of the row.
 const artifactRowText = "Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, " +
 	"name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest " +
-	"version, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; its versions are " +
-	"GET /api/v2/artifacts/{id}/versions."
+	"version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each " +
+	"null for an artifact with no version, and the size null for a version that records none), version_count, how " +
+	"many versions it holds, and a document's approval {state, latest_version, version, by, at, reason, ask_id, ...}; " +
+	"its versions are GET /api/v2/artifacts/{id}/versions."
 
 // artifactIncludeText is what every description of a read of documents says include= adds.
 const artifactIncludeText = "include=text adds to each document its canonical markdown, its whole-document token, " +
@@ -67,10 +69,12 @@ const artifactUploadText = "JSON {name, content?, summary?, actor?} stores a mar
 	"part and the fields name, summary and actor stores the file: a text/markdown file is a document, any other an " +
 	"image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are, and otherwise a file " +
 	"under its declared type. An upload under a name or slug the owner already holds is that artifact's next version. " +
-	"Answers 201 {artifact, version}, artifact as /api/v1 writes it (with every version), for a new artifact and for a " +
-	"new version alike. 400 ARTIFACT_INPUT (primary given, content beside a file, no JSON or multipart body, blank " +
-	"content under an existing document's name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, " +
-	"no file, a new name or key over 2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB."
+	"Answers 201 {artifact, version}, artifact the artifact's row as it stands once the upload is stored (its own " +
+	"fields, latest_version, latest_version_at, latest_version_size, version_count and a document's approval) and " +
+	"version the version the upload wrote, for a new artifact and for a new version alike. 400 ARTIFACT_INPUT " +
+	"(primary given, content beside a file, no JSON or multipart body, blank content under an existing document's " +
+	"name), ARTIFACT_KIND_MISMATCH, ARTIFACT_ROLE_NAME, INVALID_ARTIFACT (no name, no file, a new name or key over " +
+	"2692 bytes), 413 CAP_EXCEEDED past 25 MB or a markdown document past 1 MiB."
 
 // v2DocumentRows are the document routes (plan t7): rows 5; 4; 9; 10, 15 and 29; 11; 12; 13; 14; 16;
 // 18; 19; 20, 89 and 161; 22; 23; 24; 25; 26 and 32; 27; 28; 30, 91 and 164; 6, 31, 92 and 165; 85,
@@ -103,7 +107,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Handler:  s.uploadAgentArtifactV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Body:  requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
-			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadResponse{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}},
 			Scope: scopeSession, SessionPath: "session_id",
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal},
 		},
@@ -474,7 +478,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			// An issue document whose issue advice could not be read carries the document half
 			// alone (storeArtifact, the withRawAdvice arm).
 			Shape: routeShape{
-				Status: http.StatusCreated, Response: artifactUploadResponse{}, Advice: writeAdvice{},
+				Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: writeAdvice{},
 				OtherAdvice: []any{documentWriteAdvice{}},
 			},
 			Scope: scopeProject, ProjectOf: projectPathIssue,
@@ -503,7 +507,7 @@ func (s *server) v2DocumentRows() []routeRow {
 			Body: requestBody{Kind: bodyUpload, Type: jsonArtifactUpload{}},
 			// A project document has no issue state to report, so its write advice is the document
 			// half alone (storeArtifact, the withRawAdvice arm).
-			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadResponse{}, Advice: documentWriteAdvice{}},
+			Shape: routeShape{Status: http.StatusCreated, Response: artifactUploadV2{}, Advice: documentWriteAdvice{}},
 			Scope: scopeProject, ProjectOf: projectPathProject,
 			Refusals: []apicode.Refusal{undeclaredKeyRefusal, projectMissingRefusal},
 		},
@@ -511,11 +515,11 @@ func (s *server) v2DocumentRows() []routeRow {
 }
 
 // artifactV2 is one artifact as every /api/v2 read and list of artifacts answers it (the route
-// map's J2): the artifact's own fields, the number of its newest version in place of the versions
-// themselves, which GET /api/v2/artifacts/{id}/versions lists, and a document's approval; it is
-// the row GET /api/v1/projects/{key}/artifacts/{slug}/summary answered, and more. include= adds a
-// document's text and blocks (J1). It is a type of its own, so no /api/v1 shape's tags change
-// (decision 2).
+// map's J2): the artifact's own fields, what a reader shows of its versions - the number, the time
+// and the size of its newest and how many there are - in place of the versions themselves, which
+// GET /api/v2/artifacts/{id}/versions lists, and a document's approval; it is the row GET
+// /api/v1/projects/{key}/artifacts/{slug}/summary answered, and more. include= adds a document's
+// text and blocks (J1). It is a type of its own, so no /api/v1 shape's tags change (decision 2).
 type artifactV2 struct {
 	ID        string      `json:"id"`
 	IssueKey  *string     `json:"issue_key"`
@@ -529,8 +533,15 @@ type artifactV2 struct {
 	Role      string      `json:"role,omitempty"`
 	CreatedBy model.Actor `json:"created_by"`
 	CreatedAt time.Time   `json:"created_at"`
-	// LatestVersion is the number of the artifact's newest version, null for one with none.
-	LatestVersion *int `json:"latest_version"`
+	// LatestVersion, LatestVersionAt and LatestVersionSize are the number of the artifact's newest
+	// version, when it was written and how many bytes it stores (model.Version's Size), each null
+	// for an artifact with none and the size null for a version that records none; VersionCount
+	// is how many versions it holds. Each is on every row, the three pointers with no omitempty, so
+	// a list shows them without a read of each artifact's versions.
+	LatestVersion     *int       `json:"latest_version"`
+	LatestVersionAt   *time.Time `json:"latest_version_at"`
+	LatestVersionSize *int       `json:"latest_version_size"`
+	VersionCount      int        `json:"version_count"`
 	// Approval is a document's approval as of its latest version; absent for a file or an image.
 	Approval *artifactApprovalRead `json:"approval,omitempty"`
 	// Markdown, Token and Version are a document's canonical markdown, its whole-document token
@@ -565,16 +576,19 @@ func artifactIncludeOf(include []string) artifactV2Include {
 }
 
 // newArtifactV2 is artifact as a row, read with its versions and its approval
-// (loadArtifactDetails).
+// (loadArtifactDetails): every version is read already, in one statement for every artifact of
+// the read, so the facts of the newest and the count read no more.
 func newArtifactV2(artifact model.Artifact) artifactV2 {
 	row := artifactV2{
 		ID: artifact.ID, IssueKey: artifact.IssueKey, Project: artifact.Project, SessionID: artifact.SessionID,
 		RefKey: artifact.RefKey, Slug: artifact.Slug, Name: artifact.Name, Kind: artifact.Kind,
 		Primary: artifact.Primary, Role: artifact.Role, CreatedBy: artifact.CreatedBy, CreatedAt: artifact.CreatedAt,
+		VersionCount: len(artifact.Versions),
 	}
-	for _, version := range artifact.Versions {
+	for index := range artifact.Versions {
+		version := &artifact.Versions[index]
 		if row.LatestVersion == nil || version.Number > *row.LatestVersion {
-			row.LatestVersion = &version.Number
+			row.LatestVersion, row.LatestVersionAt, row.LatestVersionSize = &version.Number, &version.CreatedAt, version.Size
 		}
 	}
 	if artifact.Approval != nil {
@@ -842,12 +856,14 @@ func (s *server) renameArtifactV2(w http.ResponseWriter, r *http.Request) {
 
 // requestArtifactApprovalV2 answers POST /api/v2/artifacts/{id}/approval-requests: the request POST
 // /api/v1/artifacts/{id}/approval-requests makes (requestApproval), answered with the ask as every
-// /api/v2 write of one answers it (askV2), so the request's ask carries its opened_event_id (R6).
+// /api/v2 write of one answers it (askV2), read on the write's transaction (writtenAskV2), so the
+// request's ask carries its opened_event_id (R6).
 func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireArtifactV2(w, r, r.PathValue("id")) {
 		return
 	}
-	status, answer, answered := s.requestApproval(w, r, v2Body[approvalRequestInput](r))
+	written := &writtenAskV2{server: s}
+	status, answer, answered := s.requestApproval(w, r, v2Body[approvalRequestInput](r), written.readBack)
 	if !answered {
 		return
 	}
@@ -856,7 +872,7 @@ func (s *server) requestArtifactApprovalV2(w http.ResponseWriter, r *http.Reques
 		Coverage: answer.Coverage, CoverageUnread: answer.CoverageUnread,
 	}
 	if answer.Ask != nil {
-		ask, err := s.readWrittenAskV2(r.Context(), r, answer.Ask.ID)
+		ask, err := written.answer(r)
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -925,8 +941,8 @@ func (s *server) listArtifactAsksV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // createArtifactAskV2 answers POST /api/v2/artifacts/{id}/asks: the ask POST
-// /api/v1/artifacts/{id}/asks opens (openAsk), answered as the ask row with the write's advice
-// beside it.
+// /api/v1/artifacts/{id}/asks opens (openAsk), answered as the ask row, read on the write's
+// transaction (writtenAskV2), with the write's advice beside it.
 func (s *server) createArtifactAskV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -935,11 +951,12 @@ func (s *server) createArtifactAskV2(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ask, advice, suggestions, ok := s.openAsk(w, r, owner, v2Body[createAskInput](r))
+	written := &writtenAskV2{server: s}
+	_, advice, suggestions, ok := s.openAsk(w, r, owner, v2Body[createAskInput](r), written.readBack)
 	if !ok {
 		return
 	}
-	row, err := s.readWrittenAskV2(r.Context(), r, ask.ID)
+	row, err := written.answer(r)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -1126,7 +1143,7 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 		for index, edge := range outgoing {
 			items[index] = artifactReferenceV2{Kind: edge.Kind, ToID: edge.ToID}
 			if edge.Artifact != nil {
-				cited := newArtifactV2(*edge.Artifact)
+				cited := citedArtifactV2(*edge.Artifact)
 				items[index].Artifact = &cited
 			}
 		}
@@ -1144,6 +1161,18 @@ func (s *server) listArtifactReferencesV2(w http.ResponseWriter, r *http.Request
 		}
 	}
 	WriteJSON(w, http.StatusOK, pageOf(items, query.pageQuery))
+}
+
+// citedArtifactV2 is the row of a document an item cites, as refs.Outgoing reads it. That read
+// left-joins each cited document's versions and answers one that has none as holding a single
+// version numbered 0, the join's coalesce, which GET /api/v1/artifacts/{id}/references answers as
+// it stands. No stored version has that number - every writer numbers a document's versions from
+// 1 - so the row counts no version and names no newest, as every other row of such a document.
+func citedArtifactV2(artifact model.Artifact) artifactV2 {
+	if len(artifact.Versions) == 1 && artifact.Versions[0].Number == 0 {
+		artifact.Versions = nil
+	}
+	return newArtifactV2(artifact)
 }
 
 // artifactReviewsV2Query is GET /api/v2/artifacts/{id}/reviews's query: one page.
@@ -1345,7 +1374,11 @@ func (s *server) uploadAgentArtifactV2(w http.ResponseWriter, r *http.Request) {
 
 // uploadArtifactV2 stores the upload the decoder read (v2Body, v2Upload) under target, as
 // /api/v1's uploadArtifactFor stores the one it reads itself (storeUpload): a JSON body is a
-// markdown document, as jsonUploadInput reads one, and a multipart body the file it holds.
+// markdown document, as jsonUploadInput reads one, and a multipart body the file it holds. The
+// answer's row is read as GET /api/v2/artifacts/{id} reads it, on the upload's own transaction
+// before it commits (uploadAnswer), so it counts the version the upload wrote and carries the
+// approval that version leaves, and a read that fails stores nothing: the artifact the upload
+// holds carries no approval, and an artifact it found only the versions before it.
 func (s *server) uploadArtifactV2(w http.ResponseWriter, r *http.Request, target artifactTarget) {
 	body := v2Body[jsonArtifactUpload](r)
 	var input artifactUploadInput
@@ -1359,7 +1392,25 @@ func (s *server) uploadArtifactV2(w http.ResponseWriter, r *http.Request, target
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	s.storeUpload(w, r, input, target)
+	s.storeUpload(w, r, input, target, func(ctx context.Context, tx queryer, stored model.Artifact, version model.Version) (any, error) {
+		artifact, err := s.loadArtifact(ctx, tx, stored.ID)
+		if err != nil {
+			return nil, err
+		}
+		rows, err := s.artifactRowsV2(ctx, r, []model.Artifact{artifact}, artifactV2Include{})
+		if err != nil {
+			return nil, err
+		}
+		return artifactUploadV2{Artifact: rows[0], Version: version}, nil
+	})
+}
+
+// artifactUploadV2 is the body the three /api/v2 uploads answer: the artifact's row, as every
+// /api/v2 read answers it, in place of the artifact with every version that /api/v1's
+// artifactUploadResponse answers (decision 2), and the version the upload wrote.
+type artifactUploadV2 struct {
+	Artifact artifactV2    `json:"artifact"`
+	Version  model.Version `json:"version"`
 }
 
 // formUploadInput is what a multipart upload stores, its declared fields and its file read by the

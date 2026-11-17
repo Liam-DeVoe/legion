@@ -185,7 +185,14 @@ func issuesTourSteps() []tourStep {
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/references", Status: http.StatusOK,
-			Setup: onIssue(url.Values{"versions": {"latest"}}, nil), Missing: issueMissing,
+			// The issue cites a project document, so the contract is held on a member's row.
+			Setup: func(t *testing.T, tour *routeTour) tourRequest {
+				issue, project := tour.issue(t), tour.project(t)
+				cited := createProjectDocument(t, tour.handler, project, "Tour cited notes.md", "# Cited\n\nWhat the issue cites.\n")
+				createReferenceAPIComment(t, tour.handler, issue.Key, "dispatch://"+project+"/artifact/"+cited.Slug)
+				return tourRequest{Path: map[string]string{"key": issue.Key}, As: alice}
+			},
+			Missing: issueMissing,
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/checks", Status: http.StatusOK,

@@ -580,7 +580,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	if status, answer, ok := s.requestApproval(w, r, input); ok {
+	if status, answer, ok := s.requestApproval(w, r, input, nil); ok {
 		WriteJSON(w, status, answer)
 	}
 }
@@ -590,9 +590,10 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 // /api/v1/artifacts/{id}/approval-requests (requestArtifactApproval) and of its /api/v2 route
 // (requestArtifactApprovalV2). It answers the status to answer, 201 for a request it wrote and 200
 // for one that stood, and the answer as /api/v1 writes it, for the route to write in the shape of
-// its version. A request it refuses it answers itself, and reports answered false: each bare
-// return below is such a refusal.
-func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput) (
+// its version; readBack reads on the write's transaction, before it commits, what the /api/v2 route
+// answers of the request's ask. A request it refuses it answers itself, and reports answered
+// false: each bare return below is such a refusal.
+func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input approvalRequestInput, readBack askReadBack) (
 	status int, answer approvalRequestResponse, answered bool,
 ) {
 	// A summary is trimmed and must hold text, so "" below means the request named none.
@@ -745,6 +746,10 @@ func (s *server) requestApproval(w http.ResponseWriter, r *http.Request, input a
 	}
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}

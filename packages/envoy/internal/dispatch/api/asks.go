@@ -150,21 +150,39 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	ask, advice, suggestions, ok := s.openAsk(w, r, owner, input)
+	ask, advice, suggestions, ok := s.openAsk(w, r, owner, input, nil)
 	if !ok {
 		return
 	}
 	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
 }
 
+// askReadBack reads, on q, what a /api/v2 write of an ask answers of the ask id names: on the
+// write's own transaction, once its writes are made and before it commits, as an upload reads
+// its row (storeArtifact). A read that fails then rolls the write back, so its 500 is true of
+// what is stored and a retry under the request's Idempotency-Key makes the write afresh; read
+// after the commit, it would answer 500 for a write that stands, its key marked committed with it
+// (markRequestKeyCommitted), and the retry would hear 409 KEY_COMMITTED and never the ask. An
+// /api/v1 write, which answers the ask it holds and reads nothing back, has none (nil).
+type askReadBack func(ctx context.Context, q queryer, id string) error
+
+// read runs readBack where there is one.
+func (readBack askReadBack) read(ctx context.Context, q queryer, id string) error {
+	if readBack == nil {
+		return nil
+	}
+	return readBack(ctx, q, id)
+}
+
 // openAsk opens the question ask input asks on owner, once the route has read its body: the ask's
 // row, its author's follow, its references and parts and its ask.opened event, and after the
 // write commits the related-item check, whose result rides the write's advice. POST
 // /api/v1/issues/{key}/asks and /api/v1/artifacts/{id}/asks (createAskFor) and POST
-// /api/v2/issues/{key}/asks (createIssueAskV2) each answer what it opened in their own shape. It
-// writes a refusal itself and answers false.
+// /api/v2/issues/{key}/asks and /api/v2/artifacts/{id}/asks (createIssueAskV2,
+// createArtifactAskV2) each answer what it opened in their own shape, the /api/v2 routes reading
+// theirs on the write's transaction (readBack). It writes a refusal itself and answers false.
 func (s *server) openAsk(
-	w http.ResponseWriter, r *http.Request, owner owner, input createAskInput,
+	w http.ResponseWriter, r *http.Request, owner owner, input createAskInput, readBack askReadBack,
 ) (model.Ask, *writeAdvice, *model.Suggestions, bool) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
@@ -331,6 +349,10 @@ func (s *server) openAsk(
 			r.Context(), tx, routeName(r.Context()), *owner.IssueKey, actor, rowID, *status, true,
 		)
 	}
+	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, nil, nil, false
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, nil, nil, false
@@ -378,7 +400,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	ask, ok := s.rewordAsk(w, r, input)
+	ask, ok := s.rewordAsk(w, r, input, nil)
 	if !ok {
 		return
 	}
@@ -388,9 +410,9 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 // rewordAsk rewords the open ask the path names as input asks, once the route has read its body:
 // its question, options, multiple and urgency, written into a block ask's `:::ask` block first,
 // and its ask.edited event. PATCH /api/v1/asks/{id} (editAsk) and PATCH /api/v2/asks/{id}
-// (editAskV2) each answer what it wrote in their own shape. It writes a refusal itself and answers
-// false.
-func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAskInput) (model.Ask, bool) {
+// (editAskV2) each answer what it wrote in their own shape, the /api/v2 route reading its own on
+// the write's transaction (readBack). It writes a refusal itself and answers false.
+func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAskInput, readBack askReadBack) (model.Ask, bool) {
 	if input.Question == nil && input.Options == nil && input.Multiple == nil && input.Urgency == nil {
 		writeError(w, r, apicode.InvalidAsk, "ask edit requires at least one field")
 		return model.Ask{}, false
@@ -603,6 +625,10 @@ func (s *server) rewordAsk(w http.ResponseWriter, r *http.Request, input editAsk
 		return model.Ask{}, false
 	}
 	if err := refs.Stamp(documentCtx, tx, "ask", ask.ID, event.ID); err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
+	}
+	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}

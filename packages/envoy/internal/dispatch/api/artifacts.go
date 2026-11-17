@@ -206,6 +206,19 @@ type artifactUploadResponse struct {
 	Version  model.Version  `json:"version"`
 }
 
+// uploadAnswer is the body an upload answers, built on q - the upload's own transaction - once
+// every write of the upload is made and before it commits (storeArtifact), given the artifact and
+// the version as the upload wrote them: /api/v1's (answerUploadV1) or /api/v2's
+// (uploadArtifactV2). An error it returns rolls the upload back and is answered in place of the
+// body.
+type uploadAnswer func(ctx context.Context, q queryer, artifact model.Artifact, version model.Version) (any, error)
+
+// answerUploadV1 is the body the /api/v1 uploads answer: the artifact with the versions the
+// upload read it with, and the version it wrote. It reads nothing.
+func answerUploadV1(_ context.Context, _ queryer, artifact model.Artifact, version model.Version) (any, error) {
+	return artifactUploadResponse{Artifact: artifact, Version: version}, nil
+}
+
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBlobSize+(1<<20))
 	requestType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -228,14 +241,15 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	if !ok {
 		return
 	}
-	s.storeUpload(w, r, input, target)
+	s.storeUpload(w, r, input, target, answerUploadV1)
 }
 
 // storeUpload stores the upload input holds under target, once the route has read it: the work
 // of every upload, POST /api/v1/{issues,projects}/{key}/artifacts and
 // /api/v1/agents/{session_id}/artifacts (uploadArtifactFor) and their /api/v2 routes
-// (uploadArtifactV2). It refuses what the upload cannot store and answers the stored version 201.
-func (s *server) storeUpload(w http.ResponseWriter, r *http.Request, input artifactUploadInput, target artifactTarget) {
+// (uploadArtifactV2). It refuses what the upload cannot store and answers the stored version 201,
+// in the body answer gives.
+func (s *server) storeUpload(w http.ResponseWriter, r *http.Request, input artifactUploadInput, target artifactTarget, answer uploadAnswer) {
 	actor, ok := s.requireActor(w, r, input.supplied)
 	if !ok {
 		return
@@ -277,7 +291,7 @@ func (s *server) storeUpload(w http.ResponseWriter, r *http.Request, input artif
 		}
 	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target)
+	s.storeArtifact(w, r, input, actor, kind, target, answer)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -472,6 +486,7 @@ func (s *server) storeArtifact(
 	actor model.Actor,
 	kind string,
 	target artifactTarget,
+	answer uploadAnswer,
 ) {
 	checksum := sha256.Sum256(input.content)
 	sha := hex.EncodeToString(checksum[:])
@@ -765,6 +780,20 @@ func (s *server) storeArtifact(
 			r.Context(), tx, routeName(r.Context()), *target.IssueKey, actor, "", *issueStatus, false,
 		)
 	}
+	// The answer is built here, on this transaction once the upload's writes are made and before
+	// they commit, and not after the commit: a read it makes that fails then rolls the upload back,
+	// so its 500 is true of what is stored. A request under an Idempotency-Key that committed
+	// nothing leaves its key released (keyedWrites, releaseRequestKey), and a retry under it stores
+	// the version afresh; a read after the commit would answer 500 for a version that holds, its
+	// key marked committed in the commit itself (markRequestKeyCommitted), so the retry would hear
+	// 409 KEY_COMMITTED and never the answer, and a retry with no key would store the version again.
+	// The answer is written only once the commit holds, and the key keeps what the handler wrote
+	// once it returns (settleRequestKey), so the body a key keeps is the one this commit made.
+	responsePayload, err := answer(r.Context(), tx, artifact, version)
+	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
@@ -785,7 +814,6 @@ func (s *server) storeArtifact(
 		advice.SupersededApproval = superseded
 		advice.MovedApprovalRequest = moved
 	}
-	responsePayload := artifactUploadResponse{Artifact: artifact, Version: version}
 	// An issue document whose bounded issue-advice read failed leaves advice nil, and the three
 	// document reports with nothing to ride on: they are about the document alone, so they go
 	// out on their own shape here rather than being dropped with the issue state that failed,
@@ -1937,15 +1965,19 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 	`, parsed))
 }
 
-// scanArtifact reads artifactColumns. A session-owned artifact's project is "".
-func scanArtifact(row pgx.Row) (model.Artifact, error) {
+// scanArtifact reads artifactColumns; extra receives the columns after them, as scanVersion's
+// does. A session-owned artifact's project is "".
+func scanArtifact(row pgx.Row, extra ...any) (model.Artifact, error) {
 	var artifact model.Artifact
 	var project *string
 	var createdBy []byte
-	if err := row.Scan(
+	targets := make([]any, 0, 12+len(extra))
+	targets = append(targets,
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
 		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
-	); err != nil {
+	)
+	targets = append(targets, extra...)
+	if err := row.Scan(targets...); err != nil {
 		return model.Artifact{}, err
 	}
 	artifact.Project = deref(project)

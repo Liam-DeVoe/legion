@@ -47,7 +47,7 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	answer, ok := s.handAskOn(w, r, actor, askID, input.AskedOf)
+	answer, ok := s.handAskOn(w, r, actor, askID, input.AskedOf, nil)
 	if !ok {
 		return
 	}
@@ -58,8 +58,9 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 // body: it writes asks.asked_of and who handed it on and when, appends one ask.asked_of event,
 // and answers the ask read back under its own locks. PUT /api/v1/asks/{id}/asked-of
 // (putAskAskedOf) and PATCH /api/v2/asks/{id} with asked_of (editAskV2) each answer it in their
-// own shape. It writes a refusal itself and answers false.
-func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, named string) (model.Ask, bool) {
+// own shape, the /api/v2 route reading its own on the write's transaction (readBack). It writes a
+// refusal itself and answers false.
+func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.Actor, askID, named string, readBack askReadBack) (model.Ask, bool) {
 	if named == "" {
 		writeError(w, r, apicode.InvalidAsk, "asked_of must be a person's email")
 		return model.Ask{}, false
@@ -170,6 +171,10 @@ func (s *server) handAskOn(w http.ResponseWriter, r *http.Request, actor model.A
 	// stays the locked row, which is the shape every ask.* payload has (ask_rows.go).
 	answer, err := s.loadAsk(r.Context(), tx, ask.ID)
 	if err != nil {
+		s.writeHandlerError(w, r, err)
+		return model.Ask{}, false
+	}
+	if err := readBack.read(r.Context(), tx, ask.ID); err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
 	}

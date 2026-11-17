@@ -9,7 +9,7 @@ package api
 // checks, results and the retraction of one, and subscribers. Every route runs the work its
 // /api/v1 route runs (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs,
 // claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf,
-// writeDecisionKeep, issueReferenceMembers, readIssueChecks, recordCheckResultFrom,
+// writeDecisionKeep, refs.Closure, readIssueChecks, recordCheckResultFrom,
 // retractCheckResultAs, subscribersOf, unsubscribeSession), each path object checked first and
 // answered with its own 404 (decision 11); a {session_id} keeps today's answer (ruling A).
 
@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apicode"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // resultMissingRefusal is the refusal of a result id no check result has (decision 11).
@@ -295,12 +296,12 @@ func (s *server) v2IssueRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/references", Auth: authAny, Versions: onlyV2,
 			Description: "The eight-hop closure of documents the issue's content references, each member {artifact, " +
-				"depth, via}: a document in the closure with every version, its depth and the node it was reached via. " +
-				"versions=latest leaves each member's artifact.versions holding only its latest version; all, the " +
-				"default, every version. limit 1 to 200 (default 50) and offset; {items, total, limit, offset, " +
-				"truncated}, truncated where the closure was cut at its bound. The answer carries an ETag, which moves " +
-				"with the issue's events, the members, their versions and the page; If-None-Match answers 304. 404 " +
-				"ISSUE_NOT_FOUND.",
+				"depth, via}: artifact the document's row (its own fields, latest_version, latest_version_at, " +
+				"latest_version_size and version_count, and no approval; its versions are GET " +
+				"/api/v2/artifacts/{id}/versions), its depth and the node it was reached via. limit 1 to 200 (default " +
+				"50) and offset; {items, total, limit, offset, truncated}, truncated where the closure was cut at its " +
+				"bound. The answer carries an ETag, which moves with the issue's events, each member's newest version " +
+				"and the page; If-None-Match answers 304. 404 ISSUE_NOT_FOUND.",
 			Handler:  s.listIssueReferencesV2,
 			Resource: "references", Kind: kindCollection,
 			Query: issueReferencesV2Query{},
@@ -541,17 +542,101 @@ type keepDecisionStateInput struct {
 	TextSHA256 string `json:"text_sha256" required:"true"`
 }
 
-// issueReferencesV2Query is GET /api/v2/issues/{key}/references's query.
+// issueReferencesV2Query is GET /api/v2/issues/{key}/references's query: one page. It takes no
+// versions= as /api/v1's does, since a member carries no versions.
 type issueReferencesV2Query struct {
 	pageQuery
-	Versions string `query:"versions" enum:"all,latest" default:"all"`
 }
 
 // issueReferencesV2 is GET /api/v2/issues/{key}/references's answer: the envelope of the closure's
 // members, whether the closure was cut at its bound beside it.
 type issueReferencesV2 struct {
-	page[model.ReferenceMember]
+	page[referenceMemberV2]
 	Truncated bool `json:"truncated"`
+}
+
+// referenceMemberV2 is one document of an issue's reference closure as GET
+// /api/v2/issues/{key}/references answers it: /api/v1's model.ReferenceMember, the document's
+// artifact row (artifactV2) in place of the artifact with its versions (decision 2).
+type referenceMemberV2 struct {
+	Artifact artifactV2         `json:"artifact"`
+	Depth    int                `json:"depth"`
+	Via      model.ReferenceVia `json:"via"`
+}
+
+// referenceRowsV2Statement reads the documents whose ref_key is in $1 as rows, each with its newest
+// version's number, time and size and the count of its versions, in one statement that answers no
+// version but the newest: each document's newest version and its count are read over the
+// (artifact_id, number) index of artifact_versions. A document with no version is absent, as it is
+// from GET /api/v1/issues/{key}/references (loadArtifactsByRefKey).
+const referenceRowsV2Statement = `
+	select ` + artifactColumns + `, latest.number, latest.written_at, latest.size, counted.versions
+	from artifacts
+	join lateral (
+		select v.number, v.created_at as written_at, ` + model.VersionSize + ` as size
+		from artifact_versions v where v.artifact_id = artifacts.id order by v.number desc limit 1
+	) latest on true
+	cross join lateral (select count(*) as versions from artifact_versions v where v.artifact_id = artifacts.id) counted
+	where ref_key = any($1)`
+
+// loadReferenceRowsV2 reads the documents refKeys name as referenceRowsV2Statement does, keyed by
+// ref_key.
+func loadReferenceRowsV2(ctx context.Context, q queryer, refKeys []string) (map[string]artifactV2, error) {
+	documents := make(map[string]artifactV2, len(refKeys))
+	if len(refKeys) == 0 {
+		return documents, nil
+	}
+	rows, err := q.Query(ctx, referenceRowsV2Statement, refKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var number, count int
+		var writtenAt time.Time
+		var size *int
+		artifact, err := scanArtifact(rows, &number, &writtenAt, &size, &count)
+		if err != nil {
+			return nil, err
+		}
+		row := newArtifactV2(artifact)
+		row.LatestVersion, row.LatestVersionAt, row.LatestVersionSize, row.VersionCount = &number, &writtenAt, size, count
+		documents[artifact.RefKey] = row
+	}
+	return documents, rows.Err()
+}
+
+// issueReferenceMembersV2 is the issue key names and its reference closure as GET
+// /api/v2/issues/{key}/references answers it: the closure GET /api/v1/issues/{key}/references
+// reads (issueReferenceMembers), each document as its row (loadReferenceRowsV2), and whether the
+// closure was cut at its bound. A key no issue carries answers loadIssue's refusal.
+func (s *server) issueReferenceMembersV2(ctx context.Context, key string) (model.Issue, []referenceMemberV2, bool, error) {
+	pool := s.deps.Store.Pool
+	issue, err := s.loadIssue(ctx, pool, key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	closure, truncated, err := refs.Closure(ctx, pool, issue.Key)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	refKeys := make([]string, len(closure))
+	for index, member := range closure {
+		refKeys[index] = member.RefKey
+	}
+	documents, err := loadReferenceRowsV2(ctx, pool, refKeys)
+	if err != nil {
+		return model.Issue{}, nil, false, err
+	}
+	members := make([]referenceMemberV2, 0, len(closure))
+	for _, closureMember := range closure {
+		document, ok := documents[closureMember.RefKey]
+		if !ok {
+			return model.Issue{}, nil, false, fmt.Errorf("reference target %q disappeared while loading closure", closureMember.RefKey)
+		}
+		members = append(members, referenceMemberV2{Artifact: document, Depth: closureMember.Depth, Via: closureMember.Via})
+	}
+	return issue, members, truncated, nil
 }
 
 // issueChecksV2Query is GET /api/v2/issues/{key}/checks's query.
@@ -990,17 +1075,23 @@ func (s *server) putDecisionStateV2(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, keep)
 }
 
-// issueReferencesV2ETag is the validator of one page of an issue's /api/v2 references: the /api/v1
-// read's (referencesETag) and the page, under a line naming the version, so no validator one
-// version gave matches the other's answer.
-func issueReferencesV2ETag(v1 string, query pageQuery) string {
+// issueReferencesV2ETag is the validator of one page of an issue's /api/v2 references: what the
+// /api/v1 read's moves with (referencesETag), the issue's events, whether the closure was cut and
+// each member's newest version, and the page, under a line naming the version, so no validator
+// one version gave matches the other's answer.
+func issueReferencesV2ETag(lastSeq int, members []referenceMemberV2, truncated bool, query pageQuery) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "version=v2\n%s\nlimit=%d\noffset=%d\n", v1, query.Limit, query.Offset)
+	_, _ = fmt.Fprintf(hash, "version=v2\n%d\n%t\n", lastSeq, truncated)
+	for _, member := range members {
+		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, *member.Artifact.LatestVersion)
+	}
+	_, _ = fmt.Fprintf(hash, "limit=%d\noffset=%d\n", query.Limit, query.Offset)
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }
 
 // listIssueReferencesV2 answers GET /api/v2/issues/{key}/references: one page of the closure GET
-// /api/v1/issues/{key}/references reads (issueReferenceMembers), under a validator of its own.
+// /api/v1/issues/{key}/references reads, each document as its row (issueReferenceMembersV2), under
+// a validator of its own.
 func (s *server) listIssueReferencesV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1010,13 +1101,12 @@ func (s *server) listIssueReferencesV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	query := v2Query[issueReferencesV2Query](r)
-	latestOnly := query.Versions == "latest"
-	issue, members, truncated, err := s.issueReferenceMembers(r.Context(), key, latestOnly)
+	issue, members, truncated, err := s.issueReferenceMembersV2(r.Context(), key)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	etag := issueReferencesV2ETag(referencesETag(issue.LastSeq, members, truncated, latestOnly), query.pageQuery)
+	etag := issueReferencesV2ETag(issue.LastSeq, members, truncated, query.pageQuery)
 	if answerNotModified(w, r, etag) {
 		return
 	}

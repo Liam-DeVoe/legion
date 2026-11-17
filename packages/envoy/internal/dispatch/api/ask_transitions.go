@@ -199,7 +199,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	ask, ok := s.recordAnswer(w, r, actor, input)
+	ask, ok := s.recordAnswer(w, r, actor, input, nil)
 	if !ok {
 		return
 	}
@@ -210,8 +210,9 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 // its body: the first answer, or a change of the current one by the person who gave it, through
 // the transition engine (closeAsk), with an approval's reviews. POST /api/v1/asks/{id}/answer
 // (answerAsk) and PUT /api/v2/asks/{id}/state with state answered (putAskStateV2) each answer it
-// in their own shape. It writes a refusal itself and answers false.
-func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor model.Actor, input answerAskInput) (model.Ask, bool) {
+// in their own shape, the /api/v2 route reading its own on the write's transaction (readBack). It
+// writes a refusal itself and answers false.
+func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor model.Actor, input answerAskInput, readBack askReadBack) (model.Ask, bool) {
 	// The acting session the body names, where the caller's credential proved none: this route
 	// has always decoded an actor, and a personal token names its session nowhere else.
 	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
@@ -308,7 +309,7 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 		}
 		return events, nil
 	}
-	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition)
+	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, transition, readBack)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
@@ -339,7 +340,7 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ask, ok := s.recordResolution(w, r, actor, input.Kind, input.Reason)
+	ask, ok := s.recordResolution(w, r, actor, input.Kind, input.Reason, nil)
 	if !ok {
 		return
 	}
@@ -350,8 +351,9 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 // the route has read its body: kind is retracted or resolved, and reason is required, held to the
 // event's bound and to no opening of the settlement's own. POST /api/v1/asks/{id}/resolve
 // (resolveAsk) and PUT /api/v2/asks/{id}/state with state resolved or retracted (putAskStateV2)
-// each answer it in their own shape. It writes a refusal itself and answers false.
-func (s *server) recordResolution(w http.ResponseWriter, r *http.Request, actor model.Actor, kind, reason string) (model.Ask, bool) {
+// each answer it in their own shape, the /api/v2 route reading its own on the write's transaction
+// (readBack). It writes a refusal itself and answers false.
+func (s *server) recordResolution(w http.ResponseWriter, r *http.Request, actor model.Actor, kind, reason string, readBack askReadBack) (model.Ask, bool) {
 	kind = strings.TrimSpace(kind)
 	reason = strings.TrimSpace(reason)
 	if kind != "retracted" && kind != "resolved" {
@@ -386,7 +388,7 @@ func (s *server) recordResolution(w http.ResponseWriter, r *http.Request, actor 
 			}
 			return docs.WriteAskResolution(ctx, tx, ask, kind, reason, actor)
 		},
-	})
+	}, readBack)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
@@ -439,7 +441,7 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	ask, ok := s.recordDecline(w, r, actor, input)
+	ask, ok := s.recordDecline(w, r, actor, input, nil)
 	if !ok {
 		return
 	}
@@ -449,9 +451,10 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 // recordDecline declines the ask the path names for actor, a person, once the route has read its
 // body: the ask resolves with the kind declined, the note as its reason beside the words Dispatch
 // writes for the asking agent. POST /api/v1/asks/{id}/decline (declineAsk) and PUT
-// /api/v2/asks/{id}/state with state declined (putAskStateV2) each answer it in their own shape.
-// It writes a refusal itself and answers false.
-func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor model.Actor, input declineAskInput) (model.Ask, bool) {
+// /api/v2/asks/{id}/state with state declined (putAskStateV2) each answer it in their own shape,
+// the /api/v2 route reading its own on the write's transaction (readBack). It writes a refusal
+// itself and answers false.
+func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor model.Actor, input declineAskInput, readBack askReadBack) (model.Ask, bool) {
 	// The acting session the body names, where the caller's credential proved none, as the
 	// answer route reads it: a personal token names its session nowhere else.
 	actor, ok := actSessionFromBody(w, r, actor, input.Actor)
@@ -490,7 +493,7 @@ func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor mod
 			}
 			return docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionDeclined, note, actor)
 		},
-	})
+	}, readBack)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return model.Ask{}, false
@@ -498,7 +501,10 @@ func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor mod
 	return ask, true
 }
 
-func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition) (model.Ask, error) {
+// closeAsk applies transition to the open ask id names, for actor, in a transaction of its own
+// (closeAskTx), and commits it; readBack reads on that transaction what the route answers of the
+// ask once the transition is written and before the commit.
+func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition, readBack askReadBack) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return model.Ask{}, err
@@ -508,6 +514,9 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	defer ledger.Discard()
 	ask, events, err := s.closeAskTx(documentCtx, tx, id, actor, transition)
 	if err != nil {
+		return model.Ask{}, err
+	}
+	if err := readBack.read(ctx, tx, ask.ID); err != nil {
 		return model.Ask{}, err
 	}
 	if err := ledger.Commit(ctx); err != nil {
