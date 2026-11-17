@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import {
+  DISPATCH_KEY_PATTERN,
+  GATED_STEPS,
+  LEGION_BRANCH_PATTERN,
+  LEGION_ROLES,
+} from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -695,6 +700,12 @@ const legionIssue = z.object({
    * workflow does not record (phase `unrecorded`, an operator's claim) (contract 31). */
   repo: nonEmptyString.optional(),
   defaultBranch: nonEmptyString.optional(),
+  /** The issue's branch, which the daemon stored once for the issue and never changes:
+   * `legion/<KEY>` for an issue recorded before the daemon stored branches, and `legion/` and 16
+   * lower-case hexadecimal characters for one recorded since. Every worker pane of the issue is
+   * told it as `LEGION_BRANCH`. Absent on an issue the workflow does not record (phase
+   * `unrecorded`, an operator's claim). */
+  branch: nonEmptyString.optional(),
   /** Why a held issue is held, when its hold has one: `escalated` once its architect sent it to
    * the controller. `heldFrom` beside it is the phase the hold took the issue out of, and is
    * absent for an issue that is not held. The linger suppression is `holdReason`'s alone: the
@@ -1244,9 +1255,9 @@ export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
  * and its process may be replaced. `round` is the round the worker answers for, as the update
  * message it read named it: the daemon takes the answer only for the round its claim stands in,
  * and refuses one naming any other round with 409 and a sentence naming both. `head` is the
- * commit the worker reports as the head of `legion/<issue>@origin`, empty or absent when the
- * branch is not there (a planner before its first push); the daemon records it and verifies
- * nothing of it. */
+ * commit the worker reports as the head of its issue's branch (`LEGION_BRANCH`) at origin,
+ * empty or absent when the branch is not there (a planner before its first push); the daemon
+ * records it and verifies nothing of it. */
 export const LegionReadyForUpdateRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,
@@ -1588,6 +1599,15 @@ export const LegionWaveReleaseResponse = z.object({
   held: z.array(legionBlockedIssue),
 });
 
+/** The answer of `POST /legion/v1/issues/branch` and of the operator's
+ * `POST /legion/v1/operator/issue-branch`: the issue the request named and the branch the daemon
+ * stores for it (`LEGION_BRANCH_PATTERN`), allocated and stored by that request for an issue the
+ * daemon had not recorded yet, which keeps it once it is recorded. */
+export const LegionIssueBranchResponse = z.object({
+  issue: issueKey,
+  branch: z.string().regex(LEGION_BRANCH_PATTERN),
+});
+
 /** `api.GrantRequest`, the session form that mints one short-lived credential grant: it serves every
  * redemption for sixty seconds while its claim holds the registration that minted it. */
 export const LegionGrantRequest = z.strictObject({
@@ -1616,9 +1636,10 @@ export const LegionControllerGrantRequest = z.strictObject({
  * names (`head`, the 40-character lower-case commit the work the handoff reports was done
  * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
  * the implementer's completion before it goes when its `implement` record names no head, when the
- * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
- * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
- * the reviewer's completion without one. Retro and every completion of a phase its
+ * commit its workspace stands on (`@-`) is not on the issue's branch (`LEGION_BRANCH`) at origin,
+ * and when the record's head is not that pushed `@-`; a record naming no head leaves the
+ * planner's, the tester's and the reviewer's completion without one. Retro and every completion
+ * of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
@@ -1645,6 +1666,15 @@ export const LegionIssueStatusRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   status: z.enum(["todo", "backlog", "icebox"]),
+});
+
+/** The body of `POST /legion/v1/issues/branch`, the controller's or an architect's read of an
+ * issue's branch (`LegionIssueBranchResponse`), the root of a tree not yet admitted included. Any
+ * other grant is refused `ISSUE_BRANCH_FORBIDDEN`, and an `issue` that is not an issue key of the
+ * daemon's project `INVALID_ISSUE`. */
+export const LegionIssueBranchRequest = z.strictObject({
+  grantId: nonEmptyString,
+  issue: nonEmptyString,
 });
 
 /** `api.GateRegisterRequest`, the architect's current Dispatch document approval target, for one

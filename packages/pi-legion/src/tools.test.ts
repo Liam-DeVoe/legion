@@ -99,6 +99,7 @@ function recordingDaemon(options: {
     "childPark",
     "childRerun",
     "issueStatus",
+    "issueBranch",
     "freshSession",
     "compact",
     "handoffComplete",
@@ -149,9 +150,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
   "and reports it with `commit`, the head that record's body names " +
   "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+  "workspace stands on, `@-`, pushed to the issue's branch (`LEGION_BRANCH`) at origin, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
   "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
-  "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
+  "implementer's `@-` not yet on the issue's branch at origin, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -164,7 +165,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
   "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
   "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
-  "pull request on `legion/<issue>` and none recorded " +
+  "pull request on the issue's branch (`LEGION_BRANCH`) and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
   "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
@@ -175,6 +176,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
   "counts a review round. " +
+  "issue_branch (the controller and the architect alone) reads the branch the daemon stores for `issue` and returns `issue` and `branch`; " +
+  "for an issue Legion has not recorded yet it allocates that branch and stores it, so a branch made at that name before admission is the " +
+  "one the issue takes. " +
   "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
   "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
   "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -291,6 +295,7 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "read_release_records",
         "handoff_complete",
         "ready_for_update",
+        "issue_branch",
         "read_state",
         "set_status",
         "fresh_session",
@@ -574,6 +579,84 @@ test("the legion tool exposes only the workflow operations each role owns", asyn
   await expect(run(architect, { op: "spawn_worker", issue: "LEGION-208" })).resolves.toMatchObject({
     isError: true,
   });
+});
+
+// issue_branch reads the branch the daemon stores for an issue, a root not yet admitted among
+// them, so whoever hands work over can make that branch at a chosen commit before admission: the
+// controller's and the architect's, each on its own grant, answering what the daemon answers. A
+// phase worker's pane holds its own issue's branch as LEGION_BRANCH, and it is offered no read of
+// another issue's.
+test("issue_branch is the architect's and the controller's, each posting its own grant", async () => {
+  const answer = { issue: "ACME-12", branch: "legion/0123456789abcdef" };
+  const { calls, daemon } = recordingDaemon({ answers: { issueBranch: answer } });
+  const minted: string[] = [];
+  const run = (session: LegionToolSession, parameters: Record<string, unknown>) =>
+    createLegionTool({
+      pi,
+      daemon,
+      controllerGrant: async (sessionId) => {
+        minted.push(sessionId);
+        return { grantId: "controller-grant-1", expiresAt: "2099-01-01T00:00:00Z" };
+      },
+      onPhaseCompleted: () => {
+        throw new Error("issue_branch completes no phase");
+      },
+      onUpdateAnswered: () => {
+        throw new Error("issue_branch answers no update message");
+      },
+      handoffReport: noHandoffReport,
+      branchHead: noBranchHead,
+      resolveDocument: noDocumentLookup,
+      session: () => session,
+    }).execute("", parameters, undefined, undefined, context());
+  const answered = { content: [{ type: "text", text: JSON.stringify(answer) }], details: answer };
+
+  // A root architect and a sub-architect read it on a grant of their own claim.
+  for (const issue of ["LEGION-208", "LEGION-209"]) {
+    calls.splice(0);
+    await expect(
+      run(claimSession("architect", issue), { op: "issue_branch", issue: "ACME-12" })
+    ).resolves.toEqual(answered);
+    expect(calls).toEqual([
+      ["grant", { sessionId: "ses_208", secret: "claim-secret", tree: "LEGION-208", issue }],
+      ["issueBranch", { grantId: "grant-208", issue: "ACME-12" }],
+    ]);
+  }
+  // The controller reads it on the controller's grant.
+  calls.splice(0);
+  const controller: LegionToolSession = { kind: "controller", sessionID: "ses_controller" };
+  await expect(run(controller, { op: "issue_branch", issue: "ACME-12" })).resolves.toEqual(
+    answered
+  );
+  expect(minted).toEqual(["ses_controller"]);
+  expect(calls).toEqual([["issueBranch", { grantId: "controller-grant-1", issue: "ACME-12" }]]);
+
+  // Each requires the issue and takes no other field, refused before any grant is minted.
+  for (const session of [claimSession("architect"), controller]) {
+    await expect(run(session, { op: "issue_branch" })).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "issue_branch requires issue" }],
+    });
+    await expect(
+      run(session, { op: "issue_branch", issue: "ACME-12", role: "tester" })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [
+        { type: "text", text: 'issue_branch does not accept field "role"; it takes issue' },
+      ],
+    });
+  }
+  // A phase worker is offered none.
+  for (const role of ["planner", "implementer", "tester", "reviewer", "merger"] as const) {
+    await expect(
+      run(claimSession(role), { op: "issue_branch", issue: "ACME-12" })
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: "issue_branch is not available to a phase-worker session" }],
+    });
+  }
+  expect(calls).toHaveLength(1);
+  expect(minted).toEqual(["ses_controller"]);
 });
 
 // The release carries why it was made: the architect's retry_or_escalate takes an optional
@@ -910,8 +993,14 @@ test("register_gate takes the document reference the Dispatch tools take, and re
   ]);
 });
 
-/** The pane a completion runs in: its workspace and issue. */
-const paneEnv = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: "LEGION-208" };
+/** The pane a completion runs in: its workspace, its issue and the issue's branch, which the
+ * daemon allocated with no key in it. */
+const BRANCH = "legion/3f9a1c2b7d4e5f60";
+const paneEnv = {
+  LEGION_WORKSPACE: "/workspaces/LEGION-208",
+  LEGION_ISSUE: "LEGION-208",
+  LEGION_BRANCH: BRANCH,
+};
 const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
 const STANDING = "c0de0000000000000000000000000000000000ff";
 /** The newest handoff record the pane's Dispatch holds for the phase: its body names the head the
@@ -923,14 +1012,14 @@ const RECORD = {
   body: JSON.stringify({ schemaVersion: 1, issue: "LEGION-208", head: TIP }),
 };
 
-/** A jj whose workspace stands on `standing` and whose `legion/LEGION-208@origin`, whose tip is
+/** A jj whose workspace stands on `standing` and whose `$LEGION_BRANCH@origin`, whose tip is
  * `TIP`, carries that commit, unless `pushed` is false. An implementer pane that pushed its round
  * stands on `TIP`, the head its record names. */
 function paneJj(standing = STANDING, pushed = true): JjRunner {
   return async (args) => {
     const revision = args[2] ?? "";
     if (revision === "@-") return standing;
-    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${standing}::`)) {
+    if (revision === `remote_bookmarks(exact:"${BRANCH}", exact:"origin") & ${standing}::`) {
       return pushed ? TIP : "";
     }
     throw new Error(`unexpected jj ${args.join(" ")}`);
@@ -1104,13 +1193,13 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     [
       paneJj(STANDING, false),
       paneDispatch(),
-      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 2) names ${TIP}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`,
+      `the commit this workspace stands on, ${STANDING}, is not on ${BRANCH}@origin: push it with \`jj bookmark set ${BRANCH} -r @- && jj git push --bookmark ${BRANCH}\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 2) names ${TIP}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`,
     ],
     // A pushed `@-` the record does not name: it names the branch's tip at origin instead.
     [
       paneJj(),
       paneDispatch(),
-      `the newest implement handoff of LEGION-208 (version 2) names ${TIP} as its head, not the commit this workspace stands on, ${STANDING}, which legion/LEGION-208@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`,
+      `the newest implement handoff of LEGION-208 (version 2) names ${TIP} as its head, not the commit this workspace stands on, ${STANDING}, which ${BRANCH}@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`,
     ],
     [
       paneJj(),

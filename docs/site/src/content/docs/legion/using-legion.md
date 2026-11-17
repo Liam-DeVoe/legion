@@ -101,8 +101,9 @@ same way: a question in your Inbox that says what is blocked, the options, and w
 
 The issue's status tells you which phase is running (see [What each status means](#what-each-status-means)).
 The issue's events show each status change, and the architect's messages there say what changed
-and why. The pull request appears under the issue's external links, and its body carries the line
-`Dispatch: <KEY>` pointing back to the issue.
+and why. The pull request appears under the issue's external links: the daemon writes its URL
+there when it first records the pull request, and that link is how Dispatch ties the pull request
+to the issue.
 
 ## Review the pull request
 

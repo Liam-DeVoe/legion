@@ -51,7 +51,7 @@ Every path it cites is in cybermonklabs/legion.
 
   ```bash
   base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-    jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"
+    jj -R "$LEGION_WORKSPACE" new "$LEGION_BRANCH" "${base}@origin" -m "<message>"
   ```
 
   `<message>` is written in the repository's own commit convention, read from the repository
@@ -75,7 +75,7 @@ Every path it cites is in cybermonklabs/legion.
   fast-forward.
 - **After a retarget.** Retargeting a pull request to a new base does not re-run Tests. Read
   `base` again and merge the bookmark onto it in one command
-  (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
+  (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new "$LEGION_BRANCH" "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
   ordinary way, a genuine fast-forward, so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
 

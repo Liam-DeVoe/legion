@@ -9,6 +9,7 @@ import {
   sessionDispatchSettings,
 } from "@legion/envoy-client/session-settings";
 import { staleGitLockNote } from "./git-lock";
+import { paneIssueBranch } from "./issue-branch";
 
 /**
  * What a `handoff_complete` reports beside its summary, found in the pane before anything is
@@ -28,7 +29,7 @@ import { staleGitLockNote } from "./git-lock";
  * file-backed role's handoff body carries `head`, the 40-character lower-case commit the work
  * that handoff reports was done against, and the daemon takes a completion of an earlier phase
  * entry only at the head the record holds. It is read from the record and never from the
- * workspace, because a sibling role's push moves `legion/<issue>@origin` under a worker whose
+ * workspace, because a sibling role's push moves the issue's branch at origin under a worker whose
  * evidence is older. A record whose body does not parse, holds no `head`, or holds one of another
  * shape reports no commit for the planner, the tester and the reviewer, whose completion still
  * goes; the daemon refuses it `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, since a
@@ -36,15 +37,16 @@ import { staleGitLockNote } from "./git-lock";
  *
  * While the issue stands in implementing, the phase the implementer works, its round is the
  * commit its workspace stands on, `@-`, so its record and its branch are held to that commit:
- * `@-` must be on `legion/<issue>@origin` in the pane's jj, at the branch's tip or behind it, and
- * the head the record names must be `@-` itself, which puts that head on the branch too. A record
- * naming no readable head is refused naming what to write. A workspace whose `@-` the branch does
- * not carry is refused naming the push, and saying that the record's head must name that pushed
- * commit, since a round that forgot its push wrote its record against the branch's tip at origin,
- * a head the branch carries while the round's own work is under `@-` alone. A pushed `@-` the
- * record does not name is refused naming the rewrite of the record at `@-`: a head other than the
- * commit the round's work stands on is not the head that work was done against, whether the
- * branch carries it or not. These checks hold in the phase the implementer works alone.
+ * `@-` must be on the issue's branch (`LEGION_BRANCH`) at origin in the pane's jj, at the
+ * branch's tip or behind it, and the head the record names must be `@-` itself, which puts that
+ * head on the branch too. A record naming no readable head is refused naming what to write. A
+ * workspace whose `@-` the branch does not carry is refused naming the push, and saying that the
+ * record's head must name that pushed commit, since a round that forgot its push wrote its record
+ * against the branch's tip at origin, a head the branch carries while the round's own work is
+ * under `@-` alone. A pushed `@-` the record does not name is refused naming the rewrite of the
+ * record at `@-`: a head other than the commit the round's work stands on is not the head that
+ * work was done against, whether the branch carries it or not. These checks hold in the phase the
+ * implementer works alone.
  *
  * The left-phase rule, which every other comment of this module and its tests points at: a role
  * whose phase the issue has left never runs a workspace check, and where it holds a record of that
@@ -70,7 +72,7 @@ import { staleGitLockNote } from "./git-lock";
  * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
  * one.
  *
- * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
+ * The module also reads the head of the issue's branch at origin that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
  * check uses.
  */
@@ -202,7 +204,7 @@ function requiredVariable(env: NodeJS.ProcessEnv, name: string, purpose: string)
 
 const FOR_HANDOFF = "handoff_complete cannot find what to report";
 
-/** The issue the pane works and the branch it names, `legion/<issue>`: the key is the worker's own
+/** The issue the pane works and its branch (`paneIssueBranch`): the key is the worker's own
  * environment, so a value carrying `#` or `/` would otherwise name another reference or path.
  * `purpose` is what the caller cannot do without the key. */
 function issueBranch(env: NodeJS.ProcessEnv, purpose: string): { issue: string; bookmark: string } {
@@ -212,7 +214,7 @@ function issueBranch(env: NodeJS.ProcessEnv, purpose: string): { issue: string; 
       `LEGION_ISSUE ${JSON.stringify(issue)} is not a Dispatch issue key like LEGION-1`
     );
   }
-  return { issue, bookmark: `legion/${issue}` };
+  return { issue, bookmark: paneIssueBranch(env, issue) };
 }
 
 /** The revset of `<bookmark>@origin`: the branch head as the remote has it, which the
@@ -245,9 +247,9 @@ function recordHead(body: string): string | undefined {
   return typeof head === "string" && RECORD_HEAD.test(head) ? head : undefined;
 }
 
-/** The head of `legion/<issue>@origin`, as `ready_for_update` reports it: the commit the pane's
- * jj reads for the issue branch at the remote, and `""` when the branch is not on the remote at
- * all — a planner before its first push has none, which is no error. */
+/** The head of the issue's branch at origin, as `ready_for_update` reports it: the commit the
+ * pane's jj reads for the issue branch at the remote, and `""` when the branch is not on the
+ * remote at all — a planner before its first push has none, which is no error. */
 export async function findPushedBranchHead(input: {
   readonly env: NodeJS.ProcessEnv;
   readonly jj?: JjRunner;
@@ -341,7 +343,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   }
 
   // In implementing, the implementer's round is the commit its workspace stands on, `@-`:
-  // `legion/<issue>@origin` must carry that commit, at the branch's tip or behind it, and the
+  // the issue's branch at origin must carry that commit, at the branch's tip or behind it, and the
   // record must name it. A record that names no readable head is refused before the workspace is
   // read, since the record is what has to change.
   if (head === undefined) {

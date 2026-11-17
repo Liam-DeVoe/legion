@@ -286,6 +286,19 @@ state_raw() {
   printf '%s' "$file"
 }
 
+# issue_branch_in <state file> <KEY> prints the branch the daemon stores for KEY, as that state read
+# names it (.issues[<KEY>].branch: legion/ and 16 hex characters for an issue recorded since the
+# daemon stored branches, the backfilled legion/<KEY> for one recorded before), and fails, naming
+# KEY and the file, when the state names no branch of that shape: no branch is ever built from a
+# key here.
+issue_branch_in() {
+  local file=$1 key=$2 branch
+  branch=$(jq -r --arg k "$key" '.issues[$k].branch // ""' "$file") || fail "could not read $key's branch from $file"
+  [[ $branch =~ ^legion/[A-Za-z0-9][A-Za-z0-9-]*$ ]] ||
+    fail "the daemon's state ($file) names no branch for $key (.issues[\"$key\"].branch is \"$branch\")"
+  printf '%s' "$branch"
+}
+
 # dispatch_issue_raw <observation> <KEY> refreshes
 # $MULTIREPO_EVIDENCE_DIR/<observation>-dispatch-issue-<KEY>.raw from Dispatch's own
 # GET /api/v1/issues/<KEY> (the same JSON the dashboard reads, carrying .repo, .resolved_repo,
@@ -400,21 +413,25 @@ children() {
   check children "$([ "$mismatch" = 0 ] && [ "$saw_t" = 1 ] && [ "$saw_c" = 1 ] && echo 1 || echo 0)"
 }
 
-# branch-base <T child KEY>: legion/<child>'s first commit's first parent on GitHub equals the
-# stored record-head, exactly (both required to be full commit ids).
+# branch-base <T child KEY>: the child's branch (the one the daemon's state names for it,
+# issue_branch_in) has a first commit whose first parent on GitHub equals the stored record-head,
+# exactly (both required to be full commit ids).
 branch_base() {
-  local child=$1 default stored_head first_commit parent_sha ok=0
+  local child=$1 default stored_head state_file branch first_commit parent_sha ok=0
   [ -s "$MULTIREPO_EVIDENCE_DIR/record-head.txt" ] || fail "branch-base: run record-head first"
   stored_head=$(grep '^head: ' "$MULTIREPO_EVIDENCE_DIR/record-head.txt" | cut -d' ' -f2)
   [[ $stored_head =~ $sha_re ]] || fail "branch-base: the stored record-head is not a full commit id ($stored_head); record-head must have failed"
+  state_file=$(state_raw branch-base)
+  branch=$(issue_branch_in "$state_file" "$child")
   default=$(default_branch "$LEGION_E2E_REPO_T")
-  first_commit=$(gh api "repos/$LEGION_E2E_REPO_T/compare/$(urlpath "$default")...legion/$child" --jq '.commits[0].sha') ||
-    fail "gh api repos/$LEGION_E2E_REPO_T/compare/$default...legion/$child failed"
-  [[ $first_commit =~ $sha_re ]] || fail "branch-base: legion/$child's first commit on top of $default is not a full commit id ($first_commit)"
+  first_commit=$(gh api "repos/$LEGION_E2E_REPO_T/compare/$(urlpath "$default")...$(urlpath "$branch")" --jq '.commits[0].sha') ||
+    fail "gh api repos/$LEGION_E2E_REPO_T/compare/$default...$branch failed"
+  [[ $first_commit =~ $sha_re ]] || fail "branch-base: $child's branch $branch has a first commit on top of $default that is not a full commit id ($first_commit)"
   parent_sha=$(gh api "repos/$LEGION_E2E_REPO_T/commits/$first_commit" --jq '.parents[0].sha') ||
     fail "gh api repos/$LEGION_E2E_REPO_T/commits/$first_commit failed"
   [[ $parent_sha =~ $sha_re ]] && [ "$parent_sha" = "$stored_head" ] && ok=1
   summary branch-base "child: $child
+branch: $branch
 first commit: $first_commit
 first parent: $parent_sha
 record-head: $stored_head
@@ -786,9 +803,10 @@ negative_issue_repo_of() {
 # record (repo, pullRequest, generation) and GitHub's own highest pull-request number in X at that
 # moment, the cursor `after` compares against — never a wall-clock timestamp, which skew between
 # the operator and GitHub could fool. `after` PASSes only when (1) GitHub shows a pull request on
-# `legion/<child>` in X, closed, whose number is above that cursor — proof the operation happened,
-# not merely that nothing is open now — and (2) the daemon's own side is unaffected: the child is
-# still recorded on the baseline's repository, and its pull request never names X.
+# the child's branch (the one the daemon's state names for it, issue_branch_in) in X, closed, whose
+# number is above that cursor — proof the operation happened, not merely that nothing is open now —
+# and (2) the daemon's own side is unaffected: the child is still recorded on the baseline's
+# repository, and its pull request never names X.
 negative_pr_in_x() {
   local phase=$1
   if [ "$phase" = before ]; then
@@ -818,11 +836,12 @@ negative_pr_in_x() {
   local prs_file found_number
   prs_file="$MULTIREPO_EVIDENCE_DIR/negative-pr-in-x-after-$child-$run_id-pulls.raw"
   raw_fetch "$prs_file" "GET repos/$LEGION_E2E_REPO_X/pulls" gh api "repos/$LEGION_E2E_REPO_X/pulls?state=all&per_page=100"
-  found_number=$(jq --arg ref "legion/$child" --argjson since "$b_highest" \
-    '[.[] | select(.head.ref == $ref and .state == "closed" and .number > $since)] | length' "$prs_file")
 
-  local state_file now_repo now_pr_repo ok=1
+  local state_file branch now_repo now_pr_repo ok=1
   state_file=$(state_raw negative-pr-in-x-after)
+  branch=$(issue_branch_in "$state_file" "$child")
+  found_number=$(jq --arg ref "$branch" --argjson since "$b_highest" \
+    '[.[] | select(.head.ref == $ref and .state == "closed" and .number > $since)] | length' "$prs_file")
   now_repo=$(jq -r --arg k "$child" '.issues[$k].repo // "none"' "$state_file")
   now_pr_repo=$(jq -r --arg k "$child" '.issues[$k].pullRequest.repo // "none"' "$state_file")
   { [ -n "${found_number:-}" ] && [ "$found_number" -gt 0 ]; } 2>/dev/null || ok=0
@@ -831,7 +850,7 @@ negative_pr_in_x() {
 
   summary "negative-pr-in-x-$child" "baseline: repo=$b_record_repo highest_pr(X)=$b_highest
 now: daemon repo=$now_repo, pullRequest.repo=$now_pr_repo
-closed pull requests on legion/$child in X numbered above $b_highest: $found_number
+closed pull requests on $child's branch $branch in X numbered above $b_highest: $found_number
 ---
 $(cat "$prs_file")
 " >/dev/null

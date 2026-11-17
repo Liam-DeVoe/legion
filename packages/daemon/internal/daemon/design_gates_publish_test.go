@@ -85,6 +85,7 @@ func (d *gatePublishDispatch) HandOver(context.Context, dispatch.Issue, string) 
 	return errors.New("gatePublishDispatch takes no hand-over")
 }
 func (d *gatePublishDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *gatePublishDispatch) AddExternalLink(context.Context, string, string) error { return nil }
 func (d *gatePublishDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }

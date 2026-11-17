@@ -8,6 +8,7 @@ import {
   fullInputs,
   humanActorEvent,
   isolatedPath,
+  issueBranches,
   issueUpdatedEvent,
   makeStateBody,
   mutableDaemonStub,
@@ -266,6 +267,7 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
             phase: "needs_review",
             status: "todo",
             repo: "acme/widgets",
+            branch: issueBranches["ACME-2"],
             pullRequest: { repo: "other/outside", number: 5 },
           },
         },
@@ -275,7 +277,7 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
       bin,
       "gh",
       prsGhFake(
-        '[{"number":5,"head":{"ref":"legion/ACME-2"},"state":"closed","created_at":"2026-01-02T00:00:00Z","closed_at":"2026-01-02T01:00:00Z"}]'
+        `[{"number":5,"head":{"ref":"${issueBranches["ACME-2"]}"},"state":"closed","created_at":"2026-01-02T00:00:00Z","closed_at":"2026-01-02T01:00:00Z"}]`
       )
     );
     const after = await spawnScript(
@@ -296,7 +298,7 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
       `http://127.0.0.1:${dispatchServer.port}`
     );
     const { bin, evidence } = newFakeDir({
-      gh: prsGhFake('[{"number":4,"head":{"ref":"legion/OTHER-1"},"state":"open"}]'),
+      gh: prsGhFake(`[{"number":4,"head":{"ref":"${issueBranches["ACME-3"]}"},"state":"open"}]`),
     });
     const path = isolatedPath(bin);
     const before = await spawnScript(
@@ -311,7 +313,7 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
       bin,
       "gh",
       prsGhFake(
-        '[{"number":4,"head":{"ref":"legion/OTHER-1"},"state":"open"},{"number":5,"head":{"ref":"legion/ACME-2"},"state":"closed","created_at":"2026-01-02T00:00:00Z","closed_at":"2026-01-02T01:00:00Z"}]'
+        `[{"number":4,"head":{"ref":"${issueBranches["ACME-3"]}"},"state":"open"},{"number":5,"head":{"ref":"${issueBranches["ACME-2"]}"},"state":"closed","created_at":"2026-01-02T00:00:00Z","closed_at":"2026-01-02T01:00:00Z"}]`
       )
     );
     const after = await spawnScript(
@@ -322,6 +324,106 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
     );
     expect(after.status).toBe(0);
     expect(after.stdout).toContain("CHECK negative-pr-in-x-ACME-2: PASS");
+  });
+
+  // The branch is the one the daemon's state names, never one built from the key: a closed pull
+  // request on legion/<KEY> is not the child's when the state names its keyless branch, and is
+  // when the state names that backfilled legion/<KEY> itself, as for an issue recorded before the
+  // daemon stored branches.
+  for (const [stateBranch, verdict] of [
+    [issueBranches["ACME-2"], "FAIL"],
+    ["legion/ACME-2", "PASS"],
+  ] as const) {
+    test(`a closed PR on legion/ACME-2 while the state names ${stateBranch}: ${verdict}`, async () => {
+      const body = makeStateBody({
+        issues: {
+          "ACME-2": {
+            key: "ACME-2",
+            generation: 1,
+            phase: "implementing",
+            status: "todo",
+            repo: "acme/widgets",
+            branch: stateBranch,
+          },
+        },
+      });
+      const daemonServer = daemonStub(body);
+      const dispatchServer = dispatchStub({});
+      const env = fullInputs(
+        `http://127.0.0.1:${daemonServer.port}`,
+        `http://127.0.0.1:${dispatchServer.port}`
+      );
+      const { bin, evidence } = newFakeDir({ gh: prsGhFake("[]") });
+      const path = isolatedPath(bin);
+      const before = await spawnScript(
+        ["negative", "pr-in-x", "before", "ACME-2"],
+        path,
+        evidence,
+        env
+      );
+      expect(before.status).toBe(0);
+      const runId = baselineRunId(before.stdout);
+      fakeBin(
+        bin,
+        "gh",
+        prsGhFake(
+          '[{"number":5,"head":{"ref":"legion/ACME-2"},"state":"closed","created_at":"2026-01-02T00:00:00Z","closed_at":"2026-01-02T01:00:00Z"}]'
+        )
+      );
+      const after = await spawnScript(
+        ["negative", "pr-in-x", "after", runId, "ACME-2"],
+        path,
+        evidence,
+        env
+      );
+      expect(after.status).toBe(verdict === "PASS" ? 0 : 1);
+      expect(verdict === "PASS" ? after.stdout : after.stderr).toContain(
+        `CHECK negative-pr-in-x-ACME-2: ${verdict}`
+      );
+    });
+  }
+
+  // An older daemon's state names no branch: the observation refuses, naming the issue, rather
+  // than building one from the key.
+  test("after, when the daemon's state names no branch for the child: refused, naming it", async () => {
+    const { server, setBody } = mutableDaemonStub(stateBody);
+    const dispatchServer = dispatchStub({});
+    const env = fullInputs(
+      `http://127.0.0.1:${server.port}`,
+      `http://127.0.0.1:${dispatchServer.port}`
+    );
+    const { bin, evidence } = newFakeDir({ gh: prsGhFake("[]") });
+    const path = isolatedPath(bin);
+    const before = await spawnScript(
+      ["negative", "pr-in-x", "before", "ACME-2"],
+      path,
+      evidence,
+      env
+    );
+    expect(before.status).toBe(0);
+    const runId = baselineRunId(before.stdout);
+    setBody(
+      makeStateBody({
+        issues: {
+          "ACME-2": {
+            key: "ACME-2",
+            generation: 1,
+            phase: "implementing",
+            status: "todo",
+            repo: "acme/widgets",
+          },
+        },
+      })
+    );
+    const after = await spawnScript(
+      ["negative", "pr-in-x", "after", runId, "ACME-2"],
+      path,
+      evidence,
+      env
+    );
+    expect(after.status).not.toBe(0);
+    expect(after.stderr).toContain("names no branch for ACME-2");
+    expect(after.stdout).not.toContain("PASS");
   });
 
   // A generation bump between before and after (a hand-over or re-admission) is a
@@ -354,6 +456,7 @@ describe("negative pr-in-x: PR-number cursor and the daemon-side check", () => {
             phase: "implementing",
             status: "todo",
             repo: "acme/widgets",
+            branch: issueBranches["ACME-2"],
           },
         },
       })

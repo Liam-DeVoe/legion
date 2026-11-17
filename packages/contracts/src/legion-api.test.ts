@@ -27,6 +27,8 @@ import {
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
   LegionInstant,
+  LegionIssueBranchRequest,
+  LegionIssueBranchResponse,
   LegionIssueStatusRequest,
   LegionOperatorClaimResponse,
   LegionOperatorClaimsResponse,
@@ -81,6 +83,9 @@ const schemas: Record<string, z.ZodType> = {
   "grant.json": LegionGrantResponse,
   "handoff-complete.json": LegionHandoffCompleteResponse,
   "issue-status.json": LegionEmptyResponse,
+  // The controller's or an architect's read of an issue's branch, and the operator's of the
+  // same: the issue and the branch the daemon stores for it.
+  "issue-branch.json": LegionIssueBranchResponse,
   "fresh-session.json": LegionFreshSessionResponse,
   "compact.json": LegionCompactResponse,
   "gate-register.json": LegionEmptyResponse,
@@ -1318,6 +1323,7 @@ test("every request the plugin sends parses and names its required fields", () =
       LegionIssueStatusRequest,
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
     ],
+    ["issue branch", LegionIssueBranchRequest, { grantId: "grant-208", issue: "LEGION-208" }],
     [
       "claim recovery",
       LegionClaimRequest,
@@ -1592,6 +1598,50 @@ test("the state golden carries each issue's repository and the project's mapping
   expect(LegionStateResponse.parse(refused).repositories.caches[0]?.state).toBe("refused");
   Object.assign(refused.repositories.caches[0] ?? {}, { state: "gone" });
   expect(LegionStateResponse.safeParse(refused).success).toBeFalse();
+});
+
+// The branch the daemon stores for an issue, which every worker pane of the issue is told as
+// `LEGION_BRANCH` and which the controller and an architect read before admission: keyless for an
+// issue recorded from this contract on, `legion/<KEY>` for one recorded before. A pane hands the
+// name to jj and git, so a name of any other shape is refused rather than read.
+test("the issue-branch answer names the issue and its stored branch, and refuses any other shape", () => {
+  expect(LegionIssueBranchResponse.parse(fixture("issue-branch.json"))).toEqual({
+    issue: "ACME-12",
+    branch: "legion/0123456789abcdef",
+  });
+  const answer = (fields: Record<string, unknown>) =>
+    LegionIssueBranchResponse.safeParse({ issue: "ACME-12", ...fields }).success;
+  expect(answer({ branch: "legion/ACME-12" })).toBeTrue();
+  for (const branch of [
+    "",
+    "legion/",
+    "legion/-x",
+    "legion/a/b",
+    "legion/x y",
+    "legion/x#y",
+    "refs/heads/legion/0123456789abcdef",
+    "main",
+  ]) {
+    expect(answer({ branch }), JSON.stringify(branch)).toBeFalse();
+  }
+  expect(answer({ issue: "not a key", branch: "legion/0123456789abcdef" })).toBeFalse();
+});
+
+test("a state issue carries its branch beside its repository, and the branch is never empty", () => {
+  const state = fixture("state.json") as { issues: Record<string, Record<string, unknown>> };
+  const issue = state.issues["LEGION-208"];
+  if (issue === undefined) {
+    throw new Error("state fixture lacks LEGION-208");
+  }
+  issue.branch = "legion/0123456789abcdef";
+  expect(LegionStateResponse.parse(state).issues["LEGION-208"]?.branch).toBe(
+    "legion/0123456789abcdef"
+  );
+  issue.branch = "";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  // An issue the workflow does not record, and the body of a daemon before the field, carry none.
+  delete issue.branch;
+  expect(LegionStateResponse.safeParse(state).success).toBeTrue();
 });
 
 // The state's capability report (contract 16): the golden carries a decided row with the operator's

@@ -1000,11 +1000,11 @@ func (w *workflowRuntime) identity(ctx context.Context, role claim.Role, recorde
 // missing or not checked out (outbox.ensureWorkspace), through the outbox, which orders every
 // provision of the shared clones (provisionLocks). The outbox exists from attach on, and attach
 // runs before supervision restores or launches any claim.
-func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {
+func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch, branch string) error {
 	if w.outbox == nil {
 		return fmt.Errorf("provision the workspace of %s: the workflow's outbox is not attached yet", issue)
 	}
-	return w.outbox.ensureWorkspace(ctx, issue, repo, defaultBranch)
+	return w.outbox.ensureWorkspace(ctx, issue, repo, defaultBranch, branch)
 }
 
 // enqueueOutbox writes outbox rows of issue, due now, in one transaction of its own, which owns

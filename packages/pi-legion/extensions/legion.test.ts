@@ -201,6 +201,7 @@ const environmentKeys = [
   "LEGION_PROJECT",
   "LEGION_ROLE",
   "LEGION_ISSUE",
+  "LEGION_BRANCH",
   "LEGION_WORKSPACE",
   "LEGION_STATE_DIR",
   "LEGION_SLACK_CHANNELS",
@@ -6657,11 +6658,15 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
         : []
     );
   // A resumed session, its history uncompacted turns, whose role launcher said its workspace was
-  // recreated: at session start the plugin saves one notice naming the issue's branch, and no
-  // branch it assumes the repository's default to be, as a steer that starts no turn, so Oh My
-  // Pi stores it ahead of the next turn whatever starts that turn.
+  // recreated: at session start the plugin saves one notice naming the issue's branch, the
+  // `LEGION_BRANCH` the daemon told the pane, and no branch it assumes the repository's default to
+  // be, as a steer that starts no turn, so Oh My Pi stores it ahead of the next turn whatever starts
+  // that turn. The notice is made before the claim registers, where no plugin-contract gate stands,
+  // so a pane of an older daemon, which names no branch, meets `legion/<issue>` (the recovery cases
+  // below).
   test("a resume told LEGION_WORKSPACE_RECREATED=true saves one notice ahead of its next turn", async () => {
     process.env.LEGION_WORKSPACE_RECREATED = "true";
+    process.env.LEGION_BRANCH = "legion/3f9a1c2b7d4e5f60";
     const history = [
       { type: "message", message: { role: "user", content: [{ type: "text", text: "TURN-1" }] } },
       {
@@ -6679,7 +6684,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
       {
         message: {
           customType: "legion-workspace-recreated",
-          content: expect.stringContaining("legion/REPO-43"),
+          content: expect.stringContaining("it holds what was pushed to legion/3f9a1c2b7d4e5f60 ("),
           display: true,
           details: { id: expect.any(String) },
         },

@@ -385,6 +385,17 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 			r.log.Warn("outbox design-gates publish refused by Dispatch and dropped; the set Dispatch holds for the issue is the last one it took",
 				"row", row.ID, "issue", row.Issue, "status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
+	case record.DispatchExternalLink:
+		// Nobody is told: the pull request is recorded and the workflow runs on it whatever
+		// Dispatch shows. The refusals that end this row are Dispatch's own, made the same way on
+		// every attempt: the URL linked from another issue (EXTERNAL_LINK_TAKEN), which a person
+		// did and may undo, or the issue closed or gone. The line names the URL, so an operator
+		// can link it by hand where it belongs.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox Dispatch external link refused by Dispatch and dropped; the issue does not link its pull request",
+				"row", row.ID, "issue", row.Issue, "url", value.URL, "status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -596,7 +607,7 @@ func retryBackoff(attempts int) time.Duration {
 // stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
-	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
+	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease, record.OutboxKindDispatchExternalLink:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindDesignGatesPublish:
@@ -675,6 +686,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.publishGatedSteps(ctx, value)
 	case record.DesignGatesPublish:
 		return r.publishDesignGates(ctx, value)
+	case record.DispatchExternalLink:
+		return r.dispatchExternalLink(ctx, row, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1138,6 +1151,21 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 	}
 	if err := r.dispatch.PutDesignGates(ctx, payload.Issue, gates); err != nil {
 		return fmt.Errorf("publish the design gates of %s: %w", payload.Issue, err)
+	}
+	return nil
+}
+
+// dispatchExternalLink adds the pull request's URL to the external links of the row's issue in
+// Dispatch (dispatch.Client.AddExternalLink), which is how Dispatch attributes a pull request on a
+// keyless issue branch to its issue. A link the issue already holds writes nothing, so a retry after
+// a lost answer is safe; a link someone wrote since the client's read is refused as ISSUE_CHANGED,
+// which is no permanent refusal, so the row reads again on its backoff.
+func (r *outbox) dispatchExternalLink(ctx context.Context, row record.OutboxRow, payload record.DispatchExternalLink) error {
+	if r.dispatch == nil {
+		return errors.New("Dispatch external link executor has no Dispatch client")
+	}
+	if err := r.dispatch.AddExternalLink(ctx, row.Issue, payload.URL); err != nil {
+		return fmt.Errorf("link %s from %s in Dispatch: %w", payload.URL, row.Issue, err)
 	}
 	return nil
 }
@@ -2511,7 +2539,8 @@ func (r *outbox) releaseResume(issue, tree string) store.ReleaseResumeRow {
 func (r *outbox) podsProvision() bool { return r.supervisor.deps.Runtime.ProvisionsWorkspaces() }
 
 // provisionWorkspace provisions issue's workspace in the repository its record names, at the
-// default branch the record names, as the implement App for that repository's owner.
+// default branch the record names for a branch GitHub does not have yet, on the issue's stored
+// branch, as the implement App for that repository's owner.
 func (r *outbox) provisionWorkspace(ctx context.Context, issue record.Issue) error {
 	if r.podsProvision() {
 		return nil
@@ -2520,7 +2549,7 @@ func (r *outbox) provisionWorkspace(ctx context.Context, issue record.Issue) err
 	if err != nil {
 		return fmt.Errorf("provision workspace for %s: %w", issue.Key, err)
 	}
-	return r.provisionIn(ctx, issue.Key, repo, issue.DefaultBranch, false)
+	return r.provisionIn(ctx, issue.Key, repo, issue.DefaultBranch, issue.Branch, false)
 }
 
 // ensureWorkspace provisions key's workspace when a launch finds it missing or not checked out on
@@ -2529,15 +2558,15 @@ func (r *outbox) provisionWorkspace(ctx context.Context, issue record.Issue) err
 // runtime's pods before — or no longer has, or whose checkout failed or was cut short (a provision
 // registers a workspace with no files and checks it out after, workspace.Provision), where the pane
 // would start in an empty working copy. A whole workspace is left as it is. Provisioning checks out
-// the issue's branch legion/<KEY> when GitHub has it, and starts at defaultBranch otherwise; on a
+// the issue's stored branch when GitHub has it, and starts at defaultBranch otherwise; on a
 // workspace already there it finishes the checkout (workspace.Provision). The workspace is read
 // under the issue's turn (provisionIn), so a launch never reads one the issue's provision is still
 // making.
-func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string) error {
+func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch, branch string) error {
 	if r.podsProvision() {
 		return nil
 	}
-	return r.provisionIn(ctx, key, repo, defaultBranch, true)
+	return r.provisionIn(ctx, key, repo, defaultBranch, branch, true)
 }
 
 // unprovisioned is why key's workspace, working, needs a provision before a launch works in it, or
@@ -2559,18 +2588,18 @@ func (r *outbox) unprovisioned(ctx context.Context, key string, working workspac
 	return "not checked out", nil
 }
 
-// provisionIn provisions key's workspace in repo, at defaultBranch for an issue with no branch, as
-// the implement App for repo's owner; with onlyMissing, only when the workspace is still missing or
-// not checked out once this provision's turn comes (unprovisioned), so two launches that both need
-// it provision it once. Provisions of one issue take turns; once it has its turn, a provision runs
-// beside other issues' provisions, handed its repository's store lock (provisionLocks.stores) and
-// the wait for one of the provisionConcurrency checkout places (provisionLocks.slot), which
-// workspace.Provision takes for the checkout alone, once it has let the store lock go. The order is
-// issue turn, store lock, checkout place, and nothing that holds a place waits on a store lock, so
-// the three never wait in a cycle, and a provision waiting on its repository's store lock holds no
-// place another repository's checkout needs.
-func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string, onlyMissing bool) error {
-	located, err := workspace.Location(r.stateDir, repo, key)
+// provisionIn provisions key's workspace in repo on branch, at defaultBranch for a branch GitHub
+// does not have yet, as the implement App for repo's owner; with onlyMissing, only when the
+// workspace is still missing or not checked out once this provision's turn comes (unprovisioned),
+// so two launches that both need it provision it once. Provisions of one issue take turns; once it
+// has its turn, a provision runs beside other issues' provisions, handed its repository's store
+// lock (provisionLocks.stores) and the wait for one of the provisionConcurrency checkout places
+// (provisionLocks.slot), which workspace.Provision takes for the checkout alone, once it has let
+// the store lock go. The order is issue turn, store lock, checkout place, and nothing that holds a
+// place waits on a store lock, so the three never wait in a cycle, and a provision waiting on its
+// repository's store lock holds no place another repository's checkout needs.
+func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch, branch string, onlyMissing bool) error {
+	located, err := workspace.Location(r.stateDir, repo, key, branch)
 	if err != nil {
 		return fmt.Errorf("provision workspace for %s: %w", key, err)
 	}
@@ -2611,7 +2640,7 @@ func (r *outbox) provisionIn(ctx context.Context, key string, repo ghrepo.Reposi
 	store, releaseStore := r.provisions.stores.take(located.Clone)
 	defer releaseStore()
 	if _, err := r.provision(ctx, workspace.Request{
-		StateDir: r.stateDir, Repo: repo, Issue: key, DefaultBranch: defaultBranch, CredentialHelper: workspace.GitHubCredentialHelper,
+		StateDir: r.stateDir, Repo: repo, Issue: key, Branch: branch, DefaultBranch: defaultBranch, CredentialHelper: workspace.GitHubCredentialHelper,
 		Source:       workspace.FromGitHub(mint, r.stateDir),
 		Log:          func(line string) { r.log.Warn("provisioning: "+line, "issue", key) },
 		StoreLock:    store,
@@ -2871,15 +2900,16 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 	return entry, nil
 }
 
-// issueBranch creates the issue's branch, legion/<KEY>, on GitHub at the repository's default
-// branch, so no role's push is the one that creates it: GitHub can refuse such a push on a large
-// repository (its check for changed workflow files, which it runs for an App without the workflows
-// permission, times out on a new ref), where it takes one that moves the branch. A branch GitHub
-// already has is left where it is. A start of the issue waits for this row (the lifecycle lane's
-// ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the
-// issue's roles, each attempt logged with GitHub's answer, until one passes. A row of a generation
-// the issue has left, or of a tree that lingers, finishes without acting: the starts it held back
-// act on neither.
+// issueBranch creates the issue's stored branch (record.Issue.Branch) on GitHub at the repository's
+// default branch, so no role's push is the one that creates it: GitHub can refuse such a push on a
+// large repository (its check for changed workflow files, which it runs for an App without the
+// workflows permission, times out on a new ref), where it takes one that moves the branch. A branch
+// GitHub already has is left where it is, which is what lets someone create the branch at another
+// commit before the issue starts (POST /legion/v1/issues/branch names it before the issue is
+// recorded). A start of the issue waits for this row (the lifecycle lane's ordering rule,
+// record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the issue's roles, each
+// attempt logged with GitHub's answer, until one passes. A row of a generation the issue has left,
+// or of a tree that lingers, finishes without acting: the starts it held back act on neither.
 func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -2918,12 +2948,15 @@ func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
 	if err != nil {
 		return err
 	}
+	if !claim.IsIssueBranch(issue.Branch) {
+		return fmt.Errorf("the record of %s names branch %q, which is no issue branch", issue.Key, issue.Branch)
+	}
 	repo := r.repositories.serving(recorded)
 	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
 		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch)
+	return ghbranch.Create(ctx, github, repo, issue.Branch, issue.DefaultBranch)
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The
@@ -2977,7 +3010,7 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	if err != nil {
 		return fmt.Errorf("locate workspace for %s: %w", row.Issue, err)
 	}
-	working, err := workspace.Location(r.stateDir, repo, row.Issue)
+	working, err := workspace.Location(r.stateDir, repo, row.Issue, issue.Branch)
 	if err != nil {
 		return fmt.Errorf("locate workspace for %s: %w", row.Issue, err)
 	}

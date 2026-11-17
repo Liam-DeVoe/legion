@@ -275,6 +275,7 @@ func (d *tickDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, st
 	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *tickDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *tickDispatch) AddExternalLink(context.Context, string, string) error { return nil }
 func (d *tickDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }

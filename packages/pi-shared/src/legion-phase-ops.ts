@@ -39,9 +39,11 @@ export interface ClaimCapability {
 }
 
 /**
- * A phase worker's operations on the daemon's role-local workflow surface, which every host's
- * `legion` tool serves: pi-legion's (`packages/pi-legion/src/tools.ts`, beside the architect's and
- * the controller's operations) and claude-envoy's MCP tool (`packages/claude-envoy/src/legion-tool.ts`).
+ * The operations on the daemon's role-local workflow surface that every host's `legion` tool
+ * serves a claim: pi-legion's (`packages/pi-legion/src/tools.ts`, beside the architect's and the
+ * controller's operations) and claude-envoy's MCP tool (`packages/claude-envoy/src/legion-tool.ts`).
+ * Each is a phase worker's but `issue_branch`, which a claim's host offers an architect alone
+ * (`phaseOpsFor`); pi-legion's controller tool serves it too, on the controller's own grant.
  */
 export const PHASE_OPS = [
   "read_record",
@@ -49,11 +51,19 @@ export const PHASE_OPS = [
   "handoff_complete",
   "request_backward_move",
   "ready_for_update",
+  "issue_branch",
 ] as const;
 export type PhaseOp = (typeof PHASE_OPS)[number];
 
 export function isPhaseOp(op: string): op is PhaseOp {
   return (PHASE_OPS as readonly string[]).includes(op);
+}
+
+/** The phase ops a claim of `role` is offered: every one to an architect, and every one but
+ * `issue_branch` to a phase worker, whose grant the daemon reads no issue's branch on and whose
+ * pane holds its own issue's branch as `LEGION_BRANCH`. */
+export function phaseOpsFor(role: string | undefined): readonly PhaseOp[] {
+  return role === "architect" ? PHASE_OPS : PHASE_OPS.filter((op) => op !== "issue_branch");
 }
 
 /** A string field `op` requires: present, and not blank. The value is passed on as it was sent. */
@@ -168,6 +178,9 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
+    // The issue whose branch it reads, required: an architect reads a child's or a root's that
+    // Legion may not have recorded yet, which its claim does not name.
+    operation("issue_branch", { issue: requiredString("issue_branch", "issue") }),
   ],
   {
     error: (issue) =>
@@ -209,9 +222,9 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
   return byField;
 }
 
-/** The `legion` tool's sentences on `read_record`, `read_release_records` and
- * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
- * (`legionToolDescription`). */
+/** The `legion` tool's sentences on `read_record`, `read_release_records`,
+ * `request_backward_move` and `issue_branch`, which a host whose tool states them passes as
+ * `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
     "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
@@ -228,6 +241,10 @@ export const PHASE_OP_SENTENCES = {
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; " +
     "the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. ",
+  issueBranch:
+    "issue_branch (the controller and the architect alone) reads the branch the daemon stores for `issue` and returns `issue` and `branch`; " +
+    "for an issue Legion has not recorded yet it allocates that branch and stores it, so a branch made at that name before admission is the " +
+    "one the issue takes. ",
 } as const;
 
 /**
@@ -270,9 +287,9 @@ export function legionToolDescription(host: {
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
     "and reports it with `commit`, the head that record's body names " +
     "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
-    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+    "workspace stands on, `@-`, pushed to the issue's branch (`LEGION_BRANCH`) at origin, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
     "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
-    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
+    "implementer's `@-` not yet on the issue's branch at origin, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -283,7 +300,7 @@ export function legionToolDescription(host: {
     "write this phase's handoff), " +
     "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
     `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
-    "pull request on `legion/<issue>` and none recorded " +
+    "pull request on the issue's branch (`LEGION_BRANCH`) and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
     "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
@@ -307,10 +324,10 @@ export interface PhaseOpRuntime {
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
-   * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
-   * throw leaves the head out of the signal, which is still sent, and the throw's message goes
-   * to the agent in the answer's `note`. */
+  /** The head of the issue's branch (`LEGION_BRANCH`) at origin that the `ready_for_update`
+   * signal reports (`findPushedBranchHead` with the pane's environment): `""` when the branch is
+   * not there. A throw leaves the head out of the signal, which is still sent, and the throw's
+   * message goes to the agent in the answer's `note`. */
   readonly branchHead: () => Promise<string>;
   /** How `handoff_complete` waits out a daemon restart (`retryWhileDaemonRestarts`): the host's
    * sentence to the agent, and a test's clock. */
@@ -348,10 +365,11 @@ const ROOT_COMPLETION_REFUSAL =
  * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
  * names or of the claim's own when it names none, the window's records and their counts for
  * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
- * `request_backward_move`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head
- * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
- * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
- * first, then a root architect's completion,
+ * `request_backward_move`, `{}` for `ready_for_update`, or `{ note }` when its branch-head
+ * lookup failed, and the daemon's answer for `issue_branch`, `{ issue, branch }`. A refusal throws
+ * before any write, minting nothing and posting nothing: an operation the claim's role is not
+ * offered (`phaseOpsFor`) first, whole; then each problem `PhaseOpArguments` finds, joined by
+ * `; `, a field the operation does not take named first, then a root architect's completion,
  * then each problem with the operation's own fields in the order it takes them; then what the
  * record decides (a check report's verdict, its claim's role against the check's own, its
  * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
@@ -377,13 +395,14 @@ export async function executePhaseOp(
   const issues = parsed.success ? [] : parsed.error.issues;
   const unknownFields = issues.filter((issue) => issue.code === "unrecognized_keys");
   const fieldProblems = issues.filter((issue) => issue.code !== "unrecognized_keys");
+  const op = typeof input === "object" && input !== null && "op" in input ? input.op : undefined;
+  // An operation the claim's role is not offered is refused before any of its fields is read, as
+  // pi-legion refuses an operation its session kind does not own.
+  if (typeof op === "string" && isPhaseOp(op) && !phaseOpsFor(claim.role).includes(op)) {
+    throw new Error(`${op} is not available to a phase-worker session`);
+  }
   const rootCompletion =
-    typeof input === "object" &&
-    input !== null &&
-    "op" in input &&
-    input.op === "handoff_complete" &&
-    claim.role === "architect" &&
-    claim.issue === claim.tree;
+    op === "handoff_complete" && claim.role === "architect" && claim.issue === claim.tree;
   if (rootCompletion) {
     throw new Error(
       [...unknownFields.map((issue) => issue.message), ROOT_COMPLETION_REFUSAL].join("; ")
@@ -483,6 +502,13 @@ export async function executePhaseOp(
               `command. The lookup said: ${failure}`,
           };
     }
+    case "issue_branch":
+      // The daemon's answer as it stands: the issue and the branch it stores for it, allocated
+      // and stored by this read where Legion has not recorded the issue yet.
+      return daemon.issueBranch({
+        grantId: await mintClaimGrant(daemon, claim),
+        issue: args.issue,
+      });
   }
 }
 

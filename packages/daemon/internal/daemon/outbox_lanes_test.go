@@ -175,6 +175,9 @@ func (d *postingDispatch) PostMessage(_ context.Context, key, body string) error
 	d.posted[key] = append(d.posted[key], body)
 	return nil
 }
+func (d *postingDispatch) AddExternalLink(context.Context, string, string) error {
+	return errors.New("postingDispatch takes no external link")
+}
 func (d *postingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -247,6 +250,7 @@ func (d *laneBoard) ReleaseClaim(context.Context, string) error {
 	return errors.New("laneBoard releases no claim")
 }
 func (d *laneBoard) PostMessage(context.Context, string, string) error { return nil }
+func (d *laneBoard) AddExternalLink(context.Context, string, string) error { return nil }
 func (d *laneBoard) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }

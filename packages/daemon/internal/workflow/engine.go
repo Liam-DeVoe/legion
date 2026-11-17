@@ -1688,15 +1688,17 @@ func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role cla
 	return row, nil
 }
 
-// issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on
-// repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
+// issueForBranch is the issue whose stored branch (record.Issue.Branch) branch is, when it is
+// recorded on repo, as its record keeps GitHub's spelling (record.Issue.GitHubRepo), compared as
 // sameRepository compares two names — without case, as GitHub compares names, and a configured
-// rename's two names as one repository: a pull request on legion/<KEY> in another repository is
-// never <KEY>'s.
+// rename's two names as one repository: a pull request on an issue's branch in another repository
+// is never that issue's. The issue is the store's answer for the branch (record.Store.IssueForBranch);
+// nothing reads a key out of the name, so a branch named after an issue that is not that issue's
+// stored branch is no issue's.
 func (e *Engine) issueForBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*record.Issue, error) {
-	key, ok := claim.BranchIssue(branch)
-	if !ok {
-		return nil, nil
+	key, err := e.store.IssueForBranch(ctx, tx, branch)
+	if err != nil || key == "" {
+		return nil, err
 	}
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil || !e.sameRepository(issue.GitHubRepo, repo) {

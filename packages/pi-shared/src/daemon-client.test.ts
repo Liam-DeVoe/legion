@@ -333,6 +333,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
     readonly grant: (body: object) => Promise<unknown>;
     readonly handoffComplete: (body: object) => Promise<unknown>;
     readonly issueStatus: (body: object) => Promise<unknown>;
+    readonly issueBranch: (body: object) => Promise<unknown>;
     readonly freshSession: (body: object) => Promise<unknown>;
     readonly compact: (body: object) => Promise<unknown>;
     readonly gateRegister: (body: object) => Promise<unknown>;
@@ -370,6 +371,14 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       "/legion/v1/issues/status",
       { grantId: "grant-208", issue: "LEGION-208", status: "todo" },
       "issue-status.json",
+    ],
+    // The controller's or an architect's read of an issue's branch: the daemon's answer is the
+    // issue and the branch it stores for it, keyless for an issue it records from this contract on.
+    [
+      "issueBranch",
+      "/legion/v1/issues/branch",
+      { grantId: "grant-208", issue: "ACME-12" },
+      "issue-branch.json",
     ],
     [
       "freshSession",

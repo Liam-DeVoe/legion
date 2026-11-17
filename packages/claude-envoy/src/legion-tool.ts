@@ -7,25 +7,30 @@ import {
   executePhaseOp,
   legionToolDescription,
   PHASE_OP_SENTENCES,
-  PHASE_OPS,
   phaseOpParameters,
+  phaseOpsFor,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion`, under the pane's one server. */
 export const LEGION_TOOL_NAME = "legion"
 
-/** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
- * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets. */
-export function legionToolDefinition() {
+/** The tool as `tools/list` declares it for a pane whose `LEGION_ROLE` is `role`: one object
+ * schema, `op` choosing one of the phase ops the role is offered
+ * (`@legion/pi-shared/legion-phase-ops`, `phaseOpsFor`): a phase worker's five, and for an
+ * architect `issue_branch` beside them, which the description then states. */
+export function legionToolDefinition(role: string | undefined) {
+  const ops = phaseOpsFor(role)
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        (ops.includes("issue_branch") ? PHASE_OP_SENTENCES.issueBranch : ""),
     }),
-    inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
+    inputSchema: z.toJSONSchema(z.object({ op: z.enum(ops), ...phaseOpParameters(z) })),
   }
 }
 
@@ -41,8 +46,9 @@ export interface LegionToolRuntime {
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>
-  /** The head of `legion/<issue>@origin` a `ready_for_update` signal reports
-   * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. */
+  /** The head of the issue's branch (`LEGION_BRANCH`) at origin a `ready_for_update` signal
+   * reports (`findPushedBranchHead` with the pane's environment): `""` when the branch is not
+   * there. */
   readonly branchHead: () => Promise<string>
 }
 

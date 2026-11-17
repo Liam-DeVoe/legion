@@ -121,16 +121,19 @@ a root that keeps a Dispatch parent, which come to you as notices
 `todo` only for the roots you label at a person's request or file yourself.
 
 An issue whose work must start at a commit other than its base branch's head needs its branch
-`legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
-`gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/legion/<KEY> -f sha=<commit>`. You
+created at that commit before Legion starts the issue. The daemon names an issue's branch once and
+keeps the name, a root's not yet admitted included, so read it first: the `legion` tool's
+`op: "issue_branch"` with `issue: "<KEY>"` answers it as `branch` (you, and the tree's architect),
+and `legion issue-branch <KEY>` prints it (whoever hands the work over). One command creates it:
+`gh api -X POST repos/<owner>/<name>/git/refs -f ref=refs/heads/<branch> -f sha=<commit>`. You
 ask for that command rather than run it, because you edit no repository and push no commit: for a
 root, whoever hands the work over runs it; for a child of a tree, the tree's architect runs it. The
-daemon sets the deadline: its own `issue_branch` row creates `legion/<KEY>` at the issue's base
+daemon sets the deadline: its own `issue_branch` row creates `<branch>` at the issue's base
 branch and leaves a branch GitHub already has where it is, so a root's branch must exist before
 the issue is admitted, and a child's before the child starts its first phase, which it can do as
 soon as its tree's design gate opens and nothing holds it. Read the branch back before you
 `set_status` the root to `todo`:
-`gh api repos/<owner>/<name>/git/ref/heads/legion/<KEY>`. The issue's own spec tells its worker
+`gh api repos/<owner>/<name>/git/ref/heads/<branch>`. The issue's own spec tells its worker
 which branch to open the pull request against; nothing else carries that.
 
 ## Free slots

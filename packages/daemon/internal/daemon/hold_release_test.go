@@ -263,6 +263,7 @@ func (d *pilotDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, s
 	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *pilotDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *pilotDispatch) AddExternalLink(context.Context, string, string) error { return nil }
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }
@@ -324,6 +325,7 @@ func (d *filteringDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issu
 	return d.SetStatus(ctx, issue.Key, status)
 }
 func (d *filteringDispatch) PostMessage(context.Context, string, string) error { return nil }
+func (d *filteringDispatch) AddExternalLink(context.Context, string, string) error { return nil }
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }

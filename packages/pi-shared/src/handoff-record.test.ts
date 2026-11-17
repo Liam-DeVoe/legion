@@ -32,26 +32,38 @@ const TIP = "210d53a9d1b109df97fbb5dd5041d659dbab1323";
  * branch's tip `TIP`, so a report carrying it carries what the record says and not what jj
  * answered. */
 const HEAD = "9f2c81d4e6b70a35c9d8e1f4a2b6038d5c7e9a14";
-const REMOTE = 'remote_bookmarks(exact:"legion/LEGION-208", exact:"origin")';
+/** The issue's branch as the daemon allocates one for an issue it records, with no key in it: the
+ * pane is told it as `LEGION_BRANCH`, and every revset and message below names it. */
+const BRANCH = "legion/3f9a1c2b7d4e5f60";
+/** `<branch>@origin`, as the pane's jj is asked for it. */
+const remoteOf = (branch: string) => `remote_bookmarks(exact:"${branch}", exact:"origin")`;
+const REMOTE = remoteOf(BRANCH);
 /** A handoff body as a file-backed role writes it: its stamps and the head its work was done
  * against, which `head` may be left out of or given any shape. */
 const body = (head?: unknown) =>
   JSON.stringify({ schemaVersion: 1, issue: ISSUE, ...(head === undefined ? {} : { head }) });
 const RECORD = { id: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13", version: 3, body: body(HEAD) };
 
-const env = { LEGION_WORKSPACE: "/workspaces/LEGION-208", LEGION_ISSUE: ISSUE };
+/** The pane of a daemon that tells it its issue's branch. */
+const env = {
+  LEGION_WORKSPACE: "/workspaces/LEGION-208",
+  LEGION_ISSUE: ISSUE,
+  LEGION_BRANCH: BRANCH,
+};
+/** The pane of an older daemon, which sets no `LEGION_BRANCH`: its branch is `legion/<issue>`. */
+const olderPane = { LEGION_WORKSPACE: env.LEGION_WORKSPACE, LEGION_ISSUE: ISSUE };
 
 /** A jj that answers the report's commands — the commit the workspace stands on, `STANDING`, and
- * the branch's tip at origin, `TIP`, when the branch carries `STANDING`, which it does unless
- * `pushed` is false — and records each call's args. */
-function fakeJj(pushed = true): { jj: JjRunner; calls: string[][] } {
+ * the tip at origin of the branch `remote` names, `TIP`, when the branch carries `STANDING`, which
+ * it does unless `pushed` is false — and records each call's args. */
+function fakeJj(pushed = true, remote = REMOTE): { jj: JjRunner; calls: string[][] } {
   const calls: string[][] = [];
   const jj: JjRunner = async (args, cwd) => {
     expect(cwd).toBe(env.LEGION_WORKSPACE);
     calls.push([...args]);
     const revision = args[2];
     if (revision === "@-") return STANDING;
-    if (revision === `${REMOTE} & ${STANDING}::`) return pushed ? TIP : "";
+    if (revision === `${remote} & ${STANDING}::`) return pushed ? TIP : "";
     throw new Error(`unexpected jj ${args.join(" ")}`);
   };
   return { jj, calls };
@@ -179,7 +191,7 @@ test("a tester whose issue moved on to reviewing reports its own newest test rec
 });
 
 /** The commit the issue's one shared workspace stands on once the issue has moved on: a sibling
- * role's (the tester commits there), which `legion/LEGION-208@origin` does not carry and no
+ * role's (the tester commits there), which the issue's branch at origin does not carry and no
  * record of another role names. */
 const SIBLING = "c0de".repeat(10);
 
@@ -199,7 +211,7 @@ const RECORDS: Readonly<Record<HandoffWord, { id: string; version: number; head:
 type Sends = { readonly record: HandoffWord } | "@-" | { readonly thrown: string };
 
 /** What the completion reads of the shared workspace: nothing, `@-` alone, or `@-` and then
- * whether `legion/<issue>@origin` carries it, the implementer's workspace check. */
+ * whether the issue's branch at origin carries it, the implementer's workspace check. */
 type WorkspaceReads = "nothing" | "@-" | "@- and origin";
 
 /** What the daemon answers the completion sent, from a finished role (the table's doc comment). */
@@ -225,8 +237,8 @@ const row = (sends: Sends, reads: WorkspaceReads, daemon: DaemonAnswer): Complet
 });
 
 /** The part of the push refusal the implementer's round meets in implementing, where its workspace
- * stands on a commit `legion/LEGION-208@origin` does not carry. */
-const PUSH_IT = "is not on legion/LEGION-208@origin: push it";
+ * stands on a commit the issue's branch at origin does not carry. */
+const PUSH_IT = `is not on ${BRANCH}@origin: push it`;
 
 /**
  * Every role's completion while the issue stands in each phase it can stand in, with the shared
@@ -354,7 +366,7 @@ const WORKER: Readonly<Partial<Record<LegionPhase, LegionRole>>> = {
 };
 
 /** The shared workspace once the issue has moved on: it stands on `SIBLING`, which
- * `legion/LEGION-208@origin` does not carry. `asked` names each read, `@-` or `origin`. */
+ * the issue's branch at origin does not carry. `asked` names each read, `@-` or `origin`. */
 function siblingWorkspace(): { jj: JjRunner; asked: string[] } {
   const asked: string[] = [];
   const jj: JjRunner = async (args, cwd) => {
@@ -637,7 +649,7 @@ test("an implementer whose @- is not on its branch at origin is refused naming t
       findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
     ).rejects.toThrow(
       new Error(
-        `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 3) names ${named}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`
+        `the commit this workspace stands on, ${STANDING}, is not on ${BRANCH}@origin: push it with \`jj bookmark set ${BRANCH} -r @- && jj git push --bookmark ${BRANCH}\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 3) names ${named}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`
       )
     );
     expect(calls).toEqual([
@@ -658,7 +670,7 @@ test("an implementer whose pushed @- its record does not name is refused naming 
       findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
     ).rejects.toThrow(
       new Error(
-        `the newest implement handoff of LEGION-208 (version 3) names ${named} as its head, not the commit this workspace stands on, ${STANDING}, which legion/LEGION-208@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`
+        `the newest implement handoff of LEGION-208 (version 3) names ${named} as its head, not the commit this workspace stands on, ${STANDING}, which ${BRANCH}@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`
       )
     );
     expect(calls).toEqual([
@@ -666,6 +678,38 @@ test("an implementer whose pushed @- its record does not name is refused naming 
       ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
     ]);
   }
+});
+
+// The fallback, until every pod runs a daemon that sets `LEGION_BRANCH`: an older daemon's pane
+// names no branch, and that daemon named every issue's branch `legion/<issue>`.
+test("a pane that names no LEGION_BRANCH holds the implementer's round to legion/<issue>@origin", async () => {
+  const older = remoteOf("legion/LEGION-208");
+  const pushed = fakeJj(true, older);
+  await expect(
+    findHandoffReport({
+      phase: "implementing",
+      role: "implementer",
+      env: olderPane,
+      jj: pushed.jj,
+      latestHandoff: recordingDispatch(PUSHED_RECORD).latestHandoff,
+    })
+  ).resolves.toEqual({ commit: STANDING, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(pushed.calls).toEqual([
+    ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+    ["log", "-r", `${older} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
+  ]);
+  const unpushed = fakeJj(false, older);
+  await expect(
+    findHandoffReport({
+      phase: "implementing",
+      role: "implementer",
+      env: olderPane,
+      jj: unpushed.jj,
+      latestHandoff: recordingDispatch(PUSHED_RECORD).latestHandoff,
+    })
+  ).rejects.toThrow(
+    `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\``
+  );
 });
 
 test("an implementer whose record names no readable head is refused naming what to write", async () => {
@@ -684,7 +728,7 @@ test("an implementer whose record names no readable head is refused naming what 
   }
 });
 
-test("the workspace and a well-formed issue key are required before jj or Dispatch is asked", async () => {
+test("the workspace, a well-formed issue key and a well-formed branch are required before jj or Dispatch is asked", async () => {
   const { jj, calls } = fakeJj();
   const { latestHandoff, reads } = recordingDispatch();
   await expect(
@@ -705,6 +749,19 @@ test("the workspace and a well-formed issue key are required before jj or Dispat
       latestHandoff,
     })
   ).rejects.toThrow('LEGION_ISSUE "LEGION-208#x" is not a Dispatch issue key like LEGION-1');
+  // The branch is the worker's own environment too, so a value that would name another reference
+  // or path is refused naming the variable.
+  await expect(
+    findHandoffReport({
+      phase: "implementing",
+      role: "implementer",
+      env: { ...env, LEGION_BRANCH: "legion/../x" },
+      jj,
+      latestHandoff,
+    })
+  ).rejects.toThrow(
+    new Error('LEGION_BRANCH "legion/../x" is not an issue branch like legion/0123456789abcdef')
+  );
   expect(calls).toEqual([]);
   expect(reads).toEqual([]);
 });
@@ -721,26 +778,41 @@ test("a failing jj surfaces its command and stderr", async () => {
   );
 });
 
-// The head `ready_for_update` reports: the issue branch at the remote, read with the pane's jj.
-test("the branch head is the issue bookmark at origin, and empty when the remote has no such branch", async () => {
+// The head `ready_for_update` reports: the issue's branch at the remote, read with the pane's jj.
+test("the branch head is the issue's branch at origin, and empty when the remote has no such branch", async () => {
   const calls: string[][] = [];
-  const answer = async (head: string) => {
+  const answer = async (head: string, pane: NodeJS.ProcessEnv = env) => {
     const jj: JjRunner = async (args, cwd) => {
       expect(cwd).toBe(env.LEGION_WORKSPACE);
       calls.push([...args]);
       return head;
     };
-    return findPushedBranchHead({ env, jj });
+    return findPushedBranchHead({ env: pane, jj });
   };
   await expect(answer(TIP)).resolves.toBe(TIP);
   expect(calls).toEqual([["log", "-r", REMOTE, "--no-graph", "-T", "commit_id"]]);
   // A planner before its first push: no branch at the remote, and no error.
   await expect(answer("")).resolves.toBe("");
+  // A pane of an older daemon, which names no branch, reads `legion/<issue>` at the remote.
+  await expect(answer(TIP, olderPane)).resolves.toBe(TIP);
+  expect(calls.at(-1)).toEqual([
+    "log",
+    "-r",
+    remoteOf("legion/LEGION-208"),
+    "--no-graph",
+    "-T",
+    "commit_id",
+  ]);
 
-  // The issue key names the branch, and a worker sets its own environment.
+  // The issue key and the branch are the worker's own environment, which it sets itself.
   await expect(
     findPushedBranchHead({ env: { ...env, LEGION_ISSUE: "../x" }, jj: async () => TIP })
   ).rejects.toThrow(new Error('LEGION_ISSUE "../x" is not a Dispatch issue key like LEGION-1'));
+  await expect(
+    findPushedBranchHead({ env: { ...env, LEGION_BRANCH: "refs/heads/x" }, jj: async () => TIP })
+  ).rejects.toThrow(
+    new Error('LEGION_BRANCH "refs/heads/x" is not an issue branch like legion/0123456789abcdef')
+  );
   await expect(
     findPushedBranchHead({ env: { ...env, LEGION_WORKSPACE: "" }, jj: async () => TIP })
   ).rejects.toThrow(
@@ -942,13 +1014,18 @@ async function jj(cwd: string, env: Record<string, string>, ...args: string[]): 
 }
 
 test.skipIf(withoutJj)(
-  "against a real jj workspace, the implementer's report refuses an @- the branch does not carry and a record naming another commit, and names @- once it is pushed and recorded",
+  "against a real jj workspace, the implementer's report refuses an @- the issue's keyless branch does not carry and a record naming another commit, and names @- once it is pushed and recorded",
   async () => {
     const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-record-"));
     scratch.push(root);
     const workspace = path.join(root, "workspace");
     const childEnv = isolatedHome(root);
-    const paneEnv = { ...versionControlIdentity, LEGION_WORKSPACE: workspace, LEGION_ISSUE: ISSUE };
+    const paneEnv = {
+      ...versionControlIdentity,
+      LEGION_WORKSPACE: workspace,
+      LEGION_ISSUE: ISSUE,
+      LEGION_BRANCH: BRANCH,
+    };
     await Bun.spawn(["git", "init", "--bare", "--quiet", path.join(root, "origin.git")], {
       env: childEnv,
     }).exited;
@@ -983,13 +1060,13 @@ test.skipIf(withoutJj)(
     // Committed but not pushed: the branch does not exist at origin yet, so it does not carry the
     // commit the workspace stands on.
     await expect(report()).rejects.toThrow(
-      `the commit this workspace stands on, ${change}, is not on legion/${ISSUE}@origin`
+      `the commit this workspace stands on, ${change}, is not on ${BRANCH}@origin`
     );
 
     // Pushed: the head the record names, the commit the workspace stands on, is reported with the
     // record.
-    await jj(workspace, childEnv, "bookmark", "set", `legion/${ISSUE}`, "-r", "@-");
-    await jj(workspace, childEnv, "git", "push", "--bookmark", `legion/${ISSUE}`);
+    await jj(workspace, childEnv, "bookmark", "set", BRANCH, "-r", "@-");
+    await jj(workspace, childEnv, "git", "push", "--bookmark", BRANCH);
     await expect(report()).resolves.toEqual({
       commit: change,
       handoffId: RECORD.id,
@@ -1001,7 +1078,7 @@ test.skipIf(withoutJj)(
     // head.
     head = "0123456789abcdef0123456789abcdef01234567";
     await expect(report()).rejects.toThrow(
-      `the newest implement handoff of ${ISSUE} (version ${RECORD.version}) names ${head} as its head, not the commit this workspace stands on, ${change}, which legion/${ISSUE}@origin carries`
+      `the newest implement handoff of ${ISSUE} (version ${RECORD.version}) names ${head} as its head, not the commit this workspace stands on, ${change}, which ${BRANCH}@origin carries`
     );
 
     // A later commit not pushed yet is refused naming the push, whether the record names that
@@ -1018,20 +1095,20 @@ test.skipIf(withoutJj)(
     const fix = await jj(workspace, childEnv, "log", "-r", "@-", "--no-graph", "-T", "commit_id");
     head = fix;
     await expect(report()).rejects.toThrow(
-      `the commit this workspace stands on, ${fix}, is not on legion/${ISSUE}@origin`
+      `the commit this workspace stands on, ${fix}, is not on ${BRANCH}@origin`
     );
     head = change;
     const forgotten = report();
     await expect(forgotten).rejects.toThrow(
-      `the commit this workspace stands on, ${fix}, is not on legion/${ISSUE}@origin`
+      `the commit this workspace stands on, ${fix}, is not on ${BRANCH}@origin`
     );
     await expect(forgotten).rejects.toThrow(
       `names ${change}, so when that is another commit, write the handoff again with \`head\` set to ${fix}`
     );
-    await jj(workspace, childEnv, "bookmark", "set", `legion/${ISSUE}`, "-r", "@-");
-    await jj(workspace, childEnv, "git", "push", "--bookmark", `legion/${ISSUE}`);
+    await jj(workspace, childEnv, "bookmark", "set", BRANCH, "-r", "@-");
+    await jj(workspace, childEnv, "git", "push", "--bookmark", BRANCH);
     await expect(report()).rejects.toThrow(
-      `the newest implement handoff of ${ISSUE} (version ${RECORD.version}) names ${change} as its head, not the commit this workspace stands on, ${fix}, which legion/${ISSUE}@origin carries`
+      `the newest implement handoff of ${ISSUE} (version ${RECORD.version}) names ${change} as its head, not the commit this workspace stands on, ${fix}, which ${BRANCH}@origin carries`
     );
     head = fix;
     await expect(report()).resolves.toEqual({

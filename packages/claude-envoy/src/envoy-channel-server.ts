@@ -2111,9 +2111,12 @@ export async function runEnvoyChannelServer(): Promise<void> {
           env: process.env,
           log: phaseLog,
         })
+  // The `legion` tool offers the phase ops the pane's role is offered (`phaseOpsFor`): the role the
+  // daemon launched it as, which its claim then registers as.
+  const legionRole = configuredValue(process.env["LEGION_ROLE"])
   const toolDefinitions = [
     ...channelToolDefinitions(),
-    ...(daemon === undefined ? [] : [legionToolDefinition(), phaseHookToolDefinition()]),
+    ...(daemon === undefined ? [] : [legionToolDefinition(legionRole), phaseHookToolDefinition()]),
   ]
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolDefinitions }))
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {

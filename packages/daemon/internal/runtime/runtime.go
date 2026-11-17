@@ -359,8 +359,11 @@ func (k Known) Validate() error {
 // which each runtime sets itself): the claim's own issue when the project names its repository in
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
-// neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// neither. Branch is the issue's stored branch (record.Issue.Branch): the jj bookmark its workspace
+// is provisioned on and the branch its roles push to, which each runtime tells the agent itself as
+// LEGION_BRANCH and, under Kubernetes, names to the pod's workspace provisioning; "" exactly when
+// Repository is zero, and for the controller. Backend is the harness the process runs
+// (`worker_backends`, Backends); "" is Oh My Pi (Of).
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -374,6 +377,7 @@ type SpawnSpec struct {
 	Prompt            PromptParts
 	Repository        ghrepo.Repository
 	DefaultBranch     string
+	Branch            string
 	ResumeSessionFile string
 	Plugins           *PluginInstall
 	Variants          []Variant

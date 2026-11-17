@@ -169,6 +169,7 @@ func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
 }
 
 func (r *statusRecorder) PostMessage(context.Context, string, string) error { return nil }
+func (r *statusRecorder) AddExternalLink(context.Context, string, string) error { return nil }
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }

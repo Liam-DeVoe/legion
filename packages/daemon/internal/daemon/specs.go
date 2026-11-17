@@ -91,7 +91,12 @@ type specs struct {
 	// issue's workspace a launch finds missing or not checked out there (outbox.ensureWorkspace,
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
-	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch, branch string) error
+	// branch is the branch an issue is worked on (workflowRuntime.issueBranch: its stored branch,
+	// allocated for an issue that has none), which a launch that works a repository names to its
+	// runtime (runtime.SpawnSpec.Branch); nil for a daemon with no workflow, whose launches work no
+	// repository.
+	branch func(ctx context.Context, issue string) (string, error)
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -177,13 +182,18 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the repository of %s: %w", c.Token, err)
 		}
 	}
+	if s.branch != nil && !spec.Repository.IsZero() {
+		if spec.Branch, err = s.branch(ctx, c.Issue); err != nil {
+			return runtime.SpawnSpec{}, fmt.Errorf("the branch of %s: %w", c.Token, err)
+		}
+	}
 	spec.IssueTrailer = s.issueTrailer(spec.Repository, c.Issue)
 	// Every launch, not only a claim's first: a claim resumed, relaunched or recovered on this host
 	// may have no workspace here — its issue ran in another runtime's pods before, or its tree's
 	// linger removed it — and a pane cannot start without one. Provisioning checks out the issue's
-	// branch legion/<KEY> when GitHub has it, so whatever the claim pushed is there.
+	// stored branch when GitHub has it, so whatever the claim pushed is there.
 	if s.hostWorkspaces && s.ensureWorkspace != nil && !spec.Repository.IsZero() {
-		if err := s.ensureWorkspace(ctx, c.Issue, spec.Repository, spec.DefaultBranch); err != nil {
+		if err := s.ensureWorkspace(ctx, c.Issue, spec.Repository, spec.DefaultBranch, spec.Branch); err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 	}

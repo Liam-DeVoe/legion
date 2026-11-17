@@ -1646,6 +1646,117 @@ func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsA
 		model.CommitAtBasis, false)
 }
 
+// A pull request on a keyless Legion branch is its issue's by the issue's external link alone,
+// and this pins that link. The branch is legion/<16 hex characters>, the title a
+// conventional-commit subject and the body names no issue key, so four of the attribution's five
+// sources name nobody (delivery/attribution.go): no GitHub issue is cited, and no key is in the
+// head branch, the title, the body or the commit messages. What is left is the first-ranked
+// source, the issue whose external link is the pull request's own URL, and the Legion daemon
+// writes that link through the issue PATCH route (external_links) when it records the pull
+// request. Before keyless branches the head branch's key, legion/<KEY> (attribution rank 3),
+// linked such a pull request with no link at all. With the link, a before_merge result at the
+// head stands at it and the check compares with that head. The control is the same pull request
+// with no link on the issue: the read-through stores it attributed to nobody, so the check
+// compares with nothing and the result stands at another commit.
+func TestAPullRequestOnAKeylessLegionBranchStandsAtItsHeadByTheIssuesExternalLinkAlone(t *testing.T) {
+	const number = 58
+	pullRequest := fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
+	})
+	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+	})
+	// The repository is readable, so a result at no attributed head is `other_commit` rather
+	// than `unknown`.
+	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+	})
+	// The pull request a Legion worker opens from its keyless branch: no key in the branch, the
+	// title or the body, and no GitHub issue cited.
+	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `[{"number":%d,"title":"feat(results): read a check through its pull request",
+			"body":"Records each check's result at the head of this pull request.","html_url":%q,
+			"state":"open","merged":false,"updated_at":"2026-11-17T00:00:00Z",
+			"head":{"ref":"legion/3f9a1c2b7d4e5f60","sha":%q,"repo":{"full_name":"acme/widgets"}},"base":{"ref":"main"}}]`,
+			number, pullRequest, headCommit)
+	})
+	// Its commit messages name no key either. The control's read-through pages them, since no
+	// candidate ranked above them is held there; the linked read never asks.
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `[]`)
+	})
+	upstream := httptest.NewServer(mux)
+	t.Cleanup(upstream.Close)
+
+	// recordAtTheHead stands up a Dispatch over that GitHub, links its issue to the pull request
+	// when linked, records a pass of k1 at the pull request's head, and answers the issue the
+	// read-through stored the pull request under, with its source, and the results read.
+	type answered struct {
+		issue, resultID, source string
+		stored                  *string
+		read                    issueResults
+	}
+	recordAtTheHead := func(linked bool) answered {
+		t.Helper()
+		handler, database, _ := newTestServer(t, testServerOptions{
+			app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
+			githubAPIBase: upstream.URL,
+		})
+		issue := issueInRepository(t, handler, "ACME", "acme/widgets", "Keyless branch")
+		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+		if linked {
+			// The write the Legion daemon makes when it records the pull request.
+			if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{
+				"external_links": []map[string]string{{"url": pullRequest, "kind": "github_pr"}},
+			}, "alice"); response.Code != http.StatusOK {
+				t.Fatalf("link %s to %s: status=%d body=%s", issue.Key, pullRequest, response.Code, response.Body.String())
+			}
+		}
+		recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
+		got := answered{issue: issue.Key, resultID: recorded.Result.ID}
+		if err := database.Pool.QueryRow(context.Background(), `
+			select issue_key, attribution_source from pull_request_heads where repo = 'acme/widgets' and number = $1
+		`, number).Scan(&got.stored, &got.source); err != nil {
+			t.Fatalf("read the pull request the read-through stored: %v", err)
+		}
+		got.read = readResults(t, handler, issue.Key)
+		return got
+	}
+
+	linked := recordAtTheHead(true)
+	if linked.stored == nil || *linked.stored != linked.issue || linked.source != "external_link" {
+		t.Fatalf("the linked pull request is stored under issue=%v source=%q, want %s by external_link",
+			linked.stored, linked.source, linked.issue)
+	}
+	check := checkOf(t, linked.read, "k1")
+	if compared := check.ComparedWith; len(compared) != 1 || compared[0].Kind != model.CheckBasisPullRequest ||
+		compared[0].Commit != headCommit || compared[0].PullRequest == nil || *compared[0].PullRequest != number {
+		t.Fatalf("the pre-merge check compared with %+v, want the head %s of pull request %d alone", compared, headCommit, number)
+	}
+	if check.PassStands.Answer != model.PassStandsYes {
+		t.Fatalf("the pre-merge check answers pass_stands %q, want %q", check.PassStands.Answer, model.PassStandsYes)
+	}
+	standsAt(t, linked.read, "k1", linked.resultID,
+		"a result at the head of a keyless branch's pull request its issue links", model.CommitAtBasis, false)
+
+	unlinked := recordAtTheHead(false)
+	if unlinked.stored != nil || unlinked.source != "none" {
+		t.Fatalf("the unlinked pull request is stored under issue=%v source=%q, want nobody by none",
+			unlinked.stored, unlinked.source)
+	}
+	comparedNothing(t, unlinked.read, "k1", model.ReasonNoPullRequestOrBranch, model.PassStandsNo)
+	standsAt(t, unlinked.read, "k1", unlinked.resultID,
+		"a result at the head of a keyless branch's pull request its issue does not link", model.CommitOtherCommit, false)
+}
+
 // The same surface for a repository under two names. An issue is recorded under the name its
 // repository was renamed away from, and its pull request is on the name GitHub knows.
 // Dispatch holds both — repo_projects maps each, and the old name's row names what it was

@@ -183,6 +183,11 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
 	}
+	if recorded == nil || recorded.Number != pr.Number || !e.sameRepository(recorded.Repo, pr.Repo) {
+		if err := e.enqueue(ctx, tx, issue.Key, record.DispatchExternalLink{URL: pullRequestURL(fact)}); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	if issue.Phase != phase.Implementing {
 		// A reopen lands under whatever phase the issue stands in, a reviewing round with an
 		// approval standing among them, and GitHub recomputes the merge state of a pull request
@@ -195,6 +200,18 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, &pr)
+}
+
+// pullRequestURL is the GitHub URL of the pull request fact opened, which the daemon writes into its
+// issue's Dispatch external links (record.DispatchExternalLink) as it first records the pull
+// request: the URL the event carried (GitHub's html_url), else the one GitHub gives every pull
+// request, for a listener that predates the field. The link is how Dispatch attributes the pull
+// request to its issue now that the branch names no key.
+func pullRequestURL(fact intake.PullRequestOpened) string {
+	if strings.HasPrefix(fact.URL, "https://") {
+		return fact.URL
+	}
+	return fmt.Sprintf("https://github.com/%s/pull/%d", fact.Repo, fact.Number)
 }
 
 // pullRequestSynchronized records the pull request's new head and what the move leaves standing

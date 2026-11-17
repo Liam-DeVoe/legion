@@ -170,6 +170,15 @@ func validateClaimShape(spec SpawnSpec, refuse func(string, ...any) error) error
 	if !spec.Repository.IsZero() && spec.DefaultBranch == "" {
 		return refuse("no default branch for repository %s", spec.Repository)
 	}
+	// Each runtime provisions the workspace on the issue's stored branch and tells the agent that
+	// branch (LEGION_BRANCH), and a launch with no repository works no branch. The value reaches a
+	// jj revset and a command line, so it must have an issue branch's shape.
+	switch {
+	case spec.Repository.IsZero() && spec.Branch != "":
+		return refuse("a launch with no repository works no branch (got %s)", spec.Branch)
+	case !spec.Repository.IsZero() && !claim.IsIssueBranch(spec.Branch):
+		return refuse("the issue branch %q is no issue branch of the shape legion/<name>", spec.Branch)
+	}
 	return nil
 }
 
@@ -196,6 +205,9 @@ func validateControllerShape(spec SpawnSpec, refuse func(string, ...any) error) 
 	}
 	if spec.DefaultBranch != "" {
 		return refuse("the controller works no repository, so it has no default branch (got %s)", spec.DefaultBranch)
+	}
+	if spec.Branch != "" {
+		return refuse("the controller works no repository, so it has no branch (got %s)", spec.Branch)
 	}
 	if len(spec.Variants) > 0 {
 		return refuse("the controller runs in no tree, so it is in no experiment")

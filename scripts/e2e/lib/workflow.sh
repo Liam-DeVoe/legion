@@ -9,7 +9,8 @@
 #                  daemon binary it asks for state and claims; legion.yaml, the daemon's
 #                  configuration, which says where the daemon answers and which GitHub Apps its
 #                  roles act as (read_app_logins); operator-token, the operator bearer `legion
-#                  claims list` presents (claims_list); dispatch-auth-header, the curl header line
+#                  claims list` (claims_list) and `legion issue-branch` (issue_branch) present;
+#                  dispatch-auth-header, the curl header line
 #                  (`Authorization: Bearer …`) the agents' Dispatch bearer is sent as (dispatch_get's
 #                  reads, and dispatch_agent's writes in a stand-in session's name); and
 #                  dispatch-human-header, the one the proof human's writes (dispatch_human) are sent
@@ -159,13 +160,17 @@ ensure_project() {
 # carries the `legion` label, which hands it to the Go daemon (it admits no unlabeled root), and SPEC
 # as its primary document, smoke_spec when SPEC is unset or empty: the proof gives its architect no
 # instruction, so what the tree is for comes from the issue itself. A child carries neither, since
-# it runs under its root's tree.
+# it runs under its root's tree. It then reads the issue's branch (issue_branch), so the run's
+# record holds the branch of every issue the run made, from before the daemon records the issue to
+# a teardown that runs once the daemon has stopped.
 new_issue() {
-  local title=$1 parent=${2:-} spec=${3:-} payload
+  local title=$1 parent=${2:-} spec=${3:-} payload key
   [ -n "$spec" ] || spec=$(smoke_spec)
   payload=$(jq -cn --arg project "$project" --arg title "$title" --arg parent "$parent" --arg spec "$spec" \
     'if $parent == "" then {project:$project,title:$title,labels:["legion"],spec:$spec,force:true} else {project:$project,title:$title,parent:$parent,force:true} end')
-  dispatch_human POST issues "$payload" | jq -er .key
+  key=$(dispatch_human POST issues "$payload" | jq -er .key) || return 1
+  issue_branch "$key" >/dev/null || return 1
+  printf '%s\n' "$key"
 }
 # smoke_spec is every root's starting document: one tiny one-file change, and the one extra line a
 # scripted review round may ask for, which is in scope.
@@ -186,6 +191,55 @@ new_child() {
   key=$(new_issue "$1" "$2") || return 1
   set_status "$key" todo || return 1
   printf '%s\n' "$key"
+}
+
+# ---- the run's issue branches ---------------------------------------------------------------------
+
+# The daemon stores each issue's branch: legion/ and 16 lowercase hex characters it draws for an
+# issue the first time it records the issue or is asked for its branch, or, for an issue recorded
+# before the daemon stored branches, the legion/<KEY> its migration backfilled. A proof never builds
+# a branch from a key, nor reads a key out of one: it asks the daemon. $work/issue-branches is the
+# run's record of each answer, one `KEY BRANCH` line per issue, so a teardown that runs once the
+# daemon has stopped still knows every branch of the run.
+#
+# issue_branch KEY prints KEY's branch: the record's when the run has read it before, and otherwise
+# the daemon's answer to `legion issue-branch KEY` over the operator's bearer, which it adds to the
+# record. The daemon stores a branch for an issue of its project that it has not recorded yet and
+# keeps that branch when it records the issue, so the branch is known before admission (Stage 4b's
+# fixture is pushed to it). A read that gets no branch (no answer within 60 s, a refusal, or a line
+# that is not legion/ and a name) fails, naming KEY on stderr beside the command's own reason, and
+# records nothing.
+issue_branch() {
+  local key=$1 record=$work/issue-branches branch status=0
+  if [ -f "$record" ]; then
+    branch=$(awk -v key="$key" '$1 == key { print $2; exit }' "$record") || return 1
+    if [ -n "$branch" ]; then
+      printf '%s\n' "$branch"
+      return 0
+    fi
+  fi
+  branch=$(timeout 60 "$work/legion" issue-branch "$key" --config "$work/legion.yaml" --operator-token-file "$work/operator-token") ||
+    status=$?
+  if [ "$status" != 0 ]; then
+    printf 'issue_branch: legion issue-branch %s exited %s and named no branch (its reason, if it gave one, is above)\n' "$key" "$status" >&2
+    return 1
+  fi
+  if ! [[ $branch =~ ^legion/[A-Za-z0-9][A-Za-z0-9-]*$ ]]; then
+    printf 'issue_branch: the daemon answered %s with no branch: %q\n' "$key" "$branch" >&2
+    return 1
+  fi
+  printf '%s %s\n' "$key" "$branch" >>"$record"
+  printf '%s\n' "$branch"
+}
+# run_issue_branches prints, as one JSON array, the branch of every issue the run made, from the
+# run's record alone (issue_branch), so it reads no daemon: new_issue records each issue's branch as
+# it makes the issue. A run that made no issue prints [].
+run_issue_branches() {
+  if [ -f "$work/issue-branches" ]; then
+    jq -R -s -c 'split("\n") | map(select(length > 0) | split(" ")[1]) | unique' "$work/issue-branches"
+  else
+    echo '[]'
+  fi
 }
 
 # ---- the daemon's state ---------------------------------------------------------------------------
@@ -961,13 +1015,15 @@ close_smoke_cleanup() {
 # ---- the run's own pull requests ------------------------------------------------------------------
 
 # run_pull_requests prints the number of every open pull request on the smoke repository whose
-# branch is one of this run's issue branches, the daemon's `legion/<project>-*`, so a lane running
-# beside this one is untouched; clean_smoke_main's own is close_smoke_cleanup's. The limit is far
-# above the repository's open count: gh's default of 30 is a window of the newest, and this run's
-# own can sit outside it.
+# branch is one of this run's issue branches (run_issue_branches, the branches the daemon stores for
+# the issues the run made), so a lane running beside this one is untouched; clean_smoke_main's own
+# is close_smoke_cleanup's. The limit is far above the repository's open count: gh's default of 30
+# is a window of the newest, and this run's own can sit outside it.
 run_pull_requests() {
+  local branches
+  branches=$(run_issue_branches) || return 1
   gh -R "$repo" pr list --state open --limit 1000 --json number,headRefName \
-    --jq "[.[] | select(.headRefName | startswith(\"legion/$project-\")) | .number] | .[]"
+    --jq "[.[] | select(.headRefName | IN($branches[])) | .number] | .[]"
 }
 # close_run_pull_requests closes each of them with its branch, printing one line per pull request
 # with gh's reason on anything short of a full close, and returns 1 when a pull request stays open
@@ -1018,8 +1074,9 @@ close_unpassed_run_pull_requests() {
 # reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
 # session, its id and version, which the daemon read back from Dispatch and held to the claim's
 # session, and the head that record's body names, which the `legion` tool holds to be the commit
-# the workspace stands on, pushed to `legion/<issue>@origin`, for the implementer's implementing
-# round and which a planner's, a tester's or a reviewer's record naming none leaves out; for retro
+# the workspace stands on, pushed to the issue's branch on origin (`$LEGION_BRANCH@origin`, the
+# branch the daemon stores for the issue), for the implementer's implementing round and which a
+# planner's, a tester's or a reviewer's record naming none leaves out; for retro
 # and the merger the commit the workspace stands on — emptied when the role's next phase starts,
 # and, on the implementer's row, the review round (its returns to implementing). The issue moves
 # out of every phase but merging on that phase's completion, and out of merging on the daemon's

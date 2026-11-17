@@ -13,6 +13,7 @@ import {
   PhaseOpArguments,
   type PhaseOpRuntime,
   phaseOpParameters,
+  phaseOpsFor,
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
@@ -53,6 +54,7 @@ function runtime(
     "/legion/v1/state": state,
     "/legion/v1/grants": daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+    "/legion/v1/issues/branch": daemonFixture("issue-branch.json"),
   };
   const stub = (async (input, init) => {
     const route = new URL(input.toString()).pathname;
@@ -341,6 +343,56 @@ test("a root architect's handoff_complete is refused as unavailable before its o
     )
   );
   expect(root.routes).toEqual([]);
+});
+
+// An architect reads the branch the daemon stores for any issue, a child's or a root's Legion has
+// not recorded yet, with a grant of its own claim; the answer is the daemon's as it stands. A root
+// architect and a sub-architect are both architects.
+test("issue_branch mints the architect's grant, posts it with the issue, and answers the daemon's branch", async () => {
+  for (const architect of [
+    { ...implementer, role: "architect" as const },
+    { ...implementer, role: "architect" as const, issue: "LEGION-209" },
+  ]) {
+    const { ops, routes, posted } = runtime(architect);
+    await expect(executePhaseOp(ops, { op: "issue_branch", issue: "ACME-12" })).resolves.toEqual({
+      issue: "ACME-12",
+      branch: "legion/0123456789abcdef",
+    });
+    expect(routes).toEqual(["/legion/v1/grants", "/legion/v1/issues/branch"]);
+    expect(posted).toEqual([
+      {
+        sessionId: architect.sessionID,
+        secret: architect.secret,
+        tree: architect.tree,
+        issue: architect.issue,
+      },
+      { grantId: "grant-for-one-command", issue: "ACME-12" },
+    ]);
+    // The issue is required: the claim names none for it.
+    for (const input of [{ op: "issue_branch" }, { op: "issue_branch", issue: " " }]) {
+      await expect(executePhaseOp(ops, input)).rejects.toThrow(
+        new Error("issue_branch requires issue")
+      );
+    }
+    expect(routes).toHaveLength(2);
+  }
+});
+
+// A phase worker's pane holds its own issue's branch as LEGION_BRANCH, and the daemon reads no
+// issue's branch on a phase worker's grant, so the operation is not offered to one: refused whole,
+// its fields unread, before any grant is minted.
+test("issue_branch is offered to an architect alone, and refused to every phase worker before a grant", async () => {
+  expect(phaseOpsFor("architect")).toEqual([...PHASE_OPS]);
+  for (const role of ["planner", "implementer", "tester", "reviewer", "merger"] as const) {
+    expect(phaseOpsFor(role)).not.toContain("issue_branch");
+    const { ops, routes } = runtime({ ...implementer, role });
+    for (const input of [{ op: "issue_branch", issue: "ACME-12" }, { op: "issue_branch" }]) {
+      await expect(executePhaseOp(ops, input)).rejects.toThrow(
+        new Error("issue_branch is not available to a phase-worker session")
+      );
+    }
+    expect(routes).toEqual([]);
+  }
 });
 
 // A refusal that named only the field refused left the agent to guess the call again: an

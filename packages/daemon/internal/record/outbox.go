@@ -52,6 +52,9 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindDispatchExternalLink writes a pull request's URL into its issue's Dispatch external
+	// links (DispatchExternalLink).
+	OutboxKindDispatchExternalLink OutboxKind = "dispatch_external_link"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -93,7 +96,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindDispatchExternalLink},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
@@ -1044,10 +1047,10 @@ type DesignGateDocument struct {
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
 
-// IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
-// branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
-// the push that creates a branch of a large repository, where it takes a push that moves one. A
-// start of the issue waits while the row is unfinished (outboxInOrder).
+// IssueBranch creates the row's issue's stored branch (Issue.Branch) on GitHub at the repository's
+// default branch, where GitHub does not have it yet, before any role of the issue starts: GitHub
+// can refuse the push that creates a branch of a large repository, where it takes a push that moves
+// one. A start of the issue waits while the row is unfinished (outboxInOrder).
 type IssueBranch struct {
 	// Generation is the issue generation the branch is created for. A row of an earlier generation,
 	// or of a tree that lingers, finishes without acting.
@@ -1055,6 +1058,20 @@ type IssueBranch struct {
 }
 
 func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
+
+// DispatchExternalLink adds URL, a pull request's own GitHub URL, to the external links of the
+// row's issue in Dispatch, keeping every link the issue already holds. The workflow queues it as it
+// first records a pull request for the issue (workflow's pullRequestOpened). Dispatch attributes a
+// pull request to the issue whose external link is the pull request's URL before any other source,
+// so the pull request is the issue's in Dispatch — and `dispatch results` compares the issue's
+// checks with its head — though its branch, title and body name no key. A URL Dispatch already
+// holds on the issue writes nothing, and one another issue holds is left there: a link is a
+// person's act as much as the daemon's.
+type DispatchExternalLink struct {
+	URL string `json:"url"`
+}
+
+func (DispatchExternalLink) OutboxKind() OutboxKind { return OutboxKindDispatchExternalLink }
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
@@ -1476,6 +1493,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindDispatchExternalLink:
+		value := DispatchExternalLink{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -1529,6 +1552,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			}
 		}
 	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case DispatchExternalLink:
+		if !strings.HasPrefix(value.URL, "https://") {
+			return fmt.Errorf("a Dispatch external link names %q, which is no https URL of a pull request", value.URL)
+		}
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")

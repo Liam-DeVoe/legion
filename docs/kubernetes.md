@@ -1011,8 +1011,9 @@ A record that is empty or not one RFC 3339 instant, which an init container kill
 the launcher logs it, takes the workspace as not recreated, and resumes.
 At session start a Legion session's plugin reads the variable and saves one message to the session, ahead of the next turn whatever starts it (a task, an Envoy event):
 `Your workspace was recreated since your last turn: it holds what was pushed
-to legion/<KEY> (the repository's default branch if nothing was), and anything you had not pushed
+to <branch> (the repository's default branch if nothing was), and anything you had not pushed
 is gone. …` (`packages/pi-legion/src/workspace-recreated.ts`, a steer that starts no turn), with an id of its own process in the message's `details`.
+The message's `<branch>` is the pane's `LEGION_BRANCH`, the issue's branch.
 A prompt, the daemon's next task or a person's direct message that pi-envoy delivers as a user turn, first recovers a failed last turn, and Oh My Pi recovers an empty `length` stop by moving the branch back to that turn's parent, which takes the saved message off the branch with it.
 The plugin's `before_agent_start`, which runs after that recovery on either path, sends the message again when the branch no longer holds this process's copy, a notice an earlier recreation saved not counting, and the turn saves it after the prompt.
 The recovery leaves the first copy in the process's live context, so that process's requests keep its first copy alone, and an earlier recreation's notice stays where the history put it.
@@ -1606,7 +1607,7 @@ Do these steps in this order:
 
 1. **Have every running issue's work pushed, and confirm it, while this release still runs.**
    List the issue pods (`kubectl -n <namespace> get pods -l 'legion.dev/project=<project>,legion.dev/issue'
-   -L legion.dev/issue`), ask the role with work in hand on each, through Dispatch, to push it to `legion/<KEY>`, and confirm each push as the cutover does ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk), step 1).
+   -L legion.dev/issue`), ask the role with work in hand on each, through Dispatch, to push it to the issue's branch, and confirm each push as the cutover does ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk), step 1).
    The pushed branch is the only copy of an issue's work the rollback keeps.
 
 2. **Stop this release's daemon and keep it stopped:**
@@ -1750,11 +1751,12 @@ The cutover, in this order:
    Under the earlier daemon, still running, list the issues it has pods for: `kubectl -n legion get pods -l
    'legion.dev/project=<project>,legion.dev/issue' -L legion.dev/issue`.
    Each one holds a live claim, so each is one the boot would cut over.
-   Ask the role that has work in hand on each, through Dispatch, to push it to `legion/<KEY>`, letting a role mid-turn finish first;
+   Ask the role that has work in hand on each, through Dispatch, to push it to the issue's branch, letting a role mid-turn finish first;
    a role between phases pushed when it completed.
    Then confirm rather than trust the answer: take the commit id the role reports, and in any clone of the repository `git fetch
-   https://github.com/<owner>/<repo> legion/<KEY> && git merge-base --is-ancestor <commit>
-   FETCH_HEAD` exits 0 only when the branch carries it.
+   https://github.com/<owner>/<repo> <branch> && git merge-base --is-ancestor <commit>
+   FETCH_HEAD` exits 0 only when the branch carries it,
+   `<branch>` being the issue's branch: what `legion issue-branch <KEY>` prints, or `legion/<KEY>` under a daemon that has no such command.
    The pushed branch is the one copy of the issue's work that survives the cutover.
 
 2. **Stop those issues.**
@@ -1941,6 +1943,47 @@ No daemon of the earlier release can write such a row after the migration has ru
 The step costs an operator one statement with the daemon stopped, and it leaves the outbox clean whatever order the restart takes.
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
+
+#### Rolling out and back the release that stores each issue's branch
+
+This release stores each issue's branch in the daemon's database, in the table `issue_branches`: one row per issue key, written once and never changed or deleted.
+An issue the daemon records from this release on gets `legion/` and 16 lowercase hex characters, a name with no issue key in it.
+Its migration `20261117082309_issue_branches` backfills `legion/<KEY>` for every issue recorded before it, the branch that issue's roles already push to and its pull request is on, so an open branch keeps working.
+`legion issue-branch <KEY>`, the `legion` tool's `issue_branch` and `branch` on each issue of `legion state --json` read the stored name, and the daemon finds the issue of a pull request or a push by looking its branch up there, never by a key in the name.
+When the daemon first records an issue's pull request, it queues a `dispatch_external_link` outbox row (`20261117082310_dispatch_external_link` adds the kind to `outbox_kind_check`), whose delivery adds the pull request's URL to the issue's Dispatch external links, which is how Dispatch ties a pull request on a keyless branch to its issue.
+
+**The daemon ships first.**
+The daemon of this release writes `issue_branches` and sets `LEGION_BRANCH` on every pane of an issue, and this release's plugins read the issue's branch from that variable.
+A plugin falls back to `legion/<KEY>` only when `LEGION_BRANCH` is absent, the pane of an earlier daemon, and the plugin-contract gate already keeps a registered claim out of that case:
+this release raises `DaemonAPIVersion`, so a claim whose plugin speaks another contract than its daemon's is relaunched onto the daemon's own plugin before it does anything else ([Contract discipline](#contract-discipline)).
+
+**The way back drops the table, with the daemon stopped, before the earlier image is pinned.**
+The migrations are forward-only and have no down file.
+The earlier image names every issue's branch `legion/<KEY>` again, so an issue recorded under this release works on `legion/<KEY>` from then on, and what its roles pushed to its stored branch stays on GitHub under that name;
+list those names first, so that work can be carried over by hand:
+
+```sql
+select issue, branch from issue_branches where branch <> 'legion/' || issue;
+```
+
+Then, with every daemon of the database stopped:
+
+```sql
+-- The queued link writes, the stored branches, and the record that the migration ran.
+delete from outbox where kind = 'dispatch_external_link';
+drop table issue_branches;
+delete from schema_version where version = 20261117082309;
+```
+
+The `delete from outbox` drops the queued link writes: each is a link Dispatch does not hold yet, which a person can add to the issue by hand.
+The `schema_version` delete makes a later roll forward run the migration again, which creates the table and backfills `legion/<KEY>` for every issue then recorded, the branch the earlier image had each of them on;
+with the row left, the roll forward skips the migration (`versionRecorded` in `internal/store/store.go`), and every read of an issue fails on the missing table.
+The kind check keeps `dispatch_external_link`, and the rollback needs no statement for it: an earlier release never writes that kind, so the check refuses nothing that release writes.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issue_branches` is one table for all of them, keyed by the issue key alone.
+A daemon left on the earlier image records an issue with no row there and works it on `legion/<KEY>`, and the first write of that issue by a daemon of this release stores a new name, which the issue's pushed work is not on.
+Upgrade, and roll back, every daemon of one database in the same change.
 
 #### Rolling back the release that tells the merger of a merge-queue removal
 
@@ -3432,10 +3475,11 @@ architect, planner, implementer, tester, reviewer, merger):
    Its environment is the image's `PATH` and the XDG base directories (`initEnvironment`, `manifest.go`);
    nothing names a role, a generation, a lock wait, another issue's workspace, or anything the disk is expected to hold already
    — the disk is created with the pod, so every provision is the issue's first.
-   The workspace starts at whatever commit GitHub holds the issue's branch, `legion/<KEY>`, at:
+   The workspace starts at whatever commit GitHub holds the issue's branch at, the branch the daemon stored for the issue (`legion issue-branch <KEY>` prints it):
    the daemon's `issue_branch` row creates it at the issue's base branch, the default branch as GitHub names it (`default_branch`, `release/v7.1` as readily as `main`), and moves no branch GitHub has,
-   so whoever wants work to start at another commit creates `legion/<KEY>` there first, for a root before the issue is admitted, for a child before its first phase starts, after the tree's gate opens;
-   with no such branch it starts at that default branch, which the pod's command names (`--default-branch`), and its log says which (`workspace-init: <dir> on legion/<KEY> from <default branch>`).
+   so whoever wants work to start at another commit creates that branch there first, for a root before the issue is admitted, for a child before its first phase starts, after the tree's gate opens;
+   the daemon names the branch once and keeps the name, so `legion issue-branch <KEY>` answers it for a root it has not recorded yet, and the branch made at that name is the one the issue takes;
+   with no such branch it starts at that default branch, which the pod's command names (`--default-branch`), and its log says which (`workspace-init: <dir> on <branch> from <default branch>`).
    Before any git or jj runs it removes every git lock file (`<file>.lock`) in the clone's git directory and in the issue's own worktree entry of it, and logs each with its path and age (`RemoveStaleGitLocks`, `internal/workspace/stalelock.go`):
    the kubelet retries a failed init container on the pod it failed in, so a first attempt killed mid-fetch leaves its locks on the same disk the retry works on, and every later write of a locked file fails on it
    — when the retry runs before the daemon replaces the pod, which it does within seconds of reading the failure (see `workspace-fetch` above).
@@ -4132,6 +4176,7 @@ Run the steps from an empty directory, run no git on anything but the bundle out
 
 ```sh
 pod=<pod> K=<KEY> image=<runtime.kubernetes.image>   # the daemon's worker image, by digest
+branch=$(legion issue-branch "$K" --operator-token-file <file>)   # the issue's stored branch
 clone=/legion/repos/github.com/<owner>/<repo>
 ws=/legion/workspaces/<owner>/<repo>/<issue key lowercased>
 # 1. In the pod, tar alone: the clone's refs, worktree records and objects, and the workspace's
@@ -4173,7 +4218,7 @@ tar -xf "$tree"
 git -c core.excludesFile=/dev/null add -A
 git status --short
 git diff --cached --quiet ||
-  git -c user.name=rescue -c user.email=rescue@invalid commit -q -m "Edits left in $K's workspace"
+  git -c user.name=rescue -c user.email=rescue@invalid commit -q -m "Edits left in the issue pod's workspace"
 echo "unpushed commits of other branches, not in the bundle:"
 git log --oneline --glob=refs/rescue/ --not --remotes=origin "rescue-$K"
 git bundle create "/w/$K.bundle" "rescue-$K" --not --remotes=origin
@@ -4181,8 +4226,8 @@ EOF
 # 3. In a clone of your own, fetched from GitHub first: read what the bundle adds, then push it.
 git fetch origin
 git fetch "<dir>/$K.bundle" "rescue-$K:refs/remotes/rescue/$K"
-git log --stat --oneline "origin/legion/$K..rescue/$K"
-git push origin "refs/remotes/rescue/$K:refs/heads/legion/$K"
+git log --stat --oneline "origin/$branch..rescue/$K"
+git push origin "refs/remotes/rescue/$K:refs/heads/$branch"
 ```
 
 The workspace's git worktree record (`<clone>/.git/worktrees/<id>/HEAD`, the entry whose `gitdir` names the workspace's `.git`, absolute or relative) names the parent of jj's working-copy commit as of jj's last command there, or a commit a role made with `git commit` since;
@@ -4194,7 +4239,8 @@ The rebuild resets the index to that commit and lays the files over it, so a fil
 create empty bundle` together mean nothing below the working copy was left unpushed.
 The bundle is as trustworthy as a push of the role's own:
 read the log's `--stat` before pushing, and refuse a change under `.github/workflows/` unless the implement App holds `workflows: write`, since your own credential may push a workflow the App could not.
-The log fails when the issue never pushed `legion/<KEY>`; read `git log --stat --oneline rescue/<KEY>` then, and the push creates the branch.
+The log fails when the issue never pushed its branch; read `git log --stat --oneline "rescue/$K"` then, and the push creates the branch.
+`legion issue-branch` reads the daemon's operator route, so run it where the other operator commands run; it prints `legion/<KEY>` for an issue recorded before the daemon stored branches.
 `git fetch` refuses the bundle when your clone lacks a commit it builds on, such as one since force-pushed away on GitHub;
 drop `--not --remotes=origin` and run step 2 again.
 `git push` refuses anything but a fast-forward of GitHub's branch; when it does, push to a branch of another name and merge from there.
@@ -5203,13 +5249,13 @@ the clone and the jj workspace, the issue's scratch and caches, uv's Pythons and
 None of it reaches the next pod: the issue's scratch, a role's temporary directory, its logs, every file outside the workspace and every commit or file of the workspace that no role pushed go with the pod, which is why the round's message tells each role to push the commits it wants kept and to put anything else it still needs as evidence on Dispatch before it answers.
 What does reach it is what lives elsewhere
 — each role's session, a row in the session database ([Selecting the store](#selecting-the-store));
-the issue's branch on GitHub, `legion/<KEY>`, which every pushed turn is in;
+the issue's branch on GitHub, the one the daemon stored for it, which every pushed turn is in;
 the issue's record in the daemon's own Postgres; and the repository's cache, which fills the next pod's feed.
 A release adds one thing to that list: the git bundle of the workspace's unpushed work, which the daemon holds in its own database until the next pod restores it ([Idle release](#idle-release)).
 
 A pod's lifetime is not a role's, and this paragraph is the one place that says how they differ.
 A pod is created by a launch — the issue's first, one that finds no live pod (after a suspension, say, or after an update round ended the pod), or one that must replace the pod (the first end above)
-— and provisions its workspace from the issue's pushed branch (`legion/<KEY>`, or the repository's default branch when none was pushed) with the same init containers every new pod runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod));
+— and provisions its workspace from the issue's pushed branch (or the repository's default branch when none was pushed) with the same init containers every new pod runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod));
 it then lives until one of the ends above, and its disk dies with it.
 A role launched while that pod is live and nothing above replaces it starts in that pod and provisions nothing:
 no init container runs, the daemon mints no provisioning token, and the role finds the workspace as the roles before it left it, unpushed work included (`relaunch`, `internal/runtime/sandbox/relaunch.go`, which provisions only inside the branch that replaces the pod;
@@ -5380,7 +5426,7 @@ An earlier daemon (`legion-v19.0.0`, or any release at daemon API contract 47 or
 
 **Every released pod's unpushed work is lost in the rollback unless this release pushes it first.**
 That work is in the bundle and nowhere else, and no role can push it while its pod is gone, so the push needs a pod, which only this release can bring back.
-While this release still runs, list the released claims (`legion claims list --json`), resume each one (`legion claims resume --claim <token>`, or any wake of the list above), wait for each pod to be Ready and its restore to land, and ask each role with work in hand, through Dispatch, to push it to `legion/<KEY>`, confirming each push as the cutover does ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk), step 1).
+While this release still runs, list the released claims (`legion claims list --json`), resume each one (`legion claims resume --claim <token>`, or any wake of the list above), wait for each pod to be Ready and its restore to land, and ask each role with work in hand, through Dispatch, to push it to the issue's branch, confirming each push as the cutover does ([Cutting over to the pod-owned disk](#cutting-over-to-the-pod-owned-disk), step 1).
 For an issue whose push you cannot confirm, carry its work out of the resumed pod before you pin the earlier image ([Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod)).
 
 Then stop this release's daemon, and leave the claims in a state the earlier release acts on:

@@ -595,13 +595,16 @@ provider_keys:
 
 Each repository has one shared jj clone at `<state_dir>/repos/github.com/<owner>/<repo>`, and each
 issue a jj workspace of it at `<state_dir>/workspaces/<owner>/<repo>/<issue, lowercased>`, on the
-bookmark `legion/<ISSUE>`. The first provision of a repository clones it with the implement App's
+bookmark of the issue's branch: the name the daemon stores for the issue once and keeps,
+`legion/<16 lowercase hex>`, or `legion/<KEY>` for an issue recorded before the daemon stored
+branches. `legion issue-branch <KEY>` prints it, and each pane of the issue holds it as
+`LEGION_BRANCH`. The first provision of a repository clones it with the implement App's
 installation token, handed to git through a one-shot 0600 credential helper under the state
 directory. Every launch first makes sure its issue's workspace is there: a claim resumed,
 relaunched or recovered, as well as a new one, is provisioned when its directory is missing or its
 checkout never finished (it holds no sparse pattern, read with `jj sparse list
---ignore-working-copy`; a workspace an agent narrowed keeps its patterns), checking out
-`legion/<ISSUE>` when GitHub has it. A launch waits for a provision or removal of the same issue
+--ignore-working-copy`; a workspace an agent narrowed keeps its patterns), checking out the
+issue's branch when GitHub has it. A launch waits for a provision or removal of the same issue
 that is under way.
 
 Provisions of different issues run side by side. Everything a provision does to the shared clone

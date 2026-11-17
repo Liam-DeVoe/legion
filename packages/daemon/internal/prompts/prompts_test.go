@@ -44,7 +44,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 		// decision block it holds (INFRA-1201).
 		{"root architect", claim.RoleArchitect, true, []string{"architect-root.md"}, []string{"architect-root.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate`", "end the tree with `close_root`", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
 		{"sub-architect", claim.RoleArchitect, false, []string{"architect.md"}, []string{"architect.md", "architect-common.md"}, append([]string{"it chooses and starts the next role", "`register_gate` refuses a child issue", "Every notice about an issue you own arrives on your own role topic", "The merge carries no handoff onto the pull request's base", "A `pull-request-missing` notice", "`close_root` answers `CLOSE_REASON_TOO_LONG`", "`CLOSE_REASON_DECISION_BLOCK`"}, architectOperations...)},
-		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark legion/<issue>", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
+		{"planner", claim.RolePlanner, false, []string{"core/common.md", "core/planner.md", "mechanics/headless.md", "planner.md"}, []string{"planner.md", "worker-common.md"}, []string{`op: "handoff_complete"`, "jj -R \"$LEGION_WORKSPACE\" git push --bookmark \"$LEGION_BRANCH\"", "dispatch handoff-write --issue <issue> --phase <word> --body-file", "dispatch handoff-read --issue <issue> --phase <word> --version <n>", "A handoff is never committed or pushed", "`HANDOFF_SESSION_MISMATCH`", "A refusal records nothing"}},
 		// A root with no code of its own pushes one empty commit to open its pull request. The
 		// implementer is also told the completion of implementing the handoff route refuses with no
 		// open pull request, and what to do about it.
@@ -239,6 +239,28 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 			at += found + len("READY")
 			if !strings.HasSuffix(text[:at], "ALREADY") {
 				t.Errorf("the composed %s prompt names READY: %q", role, text[max(0, at-120):min(len(text), at+120)])
+			}
+		}
+	}
+}
+
+// A phase worker's issue branch is the one the daemon stored for its issue, which its pane holds
+// as LEGION_BRANCH. A new issue's branch names no issue key, so each phase worker's composed
+// prompt pushes, reads and completes on "$LEGION_BRANCH", and none builds the branch from the key
+// (legion/<issue>, legion/<KEY>, legion/$LEGION_ISSUE).
+func TestEveryComposedWorkerPromptNamesTheBranchItsPaneHolds(t *testing.T) {
+	composer, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
+		text := composedText(t, composer, role, false)
+		if !strings.Contains(text, `"$LEGION_BRANCH"`) {
+			t.Errorf("the composed %s prompt does not name %q", role, `"$LEGION_BRANCH"`)
+		}
+		for _, built := range []string{"legion/<", "legion/$"} {
+			if at := strings.Index(text, built); at >= 0 {
+				t.Errorf("the composed %s prompt builds the issue branch from the key: %q", role, text[max(0, at-80):min(len(text), at+80)])
 			}
 		}
 	}

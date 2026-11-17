@@ -45,7 +45,8 @@ export interface LegionControllerToolSession {
 export type LegionToolSession = LegionClaimToolSession | LegionControllerToolSession;
 
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
- * (`@legion/pi-shared/legion-phase-ops`) are an architect's too. */
+ * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, `issue_branch` among them, which
+ * the controller has as well and a phase worker has not. */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -60,6 +61,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "read_release_records",
     "handoff_complete",
     "ready_for_update",
+    "issue_branch",
   ],
   "phase-worker": [
     "request_backward_move",
@@ -68,10 +70,11 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "fresh_session", "compact"],
+  controller: ["read_state", "set_status", "fresh_session", "compact", "issue_branch"],
 };
 
-/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
+/** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`',
+ * and `issue_branch`'s here are the controller's call of it, which runs beside the phase ops. */
 const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   register_gate: ["issue", "artifactId", "version", "step"],
   release_children: ["issues"],
@@ -84,6 +87,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   fresh_session: ["issue", "role"],
   compact: ["issue", "role"],
+  issue_branch: ["issue"],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -215,7 +219,7 @@ function toolSchema(pi: PiApi): unknown {
   const z = pi.zod;
   const phaseOp = phaseOpParameters(z);
   return z.object({
-    op: z.enum([...OPERATIONS.architect, ...OPERATIONS.controller]),
+    op: z.enum([...new Set([...OPERATIONS.architect, ...OPERATIONS.controller])]),
     issue: phaseOp.issue,
     since: phaseOp.since,
     artifactId: z
@@ -291,7 +295,8 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * to the pane. The phase ops run on the executor every harness shares (`executePhaseOp`):
  * `handoff_complete` belongs to every session but the root architect's (a phase worker, and a
  * sub-architect: an architect whose issue is not its tree), and finds what it reports in the pane
- * first (`handoffReport`); `read_state` and `set_status` belong to the controller. */
+ * first (`handoffReport`); `read_state` and `set_status` belong to the controller, and
+ * `issue_branch` to the architect and the controller. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -307,15 +312,15 @@ export function createLegionTool(deps: {
    * (`findHandoffReport`): for a file-backed phase the role works or, once the issue has moved
    * on, the one it left, the newest Dispatch handoff record of that phase and the head its body
    * names under `head`, which for the implementer's round, while the issue stands in
-   * implementing, must be the commit its workspace stands on, pushed to `legion/<issue>@origin`;
-   * otherwise, and for a left phase with no record or an implementer's left record naming no head,
-   * the commit the workspace stands on, alone. Throws
+   * implementing, must be the commit its workspace stands on, pushed to the issue's branch
+   * (`LEGION_BRANCH`) at origin; otherwise, and for a left phase with no record or an
+   * implementer's left record naming no head, the commit the workspace stands on, alone. Throws
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
    * is not pushed, or its record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
-  /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
-   * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
+  /** The head of the issue's branch (`LEGION_BRANCH`) at origin an update signal reports, read
+   * with the pane's jj (`findPushedBranchHead`), and `""` when the branch is not on the remote. */
   readonly branchHead: () => Promise<string>;
   /** The id of the document `issue` carries under `reference` (`spec`, a slug, or a filename),
    * looked up in Dispatch as a `dispatch` command's `--artifact` is; throws naming the reference
@@ -343,7 +348,8 @@ export function createLegionTool(deps: {
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentence on request_backward_move (an architect's names the
-    // issue it returns from accepting), then the architect's retry_or_escalate, its sign_off and
+    // issue it returns from accepting) and the shared one on issue_branch (the architect's and
+    // the controller's), then the architect's retry_or_escalate, its sign_off and
     // the controller's operations: the exact text tools.test.ts pins, so a change to the shared
     // template cannot reach an Oh My Pi agent unnoticed.
     description: legionToolDescription({
@@ -351,6 +357,7 @@ export function createLegionTool(deps: {
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.issueBranch +
         "retry_or_escalate decides an issue the daemon holds after its worker failed (issue, decision): retry puts the issue " +
         "back in the phase it was held from and starts that phase's worker again, escalate leaves it held for the controller, " +
         "and an optional reason says why you decided as you did: a retry writes it into the restarted worker's task and the " +
@@ -459,8 +466,14 @@ export function createLegionTool(deps: {
         const client = daemon();
         if (active.kind === "controller") {
           if (operation === "read_state") return readState(await client.state(), parameters);
-          // The controller's three writes: each validated whole before its grant is minted.
+          // The controller's three writes and its read of an issue's branch: each validated whole
+          // before its grant is minted.
           const issue = requiredString(parameters, operation, "issue");
+          if (operation === "issue_branch") {
+            // The daemon's answer as it stands: the issue and the branch it stores for it.
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.issueBranch({ grantId, issue }));
+          }
           if (operation === "fresh_session" || operation === "compact") {
             const role = LEGION_ROLES.find((candidate) => candidate === parameters.role);
             if (role === undefined) {

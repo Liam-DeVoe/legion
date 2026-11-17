@@ -141,6 +141,10 @@ type outboxDispatch struct {
 	gatedSteps    [][]string
 	gatedStepsOf  []string
 	gatedStepsErr error
+	// links is each external link an external-link row added, as `<issue> <url>`, and linkErr what
+	// the write answers.
+	links   []string
+	linkErr error
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -174,6 +178,10 @@ func (d *outboxDispatch) ReleaseClaim(context.Context, string) error { return ni
 func (d *outboxDispatch) PostMessage(_ context.Context, _ string, body string) error {
 	d.messages = append(d.messages, body)
 	return d.postErr
+}
+func (d *outboxDispatch) AddExternalLink(_ context.Context, key, link string) error {
+	d.links = append(d.links, key+" "+link)
+	return d.linkErr
 }
 func (d *outboxDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return d.bodies, d.messageReadErr

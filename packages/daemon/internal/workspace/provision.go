@@ -25,9 +25,12 @@ import (
 // nothing of the clone's, runs with the lock let go, holding one of request.CheckoutSlot's places
 // instead.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
-	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
+	workspace, err := Location(request.StateDir, request.Repo, request.Issue, request.Branch)
 	if err != nil {
 		return Workspace{}, err
+	}
+	if workspace.Bookmark == "" {
+		return Workspace{}, errors.New("workspace request names no branch: the issue's stored branch is required")
 	}
 	if _, err := guardWorkspace(workspace.Dir, workspace.Clone, false); err != nil {
 		return Workspace{}, err
@@ -275,9 +278,6 @@ func excludeCodegraphDirectory(cloneDir string) error {
 	return nil
 }
 
-// Bookmark is the jj bookmark an issue's workspace is on: its branch (claim.IssueBranch).
-func Bookmark(issue string) string { return claim.IssueBranch(issue) }
-
 // layoutDepth is how many directories below the state directory a shared clone and a workspace
 // each sit (Location): repos/<host>/<owner>/<name>, and workspaces/<owner>/<name>/<issue>.
 const layoutDepth = 4
@@ -291,8 +291,11 @@ func CloneRoot(stateDir string) string {
 // Location is the deterministic workspace location Provision creates for one issue, and the shared
 // clone it is a jj workspace of. The repository arrives parsed (ghrepo.Parse); a `.` or `..`
 // issue is refused: joined under the repository's workspaces directory it names that directory,
-// or its owner's, and Remove deletes a workspace directory whole.
-func Location(stateDir string, repository ghrepo.Repository, issue string) (Workspace, error) {
+// or its owner's, and Remove deletes a workspace directory whole. branch is the issue's stored
+// branch, the workspace's bookmark: a caller that only locates the directory, or its clone, may
+// pass "", and a branch of any shape but an issue branch's (claim.IsIssueBranch) is refused, since
+// provisioning quotes it into jj and git commands.
+func Location(stateDir string, repository ghrepo.Repository, issue, branch string) (Workspace, error) {
 	if repository.IsZero() {
 		return Workspace{}, errors.New("workspace repository is required")
 	}
@@ -305,9 +308,12 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 	if issue == "" || issue != filepath.Base(issue) {
 		return Workspace{}, fmt.Errorf("workspace issue must be a single path component")
 	}
+	if branch != "" && !claim.IsIssueBranch(branch) {
+		return Workspace{}, fmt.Errorf("workspace branch %q is no issue branch of the shape legion/<name>", branch)
+	}
 	return Workspace{
 		Dir:      filepath.Join(stateDir, "workspaces", repository.Owner(), repository.Name(), strings.ToLower(issue)),
-		Bookmark: Bookmark(issue),
+		Bookmark: branch,
 		Clone:    filepath.Join(CloneRoot(stateDir), repository.Owner(), repository.Name()),
 		Repo:     repository,
 	}, nil
@@ -333,7 +339,7 @@ func locationOf(dir string) (Workspace, error) {
 	if err != nil {
 		return Workspace{}, err
 	}
-	want, err := Location(stateDir, repository, filepath.Base(dir))
+	want, err := Location(stateDir, repository, filepath.Base(dir), "")
 	if err != nil {
 		return Workspace{}, err
 	}

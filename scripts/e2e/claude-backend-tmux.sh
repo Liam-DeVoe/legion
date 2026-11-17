@@ -130,17 +130,24 @@ collect_transcripts() {
   done
 }
 
-# remove_run_branch closes any pull request of the run's project on the smoke repository and deletes
-# the issue's branch, which the implementer pushed: a passing run opens no pull request, so neither
-# outlives it. It makes no gh call before the proof human is established.
+# remove_run_branch closes any pull request on the run's issue branches on the smoke repository
+# (close_run_pull_requests) and deletes the issue's branch, the one the daemon stores for it
+# (issue_branch, read from the run's record: the daemon has stopped by now), which the implementer
+# pushed: a passing run opens no pull request, so neither outlives it. It makes no gh call before
+# the proof human is established.
 remove_run_branch() {
+  local branch
   [ -n "$proof_human" ] && [ -n "$issue" ] || return 0
   close_run_pull_requests >&2 || printf "some of this run's pull requests may still be open on %s (above)\n" "$repo" >&2
-  [ "$(smoke_branch_state "legion/$issue" 2>/dev/null)" = present ] || return 0
-  if timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/legion/$issue" >/dev/null 2>&1; then
-    printf 'deleted %s branch legion/%s\n' "$repo" "$issue" >&2
+  branch=$(issue_branch "$issue") || {
+    printf "could not read the branch of %s (above), so it may remain on %s\n" "$issue" "$repo" >&2
+    return 0
+  }
+  [ "$(smoke_branch_state "$branch" 2>/dev/null)" = present ] || return 0
+  if timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null 2>&1; then
+    printf 'deleted %s branch %s\n' "$repo" "$branch" >&2
   else
-    printf 'could not delete %s branch legion/%s\n' "$repo" "$issue" >&2
+    printf 'could not delete %s branch %s\n' "$repo" "$branch" >&2
   fi
 }
 
@@ -773,7 +780,8 @@ pass
 
 begin claude-implementer-handoff
 marker="claude-proof-marker-$ptoken-$RANDOM$RANDOM"
-send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on legion/$issue, push the branch to origin, write the required implementation handoff with dispatch handoff-write, then call the legion tool's handoff_complete with a concise summary. Do not open a pull request and do not merge."
+issue_branch_name=$(issue_branch "$issue")
+send_agent "$issue" implementer "Claude backend proof implementation operation ($marker): make the smallest one-file change this issue's spec describes in your $repo workspace, commit it on $issue_branch_name, push the branch to origin, write the required implementation handoff with dispatch handoff-write, then call the legion tool's handoff_complete with a concise summary. Do not open a pull request and do not merge."
 until_true 900 "the daemon to record the implementer's handoff_complete" handoff_recorded
 commit=$(role_handoff "$issue" implementer implementing)
 assert_handoff_record "$issue" implementer implementing 0

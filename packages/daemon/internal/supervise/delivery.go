@@ -1450,10 +1450,12 @@ func interruptedTask(cause string) string {
 // start and does again what is already pushed (dispatch://INFRA-714, item 4 of the refusal
 // section). It names the session that was left behind and why in the words the claim recorded —
 // for a refused session the provider's own, the size it refused at among them — and then the two
-// things that outlive a session: the issue's branch, and the handoff records its phases wrote on
-// the Dispatch issue. The controller is told neither, since it works no checkout. last is whether
-// this sentence is the last one before the task, and so ends in the task's own instruction: in
-// front of a task with no record's sentence after it. Where the record's sentence follows it
+// things that outlive a session: the issue's branch, which the pane's LEGION_BRANCH names (the
+// issue's stored branch, which the runtime sets on every worker pane), and the handoff records its
+// phases wrote on the Dispatch issue. The controller is told neither, since it works no checkout.
+// last is whether this sentence is the last one before the task, and so ends in the task's own
+// instruction: in front of a task with no record's sentence after it. Where the record's sentence
+// follows it
 // (EndedWork.Tells), that sentence is the last and carries the instruction instead
 // (relaunchSentence); in front of the daemon's own delivery of a relaunch's record, which has no
 // task (Delivery.Relaunch), neither carries one (Delivery.message).
@@ -1466,9 +1468,9 @@ func interruptedTask(cause string) string {
 func abandonedTask(c Claim, last bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
-		read = fmt.Sprintf("read the issue, then your branch %s and the handoff records its phases wrote on "+
+		read = fmt.Sprintf("read the issue, then your branch ($LEGION_BRANCH) and the handoff records its phases wrote on "+
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
-			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
+			c.Issue, handoffWords())
 	}
 	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+

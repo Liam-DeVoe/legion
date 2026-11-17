@@ -188,18 +188,24 @@ cleanup() {
   return 0
 }
 # github_cleanup closes every proof PR still open, deletes every proof head branch, and deletes the
-# scratch base. Nothing here touches the smoke main, and nothing runs unless require_proof_human
-# passed: a refused run's gh acts as someone else.
+# scratch base. A proof head branch is the branch the daemon stores for an issue the run made
+# (run_issue_branches, the run's record, since the daemon has stopped by now). Nothing here touches
+# the smoke main, and nothing runs unless require_proof_human passed: a refused run's gh acts as
+# someone else.
 github_cleanup() {
-  local n b
+  local n b branches
   [ -n "$proof_human" ] || return 0
   [ -n "${main_sha:-}" ] || return 0
+  branches=$(run_issue_branches) || {
+    printf "could not read the run's issue branches from %s, so its pull requests and branches may remain on %s\n" "$work/issue-branches" "$repo" >&2
+    branches='[]'
+  }
   for n in $(gh -R "$repo" pr list --state open --limit 100 --json number,headRefName \
-    --jq ".[] | select(.headRefName | startswith(\"legion/$project-\")) | .number" 2>/dev/null); do
+    --jq ".[] | select(.headRefName | IN($branches[])) | .number" 2>/dev/null); do
     gh -R "$repo" pr close "$n" >/dev/null 2>&1 || true
   done
-  for b in $(gh api "repos/$repo/git/matching-refs/heads/legion/$project-" --jq '.[].ref' 2>/dev/null); do
-    gh api -X DELETE "repos/$repo/git/$b" >/dev/null 2>&1 || true
+  for b in $(jq -r '.[]' <<<"$branches"); do
+    gh api -X DELETE "repos/$repo/git/refs/heads/$b" >/dev/null 2>&1 || true
   done
   for b in "$scratch_base" "$merge_base" "$gate_base"; do
     gh api -X DELETE "repos/$repo/git/refs/heads/$b" >/dev/null 2>&1 || true
@@ -453,12 +459,17 @@ gate_finish() {
   wait_for_phase "$issue" planning
   wait_for_worker "$issue" planner
 }
-pr_open_for() { gh -R "$repo" pr list --head "legion/$1" --state open --json number | jq -e 'length == 1' >/dev/null; }
+pr_open_for() {
+  local branch
+  branch=$(issue_branch "$1") || return 1
+  gh -R "$repo" pr list --head "$branch" --state open --json number | jq -e 'length == 1' >/dev/null
+}
 # retarget_pr ISSUE: the proof PR moves to the scratch base, so no merge ever reaches smoke main.
 retarget_pr() {
-  local issue=$1 n base
+  local issue=$1 n base branch
+  branch=$(issue_branch "$issue")
   until_true 1200 "$issue implementer pull request" pr_open_for "$issue"
-  n=$(gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number')
+  n=$(gh -R "$repo" pr list --head "$branch" --state open --json number --jq '.[0].number')
   pr_of[$issue]=$n
   base=$(gh -R "$repo" pr view "$n" --json baseRefName --jq .baseRefName)
   [ "$base" = "$scratch_base" ] || gh -R "$repo" pr edit "$n" --base "$scratch_base" >/dev/null
@@ -484,17 +495,18 @@ reviewer_approved() {
 # Planners and architects are instructed by the script, where each scenario needs them.
 assigned_in() { jq -e -s --arg a "Issue: $2. Phase: $3." 'any(.[]; .type == "message" and .message.role == "user" and ([.message.content[]? | .text? // empty] | join(" ") | contains($a)))' "$1" >/dev/null; }
 instruction_for() {
-  local issue=$1 role=$2 phase=$3
+  local issue=$1 role=$2 phase=$3 branch
+  branch=$(issue_branch "$issue") || return 1
   case "$role:$phase" in
-    implementer:implementing) printf '%s' "Acceptance implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$issue, and open its pull request with base branch $scratch_base (pass --base $scratch_base to gh pr create; this proof's pull requests never target main). Record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge." ;;
+    implementer:implementing) printf '%s' "Acceptance implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on $branch, and open its pull request with base branch $scratch_base (pass --base $scratch_base to gh pr create; this proof's pull requests never target main). Record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge." ;;
     tester:testing) printf '%s' "Acceptance test operation: inspect the implementer's actual one-file change and this issue's pull request, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass and a summary that begins 'TESTER-SUMMARY $issue:'." ;;
-    reviewer:reviewing) printf '%s' "Acceptance final review: use the bash tool to submit APPROVE on this issue's pull request (head legion/$issue) in $repo at its current head as $(role_app reviewer), then complete the reviewer handoff. This exact smoke instruction takes precedence over waiting for another review round." ;;
+    reviewer:reviewing) printf '%s' "Acceptance final review: use the bash tool to submit APPROVE on this issue's pull request (head $branch) in $repo at its current head as $(role_app reviewer), then complete the reviewer handoff. This exact smoke instruction takes precedence over waiting for another review round." ;;
     implementer:retro) printf '%s' "Acceptance retro: write the required retro handoff for this issue's pull request and complete the phase. Do not change the approved implementation." ;;
     merger:merging) printf '%s' "Acceptance hold: this is a proof run. Do not read, verify or merge the pull request yet, and do not call handoff_complete. Reply with the single line 'holding' and wait for the next targeted instruction, which says exactly what to do." ;;
   esac
 }
 instructor() {
-  local issue spec role phase f key tick=0 n st cl cur live watched
+  local issue spec role phase f key tick=0 n st cl cur live watched instruction branches
   trap - EXIT ERR
   set +e
   mkdir -p "$evidence/instructed"
@@ -516,14 +528,15 @@ instructor() {
         key="$evidence/instructed/$issue.$role.$phase.$(basename "$f" .jsonl)"
         [ ! -e "$key" ] || continue
         assigned_in "$f" "$issue" "$phase" || continue
-        if send_agent "$issue" "$role" "$(instruction_for "$issue" "$role" "$phase")" >>"$evidence/instructor.log" 2>&1 </dev/null; then
+        instruction=$(instruction_for "$issue" "$role" "$phase" 2>>"$evidence/instructor.log") || continue
+        if send_agent "$issue" "$role" "$instruction" >>"$evidence/instructor.log" 2>&1 </dev/null; then
           printf '%s %s %s %s\n' "$(date -u +%FT%T.%3NZ)" "$issue" "$role" "$phase" | tee "$key" >>"$evidence/instructor.log"
         fi
       done
     done
-    if [ $((tick++ % 4)) = 0 ]; then
+    if [ $((tick++ % 4)) = 0 ] && branches=$(run_issue_branches); then
       for n in $(gh -R "$repo" pr list --state open --limit 100 --json number,headRefName,baseRefName \
-        --jq ".[] | select((.headRefName | startswith(\"legion/$project-\")) and .baseRefName != \"$scratch_base\" and .baseRefName != \"$merge_base\" and .baseRefName != \"$gate_base\") | .number" 2>/dev/null); do
+        --jq ".[] | select((.headRefName | IN($branches[])) and .baseRefName != \"$scratch_base\" and .baseRefName != \"$merge_base\" and .baseRefName != \"$gate_base\") | .number" 2>/dev/null); do
         gh -R "$repo" pr edit "$n" --base "$scratch_base" >/dev/null 2>&1 &&
           printf '%s retargeted %s#%s to %s\n' "$(date -u +%FT%T.%3NZ)" "$repo" "$n" "$scratch_base" >>"$evidence/retargets.log"
       done

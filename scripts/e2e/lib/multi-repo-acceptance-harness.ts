@@ -276,6 +276,13 @@ export const fullInputs = (daemonUrl: string, dispatchUrl: string): Record<strin
   DISPATCH_TOKEN_FILE: tokenFile,
 });
 
+// The branch the daemon stores for each issue the fixed state records, as GET /legion/v1/state
+// names it (.issues[<key>].branch): legion/ and 16 hex characters, no key in it.
+export const issueBranches = {
+  "ACME-2": "legion/5e1f0c3a9b2d4e67",
+  "ACME-3": "legion/8c4b2a1d0e9f7a36",
+} as const;
+
 // A fixed daemon /legion/v1/state body, overridable per test.
 export function makeStateBody(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -288,6 +295,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
         phase: "implementing",
         status: "todo",
         repo: "acme/widgets",
+        branch: issueBranches["ACME-2"],
       },
       "ACME-3": {
         key: "ACME-3",
@@ -295,6 +303,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
         phase: "implementing",
         status: "todo",
         repo: "acme/gadgets",
+        branch: issueBranches["ACME-3"],
       },
     },
     pendingStatusWrites: [],

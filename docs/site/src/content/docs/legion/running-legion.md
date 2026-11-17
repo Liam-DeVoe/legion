@@ -134,11 +134,13 @@ lost, or that still waits behind the daemon's GitHub consumer, leaves the record
 the next of them:
 
 - **An opened or reopened pull request, in any phase.** An issue whose record holds no open pull
-  request has its own branch, `legion/<KEY>`, looked up. A pull request on that branch of
-  the repository itself (not a fork's) that the daemon does not record open is applied as its
-  opened webhook would be, a reopen when the record holds the same pull request: the workflow
-  records it in whatever phase the issue is, and moves an implementing issue whose implementer
-  completed on to testing.
+  request has its stored branch (`legion issue-branch <KEY>` prints it) looked up. A pull request
+  on that branch of the repository itself (not a fork's) that the daemon does not record open is
+  applied as its opened webhook would be, a reopen when the record holds the same pull request:
+  the workflow records it in whatever phase the issue is, and moves an implementing issue whose
+  implementer completed on to testing. The first time the daemon records a pull request for an
+  issue, by webhook or by this read, it writes the pull request's URL as an external link on the
+  Dispatch issue.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
   applied, or its merge with its merge commit: the merge closes an issue waiting on it in

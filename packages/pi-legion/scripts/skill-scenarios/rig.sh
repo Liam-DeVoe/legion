@@ -216,9 +216,12 @@ root=$(cd "$here/../../../.." && pwd -P)
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
-# The tester-proof world (worker_fixture below): its repository, and the run's own issue, which
-# run_tester_proof sets once seed.ts has filed it.
+# The tester-proof world (worker_fixture below): its repository, the run's own issue, which
+# run_tester_proof sets once seed.ts has filed it, and that issue's branch, which run_tester_proof
+# allocates as the daemon allocates one for an issue it records (`legion/` and 16 lower-case hex
+# characters, no key in it) and hands the pane as LEGION_BRANCH.
 worker_key=''
+worker_branch=''
 worker_repo=example/widgets
 
 note() { printf 'skill-scenarios: %s\n' "$*"; }
@@ -1324,18 +1327,18 @@ cmd_judge() {
 
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
 # run_tester_proof files first): a bare remote whose post-receive hook logs every push, the issue
-# workspace cloned from it, the implementer's commit on legion/<key>, the PR the gh stand-in serves,
-# and the implementer's handoff body at $R/implement.json, which run_tester_proof records on the
-# issue. The fixture's content is the same in every run; the PR number is 1000 plus <index>, the
-# run's index in its batch, and the commits are dated <index> seconds after <start>, the batch's
-# start, so no two runs of a batch share a PR number or a head (two runs can meet in a scratch file
-# in the shared /tmp), and each batch's heads carry its own start time.
+# workspace cloned from it, the implementer's commit on the issue's branch $worker_branch, the PR
+# the gh stand-in serves, and the implementer's handoff body at $R/implement.json, which
+# run_tester_proof records on the issue. The fixture's content is the same in every run; the PR
+# number is 1000 plus <index>, the run's index in its batch, and the commits are dated <index>
+# seconds after <start>, the batch's start, so no two runs of a batch share a PR number or a head
+# (two runs can meet in a scratch file in the shared /tmp), and each batch's heads carry its own
+# start time.
 # The CLI must meet every requirement the seeded spec marks, and the issue's Verification document
 # holds the check that the implementer's seeded result and the tester's own run are against.
-# testerProof fails a run that
-# pushes a change to legion/<key>, and it cannot tell a tester that pinned a real defect with a red
-# test, which roles/core/tester.md asks for, from one that went off-task. A defect left in the
-# fixture turns correct testing into a fail.
+# testerProof fails a run that pushes a change to the issue's branch, and it cannot tell a tester
+# that pinned a real defect with a red test, which roles/core/tester.md asks for, from one that
+# went off-task. A defect left in the fixture turns correct testing into a fail.
 worker_fixture() {
   local index=$1 start=$2 src C1 body when worker_pr worker_pr_url jj_setup_config
   worker_pr=$((1000 + index))
@@ -1356,7 +1359,7 @@ EOF
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
   g add -A && g commit -qm "init"
   g push -q "$R/remote.git" main
-  g checkout -qb "legion/$worker_key"
+  g checkout -qb "$worker_branch"
   cat >"$src/greet.ts" <<'EOF'
 export function greet(name: string): string {
   return `Hello, ${name.trim()}!`;
@@ -1385,7 +1388,7 @@ test("trims the name", () => {
 EOF
   g add -A && g commit -qm "feat: greet(), a greeting helper for the widgets CLI ($worker_key)"
   C1=$(g rev-parse HEAD)
-  g push -q "$R/remote.git" "legion/$worker_key"
+  g push -q "$R/remote.git" "$worker_branch"
   : >"$R/pushes.log"
   # The implement handoff as the implementer records it with `dispatch handoff-write`: the three
   # stamps (schemaVersion, phase, issue) and the phase's fields; Dispatch records when it was
@@ -1402,7 +1405,7 @@ EOF
   jj_setup_config=$R/jj-setup.toml
   printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
   JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
-  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
+  (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "$worker_branch" --remote origin && JJ_CONFIG=$jj_setup_config jj new "$worker_branch") >/dev/null 2>&1
   body="Dispatch: $worker_key
 
 Adds \`greet(name)\` and \`bun greet.ts <name>\`.
@@ -1417,7 +1420,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 **Fast-follow:** none.
 
 **Chain:** not stacked."
-  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
+  jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "$worker_branch" \
     --arg key "$worker_key" --argjson number "$worker_pr" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:"main", body:$body, mergeable:"MERGEABLE",
@@ -1437,7 +1440,7 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
     ]}' >"$R/fixtures.json"
   # The world the scorer reads: head is the PR's head, the implementer's code commit.
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --argjson pr "$worker_pr" --arg head "$C1" \
-    '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), head:$head}' >"$R/world.json"
+    --arg branch "$worker_branch" '{key:$key, repo:$repo, pr:$pr, branch:$branch, head:$head}' >"$R/world.json"
 }
 
 run_tester_proof() {
@@ -1447,6 +1450,7 @@ run_tester_proof() {
   own_dispatch project
   seed_ts tester-proof "$R/fixture.json"
   worker_key=$(jq -r .issue "$R/fixture.json")
+  worker_branch=legion/$(openssl rand -hex 8)
   worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
   seed_ts implement-handoff "$R/fixture.json" "$R/implement.json" "$(jq -r .head "$R/world.json")"
   version=$(jq -r .implement.version "$R/fixture.json")
@@ -1482,8 +1486,10 @@ run_tester_proof() {
     echo "GIT_CONFIG_COUNT=0"
     echo "JJ_USER=Rig Worker"
     echo "JJ_EMAIL=rig@example.invalid"
-    echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
+    # The pane's issue branch, as the daemon tells a worker pane (worker-pane.ts reads the pane from
+    # the label's daemon module, which an older label's names none of).
+    echo "LEGION_BRANCH=$worker_branch"
   } >"$R/pane.env"
   launch "$name"
   # What the run left on its issue: every handoff record, each with its body, for testerProof.

@@ -17,7 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> --repo <owner>/<repo> --default-branch <name> [--root /legion] --credential-helper <git helper> --feed <dir>"
+const workspaceProvisionUsage = "legion workspace-init provision --issue <KEY> --branch <issue branch> --repo <owner>/<repo> --default-branch <name> [--root /legion] --credential-helper <git helper> --feed <dir>"
 
 // provisionTokenFileEnv points `workspace-init fetch` at the mounted provisioning token.
 const provisionTokenFileEnv = "LEGION_PROVISION_TOKEN_FILE"
@@ -92,14 +92,15 @@ func runWorkspaceProvision(ctx context.Context, args []string, stdout, stderr io
 	flags := newFlags("workspace-init provision", "usage: "+workspaceProvisionUsage, stderr)
 	issue := flags.String("issue", "", "Dispatch issue key, e.g. LEGION-1 (required)")
 	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	defaultBranch := flags.String("default-branch", "", "the repository's default branch as GitHub names it, where an issue with no branch starts (required)")
+	defaultBranch := flags.String("default-branch", "", "the repository's default branch as GitHub names it, where an issue whose branch GitHub does not have yet starts (required)")
+	branch := flags.String("branch", "", "the issue's stored branch, legion/<name>, which the workspace's bookmark is (required)")
 	root := flags.String("root", "/legion", "issue volume root directory")
 	credentialHelper := flags.String("credential-helper", "", "git credential helper written into the clone's config (required)")
 	feed := flags.String("feed", "", "the pod's feed directory, which workspace-init fetch filled (required)")
 	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
 		return code
 	}
-	return workspaceInitExit(flags, workspaceInit(ctx, *issue, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
+	return workspaceInitExit(flags, workspaceInit(ctx, *issue, *branch, *repo, *defaultBranch, *root, *credentialHelper, *feed, stdout), stderr)
 }
 
 // parseWorkspaceInitFlags parses one subcommand's flags, refusing a positional argument; a false
@@ -137,13 +138,16 @@ func workspaceInitExit(flags *flag.FlagSet, err error, stderr io.Writer) int {
 // stale and would fail each later write of what it locks (LEGION-731) — the kubelet restarts a
 // failed init container on the same pod, and so on the same disk, so a first attempt killed
 // mid-fetch leaves exactly those locks for the retry to clear.
-func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
+func workspaceInit(ctx context.Context, issue, branch, repo, defaultBranch, root, credentialHelper, feed string, stdout io.Writer) error {
 	repository, err := ghrepo.Parse("--repo", repo)
 	if err != nil {
 		return err
 	}
 	if !legionclaim.IsIssueKey(issue) {
 		return fmt.Errorf("--issue must be a Dispatch issue key like LEGION-1 (got %q)", issue)
+	}
+	if !legionclaim.IsIssueBranch(branch) {
+		return fmt.Errorf("--branch must be the issue's stored branch, legion/<name> (got %q): %s", branch, workspaceProvisionUsage)
 	}
 	if !filepath.IsAbs(root) {
 		return fmt.Errorf("--root must be an absolute path (got %q)", root)
@@ -164,7 +168,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	if err != nil {
 		return err
 	}
-	located, err := workspace.Location(root, repository, issue)
+	located, err := workspace.Location(root, repository, issue, branch)
 	if err != nil {
 		return err
 	}
@@ -175,7 +179,7 @@ func workspaceInit(ctx context.Context, issue, repo, defaultBranch, root, creden
 	}
 	run := workspace.NewRunner(provisionBudget, tools)
 	provisioned, err := workspace.Provision(ctx, run, workspace.Request{
-		StateDir: root, Repo: repository, Issue: issue, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
+		StateDir: root, Repo: repository, Issue: issue, Branch: branch, DefaultBranch: defaultBranch, CredentialHelper: credentialHelper,
 		Source: workspace.FromFeed(feed), Log: log,
 	})
 	if err != nil {

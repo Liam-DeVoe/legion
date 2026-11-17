@@ -60,9 +60,9 @@ func windowKey(spec runtime.SpawnSpec) string {
 // finishes, it is exactly what panePairs sets for a tree pane
 // (TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime), which the shared validator refuses in a
 // spec's Env and as a secret's pointer. A controller pane is told controllerOwned in place of the
-// tree, the issue, the issue key it stamps and the workspace.
+// tree, the issue, the issue key it stamps, its branch and the workspace.
 var runtimeOwned = map[string]bool{
-	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_ROLE": true,
+	"LEGION_TREE": true, "LEGION_ISSUE": true, "LEGION_ISSUE_TRAILER": true, "LEGION_BRANCH": true, "LEGION_ROLE": true,
 	"LEGION_GENERATION": true, "LEGION_PROJECT": true, "LEGION_DAEMON_URL": true,
 	"LEGION_STATE_DIR": true, "LEGION_WORKSPACE": true, "ENVOY_NATS_URL": true, "ENVOY_URL": true,
 	"GIT_TERMINAL_PROMPT": true, "XDG_CONFIG_HOME": true, "XDG_CACHE_HOME": true, "XDG_DATA_HOME": true,
@@ -73,7 +73,7 @@ var runtimeOwned = map[string]bool{
 }
 
 // controllerOwned are the variables a controller pane is told in place of a tree pane's
-// LEGION_TREE, LEGION_ISSUE, LEGION_ISSUE_TRAILER and LEGION_WORKSPACE: the controller marker the
+// LEGION_TREE, LEGION_ISSUE, LEGION_ISSUE_TRAILER, LEGION_BRANCH and LEGION_WORKSPACE: the controller marker the
 // plugin classifies the session by, and LEGION_SLACK_CHANNELS, which the plugin requires of the
 // controller the daemon launches — always empty here, since only a controller enrolled with the
 // secrets broker (runtime.kubernetes.agent_secrets) may have Slack channels
@@ -167,7 +167,7 @@ func (r *Runtime) workspaceDir(spec runtime.SpawnSpec) (string, error) {
 		}
 		return dir, nil
 	}
-	working, err := workspace.Location(r.stateDir, spec.Repository, spec.Issue)
+	working, err := workspace.Location(r.stateDir, spec.Repository, spec.Issue, spec.Branch)
 	if err != nil {
 		return "", err
 	}
@@ -241,7 +241,8 @@ type PaneInputs struct {
 
 // panePairs are a pane's -e pairs, in one order: the variables every Legion pane is told (the
 // identity — a tree pane's tree and issue, and, where the project names its repository, the issue
-// key it stamps into its commits (LEGION_ISSUE_TRAILER, left out of a pane that stamps none), or
+// key it stamps into its commits (LEGION_ISSUE_TRAILER, left out of a pane that stamps none), and,
+// for a pane that works a repository, the issue's stored branch (LEGION_BRANCH), or
 // the controller's marker LEGION_CONTROLLER=1 — the daemon, state and, for a tree pane, workspace
 // variables; for the controller, its empty LEGION_SLACK_CHANNELS; the Envoy and Dispatch
 // variables; for a pane with a GHOwnersDir, GH_CONFIG_DIR, its default owner's directory of gh
@@ -287,6 +288,9 @@ func panePairs(spec runtime.SpawnSpec, in PaneInputs, files []runtime.SecretFile
 		add("LEGION_ISSUE", spec.Issue)
 		if spec.IssueTrailer != "" {
 			add("LEGION_ISSUE_TRAILER", spec.IssueTrailer)
+		}
+		if spec.Branch != "" {
+			add("LEGION_BRANCH", spec.Branch)
 		}
 	}
 	add("LEGION_ROLE", string(spec.Role))

@@ -103,7 +103,7 @@ func (w *workflowRuntime) issuePullRequest(ctx context.Context, key string) (*re
 	if issue.GitHubRepo == "" {
 		return nil, nil
 	}
-	branch := claim.IssueBranch(key)
+	branch := issue.Branch
 	read, cancel := context.WithTimeout(ctx, issueRead)
 	pull, found, err := w.openPullRequestOn(read, issue.GitHubRepo, branch)
 	cancel()
@@ -172,7 +172,7 @@ func (w *workflowRuntime) tellMissing(ctx context.Context, issue record.Issue, p
 	if commit == "" {
 		return
 	}
-	branch := claim.IssueBranch(issue.Key)
+	branch := issue.Branch
 	eventID := fmt.Sprintf("pull-request-missing:%s:%s:%d:%s", w.dispatchProject, issue.Key, issue.Generation, commit)
 	w.log.Warn("workflow: GitHub lists no open pull request on the branch of an issue whose implementer completed; telling its architect",
 		"repo", issue.GitHubRepo, "issue", issue.Key, "branch", branch, "handoff", commit)

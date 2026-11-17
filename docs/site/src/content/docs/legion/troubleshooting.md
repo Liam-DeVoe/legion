@@ -322,17 +322,18 @@ Check, in order:
    came back, whatever its board rank, so that order is no fault to chase.
 
 5. **GitHub refuses its branch.** Before the architect starts, the daemon creates the issue's
-   branch, `legion/<KEY>`, on GitHub in the issue's recorded repository at its recorded default
-   branch, as the implement App, and again before each tree member's planner starts, so no agent's
-   push is the one that creates it (GitHub can refuse that push on a large repository). A branch
-   GitHub already has is kept as it is. While GitHub refuses the read of the base branch's ref or
+   branch, the one it stored for the issue (`legion issue-branch <KEY>` prints it), on GitHub in
+   the issue's recorded repository at its recorded default branch, as the implement App, and again
+   before each tree member's planner starts, so no agent's push is the one that creates it (GitHub
+   can refuse that push on a large repository). A branch GitHub already has is kept as it is.
+   While GitHub refuses the read of the base branch's ref or
    the create, the architect or planner waiting for it does not start. The daemon retries, backing
    off to about a minute, and logs each refusal as an error whose `msg` is `outbox row failed`, with
    `kind` `issue_branch` and an `error` naming the repository, the ref, GitHub's status and its
    body:
 
    ```text
-   {"level":"ERROR","msg":"outbox row failed","row":81,"kind":"issue_branch","error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/WIDGETS-12 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
+   {"level":"ERROR","msg":"outbox row failed","row":81,"kind":"issue_branch","error":"create the branch of WIDGETS-12, which its roles' starts wait for: create refs/heads/legion/3f9a1c2b7d4e5f60 on acme/widgets at <default branch's commit>: GitHub answered POST /git/refs with 403: {\"message\":\"Resource not accessible by integration\",…}"}
    ```
 
    Fix what GitHub names, such as the implement App's permissions or a ruleset on `legion/*`
@@ -1152,7 +1153,7 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
-  was pushed to `legion/<issue>` and each role's conversation, which lives in the session
+  was pushed to the issue's branch and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
@@ -1422,12 +1423,13 @@ These arrive as messages on the Dispatch issue:
   parked.
 - **An implementer's completion refused `HANDOFF_NO_PULL_REQUEST`.** The implementer's completion
   of implementing reads GitHub, as the implement App, for the open pull request on the issue's
-  branch, `legion/<KEY>`: the issue moves to testing only on an open pull request, or one the
-  daemon recorded merged. One the daemon has not recorded yet (its opened webhook lost or still
+  stored branch (`legion issue-branch <KEY>` prints it): the issue moves to testing only on an
+  open pull request, or one the daemon recorded merged. One the daemon has not recorded yet (its
+  opened webhook lost or still
   waiting) is recorded there and the issue moves on. A pull request merged while the issue was in
   `implementing` already told the architect (`pr-merged`), and the completion is applied and moves
   the issue to testing. With none, the completion is refused and nothing is recorded: `no open pull
-  request on <owner>/<repo> legion/<KEY>; nothing was recorded. Open the pull request and complete
+  request on <owner>/<repo> <branch>; nothing was recorded. Open the pull request and complete
   again.` The implementer opens it and completes again at the same commit. When the record holds
   the issue's pull request closed without merging, the refusal adds `pull request #<n> is closed;
   your architect was told and decides this issue's phase.`: the close already told the architect,
@@ -1566,7 +1568,7 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
 
 - **`waiting`** is how many messages the consumer has not handled: not yet delivered, or delivered
   and not yet acknowledged. It counts the events the daemon acknowledges without acting on too: a
-  pull request on a branch that is not an issue's `legion/<KEY>`, a review or CI settlement of a
+  pull request on a branch that is no issue's stored branch, a review or CI settlement of a
   pull request the daemon does not record, and a run of a workflow that is no configured deploy.
   Those take no database transaction, so a backlog of them drains quickly. `0 waiting` is a
   consumer that is caught up.
@@ -1612,9 +1614,9 @@ event that waits for a phase no handoff is coming for waits for the consumer to 
 
 ## An architect is told `pull-request-missing`
 
-The notice's reason names the issue, the repository, the branch and the handoff commit: `<KEY>'s
-implementer completed at <commit>, and GitHub shows no open pull request on <owner>/<repo>
-legion/<KEY>, so <KEY> stays in implementing.` The daemon's read of that issue — made at its own start and after
+The notice's reason names the issue, the repository, the issue's stored branch and the handoff
+commit: `<KEY>'s implementer completed at <commit>, and GitHub shows no open pull request on
+<owner>/<repo> <branch>, so <KEY> stays in implementing.` The daemon's read of that issue — made at its own start and after
 every handoff — found an issue in `implementing` whose implementer recorded its handoff, with no
 open or merged pull request recorded and none GitHub lists open on its branch. That happens
 when the implementer's completion was applied without GitHub's answer (the read failed), or when

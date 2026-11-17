@@ -285,6 +285,12 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The operator's: set an issue's Dispatch lifecycle status (`todo|backlog|icebox`) from an operator shell;
   `--operator-token-file <file>` is required (the controller sets a status through its `legion` tool's `set_status`, never from bash)
 
+- `legion issue-branch <KEY> --operator-token-file <file> [--config|--port]`
+
+  The operator's: print the branch the daemon stores for an issue, and a newline, over `POST /legion/v1/operator/issue-branch`;
+  the daemon names an issue's branch once and keeps it, `legion/<16 lowercase hex>` for an issue it records now and `legion/<KEY>` for one recorded before it stored branches, and it names one for an issue of its project it has not recorded yet, which that issue takes when it is recorded, so whoever hands work over can create the branch at a chosen commit before admission (`skills/legion-controller/SKILL.md`, "Issues handed to Legion");
+  every pane of the issue holds that branch as `LEGION_BRANCH`, `legion state --json` gives it as each recorded issue's `branch`, and the controller and an architect read it with the `legion` tool's `issue_branch`, over `POST /legion/v1/issues/branch`
+
 - `legion stop [--config <legion.yaml>]`
 
   Stop the registered daemon of the project that file names
@@ -1007,6 +1013,7 @@ The record is that result and the pull request: a closed issue takes a result fo
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.
+When it first records an issue's pull request, the daemon also writes the pull request's URL into the issue's Dispatch external links through its outbox (a `dispatch_external_link` row), which is how Dispatch ties the pull request to the issue whatever its branch, title and body name.
 The controller moves an issue to `todo`/`backlog`/`icebox` through its `legion` tool's `set_status`, and an operator through `legion status <issue> <status> --operator-token-file <file>`.
 A human can also close an issue into `done` and reopen it into `backlog` from the Dispatch dashboard.
 

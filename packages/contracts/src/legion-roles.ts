@@ -38,6 +38,13 @@ const ENVOY_ROLE_TOKEN = /^[a-z0-9][a-z0-9_-]*$/;
 const PROJECT_TOKEN = /^[a-z0-9]+$/;
 /** A Dispatch issue key: uppercase project, then a numeric suffix — `IssueKey`'s sole shape. */
 export const DISPATCH_KEY_PATTERN = /^([A-Z][A-Z0-9]*)-([0-9]+)$/;
+/** The shape of an issue's branch as every reader accepts it: `legion/` and one path segment of
+ * letters, digits and `-` that starts with a letter or a digit. The daemon stores each issue's
+ * branch once and never changes it: `legion/<KEY>` for an issue recorded before it stored
+ * branches, and `legion/` and 16 lower-case hexadecimal characters for one recorded since, which
+ * carries no key. A pane reads its own from `LEGION_BRANCH`. The shape validates a name; nothing
+ * derives an issue from one. */
+export const LEGION_BRANCH_PATTERN = /^legion\/[A-Za-z0-9][A-Za-z0-9-]*$/;
 const DISPATCH_ROLE_PART =
   /^([a-z0-9]+)-([0-9]+)-(architect|planner|implementer|tester|reviewer|merger)$/;
 

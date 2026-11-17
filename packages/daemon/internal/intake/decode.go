@@ -666,16 +666,17 @@ func decodeGitHubFact(subject string, repositories []ghrepo.Repository, payload 
 	return fact, nil, err
 }
 
-// decodePullRequest decodes a pull request's lifecycle event on an issue's branch
-// (claim.BranchIssue). One on any other branch is no fact, read before anything else of the
-// event, so it is acknowledged without a transaction: the workflow records a pull request only on
-// an issue's branch (PullRequestOpened), and every later event applies only to a recorded one. A
-// mapped repository whose other pull requests open and move many times a minute would otherwise
-// cost the daemon one transaction under the fact lock (ApplyFact) for every one, all of them
-// changing nothing. Every action carries head_ref.
+// decodePullRequest decodes a pull request's lifecycle event on a branch of an issue's stored
+// shape (claim.IsIssueBranch). One on any other branch is no fact, read before anything else of
+// the event, so it is acknowledged without a transaction: the workflow records a pull request only
+// on an issue's stored branch (PullRequestOpened, which looks the branch up), and every later event
+// applies only to a recorded one. A mapped repository whose other pull requests open and move many
+// times a minute would otherwise cost the daemon one transaction under the fact lock (ApplyFact)
+// for every one, all of them changing nothing. The shape says only that the branch may be an
+// issue's; which issue it is, if any, is the store's answer. Every action carries head_ref.
 func decodePullRequest(repository ghrepo.Repository, raw map[string]json.RawMessage) (Fact, error) {
 	branch, _ := rawString(raw, "head_ref")
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+	if !claim.IsIssueBranch(branch) {
 		return nil, nil
 	}
 	number, action, ok := githubIdentity(raw)
@@ -758,8 +759,9 @@ func decodeReview(repository ghrepo.Repository, raw map[string]json.RawMessage) 
 		CommitID: commitID, HeadSHA: headSHA, Author: author, Body: body, BodyTruncated: bodyTruncated == "true"}, unread, nil
 }
 
-// decodePush decodes a push to a branch: to an issue's branch (claim.BranchIssue) it is the Push
-// the workflow applies to the pull request it records there, and to any other branch it is a
+// decodePush decodes a push to a branch: to a branch of an issue's stored shape
+// (claim.IsIssueBranch) it is the Push the workflow applies to the pull request it records there,
+// and to any other branch it is a
 // BasePush, the only notice the daemon gets that a pull request's base moved. GitHub recomputes
 // whether each head on a base still merges into it when the base moves and sends no event for the
 // pull request itself, so a head the record holds as clean goes behind or dirty unheard.
@@ -791,7 +793,7 @@ func decodePush(repository ghrepo.Repository, raw map[string]json.RawMessage) (F
 	if !ok || after == "" {
 		return nil, nil
 	}
-	if _, isIssueBranch := claim.BranchIssue(branch); !isIssueBranch {
+	if !claim.IsIssueBranch(branch) {
 		return BasePush{Repo: repository.String(), Branch: branch, After: after}, nil
 	}
 	if after == record.NoCommit {

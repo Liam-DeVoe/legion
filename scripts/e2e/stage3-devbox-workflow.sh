@@ -836,10 +836,11 @@ primary_issue() {
   pass
 
   begin primary-implementer-pull-request-and-handoff
-  send_agent "$root_issue" implementer "Stage 3 proof implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$root_issue, open its pull request, record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge."
-  until_true 900 "implementer pull request on legion/$root_issue" sh -c \
-    "gh -R '$repo' pr list --head 'legion/$root_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
-  pr_number=$(gh -R "$repo" pr list --head "legion/$root_issue" --state open --json number --jq '.[0].number')
+  root_branch=$(issue_branch "$root_issue")
+  send_agent "$root_issue" implementer "Stage 3 proof implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on $root_branch, open its pull request, record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge."
+  until_true 900 "implementer pull request on $root_branch" sh -c \
+    "gh -R '$repo' pr list --head '$root_branch' --state open --json number | jq -e 'length == 1' >/dev/null"
+  pr_number=$(gh -R "$repo" pr list --head "$root_branch" --state open --json number --jq '.[0].number')
   # The planner's handoff is a record on the Dispatch issue, so the pull request's commits are the
   # implementer's alone, authored and committed by the implement App's bot (role_app); no commit is
   # a handoff, and none changes only .legion/.
@@ -856,7 +857,7 @@ primary_issue() {
     fail "$repo#$pr_number changes product files '$(tr '\n' ' ' <<<"$smoke_file")', want the spec's one file"
   fi
   wait_for_worker "$root_issue" tester
-  note "implementer opened $repo#$pr_number on legion/$root_issue changing $smoke_file, its commits authored and committed by the implementer App bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
+  note "implementer opened $repo#$pr_number on $root_branch changing $smoke_file, its commits authored and committed by the implementer App bot alone, and its completion naming its Dispatch handoff record advanced the daemon to testing"
   pass
 
   begin primary-tester-pass
@@ -1330,9 +1331,10 @@ restart_scenarios() {
   # silently lost, and the board (left at the human's needs_review) catches up once Dispatch returns.
   # The agent's check carries a timeout: Dispatch's port is kept (start_dispatch), so while it is down
   # a request waits unanswered, and the timeout is what fails.
-  send_agent "$restart_issue" implementer "Stage 3 outbox proof: make the smallest one-file smoke change for this issue, commit it and open pull request legion/$restart_issue in $repo, and write the implementation handoff. Before you call the legion tool's handoff_complete, wait for the proof to stop the Dispatch server: run curl -fsS --max-time 5 \"\$DISPATCH_URL/api/v1\" every 5 seconds until it fails (for up to 15 minutes), and only once it has failed call the legion tool's handoff_complete. Do not post anything to Dispatch."
+  restart_branch=$(issue_branch "$restart_issue")
+  send_agent "$restart_issue" implementer "Stage 3 outbox proof: make the smallest one-file smoke change for this issue, commit it on $restart_branch and open its pull request in $repo, and write the implementation handoff. Before you call the legion tool's handoff_complete, wait for the proof to stop the Dispatch server: run curl -fsS --max-time 5 \"\$DISPATCH_URL/api/v1\" every 5 seconds until it fails (for up to 15 minutes), and only once it has failed call the legion tool's handoff_complete. Do not post anything to Dispatch."
   until_true 900 "restart-tree pull request to open" sh -c \
-    "gh -R '$repo' pr list --head 'legion/$restart_issue' --state open --json number | jq -e 'length == 1' >/dev/null"
+    "gh -R '$repo' pr list --head '$restart_branch' --state open --json number | jq -e 'length == 1' >/dev/null"
   stop_dispatch
   until_true 600 "the stopped Dispatch server to leave testing status pending" sh -c \
     "'$work/legion' state --json --port '$port_daemon' | jq -e --arg issue '$restart_issue' '.issues[\$issue].phase == \"testing\" and any(.pendingStatusWrites[]; .issue == \$issue)'"

@@ -697,9 +697,10 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 // completion moves its issue to testing only on a pull request recorded open or merged for it
 // (workflow's TriggerImplementationReady), and only the opened webhook, or the daemon's per-issue
 // read standing in for one that webhook lost (readIssuePullRequest), records one open. So before
-// the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
-// read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
-// (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
+// the completion is applied, the open pull request on the issue's stored branch
+// (record.Issue.Branch) is read as the implement App, minted for the owner of the issue's
+// repository in GitHub's spelling (record.Issue.GitHubRepo, which the webhook's facts name it by),
+// and it says whether the
 // completion goes on:
 //
 //   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
@@ -738,7 +739,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return false
 	}
-	branch := claim.IssueBranch(issue.Key)
+	branch := issue.Branch
 	logUnread := func(err error) {
 		attributes := []any{"issue", issue.Key, "repo", issue.GitHubRepo, "branch", branch, "error", err}
 		var answer *githubrest.Answer

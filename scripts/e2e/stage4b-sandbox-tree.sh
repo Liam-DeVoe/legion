@@ -2324,21 +2324,22 @@ stream_missing() {
 
 # ---- the smoke repository's fixture (tree 2) --------------------------------------------------------
 
-# push_fixture ISSUE: legion/ISSUE on the smoke repository, one commit on main carrying a
-# repository's own configuration: AGENTS.md, an Oh My Pi extension and tool, two MCP servers under
-# distinct names (one stdio server, bun on the pod's PATH, configured twice), an LSP config, a
-# Codex tool, and a Claude plugin list. Each one, if the agent's process loads it, writes its own
-# marker under /tmp/legion-fixture/ in the pod. The commit also carries what repository-tools reads:
-# two skills (one in Oh My Pi's directory, one in Claude's) each holding this run's nonce, a Go, a
-# TypeScript and a Python root small enough for a language server to hover and a code graph to
-# trace, and a .omp/config.yml setting one key nothing above it sets and one the operator's overlay
-# also sets. The workspace of ISSUE is provisioned from that bookmark (internal/workspace
-# createWorkspace), so tree 2's pods carry the fixture; tree 2 never opens a pull request, so
-# nothing of it reaches the smoke main.
+# push_fixture ISSUE: ISSUE's branch on the smoke repository (issue_branch: the one the daemon
+# stores for ISSUE, which it answers before it admits ISSUE and keeps once it records it), one
+# commit on main carrying a repository's own configuration: AGENTS.md, an Oh My Pi extension and
+# tool, two MCP servers under distinct names (one stdio server, bun on the pod's PATH, configured
+# twice), an LSP config, a Codex tool, and a Claude plugin list. Each one, if the agent's process
+# loads it, writes its own marker under /tmp/legion-fixture/ in the pod. The commit also carries
+# what repository-tools reads: two skills (one in Oh My Pi's directory, one in Claude's) each
+# holding this run's nonce, a Go, a TypeScript and a Python root small enough for a language server
+# to hover and a code graph to trace, and a .omp/config.yml setting one key nothing above it sets
+# and one the operator's overlay also sets. The workspace of ISSUE is provisioned from that
+# bookmark (internal/workspace createWorkspace), so tree 2's pods carry the fixture; tree 2 never
+# opens a pull request, so nothing of it reaches the smoke main.
 push_fixture() {
   local issue=$1 dir
   dir=$work/fixture
-  fixture_branch="legion/$issue"
+  fixture_branch=$(issue_branch "$issue") || fail "could not read the branch the daemon stores for $issue (above)"
   gh repo clone "$repo" "$dir" -- --quiet --depth 1 --branch main >/dev/null 2>&1 || fail "clone $repo for the fixture"
   mkdir -p "$dir/.omp/extensions" "$dir/.omp/tools" "$dir/.omp/plugins" "$dir/.codex/tools"
   cat >"$dir/AGENTS.md" <<'EOF'
@@ -2808,22 +2809,27 @@ delete_consumers() {
   return 0
 }
 # remove_run_branches closes each pull request the run left open on the smoke repository and deletes
-# each tree's branch legion/<tree> there (tree 2's is the fixture's): the run's own, which a run that
+# each tree's branch there, the one the daemon stores for it (issue_branch, read from the run's
+# record: the daemon has stopped by now; tree 2's is the fixture's): the run's own, which a run that
 # stops before the proof human's merge would otherwise leave behind. Then it closes the cleanup pull
 # request done opened, and deletes its branch, when the run stopped between making the branch and the
 # merge (close_smoke_cleanup, lib/workflow.sh): a run's own is proof/clean-main-$run_label, so it acts
 # only on the one this run made, and a note names by URL any it could not close. It makes no gh call
 # unless require_proof_human passed: a refused run's gh acts as someone else.
 remove_run_branches() {
-  local issue number out line
+  local issue branch number out line
   [ -n "$proof_human" ] || return 0
   for issue in $tree1 $tree2 $tree3 $tree4; do
-    number=$(timeout 60 gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
+    if ! branch=$(issue_branch "$issue"); then
+      note "could not read the branch of $issue (above), so its pull request and its branch, if any, remain on $repo"
+      continue
+    fi
+    number=$(timeout 60 gh -R "$repo" pr list --head "$branch" --state open --json number --jq '.[0].number // empty' 2>/dev/null)
     if [ -n "$number" ]; then
       timeout 60 gh -R "$repo" pr close "$number" --comment "Closed by the Stage 4b run that opened it, at its teardown." >/dev/null 2>&1 &&
-        note "closed the run's open pull request $repo#$number (legion/$issue)"
+        note "closed the run's open pull request $repo#$number ($issue's branch $branch)"
     fi
-    timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/legion/$issue" >/dev/null 2>&1 && note "deleted the run's branch legion/$issue from $repo"
+    timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null 2>&1 && note "deleted the run's branch $branch ($issue's) from $repo"
   done
   out=$(close_smoke_cleanup) || true
   while IFS= read -r line; do [ -z "$line" ] || note "$line"; done <<<"$out"
@@ -3167,14 +3173,16 @@ start_interests_sampler() {
 }
 # run_pull_request_numbers prints, as a JSON array, the number of every pull request (open or
 # closed) on the smoke repository whose branch is one of this run's issue branches
-# (legion/$project-*, run_pull_requests' own prefix, lib/workflow.sh:599-601, but --state all so a
+# (run_issue_branches, as lib/workflow.sh's run_pull_requests reads them, but --state all so a
 # pull request this run closed during the run still counts as its own): the only pull requests
 # interests_outside accepts a GitHub subject for, since two lanes share one smoke repository and
 # GitHub subjects end in the pull request number (notifications.github.<owner>.<repo>.pr.<n>,
 # packages/daemon/internal/intake/intake_test.go), not the project that opened it.
 run_pull_request_numbers() {
+  local branches
+  branches=$(run_issue_branches) || return 1
   gh -R "$repo" pr list --state all --limit 1000 --json number,headRefName \
-    --jq "[.[] | select(.headRefName | startswith(\"legion/$project-\")) | .number]"
+    --jq "[.[] | select(.headRefName | IN($branches[])) | .number]"
 }
 # interests_outside FILE PRS prints, as one JSON array, every sampled topic in FILE outside the
 # run: a topic of the run names LEGSMOKE, the project's own subject space
@@ -4476,11 +4484,12 @@ jq -e '.state == "suspended" and .suspendedBy == "operator"' <<<"$held" >/dev/nu
   fail "the operator's suspend left $held_architect $(jq -c '{state, suspendedBy}' <<<"$held"), want suspended by the operator"
 held_generation=$(jq -r .generation <<<"$held")
 note "the operator suspended $tree1's architect $held_architect at generation $held_generation; its session held $held_before phase-finished notices"
-send_agent "$tree1" implementer "Stage 4b proof implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$tree1, open its pull request, record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge."
+tree1_branch=$(issue_branch "$tree1") || fail "could not read the branch the daemon stores for $tree1 (above)"
+send_agent "$tree1" implementer "Stage 4b proof implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on $tree1_branch, open its pull request, record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge."
 # The implementer runs sleep 300 on the daemon's task line before it reads the operation, so the budget carries that turn.
-on_tree "$tree1" until_true 1500 "implementer pull request on legion/$tree1" sh -c \
-  "timeout 60 gh -R '$repo' pr list --head 'legion/$tree1' --state open --json number | jq -e 'length == 1' >/dev/null"
-pr_number=$(gh -R "$repo" pr list --head "legion/$tree1" --state open --json number --jq '.[0].number')
+on_tree "$tree1" until_true 1500 "implementer pull request on $tree1_branch" sh -c \
+  "timeout 60 gh -R '$repo' pr list --head '$tree1_branch' --state open --json number | jq -e 'length == 1' >/dev/null"
+pr_number=$(gh -R "$repo" pr list --head "$tree1_branch" --state open --json number --jq '.[0].number')
 on_tree "$tree1" wait_for_phase "$tree1" testing 1200
 assert_handoff_record "$tree1" implementer implementing 0
 smoke_file=$(pull_request_product_files)
@@ -4537,7 +4546,7 @@ begin github-credential
 # copy under that role's directory and differ between the two roles). The agent's environment names
 # GH_CONFIG_DIR and no tool pin, no grant file (the `legion` tool mints its grants in-process; no
 # agent runs `legion` from bash), its PATH has no worker-bin shim, and a task subagent it launches
-# runs the same gh with the same credential. The pushes on legion/<issue> were made by the
+# runs the same gh with the same credential. The pushes on the issue's branch were made by the
 # implement App itself with plain jj: GitHub's record of the pull request's head names the implement
 # App, and that head has its check runs (acceptance 4a). No phase pushes a commit to hand off: no
 # commit of the pull request changes only .legion/, and the planner's handoff, as every role's, is
@@ -4628,7 +4637,7 @@ pr_head=$(gh -R "$repo" pr view "$pr_number" --json headRefOid --jq .headRefOid)
 [ -n "$pr_head" ] || fail "pull request #$pr_number has no head"
 actor=$(timeout 60 gh api "repos/$repo/commits/$pr_head" --jq '.committer.login // "nobody"') || fail "GitHub could not read the implementer's head $pr_head on $repo"
 printf '%s %s %s\n' "$pr_head" "$actor" "the implementer's head" >>"$evidence/github-credential-pushes.txt"
-[ "$actor" = "$implement_app" ] || fail "the implementer's head $pr_head on legion/$tree1 was committed by $actor, want $implement_app"
+[ "$actor" = "$implement_app" ] || fail "the implementer's head $pr_head on $tree1_branch was committed by $actor, want $implement_app"
 # No handoff-only push (A2): the pull request's commits, each one's files read whole before they are
 # judged (pull_request_legion_only_commits), hold none that changes only .legion/; the planner's
 # handoff is its Dispatch record, written under the planner's claim session; and the daemon recorded
@@ -4728,7 +4737,7 @@ expect_failure conflict-aborted-turn no_aborted_turn "$evidence/conflict-tester-
 # the tester was doing survived the phase it lost.
 on_tree "$tree1" until_true 900 "the tester's witness job to write $witness" pod_file "$tester_pod" tester "$witness"
 note "the tester's witness job ran on and wrote $witness: the conflict took the phase, not the turn, the job, the process or the session"
-send_agent "$tree1" implementer "Stage 4b proof conflict operation: the head of pull request #$pr_number conflicts with $pr_base, because the proof human committed a different $conflict_path there. Merge $pr_base forward into legion/$tree1 as your skill's forward-merge procedure says (\`jj new legion/$tree1 <destination>\`, never a rebase), resolve the conflict in $conflict_path keeping your own change, push the issue branch (\`jj bookmark set legion/$tree1 -r @- && jj git push --bookmark legion/$tree1\`), record the required implementation handoff, then call the legion tool's handoff_complete. Do not merge the pull request."
+send_agent "$tree1" implementer "Stage 4b proof conflict operation: the head of pull request #$pr_number conflicts with $pr_base, because the proof human committed a different $conflict_path there. Merge $pr_base forward into $tree1_branch as your skill's forward-merge procedure says (\`jj new $tree1_branch <destination>\`, never a rebase), resolve the conflict in $conflict_path keeping your own change, push the issue branch (\`jj bookmark set $tree1_branch -r @- && jj git push --bookmark $tree1_branch\`), record the required implementation handoff, then call the legion tool's handoff_complete. Do not merge the pull request."
 on_tree "$tree1" wait_for_phase "$tree1" testing 1800
 on_tree "$tree1" until_true 300 "tree 1's tester to be handed testing again in its first pod and session" resident_kept "$tree1" tester
 note "the implementer merged $pr_base forward and $tree1 is back in testing; the tester is in its first pod and session, the one it held through the conflict"
@@ -6394,7 +6403,7 @@ note "pull request #$pr_number stands at $merge_head with $(jq length "$evidence
 send_agent "$tree1" merger "Stage 4b proof merge operation: merge pull request #$pr_number exactly as your instructions describe, then end this phase with the legion tool: op handoff_complete and a summary."
 await_merger_merge "$repo" "$pr_number" --delete-branch
 # The whole run pushed no commit only to hand off (A2): every commit the merged pull request holds,
-# the run's every push on legion/$tree1, changes something outside .legion/ (or nothing, an empty
+# the run's every push on tree 1's branch, changes something outside .legion/ (or nothing, an empty
 # commit), since each role's handoff was its Dispatch record (assert_handoff_record above).
 handoff_pushes=$(pull_request_legion_only_commits) || fail "could not read the commits of pull request #$pr_number"
 [ -z "$handoff_pushes" ] || fail "merged pull request #$pr_number carries commits that change only .legion/: $(tr '\n' ' ' <<<"$handoff_pushes")"

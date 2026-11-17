@@ -66,8 +66,11 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. The last
+// column is the issue's stored branch (Issue.Branch), read from issue_branches by the issue's key,
+// so every query that selects these columns from issues reads it, under whatever join or union it
+// stands in: none of them renames the issues table.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce((select issue_branches.branch from issue_branches where issue_branches.issue = issues.key), '')`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -295,7 +298,53 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		}
 		return fmt.Errorf("record issue %s: it is recorded on %s@%s (GitHub's %s), and an issue's repository and default branch never change", issue.Key, repo, branch, github)
 	}
+	if _, err := s.AllocateIssueBranch(ctx, tx, issue.Key); err != nil {
+		return fmt.Errorf("record issue %s: %w", issue.Key, err)
+	}
 	return nil
+}
+
+// issueBranchDraws bounds how many fresh names AllocateIssueBranch draws for one issue before it
+// gives up. A draw fails only when another issue already stores the same 64-bit name, so the first
+// draw stands but for a collision no deployment meets, and a second failing as well says the
+// generator is broken rather than unlucky.
+const issueBranchDraws = 3
+
+// AllocateIssueBranch answers key's stored branch, storing a new one when it has none. The insert
+// names no conflict target, so a key already stored and a name another key already holds both
+// write nothing rather than abort the caller's transaction; the read after it tells the two apart:
+// a row for key is the answer, and none means the draw collided, so it draws again.
+func (s *Postgres) AllocateIssueBranch(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+	for range issueBranchDraws {
+		branch, err := claim.NewIssueBranch()
+		if err != nil {
+			return "", err
+		}
+		if _, err := tx.Exec(ctx, `insert into issue_branches (issue, branch) values ($1, $2) on conflict do nothing`, key, branch); err != nil {
+			return "", fmt.Errorf("store the branch of %s: %w", key, err)
+		}
+		var stored string
+		err = tx.QueryRow(ctx, `select branch from issue_branches where issue = $1`, key).Scan(&stored)
+		if err == nil {
+			return stored, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("read the branch of %s: %w", key, err)
+		}
+	}
+	return "", fmt.Errorf("store the branch of %s: %d fresh names each collided with another issue's", key, issueBranchDraws)
+}
+
+func (s *Postgres) IssueForBranch(ctx context.Context, tx pgx.Tx, branch string) (string, error) {
+	var key string
+	err := tx.QueryRow(ctx, `select issue from issue_branches where branch = $1`, branch).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the issue of branch %s: %w", branch, err)
+	}
+	return key, nil
 }
 
 // MarkIssueMoved records at as when the daemon last saw key move. It is the one writer of
@@ -496,7 +545,7 @@ func scanIssue(row scanner) (*Issue, error) {
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &issue.Branch); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {

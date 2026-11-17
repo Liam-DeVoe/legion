@@ -542,11 +542,11 @@ test("the worker skill tells a role to read the pull request's head after its ow
   );
   const onlyInTheWorkerPrompt = ["packages/daemon/internal/prompts/go/worker-common.md"];
   countedOncePerFile(
-    "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m '<issue>: carry the pull request to the pushed commit'`",
+    "`jj -R \"$LEGION_WORKSPACE\" new --no-edit --insert-after @- -m 'carry the pull request to the pushed commit'`",
     onlyInTheWorkerPrompt
   );
   countedOncePerFile(
-    '`jj -R "$LEGION_WORKSPACE" log -r legion/<issue>@origin --no-graph -T commit_id`',
+    '`jj -R "$LEGION_WORKSPACE" log -r "$LEGION_BRANCH@origin" --no-graph -T commit_id`',
     onlyInTheWorkerPrompt
   );
   countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);

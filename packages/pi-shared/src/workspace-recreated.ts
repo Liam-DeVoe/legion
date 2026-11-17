@@ -1,3 +1,5 @@
+import { paneIssueBranch } from "./issue-branch";
+
 /**
  * The notice a resumed agent gets when its role launcher found its workspace recreated since its
  * session was last written: `LEGION_WORKSPACE_RECREATED=true`, which the launcher sets on every
@@ -41,20 +43,40 @@ export function workspaceRecreated(
 }
 
 /**
+ * The branch the notice names: the issue's branch (`paneIssueBranch`), or, where `LEGION_BRANCH`
+ * holds no issue branch, words that say so and quote the refusal. The notice goes either way: each
+ * host makes it as its session starts, where a throw would end that start — Oh My Pi's before the
+ * claim registers, Claude Code's in a callback nothing awaits — and the phase ops refuse the same
+ * value by name when a completion or an update answer reads the branch.
+ */
+function noticeBranch(
+  environment: Readonly<Record<string, string | undefined>>,
+  issue: string
+): string {
+  try {
+    return paneIssueBranch(environment, issue);
+  } catch (error) {
+    const refusal = error instanceof Error ? error.message : String(error);
+    return `your issue's branch, which this pane cannot name (${refusal})`;
+  }
+}
+
+/**
  * The notice for a Legion session on `issue` whose environment is `environment`, undefined when its
- * launcher said nothing was recreated.
+ * launcher said nothing was recreated. It names the issue's branch, `LEGION_BRANCH`.
  */
 export function workspaceRecreatedNotice(
   environment: Readonly<Record<string, string | undefined>>,
   issue: string
 ): WorkspaceRecreatedNotice | undefined {
   if (!workspaceRecreated(environment)) return undefined;
+  const branch = noticeBranch(environment, issue);
   if (environment[WORKSPACE_RESTORED_VARIABLE] === "true") {
     return {
       id: crypto.randomUUID(),
       content:
         `Your workspace was made again since your last turn: the daemon released this issue's idle ` +
-        `pod and gave its CPU and memory back. It holds what was pushed to legion/${issue} and the ` +
+        `pod and gave its CPU and memory back. It holds what was pushed to ${branch} and the ` +
         "tracked work you had not pushed, which the daemon saved and put back. What is gone is what " +
         "no commit held: the files your scratch directory held, files git ignores, and anything you " +
         "started that was running. Check the workspace against what you remember doing before you " +
@@ -64,7 +86,7 @@ export function workspaceRecreatedNotice(
   return {
     id: crypto.randomUUID(),
     content:
-      `Your workspace was recreated since your last turn: it holds what was pushed to legion/${issue} ` +
+      `Your workspace was recreated since your last turn: it holds what was pushed to ${branch} ` +
       "(the repository's default branch if nothing was), and anything you had not pushed is gone. " +
       "Before you continue, check the workspace against what you remember doing and re-read the " +
       `last handoff recorded on ${issue} with \`dispatch handoff-read --issue ${issue} --phase <phase>\` ` +

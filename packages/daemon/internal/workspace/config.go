@@ -112,14 +112,16 @@ type Runner interface {
 }
 
 // Request contains the credential and identity of the repository to provision. Repo is the
-// configured GitHub owner/repository name, for example "sjawhar/legion-smoke". DefaultBranch is
-// the repository's default branch as GitHub names it, a branch name used verbatim
-// (release/v7.1): the base an issue with no branch starts at, and the branch a pod's feed brings
-// beside the issue's own.
+// configured GitHub owner/repository name, for example "sjawhar/legion-smoke". Branch is the
+// issue's stored branch (record.Issue.Branch), which the workspace's bookmark is and which the
+// clone checks out when GitHub has it. DefaultBranch is the repository's default branch as GitHub
+// names it, a branch name used verbatim (release/v7.1): the base an issue whose branch GitHub does
+// not have yet starts at, and the branch a pod's feed brings beside the issue's own.
 type Request struct {
 	StateDir         string
 	Repo             ghrepo.Repository
 	Issue            string
+	Branch           string
 	DefaultBranch    string
 	CredentialHelper string
 	// Source is how the shared clone reaches the repository: FromFeed or FromGitHub.
@@ -193,9 +195,10 @@ func (l *storeLock) unlock() {
 // Workspace is the durable location and branch bookmark for one issue. Dir has the shape
 // <state>/workspaces/<owner>/<repo>/<lowercase issue>; Clone, the clone the workspace is a jj
 // workspace of, <state>/repos/github.com/<owner>/<repo> — under tmux the one every issue workspace
-// of the repository shares, under Kubernetes the issue pod's own on its own volume. Repo is the
-// repository, and DefaultBranch its default branch, which Provision sets from its request (Location
-// leaves it empty: no path depends on it).
+// of the repository shares, under Kubernetes the issue pod's own on its own volume. Bookmark is the
+// issue's stored branch, which Location takes from its caller: no path depends on it, and it names
+// no issue. Repo is the repository, and DefaultBranch its default branch, which Provision sets from
+// its request (Location leaves it empty: no path depends on it).
 type Workspace struct {
 	Dir           string
 	Bookmark      string

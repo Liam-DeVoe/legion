@@ -136,6 +136,17 @@ type Issue struct {
 	// GitHub call the daemon makes for the record addresses the repository GitHub serves it under
 	// now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
+	// Branch is the GitHub branch the issue is worked on: the jj bookmark of its workspace, the
+	// branch the daemon creates for it (IssueBranch), and the head branch of its pull request. It
+	// is the issue's row of issue_branches, read beside the record and never written through it:
+	// PutIssue allocates the row as the issue is first recorded (AllocateIssueBranch), unless one
+	// was allocated before (POST /legion/v1/issues/branch), and nothing changes it after. So it is
+	// set on every record a store read returns: legion/<KEY> for an issue recorded before the
+	// release that stopped naming branches after their issue, which the migration copied in as
+	// the branch that issue was already on, and legion/<16 lowercase hex> (claim.NewIssueBranch)
+	// for every issue since. A pull request is its issue's when its head branch is this
+	// (IssueForBranch); no reader takes an issue out of a branch name.
+	Branch string
 	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
 	// applied to the record was prepared with (intake's DispatchIssue.Ancestry), or as the
@@ -1452,8 +1463,19 @@ type Store interface {
 	SlottedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	// PutIssue writes issue, refusing one without its repository, default branch or GitHub's
 	// spelling of the repository, one whose GitHub spelling names another repository, and one that
-	// would give a recorded issue another of any of them.
+	// would give a recorded issue another of any of them. It allocates the issue's branch in the
+	// same transaction when the issue has none yet (AllocateIssueBranch), and never writes
+	// issue.Branch: a record's branch is the stored one.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
+	// AllocateIssueBranch is key's stored branch (Issue.Branch), drawing and storing a new one
+	// (claim.NewIssueBranch) when key has none. The row is written once and never changed, so every
+	// call for one key answers the same branch, whether or not the issue is recorded yet: a branch
+	// created on GitHub at that name before the issue is admitted is the one its roles work on.
+	AllocateIssueBranch(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// IssueForBranch is the key of the issue whose stored branch is branch, "" when no issue's is.
+	// It is the one way the daemon finds the issue of a pull request or a push: by the branch it
+	// stored, never by a key read out of the name.
+	IssueForBranch(ctx context.Context, tx pgx.Tx, branch string) (string, error)
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
 	// column nowhere, so no stale copy of an issue can write a movement away.

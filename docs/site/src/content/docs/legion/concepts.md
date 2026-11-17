@@ -23,18 +23,24 @@ section can use the words without stopping to explain them.
 - **[Dispatch](/legion/dispatch/)** is where people and agents meet: the issue, its spec, the
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
-- **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
+- **GitHub** holds the code: one branch and one pull request per issue, in the
   issue's repository. A project spans every repository Dispatch maps to it (Settings →
   Repositories → Projects); each issue targets one of them, the one Dispatch resolves for it (its
   own, else its nearest ancestor's, else the project's default), which Legion records, with that
   repository's default branch as GitHub names it, when it first records the issue, and keeps.
+  The issue's branch is a name the daemon stores for the issue once and keeps: `legion/` and 16
+  lowercase hex characters, or `legion/<KEY>` for an issue recorded before the daemon stored
+  branches. `legion issue-branch <KEY>` prints it, `legion state --json` gives it as the issue's
+  `branch`, and every pane of the issue holds it as `LEGION_BRANCH`.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
   that wrote it. The daemon creates a root's branch at the recorded default branch (`main`,
   `develop` or `release/v7.1` alike) when it admits the root, before its architect starts, and a
   child's when the child starts planning in its tree, so no agent's push is the one that creates a
   branch: GitHub can refuse that push on a large repository. An issue's workspace with no branch to
-  start from starts at that default branch too. A pull request or push names its repository, and
-  counts for an issue only in the issue's own.
+  start from starts at that default branch too. A pull request or push counts for the issue whose
+  stored branch it is on, and only in the issue's own repository. When the daemon first records an
+  issue's pull request, it writes the pull request's URL as an external link on the Dispatch
+  issue, which is how Dispatch ties the pull request to the issue.
 
 ## Several repositories
 
@@ -137,7 +143,7 @@ head — brings the pod back and resumes the same sessions where they stopped.
 | --- | --- | --- | --- |
 | `awaiting_person` | none | The root keeps its admission slot while its live architect waits for and reads a person's answer to a question on the root. | none |
 | `planning` | planner | Writes the implementation plan into its handoff and the issue's document. | review App |
-| `implementing` | implementer | Writes the change, proves it works, pushes `legion/<KEY>` and opens the pull request. | implement App |
+| `implementing` | implementer | Writes the change, proves it works, pushes the issue's branch and opens the pull request. | implement App |
 | `testing` | tester | Runs the changed surface for real, tries to break it, judges whether the tests would catch what breaks, and reads CI for everything static; reports `pass` or `fail`. | review App |
 | `reviewing` | reviewer | Reviews the pull request and submits an approval of the head, or changes requested. | review App |
 | `accepting` | the architect | Reads the tester's handoff, each check of the issue's Verification document with its latest result, and the reviewer's approval of the head, and accepts the issue (on to retro) or sends it back to the implementer or the tester. Issues still running beneath it do not hold the acceptance: a root's close waits for them instead. No worker runs here; the issue's Dispatch status stays `needs_review`. | review App |

@@ -115,7 +115,7 @@ func (issuePod) prepare(l *launch) error {
 	if spec.Repository.IsZero() {
 		return errors.New("no repository: a pod's init container provisions the issue's workspace from one")
 	}
-	working, err := workspace.Location(TreeRoot, spec.Repository, spec.Issue)
+	working, err := workspace.Location(TreeRoot, spec.Repository, spec.Issue, spec.Branch)
 	if err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func (k issuePod) initContainers(r *Runtime, l launch) []corev1.Container {
 		Name:  initContainer,
 		Image: r.image,
 		Command: []string{
-			legion, "workspace-init", "provision", "--issue", l.spec.Issue, "--repo", l.spec.Repository.String(),
+			legion, "workspace-init", "provision", "--issue", l.spec.Issue, "--branch", l.spec.Branch, "--repo", l.spec.Repository.String(),
 			"--default-branch", l.spec.DefaultBranch, "--root", TreeRoot,
 			"--credential-helper", workspace.GitHubCredentialHelper, "--feed", FeedDir,
 		},
@@ -346,9 +346,10 @@ func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
 	return volumes
 }
 
-// agentEnv tells each agent its tree, issue and workspace, the issue key it stamps into its
-// commits where the project names its repository (LEGION_ISSUE_TRAILER, left out of an agent that
-// stamps none), where its gh reads its credentials, and uv's directories on the issue's volume.
+// agentEnv tells each agent its tree, issue, the issue's stored branch (LEGION_BRANCH) and its
+// workspace, the issue key it stamps into its commits where the project names its repository
+// (LEGION_ISSUE_TRAILER, left out of an agent that stamps none), where its gh reads its
+// credentials, and uv's directories on the issue's volume.
 func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 	var trailer []corev1.EnvVar
 	if l.spec.IssueTrailer != "" {
@@ -358,6 +359,7 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 		[]corev1.EnvVar{
 			{Name: "LEGION_TREE", Value: l.spec.Tree},
 			{Name: "LEGION_ISSUE", Value: l.spec.Issue},
+			{Name: "LEGION_BRANCH", Value: l.spec.Branch},
 		},
 		trailer,
 		[]corev1.EnvVar{{Name: "LEGION_WORKSPACE", Value: l.workspace}},

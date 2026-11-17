@@ -212,6 +212,40 @@ func (c *HTTPClient) HandOver(ctx context.Context, issue Issue, status string) e
 	return c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), write, nil)
 }
 
+// pullRequestLinkKind is the kind the daemon gives a pull request's link (AddExternalLink): the
+// word Dispatch's own pull-request links carry. Dispatch matches a link to a pull request by its
+// URL alone, so the kind only labels it for a reader.
+const pullRequestLinkKind = "github_pr"
+
+// AddExternalLink adds link to the issue's external links through PATCH /api/v1/issues/{key},
+// keeping every link the issue holds and its kind. Dispatch's PATCH replaces the whole set, so the
+// write sends the set it read with link added, fenced on the sequence of that read
+// (expected_sequence): a link someone added since is refused as ISSUE_CHANGED rather than written
+// away, and the caller reads again. An issue that already holds link is left alone, and Dispatch
+// refuses with EXTERNAL_LINK_TAKEN a link another issue holds.
+func (c *HTTPClient) AddExternalLink(ctx context.Context, key, link string) error {
+	var issue struct {
+		LastSeq       int64          `json:"last_seq"`
+		ExternalLinks []externalLink `json:"external_links"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key), nil, &issue); err != nil {
+		return err
+	}
+	links := make([]externalLink, 0, len(issue.ExternalLinks)+1)
+	for _, held := range issue.ExternalLinks {
+		if held.URL == link {
+			return nil
+		}
+		links = append(links, held)
+	}
+	links = append(links, externalLink{URL: link, Kind: pullRequestLinkKind})
+	return c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(key), externalLinksWrite{
+		ExternalLinks:    links,
+		ExpectedSequence: issue.LastSeq,
+		Actor:            daemonActor(key),
+	}, nil)
+}
+
 // PostMessage writes a durable notice through POST /api/v1/issues/{key}/messages. Dispatch's
 // issue-message route has no idempotency-key field, so this method deliberately sends none.
 func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
@@ -667,6 +701,20 @@ type daemonWrite struct {
 	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	Actor            actor    `json:"actor"`
+}
+
+// externalLink is one of an issue's external links as Dispatch reads and writes them.
+type externalLink struct {
+	URL  string `json:"url"`
+	Kind string `json:"kind,omitempty"`
+}
+
+// externalLinksWrite is the body of AddExternalLink's PATCH: the issue's whole link set, never
+// omitted, the sequence the set was read at, and the daemon's actor.
+type externalLinksWrite struct {
+	ExternalLinks    []externalLink `json:"external_links"`
+	ExpectedSequence int64          `json:"expected_sequence"`
+	Actor            actor          `json:"actor"`
 }
 
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,

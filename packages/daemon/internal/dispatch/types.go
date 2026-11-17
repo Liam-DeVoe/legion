@@ -28,6 +28,10 @@ type Client interface {
 	ReleaseClaim(ctx context.Context, key string) error
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
+	// AddExternalLink adds link to the issue's external links, keeping every link it holds: the
+	// daemon writes a pull request's URL there as it first records the pull request, which is how
+	// Dispatch attributes a pull request on a keyless branch to its issue.
+	AddExternalLink(ctx context.Context, key, link string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)

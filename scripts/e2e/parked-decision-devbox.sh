@@ -145,20 +145,28 @@ collect_transcripts() {
   cp -a "$sessions/." "$evidence/transcripts/" 2>/dev/null || true
 }
 
-# remove_run_branches closes the open pull request on legion/<tree> and deletes that branch on the
-# smoke repository, for each tree of the run (the daemon makes the branch at admission,
-# daemon/outbox.go). It makes no gh call unless require_proof_human passed: a refused run's gh acts
-# as someone else.
+# remove_run_branches closes the open pull request on each tree's branch and deletes that branch on
+# the smoke repository, for each tree of the run (the daemon makes the branch at admission,
+# daemon/outbox.go). The branch is the one the daemon stores for the tree (issue_branch), read from
+# the run's record, since the daemon has stopped by now. It makes no gh call unless
+# require_proof_human passed: a refused run's gh acts as someone else. A run with no record made no
+# tree, or passed: its last checkpoint removed the branches, read them gone and then removed $work,
+# the record with it, before the EXIT trap runs this again.
 remove_run_branches() {
-  local issue number
+  local issue branch number
   [ -n "$proof_human" ] || return 0
+  [ -f "$work/issue-branches" ] || return 0
   for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do
-    number=$(timeout 60 gh -R "$repo" pr list --head "legion/$issue" --state open --json number --jq '.[0].number // empty' 2>/dev/null) || number=
+    if ! branch=$(issue_branch "$issue"); then
+      note "could not read the branch of $issue (above), so its pull request and its branch, if any, remain on $repo"
+      continue
+    fi
+    number=$(timeout 60 gh -R "$repo" pr list --head "$branch" --state open --json number --jq '.[0].number // empty' 2>/dev/null) || number=
     if [ -n "$number" ]; then
       timeout 60 gh -R "$repo" pr close "$number" --comment "Closed by the parked-decision run that opened it, at its teardown." >/dev/null 2>&1 &&
-        note "closed the run's open pull request $repo#$number (legion/$issue)"
+        note "closed the run's open pull request $repo#$number ($issue's branch $branch)"
     fi
-    timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/legion/$issue" >/dev/null 2>&1 && note "deleted the run's branch legion/$issue from $repo"
+    timeout 60 gh api -X DELETE "repos/$repo/git/refs/heads/$branch" >/dev/null 2>&1 && note "deleted the run's branch $branch ($issue's) from $repo"
   done
   return 0
 }
@@ -1049,10 +1057,11 @@ done
 wait_for_run_processes 600 10
 remove_run_branches
 for issue in $tree1 $tree2 $tree3 $tree4 $tree5; do
-  if out=$(timeout 60 gh api "repos/$repo/branches/legion/$issue" 2>&1); then
-    fail "$repo still has the branch legion/$issue"
+  branch=$(issue_branch "$issue") || fail "could not read the branch of $issue (above)"
+  if out=$(timeout 60 gh api "repos/$repo/branches/$branch" 2>&1); then
+    fail "$repo still has $issue's branch $branch"
   fi
-  grep -qF 'HTTP 404' <<<"$out" || fail "gh could not tell whether $repo has legion/$issue: $out"
+  grep -qF 'HTTP 404' <<<"$out" || fail "gh could not tell whether $repo has $issue's branch $branch: $out"
 done
 collect_transcripts
 [ ! -e "$HOME/.omp/profiles/$profile" ] || fail "the run wrote the operator's profile root: $HOME/.omp/profiles/$profile exists"

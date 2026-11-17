@@ -39,7 +39,7 @@ interface StallPane extends LegionPane {
   readonly publishes: () => Record<string, unknown>[];
   /** The persisted transcript's phase-stall entries, in order. */
   readonly phaseEntries: () => Promise<unknown[]>;
-  /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
+  /** The commit `$LEGION_BRANCH@origin` names in the pane's workspace: the pushed tip its
    * `handoff_complete` reports beside the record. */
   readonly pushedTip: string;
 }
@@ -93,6 +93,10 @@ function published(body: Record<string, unknown>): Response {
 /** The identity the daemon puts on every pane (runtime.GitIdentity), which the pane's jj commits
  * as. */
 const PANE_IDENTITY = { JJ_USER: "Legion Test", JJ_EMAIL: "legion-test@example.invalid" };
+
+/** The issue's branch the daemon tells the pane as `LEGION_BRANCH`, allocated with no key in it:
+ * the branch the pane's `handoff_complete` holds its workspace to at origin. */
+const PANE_BRANCH = "legion/5e0c1a9b7d3f2468";
 
 /** The implement handoff the worker wrote to the stand-in Dispatch with `dispatch handoff-write`
  * before completing: the newest record of STALL-2's implement phase, which its `handoff_complete`
@@ -218,7 +222,7 @@ interface PaneOptions
  * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
  * daemon's state and completion routes and, as Dispatch, the issue's handoff records and the
  * open-ask snapshot, until its run settles. The pane's workspace is a jj repository whose change
- * is committed and pushed to a bare origin's `legion/STALL-2`, and the stand-in Dispatch holds the
+ * is committed and pushed to a bare origin's `PANE_BRANCH`, and the stand-in Dispatch holds the
  * implement record written to it, as a worker leaves both before completing, so the pane's
  * `handoff_complete` finds the record and the pushed tip.
  */
@@ -247,8 +251,10 @@ async function stallPane(
       env: {
         ...PANE_IDENTITY,
         // The daemon puts the project token on every pane, and the architect notice's role topic
-        // is built from it (`roleToken`).
-        ...(options.legion === false ? {} : { LEGION_PROJECT: "stall" }),
+        // is built from it (`roleToken`); and the issue's branch, which `handoff_complete` reads.
+        ...(options.legion === false
+          ? {}
+          : { LEGION_PROJECT: "stall", LEGION_BRANCH: PANE_BRANCH }),
         ...options.env,
       },
       prepare: async ({ workspace, bin }) => {
@@ -268,8 +274,8 @@ async function stallPane(
         await writeFile(path.join(workspace, "main.py"), 'print("stall")\n');
         await jjIn("describe", "-m", "implement: the change");
         await jjIn("new");
-        await jjIn("bookmark", "set", "legion/STALL-2", "-r", "@-");
-        await jjIn("git", "push", "--bookmark", "legion/STALL-2");
+        await jjIn("bookmark", "set", PANE_BRANCH, "-r", "@-");
+        await jjIn("git", "push", "--bookmark", PANE_BRANCH);
         pushedTip = await jjIn("log", "-r", "@-", "--no-graph", "-T", "commit_id");
         // The worker's `dispatch handoff-write --issue STALL-2 --phase implement`, whose body
         // names the tip it just pushed.
@@ -365,7 +371,7 @@ test.skipIf(skip)(
     // The worker registered through the daemon's routes; the reminder's record check read the
     // issue's record before it was sent, and the handoff_complete read it again, read the newest
     // implement record from the pane's Dispatch, held the head that record names to the commit
-    // the pane's workspace stands on, pushed to legion/STALL-2@origin, with the pane's jj, minted
+    // the pane's workspace stands on, pushed to $LEGION_BRANCH@origin, with the pane's jj, minted
     // a grant in-process and posted the completion at that head with the record: no grant file,
     // no `legion` command, and no handoff file. Each of the two runs the host settled also
     // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the

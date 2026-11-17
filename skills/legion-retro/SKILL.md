@@ -115,7 +115,7 @@ Dispatch message (step 5) is for a finished retro only.
 
 ## Before you complete
 
-- `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only`
+- `jj -R "$LEGION_WORKSPACE" diff --from "${LEGION_BRANCH:?}@origin" --to @ --name-only`
   lists nothing: retro leaves the workspace as it found it, and the merger merges the head the
   reviewer approved.
 - Each body line you added or changed that says work was done names work this pull request did.

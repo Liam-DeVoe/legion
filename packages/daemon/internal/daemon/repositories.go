@@ -1649,6 +1649,23 @@ func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghre
 	return repo, issue.DefaultBranch, nil
 }
 
+// issueBranch is the branch issue is worked on (record.Issue.Branch): its stored branch, drawn and
+// stored now for an issue that has none (record.Store.AllocateIssueBranch), such as an operator's
+// claim on an issue the workflow does not record. Every launch of the issue's claims names it to
+// its runtime (runtime.SpawnSpec.Branch), which tells the agent (LEGION_BRANCH) and provisions the
+// issue's workspace on it.
+func (w *workflowRuntime) issueBranch(ctx context.Context, key string) (string, error) {
+	var branch string
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		var err error
+		branch, err = w.records.AllocateIssueBranch(ctx, tx, key)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("read the branch of %s: %w", key, err)
+	}
+	return branch, nil
+}
+
 // recordOf is key's issue record, nil when the workflow does not record it.
 func (w *workflowRuntime) recordOf(ctx context.Context, key string) (*record.Issue, error) {
 	var issue *record.Issue

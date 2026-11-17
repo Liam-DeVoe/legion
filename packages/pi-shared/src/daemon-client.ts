@@ -14,6 +14,8 @@ import {
   LegionGrantResponse,
   LegionHandoffCompleteRequest,
   LegionHandoffCompleteResponse,
+  LegionIssueBranchRequest,
+  LegionIssueBranchResponse,
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
@@ -69,8 +71,8 @@ export type ReadyInput = z.input<typeof LegionReadyRequest>;
 /** `claim.ReadyForUpdateRequest`: the worker's answer to its update round's message, saying it
  * has pushed everything it wants kept and the process holding this claim may be replaced. `round`
  * is the round the update message named, which the daemon takes the answer for and no other.
- * `head` is the commit it reports as the head of `legion/<issue>@origin`, left out when the branch
- * is not there. */
+ * `head` is the commit it reports as the head of the issue's branch (`LEGION_BRANCH`) at origin,
+ * left out when the branch is not there. */
 export type ReadyForUpdateInput = z.input<typeof LegionReadyForUpdateRequest>;
 
 /** `claim.ExitRequest`: the agent reporting its own end, and why. */
@@ -129,6 +131,12 @@ export interface LegionDaemonClient {
   readonly issueStatus: (
     input: z.input<typeof LegionIssueStatusRequest>
   ) => Promise<z.output<typeof LegionEmptyResponse>>;
+  /** The controller's or an architect's read of an issue's branch, on the caller's grant: the
+   * branch the daemon stores for `issue`, allocated and stored now for an issue it has not
+   * recorded yet, which keeps it once recorded. */
+  readonly issueBranch: (
+    input: z.input<typeof LegionIssueBranchRequest>
+  ) => Promise<z.output<typeof LegionIssueBranchResponse>>;
   /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
    * session behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
@@ -514,6 +522,8 @@ export function createLegionDaemonClient(
       ),
     issueStatus: (input) =>
       post("/legion/v1/issues/status", LegionIssueStatusRequest, LegionEmptyResponse, input),
+    issueBranch: (input) =>
+      post("/legion/v1/issues/branch", LegionIssueBranchRequest, LegionIssueBranchResponse, input),
     freshSession: (input) =>
       post(
         "/legion/v1/claims/fresh-session",

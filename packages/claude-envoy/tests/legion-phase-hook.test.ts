@@ -718,15 +718,16 @@ test("a resumed session whose task arrives first is not reminded on top of it", 
 })
 
 test("a worker whose workspace was recreated is told once, as a turn of its own", async () => {
+  // The pane's issue branch is the one the daemon told it, `LEGION_BRANCH`, which carries no key.
   const { endpoint, record, inbox, boot, close } = await harness({
     record: recorded("closed", 0),
     claim: implementer,
-    env: { LEGION_WORKSPACE_RECREATED: "true" },
+    env: { LEGION_WORKSPACE_RECREATED: "true", LEGION_BRANCH: "legion/3f9a1c2b7d4e5f60" },
   })
   try {
     boot()
     await waitFor(async () => inbox.length > 0, "the recreated-workspace notice")
-    expect(inbox[0]).toContain("it holds what was pushed to legion/LEGION-208")
+    expect(inbox[0]).toContain("it holds what was pushed to legion/3f9a1c2b7d4e5f60 (")
     // Recorded in the record the phase and count live in, so a server Claude Code restarts inside
     // the same process does not repeat it.
     expect(await record()).toEqual({

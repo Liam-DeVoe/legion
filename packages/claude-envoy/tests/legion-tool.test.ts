@@ -87,6 +87,7 @@ async function daemon(): Promise<{
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
     "/legion/v1/phase/backward": {},
     "/legion/v1/claims/release-records": RELEASE_RECORDS,
+    "/legion/v1/issues/branch": await daemonFixture("issue-branch.json"),
   }
   const requests: Request[] = []
   const stub = (async (input, init) => {
@@ -128,7 +129,7 @@ const grantRequest = {
 }
 
 test("declares the five phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
-  const definition = legionToolDefinition()
+  const definition = legionToolDefinition("implementer")
   expect(definition.name).toBe("legion")
   expect(definition.inputSchema).toMatchObject({
     properties: {
@@ -157,6 +158,69 @@ test("declares the five phase-worker operations under one op, and names the Envo
     "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`): a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which counts a review round. What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
+})
+
+// An architect pane is offered issue_branch beside the phase ops, and told what it does; no other
+// role is (`phaseOpsFor`), and a pane that names no role is offered the phase worker's five.
+test("an architect's pane declares issue_branch and its sentence, and no other pane does", () => {
+  const architect = legionToolDefinition("architect")
+  expect(architect.inputSchema).toMatchObject({
+    properties: {
+      op: {
+        enum: [
+          "read_record",
+          "read_release_records",
+          "handoff_complete",
+          "request_backward_move",
+          "ready_for_update",
+          "issue_branch",
+        ],
+      },
+    },
+  })
+  expect(architect.description).toContain(
+    "which counts a review round. issue_branch (the controller and the architect alone) reads the branch the daemon stores for `issue` and returns `issue` and `branch`; for an issue Legion has not recorded yet it allocates that branch and stores it, so a branch made at that name before admission is the one the issue takes. What a later phase needs",
+  )
+  for (const role of ["planner", "implementer", "tester", "reviewer", "merger", undefined]) {
+    const definition = legionToolDefinition(role)
+    expect(JSON.stringify(definition.inputSchema)).not.toContain("issue_branch")
+    expect(definition.description).not.toContain("issue_branch")
+  }
+})
+
+// The architect reads any issue's branch, a root's Legion has not recorded yet among them, on a
+// grant of its own claim, and is answered what the daemon answers; a phase worker is refused
+// before any grant is minted.
+test("issue_branch mints the architect's grant and answers the daemon's branch, and is refused to a phase worker", async () => {
+  const { client, requests } = await daemon()
+  const architect: ClaimCapability = {
+    ...implementer,
+    sessionID: "ses_architect",
+    role: "architect",
+  }
+  const runtimeOf = (claim: ClaimCapability) => ({
+    daemon: client,
+    claim: () => claim,
+    handoffReport: async (): Promise<never> => {
+      throw new Error("no handoff report expected")
+    },
+    branchHead: noBranchHead,
+  })
+  await expect(
+    executeLegionTool(runtimeOf(architect), { op: "issue_branch", issue: "ACME-12" }),
+  ).resolves.toEqual(await daemonFixture("issue-branch.json"))
+  expect(requests).toEqual([
+    { ...grantRequest, body: { ...grantRequest.body, sessionId: "ses_architect" } },
+    {
+      method: "POST",
+      path: "/legion/v1/issues/branch",
+      body: { grantId: "grant-for-one-command", issue: "ACME-12" },
+    },
+  ])
+  await expect(
+    executeLegionTool(runtimeOf(implementer), { op: "issue_branch", issue: "ACME-12" }),
+  ).rejects.toThrow("issue_branch is not available to a phase-worker session")
+  expect(requests).toHaveLength(2)
 })
 
 test("handoff_complete finds the record and commit for the issue's phase and the claim's role, then mints its grant and posts them", async () => {
