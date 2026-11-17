@@ -30,15 +30,22 @@ func heldListener(t *testing.T) (*sessionConsumerRig, *testnats.ReplyHold, strin
 }
 
 // A relay restart reads the session's interest row under the session's lock (sessionRelays.restart),
-// and a read whose reply the connection's drop lost gives that lock up within 100 ms of the drop:
-// a registration of the session, which takes the same lock, is answered 200 within its budget, and
-// the relay restarts the session's consumer on the new connection and delivers a message stored
-// after the drop within 3 s of it. This is the session-lock half of the held-reconnect harness the
-// fix was measured with, where 7 of 30 registrations after a held reconnect answered 503 at main.
+// and a read whose reply the connection's drop lost fails at the drop and gives that lock up, before
+// the read's own deadline (sessionConsumerCallTimeout) fires: a registration of the session, which
+// takes the same lock, is answered 200, and the relay restarts the session's consumer on the new
+// connection and delivers a message stored after the drop. This is the session-lock half of the
+// held-reconnect harness the fix was measured with, where 7 of 30 registrations after a held
+// reconnect answered 503 at main.
+//
+// What the row decides is that order, not a time, and it sees it through the restart's own cause:
+// the restart logs the read as one that lost its connection (connectionLost), which a read whose
+// own deadline fired first never is, since bindRequest names a request lost only while its own
+// context runs; a read that waited out its deadline logs "could not read the session's interests".
+// Every wait is bounded by the test's deadline alone (testnats.Remaining).
 //
 // The control is the same row at main a97cd59397 (and 44a1f1fb97): the restart holds the lock
-// until its read's bound, sessionConsumerCallTimeout (5 s), ends, so the lock is still held 2 s
-// after the drop and the row fails there.
+// until its read's deadline, sessionConsumerCallTimeout (5 s), fires, and logs that read as one
+// it could not make.
 func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts(t *testing.T) {
 	rig, hold, url := heldListener(t)
 	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
@@ -46,7 +53,7 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 		t.Fatalf("start the session relays: %v", err)
 	}
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testnats.Remaining(t))
 		defer cancel()
 		relays.stop(ctx)
 	})
@@ -61,8 +68,8 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	relays.setOwned(true)
 	select {
 	case <-held.Withheld():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the relay restart read no interest row within 5 s of gaining the binding")
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the relay restart read no interest row by the test's deadline")
 	}
 
 	// The restart holds the session's lock over the read whose reply the hold keeps from it; a
@@ -77,13 +84,20 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	hold.Drop()
 	select {
 	case at := <-locked:
-		if took := at.Sub(dropped); took > 100*time.Millisecond {
-			t.Fatalf("the session's lock was given up %s after the drop, want within 100 ms", took)
-		} else {
-			t.Logf("the session's lock was given up %s after the drop", took)
+		t.Logf("the session's lock was given up %s after the drop", at.Sub(dropped))
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the relay restart still held the session's lock at the test's deadline")
+	}
+	// The restart logs its read's end after it gives the lock up (storedFilterFailed).
+	const lost, ranOut = "session relay lost its NATS connection to read the session's interests", "session relay could not read the session's interests"
+	for logs := rig.harness.logs.String(); !strings.Contains(logs, lost) && !strings.Contains(logs, ranOut); logs = rig.harness.logs.String() {
+		if testnats.Remaining(t) <= 0 {
+			t.Fatal("the relay restart logged no end of its read by the test's deadline")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the relay restart still held the session's lock 2 s after the drop cut its read off")
+		time.Sleep(10 * time.Millisecond)
+	}
+	if logs := rig.harness.logs.String(); !strings.Contains(logs, lost) || strings.Contains(logs, ranOut) {
+		t.Fatalf("the relay restart's read ended other than at the drop, before its own deadline: want %q and not %q in the listener log", lost, ranOut)
 	}
 
 	recorder := httptest.NewRecorder()
@@ -103,7 +117,7 @@ func TestARelayRestartWhoseInterestReadTheDropCutOffGivesTheSessionUpAndRestarts
 	if _, err := js.Publish(item.Topic, marshalListenerEnvelope(t, item)); err != nil {
 		t.Fatalf("store a message for the session: %v", err)
 	}
-	frame := standIn.collect(t, 1, time.Until(dropped.Add(3*time.Second)))[0]
+	frame := standIn.collect(t, 1, testnats.Remaining(t))[0]
 	if frame.item.EventID != item.EventID {
 		t.Fatalf("the relay delivered %s, want the message stored after the drop, %s", frame.item.EventID, item.EventID)
 	}
@@ -150,25 +164,25 @@ func TestARegistrationsConfirmWhoseReadTheDropCutOffIsMadeAgainOnTheNewConnectio
 		rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(consumerRegistration(sessionID, "epoch-1"))))
 		answered <- recorder
 	}()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testnats.Remaining(t))
 	for held.Load() == nil {
 		if time.Now().After(deadline) {
-			t.Fatal("the registration's confirm made no pass within 5 s")
+			t.Fatal("the registration's confirm made no pass by the test's deadline")
 		}
 		time.Sleep(time.Millisecond)
 	}
 	select {
 	case <-held.Load().Withheld():
-	case <-time.After(5 * time.Second):
-		t.Fatal("the confirm read no session record within 5 s")
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the confirm read no session record by the test's deadline")
 	}
 	dropped := time.Now()
 	hold.Drop()
 	var recorder *httptest.ResponseRecorder
 	select {
 	case recorder = <-answered:
-	case <-time.After(8 * time.Second):
-		t.Fatal("the registration did not answer within 8 s of the drop")
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the registration did not answer by the test's deadline")
 	}
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("the registration answered %d %s, want 200", recorder.Code, recorder.Body.String())
@@ -196,6 +210,12 @@ const refusalWindow = 4 * time.Second
 // What this does not measure is the plugins' own reconnect to the hub, which a broker-token session
 // makes on its broker client's jittered redial backoff, capped at 20 s: that is the session's link,
 // and its registration reaches the listener over HTTP, not over it.
+//
+// This row keeps a time bound, because a time is what it measures: how long the outage lasts after
+// the admit. The bound is nats.go's reconnect wait of one second (connect.go's options) plus the
+// round trips of a registration, 2.5 s in all. The first 200 came 123 ms to 246 ms after the admit
+// in every run measured, at 5-minute loads of 500 to 950 on a 288-CPU box, so the bound stands ten
+// times over the slowest. Every other wait of the row is bounded by the test's deadline alone.
 func TestARegistrationAfterARefusalWindowAnswersWithinAReconnectWaitOfTheAdmit(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
@@ -258,8 +278,8 @@ func TestARegistrationAfterARefusalWindowAnswersWithinAReconnectWaitOfTheAdmit(t
 				t.Fatalf("the first registration answered 200 %s after the admit, want within one reconnect wait (1 s) and a registration's round trips (2.5 s)", took)
 			}
 			return
-		case <-time.After(10 * time.Second):
-			t.Fatalf("no registration answered 200 within 10 s of the admit; %d answered otherwise", refused)
+		case <-time.After(testnats.Remaining(t)):
+			t.Fatalf("no registration answered 200 by the test's deadline; %d answered otherwise", refused)
 		}
 	}
 }

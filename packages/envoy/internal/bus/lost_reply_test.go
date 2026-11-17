@@ -13,14 +13,20 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// lostReplyWithin is how soon after its connection drops a request whose reply the drop lost must
-// fail.
-const lostReplyWithin = 100 * time.Millisecond
+// What these rows decide is an order, not a time: a request whose reply the connection's drop
+// lost fails at the drop, before its own deadline fires, where nats.go alone leaves it to fail at
+// that deadline (processOpErr clears no pending request). A row gives its request a deadline of
+// its own that ends just short of the test binary's (ownWait), sees the order through the error
+// and that deadline - the answer is ErrConnectionLost, which bindRequest gives only to a request
+// whose own context is still running, and the request's own context has not fired when it comes -
+// and waits for it no shorter than the test's deadline (testnats.Remaining). So a loaded or
+// starved box can make a row slow, never fail it; a request that waits for its own deadline fails
+// it with the error that deadline gives.
 
-// lostReplyWait is how long a row waits for a request it held to fail at all: far past
-// lostReplyWithin, and short of every bound those requests carry of their own (3 s to 10 s), so
-// a request that waits for its bound fails the row as one still waiting rather than as one late.
-const lostReplyWait = 2 * time.Second
+// ownWait is the deadline a row gives the request it holds: five seconds short of what the test
+// binary's deadline leaves, so the request's own deadline fires, and fails the row with its own
+// error, before the row's wait for it (testnats.Remaining) ends.
+func ownWait(t *testing.T) time.Duration { return testnats.Remaining(t) - 5*time.Second }
 
 // heldClient is a client of its own on a server of its own, connected through a hold
 // (testnats.ReplyHold), owning the stream so the stream's requests have a stream to answer for.
@@ -45,23 +51,26 @@ const (
 	noFlush   flushes = false
 )
 
-// requireLostAtTheDrop holds the replies to the requests on prefix, runs send, waits until the hold
-// has withheld its reply and, for a request that flushes, forwarded that flush's PONG, so the
-// request is past its publish and its flush and waiting for its reply, drops the connection, and
-// requires send to fail within lostReplyWithin of the drop with ErrConnectionLost.
-func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string, flush flushes, send func() error) {
+// requireLostAtTheDrop holds the replies to the requests on prefix, runs send with a context of
+// the request's own (ownWait), waits until the hold has withheld its reply and, for a request that
+// flushes, forwarded that flush's PONG, so the request is past its publish and its flush and
+// waiting for its reply, drops the connection, and requires send to fail with ErrConnectionLost
+// while its own context is still running. Every wait is bounded by the test's deadline alone.
+func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string, flush flushes, send func(ctx context.Context) error) {
 	t.Helper()
+	own, cancel := context.WithTimeout(context.Background(), ownWait(t))
+	defer cancel()
 	held := hold.Hold(prefix)
 	answered := make(chan error, 1)
-	go func() { answered <- send() }()
+	go func() { answered <- send(own) }()
 	waitFor := func(event <-chan struct{}, what string) {
 		t.Helper()
 		select {
 		case <-event:
 		case err := <-answered:
 			t.Fatalf("the request on %s answered %v before the hold %s", prefix, err, what)
-		case <-time.After(lostReplyWait):
-			t.Fatalf("the hold had not %s of a request on %s within %s", what, prefix, lostReplyWait)
+		case <-time.After(testnats.Remaining(t)):
+			t.Fatalf("the hold had not %s of a request on %s by the test's deadline", what, prefix)
 		}
 	}
 	waitFor(held.Withheld(), "withheld its reply")
@@ -76,79 +85,79 @@ func requireLostAtTheDrop(t *testing.T, hold *testnats.ReplyHold, prefix string,
 		if !errors.Is(err, ErrConnectionLost) {
 			t.Fatalf("the request on %s whose reply the drop lost answered %v %s after the drop, want ErrConnectionLost", prefix, err, took)
 		}
-		if took > lostReplyWithin {
-			t.Fatalf("the request on %s whose reply the drop lost failed %s after the drop, want within %s", prefix, took, lostReplyWithin)
+		if own.Err() != nil {
+			t.Fatalf("the request on %s whose reply the drop lost answered %v only once its own deadline had fired, want it failed at the drop", prefix, err)
 		}
-		t.Logf("the request on %s whose reply the drop lost failed %s after the drop: %v", prefix, took, err)
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the request on %s whose reply the drop lost was still waiting %s after the drop, want it failed within %s", prefix, lostReplyWait, lostReplyWithin)
+		t.Logf("the request on %s whose reply the drop lost failed %s after the drop, its own deadline still running: %v", prefix, took, err)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatalf("the request on %s whose reply the drop lost was still waiting at the test's deadline, want it failed at the drop", prefix)
 	}
 }
 
-// A request on a client's connection whose reply the connection's drop lost fails within 100 ms
-// of the drop with ErrConnectionLost, whatever shape of request it is: a core request on a reply
-// inbox of its own (requestConfirmed, which carries every session consumer call and stream read,
-// and RequestCore, the connection probe's), a forward's wait for the stream's acknowledgement, a
-// JetStream API call through the client's JetStream context, and a KV read and write through a
-// bucket handle opened on the client's connection. The request reaches the server, which answers
-// it, and the hold keeps that answer from the client: what the client sees is a request whose
-// reply its lost connection took.
+// A request on a client's connection whose reply the connection's drop lost fails at the drop with
+// ErrConnectionLost, before its own deadline fires, whatever shape of request it is: a core request
+// on a reply inbox of its own (requestConfirmed, which carries every session consumer call and
+// stream read, and RequestCore, the connection probe's), a forward's wait for the stream's
+// acknowledgement, a JetStream API call through the client's JetStream context, and a KV read and
+// write through a bucket handle opened on the client's connection. The request reaches the server,
+// which answers it, and the hold keeps that answer from the client: what the client sees is a
+// request whose reply its lost connection took. Each request's own deadline is the row's (ownWait):
+// its context, the forward's timeout, and for the calls nats.go gives no context, the MaxWait of
+// the JetStream context they go through.
 //
-// The control is the same rows at main a97cd59397 (and 44a1f1fb97): nats.go clears no pending
-// request when a dropped socket turns the connection to reconnecting (processOpErr), so each of
-// them waits for its own bound, 3 s to 10 s, and every row fails as still waiting.
+// The control is the same rows with the binding taken out (bindRequest binding nothing), and at
+// main a97cd59397 and 44a1f1fb97: nats.go clears no pending request when a dropped socket turns the
+// connection to reconnecting (processOpErr), so each request waits for its own deadline and every
+// row fails with the error that deadline gives.
 func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 	for _, row := range []struct {
 		name, prefix string
 		flush        flushes
 		// prepare makes what the row's request needs before anything is held, and returns the
-		// request.
-		prepare func(*testing.T, *Client) func() error
+		// request, which it makes under the context it is given, its own.
+		prepare func(*testing.T, *Client) func(context.Context) error
 	}{
-		{"core request", "$JS.API.STREAM.INFO.", withFlush, func(_ *testing.T, c *Client) func() error {
-			return func() error {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
+		{"core request", "$JS.API.STREAM.INFO.", withFlush, func(_ *testing.T, c *Client) func(context.Context) error {
+			return func(ctx context.Context) error {
 				_, err := c.requestConfirmed(ctx, "$JS.API.STREAM.INFO."+Stream, nil)
 				return err
 			}
 		}},
-		{"core request on a channel inbox", "envoy.lostreply.probe", withFlush, func(_ *testing.T, c *Client) func() error {
-			return func() error {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
+		{"core request on a channel inbox", "envoy.lostreply.probe", withFlush, func(_ *testing.T, c *Client) func(context.Context) error {
+			return func(ctx context.Context) error {
 				_, err := c.RequestCore(ctx, "envoy.lostreply.probe", nats.Header{ConnectionProbeHeader: []string{"1"}})
 				return err
 			}
 		}},
 		// An agent subject, which the stream stores, so the withheld reply is the stream's
 		// acknowledgement of the forward.
-		{"forward", contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), withFlush, func(_ *testing.T, c *Client) func() error {
+		{"forward", contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), withFlush, func(_ *testing.T, c *Client) func(context.Context) error {
 			item := contracts.Envelope{Topic: contracts.AgentSubject(contracts.NoProject, "ses_lost_forward"), Source: "test", DedupeKey: "lost-reply"}
-			return func() error {
-				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", 3*time.Second)
+			return func(ctx context.Context) error {
+				deadline, _ := ctx.Deadline()
+				forward, err := c.StartRequestStoredTo(item.Topic, item, "lost-reply", time.Until(deadline))
 				if err != nil {
 					return err
 				}
 				return forward.Wait()
 			}
 		}},
-		{"JetStream API call", "$JS.API.STREAM.INFO.", noFlush, func(_ *testing.T, c *Client) func() error {
-			return func() error {
-				_, err := c.JS().StreamInfo(Stream)
+		{"JetStream API call", "$JS.API.STREAM.INFO.", noFlush, func(_ *testing.T, c *Client) func(context.Context) error {
+			return func(ctx context.Context) error {
+				_, err := c.JS().StreamInfo(Stream, nats.Context(ctx))
 				return err
 			}
 		}},
-		{"KV read", "$JS.API.DIRECT.GET.KV_envoy_lost_reply", noFlush, func(t *testing.T, c *Client) func() error {
+		{"KV read", "$JS.API.DIRECT.GET.KV_envoy_lost_reply", noFlush, func(t *testing.T, c *Client) func(context.Context) error {
 			kv := lostReplyBucket(t, c)
-			return func() error {
+			return func(context.Context) error {
 				_, err := kv.Get("key")
 				return err
 			}
 		}},
-		{"KV write", "$KV.envoy_lost_reply.", noFlush, func(t *testing.T, c *Client) func() error {
+		{"KV write", "$KV.envoy_lost_reply.", noFlush, func(t *testing.T, c *Client) func(context.Context) error {
 			kv := lostReplyBucket(t, c)
-			return func() error {
+			return func(context.Context) error {
 				_, err := kv.Put("key", []byte("value"))
 				return err
 			}
@@ -162,10 +171,16 @@ func TestARequestWhoseReplyTheDropLostFailsAtTheDrop(t *testing.T) {
 }
 
 // lostReplyBucket opens the bucket the KV rows hold their requests on, on c's connection, as the
-// listener opens its buckets (EnsureKeyValue through the client's JetStream context).
+// listener opens its buckets (EnsureKeyValue through a JetStream context bound to the connection's
+// life, JetStream). The handle's calls take no context, so their own deadline is that context's
+// MaxWait, which is the row's (ownWait).
 func lostReplyBucket(t *testing.T, c *Client) KeyValue {
 	t.Helper()
-	kv, err := EnsureKeyValue(c.Conn, c.JS(), &nats.KeyValueConfig{Bucket: "envoy_lost_reply", Storage: nats.MemoryStorage})
+	js, err := JetStream(c.Conn, nats.MaxWait(ownWait(t)))
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	kv, err := EnsureKeyValue(c.Conn, js, &nats.KeyValueConfig{Bucket: "envoy_lost_reply", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("open the bucket: %v", err)
 	}
@@ -173,14 +188,15 @@ func lostReplyBucket(t *testing.T, c *Client) KeyValue {
 }
 
 // The shared read of the stream's state (SessionConsumers.streamState), which every session
-// consumer call waits on, gives up a read whose reply the connection's drop lost within 100 ms of
-// the drop, and the read made once the connection is back is answered: a session registration
-// after a reconnect, which waits on that read before its consumer call, no longer waits behind
-// the one the drop cut off (the held-reconnect harness: 7 of 30 registrations answered 503 at main).
+// consumer call waits on, gives up a read whose reply the connection's drop lost at the drop, before
+// that read's own deadline (sessionStreamReadWait) fires, and the read made once the connection is
+// back is answered: a session registration after a reconnect, which waits on that read before its
+// consumer call, no longer waits behind the one the drop cut off (the held-reconnect harness: 7 of
+// 30 registrations answered 503 at main).
 //
-// The control is the same row at main a97cd59397: the read cut off waits out its own
-// sessionStreamReadWait (5 s), so the first call is still waiting at lostReplyWait, and a call
-// made after the reconnect waits for the read after it, which starts only once that one ends.
+// The control is the same row with the binding taken out, and at main a97cd59397: the read cut off
+// waits out its own sessionStreamReadWait (5 s) and answers that deadline's error, not
+// ErrConnectionLost.
 func TestAStreamReadTheDropCutOffReleasesTheCallsWaitingOnIt(t *testing.T) {
 	hold := testnats.StartReplyHold(t, testnats.URL(t))
 	owner, err := ConnectOwningStream([]string{hold.URL()}, WithReplicas(1))
@@ -193,30 +209,28 @@ func TestAStreamReadTheDropCutOffReleasesTheCallsWaitingOnIt(t *testing.T) {
 		t.Fatalf("connect the session consumers: %v", err)
 	}
 	t.Cleanup(consumers.Close)
-	requireLostAtTheDrop(t, hold, "$JS.API.STREAM.INFO."+Stream, withFlush, func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+	requireLostAtTheDrop(t, hold, "$JS.API.STREAM.INFO."+Stream, withFlush, func(ctx context.Context) error {
 		_, err := consumers.StreamID(ctx)
 		return err
 	})
-	reconnected := time.Now().Add(lostReplyWait)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
+	defer cancel()
 	for !consumers.client.Connected() {
-		if time.Now().After(reconnected) {
-			t.Fatalf("the session consumers' connection was not back %s after the drop", lostReplyWait)
+		if ctx.Err() != nil {
+			t.Fatal("the session consumers' connection was not back by the test's deadline")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
 	if id, err := consumers.StreamID(ctx); err != nil || id == "" {
-		t.Fatalf("the stream read made once the connection was back answered %q, %v; want the stream's id within 1 s", id, err)
+		t.Fatalf("the stream read made once the connection was back answered %q, %v; want the stream's id", id, err)
 	}
 }
 
-// A session consumer's pull whose connection drops ends within 100 ms of the drop with
-// ErrConnectionLost: the pull request standing at the server went with the connection, and the
-// relay restarts the consumer on the new connection rather than waiting to hear nothing for twice
-// the pull's heartbeat (ErrSessionPullStalled).
+// A session consumer's pull whose connection drops ends at the drop with ErrConnectionLost: the
+// pull request standing at the server went with the connection, and the relay restarts the
+// consumer on the new connection rather than waiting to hear nothing for twice the pull's heartbeat
+// (ErrSessionPullStalled). That stall is the pull's own end, so the order is seen through the
+// error: ErrConnectionLost, which only the end of the connection's life gives it.
 //
 // The control is the same row at main a97cd59397: Next goes on waiting for the server that will
 // never send on the lost pull, until it stalls at twice sessionPullHeartbeat (30 s).
@@ -233,7 +247,7 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 	}
 	t.Cleanup(consumers.Close)
 	const sessionID = "ses_lost_pull"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(contracts.NoProject, sessionID)}, 0); err != nil {
 		t.Fatalf("create the session's consumer: %v", err)
@@ -259,17 +273,17 @@ func TestAPullWhoseConnectionDropsEndsAtTheDrop(t *testing.T) {
 	select {
 	case err := <-answered:
 		took := time.Since(dropped)
-		if !errors.Is(err, ErrConnectionLost) || took > lostReplyWithin {
-			t.Fatalf("the pull whose connection dropped ended %s after the drop with %v, want ErrConnectionLost within %s", took, err, lostReplyWithin)
+		if !errors.Is(err, ErrConnectionLost) {
+			t.Fatalf("the pull whose connection dropped ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
 		t.Logf("the pull whose connection dropped ended %s after the drop: %v", took, err)
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the pull whose connection dropped was still waiting %s after the drop, want it ended within %s", lostReplyWait, lostReplyWithin)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the pull whose connection dropped was still waiting at the test's deadline, want it ended at the drop")
 	}
 }
 
 // A pull whose connection drops in the moment between its read of the connection's life and its
-// wait still ends within 100 ms of the drop with ErrConnectionLost: the wait it then makes is on
+// wait still ends at the drop with ErrConnectionLost, before it stalls: the wait it then makes is on
 // that life, which has ended. The row forces that moment (beforeWait): the drop is made there and
 // the hook returns only once the life has ended, so the wait begins on a life already over.
 //
@@ -290,7 +304,7 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 	}
 	t.Cleanup(consumers.Close)
 	const sessionID = "ses_lost_pull_before_wait"
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	if _, err := consumers.Ensure(ctx, sessionID, []string{contracts.AgentSubject(contracts.NoProject, sessionID)}, 0); err != nil {
 		t.Fatalf("create the session's consumer: %v", err)
@@ -306,7 +320,7 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 		once.Do(func() {
 			dropped <- time.Now()
 			hold.Drop()
-			for deadline := time.Now().Add(time.Second); pull.life.Err() == nil && time.Now().Before(deadline); {
+			for pull.life.Err() == nil {
 				time.Sleep(time.Millisecond)
 			}
 		})
@@ -321,17 +335,17 @@ func TestAPullWhoseConnectionDropsBeforeItsWaitStillEndsAtTheDrop(t *testing.T) 
 	case at = <-dropped:
 	case err := <-answered:
 		t.Fatalf("the pull answered %v before it waited", err)
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the pull made no wait within %s", lostReplyWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the pull made no wait by the test's deadline")
 	}
 	select {
 	case err := <-answered:
 		took := time.Since(at)
-		if !errors.Is(err, ErrConnectionLost) || took > lostReplyWithin {
-			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop with %v, want ErrConnectionLost within %s", took, err, lostReplyWithin)
+		if !errors.Is(err, ErrConnectionLost) {
+			t.Fatalf("the pull whose connection dropped before its wait ended %s after the drop with %v, want ErrConnectionLost before it stalled", took, err)
 		}
 		t.Logf("the pull whose connection dropped before its wait ended %s after the drop: %v", took, err)
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the pull whose connection dropped before its wait was still waiting %s after the drop, want it ended within %s", lostReplyWait, lostReplyWithin)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the pull whose connection dropped before its wait was still waiting at the test's deadline, want it ended at the drop")
 	}
 }

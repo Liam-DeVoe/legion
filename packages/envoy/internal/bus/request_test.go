@@ -29,7 +29,7 @@ func TestARequestWhileTheConnectionIsDownIsNotSentAndIsSentOnceItIsBack(t *testi
 		sends++
 		return client.js.StreamInfo(Stream, nats.Context(ctx))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	if _, err := Request(ctx, client, read); err != nil || sends != 1 {
 		t.Fatalf("the request on a live connection answered %v after %d sends, want an answer after one", err, sends)
@@ -66,7 +66,7 @@ func TestARequestWhileTheConnectionIsDownIsNotSentAndIsSentOnceItIsBack(t *testi
 // connection is bound to the new connection's life, not the one that ended.
 func TestALostConnectionEndsOnlyTheRequestsItCutOff(t *testing.T) {
 	client, hold := heldClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 	defer cancel()
 	answered, err := Request(ctx, client, func(ctx context.Context) (string, error) { return "answer", nil })
 	if err != nil || answered != "answer" {

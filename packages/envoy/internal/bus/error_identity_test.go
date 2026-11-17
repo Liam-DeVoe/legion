@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testnats"
 )
 
 // closedNotLost reports whether err is nats.ErrConnectionClosed and not ErrConnectionLost.
@@ -35,8 +36,8 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 	}()
 	select {
 	case <-held.Withheld():
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the hold withheld no reply within %s", lostReplyWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the hold withheld no reply by the test's deadline")
 	}
 	client.Close()
 	select {
@@ -44,8 +45,8 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 		if !closedNotLost(err) {
 			t.Fatalf("the read the client's stop cut off answered %v, want nats.ErrConnectionClosed and not ErrConnectionLost", err)
 		}
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the read the client's stop cut off was still waiting %s after the stop", lostReplyWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the read the client's stop cut off was still waiting at the test's deadline")
 	}
 	if _, err := kv.Get("key"); !closedNotLost(err) {
 		t.Fatalf("a KV read on the stopped client answered %v, want nats.ErrConnectionClosed and not ErrConnectionLost", err)
@@ -56,9 +57,9 @@ func TestARequestOnAStoppedClientAnswersConnectionClosed(t *testing.T) {
 }
 
 // A stored publish whose acknowledgement the connection's drop lost is sent again once the
-// connection is back, inside the publish's own bound (sendStored): the caller is answered the
-// stream's acknowledgement, as a duplicate of the copy the first send stored under the same
-// Nats-Msg-Id, rather than ErrConnectionLost.
+// connection is back, inside the publish's own bound (sendStored), here the row's (ownWait): the
+// caller is answered the stream's acknowledgement, as a duplicate of the copy the first send stored
+// under the same Nats-Msg-Id, rather than ErrConnectionLost.
 //
 // The control is the same row at 2b8a5d7cbb: the client's JetStream context answered the loss
 // ErrConnectionLost, which sendStored's retry, reading nats.ErrConnectionClosed alone, passed over,
@@ -76,15 +77,15 @@ func TestAStoredPublishWhoseAckTheDropLostIsSentAgainOnTheNewConnection(t *testi
 	}
 	answered := make(chan answer, 1)
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), publishBound)
+		ctx, cancel := context.WithTimeout(context.Background(), ownWait(t))
 		defer cancel()
 		ack, err := client.PublishStoredAck(ctx, subject, item, "lost-stored")
 		answered <- answer{ack, err}
 	}()
 	select {
 	case <-held.Withheld():
-	case <-time.After(lostReplyWait):
-		t.Fatalf("the hold withheld no acknowledgement within %s", lostReplyWait)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the hold withheld no acknowledgement by the test's deadline")
 	}
 	dropped := time.Now()
 	hold.Drop()
@@ -97,7 +98,7 @@ func TestAStoredPublishWhoseAckTheDropLostIsSentAgainOnTheNewConnection(t *testi
 			t.Fatalf("the publish sent again was stored as a new copy at %d, want it acknowledged as the duplicate of the first send's", got.ack.Sequence)
 		}
 		t.Logf("the publish was sent again and acknowledged %s after the drop, a duplicate of seq %d", time.Since(dropped), got.ack.Sequence)
-	case <-time.After(publishBound + time.Second):
-		t.Fatalf("the publish whose acknowledgement the drop lost was still waiting %s after the drop", publishBound+time.Second)
+	case <-time.After(testnats.Remaining(t)):
+		t.Fatal("the publish whose acknowledgement the drop lost was still waiting at the test's deadline")
 	}
 }
