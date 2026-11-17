@@ -2974,10 +2974,6 @@ test("Request changes in its dialog pressed again by Enter before the change req
 test("Copy issue key pressed again by Enter while its write is out makes no second write", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "Copy issue key writes to the clipboard again while its write is out: the shared copy button keeps no press guard yet (decision 223)"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     const clipboard = await holdClipboard(page);
@@ -3014,13 +3010,15 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
     const landed = await focusNow(page);
     await expect(copy, `once Copied was drawn the focus was on ${landed.what}`).toBeFocused();
 
+    // The press is made inside Copied's time: Copied is still drawn as it is made. The press
+    // clears that status as it starts its own copy, so Copied is read before it, not after.
+    expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
     await page.keyboard.press("Enter");
     await expect
       .poll(() => clipboard.writes(), {
         message: "Copy issue key, pressed inside Copied's time, wrote nothing",
       })
       .toBe(2);
-    expect(await copied.isVisible(), "the press made for Copied's time came after it").toBe(true);
     await clipboard.land();
     await framesDrawn(page, 2);
     const after = await focusNow(page);
