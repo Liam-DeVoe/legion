@@ -3822,6 +3822,13 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open interest registry: %v", err)
 	}
+	// Each store's watchers stop when the test ends, before the caller's client closes (cleanups
+	// run last-registered first), as the listener's shutdown stops them before its drain. A watcher
+	// left running on a closed client fails its next stream probe and reads again every 5 s
+	// (kvwatch's rereadDelay) until the test binary exits, logging "re-read … it is tried again"
+	// each time. StopWatch sends nothing to the server, and a test that stopped a watcher itself
+	// stops it again here harmlessly.
+	t.Cleanup(registry.StopWatch)
 	// Both caches are waited for here, as the listener's own start waits for them: a Put that
 	// lands after a watch fixed its initial snapshot and before the read that turns its marks on
 	// is unmarked, and the sweep that completes the read drops it, so an interest or a session
@@ -3831,6 +3838,7 @@ func newListenerDeliveryHarnessOn(t *testing.T, client *bus.Client, sessionOptio
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)
 	}
+	t.Cleanup(sessions.StopWatch)
 	waitForSessions(t, sessions)
 	dedupeCache := dedupe.New(10 * time.Minute)
 	attemptCache := dedupe.New(5 * time.Minute)
