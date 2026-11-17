@@ -1310,7 +1310,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
 test.skip("r on a statement in the Spec view writes a comment under it @owed", {
   annotation: {
     description:
-      "Owed: the Spec view's rows take the writer's r only once the view's keymap is passed the box's writer, which it is not yet, so this reading is skipped until then.",
+      "Owed on part J (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap, so this reading is skipped until then.",
     type: "owed",
   },
 }, async ({ browser }) => {
