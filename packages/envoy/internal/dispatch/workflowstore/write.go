@@ -90,24 +90,16 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	if err := json.Unmarshal(heldText, &held); err != nil {
 		return Step{}, fmt.Errorf("decode the attributes of step %s: %w", id, err)
 	}
+	current, err := stepFrom(id, heldText)
+	if err != nil {
+		return Step{}, err
+	}
 	if !made {
-		var issue string
-		if raw, holds := held[AttributeIssue]; holds {
-			if err := json.Unmarshal(raw, &issue); err != nil {
-				return Step{}, fmt.Errorf("decode the issue of step %s: %w", id, err)
-			}
-		}
-		if issue != write.Issue {
-			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, issue, write.Issue)
-		}
-		var kind string
-		if raw, holds := held[AttributeKind]; holds {
-			if err := json.Unmarshal(raw, &kind); err != nil {
-				return Step{}, fmt.Errorf("decode the kind of step %s: %w", id, err)
-			}
+		if current.Issue != write.Issue {
+			return Step{}, fmt.Errorf("%w: step %s is part of %s, and this write names %s", ErrStepOtherIssue, id, current.Issue, write.Issue)
 		}
 		if write.Type != nil {
-			if err := typeOfKind(kind, *write.Type); err != nil {
+			if err := typeOfKind(current.Kind, *write.Type); err != nil {
 				return Step{}, err
 			}
 		}
@@ -138,7 +130,7 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 		tuples = append(tuples, tuple{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report})
 	}
 	if len(setting) == 0 {
-		return stepFrom(id, heldText)
+		return current, nil
 	}
 
 	moved, err := json.Marshal(setting)
