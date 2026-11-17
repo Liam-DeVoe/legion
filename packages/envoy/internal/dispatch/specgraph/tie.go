@@ -38,7 +38,7 @@ func tiePathsFault(paths []string) error {
 	}
 	for _, entry := range paths {
 		if !isTieEntry(entry) {
-			return fmt.Errorf("specgraph: tie entry %q is not a repository path, <dir>/* or <dir>/**", entry)
+			return fmt.Errorf("specgraph: tie entry %s is not a repository path, <dir>/* or <dir>/**", quoted(entry))
 		}
 	}
 	return nil
@@ -68,13 +68,13 @@ func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	ties := make(CommitTies, len(paths))
 	for _, commit := range slices.Sorted(maps.Keys(paths)) {
 		if !hasWord(commit) {
-			return nil, fmt.Errorf("commit %q: a commit of no letter and no digit names no commit", commit)
+			return nil, fmt.Errorf("commit %s: a commit of no letter and no digit names no commit", quoted(commit))
 		}
 		ties[commit] = make(map[string]Tie, len(paths[commit]))
 		for _, check := range slices.Sorted(maps.Keys(paths[commit])) {
 			tie, err := NewTie(paths[commit][check])
 			if err != nil {
-				return nil, fmt.Errorf("commit %q: check %q: %w", commit, check, err)
+				return nil, fmt.Errorf("commit %s: check %s: %w", quoted(commit), quoted(check), err)
 			}
 			ties[commit][check] = tie
 		}

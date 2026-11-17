@@ -332,6 +332,106 @@ func TestAnApprovedNodeSetsRemovedAndPartlyChecked(t *testing.T) {
 	}
 }
 
+// A key of ties.json, history.json and uncited.json is the writer's own text, and a refusal of a
+// value of another type names the place of the value, so the place holds the key. Each row: a key
+// of 262,144 bytes whose value is of another type. The command exits 2 with nothing on stdout and
+// one line on stderr that names the file, the form and the place, and the place as it prints it
+// holds at most placeBound bytes: the bound of decodeJSON, which prints a place whole up to 100
+// bytes, else its first and its last 50 bytes with … between them. The line names the place by its
+// start and its end, and grows with no byte of the key.
+func TestARefusalNamesALongKeyOfTheWriterInPart(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const placeBound = 100 + len("…")
+	start := "a-name-of-the-writer-"
+	key := start + strings.Repeat("y", 262144-len(start)-len("-end")) + "-end"
+	for _, row := range []struct {
+		name, file, content string
+		form                string // the line is "spec-check: <dir>/<file>: <form>: the value at "<place>" is of another type"
+		place               string // the place whole
+	}{
+		{"a check of ties.json whose name is long and whose tie is a number", "ties.json", `{"c1":{"` + key + `":7}}`,
+			`it is not in the form {"<commit>":{"<check id>":["<path or pattern>", …]}}`, "/c1/" + key},
+		{"a path of history.json whose name is long and whose label is a number", "history.json",
+			`{"commits":[{"id":"c1","files":{"` + key + `":7}}]}`,
+			`specgraph: history: it is not in the form {"commits":[{"id":"<commit>","parent":"<commit>","files":{"<repository path>":"<content label>"}}, …]}`,
+			"/commits/0/files/" + key},
+		{"a check of uncited.json whose name is long and whose rule is a list", "uncited.json", `{"c1":{"` + key + `":["x"]}}`,
+			`it is not in the form {"<commit>":{"<check id>":"<R48 rule>"}}`, "/c1/" + key},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, "carry")
+			writeFile(t, filepath.Join(dir, row.file), []byte(row.content))
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			before := "spec-check: " + filepath.Join(dir, row.file) + ": " + row.form + `: the value at "`
+			const after = `" is of another type` + "\n"
+			if got.code != 2 || got.stdout != "" || strings.Count(got.stderr, "\n") != 1 ||
+				!strings.HasPrefix(got.stderr, before) || !strings.HasSuffix(got.stderr, after) {
+				t.Fatalf("exit %d, stdout %d bytes, stderr %d bytes starting %q\nwant exit 2, nothing on stdout and one line %q<place>%q",
+					got.code, len(got.stdout), len(got.stderr), got.stderr[:min(len(got.stderr), 300)], before, after)
+			}
+			place := got.stderr[len(before) : len(got.stderr)-len(after)]
+			if len(place) > placeBound || !strings.HasPrefix(place, row.place[:40]) || !strings.HasSuffix(place, row.place[len(row.place)-40:]) {
+				t.Errorf("the line is %d bytes, and its place %d bytes, starting %q and ending %q\nwant a place of at most %d bytes that starts %q and ends %q",
+					len(got.stderr), len(place), place[:min(len(place), 60)], place[max(0, len(place)-60):], placeBound, row.place[:40], row.place[len(row.place)-40:])
+			}
+		})
+	}
+}
+
+// Each other value of a scenario's files that a refusal of the reader prints is the writer's own
+// text too: a commit of a subject, a check, a kind and an outcome of a result, a commit of the
+// history, a commit, a check and an entry of a tie, and a unit and the ids that it names. Each row:
+// a value of 262,144 bytes where the reader refuses it. The command exits 2 with nothing on stdout
+// and one line on stderr that names the file and the value by its first and its last bytes, and
+// that holds at most 700 bytes beside the path of the scenario, since each value prints as decodeJSON
+// prints a place, whole up to 100 bytes, else its first and its last 50 bytes with … between them.
+func TestARefusalNamesALongValueOfTheWriterInPart(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	long := func(start string) string { return start + strings.Repeat("y", 262144-len(start)-len("-end")) + "-end" }
+	commit, check, unit, blanks := long("a-commit-"), long("a-check-"), long("a-unit-"), strings.Repeat(" ", 262144)
+	const now = `"now":"2026-11-14T00:00:00Z"`
+	result := func(check, kind, outcome string) string {
+		return `[{"check":"` + check + `","check_version":1,"kind":"` + kind + `","outcome":"` + outcome + `","commit":"c1","job":"go-checks","at":"2026-11-12T10:00:00Z","seq":1}]`
+	}
+	for _, row := range []struct {
+		name, scenario, file, content string
+		value                         string // the long value that the line names
+	}{
+		{"a commit of a subject that names no directory", "carry", "subjects.json", `[{"commit":"a/` + commit + `","branch":"b",` + now + `}]`, "a/" + commit},
+		{"a commit of a subject too long for a directory", "carry", "subjects.json", `[{"commit":"` + commit + `","branch":"b",` + now + `}]`, commit},
+		{"a check of a result", "carry", "results.json", result(check, "run", "pass"), check},
+		{"a kind of a result", "carry", "results.json", result("a-restart-loses-no-message", check, "pass"), check},
+		{"an outcome of a result", "carry", "results.json", result("a-restart-loses-no-message", "run", check), check},
+		{"a commit of the history two times", "carry", "history.json", `{"commits":[{"id":"` + commit + `","files":{}},{"id":"` + commit + `","files":{}}]}`, commit},
+		{"a commit of the history with no files", "carry", "history.json", `{"commits":[{"id":"` + commit + `"}]}`, commit},
+		{"a commit of ties.json of no letter and no digit", "carry", "ties.json", `{"` + blanks + `":{}}`, blanks},
+		{"a check of ties.json", "carry", "ties.json", `{"c1":{"` + check + `":["p/*.go"]}}`, check},
+		{"an entry of a tie", "carry", "ties.json", `{"c1":{"a-restart-loses-no-message":["` + check + `*"]}}`, check + "*"},
+		{"a unit two times", "wait-cycle", "units.json", `[{"id":"` + unit + `","serves":[],"needs":[],"waits_on":[]},{"id":"` + unit + `","serves":[],"needs":[],"waits_on":[]}]`, unit},
+		{"a unit that serves no statement", "wait-cycle", "units.json", `[{"id":"` + unit + `","serves":["` + check + `"],"needs":[],"waits_on":[]}]`, check},
+		{"a unit that needs no unit", "wait-cycle", "units.json", `[{"id":"` + unit + `","serves":[],"needs":["` + commit + `"],"waits_on":[]}]`, commit},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			dir := copyScenario(t, row.scenario)
+			writeFile(t, filepath.Join(dir, row.file), []byte(row.content))
+			got := runBinary(t, binary, "", "state", "--scenario", dir)
+			start := "spec-check: " + filepath.Join(dir, row.file) + ": "
+			if got.code != 2 || got.stdout != "" || strings.Count(got.stderr, "\n") != 1 || !strings.HasPrefix(got.stderr, start) {
+				t.Fatalf("exit %d, stdout %d bytes, stderr %d bytes starting %q\nwant exit 2, nothing on stdout and one line that starts %q",
+					got.code, len(got.stdout), len(got.stderr), got.stderr[:min(len(got.stderr), 300)], start)
+			}
+			if len(got.stderr)-len(dir) > 700 || !strings.Contains(got.stderr, row.value[:40]) || !strings.Contains(got.stderr, row.value[len(row.value)-40:]) {
+				t.Errorf("the line is %d bytes beside the path of the scenario, starting %q\nwant at most 700 that name the value by its first 40 and its last 40 bytes",
+					len(got.stderr)-len(dir), got.stderr[:min(len(got.stderr), 400)])
+			}
+		})
+	}
+}
+
 // The approved side is read by what Dispatch refuses at a change, not by the rules of the files:
 // the person approves a level before the checks of its statements exist, so the approved spec can
 // hold a leaf with no check. The files do not hold it, and it reads not built (R10).

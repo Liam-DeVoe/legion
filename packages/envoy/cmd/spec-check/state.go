@@ -58,8 +58,6 @@ func runState(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// ReadScenario refuses each input that Derive refuses, so Derive answers no error here; one is
-	// still a refusal, never a state.
 	states := make([]specgraph.State, len(scenario.Subjects))
 	for i := range scenario.Subjects {
 		if states[i], err = specgraph.Derive(scenario.Input(i)); err != nil {

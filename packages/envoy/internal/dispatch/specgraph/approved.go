@@ -107,7 +107,7 @@ func approvedFlagsFault(data []byte) error {
 			set  bool
 		}{{"removed", n.Removed != nil}, {"partly_checked", n.PartlyChecked != nil}} {
 			if !member.set {
-				return fmt.Errorf("specgraph: approved spec: it is not in the form %s: the value at %q is not set", approvedForm, fmt.Sprintf("/nodes/%d/%s", i, member.name))
+				return fmt.Errorf("specgraph: approved spec: it is not in the form %s: the value at %s is not set", approvedForm, quoted(fmt.Sprintf("/nodes/%d/%s", i, member.name)))
 			}
 		}
 	}
