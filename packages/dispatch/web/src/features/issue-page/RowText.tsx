@@ -160,10 +160,13 @@ const ROW_CHIP = "data-row-chip";
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
  *  decision's text holds the lines of a block its section quotes, and both its stored text and
  *  its reading carry them as they stand. */
-export const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
+const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
-/** `text` without a typed block's source lines, and with no blank line left where one stood. */
-function withoutDirectiveLines(text: string): string {
+/** `text` without a typed block's source lines, and with no blank line left where one stood:
+ *  the rule every view that draws a node's words leaves those lines out by (decision 94). The
+ *  pattern stays in this file, since its `g` flag carries `lastIndex` from one `test` or `exec`
+ *  to the next; `replace` starts from the beginning each time. */
+export function withoutDirectiveLines(text: string): string {
   return text.includes(":::") ? text.replace(DIRECTIVE_LINE, "") : text;
 }
 
