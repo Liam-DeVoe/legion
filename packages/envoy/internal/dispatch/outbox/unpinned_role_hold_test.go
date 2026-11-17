@@ -68,7 +68,9 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	// because only the sender's own resolution learns which session holds the role.
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
+	before := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	after := time.Now()
 	recv.drained(t)
 
 	if forwards := recv.received(); len(forwards) > 0 {
@@ -87,8 +89,8 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d while the forward waits on a mention, want 0: a wait is no failure", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now, the wait a blocked event takes", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan, the wait a blocked event takes", due, mentionPendingDelay)
 	}
 
 	// The sender's own resolution lands: it pins the session on the row and settles the attempt
@@ -102,14 +104,13 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	recv.drained(t)
 
 	if publishedAt(t, rig.database, comment.ID) == nil {
 		attempts, failure, reached := eventState(t, rig.database, comment.ID)
 		t.Fatalf("the comment was not published once the mention of %s settled: attempt_count %d, publish_error %v, reached %v",
 			target, attempts, failure, reached)
 	}
-	forwards := recv.received()
+	forwards := recv.receivedNow(t, rig.client)
 	if len(forwards) != 1 {
 		t.Fatalf("%s was sent %+v once its mention settled, want the route's one forward", holder, forwards)
 	}
@@ -172,7 +173,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	waitFor(t, 10*time.Second, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	waitFor(t, eventWait, "the author's copy", func() bool { return len(wrote.received()) > 0 })
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",

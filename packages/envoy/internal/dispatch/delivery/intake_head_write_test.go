@@ -305,7 +305,7 @@ func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 		t.Fatalf("take the hold this row lapses: %v", err)
 	}
 	if hold == nil {
-		t.Fatal("the hold this row lapses is held by another process, though this test's database is its own")
+		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
 	}
 	delivery := &intakeDelivery{hold: hold, subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {

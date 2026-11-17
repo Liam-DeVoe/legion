@@ -108,8 +108,10 @@ type hubEventFeed struct {
 // event at or below its head, none of which arrives on the feed.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
-// over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
-// running to wait on, and no subscription the relay would keep its generation running for.
+// over waits for the intake to take the feed (g.feeds has no slot) and gives up when g ends,
+// cancelling the feed, so a feed the intake will never take leaves no goroutine behind for running
+// to wait on, and no subscription the relay would keep its generation running for. The "feed
+// ready" note is made as the hand-over begins.
 func (h *deliveryHub) seedEvents(g *hubGeneration) {
 	h.running.Add(1)
 	go func() {
@@ -123,6 +125,7 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 				}
 			}
 			if err == nil {
+				h.note(deliveryHubNote{what: "feed ready", eventID: feed.head})
 				select {
 				case g.feeds <- hubEventFeed{feed: feed, p0: p0}:
 					// The send and the end can both be ready - g.feeds holds one feed, so the

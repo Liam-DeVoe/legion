@@ -117,9 +117,8 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	u.drained(t)
 	var order []string
-	for _, item := range u.received() {
+	for _, item := range u.receivedNow(t, rig.client) {
 		order = append(order, item.DedupeKey)
 	}
 	t.Logf("R17 ORDER: event N=%d N+1=%d; ses-u received dedupe keys in order %v", first.ID, second.ID, order)

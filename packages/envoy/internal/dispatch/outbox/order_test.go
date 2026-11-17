@@ -278,8 +278,12 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	var (
 		mu       sync.Mutex
 		arrivals []int64
+		marks    markers
 	)
 	sub, err := rig.conn.Subscribe(contracts.LegacyAgentSubject(holder), func(msg *natsgo.Msg) {
+		if marks.took(msg) {
+			return
+		}
 		id := envelopeEventID(t, msg.Data)
 		mu.Lock()
 		arrivals = append(arrivals, id)
@@ -338,6 +342,11 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 			t.Fatalf("event %d counted %d attempts, want none: it only waited on the first event", event.ID, attempts)
 		}
 	}
+	// Each event is marked published once the stream acknowledged its forward to S, and S is
+	// handed the same message on its own connection, which can arrive just after that
+	// acknowledgement on a busy machine: S is read once it has taken every forward sent to it
+	// (markers.await).
+	marks.await(t, rig.client, contracts.LegacyAgentSubject(holder))
 	var order []int64
 	for _, got := range taken() {
 		if !slices.Contains(order, got) {
@@ -901,6 +910,18 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 	claim := claims[0]
 	// Ten more due events, so the statement measured and explained has a batch to choose.
 	unpublished := fresh()
+	// The scan's publish left the old versions of the events it published dead, with their
+	// entries in the indexes of events. The first claim to step over such an entry once no
+	// snapshot can see its row marks it dead and reads its page again to do it, and whether a
+	// snapshot can still see the row is judged from the oldest transaction on the whole server,
+	// not on this database alone. On a Postgres other packages' tests share, a transaction open
+	// in another database keeps the explains below from marking those entries, and the first
+	// measured run pays for the marking instead: 38 blocks and then 37, or 39 and 37 at the larger
+	// size. A vacuum removes the dead rows and their index entries outright, judging by this
+	// database's own transactions, so the runs below measure the claim and none of that cleanup.
+	if _, err := database.Pool.Exec(ctx, `vacuum (index_cleanup on) events`); err != nil {
+		t.Fatalf("vacuum events: %v", err)
+	}
 
 	// The fastest of several runs: the box is small and shared, and a run another test's work
 	// delayed says nothing about the statement.
@@ -936,64 +957,29 @@ func measureClaim(t *testing.T, backlog int) claimCost {
 		t.Fatalf("acquire the connection the counters are read on: %v", err)
 	}
 	defer conn.Release()
-	// What the claim reads is settled rather than read twice: claimReads runs again on the
-	// pinned connection until two consecutive readings report the same rowsRead and the same
-	// indexBlocks, at most five readings, and that pair is the measurement. A claim run marks
-	// the dead index entries the scan's publish left and reads those pages again to do it,
-	// which the 20 explains above run the claim first to absorb; under this lane's load the
-	// marking of one page does not always land before the first reading, and two consecutive
-	// readings then differ by one block. Job 130541308666 of run 43021338811 read 37 blocks on
-	// the first run and 38 on the second and failed there, where the same head read one figure
-	// twice in attempt 1 (job 130525083786) and in three earlier pairs. Five is the bound
-	// because the marking is bounded work that each reading retires: no reading leaves more of
-	// it than the reading before, so a pair agrees within a few readings, and five gives four
-	// chances to agree before the loop ends rather than runs on. On a two-core pod all 20
-	// measurements of 5 runs of this row agreed at the second reading, idle and under two busy
-	// loops alike, so the four spare readings are for a pod slower than that one.
-	const mostReadings = 5
-	type reading struct {
-		rowsRead    int64
-		seqRead     int64
-		indexBlocks int64
-		kept        []int64
+	rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
+	secondRowsRead, _, secondIndexBlocks, _ := claimReads(t, conn, claim)
+	if rowsRead != secondRowsRead {
+		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
+			rowsRead, secondRowsRead)
 	}
-	taken := make([]reading, 0, mostReadings)
-	settledAt := -1
-	for len(taken) < mostReadings && settledAt < 0 {
-		rowsRead, seqRead, indexBlocks, kept := claimReads(t, conn, claim)
-		taken = append(taken, reading{rowsRead: rowsRead, seqRead: seqRead, indexBlocks: indexBlocks, kept: kept})
-		if last := len(taken) - 1; last > 0 && taken[last-1].rowsRead == rowsRead && taken[last-1].indexBlocks == indexBlocks {
-			settledAt = last
-		}
+	// The blocks are as steady as the rows once the dead entries the scan's publish left are
+	// vacuumed away (above): 37 on both runs of each size, in all 12 readings of 3 runs of the
+	// healthy claim on 2026-11-09, and 56 and 113 on both runs of the mutated one.
+	if indexBlocks != secondIndexBlocks {
+		t.Errorf("the claim fetched %d blocks from the indexes of events on the first run and %d on the second, want one figure twice: the figure is the difference across the claim, and with no dead index entry left for the first run to mark, a second run on the same connection fetches the same blocks",
+			indexBlocks, secondIndexBlocks)
 	}
-	// Settling hides no regression, because a broken claim reads the same figures on every run:
-	// the claim over a retry index rebuilt as (id, next_attempt_at) fetched 56 blocks at 5,000
-	// and 113 at 20,000 on both runs of each size, so its first two readings agree and the
-	// bounds below weigh those figures. Only the marking moves a reading, by the one block it
-	// has left to do, and only on the first reading. Readings that never agree are a measurement
-	// that does not hold still, which is no measurement at all, so the row names them all and
-	// stops.
-	if settledAt < 0 {
-		shown := make([]string, 0, len(taken))
-		for index, each := range taken {
-			shown = append(shown, fmt.Sprintf("reading %d read %d rows and fetched %d blocks", index+1, each.rowsRead, each.indexBlocks))
-		}
-		t.Fatalf("no two consecutive readings of the claim agreed in %d readings on the same connection, want a pair reading the same rows and the same blocks from the indexes of events; in order: %s. Each figure is the difference across the claim, and a measurement that reads pg_stat_xact_user_tables' counter rather than its difference grows by about the first reading every time",
-			mostReadings, strings.Join(shown, "; "))
+	if rowsRead == 0 && secondRowsRead == 0 {
+		t.Errorf("the claim read 0 rows from events on both runs: track_counts must be on for pg_stat_xact_user_tables to count a row")
 	}
-	measured := taken[settledAt]
-	if measured.rowsRead == 0 {
-		t.Errorf("the claim read 0 rows from events in both readings of the settled pair: track_counts must be on for pg_stat_xact_user_tables to count a row")
-	}
-	t.Logf("the claim settled at reading %d of at most %d: %d rows read from events and %d blocks fetched from its indexes",
-		settledAt+1, mostReadings, measured.rowsRead, measured.indexBlocks)
 
 	return claimCost{
 		backlog:     backlog,
-		rowsRead:    measured.rowsRead,
-		seqRead:     measured.seqRead,
-		indexBlocks: measured.indexBlocks,
-		kept:        measured.kept,
+		rowsRead:    rowsRead,
+		seqRead:     seqRead,
+		indexBlocks: indexBlocks,
+		kept:        kept,
 		unpublished: unpublished,
 		plans:       plans,
 		fastest:     fastest,

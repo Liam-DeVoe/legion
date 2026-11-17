@@ -58,7 +58,7 @@ var harness = pgtemplate.New(pgtemplate.Dispatch, store.MigrationsFingerprint, s
 func Open(t testing.TB) *store.Store {
 	t.Helper()
 	if !harness.InMain() {
-		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }")
+		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
 	raw := os.Getenv(DatabaseURLEnv)
 	if raw == "" {
@@ -78,3 +78,12 @@ func Open(t testing.TB) *store.Store {
 // A package whose tests call Open uses it as its TestMain:
 // func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
 func Main(m *testing.M) int { return harness.Main(m) }
+
+// Run is Main for a package whose tests also need another harness's Main, which runs m.Run
+// itself: run runs the package's tests through that Main, and Run then does what Main does after
+// them (pgtemplate.Harness.MainWith, which hands run no m here, since run holds its own).
+// internal/dispatch/delivery runs its tests through testnats.Main this way:
+// func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+func Run(run func() int) int {
+	return harness.MainWith(nil, func(*testing.M) int { return run() })
+}

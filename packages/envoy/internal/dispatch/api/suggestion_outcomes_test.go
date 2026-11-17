@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/multitracer"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -63,42 +64,20 @@ func lastEventID(t *testing.T, database *store.Store) int64 {
 	return id
 }
 
-// ageIssueEvents moves every event of issueKey back by by, so a test that needs an event the
-// sweep reads as settle old sets that age on the row rather than waiting the window out. Every
-// one of the issue's events moves together, so the order the writes made is the order that
-// stands.
-func ageIssueEvents(t *testing.T, database *store.Store, issueKey string, by time.Duration) {
+// awaitEventSettled returns once event id is settle old by the database's clock, the one a pass
+// reads every age by (readSuggestionPage): a pass whose transaction starts after it reads the
+// event as settled, however long the box took to get there. An id with no event fails the test
+// rather than returning at once.
+func awaitEventSettled(t *testing.T, database *store.Store, id int64, settle time.Duration) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(),
-		`update events set created_at = created_at - $2::float8 * interval '1 second' where issue_key = $1`,
-		issueKey, by.Seconds()); err != nil {
-		t.Fatalf("age the events of %s: %v", issueKey, err)
+	var slept string
+	if err := database.Pool.QueryRow(context.Background(), `
+		select pg_sleep(greatest(0::double precision,
+			$2::double precision - extract(epoch from clock_timestamp() - created_at)::double precision))::text
+		  from events where id = $1
+	`, id, settle.Seconds()).Scan(&slept); err != nil {
+		t.Fatalf("wait for event %d to be %v old: %v", id, settle, err)
 	}
-}
-
-// ageSuggestion moves the suggestion sourceIssueKey offered back by by, which is how a test makes
-// one settle old without waiting: the pass judges a suggestion by now() - created_at, as it judges
-// an event (readSuggestionPage, touchedSuggestions).
-func ageSuggestion(t *testing.T, database *store.Store, sourceIssueKey string, by time.Duration) {
-	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(),
-		`update write_suggestions set created_at = created_at - $2::float8 * interval '1 second' where source_issue_key = $1`,
-		sourceIssueKey, by.Seconds()); err != nil {
-		t.Fatalf("age the suggestion of %s: %v", sourceIssueKey, err)
-	}
-}
-
-// suggestionAge is how old the suggestion sourceIssueKey offered is by the database's clock, the
-// one the pass compares against settle.
-func suggestionAge(t *testing.T, database *store.Store, sourceIssueKey string) time.Duration {
-	t.Helper()
-	var seconds float64
-	if err := database.Pool.QueryRow(context.Background(),
-		`select extract(epoch from now() - created_at)::float8 from write_suggestions where source_issue_key = $1`,
-		sourceIssueKey).Scan(&seconds); err != nil {
-		t.Fatalf("read the age of the suggestion of %s: %v", sourceIssueKey, err)
-	}
-	return time.Duration(seconds * float64(time.Second))
 }
 
 // sweepSuggestionOutcomes judges everything there is to judge at the server's page size, holding
@@ -117,6 +96,7 @@ func sweepSuggestionOutcomes(t *testing.T, srv *server) error {
 // it has gone quiet.
 type idleSweep struct {
 	handler        http.Handler
+	database       *store.Store
 	server         *server
 	counter        *storetest.StatementCounter
 	target, source string
@@ -163,7 +143,9 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 	case <-time.After(concurrentWait):
 		t.Fatalf("the hub did not connect within %s", concurrentWait)
 	}
-	waitUntil(t, concurrentWait, "the boot pass to set the cursor", func() bool { return outcomeCursor(t, database) != nil })
+	// The boot pass awaits the event horizon before it sets the cursor (suggestionOutcomePass), and
+	// a transaction open anywhere on the instance holds that back, so the wait is the horizon's.
+	horizontest.PollInProcess(t, "the boot pass to set the cursor", database, func() bool { return outcomeCursor(t, database) != nil })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the boot
 	// pass began; after it the loop is idle. That pass is waited for, not assumed: a sweep whose
 	// wakes all arrived late would otherwise run it after the test's own write and judge that
@@ -172,7 +154,7 @@ func startIdleSweep(t *testing.T, project string, settle time.Duration) idleSwee
 		return countStatements(recorder.Statements(), cursorHeld) >= 2
 	})
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, concurrentWait)
-	return idleSweep{handler: handler, server: srv, counter: counter, target: target, source: source}
+	return idleSweep{handler: handler, database: database, server: srv, counter: counter, target: target, source: source}
 }
 
 // With no event written, the sweep makes no statement at all - no pass on a timer, no lease
@@ -195,18 +177,22 @@ func TestTheSuggestionSweepMakesNoStatementWithNoEvents(t *testing.T) {
 }
 
 // An event the suggestion's actor writes on the suggested issue wakes the idle sweep through its
-// notification on a real pglisten.Hub, and the suggestion is marked acted_on within five seconds.
+// notification on a real pglisten.Hub, and the suggestion is marked acted_on by the first pass
+// whose safe horizon has passed that event: the sweep reads the log only up to it, so the wait is
+// the horizon's.
 func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *testing.T) {
-	// No t.Parallel: this test measures the process. It requires the suggestion marked acted_on
-	// within 5 s of the actor's write, a bound another test's work on the same machine would
-	// stretch; and startIdleSweep measures a quiet window of the sweep it runs
+	// No t.Parallel: startIdleSweep measures a quiet window of the sweep it runs
 	// (storetest.AwaitQuiet) before the test's own write, which a parallel test's CPU would
-	// stretch too.
+	// stretch.
 	sweep := startIdleSweep(t, "OWAKE", idleSweepGap)
 	seedWriteSuggestion(t, sweep.server, "issue", sweep.source, "", "alice", "issue", sweep.target, sweep.target)
 
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, concurrentWait, "the suggestion to be marked acted_on", func() bool {
+	// A pass judges by the message once it is settle old by the database's clock, which the pass
+	// reads every age by, and once the pass's safe horizon has passed it. The first is waited out
+	// here, so what the wait below waits on is the horizon alone.
+	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), idleSweepGap)
+	horizontest.PollInProcess(t, "the suggestion to be marked acted_on", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome == "acted_on"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Detail != "the suggested issue was updated directly" {
@@ -231,7 +217,10 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	postOutcomeMessage(t, sweep.handler, sweep.source, "alice", "Looking into this here first.")
 	time.Sleep(300 * time.Millisecond)
 	postOutcomeMessage(t, sweep.handler, sweep.target, "alice", "Adding the new detail here instead.")
-	waitUntil(t, concurrentWait, "the suggestion to be judged", func() bool {
+	// The settle waited out on the database's clock, which the pass reads every age by; then the
+	// horizon alone, which the pass reads up to.
+	awaitEventSettled(t, sweep.database, lastEventID(t, sweep.database), settle)
+	horizontest.PollInProcess(t, "the suggestion to be judged", sweep.database, func() bool {
 		return readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target).Outcome != "ignored"
 	})
 	if row := readSuggestionOutcome(t, sweep.server, sweep.source, sweep.target); row.Outcome != "acted_on" {
@@ -240,22 +229,22 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 }
 
 // A suggestion younger than settle is not judged, whatever older event a page carries: here
-// another person's message on the suggested issue, written before the suggestion, is settle old
-// while the suggestion is not. The agent comments on what it filed and, moments later, updates
-// the suggested issue; judged at the older event's turn, the comment alone would read as an
+// another person's message on the suggested issue, written before the suggestion, is settle old at
+// a pass while the suggestion is not. The agent comments on what it filed and, moments later,
+// updates the suggested issue; judged at the older event's turn, the comment alone would read as an
 // override. Judged once it is settle old, the rules see both writes, and it is acted_on.
+//
+// A pass reads every age against now(), its transaction's start. The young pass's transaction
+// starts once the other person's message is settle old and before the suggestion is recorded, so
+// that pass reads the message as settled and the suggestion and the comment after it as younger
+// than settle, however long the writes and the safe horizon between take. It takes no transaction
+// id until the pass locks the cursor, so it holds back neither those writes nor that horizon.
 func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 	// No t.Parallel: this test reads the event log by id cursor up to the safe horizon, which is
 	// instance-wide - it is proven from pg_snapshot_xmin, the oldest transaction id running
 	// anywhere on the Postgres server (internal/dispatch/events, horizon.go) - so any open
 	// transaction, this package's tests' included, holds it back.
-	//
-	// settle is the window the pass is given, a parameter of every call below rather than a span
-	// the test waits out: an hour, so no load between the age the test checks and the pass's own
-	// now() can age the young suggestion past it. The two ages the test turns on are set on the
-	// rows themselves (ageIssueEvents, ageSuggestion), as seedWriteSuggestion stamps its row ten
-	// milliseconds back rather than sleeping for the gap it needs.
-	const settle = time.Hour
+	const settle = 2 * time.Second
 	ctx := context.Background()
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	srv := directServer(deps)
@@ -271,25 +260,35 @@ func TestAYoungSuggestionIsNotJudgedByAnOlderEventOfItsIssues(t *testing.T) {
 	}
 
 	postOutcomeMessage(t, handler, target, "bob", "A note of my own on the target.")
-	// bob's message is settle old, and still older than the suggestion the test seeds next.
-	ageIssueEvents(t, database, target, settle+time.Minute)
+	older := lastEventID(t, database)
+	awaitEventSettled(t, database, older, settle)
+	pass, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the young pass's transaction: %v", err)
+	}
+	defer func() { _ = pass.Rollback(context.Background()) }()
 	seedWriteSuggestion(t, srv, "issue", source, "", "alice", "issue", target, target)
 	postOutcomeMessage(t, handler, source, "alice", "Looking into this here first.")
 
-	if age := suggestionAge(t, database, source); age >= settle {
-		t.Fatalf("the suggestion is already %v old; the test needs it younger than %v here", age, settle)
+	safe := safeHorizon(t, srv)
+	if _, _, err := judgeSuggestionPage(ctx, pass, safe, suggestionOutcomePage, settle); err != nil {
+		t.Fatalf("judge a page while the suggestion is young: %v", err)
 	}
-	if _, err := sweepSuggestionOutcomePages(ctx, database.Pool, safeHorizon(t, srv), suggestionOutcomePage, settle); err != nil {
-		t.Fatalf("sweep while the suggestion is young: %v", err)
+	if err := pass.Commit(ctx); err != nil {
+		t.Fatalf("commit the young pass: %v", err)
+	}
+	switch cursor := outcomeCursor(t, database); {
+	case cursor == nil:
+		t.Fatalf("the cursor is unset after the young pass; want it at event %d, bob's message", older)
+	case *cursor != older:
+		t.Fatalf("cursor = %d after the young pass; want %d: the page carries bob's message, settle old, and stops at alice's younger comment", *cursor, older)
 	}
 	if row := readSuggestionOutcome(t, srv, source, target); row.Outcome != "ignored" {
 		t.Fatalf("outcome = %+v while the suggestion is younger than settle; want ignored until it is settle old", row)
 	}
 
 	postOutcomeMessage(t, handler, target, "alice", "Adding the new detail here instead.")
-	// The suggestion is settle old now, with both of alice's writes still after it and both made
-	// while it was young: what the pass has to judge together.
-	ageSuggestion(t, database, source, settle+30*time.Second)
+	awaitEventSettled(t, database, lastEventID(t, database), settle)
 	if _, err := sweepSuggestionOutcomePages(ctx, database.Pool, safeHorizon(t, srv), suggestionOutcomePage, settle); err != nil {
 		t.Fatalf("sweep once the suggestion is settle old: %v", err)
 	}

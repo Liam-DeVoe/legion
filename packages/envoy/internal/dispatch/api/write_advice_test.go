@@ -809,10 +809,32 @@ func TestWriteAdviceOnIdempotentExternalIssueCreate(t *testing.T) {
 	}
 }
 
+// A session's write on an issue with a long event history still answers its advice, with the full
+// count of the session's writes. The advice's queries run under the 500 ms statement_timeout
+// writeAdvice sets on its savepoint, and a count that runs past that bound is cancelled and costs
+// the write its advice, so a count that is answered ran inside the bound. The hook reads that the
+// bound stood on the savepoint the count runs on. The write's wall-clock time depends on the
+// machine and is not checked.
 func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
-	// Serial: this test measures the process. Its assertion is a time: the advice round
-	// trip over 5,001 events within 2 s.
-	handler, database := newTestHandlerWithStore(t)
+	// Serial: this test measures the process. The count of the session's 5,001 writes must
+	// finish inside the 500 ms statement_timeout writeAdvice sets, or the advice is omitted and the
+	// count this test reads is lost with it.
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	bound := make(chan string, 1)
+	served.adviceQueryHook = func(ctx context.Context, tx pgx.Tx, query string) error {
+		if query != "session_writes_since_human" {
+			return nil
+		}
+		var setting string
+		if err := tx.QueryRow(ctx, `select current_setting('statement_timeout')`).Scan(&setting); err != nil {
+			return err
+		}
+		select {
+		case bound <- setting:
+		default:
+		}
+		return nil
+	}
 	createAdviceProject(t, handler, "PERF")
 	spec := "# Performance\n"
 	issue := createAdviceIssue(t, handler, "PERF", "Long event history", &spec)
@@ -846,35 +868,45 @@ func TestWriteAdviceStaysBoundedOnLongIssueHistory(t *testing.T) {
 		t.Fatalf("commit event seed: %v", err)
 	}
 
-	started := time.Now()
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "bounded advice", "actor": adviceSessionActor("session-performance"),
 	})
-	elapsed := time.Since(started)
 	advice := adviceFromResponse(t, response.Code, response.Body.String())
 	if advice.SessionWritesSinceHuman != seededEvents+1 {
 		t.Fatalf("session write count = %d, want %d", advice.SessionWritesSinceHuman, seededEvents+1)
 	}
-	if elapsed >= 2*time.Second {
-		t.Fatalf("advice round trip took %s, want under 2s", elapsed)
+	select {
+	case setting := <-bound:
+		if setting != "500ms" {
+			t.Fatalf("the advice counted the session's writes under statement_timeout %q, want the 500ms writeAdvice sets", setting)
+		}
+	default:
+		t.Fatal("the advice answered without running its count of the session's writes")
 	}
 }
 
+// A session's write whose advice query cannot finish still commits, without its advice. The
+// failing query sleeps for two seconds, and the 500 ms statement_timeout on the advice's savepoint
+// (writeAdvice) ends it: Postgres cancels it for that timeout, and the server logs the advice as
+// omitted for that reason, so the write did not wait out the two seconds. The write's wall-clock
+// time depends on the machine and is not checked.
 func TestWriteAdviceFailureDoesNotAbortWrite(t *testing.T) {
-	// Serial: this test measures the process. Its assertion is a time: the write must not
-	// wait out the 2 s advice stall, which the advice's 500 ms statement timeout cuts, leaving the
-	// write's other database work the rest of the 2 s.
+	// Serial: this test swaps process-wide state. captureLogs points slog's default logger at a
+	// buffer of its own and reads the omitted advice's line from it, which every other test's
+	// logging would join.
 	handler, database := newFailingAdviceHandler(t, "session_writes_since_human", 0)
 	createAdviceProject(t, handler, "FAIL")
 	spec := "# Failure isolation\n"
 	issue := createAdviceIssue(t, handler, "FAIL", "Advice failure", &spec)
 
-	started := time.Now()
+	logs := captureLogs(t)
 	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "must still commit", "actor": adviceSessionActor("session-failure"),
 	})
-	if elapsed := time.Since(started); elapsed >= 2*time.Second {
-		t.Fatalf("timed-out advice query held the write for %s, want under 2s", elapsed)
+	omitted := logs.Lines(`msg="dispatch: write advice omitted"`)
+	if !strings.Contains(omitted, "query=session_writes_since_human") ||
+		!strings.Contains(omitted, "canceling statement due to statement timeout") {
+		t.Fatalf("the failing advice query was not ended by the advice's statement_timeout; the server logged:\n%s", logs.String())
 	}
 	if response.Code != http.StatusCreated {
 		t.Fatalf("message with failed advice: status=%d body=%s", response.Code, response.Body.String())

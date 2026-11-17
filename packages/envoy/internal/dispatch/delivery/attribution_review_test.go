@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"net/http"
 	"strconv"
 	"sync/atomic"
@@ -18,8 +17,7 @@ import (
 func TestAttributionMatchesGitHubURLsWhateverTheirCase(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
-	// URLs no other test links: a link's URL is unique across every issue, and the tests share
-	// one database.
+	// URLs no other row of this test links: a link's URL is unique across every issue.
 	seedAttributionIssues(t, ctx, pool, []string{"ATTR-201", "ATTR-202"}, map[string][]string{
 		"ATTR-201": {"https://github.com/acme/widgets/pull/201"},
 		"ATTR-202": {"https://github.com/acme/widgets/issues/277"},
@@ -174,14 +172,6 @@ func TestAttributingAStoredPullRequestReadsOneCanonicalNameFromTwoMappingsOfOneR
 	`, gadgetsRepo); err != nil {
 		t.Fatalf("record a second mapping of %s: %v", gadgetsOldRepo, err)
 	}
-	// The row outlives the test's own context, which is cancelled before any cleanup runs, so the
-	// delete takes one of its own: left behind, this mapping would put every later test's reads
-	// of the old name through two rows.
-	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), `delete from repo_projects where repo = 'OldCo/Gadgets'`); err != nil {
-			t.Errorf("drop the second mapping of %s: %v", gadgetsOldRepo, err)
-		}
-	})
 
 	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
 	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{

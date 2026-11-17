@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // mentionsOf is a payload's mentions as the scan decodes them from JSON, each resolved to its
@@ -422,14 +423,14 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 	return attempts, due
 }
 
-// databaseNow is the database's own clock, the one the outbox's record stamps next_attempt_at on.
-func databaseNow(t *testing.T, database *store.Store) time.Time {
-	t.Helper()
-	var now time.Time
-	if err := database.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
-	return now
+// waitsFromScan reports whether due is mentionPendingDelay after a moment between before and
+// after, the times read either side of the scan that wrote it: recordBatch writes a blocked
+// event's next_attempt_at as least(now() + delay, until), now() is read inside the scan, and a
+// blocker that waits on a mention is written in the same statement. A bound read from the
+// test's clock after the scan instead moves with the time the test takes to reach the check,
+// which a loaded machine can stretch past the whole wait.
+func waitsFromScan(due *time.Time, before, after time.Time) bool {
+	return due != nil && !due.Before(before.Add(mentionPendingDelay)) && !due.After(after.Add(mentionPendingDelay))
 }
 
 // TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent drives the scan itself: a new comment
@@ -473,9 +474,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
-			beforeScan := databaseNow(t, database)
+			before := time.Now()
 			outbox.scan(ctx, unfenced{})
-			afterScan := databaseNow(t, database)
+			after := time.Now()
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -486,13 +487,8 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			if attempts != 0 {
 				t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 			}
-			// The record blocks the event until now() + mentionPendingDelay on the database's clock,
-			// in a transaction that began between the two readings taken around the scan, so the due
-			// time lies between those readings moved on by the delay, however long the scan and the
-			// reads after it took. Read against the test's clock after those reads instead, a step
-			// slowed past the delay found the due time already behind it.
-			if earliest, latest := beforeScan.Add(mentionPendingDelay), afterScan.Add(mentionPendingDelay); due == nil || due.Before(earliest) || due.After(latest) {
-				t.Fatalf("next_attempt_at = %v, want %v after the scan's record, %v to %v", due, mentionPendingDelay, earliest, latest)
+			if !waitsFromScan(due, before, after) {
+				t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
 			}
 			if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, []string{issueTopic}) {
 				t.Fatalf("published_destinations = %#v, want the issue topic alone", destinations)
@@ -557,7 +553,9 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 
 	publisher := &recordingPublisher{}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher})
+	before := time.Now()
 	outbox.scan(ctx, unfenced{})
+	after := time.Now()
 
 	want := []string{issueTopic, claimantTopic}
 	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
@@ -570,8 +568,8 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 	if attempts != 0 {
 		t.Fatalf("attempt_count = %d after a deferral, want 0", attempts)
 	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("next_attempt_at = %v, want about %v from now", due, mentionPendingDelay)
+	if !waitsFromScan(due, before, after) {
+		t.Fatalf("next_attempt_at = %v, want mentionPendingDelay = %v from the scan", due, mentionPendingDelay)
 	}
 	if destinations, _ := publishedDestinations(t, database, event.ID); !reflect.DeepEqual(destinations, want) {
 		t.Fatalf("published_destinations = %#v, want %#v", destinations, want)
@@ -1255,9 +1253,7 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -1347,9 +1343,7 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 		deadLetter   = `level=ERROR msg="dispatch outbox: fallback copy reached dead-letter threshold"`
 	)
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
@@ -1496,9 +1490,7 @@ func TestAFallbackPassThatIsStoppingClaimsNoRow(t *testing.T) {
 	}
 	published := len(publisher.all())
 	var logged lockedBuffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
 
 	stopping, stop := context.WithCancel(ctx)
 	stop()

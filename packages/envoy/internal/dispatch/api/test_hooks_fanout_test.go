@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // holdTestHookLock is a process that is alive but never acknowledges a test hook: a connection of
@@ -99,8 +100,14 @@ func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 
 // secondHookProcess is a second server process on database: a pool of its own (and so a listening
 // connection and a lock of its own), its own document service and its own in-process conversation
-// relay, as a second envoy-dispatch process holds. It answers that process's server, once that
-// process is one a hook reaches.
+// relay, as a second envoy-dispatch process holds. It answers that process's server once that
+// process hears test hooks. register starts the process's listener and returns before it has
+// dialed, and a call waits only for the processes holding a test-hook lock when it is sent
+// (testHookFanout.call): a call sent sooner answers 200 without this process, which never hears
+// it, so a viewer here waits for a frame that never comes. The process takes its lock only once
+// it listens (testHookFanout.dial), so from then on every call reaches it and waits for its
+// acknowledgement. The wait is the one the caller makes for its own lock (awaitOwnLock), bounded
+// by the test binary's deadline: how long a loaded machine takes to connect is not under test.
 func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	t.Helper()
 	second := storetest.SecondProcess(t, database)
@@ -123,21 +130,13 @@ func secondHookProcess(t *testing.T, database *store.Store) *httptest.Server {
 	mux := http.NewServeMux()
 	served := register(mux, t.Context(), deps)
 	t.Cleanup(served.waitBackground)
+	listening, stop := context.WithTimeout(t.Context(), testwait.Bounded(t, time.Minute, time.Second))
+	defer stop()
+	if _, err := served.testHooks.awaitOwnLock(listening); err != nil {
+		t.Fatalf("the second process's test-hook listener did not take its lock: %v", err)
+	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	// A call waits for the processes holding a test-hook lock when it sends and for no other
-	// (testHookFanout.call), and this process takes its own on the goroutine register started. A
-	// caller that sent before that goroutine had listened and locked would be answered by its own
-	// process alone, 200, while this one never heard the call at all: its viewer would then wait
-	// out its whole deadline for a frame nobody here published. So the process is not handed back
-	// until it holds its lock, which is what makes it one a hook reaches, exactly as a caller
-	// waits for its own (awaitOwnLock). The bound is the caller's own: a listener that has not
-	// locked by then is one no hook in this test would reach either.
-	lock, cancel := context.WithTimeout(t.Context(), testHookTimeout)
-	defer cancel()
-	if _, err := served.testHooks.awaitOwnLock(lock); err != nil {
-		t.Fatalf("the second process's test-hook listener did not take its lock within %v: %v", testHookTimeout, err)
-	}
 	return server
 }
 

@@ -99,9 +99,8 @@ func databaseAge(t *testing.T, ctx context.Context, pool *store.Pool, query stri
 // justNow reports whether age is a moment the database's clock reached within the last minute.
 func justNow(age *time.Duration) bool { return age != nil && *age >= 0 && *age < time.Minute }
 
-// listenConn opens a connection of its own on pool's database, outside the pool, listening on
-// channel. It takes pool rather than DISPATCH_TEST_DATABASE_URL because each test has a database
-// of its own now, and a notification only reaches a listener on the same database.
+// listenConn opens a connection of its own to pool's database, outside the pool, listening on
+// channel.
 func listenConn(t *testing.T, ctx context.Context, pool *store.Pool, channel string) *pgx.Conn {
 	t.Helper()
 	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig)
