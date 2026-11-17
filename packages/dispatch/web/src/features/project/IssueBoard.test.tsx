@@ -139,7 +139,7 @@ function board(issues: IssueSummary[], search: string, daemon: LegionSetting | n
     );
     return {
       issues: rows.slice(0, options.limit),
-      limit: options.limit,
+      limit: options.limit ?? rows.length,
       offset: 0,
       total: rows.length,
     };
@@ -535,10 +535,14 @@ test("a card draws its Legion fields and leaves out every one the board gives no
   expect(phaseTime).toHaveAttribute("tabindex", "0");
   expect(phaseTime.hasAttribute("title")).toBe(false);
   act(() => phaseTime.focus());
-  expect((await screen.findByRole("tooltip")).textContent).toBe(MEASURE_METHODS.time_in_phase);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    MEASURE_METHODS.time_in_phase ?? "a method for Time in Legion phase"
+  );
   act(() => phaseTime.blur());
   await user.hover(fact(first, "work-time") as HTMLElement);
-  expect((await screen.findByRole("tooltip")).textContent).toBe(MEASURE_METHODS.work_hours);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(
+    MEASURE_METHODS.work_hours ?? "a method for Work time"
+  );
   await user.unhover(fact(first, "work-time") as HTMLElement);
 
   // The open asks badge says what it counts in the tooltip, is a tab stop, and has no title.
@@ -1028,7 +1032,7 @@ test("a failed move puts the listing back, reads it again and tells the truth ab
     keyedAttempt
   );
   expect(hook.result.current.error).toBe(staleBoardMessage);
-  expect(client.getQueryData(key)).toEqual(open);
+  expect(client.getQueryData<IssueSummary[]>(key)).toEqual(open);
   expect(client.getQueryState(key)?.isInvalidated).toBe(true);
 });
 
