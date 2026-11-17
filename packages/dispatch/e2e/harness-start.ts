@@ -149,11 +149,7 @@ function watch(running: PipedRunning, listener: ReportingListener, logDir?: stri
 /** The refusal for a listener that did not come up, quoting its last lines. `named` is the port a
  *  caller set for it, as `FAKE_ENVOY_PORT=4100`, or undefined where the OS chose it: a set port it
  *  could not bind is named as such. */
-function refusal(
-  watched: Watched,
-  named: string | undefined,
-  what: string
-): Error {
+function refusal(watched: Watched, named: string | undefined, what: string): Error {
   const { listener, log, tail } = watched;
   const lines = tail.join("\n");
   const inUse = named !== undefined && /EADDRINUSE|address already in use/.test(lines);
