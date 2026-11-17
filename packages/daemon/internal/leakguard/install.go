@@ -265,7 +265,12 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err != nil {
 		return fmt.Errorf("the pod's launcher could not unpack the check the daemon served: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(in.Tag+"\n"), 0o644); err != nil {
+	// The tag is read by every role as the check's files are, so its mode is set past the umask too.
+	tag := filepath.Join(staging, tagFile)
+	if err := os.WriteFile(tag, []byte(in.Tag+"\n"), 0o644); err != nil {
+		return fmt.Errorf("the installed tag could not be recorded: %w", err)
+	}
+	if err := os.Chmod(tag, 0o644); err != nil {
 		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
 	if err := verifyServed(ctx, filepath.Join(staging, checkName), parent); err != nil {
@@ -332,14 +337,14 @@ func unpackServed(body []byte, dir string) (int, error) {
 		target := filepath.Join(dir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := mkdirShared(dir, target); err != nil {
 				return files, err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := mkdirShared(dir, filepath.Dir(target)); err != nil {
 				return files, err
 			}
-			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()); err != nil {
+			if err := writeMember(target, archive, header.FileInfo().Mode().Perm()&^0o022); err != nil {
 				return files, err
 			}
 			files++
@@ -349,12 +354,38 @@ func unpackServed(body []byte, dir string) (int, error) {
 	}
 }
 
+// mkdirShared makes target and every directory between it and dir, each 0755 whatever the umask:
+// a role's shell may run umask 077, under which MkdirAll's 0755 lands 0700 and no one else could
+// reach the check's files below it. dir itself is the caller's, and its mode is left to it.
+func mkdirShared(dir, target string) error {
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return err
+	}
+	for at := target; at != dir && strings.HasPrefix(at, dir+string(filepath.Separator)); at = filepath.Dir(at) {
+		if err := os.Chmod(at, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeMember writes content to a new file at path, of mode. unpackServed passes the member's own
+// mode in the served body less group and other write: GitHub's tarballs carry git archive's 0664
+// and 0775 (measured 2026-11-17 on codeload's tarball of sjawhar/knives v4.0.1), and no one but
+// its owner may write a check every push runs. The mode is set with a chmod once the file is
+// written rather than left to the open, whose mode the umask narrows: a role's shell may run
+// umask 077, under which the check's python file would land 0600 and its launcher 0700, and the
+// shared check must be readable by others.
 func writeMember(path string, content io.Reader, mode os.FileMode) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(file, content); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Chmod(mode); err != nil {
 		_ = file.Close()
 		return err
 	}

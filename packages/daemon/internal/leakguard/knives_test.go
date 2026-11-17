@@ -158,6 +158,11 @@ func TestAKnivesRegistryThatCannotBeReadRefusesThePush(t *testing.T) {
 			want: unread + "knives registry 1 of LEGION_KNIVES_REGISTRIES: [repos.invented-repo] names no origin",
 		},
 		{
+			name: "an entry of the registry names an upstream that is not a string",
+			rows: []knivesServed{registry("[repos.invented-repo]\nupstream = [\"https://github.com/upstream-org/invented-repo\"]\norigin = \"" + knivesOrigin + "\"\nforbidden = [\"Quillwort\"]\n")},
+			want: unread + "knives registry 1 of LEGION_KNIVES_REGISTRIES: [repos.invented-repo] upstream is not a string",
+		},
+		{
 			name: "the overlay adds to an entry the registry does not have",
 			rows: []knivesServed{theKnivesRow, overlay("[repos.private-entry]\nforbidden = [\"Marrowfen\"]\n")},
 			want: unread + "knives registry 2 of LEGION_KNIVES_REGISTRIES adds to an entry no earlier registry has; an overlay only adds to an entry the registry already has",

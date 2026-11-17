@@ -62,12 +62,15 @@ type knivesEntry struct {
 // knivesRegistryFile is what this pass reads of the first registry: each entry's origin, its
 // release, its upstream and its forbidden list. Every other field knives writes (base, consumers,
 // a [trust] table) is passed over, where knives itself refuses a field it does not know: this pass
-// reads four fields of the file and needs no opinion on the rest.
+// reads four fields of the file and needs no opinion on the rest. The three remotes are decoded as
+// whatever the file holds and read as strings entry by entry (knivesEntries), so that a remote
+// that is not a string is refused naming its entry and field, where a string field would fail the
+// whole decode naming neither (notKnivesTOML).
 type knivesRegistryFile struct {
 	Repos map[string]struct {
-		Origin    string   `toml:"origin"`
-		Release   string   `toml:"release"`
-		Upstream  string   `toml:"upstream"`
+		Origin    any      `toml:"origin"`
+		Release   any      `toml:"release"`
+		Upstream  any      `toml:"upstream"`
 		Forbidden []string `toml:"forbidden"`
 	} `toml:"repos"`
 }
@@ -415,7 +418,9 @@ func knivesRows(listed string) ([]knivesRow, error) {
 // overlay whose tables may name only an entry an earlier row has, each adding its forbidden terms
 // to the end of that entry's list. After each row, each list the row wrote is checked as knives
 // checks one (knivesChecked). An entry of the first row must name its origin, which knives requires
-// as well. A file that is not TOML of that shape is an error, never a registry read as empty.
+// as well, and an origin, release or upstream it names must be a string; either error names the
+// row, the entry (knivesEntryName) and the field. A file that is not TOML of that shape is an
+// error, never a registry read as empty.
 //
 // The files are read at once, one gh each, and merged in row order after the last read ends: a
 // read takes about as long as a push's other passes together (measured 2026-11-17 in an issue
@@ -441,9 +446,21 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 			}
 			for _, name := range slices.Sorted(maps.Keys(registry.Repos)) {
 				read := registry.Repos[name]
-				entry := &knivesEntry{name: name, origin: read.Origin, release: read.Release, upstream: read.Upstream, forbidden: read.Forbidden}
+				entry := &knivesEntry{name: name, forbidden: read.Forbidden}
+				named := knivesEntryName(name, knivesTerms(entry.forbidden))
+				for _, remote := range []struct {
+					field string
+					read  any
+					into  *string
+				}{{"origin", read.Origin, &entry.origin}, {"release", read.Release, &entry.release}, {"upstream", read.Upstream, &entry.upstream}} {
+					value, ok := remote.read.(string)
+					if !ok && remote.read != nil {
+						return nil, fmt.Errorf("%s: %s %s is not a string", knivesRowName(i), named, remote.field)
+					}
+					*remote.into = value
+				}
 				if entry.origin == "" {
-					return nil, fmt.Errorf("%s: %s names no origin", knivesRowName(i), knivesEntryName(name, knivesTerms(entry.forbidden)))
+					return nil, fmt.Errorf("%s: %s names no origin", knivesRowName(i), named)
 				}
 				if err := knivesChecked(i, entry); err != nil {
 					return nil, err

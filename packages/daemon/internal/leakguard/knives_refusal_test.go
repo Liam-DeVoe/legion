@@ -26,8 +26,9 @@ const knivesTerm = "Quillwort"
 // pre-push hook for a remote that pushes to it.
 const knivesOrigin = "https://github.com/invented-org/invented-repo.git"
 
-// theKnivesRegistry is a registry file in the shape knives writes one, with a field this pass
-// does not read (upstream): one entry, for the fork at knivesOrigin, listing two terms.
+// theKnivesRegistry is a registry file in the shape knives writes one: one entry, for the fork at
+// knivesOrigin, listing two terms and naming its upstream, which the pass reads to tell the
+// upstream's remote, whose remote-tracking refs hold commits the pass does not read (Guard.knives).
 const theKnivesRegistry = `[repos.invented-repo]
 upstream = "https://github.com/upstream-org/invented-repo"
 origin = "https://github.com/invented-org/invented-repo"
