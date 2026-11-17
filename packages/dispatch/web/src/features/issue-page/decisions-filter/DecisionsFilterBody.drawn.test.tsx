@@ -218,8 +218,8 @@ function decisionsText(made: readonly Decision[]): string {
 }
 
 /** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
- *  decisions read of `made` as the cache holds them. `comments` or `made` null leaves that read
- *  out of the cache, as before it answers. */
+ *  decisions read of `made` as the cache holds them. `made` null leaves the decisions read out
+ *  of the cache, as before it answers. */
 function renderBody(
   {
     asks = [],
@@ -229,7 +229,7 @@ function renderBody(
   }: {
     asks?: DecisionsAsk[];
     children: TreeNode[];
-    comments?: Comment[] | null;
+    comments?: Comment[];
     made?: Decision[] | null;
   },
   props: BodyProps = {},
@@ -247,7 +247,7 @@ function renderBody(
   // The reads the page's tree is built from, under the keys it reads them by.
   if (made !== null) client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY], asks);
-  if (comments !== null) client.setQueryData(["comments", KEY], comments);
+  client.setQueryData(["comments", KEY], comments);
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
   client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
@@ -468,15 +468,6 @@ test("the four parts are drawn under their headings, in order, and no sentence e
   expect(tree.hasAttribute("aria-owns")).toBe(false);
   await user.click(foot);
   expect(rowsOfPart(view, "agents")).toEqual([D("minor"), D("replaced")]);
-  // The state's colour follows the list, not the tree: a decision of the review list says it
-  // waits in the decisions' violet, and one of the foot, which no one is asked to review, in
-  // grey. The colour is on the box that holds the state's word and its shape.
-  const stateBox = (id: string) =>
-    rowOf(view, id).querySelector("[data-node-margin] [data-node-state]")?.parentElement;
-  expect({
-    foot: stateBox(D("minor"))?.classList.contains(pageStateText.quiet),
-    review: stateBox(D("second"))?.classList.contains(pageStateText.decision),
-  }).toEqual({ foot: true, review: true });
   expect(foot.getAttribute("aria-expanded")).toBe("true");
   expect(words(foot)).toBe(`▾ 2 ${DECISIONS_WORDS.agents_many}`);
   const footRows = view.container.querySelector('[data-decisions-part="agents"] [role="group"]');
@@ -554,19 +545,26 @@ test("a decision reads how it stands in the three states the page names", async 
   const state = (id: string) => {
     const row = rowOf(view, id);
     const word = row.querySelector("[data-node-margin] [data-node-state]");
+    const box = word?.parentElement;
     return {
-      shape: word?.parentElement?.querySelector("svg")?.getAttribute("aria-label") ?? null,
+      // The box that holds the state's word and its shape carries its colour: a review row's
+      // state is violet, and a foot row's grey.
+      colour: (["decision", "quiet"] as const).find((tone) =>
+        box?.classList.contains(pageStateText[tone])
+      ),
+      shape: box?.querySelector("svg")?.getAttribute("aria-label") ?? null,
       token: row.getAttribute("data-node-state"),
       word: words(word),
     };
   };
   expect(state(D("second"))).toEqual({
+    colour: "decision",
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.waiting_review],
     token: "waiting_review",
     word: NODE_STATE_WORDS.decision.waiting_review,
   });
   // The name is the person's own, drawn as an author's text and never as an id of the page's.
-  expect(state(D("kept"))).toEqual({
+  expect(state(D("kept"))).toMatchObject({
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.kept],
     token: "kept",
     word: `${NODE_STATE_WORDS.decision.kept} alice`,
@@ -574,14 +572,17 @@ test("a decision reads how it stands in the three states the page names", async 
   expect(
     rowOf(view, D("kept")).querySelector("[data-kept-by][data-author-text]")?.textContent
   ).toBe("alice");
-  expect(state(D("replaced"))).toEqual({
+  expect(state(D("replaced"))).toMatchObject({
     shape: GLYPH_NAMES[GLYPH_TOKENS.states.decision.replaced],
     token: "replaced",
     word: NODE_STATE_WORDS.decision.replaced,
   });
   // A decision that waits and is tied to nothing reads the model's own state where it stands
   // (R35: "a second rule decides the mark on a row").
-  expect(state(D("minor")).word).toBe(NODE_STATE_WORDS.decision.waiting_review);
+  expect(state(D("minor"))).toMatchObject({
+    colour: "quiet",
+    word: NODE_STATE_WORDS.decision.waiting_review,
+  });
   // The one word the model holds for an agent's doubt, on the decision it marks.
   expect(words(rowOf(view, D("second")).querySelector("[data-node-unsure]"))).toBe(
     CONTROL_LABELS.unsure
@@ -1443,23 +1444,24 @@ test("another person's answer stands under Your decisions with their name", () =
 // script moves it, takes the report away at once. A press on another control of the page keeps
 // it drawn while the press is held, so nothing moves under the pointer, and takes it away once
 // the press has ended and its click has landed. Pressed on no row, on the foot's control say,
-// it says so at the list's tab stop, as the outline's keys do. Until every read behind the list
-// holds its answer, there being nowhere to go may be false, so the key says nothing.
+// it says so at the list's tab stop, as the outline's keys do. Until the reads that say which
+// questions and decisions there are hold their answers, there being nowhere to go may be false,
+// so the key says nothing.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
-  // The comments read the mount starts never answers.
-  const listComments = spyOn(api, "listComments").mockReturnValue(
+  // The decisions read the mount starts never answers.
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockReturnValue(
     Promise.withResolvers<never>().promise
   );
   try {
-    const cold = renderBody({ ...wholeIssue(), comments: null });
+    const cold = renderBody({ ...wholeIssue(), made: null });
     await act(async () => rowOf(cold, "q-open").focus());
     await user.keyboard("w");
     expect(focusedRow(cold)).toBe("q-open");
     expect(cold.container.querySelector("[data-row-report]")).toBeNull();
     cold.unmount();
   } finally {
-    listComments.mockRestore();
+    getIssueDecisions.mockRestore();
   }
 
   // Every read holds its answer from here on.

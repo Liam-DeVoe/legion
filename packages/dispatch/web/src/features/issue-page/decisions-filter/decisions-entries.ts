@@ -33,17 +33,24 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
  * put in `yours`, newest first, and `others` is left empty.
  *
- * The seam says too whether those reads hold their answers (`readsHeld`), which the outline's
- * keys (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with no
- * question or no decision to go to may be one whose questions and decisions have not arrived,
- * so `q` and `w` with nowhere to go say nothing rather than that there is none, and the body
- * draws no line that the issue holds nothing, as the outline does (`slots/body.tsx`).
+ * The seam says too whether the reads that say which questions and decisions there are, the
+ * decisions read and the asks, hold their answers (`readsHeld`), which the outline's keys
+ * (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with no question
+ * or no decision to go to may be one whose questions and decisions have not arrived, so `q` and
+ * `w` with nowhere to go say nothing rather than that there is none, and the body draws no line
+ * that the issue holds nothing, as the outline does (`slots/body.tsx`). The comments and the
+ * blocks are not waited for: they say of no entry whether it is there, only whether a decision
+ * stands in the review list or in the reader's own, so a failed read of either still lets an
+ * issue that holds nothing say so.
  */
 
-/** The Decisions view's parts, and whether the reads they come from hold their answers. */
+/** The Decisions view's parts, and whether the reads that say which entries there are hold
+ *  their answers. */
 interface DecisionsEntries extends DecisionsParts {
-  /** Whether the decisions read, the asks, the comments and, where the issue has a decisions
-   *  document, that document's blocks each hold an answer. A read that failed holds none. */
+  /** Whether the decisions read and the asks each hold an answer: the reads that say which
+   *  questions and decisions there are. The comments and the decisions document's blocks only
+   *  move a decision between the review list and the reader's own, so they are not waited for.
+   *  A read that failed holds none. */
   readonly readsHeld: boolean;
 }
 
@@ -82,12 +89,8 @@ export function useDecisionsEntries({
     ...artifactBlocksQuery(documentId ?? ""),
     enabled: documentId !== undefined,
   }).data;
-  // An issue with no decisions document has no blocks to wait for.
-  const readsHeld =
-    decisions !== undefined &&
-    asks !== undefined &&
-    comments !== undefined &&
-    (documentId === undefined || blocks !== undefined);
+  // The comments and the blocks only move a decision between parts, so they are not waited for.
+  const readsHeld = decisions !== undefined && asks !== undefined;
   const documents = useMemo<readonly DocumentBlocks[] | undefined>(
     () =>
       documentId === undefined || blocks === undefined

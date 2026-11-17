@@ -244,7 +244,9 @@ test("the seam gives four parts from today's reads and makes no request", async 
 // decision and no error, and the view draws the questions alone. The tree is the one the page
 // builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
 // Such a read holds its answer all the same (`readsHeld`). While any one of the four reads has
-// not answered, the questions are drawn all the same, and the reads hold only once it answers.
+// not answered, the questions are drawn all the same. The reads hold once the decisions read and
+// the asks have answered, which say which questions and decisions there are; the comments and
+// the blocks only move a decision between parts, so the reads hold while those are out.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   // A read with no `decisions` member, which its type does not allow and an answer can still be.
@@ -274,34 +276,39 @@ test("an empty decisions member gives the questions alone and no error", async (
 
   // Each read in turn is left out of the cache, and the fetch the mount starts for it never
   // settles; its answer comes into the cache later, as a read that answers puts it there.
+  // `heldWhileOut` is whether the reads hold while that read is out.
   const noDecision = decisionsRead([]);
   const cold = [
     {
       answer: noDecision,
+      heldWhileOut: false,
       key: ["decisions", KEY],
       mount: () => mountEntries(children, null),
       read: "getIssueDecisions",
     },
     {
       answer: [],
+      heldWhileOut: false,
       key: ["asks", KEY],
       mount: () => mountEntries(children, noDecision, null),
       read: "listIssueAsks",
     },
     {
       answer: [],
+      heldWhileOut: true,
       key: ["comments", KEY],
       mount: () => mountEntries(children, noDecision, [], null),
       read: "listComments",
     },
     {
       answer: [],
+      heldWhileOut: true,
       key: ["artifact", DECISIONS_DOCUMENT.id, "blocks"],
       mount: () => mountEntries(children, noDecision, [], [], null),
       read: "getArtifactBlocks",
     },
   ] as const;
-  for (const { answer, key, mount, read } of cold) {
+  for (const { answer, heldWhileOut, key, mount, read } of cold) {
     const started = spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise);
     try {
       const { client, hook } = await mount();
@@ -310,7 +317,7 @@ test("an empty decisions member gives the questions alone and no error", async (
         read,
         readsHeld: hook.result.current.readsHeld,
       });
-      expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: false });
+      expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: heldWhileOut });
       expect(started).toHaveBeenCalledTimes(1);
       await act(async () => client.setQueryData(key, answer));
       expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: true });

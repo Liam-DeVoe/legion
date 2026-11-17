@@ -50,9 +50,9 @@ import { expect, test } from "./test";
  * the Decisions view - the open questions, the decisions that wait for the reader's review with
  * Keep and Change, the reader's own decisions, and the agents' other decisions folded at the
  * foot - read on the real stack. Each row turns the new page on for its reader through D's
- * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or this part's
- * `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
- * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and this part's `e2e/issue-page-q.ts`.
+ * `phase`, seeds what it reads with the seeds of `e2e/issue-layout-seed.ts` or the Decisions
+ * view's own `e2e/issue-page-q.ts`, and reads the page through D's `e2e/issue-page.ts`, G's
+ * `e2e/issue-page-g.ts`, I's `e2e/issue-page-i.ts` and the view's own `e2e/issue-page-q.ts`.
  *
  * Six rows, each under the title of the check it answers:
  *

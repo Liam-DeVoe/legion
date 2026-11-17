@@ -84,8 +84,9 @@ const NOTHING = (): void => {};
  * draws nothing for, with no row and no foot, there is nowhere to pass it, and the tree keeps
  * it. A key with nowhere to go says so at the row it was pressed on, or at the list's tab stop
  * where it was pressed on no row, as the outline's keys do (the tester's F16). Until the reads
- * behind the list hold their answers, `q` and `w` with nowhere to go say nothing: no question or
- * decision to go to may mean only that they have not arrived (`decisions-entries.ts`).
+ * that say which questions and decisions there are hold their answers, `q` and `w` with nowhere
+ * to go say nothing: no question or decision to go to may mean only that they have not arrived
+ * (`decisions-entries.ts`).
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -107,7 +108,7 @@ export function DecisionsFilterBody({
    *  is written against (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
   /** What the page says where the issue holds no ask and no decision the filter draws, once
-   *  the reads behind the list hold their answers. */
+   *  the reads that say which asks and decisions there are hold their answers. */
   emptyLine: string;
   /** Whether the page takes Escape from a row before the list is left: a filter by words to
    *  clear or a view to turn off comes first in the key table's order
@@ -644,9 +645,10 @@ export function DecisionsFilterBody({
       )}
       {/* The issue holds no question and no decision the view draws. The node an address
           names is no entry of the list, so its row and this line are drawn together. Until the
-          reads behind the list hold their answers, a list with nothing in it may be one whose
-          entries have not arrived, so no line says the issue holds nothing, as the outline
-          draws none then (`slots/body.tsx`). */}
+          reads that say which questions and decisions there are hold their answers
+          (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
+          arrived, so no line says the issue holds nothing, as the outline draws none then
+          (`slots/body.tsx`). */}
       {parts.readsHeld &&
       parts.open_questions.length === 0 &&
       parts.review.length === 0 &&

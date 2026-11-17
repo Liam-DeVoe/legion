@@ -9,8 +9,8 @@ import { longWords, READER } from "./issue-page-g";
 /**
  * How the Decisions view's browser rows read it on the new issue page (the rows are in
  * `e2e/issue-page-q.e2e.ts`): the readers that D's `e2e/issue-page.ts`, G's `e2e/issue-page-g.ts`
- * and I's `e2e/issue-page-i.ts` do not hold (decision 2 of the parts). No later part changes this
- * file; a later part's rows import from it.
+ * and I's `e2e/issue-page-i.ts` do not hold (decision 2 of the parts). A later file's rows
+ * import from this file and change nothing in it.
  *
  * What the view draws (`decisions-filter/DecisionsFilterBody.tsx`):
  *
