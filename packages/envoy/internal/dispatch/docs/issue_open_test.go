@@ -694,6 +694,10 @@ func TestAnIssueClosedWhileTheListenerWasDownClosesItsRoomsOnTheReconnect(t *tes
 	writeIssueClosed(t, database, "DOC-1", true)
 	close(up)
 	requireEnds(t, alice, "the issue closed while the listener was down, and the reconnect left alice's browser connected")
+	// alice's socket ends as the room closes for its issue, which can be before ygo has taken that
+	// room out of its map: a browser that connects meanwhile joins the closing room and is closed
+	// with it. So the reconnect waits for the room to have gone, and loads a room of its own.
+	waitForNoLiveDocument(t, service, artifactID)
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
 }
 

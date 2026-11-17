@@ -6100,6 +6100,68 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 // eviction moved the room's generation its retry arms nothing: the next write to the room settles
 // on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
+	service, artifactID := evictMidSettle(t)
+	// The next write settles on its own. The eviction left the document owing the settlement it
+	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
+	// a settlement that reads the room before the write lands versions "after" first: the version
+	// that carries the write is the latest to come, whatever its number
+	// (TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit holds that order).
+	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
+	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
+		markdown := latestVersionMarkdown(t, service, artifactID)
+		return markdown, markdown == "later\n"
+	})
+}
+
+// The settlement an eviction cut short is owed, and the next write's load of the room arms it
+// (onLoadDocument), the settle delay out: it can run before that write commits, which load made
+// happen at random (INFRA-3149). Here the write's commit is held until the owed settlement has
+// versioned the document. No edit is lost, and the versions come in that order: the owed
+// settlement's version holds the evicted room's edit, "after", and the next version, the write's
+// own settlement's, holds the write, "later".
+func TestAnEvictionsOwedSettlementBeforeTheNextWritesCommitLosesNoEdit(t *testing.T) {
+	service, artifactID := evictMidSettle(t)
+	var owed int
+	err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
+		// This Apply loaded the room, and the load armed the owed settlement: the write commits
+		// once that settlement has versioned what the store holds.
+		testwait.Until(t, `the owed settlement's version to read "after\n"`, func() (string, bool) {
+			markdown := latestVersionMarkdown(t, service, artifactID)
+			return markdown, markdown == "after\n"
+		})
+		owed = latestVersionNumber(t, service, artifactID)
+		fragment := doc.GetXmlFragment(fragmentName)
+		tree, err := pmdoc.Read(fragment)
+		if err != nil {
+			t.Fatalf("read live tree: %v", err)
+		}
+		want := replaceRun("after", "later")(tree)
+		transact(func(txn *crdt.Transaction) {
+			if err := pmdoc.Update(txn, fragment, want); err != nil {
+				t.Errorf("update live tree: %v", err)
+			}
+		})
+	})
+	if err != nil {
+		t.Fatalf("apply the write after the owed settlement: %v", err)
+	}
+	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
+		markdown := latestVersionMarkdown(t, service, artifactID)
+		return markdown, markdown == "later\n"
+	})
+	if latest := latestVersionNumber(t, service, artifactID); latest != owed+1 {
+		t.Errorf("the write's version is version %d, want %d, the one after the owed settlement's version %d", latest, owed+1, owed)
+	}
+	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "later\n" {
+		t.Errorf("the document reads %q (%v), want the write, %q", text, err, "later\n")
+	}
+}
+
+// evictMidSettle is a service whose document's room was evicted after its settlement's warm-up
+// and before that settlement read the room, so the settlement stopped short and the document owes
+// it: the document reads "after", the evicted room's edit, and no room holds it.
+func evictMidSettle(t *testing.T) (*Service, string) {
+	t.Helper()
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
@@ -6126,15 +6188,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	if got, err := service.Text(ctx, artifactID); err != nil || got != "after\n" {
 		t.Fatalf("text after mid-settle eviction = %q (%v), want the persisted live text", got, err)
 	}
-	// The next write settles on its own. The eviction left the document owing the settlement it
-	// cut short, and this write's reload of the room arms that owed settlement (onLoadDocument), so
-	// a settlement that reads the room before the write lands versions "after" first: the version
-	// that carries the write is the latest to come, whatever its number.
-	editLiveTree(t, service, artifactID, replaceRun("after", "later"))
-	testwait.Until(t, `the document's latest version to read "later\n"`, func() (string, bool) {
-		markdown := latestVersionMarkdown(t, service, artifactID)
-		return markdown, markdown == "later\n"
-	})
+	return service, artifactID
 }
 
 // A settlement whose room a close retires between its warm-up and its read of the room, a close
