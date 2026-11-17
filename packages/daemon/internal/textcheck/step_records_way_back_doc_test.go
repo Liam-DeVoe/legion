@@ -63,7 +63,7 @@ func TestTheStepRecordsMigrationsEntriesLinkTheirWayBack(t *testing.T) {
 		t.Errorf("%s's section %v: the entries of the release's migrations link it by its anchor, #%s, "+
 			"so the heading and those links change together", wayBackGuide, err, sectionAnchor(stepRecordsWayBackSection))
 	}
-	for _, migration := range stepRecordsMigrationNames(t) {
+	for _, migration := range migrationNames(t, stepRecordsMigrations...) {
 		if err := entryLinkIn(guide, migration, stepRecordsWayBackSection); err != nil {
 			t.Errorf("%s's list of the migrations recorded above %s: %v: give the entry the link [%s](#%s), since "+
 				"a rollback to a release before %s takes that section's steps with the phase entry's block",
@@ -73,10 +73,10 @@ func TestTheStepRecordsMigrationsEntriesLinkTheirWayBack(t *testing.T) {
 	}
 }
 
-// stepRecordsMigrationNames is the name the guide writes of each of the release's migrations, read
-// from the embedded migrations by version. A set without one of them stops the test, since the
-// entry it would hold is the one that names it.
-func stepRecordsMigrationNames(t *testing.T) []string {
+// migrationNames is the name the guide writes of each version given, read from the embedded
+// migrations: the migration's file name without its `.up.sql`. A version the set does not hold
+// stops the test by name, since the entry that names it is what the caller holds the guide to.
+func migrationNames(t *testing.T, versions ...int) []string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -84,13 +84,12 @@ func stepRecordsMigrationNames(t *testing.T) []string {
 	}
 	var names []string
 	for _, migration := range all {
-		if slices.Contains(stepRecordsMigrations, migration.Version) {
+		if slices.Contains(versions, migration.Version) {
 			names = append(names, strings.TrimSuffix(migration.Name, ".up.sql"))
 		}
 	}
-	if len(names) != len(stepRecordsMigrations) {
-		t.Fatalf("the daemon embeds %v of the release that records each step's migrations %v", names,
-			stepRecordsMigrations)
+	if len(names) != len(versions) {
+		t.Fatalf("the daemon embeds %v of the migrations %v", names, versions)
 	}
 	return names
 }

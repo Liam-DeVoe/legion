@@ -1,7 +1,6 @@
 package textcheck
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -21,9 +20,9 @@ import (
 // the guide's block is the one under that heading that holds the one line only that rollback's
 // block holds (wayBackBlockOfTheGuide).
 const (
-	// planRatingsMigration is the migration whose header carries the block, as the guide names it.
-	planRatingsMigration = "20261117023932_outbox_kinds_with_the_plan_record.up.sql"
-	// planRatingsVersion is planRatingsMigration's version, which migrations.WayBack reads it by.
+	// planRatingsVersion is the version of the migration whose header carries the block, which
+	// migrations.WayBack reads it by and whose name the embedded set gives (migrationNames), so
+	// the header this test reads and the entry it holds the guide to are one migration.
 	planRatingsVersion = 20261117023932
 	// planRatingsWayBackSection is the heading of the guide's section that gives the way back.
 	planRatingsWayBackSection = "Rolling back the release that rates each plan"
@@ -36,25 +35,26 @@ const (
 // carries, line for line. An edit to either side alone fails here: a line changed in the guide
 // and not in the header would otherwise never reach the test that runs the header's block.
 func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	migration := migrationNames(t, planRatingsVersion)[0]
 	header := planRatingsWayBackOfTheHeader(t)
 	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackSection, planRatingsWayBackMark,
-		"the header of "+planRatingsMigration)
+		"the header of "+migration)
 	if header == guide {
 		return
 	}
 	t.Errorf("the header of %s and %s's way back disagree:\n%s"+
 		"internal/store's test runs the header's block and an operator the guide's; change them in one commit",
-		planRatingsMigration, wayBackGuide, wayBackBlockDifference("the header", header, guide))
+		migration, wayBackGuide, wayBackBlockDifference("the header", header, guide))
 }
 
-// planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsMigration
-// carries, read by the one reader of it (migrations.WayBack) that internal/store's test runs. A
-// migration that is not embedded, and a header with no way back, stop the test by name.
+// planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsVersion carries,
+// read by the one reader of it (migrations.WayBack) that internal/store's test runs. A migration
+// that is not embedded, and a header with no way back, stop the test by name.
 func planRatingsWayBackOfTheHeader(t *testing.T) string {
 	t.Helper()
 	block, err := migrations.WayBack(planRatingsVersion)
 	if err != nil {
-		t.Fatalf("read the way back %s gives from the header of %s: %v", wayBackGuide, planRatingsMigration, err)
+		t.Fatalf("read the way back %s gives from the header of migration %d: %v", wayBackGuide, planRatingsVersion, err)
 	}
 	return block
 }
@@ -67,7 +67,7 @@ func planRatingsWayBackOfTheHeader(t *testing.T) string {
 // this release with the phase entry's block alone. The entry is held where a reader follows it,
 // by the check the step records' entries take (entryLinkIn).
 func TestThePlanRecordMigrationsEntryLinksItsWayBack(t *testing.T) {
-	migration := strings.TrimSuffix(planRatingsMigration, ".up.sql")
+	migration := migrationNames(t, planRatingsVersion)[0]
 	if err := entryLinkIn(shippedText(t, wayBackGuide), migration, planRatingsWayBackSection); err != nil {
 		t.Errorf("%s's list of the migrations recorded above %s: %v: give the entry the link [%s](#%s), since "+
 			"a rollback to a release before %s takes that section's steps with the phase entry's block",
