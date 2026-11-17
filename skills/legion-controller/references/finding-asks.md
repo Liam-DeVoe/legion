@@ -119,7 +119,10 @@ A member under an issue that holds only a design never runs, for the reason abov
 class root with `--label legion`, and write in its spec that it has no code of its own. Do this
 also when a request or a proposal asks for an issue that holds only a design, and say why in its
 spec and in your reply. A request for a class root whose members Legion runs asks Legion to run
-that root.
+that root. Where the request also asks that nothing start yet, file the root with the label all
+the same and park it in `backlog` at once: the label starts nothing there, since a parked root
+keeps its `legion` label and a person's decision starts it
+(`skill://legion-controller/references/parked-decisions.md`).
 
 An issue already filed that belongs to an approved root, with no `child_of` link to it, goes where
 a new issue goes, by the list above. Where it runs as a root of its own (`issues.<KEY>.tree` is
