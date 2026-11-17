@@ -389,7 +389,7 @@ Each item below names a script, then what it proves.
 - `plan-ratings-read.sh`
 
   the read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to done: `dispatch plans --project <PROJECT>` run once in the operator's own shell with the operator's own credential, and the line of `<ISSUE>` judged.
-  It passes only when the issue is listed with a plan, at least one rating, each with a reason, and a time;
+  It passes only when the issue is listed with a plan and at least one rating, each with a reason, and prints the issue's time as `unknown` where Dispatch knows none;
   a read that lists no finished issue, or that fails, is `UNKNOWN` and never a pass.
   A deployed Dispatch and the operator's credential; it starts nothing
 
