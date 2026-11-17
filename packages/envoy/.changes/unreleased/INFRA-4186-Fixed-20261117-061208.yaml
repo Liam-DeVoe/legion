@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    One session can no longer acknowledge another session's relay frame. A frame's reply subject was the listener's reply inbox and a counter every session behind that listener shared, so a session that answered `done` on the next number acknowledged another session's message, which was then never delivered. The reply subject is now `<inbox>.<session id>.<token>`, the token 128 random bits, and the relay moves a frame only on a reply that names the session the frame was sent to; a reply naming another session is logged at WARN and changes nothing.
+    The listener's connection probe and Dispatch's agent stream replay also ask on a reply subject that names the session, so a session whose grant admits only its own replies (`_INBOX.*.<session id>.>`, `bus.SessionReplies`) answers all three. Deploy listeners and Dispatch with this change before any session holds such a grant: a session on that grant cannot answer a frame, a probe or a replay request from a release before it.
+time: 2026-11-17T06:12:08.917890849Z
+custom:
+    Issue: INFRA-4186
