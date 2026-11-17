@@ -202,7 +202,8 @@ export interface TreeNode {
   /** What the model holds about the node that a row has no line for, drawn in its body. */
   readonly facts: readonly NodeFact[];
   readonly gaps: readonly GapKind[];
-  /** How many nodes this one holds, at any depth: what a folded row says it holds. */
+  /** How many rows this one holds, at any depth, its overtaken children as the one line they
+   *  fold to and nothing under them: what a folded row says it holds. */
   readonly held: number;
   /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
    *  the model gives it. */
@@ -588,7 +589,7 @@ export function ambiguousTargets(reads: IssueTreeReads): ReadonlySet<string> {
   return ambiguous;
 }
 
-/** How many nodes a branch holds below `children`, at any depth. */
+/** How many rows a branch holds below `children`, at any depth, as `TreeNode.held` counts them. */
 export function heldBy(children: readonly TreeNode[]): number {
   // A parent's overtaken children fold to one line under it, so they count as that one row and
   // nothing under them.

@@ -108,9 +108,11 @@ export type VerificationReads =
  * own, which holds the summary and the chips, so the page's `t k`, which focuses the tree's tab
  * stop, leaves the view's top on screen and the next Tab on the chip All; a focused tree element
  * would leave the top of a view taller than the screen above it. Then come each statement, with
- * its checks in one group under it, each check that serves no statement, and each other row.
- * One row holds the tree's tab stop (WAI-ARIA's roving tabindex): the issue's, until the stop
- * moves, and again when the row that held it is no longer drawn. The tree answers the outline's
+ * its checks in one group under it and a line of its overtaken checks after them, each check that
+ * serves no statement, each other row, and last the issue's line of overtaken nodes, holding the
+ * statements and those checks at or under one. One row holds the tree's tab stop (WAI-ARIA's roving
+ * tabindex), as a line may: the issue's, until the stop moves, and again when the row that held it
+ * is no longer drawn, unless a line closed over it, which takes it. The tree answers the outline's
  * keys (`j`, `k`, the arrows, Home, End, Enter, `o`) by a handler of its own, and the page's `?`
  * lists none of them: a binding of the page's keymap is a row of that list (part V's departure
  * 3).
@@ -652,7 +654,8 @@ function keptChecks(
 }
 
 /** The ids of the rows the tree draws, in the order they stand on the page: the issue's row,
- *  each statement followed by its checks, each check that serves no statement, and each other
+ *  each statement followed by its checks, each check that serves no statement, each other row,
+ *  then those the issue's line of overtaken nodes holds; the body adds after them each line's own
  *  row. The tree's tab stop is one of them (part V's R8), and each row's element carries its
  *  id as `data-verification-row`. */
 function treeRows(

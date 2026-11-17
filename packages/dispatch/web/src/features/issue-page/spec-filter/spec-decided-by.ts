@@ -73,7 +73,8 @@ import { statementStandings } from "../verification-filter/statement-state";
 export type SpecSaid = "agent" | "person" | "you";
 
 /** The mark at the right of a statement's row: how it stands at the commit the page names, in
- *  the Verification filter's own reading, or that no check serves it (R10, R17). */
+ *  the Verification filter's own reading, or that no check a count reads serves it, as for any
+ *  statement no count reads, checks or none (`carriesCheck`, R10, R17). */
 export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
@@ -152,7 +153,8 @@ export interface SpecParent {
   readonly type: NodeType;
 }
 
-/** The statements under one parent, in the order the filter draws them. */
+/** The statements under one parent, in the order the filter draws them, but for those at or
+ *  under an overtaken node, which the body folds to a line after the others (`foldedLines`). */
 export interface SpecGroup {
   /** The node they hang under; absent for the statements that hang under the issue itself. */
   readonly parent?: SpecParent;
@@ -172,7 +174,8 @@ export interface SpecReading {
  * The Spec filter's body, read from the tree, the decisions and the results.
  *
  * `view` is the Spec filter's own view of the tree (`presetView`), whose rows are the
- * statements in the order the page draws them; `root` is the whole tree, which holds the asks,
+ * statements in the order the page draws them, but for those it folds to a line after the
+ * others (`SpecGroup`); `root` is the whole tree, which holds the asks,
  * the decisions and each statement's checks, none of which the Spec filter draws as rows (R2).
  * `decisions` are the decisions of the Spec view read (`?view=spec`) as every reader of a
  * decision reads them (`decisionNodes`), in that answer's order. `nodeIdOf` is how this issue
@@ -210,7 +213,8 @@ export function specDecidedBy({
     parent?: SpecParent;
     runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
   }[] = [];
-  // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
+  // Every row the Spec filter kept, in the order it draws them but for the statements it folds
+  // to a line: the view's nodes but its root.
   const rows = nodesInOrder(view).slice(1);
   for (const node of rows.filter((row) => row.type === "requirement")) {
     const parent = parentOf(node, nodes, nameOf);

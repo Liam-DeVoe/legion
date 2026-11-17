@@ -10,10 +10,10 @@ import { isOvertaken } from "../tree-fold";
 /**
  * The plan's tasks as ordered steps (dispatch://INFRA-1196 R26).
  *
- * A step stands after every task in its `needs`. The order is stable: where the `needs` leave
- * two tasks free to stand in either order, the plan's own order decides, so a plan already
- * written in an order its `needs` allow is drawn in that order and a reader who knows the plan
- * document recognises it.
+ * A step stands after every task in its `needs` but an overtaken one, which the page draws after
+ * every step. The order is stable: where the `needs` leave two tasks free to stand in either
+ * order, the plan's own order decides, so a plan already written in an order its `needs` allow is
+ * drawn in that order and a reader who knows the plan document recognises it.
  *
  * Tasks that need each other, directly or through the rest, are one cycle: no order can put any
  * of them after every task it needs, so they are one group, which the page draws as one line
@@ -33,7 +33,8 @@ import { isOvertaken } from "../tree-fold";
  * its own and makes no request.
  */
 
-/** One step of the plan: a task the order puts after every task in its `needs`. */
+/** One step of the plan: a task the order puts after every task in its `needs` but an overtaken
+ *  one, which is no step. */
 export interface PlanStep {
   readonly kind: "step";
   readonly task: TreeNode;
@@ -182,8 +183,8 @@ export function planOrder(drawn: readonly TreeNode[]): readonly PlanEntry[] {
     return true;
   });
   const at = new Map(nodes.map((node, index) => [node.id, index]));
-  // What each node needs, by index. A need naming a task this plan does not hold is no edge,
-  // and puts the task under no order.
+  // What each node needs, by index. A need naming a task this plan does not hold, or an
+  // overtaken one, which has no place, is no edge, and puts the task under no order.
   const needs = nodes.map((node) =>
     neededIds(node).flatMap((needed) => {
       const index = at.get(needed);
@@ -268,7 +269,7 @@ export interface PlanBar {
   readonly kind: "bar";
   /** The tasks drawn above it that it needs, steps and tasks of a cycle alike. */
   readonly needs: readonly TreeNode[];
-  /** Where it starts: after every task it needs has ended (R26). */
+  /** Where it starts: after every task it needs but an overtaken one has ended (R26). */
   readonly start: number;
   readonly task: TreeNode;
 }
@@ -285,12 +286,12 @@ export interface PlanChart {
 
 /**
  * The chart of time over the plan's order (R26): one bar per step, starting after every task it
- * needs has ended, and one line per cycle at its place in the order.
+ * needs but an overtaken one has ended, and one line per cycle at its place in the order.
  *
  * Where a bar starts is worked out here from the `needs` the plan holds, since today's reads
  * give no position (dispatch://INFRA-1253 R8 and R11), and every bar is one unit long, since
- * they give no size. A cycle takes one unit after whatever its tasks need from outside it,
- * since the order cannot say more of tasks that need each other.
+ * they give no size. A cycle takes one unit after whatever its tasks need from outside it, an
+ * overtaken task aside, since the order cannot say more of tasks that need each other.
  */
 export function planChart(entries: readonly PlanEntry[]): PlanChart {
   const ends = new Map<string, number>();

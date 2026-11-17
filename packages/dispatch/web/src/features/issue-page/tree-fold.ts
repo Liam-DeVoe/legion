@@ -6,7 +6,7 @@ import type { TreeNode } from "./issue-tree";
  *
  * The first drawing is the frontier's own: the path to what is open and unanswered is
  * unfolded whatever its depth, and every other branch arrives folded to one row saying how
- * many nodes it holds. Nothing is counted against anything - there is no budget and no fixed
+ * many rows it holds. Nothing is counted against anything - there is no budget and no fixed
  * depth - because a branch is folded unless the frontier or the reader opened it, so what is
  * open costs no other branch a row.
  *
@@ -26,7 +26,7 @@ import type { TreeNode } from "./issue-tree";
  * The depth no longer decides what is drawn: it decides how far one opening reaches (R16). The
  * outline draws `DRAWN_LEVELS` levels below the node it is rooted at from 1024 px up and
  * `NARROW_LEVELS` below that; a branch the reader opens deeper than that draws one row saying
- * how many nodes it holds rather than the nodes themselves, which they open in place
+ * how many rows it holds rather than the nodes themselves, which they open in place
  * (`DeeperRow`, `OpenedBranches`'s `deeper`), so one gesture deep in the tree cannot flood the
  * page. The frontier outranks it: a path to something open is drawn to its end whatever the
  * depth (R1, R16).
@@ -48,11 +48,13 @@ export const DRAWN_LEVELS = 3;
 export const NARROW_LEVELS = 1;
 
 /** What the reader has done to the fold by hand: the branches they unfolded, the branches they
- *  folded shut, and the deeper branches they opened in place. */
+ *  folded shut, the deeper branches they opened in place, and the lines of overtaken nodes they
+ *  opened. */
 export interface OpenedBranches {
   /** The nodes whose children the reader unfolded. */
   readonly branches: ReadonlySet<string>;
-  /** The nodes whose children the reader folded shut. A branch the frontier draws of its own
+  /** The nodes whose children the reader folded shut, and each line of overtaken nodes they
+   *  closed under the words filter, as `overtaken:<id>`. A branch the frontier draws of its own
    *  accord - the path to what is open and unanswered - is drawn until the reader closes it,
    *  and this is what says they did: without it a reader could open a branch and never close
    *  it again, and the Fold control on it would do nothing. */
@@ -71,9 +73,9 @@ export interface TreeRow {
   /** `true` when its children are drawn, `false` when it holds children and they are not, and
    *  undefined for a node that holds none. */
   readonly expanded?: boolean;
-  /** How many nodes the row holds that are drawn as no row of their own: the branch it folds
-   *  shut, and the branch below the drawn levels that folds to one line under it. Undefined
-   *  for a row whose children are all drawn. */
+  /** How many rows the row's branch holds, a line of overtaken nodes as one, where they are not
+   *  drawn: the branch it folds shut, and the branch below the drawn levels that folds to one
+   *  line under it. Undefined for a row whose children are drawn, overtaken ones as their line. */
   readonly folded?: number;
   readonly level: number;
   readonly node: TreeNode;
@@ -85,7 +87,7 @@ export interface TreeRow {
 
 /** One row standing for a branch below the drawn levels, which opens it in place. */
 export interface DeeperRow {
-  /** How many nodes the branch holds. */
+  /** How many rows the branch holds, a line of overtaken nodes as one. */
   readonly held: number;
   readonly level: number;
   /** The node whose branch it stands for. */
@@ -114,8 +116,8 @@ export interface OvertakenRow {
   readonly trail: readonly string[];
 }
 
-/** Every row the tree draws, in reading order: a node's own row, or the one row a branch below
- *  the drawn levels folds to. */
+/** Every row the tree draws, in reading order: a node's own row, the one line a node's overtaken
+ *  children fold to, or the one row a branch below the drawn levels folds to. */
 export type DrawnRow =
   | ({ readonly kind: "node" } & TreeRow)
   // The one line a node's overtaken children fold to.

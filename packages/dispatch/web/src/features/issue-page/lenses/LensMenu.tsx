@@ -91,8 +91,8 @@ export function lensActFor(node: TreeNode, act: LensAct): boolean {
  *
  * The act is one of `RowActs`' controls, drawn the way they are and out of the tab order unless
  * `tabStops` holds, so `f` reaches it as a control no key presses (`useTreeKeymap.ts`'s
- * `rowStops`). It carries `data-row-lens` and not `data-row-act`, which names the writer's acts
- * alone. A press opens the menu, titled `LENS_WORDS.menu_title`, which reads the lens catalogue
+ * `rowStops`). It carries `data-row-lens`, not `data-row-act`, which names Settle and the writer's
+ * acts. A press opens the menu, titled `LENS_WORDS.menu_title`, which reads the lens catalogue
  * as it opens - once in a load, and again after a read that failed - and lists each kind in the
  * catalogue's order by its words and, under them, its first source's standard. While the
  * catalogue is read, once its read failed, and while a pick is out, the menu says so on one line

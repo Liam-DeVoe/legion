@@ -61,11 +61,12 @@ import {
  * The Plan filter's body (dispatch://INFRA-1196 R26, ruling 5 of build-rulings-md, the picture
  * `page-v3-plan-1440.png` and the prototype's `.plan`).
  *
- * It opens on the chart of time: one bar for each step, starting after every task it needs has
- * ended, with the lines between a step and the steps it needs, the step's words beside its bar
- * and the statements it serves at the end of its row. One control switches to the ordered
- * steps, which are the outline's own rows in the same order (`IssueTree`): each task after every
- * task in its `needs`, each row drawing the task's words, the chips naming what it needs by the
+ * It opens on the chart of time: one bar for each step, starting after every task it needs but an
+ * overtaken one has ended, with the lines between a step and the steps it needs, the step's words
+ * beside its bar and the statements it serves at the end of its row, then a line of the overtaken
+ * tasks. One control switches to the ordered steps, which are the outline's own rows in the same
+ * order (`IssueTree`): each task after every task in its `needs` but an overtaken one, which is in
+ * a line after the steps, each row drawing the task's words, the chips naming what it needs by the
  * names part F's view gives them, and the line naming the statement it serves, which is the
  * parent the filter draws as no row (R2).
  *
@@ -397,7 +398,8 @@ interface DrawnPlace {
  * label but `tree-link` and `tree-edit`, whose labels say what they do here ("Move to the next
  * link on the focused row", "Go to the focused step in the conversation"). Tab from the page
  * itself enters the chart at its one tab stop, the arrows and `j`/`k` reach the bars in order
- * and pass over a cycle's row, Home and End the first and the last bar, `f` steps through the
+ * and pass over a cycle's row, then the line of overtaken tasks and each row it holds open, Home
+ * and End the first and the last row they reach, `f` steps through the
  * focused row's links, Escape gives a row back from its link and leaves the chart from the row,
  * and Enter goes to the row's task in the conversation, where it is edited
  * (dispatch://INFRA-3938 R7). The focus on a row puts its task in Details. A focus anywhere
@@ -417,10 +419,11 @@ interface DrawnPlace {
  * task of a cycle would focus nothing and a plan whose every task is in a cycle would have no
  * Tab stop.
  *
- * The one Tab stop is the row the reader last stood on, else the first bar's, else the first
- * cycle's. Each row places itself on screen by the outline's one hook (`useRowOnScreen`), so the
- * keys move the focus without the browser's own scroll, which knows nothing of the band that
- * stays at the top of the page (R7).
+ * The one Tab stop is the row the reader last stood on, the line of overtaken tasks and each row
+ * it holds open among them, else the first bar's, else the first cycle's, else the line's. Each
+ * row places itself on screen by the outline's one hook (`useRowOnScreen`), so the keys move the
+ * focus without the browser's own scroll, which knows nothing of the band that stays at the top
+ * of the page (R7).
  */
 function PlanChart({
   entries,

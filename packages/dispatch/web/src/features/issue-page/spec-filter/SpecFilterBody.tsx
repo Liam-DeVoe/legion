@@ -129,8 +129,9 @@ const NOTHING = (): void => {};
  * statements' column, as the prototype's `renderSpec` puts them.
  *
  * It is the outline under the Spec filter, so it is one `role="tree"` named as the outline is,
- * with the outline's keys (`useTreeKeymap.ts`): the statements are its rows, the focused one is
- * its one tab stop, the arrows and `j`/`k` move between them, `w` moves to the decision beside
+ * with the outline's keys (`useTreeKeymap.ts`): the statements, and each group's
+ * line of overtaken statements, are its rows, the focused one is its one tab stop,
+ * the arrows and `j`/`k` move between them, `w` moves to the decision beside
  * a statement, the arrows and `j`/`k` move on from that decision to the statement after or
  * before its run, and Enter goes to a statement in the conversation, where it is edited. `r`
  * replies to a statement once part L makes a statement a target of the outline's writer, which
@@ -290,8 +291,8 @@ export function SpecFilterBody({
     const row = document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
     setReport(line === "" || row === undefined ? undefined : { line, row });
   }, []);
-  // The statements in the order they are drawn, which is the order the keys move through them,
-  // and after them every other row the filter kept.
+  // The statements in the order their groups' runs hold them, and after them every other row the
+  // filter kept: the order they are drawn and the keys move in, unless one folds (`folds.rows`).
   const statements = useMemo(
     () => [
       ...groups.flatMap((group) =>

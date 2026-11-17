@@ -156,7 +156,7 @@ export function IssueTree({
   const branchAtMount = useRef(focusBranch ? request?.id : undefined);
   const [zoom, setZoom] = useState<string | undefined>(branchAtMount.current);
   // How much of the whole tree the cycle key draws: its first lines, their bodies down to the
-  // second level, then everything.
+  // second level, then every branch and body, with each line of overtaken nodes left as it was.
   const [cycle, setCycle] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);

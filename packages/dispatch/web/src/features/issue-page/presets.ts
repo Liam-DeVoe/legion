@@ -101,13 +101,14 @@ export interface PresetView {
   /** Whether this view is filtered at all: false for the page with no filter on and no words
    *  typed, whose fold is the frontier's alone (R1). While one is, every branch the view kept
    *  is drawn open (`IssueTree.tsx`): a filter exists to show what it matched, and the fold may
-   *  not hide it. */
+   *  not hide it. A line of overtaken nodes is no branch: under words it is open until the reader
+   *  closes it, and with none it is closed until the reader or an address opens it. */
   readonly filtering: boolean;
   /** The decisions and constraints of the view read each row carries as a line of its own, by
    *  the row's id: never rows (R4). Empty where the view is read off the tree. */
   readonly lines: ReadonlyMap<string, readonly PresetLine[]>;
-  /** How many distinct nodes of the view's main kind it draws: a check drawn under two
-   *  requirements is one node, so this is what the control's own count says. */
+  /** How many distinct nodes of the view's main kind it matched, closed ones too: a check drawn
+   *  under two requirements is one node, so this is what the control's own count says. */
   readonly matches: number;
   /** The tree as the view leaves it. Under a filter its children are the filter's top rows. */
   readonly root: TreeNode;
@@ -518,8 +519,8 @@ function parentLineOf(node: TreeNode): string {
 /** What one control of the filter row draws after its name (R2): its count, then, where the
  *  picture draws one, the noun the count is in or what of it waits on the reader. */
 export interface PresetSignal {
-  /** How many nodes of the view's main kind it draws (R2), or for Conversation how many entries
-   *  the Contents list holds, as the prototype's signal counts them. */
+  /** How many nodes of the view's main kind it matched (R2), closed ones too, or for Conversation
+   *  how many entries the Contents list holds, as the prototype's signal counts them. */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */

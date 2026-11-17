@@ -25,7 +25,7 @@ import { rowKeyOf } from "./tree-keys";
  *
  * It is the drawing alone: which rows there are is the fold's (`tree-fold.ts`), and what the
  * reader opened, pinned, focused and is editing in is `IssueTree.tsx`'s, which hands each row
- * what it is. A row below the levels the fold drew is one line saying how many nodes it holds
+ * what it is. A row below the levels the fold drew is one line saying how many rows it holds
  * and opening them in place.
  * A node's overtaken children fold to one line of their own after its other children, which
  * takes the focus and opens them in place (`OvertakenLine`).
@@ -187,8 +187,8 @@ export function TreeRows({
 /**
  * How much of the whole tree the cycle key draws, in the three states it steps through: its
  * rows as the fold left them, those rows with every body down to the second level open, and
- * everything - every branch unfolded and every body open (R9). The reader's own folds and pins
- * are untouched by it, so the cycle comes back to the tree they had.
+ * every branch unfolded with every body open, each line of overtaken nodes left as it was (R9).
+ * The reader's own folds and pins are untouched by it, so the cycle comes back to their tree.
  */
 export const CYCLE_STATES = 3;
 

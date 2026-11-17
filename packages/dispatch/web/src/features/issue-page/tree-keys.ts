@@ -21,8 +21,9 @@ export function rowKeyOf(row: DrawnRow): string {
   return row.kind === "deeper" ? `deeper:${path}` : path;
 }
 
-/** Every node of `root` in reading order, the root first: the order the rows are drawn in, and
- *  the order a key looking for the next node of a kind walks, whatever is folded. */
+/** Every node of `root` in reading order, the root first: the order the rows are drawn in, save
+ *  that a node's overtaken children are drawn after its others, and the order a key looking for
+ *  the next node of a kind walks, whatever is folded. */
 export function nodesInOrder(root: TreeNode): TreeNode[] {
   const found: TreeNode[] = [];
   const walk = (node: TreeNode): void => {
@@ -91,10 +92,10 @@ export function decisionBehind(root: TreeNode, id: string): TreeNode | undefined
   return undefined;
 }
 
-/** Every branch of `root` opened, which is the whole tree drawn: the last state of the key that
- *  cycles how much of it is on screen. Nothing is folded shut in it, since this state is the
- *  whole tree; the reader's own folds are held apart from it and come back when the cycle
- *  does. */
+/** Every branch of `root` opened, which is the whole tree drawn but what the lines of overtaken
+ *  nodes hold, since it opens no line: the last state of the key that cycles how much of it is
+ *  on screen, which leaves each line as it was. Nothing is folded shut in it; the reader's own
+ *  folds are held apart from it and come back when the cycle does. */
 export function everythingOpened(root: TreeNode): OpenedBranches {
   const ids = nodesInOrder(root).map((node) => node.id);
   return { branches: new Set(ids), closed: new Set(), deeper: new Set(ids) };

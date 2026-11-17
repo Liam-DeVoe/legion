@@ -7,9 +7,10 @@ import type { NodeType } from "./page-words";
 /**
  * What the reader's focus is on, which the panel draws the facts of (dispatch://INFRA-1196 R12).
  *
- * The tree moves the focus: `IssueTree` calls `useSetFocusedNode` on every move, and hands back
- * `undefined` when the focus leaves the tree for anywhere but Details, which leaves the issue
- * itself focused, so the panel draws the facts of something rather than an empty box.
+ * The tree moves the focus: `IssueTree` calls `useSetFocusedNode` on every move to a row, and
+ * hands back `undefined` when the focus leaves the tree for anywhere but Details, which leaves
+ * the issue itself focused, so the panel draws the facts of something rather than an empty box.
+ * A line of overtaken nodes taking the focus sets none: the panel goes on drawing what it drew.
  */
 export interface FocusedNode {
   /** Who made it, where the model holds an author: the panel names them by the page's one rule
