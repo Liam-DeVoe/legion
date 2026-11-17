@@ -237,9 +237,13 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 		t.Fatalf("at the rollback the outbox holds %d step records and %d other rows and step_starts holds %q; want both kinds of row unsent and implementing's second start open, or the way back runs over nothing it could lose",
 			stepRows, otherRows, starts)
 	}
-	rollBackFrom := r.databaseNow()
 	r.rollBackStepRecords()
-	rollBackTo := r.databaseNow()
+	// The way back keeps the moment of the rollback beside the issue's witness, and the roll forward
+	// writes it as the end of a run the earlier release ended (step_starts_rollback.taken_at).
+	var rolledBackAt time.Time
+	if err := r.st.Pool().QueryRow(context.Background(), `select taken_at from step_starts_rollback where issue = $1`, r.key).Scan(&rolledBackAt); err != nil {
+		t.Fatalf("read the moment the way back kept for %s: %v", r.key, err)
+	}
 	if after := r.storeRows(stepRecordsOutboxRows); !slices.Equal(after, outbox) {
 		t.Fatalf("the way back changed the outbox:\nbefore %q\nafter  %q", outbox, after)
 	}
@@ -306,9 +310,9 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 		return workflow.StepID(r.key, 1, record.StepPlace{Task: "default", Kind: "step", Place: step}, count)
 	}
 	if ended := read.find("step", 2, 2); ended.ID != id(2, 2) || ended.Agent != string(r.token(claim.RoleImplementer)) ||
-		ended.EndedAt.Before(rollBackFrom.Truncate(time.Second)) || ended.EndedAt.After(rollBackTo) {
-		t.Fatalf("the implementer's run open at the rollback reads %+v (ended %v), want the record %s its start wrote, the implementer's, stopped at the rollback, between %s and %s",
-			ended, ended.EndedAt, id(2, 2), rollBackFrom, rollBackTo)
+		ended.EndedAt == nil || !ended.EndedAt.Equal(rolledBackAt) {
+		t.Fatalf("the implementer's run open at the rollback reads %+v (ended %v), want the record %s its start wrote, the implementer's, stopped at the moment the way back kept, %s",
+			ended, ended.EndedAt, id(2, 2), rolledBackAt)
 	}
 	if counted := read.find("step", 3, 1); counted.ID != id(3, 1) {
 		t.Fatalf("the tester's run this release counted reads %+v, want its own record %s", counted, id(3, 1))
@@ -371,16 +375,6 @@ func (r *stepRecordsRig) phaseOf(role claim.Role) record.PhaseRow {
 	}
 	r.t.Fatalf("%s has no phases row of %s", r.key, role)
 	return record.PhaseRow{}
-}
-
-// databaseNow is the store's clock, which the way back stamps the rollback's moment with.
-func (r *stepRecordsRig) databaseNow() time.Time {
-	r.t.Helper()
-	var now time.Time
-	if err := r.st.Pool().QueryRow(context.Background(), `select clock_timestamp()`).Scan(&now); err != nil {
-		r.t.Fatalf("read the store's clock: %v", err)
-	}
-	return now
 }
 
 // rollBackStepRecords runs the way back the roll forward's migration carries in its header
