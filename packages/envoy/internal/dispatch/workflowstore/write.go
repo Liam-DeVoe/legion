@@ -34,7 +34,10 @@ var (
 // stands after the write. It sets each field the write states that the node does not hold yet,
 // appending one value tuple for each, and leaves each field the node holds as it is, appending
 // nothing for it. So a start and an end merge in either order, a write that runs again changes
-// nothing, and a later end never replaces an earlier one.
+// nothing, and a later end never replaces an earlier one. The one field taken otherwise is
+// returned_to: the result of a run and the step it returned to are one fact, the outcome one end
+// reported, so only the write that sets the result sets it, and a node that holds a result keeps
+// the destination its own end named, none included.
 //
 // The write that finds no node makes it, whichever of the two it is, and states the `part_of`
 // relation to the issue; it must name the step's whole identity (task, kind, step, role and
@@ -79,6 +82,15 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 			}
 			return nil
 		},
+		// The result of a run and the step it returned to are one fact, so only the write that
+		// sets the result sets returned_to.
+		sets: func(held map[string]json.RawMessage, name string) bool {
+			if name != AttributeReturnedTo {
+				return true
+			}
+			_, ended := held[AttributeResult]
+			return !ended && write.Result != nil && *write.Result != ""
+		},
 		relations: func(setting map[string]string) []tuple {
 			if report, sets := setting[AttributeReport]; sets {
 				return []tuple{{fromID: id, kind: RelationReports, toKind: KindHandoff, toID: report}}
@@ -112,6 +124,9 @@ type nodeWrite struct {
 	// check judges the write against the attributes the node holds before it ({} for the node
 	// this write makes); a refusal is answered as it is. Nil takes every write.
 	check func(held map[string]json.RawMessage) error
+	// sets says whether the write sets the attribute called name, which the node does not hold
+	// yet, given the attributes the node holds before it. Nil sets each.
+	sets func(held map[string]json.RawMessage, name string) bool
 	// relations are the relation tuples the write states beside its attributes and its
 	// `part_of`, from the attributes it sets: each one's text, as its value tuple holds it, by its
 	// name. Nil states none.
@@ -130,10 +145,10 @@ func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " 
 
 // putNode is the one write of a node, a run's or a plan's, inside the caller's transaction, and
 // answers the node's attributes as they stand after it. It sets each attribute the write states
-// that the node does not hold yet, appending one value tuple for each, and leaves each the node
-// holds, appending nothing for it; the write that makes the node states its `part_of` relation to
-// the issue. A refusal comes before anything is moved, but the node a refused write made is the
-// caller's to roll back with its transaction.
+// that the node does not hold yet and the write sets (sets), appending one value tuple for each,
+// and leaves each the node holds, appending nothing for it; the write that makes the node states
+// its `part_of` relation to the issue. A refusal comes before anything is moved, but the node a
+// refused write made is the caller's to roll back with its transaction.
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
@@ -192,6 +207,9 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 	var tuples []tuple
 	for _, attribute := range write.stated {
 		if _, holds := held[attribute.name]; holds {
+			continue
+		}
+		if write.sets != nil && !write.sets(held, attribute.name) {
 			continue
 		}
 		setting[attribute.name] = attribute.value

@@ -2,10 +2,11 @@ import type { IssueSteps, StepRecord } from "../../api/types";
 
 /** Where a run stands, with only what that can hold: running until the daemon writes its end,
  *  then the result it ended with. Only a failed or a stopped run sent its task back, so only it
- *  carries `returnedTo` (Dispatch refuses `returned_to` with any other result): where it sent it,
- *  as its Result cell names it - `step <n>`, or `the retro` for place 0 (`returnPlace`) - or null
- *  when it sent it nowhere. `other` is a result this build has no word for, which only a newer
- *  Dispatch can send, kept in `result` in the server's own word. */
+ *  carries `returnedTo` (Dispatch takes `returned_to` only from the write that sets a failed or
+ *  stopped result, so a record never pairs one end's result with another end's destination):
+ *  where it sent it, as its Result cell names it - `step <n>`, or `the retro` for place 0
+ *  (`returnPlace`) - or null when it sent it nowhere. `other` is a result this build has no word
+ *  for, which only a newer Dispatch can send, kept in `result` in the server's own word. */
 export type StepEnd =
   | { state: "running" | "passed" }
   | { state: "failed" | "stopped"; returnedTo: string | null }
@@ -60,7 +61,9 @@ function stepEnd(record: StepRecord): StepEnd {
     case "stopped":
       return { returnedTo: returnPlace(record.returned_to), state: record.result };
     default:
-      return { result: record.result, state: "other" };
+      // A result only a newer Dispatch sends, which this build's contract does not name, keeps its
+      // own word; a result the contract names fails to compile here until it has a case.
+      return { result: record.result satisfies never, state: "other" };
   }
 }
 

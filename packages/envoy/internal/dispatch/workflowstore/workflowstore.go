@@ -9,10 +9,11 @@
 // The Legion daemon writes a run twice, at its start and at its end, under one id, and the two
 // writes can arrive in either order, or more than once; the rating of a retro is a third write of
 // the retro's run, in any order with the other two. So a write never refuses for its order: it
-// sets each field the node does not hold yet, leaves each field it holds, and makes the node when
-// none exists (PutStep, PutPlan). The read of an issue (IssueSteps) answers each run with its
-// attempt, which no write stores, and the read of a project (ProjectPlans) answers each of its
-// finished issues with its plan, its ratings, its time and its count of failed steps.
+// sets each field the node does not hold yet, leaves each field it holds, but returned_to, which
+// only the write that sets the result sets, and makes the node when none exists (PutStep,
+// PutPlan). The read of an issue (IssueSteps) answers each run with its attempt, which no write
+// stores, and the read of a project (ProjectPlans) answers each of its finished issues with its
+// plan, its ratings, its time and its count of failed steps.
 //
 // The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
 // does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's

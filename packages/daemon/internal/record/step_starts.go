@@ -66,11 +66,11 @@ const (
 // RaiseStepStarts counts one more start of place on issue, marks its run open whatever the run
 // before it stood at, and answers that start's write: run, given the count with that start in it,
 // is the write of the start's record (workflow's startStep). The row keeps the agent and the
-// moment that write names, which the run's end writes again, and the identity it carries — the
-// fields each write of the record carries, its id among them — which the roll forward of a
-// rollback ends the record under where an earlier release ended the run (store migration
-// 20261117064152_step_starts_roll_forward). It is called in the transaction that writes the
-// start's record.
+// moment that write names, which the run's end writes again, and the write itself — the identity
+// of the record, its id among them, and the moment; a start writes nothing else (workflow's
+// startStep) — which the roll forward of a rollback ends the record under where an earlier
+// release ended the run (store migration 20261117064152_step_starts_roll_forward). It is called
+// in the transaction that writes the start's record.
 func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error) {
 	var starts int64
 	if err := tx.QueryRow(ctx, `insert into step_starts (issue, task, kind, place, starts, agent, run) values ($1, $2, $3, $4, 1, '', 'open')
@@ -79,8 +79,7 @@ func (s *Postgres) RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string,
 		return StepRecord{}, fmt.Errorf("count a start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}
 	write := run(starts)
-	identity, err := json.Marshal(StepRecord{ID: write.ID, Task: write.Task, Step: write.Step, Kind: write.Kind, Role: write.Role,
-		Type: write.Type, Agent: write.Agent, Generation: write.Generation, StartedAt: write.StartedAt})
+	identity, err := json.Marshal(write)
 	if err != nil {
 		return StepRecord{}, fmt.Errorf("keep the start of %s %s/%s/%d: %w", issue, place.Task, place.Kind, place.Place, err)
 	}

@@ -55,7 +55,9 @@ awk -v issue="$issue" '
     runs++
     place = ($3 == "step") ? "step " $2 : "the " $3
     seen[place] = 1
-    if ($11 == "running" || $11 == "-" || $12 == "running") faults[++count] = "the record never ended: " $0
+    # A run that has ended prints its end, a moment, in column 11; steps.ts prints `running` there
+    # (and in column 12) for one that has not, and any other text there is no end either.
+    if ($11 !~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]/) faults[++count] = "the record never ended: " $0
     if ($8 == "-" && $3 != "merge") faults[++count] = "the record names no agent: " $0
     if ($8 == "-" && $3 == "merge") notes[++noted] = "the merge has no agent: no merger ran it: " $0
     if ($3 == "step" && $9 == "-") faults[++count] = "the step names no model: " $0

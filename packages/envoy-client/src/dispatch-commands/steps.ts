@@ -20,8 +20,9 @@ function stepLine(record: StepRecord): string {
     orDash(record.agent),
     orDash(record.model),
     orDash(record.started_at),
-    record.ended_at ?? "running",
-    record.ended_at === null ? "running" : orDash(record.result),
+    ...(record.ended_at === null
+      ? ["running", "running"]
+      : [record.ended_at, orDash(record.result)]),
   ].join(" ");
 }
 

@@ -15,8 +15,8 @@ import (
 func TestStepOfIsTodaysSequence(t *testing.T) {
 	type step struct {
 		place record.StepPlace
-		role  string
-		typ   string
+		role  stepRole
+		typ   stepType
 	}
 	want := map[phase.Phase]step{
 		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, "planner", "planning"},
@@ -75,21 +75,17 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 	}
 }
 
-// The end of a move is the end of the step the issue stands in, read as endStep reads it
-// (record.StandsAt): a held issue's is the step of the phase its hold is from, so a review sent
-// back from a hold of reviewing ends that review failed, returns the work to implementing's place
-// and names the reviewer's report, as it does for the issue standing in reviewing itself.
+// The end of a move is the end of the step the issue stands in: a review a request for changes
+// sends back from reviewing ends failed, returns the work to implementing's place and names the
+// reviewer's report. No held issue is a case here, since none reaches a move's end: no row of the
+// table leaves held, so transition returns before it ends a step, and the moves out of a hold
+// clear it first (retryPhase, closeMerged).
 func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
 	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
-	for name, before := range map[string]record.Issue{
-		"standing in reviewing": {Key: "LEGION-1", Phase: phase.Reviewing},
-		"held from reviewing":   {Key: "LEGION-1", Phase: phase.Held, Hold: &record.Hold{From: phase.Reviewing}},
-	} {
-		end := endOfTransition(TriggerReviewRejected, before, phase.Implementing, review)
-		if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
-			t.Errorf("%s: the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
-				name, end, end.ReturnedTo, review.HandoffRecord)
-		}
+	end := endOfTransition(TriggerReviewRejected, record.Issue{Key: "LEGION-1", Phase: phase.Reviewing}, phase.Implementing, review)
+	if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
+		t.Errorf("the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
+			end, end.ReturnedTo, review.HandoffRecord)
 	}
 }
 
@@ -108,6 +104,12 @@ func TestAStepIDIsStableAndDistinct(t *testing.T) {
 	namespace := uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-step-record"))
 	if want := uuid.NewSHA1(namespace, []byte("LEG-1/1/default/step/2/1")).String(); first != want {
 		t.Fatalf("StepID = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", first, want)
+	}
+	// The generation, the place and the count are three different numbers here, so no two of the
+	// name's numbers can trade places unseen.
+	if got, want := StepID("LEG-1", 7, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 4),
+		uuid.NewSHA1(namespace, []byte("LEG-1/7/default/step/3/4")).String(); got != want {
+		t.Fatalf("StepID of generation 7, place 3, count 4 = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", got, want)
 	}
 	seen := map[string]string{first: "the first"}
 	for name, id := range map[string]string{

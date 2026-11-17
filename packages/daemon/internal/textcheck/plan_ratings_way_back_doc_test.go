@@ -1,12 +1,9 @@
 package textcheck
 
 import (
-	"fmt"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
@@ -47,7 +44,7 @@ func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	}
 	t.Errorf("the header of %s and %s's way back disagree:\n%s"+
 		"internal/store's test runs the header's block and an operator the guide's; change them in one commit",
-		planRatingsMigration, wayBackGuide, wayBackBlockDifference(header, guide))
+		planRatingsMigration, wayBackGuide, wayBackBlockDifference("the header", header, guide))
 }
 
 // planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsMigration
@@ -84,89 +81,14 @@ func planRatingsWayBackOfTheHeader(t *testing.T) string {
 // entry links the section that gives the block. The list's own checks hold its names alone
 // (phase_entry_migrations_doc_test.go), so an entry that kept the name and lost the link, or
 // linked another rollback's section, would pass them and leave an operator who rolls back below
-// this release with the phase entry's block alone.
+// this release with the phase entry's block alone. The entry is held where a reader follows it,
+// by the check the step records' entries take (entryLinkIn).
 func TestThePlanRecordMigrationsEntryLinksItsWayBack(t *testing.T) {
 	migration := strings.TrimSuffix(planRatingsMigration, ".up.sql")
 	if err := entryLinkIn(shippedText(t, wayBackGuide), migration, planRatingsWayBackSection); err != nil {
-		t.Errorf("%s %v: give it the link [%s](#%s), since a rollback to a release before %s takes that "+
-			"section's steps with the phase entry's block", wayBackGuide, err, planRatingsWayBackSection,
+		t.Errorf("%s's list of the migrations recorded above %s: %v: give the entry the link [%s](#%s), since "+
+			"a rollback to a release before %s takes that section's steps with the phase entry's block",
+			wayBackGuide, phaseEntryMigration, err, planRatingsWayBackSection,
 			sectionAnchor(planRatingsWayBackSection), migration)
 	}
-}
-
-// The entry check takes the entry a reader sees and asks it for the link alone: an entry that
-// links its section passes, and one that lost the link, links another rollback's section, shows
-// its link only inside an HTML comment, stands inside one itself or is written twice is refused.
-// Each case is a list as the guide writes one, the entry among others.
-func TestTheEntryCheckReadsTheLinkOfTheEntryAReaderSees(t *testing.T) {
-	const (
-		migration = "20990101000001_rated"
-		other     = "20990101000002_other touches none of the six, so the block holds over it.\n"
-		entry     = migration + " touches none of the six, so the block holds over it, and a rollback to a " +
-			"release before it takes the steps of its own section, "
-		link   = "[Rolling back the release that rates each plan](#rolling-back-the-release-that-rates-each-plan).\n"
-		linked = entry + link
-		// redirected is the entry linking the step records' section, which another list entry links.
-		redirected = entry + "[Rolling back the release that records each step]" +
-			"(#rolling-back-the-release-that-records-each-step).\n"
-	)
-	for _, list := range []struct{ shape, text, refusal string }{
-		{"the entry linking its section", other + linked + other, ""},
-		{"the entry without its link", other + migration + " touches none of the six.\n", "links no section"},
-		{"the entry linking another rollback's section", other + redirected, "links no section"},
-		{"the link inside an HTML comment", other + entry + "<!-- " + strings.TrimSuffix(link, "\n") + " -->\n",
-			"links no section"},
-		{"the entry inside an HTML comment", other + "<!--\n" + linked + "-->\n", "no entry"},
-		{"the entry written twice", linked + other + linked, "2 entries"},
-	} {
-		err := entryLinkIn(list.text, migration, planRatingsWayBackSection)
-		switch {
-		case list.refusal == "" && err != nil:
-			t.Errorf("%s: the check refuses the entry: %v", list.shape, err)
-		case list.refusal != "" && (err == nil || !strings.Contains(err.Error(), list.refusal)):
-			t.Errorf("%s: the check answers %v, want a refusal saying %q: %q", list.shape, err, list.refusal,
-				list.text)
-		}
-	}
-}
-
-// entryLinkIn reads text where a reader sees it, every HTML comment taken out (htmlComment), and
-// answers nil when the one line opening on migration's name, its entry in the guide's list of
-// migrations, links the section heading opens by that heading's anchor (sectionAnchor). A text
-// with no such line or with two, and one whose line carries no such link, is refused with why.
-func entryLinkIn(text, migration, heading string) error {
-	opens := regexp.MustCompile(`^` + regexp.QuoteMeta(migration) + `\b`)
-	var entries []string
-	for _, line := range strings.Split(htmlComment.ReplaceAllString(text, ""), "\n") {
-		if opens.MatchString(line) {
-			entries = append(entries, line)
-		}
-	}
-	switch link := "](#" + sectionAnchor(heading) + ")"; {
-	case len(entries) == 0:
-		return fmt.Errorf("carries no entry a reader sees opening on %s", migration)
-	case len(entries) > 1:
-		return fmt.Errorf("carries %d entries opening on %s, where the list gives a migration one", len(entries),
-			migration)
-	case !strings.Contains(entries[0], link):
-		return fmt.Errorf("carries an entry of %s that links no section %q, whose anchor is #%s", migration,
-			heading, sectionAnchor(heading))
-	}
-	return nil
-}
-
-// sectionAnchor is the anchor a link of the guide names a section by: the heading in lower case,
-// each space a hyphen, and every character but a letter, a digit, a hyphen and an underscore
-// dropped.
-func sectionAnchor(heading string) string {
-	var anchor strings.Builder
-	for _, r := range strings.ToLower(heading) {
-		switch {
-		case r == ' ':
-			anchor.WriteByte('-')
-		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_':
-			anchor.WriteRune(r)
-		}
-	}
-	return anchor.String()
 }

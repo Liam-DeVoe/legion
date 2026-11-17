@@ -43,20 +43,26 @@ const whole = [
 // answer is whole with the lines that match drop taken out, the header's count following.
 function without(drop: RegExp): string {
   const lines = whole.slice(1).filter((line) => !drop.test(line));
-  return [`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n") + "\n";
+  return `${[`${key}: ${lines.length} steps in 1 tasks`, ...lines].join("\n")}\n`;
 }
 // changed is whole with the line that matches pick replaced by its edit.
 function changed(pick: RegExp, edit: (line: string) => string): string {
-  return whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n") + "\n";
+  return `${whole.map((line) => (pick.test(line) ? edit(line) : line)).join("\n")}\n`;
 }
 
+// bash is the shell the script runs under, found once where read's own PATH finds it, so a case
+// that gives the script a PATH with no bash on it still runs the same shell.
+const bash = Bun.which("bash", { PATH: "/usr/bin:/bin" });
+if (bash === null) throw new Error("no bash in /usr/bin or /bin");
 let runs = 0;
-function read(out: string, args: string[] = [key], exit = 0) {
+// read runs the script with args against the fake dispatch, which prints out and exits exit, on
+// path, which by default finds the fake first.
+function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr/bin:/bin`) {
   const log = join(dir, `calls-${++runs}`);
   writeFileSync(log, "");
-  const result = Bun.spawnSync(["bash", script, ...args], {
+  const result = Bun.spawnSync([bash, script, ...args], {
     env: {
-      PATH: `${dir}:/usr/bin:/bin`,
+      PATH: path,
       HOME: dir,
       FAKE_DISPATCH_LOG: log,
       FAKE_DISPATCH_OUT: out,
@@ -73,7 +79,7 @@ function read(out: string, args: string[] = [key], exit = 0) {
 
 describe("step-records-read.sh", () => {
   test("a whole answer passes, exit 0, read once with dispatch steps --issue", () => {
-    const { code, stdout, calls } = read(whole.join("\n") + "\n");
+    const { code, stdout, calls } = read(`${whole.join("\n")}\n`);
     expect(calls).toBe(`steps --issue ${key}\n`);
     expect(stdout).toContain(whole[0]);
     expect(stdout).toContain(
@@ -110,6 +116,23 @@ describe("step-records-read.sh", () => {
       "FAIL: the record never ended: default 5 step acceptance review attempt 1"
     );
     expect(code).toBe(1);
+  });
+
+  test("an end that is no moment, `-` or any word, fails, exit 1: only a moment ends a record", () => {
+    // steps.ts prints `running` there for a run that has not ended; a printer that wrote the end
+    // through orDash would print `-`, and another a word of its own: none of them is an end.
+    for (const end of ["-", "unknown"]) {
+      const { code, stdout } = read(
+        changed(/ 2 step implementer implementation attempt 2 /, (line) =>
+          line.replace(/ \S+ passed$/, ` ${end} passed`)
+        )
+      );
+      expect(stdout).toContain(
+        `FAIL: the record never ended: default 2 step implementer implementation attempt 2 legion-infra-infra-42-implementer anthropic/claude-opus-5 2026-11-20T09:00:00Z ${end} passed`
+      );
+      expect(stdout).not.toContain("PASS");
+      expect(code).toBe(1);
+    }
   });
 
   test("a retro with no agent fails, exit 1, naming it", () => {
@@ -209,7 +232,7 @@ describe("step-records-read.sh", () => {
       "UNKNOWN: the first line of the answer is no header of INFRA-42"
     );
     expect(header.code).toBe(2);
-    const short = read(`${key}: 11 steps in 1 tasks\n` + whole.slice(1).join("\n") + "\n");
+    const short = read(`${key}: 11 steps in 1 tasks\n${whole.slice(1).join("\n")}\n`);
     expect(short.stdout).toContain(
       "UNKNOWN: the header says 11 records and 10 lines of runs follow it"
     );
@@ -226,21 +249,15 @@ describe("step-records-read.sh", () => {
   });
 
   test("no dispatch command on PATH is UNKNOWN, exit 2, naming what is missing", () => {
-    // The PATH the script gets holds no directory, so bash is named by the path this one finds.
-    const bash = Bun.which("bash");
-    if (bash === null) throw new Error("no bash on this test's PATH");
-    const result = Bun.spawnSync([bash, script, key], {
-      env: { PATH: join(dir, "no-such-directory"), HOME: dir },
-    });
-    expect(result.stdout.toString()).toContain(
-      "UNKNOWN: no dispatch command is on PATH, so nothing was read"
-    );
-    expect(result.exitCode).toBe(2);
+    // The PATH the script gets holds no directory: bash is named by the path read found it at.
+    const { code, stdout } = read("", [key], 0, join(dir, "no-such-directory"));
+    expect(stdout).toContain("UNKNOWN: no dispatch command is on PATH, so nothing was read");
+    expect(code).toBe(2);
   });
 
   test("no issue, two issues or a malformed key is refused, exit 2, reading nothing", () => {
     for (const args of [[], [key, "INFRA-43"], ["infra-42"]]) {
-      const { code, stderr, calls } = read(whole.join("\n") + "\n", args);
+      const { code, stderr, calls } = read(`${whole.join("\n")}\n`, args);
       expect(stderr).toContain("usage: scripts/e2e/step-records-read.sh <ISSUE>");
       expect(calls).toBe("");
       expect(code).toBe(2);

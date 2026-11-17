@@ -19,8 +19,10 @@ import (
 // An agent's own request that ends its step waits for its claim's machine to handle what the
 // worker stream read before it (Options.AwaitStream), and only then applies its fact, so the record
 // of the step names the model whose answer came ahead of the request: the tester's completion, the
-// architect's sign-off and a phase worker's move back each wait for the grant's own claim, with no
-// fact of theirs applied yet. A request refused before it applies anything waits for nothing.
+// architect's sign-off, a phase worker's move back and the architect's move back out of accepting,
+// its own step, each wait for the grant's own claim, with no fact of theirs applied yet. A request
+// refused before it applies anything waits for nothing: the tester's completion with no verdict,
+// and the architect's move back of an issue of another tree.
 func TestAnAgentsRequestThatEndsItsStepWaitsForItsStreamFirst(t *testing.T) {
 	h := newHarness(t)
 	facts := &factRecorder{}
@@ -60,10 +62,20 @@ func TestAnAgentsRequestThatEndsItsStepWaitsForItsStreamFirst(t *testing.T) {
 	}, nil); backward.Code != http.StatusOK {
 		t.Fatalf("phase backward = %d: %s", backward.Code, backward.Body)
 	}
+	seedIssueAt(t, h, "LEGION-209", phase.Accepting)
+	assertFailure(t, h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+		"grantId": architect.grant(t), "issue": "LEGION-209", "to": "implementing", "reason": "not this architect's tree",
+	}, nil), http.StatusForbidden, "ISSUE_OUTSIDE_TREE")
+	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	if backward := h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
+		"grantId": architect.grant(t), "issue": "LEGION-208", "to": "implementing", "reason": "the acceptance found a gap",
+	}, nil); backward.Code != http.StatusOK {
+		t.Fatalf("the architect's phase backward = %d: %s", backward.Code, backward.Body)
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if want := []wait{{tester.token, 0}, {architect.token, 1}, {tester.token, 2}}; !slices.Equal(waits, want) {
-		t.Fatalf("the waits made = %+v, want the tester's before its completion applied, the architect's before its sign-off, the tester's before its move back", waits)
+	if want := []wait{{tester.token, 0}, {architect.token, 1}, {tester.token, 2}, {architect.token, 3}}; !slices.Equal(waits, want) {
+		t.Fatalf("the waits made = %+v, want the tester's before its completion applied, the architect's before its sign-off, the tester's before its move back, the architect's before its move back out of accepting", waits)
 	}
 }

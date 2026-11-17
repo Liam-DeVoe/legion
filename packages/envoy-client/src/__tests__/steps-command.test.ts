@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
+  type FakeDispatchFetch,
   type FakeDispatchOptions,
   type FakeDispatchServer,
   fakeDispatchFetch,
@@ -11,7 +12,7 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
 // `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
@@ -42,7 +43,8 @@ const implementer: StepRecord = {
   rating_reason: null,
 };
 
-/** The tester's run of step 3, still running: no end, no result, and no model answered yet. */
+/** The tester's run of step 3, still running: no end, no result, and no session or model, which
+ *  only the end writes, as one read of its agent. */
 const tester: StepRecord = {
   id: "5a1d9c3e-7b2f-5d8a-8e4c-6f0a2b4c6d81",
   issue: "LEG-1",
@@ -52,7 +54,7 @@ const tester: StepRecord = {
   role: "tester",
   type: "testing",
   agent: "legion-leg-leg-1-tester",
-  session: "ses-tester",
+  session: "",
   model: "",
   generation: 1,
   attempt: 1,
@@ -158,8 +160,8 @@ const ratedRetro: StepRecord = {
   rating_reason: "The plan fit the work; the review sent it back once.",
 };
 
-/** A merger's run that failed and sent its task back to place 0, the retro, with the report its
- *  completion named: a destination of 0 is a place, not the absence of one. */
+/** A merger's run that failed and sent its task back to place 0, the retro: a destination of 0
+ *  is a place, not the absence of one. Merging ends with no handoff record, so it names no report. */
 const mergeSentBack: StepRecord = {
   id: "9d4b2f6a-3c8e-5f1b-a7d9-2e4c6a8b0d47",
   issue: "LEG-1",
@@ -177,7 +179,7 @@ const mergeSentBack: StepRecord = {
   ended_at: "2026-11-16T12:10:00Z",
   result: "failed",
   returned_to: 0,
-  report: "2c4e6a8b-0d1f-4a3c-9e5b-7d9f1b3d5f79",
+  report: null,
   rating: null,
   rating_reason: null,
 };
@@ -192,11 +194,10 @@ const config = {
 /** The one route the command reads. */
 const STEPS_PATH = "/api/v1/issues/LEG-1/steps";
 
-/** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
- *  result, and each request the fake saw as `<method> <pathname>`. */
-async function readSteps(answer: unknown) {
-  const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
-  const result = await executeDispatchTool({
+/** `dispatch steps --issue LEG-1` over `dispatch`, a fake Dispatch as a fetch. The client waits
+ *  no time before it asks again a request Dispatch answered with no route. */
+function runSteps(dispatch: FakeDispatchFetch) {
+  return executeDispatchTool({
     tool: "dispatch_steps",
     args: { issue: "LEG-1" },
     cwd: "/workspace",
@@ -208,7 +209,15 @@ async function readSteps(answer: unknown) {
       throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
     },
     fetchImpl: dispatch.fetchImpl,
+    sleep: async () => {},
   });
+}
+
+/** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
+ *  result, and each request the fake saw as `<method> <pathname>`. */
+async function readSteps(answer: IssueSteps) {
+  const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
+  const result = await runSteps(dispatch);
   return {
     result,
     requests: dispatch.calls.map((call) => `${call.method} ${call.url.pathname}`),
@@ -267,6 +276,67 @@ describe("dispatch steps", () => {
     });
   });
 
+  // Dispatch stores passed, failed or stopped as the result of a run that ended, and "" as that of
+  // one still running (workflowstore's stepResults). The read's generated type admits those words
+  // and no other, so `bun run typecheck` fails at the directive below once model.StepRecord.Result
+  // loses its enum and the contract is generated again.
+  test("an ended run prints the result Dispatch stored, a word the read's type holds", async () => {
+    const stored: readonly StepRecord["result"][] = ["", "passed", "failed", "stopped"];
+    // @ts-expect-error - a word Dispatch never stores is no result.
+    const notStored: StepRecord["result"] = "skipped";
+    expect(stored).not.toContain(notStored);
+
+    // The implementer's run as each end leaves it: passed, naming its report; failed, sent back to
+    // step 1 by the architect's backward move, which names no report of the implementer's; and
+    // stopped, ended under it, which returns nowhere and names none.
+    const ended: readonly StepRecord[] = [
+      implementer,
+      { ...implementer, result: "failed", returned_to: 1, report: null },
+      { ...implementer, result: "stopped", report: null },
+    ];
+    for (const run of ended) {
+      const { result } = await readSteps({
+        issue: "LEG-1",
+        tasks: [{ task: "default", steps: [run] }],
+      });
+
+      expect(result.text.split("\n")[1], run.result).toEndWith(
+        ` 2026-11-16T09:40:00Z ${run.result}`
+      );
+    }
+    expect(ended.map((run) => run.result)).toEqual(stored.filter((word) => word !== ""));
+  });
+
+  // A run is of a step, a retro or a merge (model.StepRecord.Kind). The read's generated type
+  // admits those kinds and no other, so `bun run typecheck` fails at the directive below once the
+  // field loses its enum and the contract is generated again.
+  test("a retro's run prints its kind at place 0, a kind the read's type holds", async () => {
+    const kinds: readonly StepRecord["kind"][] = ["step", "retro", "merge"];
+    // @ts-expect-error - a kind Dispatch never stores is no kind.
+    const notStored: StepRecord["kind"] = "pause";
+    expect(kinds).not.toContain(notStored);
+    // The implementer runs the retro, at place 0 and of no type, and names no report.
+    const retro: StepRecord = {
+      ...implementer,
+      id: "6e8a0c2e-4b6d-5f8a-9c1e-3a5c7e9b1d47",
+      step: 0,
+      kind: "retro",
+      type: "",
+      started_at: "2026-11-16T11:30:00Z",
+      ended_at: "2026-11-16T11:45:00Z",
+      report: null,
+    };
+
+    const { result } = await readSteps({
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, retro] }],
+    });
+
+    expect(result.text.split("\n")[2]).toBe(
+      "default 0 retro implementer - attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T11:30:00Z 2026-11-16T11:45:00Z passed"
+    );
+  });
+
   // Dispatch lists the tasks in the order each first ran, which is neither the order of their
   // names nor the order of all runs' starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
@@ -297,7 +367,7 @@ describe("dispatch steps", () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "default", steps: [tester, mergeSentBack] },
+        { task: "default", steps: [implementer, tester, mergeSentBack] },
         { task: "docs", steps: [docsReview] },
       ],
     };
@@ -319,6 +389,28 @@ describe("dispatch steps", () => {
       expect(result.text, JSON.stringify(answer)).toBe("LEG-1: 0 steps in 0 tasks");
       expect(result.details, JSON.stringify(answer)).toEqual({ issue: "LEG-1", tasks: [] });
     }
+  });
+
+  // A Dispatch older than the steps route answers it with its router's no-route 404. The client
+  // asks again after each wait and then throws, so the read fails: it never reads as an issue
+  // with no step, which only that route's 200 says.
+  test("a Dispatch with no steps route fails the read, and answers no steps", async () => {
+    const dispatch = fakeDispatchFetch({
+      handler: (call) =>
+        Response.json(
+          {
+            code: "NOT_FOUND",
+            error: `no route for ${call.method} ${call.url.pathname}`,
+            hint: "GET /api/v1 lists every route",
+          },
+          { status: 404 }
+        ),
+    });
+
+    await expect(runSteps(dispatch)).rejects.toBeInstanceOf(DispatchNoRouteError);
+    expect(new Set(dispatch.calls.map((call) => `${call.method} ${call.url.pathname}`))).toEqual(
+      new Set([`GET ${STEPS_PATH}`])
+    );
   });
 
   // The generated type lets one task's own list be null too, which reads as a task with no run.
@@ -400,26 +492,26 @@ describe("dispatch steps on the command line", () => {
   }
 
   test("--issue and a bare key read the same steps and print them, exit 0", async () => {
-    const server = dispatchServing({
-      routes: {
-        [STEPS_PATH]: {
-          issue: "LEG-1",
-          tasks: [{ task: "default", steps: [implementer, tester] }],
-        },
-      },
-    });
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [{ task: "default", steps: [implementer, tester] }],
+    };
     for (const argv of [
       ["steps", "--issue", "LEG-1"],
       ["steps", "LEG-1"],
     ]) {
-      const before = server.reads.length;
+      const label = argv.join(" ");
+      const server = dispatchServing({ routes: { [STEPS_PATH]: answer } });
 
       const { code, stdout } = await run(server, argv);
 
-      expect(code, argv.join(" ")).toBe(0);
+      expect(code, label).toBe(0);
       // The run read the steps route once and asked Dispatch nothing else.
-      expect(server.reads.slice(before).map((url) => url.pathname)).toEqual([STEPS_PATH]);
-      expect(stdout).toContain(
+      expect(
+        server.reads.map((url) => url.pathname),
+        label
+      ).toEqual([STEPS_PATH]);
+      expect(stdout, label).toContain(
         [
           "LEG-1: 2 steps in 1 tasks",
           "default 2 step implementer implementation attempt 1 legion-leg-leg-1-implementer anthropic/claude-opus-5 2026-11-16T09:00:00Z 2026-11-16T09:40:00Z passed",
@@ -440,60 +532,75 @@ describe("dispatch steps on the command line", () => {
     expect(stdout).toContain("LEG-1: 0 steps in 0 tasks");
   });
 
+  // The answers the steps GET refuses with: a credential Dispatch does not take (401), a fault of
+  // its own (500), and a page something in its place answered (502). No GET is project-scoped, so
+  // it answers no project's 403; a key Dispatch does not hold is the issue read's 404, the next row.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
-    const refusals: readonly {
-      readonly status: string;
-      readonly answer: () => Response;
-      readonly printed: (url: string) => string;
-    }[] = [
-      {
-        status: "403",
-        answer: () =>
-          Response.json(
-            { code: "PROJECT_SCOPE", error: "project is outside this credential's scope" },
-            { status: 403 }
-          ),
-        printed: () => "PROJECT_SCOPE: project is outside this credential's scope",
-      },
-      {
-        status: "404",
-        answer: () =>
-          Response.json({ code: "ISSUE_NOT_FOUND", error: "no issue LEG-1" }, { status: 404 }),
-        printed: () => "ISSUE_NOT_FOUND: no issue LEG-1",
-      },
-      {
-        status: "500",
-        answer: () =>
-          Response.json({ code: "INTERNAL", error: "internal server error" }, { status: 500 }),
-        printed: () => "INTERNAL: internal server error",
-      },
-      {
-        status: "502 page",
-        answer: () =>
-          new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
-            status: 502,
-            statusText: "Bad Gateway",
-            headers: { "Content-Type": "text/html" },
-          }),
-        printed: (url) =>
-          `HTTP_502: GET ${url}${STEPS_PATH} answered 502 Bad Gateway with a body that is not ` +
-          `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
-          "rather than Dispatch's own answer, so a retry may succeed.",
-      },
-    ];
-    for (const { status, answer, printed } of refusals) {
-      const server = dispatchServing({ handler: answer });
-
+    /** The run against `server` exits 1, reads the steps route once, and prints `refusal` and no
+     *  steps; `label` names the case in each assertion's message. */
+    async function refused(server: FakeDispatchServer<unknown>, label: string, refusal: string) {
       const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);
 
-      expect(code, status).toBe(1);
+      expect(code, label).toBe(1);
       // The one request was the steps read, and the refusal is its answer.
       expect(
         server.reads.map((url) => url.pathname),
-        status
+        label
       ).toEqual([STEPS_PATH]);
-      expect(stdout, status).toContain(printed(server.url));
-      expect(stdout, status).not.toContain("steps in");
+      expect(stdout, label).toContain(refusal);
+      expect(stdout, label).not.toContain("steps in");
     }
+
+    // Dispatch's own refusals print as `messageFor` writes them: `<code>: <error>`.
+    for (const [status, code, error] of [
+      [401, "UNAUTHORIZED", "invalid bearer token"],
+      [500, "INTERNAL", "internal server error"],
+    ] as const) {
+      const server = dispatchServing({ handler: () => Response.json({ code, error }, { status }) });
+      await refused(server, String(status), `${code}: ${error}`);
+    }
+
+    // A page something in Dispatch's place answered, named as such with the URL it came from.
+    const page = dispatchServing({
+      handler: () =>
+        new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+          status: 502,
+          statusText: "Bad Gateway",
+          headers: { "Content-Type": "text/html" },
+        }),
+    });
+    await refused(
+      page,
+      "502 page",
+      `HTTP_502: GET ${page.url}${STEPS_PATH} answered 502 Bad Gateway with a body that is not ` +
+        `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
+        "rather than Dispatch's own answer, so a retry may succeed."
+    );
+  });
+
+  // A key Dispatch does not hold is the issue read's 404 NOT_FOUND on the steps route as on the
+  // issue's own, so `dispatch steps` fails for it as `dispatch read` does, and a mistyped key
+  // never reads as an issue Legion never ran.
+  test("a key Dispatch does not hold fails as dispatch read fails for it, and prints no steps", async () => {
+    /** What each command prints and exits with against a Dispatch answering every request as it
+     *  answers a read of an issue it does not hold, and the paths the command read. */
+    async function runUnknown(argv: readonly string[]) {
+      const server = dispatchServing({
+        handler: () => Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 }),
+      });
+      const { code, stdout } = await run(server, argv);
+      return { code, stdout, reads: server.reads.map((url) => url.pathname) };
+    }
+
+    const steps = await runUnknown(["steps", "--issue", "LEG-999"]);
+    const read = await runUnknown(["read", "--issue", "LEG-999"]);
+
+    expect(steps.reads).toEqual(["/api/v1/issues/LEG-999/steps"]);
+    expect(read.reads).toContain("/api/v1/issues/LEG-999");
+    expect(read.code).toBe(1);
+    expect(read.stdout).toContain("NOT_FOUND: not found");
+    expect(steps.code).toBe(1);
+    expect(steps.stdout).toBe(read.stdout);
+    expect(steps.stdout).not.toContain("steps in");
   });
 });

@@ -263,14 +263,14 @@ test("a live count widening an earlier tab keeps the selected tab clear of the f
     activity.getBoundingClientRect = () =>
       rect(activityLeft - tablist.scrollLeft, activityLeft + 88 - tablist.scrollLeft);
     sizes.resize();
-    expect(activity.getBoundingClientRect().right).toBe(268);
+    expect(activity.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
 
     activityLeft += 8;
     box.scroll += 8;
     view.rerender(renderTabs(10));
     // The list and Activity keep their dimensions; only the counted tab's width changed.
     sizes.resize(artifacts);
-    expect(activity.getBoundingClientRect().right).toBe(268);
+    expect(activity.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
     expect(tablist.scrollLeft).toBe(8);
   } finally {
     view.unmount();

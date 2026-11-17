@@ -2,14 +2,14 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -64,10 +64,10 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			// The run open at the rollback is the one the earlier release ended first: the
 			// implementer's, which the tester's fail had started, where the tester's run had
 			// ended, and the tester's own where it was still open. The roll forward ends it.
-			counted := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1)
+			counted := StepID("LEGION-208", 1, placeOf("step", 3), 1)
 			abandoned, abandonedStep, abandonedRole := counted, 3, claim.RoleTester
 			if !tc.open {
-				abandoned, abandonedStep, abandonedRole = StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1), 2, claim.RoleImplementer
+				abandoned, abandonedStep, abandonedRole = StepID("LEGION-208", 1, placeOf("step", 2), 1), 2, claim.RoleImplementer
 			}
 			ended := stepWrites(t, pool, "LEGION-208")[before:]
 			if len(ended) != 1 {
@@ -94,11 +94,86 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 			}
 			end := after[0]
 			assertEnd(t, end, "step", 3, 1, "passed", nil)
-			if want := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 2); end.ID != want || end.StartedAt == nil || !end.StartedAt.Equal(secondRun) ||
+			if want := StepID("LEGION-208", 1, placeOf("step", 3), 2); end.ID != want || end.StartedAt == nil || !end.StartedAt.Equal(secondRun) ||
 				end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
 				t.Fatalf("the end = %+v, want the record %s of the second count, the tester's, started at %s", end, want, secondRun)
 			}
 		})
+	}
+}
+
+// A member's merge runs on through the linger of its tree and the re-admission of its root, and
+// only the promotion that starts its merger again ends it (admit's startMidPhaseMembers). So an
+// earlier release that re-admits the root after a rollback, and has not promoted the tree by the
+// roll forward, ended no run of the member: the roll forward writes nothing of its merge, and the
+// merge that lands then ends the record this release counted, passed, under its own id.
+func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Reviewing)
+	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+	engine := stepEngine(nil)
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+	apply := applyFacts(t, pool, engine)
+	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+		Status: "backlog", Title: "root", Rank: "U"})
+	writes := stepWrites(t, pool, "LEGION-209")
+	if len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {
+		t.Fatalf("the member's writes before the rollback = %+v, want the retro's end and the merge's start, open", writes)
+	}
+	merge := writes[1].ID
+	rollBackStepRecords(t, pool)
+	// The earlier release re-admits the root (admit's readmit): a new generation, its linger
+	// cleared, and no promotion yet.
+	execSQL(t, pool, `update issues set generation = generation + 1, linger_until = null, phase = 'admitted', status = 'todo' where key = $1`, root.Key)
+	rollForwardStepRecords(t, pool)
+	if after := stepWrites(t, pool, "LEGION-209")[len(writes):]; len(after) != 0 {
+		t.Fatalf("the roll forward wrote %+v for LEGION-209, whose merge still runs", after)
+	}
+	apply("merge", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
+	after := stepWrites(t, pool, "LEGION-209")[len(writes):]
+	if len(after) != 1 || after[0].ID != merge {
+		t.Fatalf("the merge's writes after the roll forward = %+v, want the one end of the record %s this release counted", after, merge)
+	}
+	assertEnd(t, after[0], "merge", 0, 3, "passed", nil)
+}
+
+// A review the review event approves before the reviewer completes ends passed with no report, and
+// the reviewer's completion names its handoff on that ended run's record when it lands
+// (reportEndedStep). A rollback between the two, under which the earlier release signs the issue
+// off into the retro, starts no review: the review's place is none that release may have run
+// again, so the roll forward leaves its counted run ended, and the late completion's report lands
+// on the record this release counted.
+func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
+	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	pool := migratedPool(t)
+	seedReview(t, pool, "green")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		return engine.StartStepRecord(ctx, tx, issue)
+	})
+	apply := applyFacts(t, pool, engine)
+	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
+		Body: reviewBody("the review", headOne)})
+	if got := issueAt(t, pool, "LEGION-208"); got != phase.Accepting {
+		t.Fatalf("LEGION-208 stands at %s after the approval, want accepting", got)
+	}
+	rollBackStepRecords(t, pool)
+	// The earlier release signs the issue off: accepting moves to the retro, whose start raises
+	// the implementer's entry.
+	execSQL(t, pool, `update issues set phase = 'retro' where key = 'LEGION-208'`)
+	execSQL(t, pool, `update phases set entry = entry + 1 where issue = 'LEGION-208' and role = 'implementer'`)
+	rollForwardStepRecords(t, pool)
+	before := len(stepWrites(t, pool, "LEGION-208"))
+	if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+		Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+	}
+	after := stepWrites(t, pool, "LEGION-208")[before:]
+	counted := StepID("LEGION-208", 1, placeOf("step", 4), 1)
+	if len(after) != 1 || after[0].ID != counted || after[0].Report == nil || *after[0].Report != report {
+		t.Fatalf("the late completion wrote %+v, want one write of the counted review's record %s naming %s", after, counted, report)
 	}
 }
 
@@ -124,34 +199,17 @@ func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
 // way back, which the way back re-arms and the roll forward applies again.
 const stepRecordsRollForward = 20261117064152
 
-// rollBackStepRecords runs the way back the roll forward's migration carries in its header, as an
-// operator runs it with the daemon stopped (docs/kubernetes.md, "Rolling back the release that
-// records each step", carries the same block; internal/textcheck holds the two to one text).
+// rollBackStepRecords runs the way back the roll forward's migration carries in its header
+// (migrations.WayBack), as an operator runs it with the daemon stopped (docs/kubernetes.md,
+// "Rolling back the release that records each step", carries the same block; internal/textcheck
+// holds the two to one text).
 func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	all, err := migrations.All()
+	block, err := migrations.WayBack(stepRecordsRollForward)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back of the roll forward: %v", err)
 	}
-	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForward)
-	for _, migration := range all {
-		if migration.Version != stepRecordsRollForward {
-			continue
-		}
-		var block []string
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
-				continue
-			}
-			block = append(block, strings.TrimPrefix(line, "-- "))
-			if line == mark {
-				execSQL(t, pool, strings.Join(block, "\n"))
-				return
-			}
-		}
-		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
-	}
-	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
+	execSQL(t, pool, block)
 }
 
 // rollForwardStepRecords is the newer image's boot over the store the earlier release left: its

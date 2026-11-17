@@ -23,7 +23,7 @@ func DefaultSteps() []string {
 
 // stepWork is the role whose step works phase p, as a step of a plan names it (the part before a
 // step's `:key`), and the type of that work; ok is false for a phase no step of a plan works.
-func stepWork(p phase.Phase) (role, typ string, ok bool) {
+func stepWork(p phase.Phase) (role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Planning:
 		return "planner", "planning", true
@@ -45,7 +45,7 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 // type ("" for a retro or a merge). A working phase's step is the first step of steps whose role
 // works it, at one plus its index. A phase no step of steps works, and a phase that runs no step —
 // admitted, awaiting a person, held, done — answers ok false.
-func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
+func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	switch p {
 	case phase.Retro:
 		return record.StepPlace{Task: defaultTask, Kind: "retro"}, "implementer", "", true
@@ -57,7 +57,7 @@ func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role, typ st
 		return record.StepPlace{}, "", "", false
 	}
 	for i, named := range steps {
-		if stepRole, _, _ := strings.Cut(named, ":"); stepRole == role {
+		if head, _, _ := strings.Cut(named, ":"); stepRole(head) == role {
 			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
 		}
 	}

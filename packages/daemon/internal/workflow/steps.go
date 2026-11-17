@@ -16,19 +16,29 @@ import (
 // every step of it is a step of this task.
 const defaultTask = "default"
 
-// StepAgent is what the daemon reads of a step's agent where it writes the step's record: the
-// session its claim records now, and the model that answered it last in that session as
-// `<provider>/<model>`. Either is "" where the daemon reads none, and a record leaves out a field
-// read empty, so a later write can still fill it (record.StepRecord).
+// StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
+// write of a step's record that names either field (endStep): the session its claim records now,
+// and the model that answered it last in that session as `<provider>/<model>`, or the model alone
+// when the frame named no provider. Either is "" where the daemon reads none, and the end then
+// leaves that field out, so the record names none.
 type StepAgent struct {
 	Session string
 	Model   string
 }
 
+// stepRole is the role a step's record names, the worker of the step as Dispatch reads it
+// ("acceptance" for accepting's architect), and stepType the type of its work ("" for a retro or a
+// merge). Each is a type of its own, so no call can give a step's role, its type and its agent,
+// three texts, in another order (stepWrite).
+type (
+	stepRole string
+	stepType string
+)
+
 // stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps:
 // stepIn over that list. A held issue's step is the step of the phase its hold is from
 // (record.StandsAt), which the caller reads.
-func stepOf(p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
+func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
 	return stepIn(DefaultSteps(), p)
 }
 
@@ -283,9 +293,9 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 
 // stepWrite is the identity of one run of a step of issue: the fields every write of its record
 // carries.
-func stepWrite(issue record.Issue, place record.StepPlace, role, typ, agent string, starts int64) record.StepRecord {
+func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ stepType, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
-		Step: place.Place, Kind: place.Kind, Role: role, Type: typ, Agent: agent, Generation: issue.Generation}
+		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
 }
 
 // readAgent is what the daemon reads of agent now (Config.StepAgent): nothing for no agent or no
@@ -300,9 +310,10 @@ func (e *Engine) readAgent(agent claim.Token) StepAgent {
 // endOfTransition is how a transition on trigger ends the step before stands in, moving the issue
 // into to with handoff as the completion's row: endOf's result, the step of to where the work goes
 // back, and the handoff record handoff names when its role is the role of that step's phase. The
-// step is where before stands (record.StandsAt), the step endStep ends, so a held issue's is the
-// step of the phase its hold is from. A phase that runs no step, admitted among them, whose role
-// is the architect's, ends no step and names no report.
+// step is where before stands (record.StandsAt), the step endStep ends, so the two read one
+// position; no row of the table leaves held, so before is never a held issue here (transition
+// returns first). A phase that runs no step, admitted among them, whose role is the architect's,
+// ends no step and names no report.
 func endOfTransition(trigger TriggerKind, before record.Issue, to phase.Phase, handoff record.PhaseRow) StepEnd {
 	from := record.StandsAt(before)
 	result, returns := endOf(trigger)

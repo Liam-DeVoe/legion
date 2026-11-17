@@ -718,6 +718,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -1998,6 +2001,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -2086,6 +2090,9 @@ jobs:
               # internal/dispatch/redeliver sweeps its redelivery records through
               # kvwatch.ScanExistingKeys (redeliver/sweep.go:50,488).
               - 'packages/envoy/internal/kvwatch/*'
+              # internal/dispatch/api checks a role-holder publication against legionagents.Roles
+              # (issue_role_holders.go).
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
@@ -2763,6 +2770,12 @@ jobs:
               # main holds no spec file yet, and check-ci-filters.sh refuses a pattern that
               # matches no file (its rule 9).
               - '.dispatch/**'
+              # The step "Check that no CI file of this repository compares the spec files" reads
+              # every file under these four.
+              - '.github/workflows/**'
+              - '.github/actions/**'
+              - '.github/scripts/**'
+              - 'scripts/**'
             # The text checks of the three Go modules, the Dispatch API's eight static source
             # checks, and the two pure pins of packages/daemon's supervise table: the tests whose
             # subject is a file's words. Their job runs packages/envoy/internal/textcheck,
@@ -2786,19 +2799,20 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
-              # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
-              # of the phrase it reads in place of importing internal/workflow (:23-24), and the
-              # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
+              # The prompt design_approved_wake_test.go:32-38 holds the resume's wake to, the copy
+              # of the phrase it reads in place of importing internal/workflow (:26-27), and the
+              # committed extract reclaim_doc_test.go:50 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The store's migrations, which phase_entry_migrations_doc_test.go reads through
-              # migrations.All to hold the guide's list of those above the phase entry to them.
+              # The store's migrations, which the text checks read through migrations.All to hold
+              # the guide to them: its list of those above the phase entry, and its way back of the
+              # step records, to the block the roll forward's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
-              # backs' (way_back_doc_test.go:79) and the troubleshooting page's refusal table's
-              # (troubleshooting_refusals_doc_test.go:36), each committed beside the package whose
+              # backs' (way_back_doc_test.go:123) and the troubleshooting page's refusal table's
+              # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
               # own check reads it. They are .txt files, which the module's `**/*.go` above does
               # not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
@@ -2809,7 +2823,7 @@ jobs:
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:390; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
               - 'AGENTS.md'
@@ -2829,11 +2843,11 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
-              # way_back_doc_test.go:101).
+              # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,277 and
+              # way_back_doc_test.go:146).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
-              # holds the architect's prompt to (:33-39).
+              # holds the architect's prompt to (:32-38).
               - 'skills/legion-architect/SKILL.md'
               - 'skills/legion-architect/references/design-gate.md'
               - 'skills/legion-architect/references/wake-routing.md'
@@ -3712,6 +3726,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -3795,6 +3810,7 @@ jobs:
               - '!packages/envoy/internal/fold/**/*_test.go'
               - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/kvwatch/**/*_test.go'
+              - '!packages/envoy/internal/legionagents/**/*_test.go'
               - '!packages/envoy/internal/metrics/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
@@ -5051,7 +5067,8 @@ jobs:
   # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
   # must come back on every push. No Postgres service: nothing here opens a database. It
   # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
-  # binary of every package of the envoy module).
+  # binary of every package of the envoy module). It also runs the guard that no CI file of this
+  # repository compares the spec files with the approved spec.
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')

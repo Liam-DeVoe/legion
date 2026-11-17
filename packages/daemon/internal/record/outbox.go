@@ -55,6 +55,9 @@ const (
 	// left (MergeQueueRemoval).
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
+	// OutboxKindRoleHoldersPublish publishes the live role sessions of one issue onto its Dispatch
+	// row (RoleHoldersPublish).
+	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
 	// record of that step, or the rating a retro gave the plan onto the retro's record
 	// (StepRecord).
@@ -109,7 +112,7 @@ const (
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
@@ -1068,16 +1071,31 @@ type DesignGateDocument struct {
 
 func (DesignGatesPublish) OutboxKind() OutboxKind { return OutboxKindDesignGatesPublish }
 
-// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
-// /api/v1/issues/{key}/steps/{id}): the start of the step, or its end. ID is the record's id, a
-// uuid the start and the end of one run of the step both compute, and the row's issue column is the
-// issue. Each other field is a field of the route's body under the same name.
+// RoleHoldersPublish writes the session of each live Legion role of Issue onto the issue's
+// Dispatch row (PUT /api/v1/issues/{key}/role-holders), which Dispatch reads to take the role of a
+// result from the session that wrote it. The payload names the issue alone: the executor reads the
+// live set from the claims when the row runs (publishRoleHolders), so a row queued before a claim
+// ended sends the set without it, and two events of one issue never publish a stale set.
 //
-// Dispatch writes each field once and keeps every field a write leaves out, so the start and the
-// end merge in either order and a write that runs again changes nothing. Every write carries the
+// The row waits on its issue's board lane among the issue's other Dispatch writes. The write
+// replaces the issue's whole set and tells nobody, so a set Dispatch already holds costs nothing.
+type RoleHoldersPublish struct {
+	Issue string `json:"issue"`
+}
+
+func (RoleHoldersPublish) OutboxKind() OutboxKind { return OutboxKindRoleHoldersPublish }
+
+// StepRecord is one write of an issue's record of one step onto Dispatch (PUT
+// /api/v1/issues/{key}/steps/{id}): the start of the step, its end, or the report alone of a
+// completion that landed after that end (workflow's reportEndedStep). ID is the record's id, a
+// uuid every write of one run of the step computes, and the row's issue column is the issue. Each
+// other field is a field of the route's body under the same name.
+//
+// Dispatch writes each field once and keeps every field a write leaves out, so the writes of one
+// run merge in any order and a write that runs again changes nothing. Every write carries the
 // identity of the step (task, step, kind, role, type, agent and generation), the empty type of a
 // retro or a merge and the place 0 of either included, and each field a write may not know yet is
-// a pointer, nil for one the write leaves to the other. The route takes a text field sent as "" as
+// a pointer, nil for one the write leaves to another. The route takes a text field sent as "" as
 // left out, so for a text field the pointer only says what the write knows; for a time and for
 // ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
 // Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
@@ -1524,6 +1542,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRoleHoldersPublish:
+		value := RoleHoldersPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1631,8 +1655,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Status == "" {
 			return fmt.Errorf("outbox status write has empty status")
 		}
-		if value.Reason != "" && value.Status != "done" {
-			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
+		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
+		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
+		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
+		// carries out a move whose cause is already on the issue, so it posts none.
+		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
+			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}
 	case MessagePost:
 		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
@@ -1793,6 +1821,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			}
 			named[gate.Step] = true
 		}
+	case RoleHoldersPublish:
+		if value.Issue == "" {
+			return fmt.Errorf("a role-holders publish requires the issue whose role sessions it writes")
+		}
 	case CheckWakeDue:
 		if value.Look <= 0 {
 			return fmt.Errorf("check wake requires the look it was named at")
@@ -1853,9 +1885,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
 	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
-	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND, the one answer
-	// the row retries for ever; and a write without the step's identity is refused only when it is
-	// the record's first, so the same defect would make a record on one run and none on another.
+	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
+	// …", the one answer the row waits on for ever; and a write without the step's identity is
+	// refused only when it is the record's first, so the same defect would make a record on one
+	// run and none on another.
 	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
 	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
 	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of

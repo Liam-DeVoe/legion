@@ -107,6 +107,17 @@ func stepsOf(t *testing.T, handler http.Handler, issue string) []model.StepRecor
 	return steps
 }
 
+// stepOf is the run id as the read of issue lists it; a read that does not list it fails the test.
+func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepRecord {
+	t.Helper()
+	steps := stepsOf(t, handler, issue)
+	index := slices.IndexFunc(steps, func(step model.StepRecord) bool { return step.ID == id })
+	if index < 0 {
+		t.Fatalf("the read of %s does not list the run %s", issue, id)
+	}
+	return steps[index]
+}
+
 // requireStepRefusal fails unless response is status with code, its message naming each of words.
 func requireStepRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, words ...string) {
 	t.Helper()
@@ -171,20 +182,24 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 }
 
 // A run's session, its report and its generation reach the store from the body and come back from
-// it as written: the write's answer and the read carry the session the first write named, the
-// report in its canonical spelling and generation 2, beside its attempt 1 and the place it
-// returned to.
+// it as written. The start names no session, as the daemon's start does, and the end names the
+// session with the model, as one pair; a later end that names another session leaves it. The
+// write's answers and the read carry that pair, the report in its canonical spelling and
+// generation 2, beside its attempt 1 and the place it returned to.
 func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
 	identity := withStepFields(stepIdentity(daemonSession("LEG")), map[string]any{"generation": 2})
-	putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
-		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart, "session": "ses_implementer_run",
+	started := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart,
 	}))
+	if started.Session != "" || started.Model != "" {
+		t.Fatalf("the start answers %s, want no session and no model yet", stepJSON(t, started))
+	}
 	ended := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
-		"session": "ses_a_later_session", "report": strings.ToUpper(report), "returned_to": 1,
+		"session": "ses_implementer_run", "report": strings.ToUpper(report), "returned_to": 1,
 	}))
 
 	returned := 1
@@ -196,6 +211,12 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	}
 	if got := stepJSON(t, ended); got != stepJSON(t, want) {
 		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	again := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"result": "failed", "ended_at": stepEnd, "session": "ses_a_later_session",
+	}))
+	if got := stepJSON(t, again); got != stepJSON(t, want) {
+		t.Fatalf("the repeated end's answer is\n%s\nwant the first end's session\n%s", got, stepJSON(t, want))
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || stepJSON(t, steps[0]) != stepJSON(t, want) {
 		t.Fatalf("the read lists %+v, want the one record\n%s", steps, stepJSON(t, want))
@@ -324,18 +345,29 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	}
 }
 
-// The read of an issue Dispatch does not hold answers as the read of its handoffs does: 200 and
-// nothing in it.
-func TestAnUnknownIssueReadsAsItsHandoffsRead(t *testing.T) {
+// The read of an issue Dispatch does not hold answers as the read of the issue itself does, 404
+// NOT_FOUND, so a mistyped key never reads as an issue Legion never ran; and that answer is the
+// handler's, not the router's "no route" of a Dispatch older than the route. An issue Dispatch
+// holds that no step ran on still reads 200 and no task.
+func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
 	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "An issue Legion never ran")
 
-	handoffs := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999/handoffs", nil, "alice")
-	if handoffs.Code != http.StatusOK || strings.TrimSpace(handoffs.Body.String()) != "[]" {
-		t.Fatalf("the handoffs of LEG-999: status=%d body=%s, want 200 []", handoffs.Code, handoffs.Body.String())
-	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999", nil, "alice")
+	requireStepRefusal(t, "the issue read of LEG-999", read, http.StatusNotFound, "NOT_FOUND")
 	steps := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999/steps", nil, "alice")
-	if want := `{"issue":"LEG-999","tasks":[]}`; steps.Code != http.StatusOK || strings.TrimSpace(steps.Body.String()) != want {
-		t.Fatalf("the steps of LEG-999: status=%d body=%s, want 200 %s", steps.Code, steps.Body.String(), want)
+	if steps.Code != read.Code || strings.TrimSpace(steps.Body.String()) != strings.TrimSpace(read.Body.String()) {
+		t.Fatalf("the steps of LEG-999: status=%d body=%s, want the issue read's status=%d body=%s",
+			steps.Code, steps.Body.String(), read.Code, read.Body.String())
+	}
+	if refusal := decodeBody[refusalAnswer](t, steps); strings.HasPrefix(refusal.Error, "no route") {
+		t.Fatalf("the steps of LEG-999 answer the router's refusal %q, want the handler's", refusal.Error)
+	}
+
+	held := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/steps", nil, "alice")
+	if want := `{"issue":"` + issue + `","tasks":[]}`; held.Code != http.StatusOK || strings.TrimSpace(held.Body.String()) != want {
+		t.Fatalf("the steps of %s, which no step ran on: status=%d body=%s, want 200 %s", issue, held.Code,
+			held.Body.String(), want)
 	}
 }
 
@@ -384,15 +416,18 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 		{"a result with no end", "", withStepFields(start, map[string]any{"result": "passed"}), "result"},
 		{"a step returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 2}), "returned_to"},
 		{"a retro returned to by a run that passed", "", withStepFields(start, map[string]any{"result": "passed", "ended_at": stepEnd, "returned_to": 0}), "returned_to"},
-		{"a first write with no task", "", without("task"), "task"},
-		{"a first write with no kind", "", without("kind"), "kind"},
-		{"a first write with no step", "", without("step"), "step"},
-		{"a first write with no role", "", without("role"), "role"},
-		{"a first write with no generation", "", without("generation"), "generation"},
+		{"a returned_to below 0", "", withStepFields(start, map[string]any{"result": "failed", "ended_at": stepEnd, "returned_to": -1}), "returned_to -1"},
+		{"a step returned to by a write that names no result", "", withStepFields(start, map[string]any{"returned_to": 2}), `this write's result is ""`},
+		{"a first write with no task", "", without("task"), "does not name its task:"},
+		{"a first write with no kind", "", without("kind"), "does not name its kind:"},
+		{"a first write with no step", "", without("step"), "does not name its step:"},
+		{"a first write with no role", "", without("role"), "does not name its role:"},
+		{"a first write with no generation", "", without("generation"), "does not name its generation:"},
 		{"a generation that is no run", "", withStepFields(start, map[string]any{"generation": 0}), "generation"},
-		{"a place below 0", "", withStepFields(start, map[string]any{"step": -1}), "step"},
-		{"a step of kind step at place 0", "", withStepFields(start, map[string]any{"step": 0}), "step"},
-		{"a retro at a step's place", "", withStepFields(start, map[string]any{"kind": "retro"}), "step"},
+		{"a place below 0", "", withStepFields(without("kind"), map[string]any{"step": -1}), "0 or more"},
+		{"a step of kind step at place 0", "", withStepFields(start, map[string]any{"step": 0}), "count from 1"},
+		{"a retro at a step's place", "", withStepFields(start, map[string]any{"kind": "retro", "type": ""}), "its step is 0"},
+		{"a merge at a step's place", "", withStepFields(start, map[string]any{"kind": "merge", "type": "", "role": "merger"}), "its step is 0"},
 		{"a role that is no role", "", withStepFields(start, map[string]any{"role": "Implementer"}), "role"},
 		{"a type that is no type", "", withStepFields(start, map[string]any{"type": "Review"}), "type"},
 		{"a retro with a type", "", withStepFields(start, map[string]any{"kind": "retro", "step": 0}), "type"},
@@ -442,17 +477,8 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
 			t.Fatalf("the write of %s answers %s, want start %s", row.input, stepJSON(t, written), row.want)
 		}
-		found := false
-		for _, step := range stepsOf(t, handler, issue) {
-			if step.ID == id {
-				found = true
-				if step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
-					t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
-				}
-			}
-		}
-		if !found {
-			t.Fatalf("the read does not list the run %s", id)
+		if step := stepOf(t, handler, issue, id); step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
+			t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
 		}
 	}
 }
@@ -564,15 +590,9 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
 				t.Fatalf("the later end answers %s, want the first return to place 0", stepJSON(t, again))
 			}
-			for _, step := range stepsOf(t, handler, issue) {
-				if step.ID == id {
-					if step.ReturnedTo == nil || *step.ReturnedTo != 0 {
-						t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
-					}
-					return
-				}
+			if step := stepOf(t, handler, issue, id); step.ReturnedTo == nil || *step.ReturnedTo != 0 {
+				t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
 			}
-			t.Fatalf("the read does not list the run %s", id)
 		})
 	}
 }

@@ -2284,8 +2284,9 @@ export const dispatchToolSpecs = [
       "from 1. agent is the claim of the role that ran the step, and model is the model that " +
       "answered it, as provider/model. result is passed, failed or stopped. A field with no " +
       "value prints -, and a run that has not ended prints running for its end and its result. " +
-      "A closed issue's steps read too. An issue that no step ran on, or that Dispatch does not " +
-      `hold, prints 0 steps in 0 tasks. ${ISSUE_REFERENCE}`,
+      "A closed issue's steps read too. An issue that no step ran on prints 0 steps in 0 tasks, " +
+      "and a key Dispatch does not hold fails as dispatch read fails for it, NOT_FOUND: not " +
+      `found. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
     }),

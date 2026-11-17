@@ -28,6 +28,12 @@ func stepEngine(agent func(claim.Token) StepAgent) *Engine {
 	return engine
 }
 
+// placeOf is the place of kind at step in the task default, the key an expected id is computed
+// from (StepID).
+func placeOf(kind string, step int) record.StepPlace {
+	return record.StepPlace{Task: "default", Kind: kind, Place: step}
+}
+
 // stepRoot is the root LEGION-208 standing at at, generation 1, with its open pull request #42.
 func stepRoot(t *testing.T, pool *pgxpool.Pool, at phase.Phase) record.Issue {
 	t.Helper()
@@ -48,6 +54,34 @@ func stepChild(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, hol
 		Title: key, Parent: &parent, Phase: at, Hold: hold, Generation: 3, Status: "in_progress", Rank: "V", LastDispatchSeq: 1}
 	seedIssue(t, pool, child)
 	return child
+}
+
+// seedChildPR gives LEGION-209 its pull request #43 in state, with its merge commit where merged.
+func seedChildPR(t *testing.T, pool *pgxpool.Pool, state record.PullRequestState) {
+	t.Helper()
+	pr := record.PullRequest{State: state, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}}
+	if state == record.PullRequestMerged {
+		pr.MergeSHA = "merge-43"
+	}
+	seedPR(t, pool, pr)
+}
+
+// mergingChild seeds LEGION-209 at the retro under LEGION-208, with its open pull request, and
+// moves it into merging through engine: the start of its merge step, which the test then ends.
+func mergingChild(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+	t.Helper()
+	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+	seedChildPR(t, pool, record.PullRequestOpen)
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+}
+
+// holdFrom holds key from the phase from, where the death of that phase's worker's claim leaves it.
+func holdFrom(t *testing.T, pool *pgxpool.Pool, key string, from phase.Phase) {
+	t.Helper()
+	held := issueRecord(t, pool, key)
+	held.Phase, held.Hold = phase.Held, &record.Hold{From: from}
+	seedIssue(t, pool, *held)
 }
 
 // onStored runs write in one transaction on key's record as the store holds it.
@@ -94,6 +128,31 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 func isStart(w record.StepRecord) bool { return w.StartedAt != nil && w.EndedAt == nil }
 func isEnd(w record.StepRecord) bool   { return w.EndedAt != nil && w.Result != nil }
 
+// writesAt is the writes of one place among writes, those of kind at step, in their order.
+func writesAt(writes []record.StepRecord, kind string, step int) []record.StepRecord {
+	var at []record.StepRecord
+	for _, w := range writes {
+		if w.Kind == kind && w.Step == step {
+			at = append(at, w)
+		}
+	}
+	return at
+}
+
+// runOf is the latest start and the latest end among writes of kind at step, the zero record for
+// none.
+func runOf(writes []record.StepRecord, kind string, step int) (start, end record.StepRecord) {
+	for _, w := range writesAt(writes, kind, step) {
+		if isStart(w) {
+			start = w
+		}
+		if isEnd(w) {
+			end = w
+		}
+	}
+	return start, end
+}
+
 // resultOf is the result an end write carries, "" for a start.
 func resultOf(w record.StepRecord) string {
 	if w.Result == nil {
@@ -125,18 +184,11 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 		between(pool)
 		// The restart: a new engine on a new store over the same database.
 		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
-		for _, w := range stepWrites(t, pool, "LEGION-208") {
-			if w.Kind == "step" && w.Step == 3 && isStart(w) {
-				start = w
-			}
-			if w.Kind == "step" && w.Step == 3 && isEnd(w) {
-				end = w
-			}
-		}
+		start, end = runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 		return start, end, pool
 	}
 	start, end, pool := run(t, func(*pgxpool.Pool) {})
-	if want := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1); start.ID != want {
+	if want := StepID("LEGION-208", 1, placeOf("step", 3), 1); start.ID != want {
 		t.Fatalf("the start of testing has id %s, want %s (the first start of default/step/3)", start.ID, want)
 	}
 	if end.ID != start.ID {
@@ -174,15 +226,7 @@ func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
 	ending.cfg.Clock = func() time.Time { return ended }
 	move(t, pool, starting, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 	move(t, pool, ending, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
-	var start, end record.StepRecord
-	for _, w := range stepWrites(t, pool, "LEGION-208") {
-		if w.Kind == "step" && w.Step == 3 && isStart(w) {
-			start = w
-		}
-		if w.Kind == "step" && w.Step == 3 && isEnd(w) {
-			end = w
-		}
-	}
+	start, end := runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 	if want := began.Truncate(time.Microsecond); start.StartedAt == nil || !start.StartedAt.Equal(want) {
 		t.Fatalf("the start of testing began at %v, want %s, the moment its engine read to the microsecond", start.StartedAt, want)
 	}
@@ -212,7 +256,7 @@ func TestAFailedReviewEndsFailedAndStartsTheImplementerAgain(t *testing.T) {
 	if end.Role != "reviewer" || end.Type != "review" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleReviewer) {
 		t.Fatalf("the review's end = %+v, want the reviewer's", end)
 	}
-	if !isStart(start) || start.Step != 2 || start.Role != "implementer" || start.ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2) {
+	if !isStart(start) || start.Step != 2 || start.Role != "implementer" || start.ID != StepID("LEGION-208", 1, placeOf("step", 2), 2) {
 		t.Fatalf("the rejection's start = %+v, want the implementer's second start of step 2", start)
 	}
 	if first := writes[1]; !isStart(first) || first.Step != 2 || first.ID == start.ID {
@@ -288,9 +332,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 		onStored(t, pool, engine, key, endTwice)
 	}
 	testingWrites := func(key string) (starts, ends []record.StepRecord) {
-		for _, w := range stepWrites(t, pool, key) {
+		for _, w := range writesAt(stepWrites(t, pool, key), "step", 3) {
 			switch {
-			case w.Step != 3:
 			case isStart(w):
 				starts = append(starts, w)
 			case isEnd(w):
@@ -302,7 +345,7 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	if starts, ends := testingWrites("LEGION-208"); len(starts) != 1 || len(ends) != 1 || ends[0].ID != starts[0].ID {
 		t.Fatalf("four ends of one run of testing wrote starts %+v and ends %+v, want one start and its one end", starts, ends)
 	}
-	if starts, ends := testingWrites("LEGION-209"); len(starts) != 0 || len(ends) != 1 || ends[0].ID != StepID("LEGION-209", 3, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 0) {
+	if starts, ends := testingWrites("LEGION-209"); len(starts) != 0 || len(ends) != 1 || ends[0].ID != StepID("LEGION-209", 3, placeOf("step", 3), 0) {
 		t.Fatalf("four ends of a run no start counted wrote starts %+v and ends %+v, want one end at the count 0", starts, ends)
 	}
 	startTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
@@ -314,7 +357,7 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	onStored(t, pool, engine, "LEGION-208", startTwice)
 	onStored(t, pool, engine, "LEGION-208", endTwice)
 	starts, ends := testingWrites("LEGION-208")
-	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 2) || ends[1].ID != starts[1].ID {
+	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, placeOf("step", 3), 2) || ends[1].ID != starts[1].ID {
 		t.Fatalf("a start after the end, a second start and two ends wrote starts %+v and ends %+v, want the second run's one start and one end", starts, ends)
 	}
 }
@@ -322,8 +365,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 // The end of a step carries the session and the model the daemon reads of its agent at that end,
 // one read's pair, and the handoff record the ending role's completion named; the start carries
 // neither, since Dispatch keeps the first value it is given of each field and only the end names
-// the model. A daemon that reads no agent writes neither, which leaves them for a later write to
-// fill.
+// the model. A daemon that reads no agent writes neither, so the record names no session and no
+// model.
 func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Testing)
@@ -370,10 +413,14 @@ func TestTheEndNamesTheModelThatAnswered(t *testing.T) {
 // The report of a step is the handoff its role's completion named, whichever of that completion
 // and the review event lands first: an event that decides the round first ends the review before
 // the reviewer completes, and the completion then names its handoff on that ended run's record,
-// so one write of the run carries it. The review's handoff is the review's alone: the sign-off that
-// ends accepting passes the reviewer's row, and the record of acceptance names no report.
+// so one write of the run carries it. That write is the run's: its id, its role, its type, its
+// agent and its generation, for a review this release started and counted (count 1) as for one
+// that ran at the upgrade (count 0), whose end the store gave the count. The review's handoff is
+// the review's alone: the sign-off that ends accepting passes the reviewer's row, and the record
+// of acceptance names no report.
 func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	reviewer := treeRoleToken(t, "LEGION-208", claim.RoleReviewer)
 	for _, tc := range []struct {
 		name          string
 		decision      string
@@ -385,63 +432,88 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 		{name: "approved on a clean head, then the reviewer completes", decision: "approved", want: phase.Accepting},
 		{name: "the reviewer completes, then an approval on a clean head", decision: "approved", completeFirst: true, want: phase.Accepting},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := migratedPool(t)
-			seedReview(t, pool, "green")
-			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			review := func() {
-				apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp,
-					Body: reviewBody("the review", headOne)})
+		for _, counted := range []bool{true, false} {
+			name := tc.name + ", a review this release counted"
+			if !counted {
+				name = tc.name + ", a review running at the upgrade"
 			}
-			complete := func() {
-				if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
-					Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
-					t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+			t.Run(name, func(t *testing.T) {
+				pool := migratedPool(t)
+				seedReview(t, pool, "green")
+				engine := testEngine(config.DesignGateRootIssues, nil)
+				var starts int64
+				if counted {
+					onStored(t, pool, engine, "LEGION-208", engine.StartStepRecord)
+					starts = 1
 				}
-			}
-			if tc.completeFirst {
-				complete()
-				review()
-			} else {
-				review()
-				complete()
-			}
-			if got := issueAt(t, pool, "LEGION-208"); got != tc.want {
-				t.Fatalf("LEGION-208 stands at %s, want %s", got, tc.want)
-			}
-			var reviewWrites []record.StepRecord
-			reports := map[string]int{}
-			for _, w := range stepWrites(t, pool, "LEGION-208") {
-				if w.Kind == "step" && w.Step == 4 {
+				apply := applyFacts(t, pool, engine)
+				review := func() {
+					apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp,
+						Body: reviewBody("the review", headOne)})
+				}
+				complete := func() {
+					if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+						Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+						t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+					}
+				}
+				if tc.completeFirst {
+					complete()
+					review()
+				} else {
+					review()
+					complete()
+				}
+				if got := issueAt(t, pool, "LEGION-208"); got != tc.want {
+					t.Fatalf("LEGION-208 stands at %s, want %s", got, tc.want)
+				}
+				run := StepID("LEGION-208", 1, placeOf("step", 4), starts)
+				var reviewWrites, ends, late []record.StepRecord
+				reports := map[string]int{}
+				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 4) {
+					if w.ID != run || w.Task != "default" || w.Role != "reviewer" || w.Type != "review" || w.Agent != reviewer || w.Generation != 1 {
+						t.Fatalf("a write of the review = %+v, want the identity of its run: id %s, role reviewer, type review, agent %s, generation 1",
+							w, run, reviewer)
+					}
 					reviewWrites = append(reviewWrites, w)
+					switch {
+					case isEnd(w):
+						ends = append(ends, w)
+					case !isStart(w):
+						late = append(late, w)
+					}
 					if w.Report != nil {
 						reports[*w.Report]++
 					}
 				}
-			}
-			if len(reviewWrites) == 0 || !isEnd(reviewWrites[0]) || len(reports) != 1 || reports[report] != 1 {
-				t.Fatalf("the writes of the review = %+v with reports %v, want its end and one write naming %s", reviewWrites, reports, report)
-			}
-			for _, w := range reviewWrites {
-				if w.ID != reviewWrites[0].ID {
-					t.Fatalf("the review's writes name two runs, %s and %s: %+v", reviewWrites[0].ID, w.ID, reviewWrites)
+				if counted && (len(reviewWrites) == 0 || !isStart(reviewWrites[0])) {
+					t.Fatalf("the writes of the review = %+v, want its counted start first", reviewWrites)
 				}
-			}
-			if tc.want != phase.Accepting {
-				return
-			}
-			apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
-			var ended bool
-			for _, w := range stepWrites(t, pool, "LEGION-208") {
-				if w.Kind == "step" && w.Step == 5 && w.Report != nil {
-					t.Fatalf("a write of the acceptance names report %s, want none: the reviewer's handoff is the review's", *w.Report)
+				if len(ends) != 1 || len(reports) != 1 || reports[report] != 1 {
+					t.Fatalf("the writes of the review = %+v with reports %v, want one end and one write naming %s", reviewWrites, reports, report)
 				}
-				ended = ended || w.Kind == "step" && w.Step == 5 && isEnd(w)
-			}
-			if !ended {
-				t.Fatal("the sign-off wrote no end of the acceptance")
-			}
-		})
+				// A completion that lands first names its handoff on the end; one that lands after
+				// the end writes the report alone, the one write that is neither start nor end.
+				if tc.completeFirst && (ends[0].Report == nil || len(late) != 0) || !tc.completeFirst && (ends[0].Report != nil || len(late) != 1) {
+					t.Fatalf("the review's end = %+v and its later writes %+v, want the report on the end when the completion landed first, else on one write after it",
+						ends[0], late)
+				}
+				if tc.want != phase.Accepting {
+					return
+				}
+				apply("sign-off", intake.SignOff{Issue: "LEGION-208"})
+				var ended bool
+				for _, w := range writesAt(stepWrites(t, pool, "LEGION-208"), "step", 5) {
+					if w.Report != nil {
+						t.Fatalf("a write of the acceptance names report %s, want none: the reviewer's handoff is the review's", *w.Report)
+					}
+					ended = ended || isEnd(w)
+				}
+				if !ended {
+					t.Fatal("the sign-off wrote no end of the acceptance")
+				}
+			})
+		}
 	}
 }
 
@@ -508,21 +580,14 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 		pool := migratedPool(t)
 		stepRoot(t, pool, phase.Implementing)
 		stepChild(t, pool, "LEGION-209", at, nil)
-		seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-			Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+		seedChildPR(t, pool, record.PullRequestOpen)
 		engine := stepEngine(agent)
 		enter(pool, engine)
 		applyFacts(t, pool, engine)("sign-off", intake.SignOff{Issue: "LEGION-209"})
 		if got := issueAt(t, pool, "LEGION-209"); got != phase.Retro {
 			t.Fatalf("LEGION-209 stands at %s after the sign-off, want retro", got)
 		}
-		var accepting []record.StepRecord
-		for _, w := range stepWrites(t, pool, "LEGION-209") {
-			if w.Kind == "step" && w.Step == 5 {
-				accepting = append(accepting, w)
-			}
-		}
-		return accepting
+		return writesAt(stepWrites(t, pool, "LEGION-209"), "step", 5)
 	}
 	treeArchitects := func(t *testing.T, w record.StepRecord) {
 		t.Helper()
@@ -556,7 +621,7 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 	})
 	t.Run("a run the release before started", func(t *testing.T) {
 		writes := run(t, phase.Accepting, func(*pgxpool.Pool, *Engine) {})
-		if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, record.StepPlace{Task: "default", Kind: "step", Place: 5}, 0) {
+		if len(writes) != 1 || writes[0].ID != StepID("LEGION-209", 3, placeOf("step", 5), 0) {
 			t.Fatalf("the writes of LEGION-209's step 5 = %+v, want one end at the count 0", writes)
 		}
 		treeArchitects(t, writes[0])
@@ -570,17 +635,10 @@ func TestAChildsAcceptanceIsItsTreeArchitects(t *testing.T) {
 func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	pool := migratedPool(t)
 	stepRoot(t, pool, phase.Reviewing)
-	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 	engine := stepEngine(nil)
-	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
-	var merge string
-	for _, w := range stepWrites(t, pool, "LEGION-209") {
-		if w.Kind == "merge" && isStart(w) {
-			merge = w.ID
-		}
-	}
+	mergingChild(t, pool, engine)
+	start, _ := runOf(stepWrites(t, pool, "LEGION-209"), "merge", 0)
+	merge := start.ID
 	if merge == "" {
 		t.Fatalf("LEGION-209's merge wrote no start: %+v", stepWrites(t, pool, "LEGION-209"))
 	}
@@ -591,8 +649,7 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 			t.Fatalf("the linger ended LEGION-209's merge %+v; a merge that awaits its landing stays open", w)
 		}
 	}
-	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-		Branch: "legion/LEGION-209", HeadSHA: "head-43", MergeSHA: "merge-43", Failing: []string{}})
+	seedChildPR(t, pool, record.PullRequestMerged)
 	onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, member record.Issue) error {
 		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-209")
 		if err != nil {
@@ -629,14 +686,9 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pool := migratedPool(t)
 			stepRoot(t, pool, phase.Reviewing)
-			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
-			child := issueRecord(t, pool, "LEGION-209")
-			child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
-			seedIssue(t, pool, *child)
+			mergingChild(t, pool, engine)
+			holdFrom(t, pool, "LEGION-209", phase.Merging)
 			apply := applyFacts(t, pool, engine)
 			if lingering {
 				apply("park-root", intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
@@ -655,31 +707,39 @@ func TestAMergeEventEndsAHeldMergeStep(t *testing.T) {
 	}
 }
 
-// A parked tree hands over only an unheld member with an open pull request. The other merge
-// workers are retired when its linger closes, so their records end rather than staying running.
+// A parked tree hands over only an unheld member with an open pull request. The close of its
+// linger retires the other merge workers too, and ends the merge of one whose pull request can no
+// longer land: its record ends rather than staying running. A held merger's open pull request
+// can still land, so its merge stays open until it does, and ends passed (C1's one exception), or
+// until the pull request closes unmerged, which ends it stopped, once. A member handed over keeps
+// its merge open for its readmit to end, whatever its pull request does.
 func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
+	merged := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"}
+	closed := intake.PullRequestClosed{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43"}
 	for _, tc := range []struct {
 		name     string
 		held     bool
 		closedPR bool
-		wantEnd  bool
+		// wantEnd is the close's end of the merge, stopped; handed is its hand-over.
+		wantEnd, handed bool
+		// after is what the pull request does after the close, and wantAfter the result of the
+		// one end the merge step has then ("" for none).
+		after     intake.Fact
+		wantAfter string
 	}{
 		{name: "closed pull request", closedPR: true, wantEnd: true},
-		{name: "held merger", held: true, wantEnd: true},
-		{name: "open merger is handed over"},
+		{name: "held merger", held: true, after: merged, wantAfter: "passed"},
+		{name: "held merger whose pull request closes after the close", held: true, after: closed, wantAfter: "stopped"},
+		{name: "open merger is handed over", handed: true},
+		{name: "handed-over merger whose pull request closes after the close", handed: true, after: closed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			root := stepRoot(t, pool, phase.Reviewing)
-			stepChild(t, pool, "LEGION-209", phase.Retro, nil)
-			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
-				Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
 			engine := stepEngine(nil)
-			move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+			mergingChild(t, pool, engine)
 			if tc.held {
-				child := issueRecord(t, pool, "LEGION-209")
-				child.Phase, child.Hold = phase.Held, &record.Hold{From: phase.Merging}
-				seedIssue(t, pool, *child)
+				holdFrom(t, pool, "LEGION-209", phase.Merging)
 			}
 			apply := applyFacts(t, pool, engine)
 			apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
@@ -690,6 +750,9 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 			if writes := stepWrites(t, pool, "LEGION-209"); len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {
 				t.Fatalf("before expiry the merge must still be open: %+v", writes)
 			}
+			// The close comes at the linger's deadline, and the engine's clock with it.
+			parked := issueRecord(t, pool, root.Key)
+			engine.cfg.Clock = func() time.Time { return parked.LingerUntil.Add(time.Second) }
 			apply("expire-linger", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
 			apply("expire-linger-again", intake.LingerExpired{Issue: root.Key, Generation: root.Generation})
 			writes := stepWrites(t, pool, "LEGION-209")
@@ -708,11 +771,36 @@ func TestALingerCloseEndsAMergeThatItDoesNotHandOver(t *testing.T) {
 			}
 			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
 				handover, err := engine.store.Handover(ctx, tx, "LEGION-209")
-				if err == nil && (handover != nil) == tc.wantEnd {
+				if err == nil && (handover != nil) != tc.handed {
 					t.Fatalf("handover = %+v, want a handover only for the open, unheld merger", handover)
 				}
 				return err
 			})
+			if tc.after == nil {
+				return
+			}
+			// A second delivery of what the pull request did writes no second end.
+			apply("after-close", tc.after)
+			apply("after-close-again", tc.after)
+			var ends []record.StepRecord
+			for _, w := range stepWrites(t, pool, "LEGION-209") {
+				if w.ID == writes[1].ID && isEnd(w) {
+					ends = append(ends, w)
+				}
+			}
+			if tc.wantAfter == "" {
+				if len(ends) != 0 {
+					t.Fatalf("ends of LEGION-209's handed-over merge after the close = %+v, want none: its readmit ends it", ends)
+				}
+				return
+			}
+			if len(ends) != 1 {
+				t.Fatalf("ends of LEGION-209's merge after the close = %+v, want exactly one", ends)
+			}
+			assertEnd(t, ends[0], "merge", 0, 3, tc.wantAfter, nil)
+			if got := issueAt(t, pool, "LEGION-209"); tc.wantAfter == "passed" && got != phase.Done {
+				t.Fatalf("LEGION-209 merged after its tree's close stands at %s, want done", got)
+			}
 		})
 	}
 }
@@ -866,7 +954,7 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 	}
 	end := writes[0]
 	assertEnd(t, end, "step", 3, 1, "passed", nil)
-	if end.ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 0) || end.StartedAt == nil || !end.StartedAt.Equal(t0) ||
+	if end.ID != StepID("LEGION-208", 1, placeOf("step", 3), 0) || end.StartedAt == nil || !end.StartedAt.Equal(t0) ||
 		end.Role != "tester" || end.Type != "testing" || end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleTester) {
 		t.Fatalf("the end = %+v, want count 0, the tester's identity and its start at %s", end, t0)
 	}
@@ -877,7 +965,9 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 // GitHub had made when the retro's completion brought the issue to merging started no merger, so
 // the entry its merger still holds is an earlier visit's, raised before that completion: that
 // merge ends with no agent and no start. One whose merger this visit started ends under that
-// merger, at its entry. Each merge waits on a child, whose departure closes the root.
+// merger, at its entry, which the move into merging raised (enter) after that completion, or at
+// its very moment where the clock gave the two one reading. Each merge waits on a child, whose
+// departure closes the root.
 func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 	retroCompleted := stepClock.Add(-2 * time.Hour)
 	for _, tc := range []struct {
@@ -886,7 +976,8 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 		merger bool
 	}{
 		{name: "the merger of an earlier visit", entry: stepClock.Add(-48 * time.Hour)},
-		{name: "the merger of this visit", entry: retroCompleted, merger: true},
+		{name: "the merger of this visit, entered at the completion's moment", entry: retroCompleted, merger: true},
+		{name: "the merger of this visit, entered after the completion", entry: retroCompleted.Add(time.Minute), merger: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -903,7 +994,7 @@ func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
 				t.Fatalf("LEGION-208 stands at %s once its last child left, want done", got)
 			}
 			writes := stepWrites(t, pool, "LEGION-208")
-			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "merge", Place: 0}, 0) {
+			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, placeOf("merge", 0), 0) {
 				t.Fatalf("step rows = %+v, want the merge's one end at the count 0", writes)
 			}
 			end := writes[0]

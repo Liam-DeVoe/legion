@@ -1811,8 +1811,8 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/issues/{key}/steps`: every run of each step of the issue, task by task in the
-   *  order each task first ran, each with the attempt the read computes. An issue Dispatch does
-   *  not hold answers with no task, as its handoffs read. */
+   *  order each task first ran, each with the attempt the read computes. An issue no step ran on
+   *  answers with no task; a key Dispatch does not hold is `404 NOT_FOUND`, as the issue read. */
   async listSteps(issue: string): Promise<IssueSteps> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
   }

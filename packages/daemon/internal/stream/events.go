@@ -127,12 +127,14 @@ type LateRefusal struct {
 // Answered is OMP's message_end of an assistant message: the model that answered, under
 // message.provider and message.model, which is the model that really served the turn, also after a
 // fallback moved it off the one the session started with. A message no model wrote names none (an
-// empty model, or Claude Code's `<synthetic>` through the bridge) and is no Answered. It carries
-// nothing of the message's text.
+// empty model, or Claude Code's `<synthetic>` through the bridge) and is no Answered; a message
+// whose provider or model holds U+0000 did answer, and is an Answered that names neither (Conn's
+// answeredBy). It carries nothing of the message's text.
 //
 // Generation is the launch the connection that read the frame was registered for, as its Hello
-// names it: one launch registers one session, so it is what tells an answer of the claim's session
-// from one of a process the claim has replaced, which can wait in the queues behind the
+// names it. A spawn starts a session and a resume continues it, so the machine takes an answer of
+// any launch from the one that spawned the claim's session (supervise's Machine.sessionFrom), and
+// drops one of a process whose session the claim has left, which can wait in the queues behind the
 // registration of the next session.
 type Answered struct {
 	Claim           claim.Token

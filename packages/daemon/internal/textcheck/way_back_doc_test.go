@@ -1,6 +1,7 @@
 package textcheck
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -72,6 +73,49 @@ func TestTheArchitectEntryWayBackExtractIsTheGuidesWayBackBlock(t *testing.T) {
 		architectEntryWayBackMark)
 }
 
+// A way back an operator cannot see is none: the rendered guide shows nothing of a fenced block
+// inside an HTML comment, so the reader refuses such a block as hidden even when its lines are
+// the ones a check wants, whether the comment closes after the block or is never closed. A block a
+// reader sees is read, the one after a hidden block that holds the same mark among them, and so is
+// a block after a fenced block that holds a "<!--", which opens no comment there. A text with no
+// block holding the mark is refused as such.
+func TestAWayBackIsReadOnlyFromAFencedBlockAReaderSees(t *testing.T) {
+	const (
+		heading = "Rolling back a release"
+		section = "#### " + heading + "\n\n"
+		mark    = "delete from schema_version where version = 20990101000001;"
+	)
+	for _, doc := range []struct {
+		shape, text, want string
+		err               error
+	}{
+		{"a block a reader sees",
+			section + "Run this:\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+			"select 1;\n" + mark, nil},
+		{"a block inside a comment",
+			section + "Run this:\n\n<!--\n```sql\nselect 1;\n" + mark + "\n```\n-->\n",
+			"", errHidden},
+		{"a block after a comment never closed",
+			section + "Run this: <!-- a note\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+			"", errHidden},
+		{"a block after a hidden block holding the same mark",
+			section + "<!--\n```sql\nselect 2;\n" + mark + "\n```\n-->\nRun this:\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+			"select 1;\n" + mark, nil},
+		{"a block after a fenced block holding a comment's opening",
+			section + "```html\n<!--\n```\n\nRun this:\n\n```sql\nselect 1;\n" + mark + "\n```\n",
+			"select 1;\n" + mark, nil},
+		{"no block holding the mark",
+			section + "Run this:\n\n```sql\nselect 1;\n```\n",
+			"", errNoWayBack},
+	} {
+		block, err := wayBackBlockIn(doc.shape, doc.text, heading, mark)
+		if !errors.Is(err, doc.err) || block != doc.want {
+			t.Errorf("%s: the way back reads %q and the error %v, want %q and %v: %q", doc.shape, block, err,
+				doc.want, doc.err, doc.text)
+		}
+	}
+}
+
 // assertTheExtractIsTheGuidesBlock holds the body of extract, a committed copy, to the fenced
 // block of the guide holding mark under heading, and names each line the two disagree on.
 func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, heading, mark string) {
@@ -88,35 +132,38 @@ func assertTheExtractIsTheGuidesBlock(t *testing.T, extract, heading, mark strin
 	t.Errorf("%s and %s's way back disagree:\n%s"+
 		"the extract is the copy internal/daemon checks the migration headers against, so the guide "+
 		"answers for the migrations only while the two are equal; change them in one commit",
-		extract, wayBackGuide, wayBackBlockDifference(copied, guide))
+		extract, wayBackGuide, wayBackBlockDifference("the extract", copied, guide))
 }
 
 // wayBackBlockOfTheGuide is a way back as docs/kubernetes.md carries it (wayBackBlockIn): the
-// content of the one fenced block holding mark, in the section heading opens.
-// extract is the committed copy of that block, which a failure names. A guide with no such block
-// stops the test rather than skipping it: an absence here would read exactly like a pass, and
-// what this check guards is the copy an operator runs at a rollback.
-func wayBackBlockOfTheGuide(t *testing.T, heading, mark, extract string) string {
+// content of the one fenced block a reader sees holding mark, in the section heading opens. held
+// is the text the check holds the guide's block to, which a failure names: a committed extract, or
+// a migration's header. A guide with no such block stops the test rather than skipping it: an
+// absence here would read exactly like a pass, and what this check guards is the copy an operator
+// runs at a rollback.
+func wayBackBlockOfTheGuide(t *testing.T, heading, mark, held string) string {
 	t.Helper()
-	block, err := wayBackBlockIn(shippedText(t, wayBackGuide), heading, mark)
+	block, err := wayBackBlockIn(wayBackGuide, shippedText(t, wayBackGuide), heading, mark)
 	if err != nil {
-		t.Fatalf("%s %v; that block is the way back an operator runs, and %s is its copy", wayBackGuide, err,
-			extract)
+		t.Fatalf("%v; that block is the way back an operator runs, and the check holds it to %s", err, held)
 	}
 	return block
 }
 
-// wayBackBlockIn answers the content of text's fenced block holding mark, without its fence lines.
-// That block must be the only one of the text that holds mark, and stand in the section heading
+// errNoWayBack is why a check refuses a text with no fenced block holding the mark it looks for.
+var errNoWayBack = errors.New("no fenced block holds it")
+
+// wayBackBlockIn is the way back that text, the guide called name, carries where a reader sees it
+// (visibleMarkdown): the content of the fenced block holding mark, without its fence lines. That
+// block must be the only one a reader sees that holds mark, and stand in the section heading
 // opens: from that heading's line to the next heading of its level or above, where a line inside
 // a fenced block opens no section. Each other text is refused, naming why: one with no such
-// heading or with two, one where no block holds mark, one where a second block holds it, which an
-// operator could take for the way back, and one whose block stands outside the section, which is
-// not the block the section tells them to run. A block an HTML comment hides from the rendered
-// guide is not this reader's to refuse: scripts/semantic-line-breaks.guides.test.ts refuses every
-// raw HTML block of docs/kubernetes.md, a comment among them.
-func wayBackBlockIn(text, heading, mark string) (string, error) {
-	lines := strings.Split(text, "\n")
+// heading or with two; one where only an HTML comment holds the block, which the rendered guide
+// does not show (errHidden); one where no block holds mark at all (errNoWayBack); one where a
+// second block holds it, which an operator could take for the way back; and one whose block
+// stands outside the section, which is not the block the section tells them to run.
+func wayBackBlockIn(name, text, heading, mark string) (string, error) {
+	lines := strings.Split(visibleMarkdown(text), "\n")
 	// section is the line of the heading and end the line of the next heading at its level or above,
 	// one past the text where there is none; holding is the opening line of each block holding mark.
 	section, level, end := 0, 0, len(lines)+1
@@ -143,8 +190,8 @@ func wayBackBlockIn(text, heading, mark string) (string, error) {
 			switch {
 			case opens == nil:
 			case opens[2] == heading && section > 0:
-				return "", fmt.Errorf("carries the heading %q twice, at lines %d and %d: a link to it reaches "+
-					"the first alone", heading, section, number)
+				return "", fmt.Errorf("%s carries the heading %q twice, at lines %d and %d: a link to it reaches "+
+					"the first alone", name, heading, section, number)
 			case opens[2] == heading:
 				section, level = number, len(opens[1])
 			case section > 0 && end > len(lines) && len(opens[1]) <= level:
@@ -154,17 +201,42 @@ func wayBackBlockIn(text, heading, mark string) (string, error) {
 	}
 	switch {
 	case section == 0:
-		return "", fmt.Errorf("carries no heading %q, whose section shows the way back", heading)
+		return "", fmt.Errorf("%s carries no heading %q, whose section shows the way back", name, heading)
+	case len(holding) == 0 && fencedBlockHolds(text, mark):
+		return "", fmt.Errorf("%s's way back an operator runs, the fenced block holding %q: %w", name, mark, errHidden)
 	case len(holding) == 0:
-		return "", fmt.Errorf("carries no fenced block holding %q", mark)
+		return "", fmt.Errorf("%s's way back an operator runs, the fenced block holding %q: %w", name, mark, errNoWayBack)
 	case len(holding) > 1:
-		return "", fmt.Errorf("carries %d fenced blocks holding %q, opening at lines %v: an operator cannot "+
-			"tell which is the way back, so keep the one under %q alone", len(holding), mark, holding, heading)
+		return "", fmt.Errorf("%s carries %d fenced blocks holding %q, opening at lines %v: an operator cannot "+
+			"tell which is the way back, so keep the one under %q alone", name, len(holding), mark, holding, heading)
 	case holding[0] < section || holding[0] > end:
-		return "", fmt.Errorf("carries its fenced block holding %q at line %d, outside the section %q opens "+
-			"at line %d: the operator runs the block that section shows", mark, holding[0], heading, section)
+		return "", fmt.Errorf("%s carries its fenced block holding %q at line %d, outside the section %q opens "+
+			"at line %d: the operator runs the block that section shows", name, mark, holding[0], heading, section)
 	}
 	return found, nil
+}
+
+// fencedBlockHolds is whether a fenced block of text as written, from a line opening "```" to the
+// next, holds mark as a line of its own: what tells a block only an HTML comment holds from none.
+func fencedBlockHolds(text, mark string) bool {
+	var block []string
+	inside := false
+	for _, line := range strings.Split(text, "\n") {
+		switch {
+		case !strings.HasPrefix(line, "```"):
+			if inside {
+				block = append(block, line)
+			}
+		case !inside:
+			inside, block = true, nil
+		default:
+			if slices.Contains(block, mark) {
+				return true
+			}
+			inside = false
+		}
+	}
+	return false
 }
 
 // The reader takes the way back an operator reads under its heading, and nothing else in its
@@ -196,7 +268,7 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 		{"no heading of that section", before + fenced + after, "no heading"},
 		{"the heading twice", before + opening + fenced + after + "\n" + opening + "Nothing here.\n", "twice"},
 	} {
-		got, err := wayBackBlockIn(guide.text, heading, mark)
+		got, err := wayBackBlockIn(guide.shape, guide.text, heading, mark)
 		switch {
 		case guide.refusal == "" && (err != nil || got != block):
 			t.Errorf("%s: the reader answers %q and %v, want %q", guide.shape, got, err, block)
@@ -207,26 +279,27 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	}
 }
 
-// wayBackBlockDifference renders the lines a copy of a way back and the guide's block disagree
-// on, each with its number inside the block, so a failing run names the edit to make rather than
-// two blocks to compare by eye. The copy is a committed extract or a migration's header, which the
-// caller's message names. internal/daemon keeps a rendering of the same shape for the header and
-// the copy; this file may not import that package (see wayBackMark above).
-func wayBackBlockDifference(copied, guide string) string {
-	copiedLines, guideLines := strings.Split(copied, "\n"), strings.Split(guide, "\n")
+// wayBackBlockDifference renders the lines other, the text label names, and the guide's block
+// disagree on, each with its number inside the block, so a failing run names the edit to make
+// rather than two blocks to compare by eye. internal/daemon keeps a rendering of the same shape
+// for the header and the copy; this file may not import that package (see wayBackMark above).
+func wayBackBlockDifference(label, other, guide string) string {
+	otherLines, guideLines := strings.Split(other, "\n"), strings.Split(guide, "\n")
+	width := max(len(label), len("the guide")) + len(":")
 	var difference strings.Builder
-	for i := range max(len(copiedLines), len(guideLines)) {
-		line, held := "", ""
-		if i < len(copiedLines) {
-			line = copiedLines[i]
+	for i := range max(len(otherLines), len(guideLines)) {
+		otherLine, guideLine := "", ""
+		if i < len(otherLines) {
+			otherLine = otherLines[i]
 		}
 		if i < len(guideLines) {
-			held = guideLines[i]
+			guideLine = guideLines[i]
 		}
-		if line == held {
+		if otherLine == guideLine {
 			continue
 		}
-		fmt.Fprintf(&difference, "line %d:\n\tthe copy:  %q\n\tthe guide: %q\n", i+1, line, held)
+		fmt.Fprintf(&difference, "line %d:\n\t%-*s %q\n\t%-*s %q\n", i+1, width, label+":", otherLine, width,
+			"the guide:", guideLine)
 	}
 	return difference.String()
 }

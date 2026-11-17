@@ -551,7 +551,6 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				"extension", event.ExtensionPath, "event", event.Event, "error", event.Error)
 		case "message_end":
 			if answered, ok := c.answeredBy(frame.JSON); ok {
-				answered.Claim, answered.Generation = c.claim, c.generation
 				c.events.push(answered)
 			}
 		}
@@ -583,17 +582,19 @@ func stepArgsHash(args []byte) string {
 // answer to a provider's refusal (internal/claudebridge's testdata/api-error-429.jsonl).
 const syntheticModel = "<synthetic>"
 
-// answeredBy is the model a message_end names as the one that answered: an assistant message
-// whose message.model is set and is not syntheticModel. A user's message, a tool's result and a
-// message no model wrote answer nothing, and neither does a frame that is not the shape Oh My Pi
-// writes (internal/testbin's omp frames, omp://rpc.md).
+// answeredBy is the Answered a message_end read on this connection makes, under the connection's
+// claim and the generation its hello was registered for: an assistant message whose message.model
+// is set and is not syntheticModel. A user's message, a tool's result and a message no model wrote
+// answer nothing, and neither does a frame that is not the shape Oh My Pi writes
+// (internal/testbin's omp frames, omp://rpc.md).
 //
-// Nor does a message whose provider or model holds U+0000: no store can keep that character
-// (PostgreSQL's text and jsonb refuse it), and the model an answer names is written into the
-// record of the step it served, in the transaction that ends the step, which would fail with it.
-// This is the one place a frame becomes an Answered, so every reader after it holds a storable
-// model; the frame is dropped with one line naming the claim and the field, never its text, and
-// the step's record names no model from it, as for an agent that named none.
+// A message whose provider or model holds U+0000 did answer, with a model no store can keep
+// (PostgreSQL's text and jsonb refuse that character), and the model an answer names is written
+// into the record of the step it served, in the transaction that ends the step, which would fail
+// with it. This is the one place a frame becomes an Answered, so every reader after it holds a
+// storable model: such a message is an Answered that names neither its provider nor its model,
+// with one line naming the claim and the field, never its text. So the model that answered before
+// it is not the last one, and the step's record names no model, as for an agent that named none.
 func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
 	var frame struct {
 		Message struct {
@@ -616,12 +617,14 @@ func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
 	if strings.ContainsRune(m.Model, 0) {
 		unstorable = append(unstorable, "message.model")
 	}
+	answered := Answered{Claim: c.claim, Generation: c.generation}
 	if len(unstorable) > 0 {
 		c.log.Warn("worker-stream: dropped the model a message_end named: it holds U+0000, which no store can keep",
 			"claim", c.claim, "field", strings.Join(unstorable, " and "))
-		return Answered{}, false
+		return answered, true
 	}
-	return Answered{Provider: m.Provider, Model: m.Model}, true
+	answered.Provider, answered.Model = m.Provider, m.Model
+	return answered, true
 }
 
 // answerShim hands a frame the shim answered itself to the request waiting on its id; one nobody

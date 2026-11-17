@@ -1205,7 +1205,10 @@ func recordedOutside(tree string, children []releasedChild) []intake.AdoptedChil
 
 // phaseBackward applies a backward move: a phase worker's on its own issue (the grant's), or the
 // tree architect's on an issue it owns (architectOwns, as sign_off), named by the request, from
-// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED).
+// accepting. The workflow decides whether the requester runs the phase (BACKWARD_REFUSED), so a
+// move it applies ends the requester's own step — the worker's phase, or accepting, the tree
+// architect's — and each waits for the requester's stream first (awaitStreamOf), as a completion
+// and a sign-off do.
 func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 	var req PhaseBackwardRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -1235,6 +1238,7 @@ func (s *server) phaseBackward(w http.ResponseWriter, r *http.Request) {
 		if !ok || !s.architectOwns(w, r, architect, recorded, "request_backward_move") {
 			return
 		}
+		s.awaitStreamOf(r.Context(), architect.Claim)
 		s.applyFact(w, r, requestFactID("phase/backward"),
 			intake.BackwardMove{Issue: req.Issue, Requester: claim.RoleArchitect, To: req.To, Reason: req.Reason}, PhaseBackwardResponse{})
 		return

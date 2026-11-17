@@ -38,7 +38,7 @@ func TestStepOfReadsTheDefaultSteps(t *testing.T) {
 			t.Fatalf("the default step %q names a role that works no phase", step)
 		}
 		place, got, _, ok := stepOf(at)
-		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || got != role {
+		if want := (record.StepPlace{Task: "default", Kind: "step", Place: i + 1}); !ok || place != want || got != stepRole(role) {
 			t.Errorf("stepOf(%s) = %+v, role %q, ok %v; want %+v, role %q", at, place, got, ok, want, role)
 		}
 	}
