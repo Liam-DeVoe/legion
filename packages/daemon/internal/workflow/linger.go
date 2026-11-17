@@ -320,8 +320,10 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) 
 		// The linger stops every member's step, the root's being leave's. A member that awaits its
 		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
 		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
-		// readmit, startMidPhaseMembers), and the linger's close stops one it hands over to nobody
-		// (lingerExpired), so Dispatch never holds a stopped merge that landed, nor an open one.
+		// readmit, startMidPhaseMembers), the linger's close stops one it hands over to nobody whose
+		// pull request is not open (lingerExpired), and the unmerged close of a pull request after
+		// the linger's close stops one that close left open (closed), so Dispatch never holds a
+		// stopped merge that landed, nor an open one.
 		if member.Key != root.Key && !awaitsMerge(member) {
 			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
 				return err
