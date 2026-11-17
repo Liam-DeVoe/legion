@@ -48,6 +48,8 @@ const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
   child_issue: false,
   comment: true,
   constraint: true,
+  // A criterion and a reading are blocks of the issue's documents, as a statement is.
+  criterion: true,
   decision: true,
   document: false,
   finding: true,
@@ -57,6 +59,7 @@ const INVOKED_ON: Readonly<Record<NodeType, boolean>> = {
   lens: true,
   message: true,
   plan_task: true,
+  reading: true,
   requirement: true,
   result: false,
   risk: true,

@@ -524,7 +524,9 @@ test("Escape gives the focus back", async () => {
   }
 });
 
-/** The kinds of node the invoke route takes (R4), written out rather than read from the code. */
+/** The kinds of node the invoke route takes (R4), written out rather than read from the code:
+ *  every block of the issue's documents, so the criterion and the reading the schema added
+ *  since the plan take it as a statement does. */
 const OFFERED: readonly NodeType[] = [
   "requirement",
   "check",
@@ -532,6 +534,8 @@ const OFFERED: readonly NodeType[] = [
   "decision",
   "callout",
   "image",
+  "criterion",
+  "reading",
   "ask",
   "comment",
   "message",
