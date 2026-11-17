@@ -4327,7 +4327,9 @@ A read-only broker token carries no project either, but none of the three checks
   Without the bucket, it answers a lapsed session for the registry's last-seen retention (`session.WithLastSeenRetention`, `session.LastSeenMemory` (2 hours) by default and never less than one TTL) past that registration's expiry.
   With the bucket, which a listener with a lease opens, the bucket's age ends the answer first: the state bucket drops a `seen.` record 20 minutes after its last write (`listenerStateMaxAge`), and no pod answers once the record is gone (`internal/session/lastseen.go`).
   So the answer lasts 20 minutes past the last write.
-  That is shorter than the gone horizon (1 hour), so a caller told a session is gone can no longer be told when it was last seen, and it covers the session TTL and the interest reaper's allowance (`store.InterestReapGrace` + `store.InterestRefreshAge`, `store.InterestReapAllowance`, 15 minutes) only at the default 5 minute TTL (`cmd/listener/README.md`, "Last seen").
+  That is shorter than the gone horizon (1 hour), so a caller told a session is gone can no longer be told when it was last seen.
+  While the session TTL is at most 15 minutes it outlasts every row the interest reaper holds, which goes between 10 and 20 minutes after its session's last heartbeat (`store.InterestReapAllowance`, `store.InterestReapGrace` + `store.InterestRefreshAge`, 15 minutes after the row's `updated_at`), so `GET /v1/interests/` gives a last heartbeat for each row it lists.
+  A longer TTL leaves a dead session's row listed with no heartbeat (`cmd/listener/README.md`, "Last seen").
   The state bucket's `MaxAge` (`listenerStateMaxAge`, 20 minutes) bounds how long the shared record itself stands, and every open raises a bucket an earlier build created with a shorter age.
   An id's revision fence does not leave with its per-process last-seen record: the last-seen deadline (`expireDue`) drops only that record.
   The next completed read that finds the bucket no longer holds the key drops the fence (`kvwatch.Copy.CompleteRead`).

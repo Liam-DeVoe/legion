@@ -45,7 +45,9 @@ A standby runs none of them, never creates or updates the durable, and registers
 The lease is the key `lease.<durable>` (`lease.listener-<machine id>`) in the KV bucket `envoy_listener` (`bus.ListenerStateBucket`), which the listener creates at `ENVOY_NATS_REPLICAS` replicas, file storage, one value per key and a 20 minute `MaxAge` (`listenerStateMaxAge`), raising a bucket an earlier build created with a shorter one on every open.
 The age is sized by the `seen.` records beside the lease, not by the lease:
 every pod answers a lapsed session's `last_seen` out of that record alone, and the session registry would report it for the session TTL and its last-seen retention (`session.LastSeenMemory`, 2 hours) past the session's last registration write, so the bucket's age, which drops the record 20 minutes after that write, is what ends the answer.
-At the default 5 minute TTL those 20 minutes are the session TTL and the interest reaper's allowance (`store.InterestReapAllowance`, 15 minutes), so `/v1/interests/` can give the last heartbeat of every row that reaper still holds.
+The interest reaper deletes a dead session's row at its first pass after both the session's record and its own allowance have run out (`store.InterestReapAllowance`, 15 minutes after the row's `updated_at`, which lags the session's last heartbeat by up to `store.InterestRefreshAge`).
+So while the session TTL is at most 15 minutes the row goes between 10 and 20 minutes after that heartbeat, and `/v1/interests/` can give the last heartbeat of every row that reaper still holds.
+A longer TTL holds a dead session's row past those 20 minutes, and the listing then gives it no heartbeat.
 Its value is JSON: `holder` (the holding pod's instance), `boot` (random per process start), `deliver_subject`, `service_since`, `acquired_at`, `released`, `former_boots` (below), and `stale_binding`, `unsettled`, `ack_wait_owed` and `receiving` ("Take-over" below);
 a field this build does not know is kept across every rewrite.
 `former_boots` names the boots that held the lease before `holder` (`formerBoots`, `lease_record.go`):
@@ -340,8 +342,10 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
 
 - **Last seen** (`seen.<session token>` in `envoy_listener`, the same session token as in the ledger key above):
   every session registration write records when the session was last seen, and every pod answers a lapsed session's `last_seen` out of that record alone, so two pods never answer one session differently - a pod that watched the session keeps no answer of its own.
-  The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write, which is the session TTL and the interest reaper's allowance only at the default 5 minute TTL;
-  with no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
+  The registry would report it for the session TTL and 2 hours (`session.LastSeenMemory`) past the last write, but the bucket's `MaxAge` drops the record 20 minutes after that write, so the answer lasts 20 minutes past the last write.
+  While the session TTL is at most 15 minutes that outlasts every row the interest reaper holds, so `/v1/interests/` gives the last heartbeat of each row it lists ("The delivery lease" above states that reaper's own deadline).
+  A longer TTL leaves a dead session's row listed with no heartbeat.
+  With no record in the bucket - it was never written, its age removed it, or it could not be read within the request's budget - no pod answers one.
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).

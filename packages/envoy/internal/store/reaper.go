@@ -31,9 +31,11 @@ const (
 // (session.WithLastSeenBucket, which a listener with a delivery lease opens) the bucket drops
 // that heartbeat listenerStateMaxAge (20 minutes) after the session's last write. Reap deletes the
 // row at its first pass after both this allowance and the session's record have run out (the
-// listener passes every 5 minutes, and the record ends one TTL after its last write), so at the
-// default 5 minute TTL the row goes about when its heartbeat does, and a longer TTL leaves the row
-// listed with no heartbeat (cmd/listener/main.go, where the bucket is wired).
+// listener passes every 5 minutes, and the record ends one TTL after its last write). A row's
+// UpdatedAt lags the heartbeat by up to InterestRefreshAge, so while the TTL is at most 15 minutes
+// the row goes between 10 and 20 minutes after the last heartbeat, and every row this reaper still
+// holds has one. A longer TTL leaves the row listed with no heartbeat (cmd/listener/main.go, where
+// the bucket is wired).
 func InterestReapAllowance(grace time.Duration) time.Duration {
 	return grace + InterestRefreshAge
 }
