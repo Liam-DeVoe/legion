@@ -68,8 +68,9 @@ says which), its first line exactly `Clear defect from <your role token>`. It pr
   (`dispatch://<KEY>`)
 - where the fix belongs: the repository and the component
 - the approved root the fix belongs to, when you know one: a class root whose class holds the fix,
-  or a running tree whose unfinished work holds it. A mention of the class in prose is no link, so
-  name the root by its key. The controller files or links the issue under that root
+  or a running tree whose unfinished work holds it. A `done` issue is no such root: a fix of what it
+  delivered is new work, which the controller files with no parent. A mention of the class in prose
+  is no link, so name the root by its key. The controller files or links the issue under that root
   (`skill://legion-controller/references/finding-asks.md#link-an-issue-to-its-approved-root`).
 - the fix
 - the evidence comment, `dispatch://<REPORT KEY>/comment/<id>`
