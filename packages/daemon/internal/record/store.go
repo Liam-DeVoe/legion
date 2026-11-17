@@ -684,7 +684,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, task`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -874,9 +874,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
-		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, task,
+		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
 		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, 0, 0, '')
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -886,12 +886,12 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
-		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha, task = excluded.task`,
+		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, pr.Task,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1499,7 +1499,7 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA, &pr.Task); err != nil {
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -2332,6 +2332,59 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 		return fmt.Errorf("enqueue %s for %s: %w", row.Kind, row.Issue, err)
 	}
 	return nil
+}
+
+// liveClaimStates are the claim states in which a claim's session holds its role: the states
+// supervise.HoldsCapability answers true for, a registered agent with a running process. A
+// suspended, a failed and a retired claim hold none, and neither does one still launching.
+var liveClaimStates = []string{
+	string(supervise.StateRegistered), string(supervise.StateReady), string(supervise.StateWorking), string(supervise.StateIdle),
+}
+
+// RoleHolder is one live role of an issue and the session that holds it.
+type RoleHolder struct {
+	Role    claim.Role
+	Session string
+}
+
+// LiveRoleHolders is the session of each live claim of issue, by role: a claim in one of
+// liveClaimStates that records a session. It is what a role-holder publication sends.
+func (s *Postgres) LiveRoleHolders(ctx context.Context, tx pgx.Tx, issue string) ([]RoleHolder, error) {
+	rows, err := tx.Query(ctx, `select role, session from claims
+		where issue = $1 and session <> '' and state = any($2)
+		order by role`, issue, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	holders, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (RoleHolder, error) {
+		var holder RoleHolder
+		err := row.Scan(&holder.Role, &holder.Session)
+		return holder, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the live role holders of %s: %w", issue, err)
+	}
+	return holders, nil
+}
+
+// RecentClaimIssues is every issue of the Dispatch project whose key starts `<project>-` and
+// that has a live claim, or a claim that changed at or after since (claims.updated_at, which every
+// claim write sets), in key order. The boot publishes each of them, for what a release that
+// published nothing left: the live ones because a daemon that starts over running sessions has
+// published nothing for them yet, and the recent ones because that release ended claims and
+// published none of those ends.
+func (s *Postgres) RecentClaimIssues(ctx context.Context, tx pgx.Tx, dispatchProject string, since time.Time) ([]string, error) {
+	rows, err := tx.Query(ctx, `select distinct issue from claims
+		where starts_with(issue, $1 || '-') and (updated_at >= $2 or state = any($3))
+		order by issue`, dispatchProject, since, liveClaimStates)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of %s with a recent claim: %w", dispatchProject, err)
+	}
+	return issues, nil
 }
 
 const outboxColumns = `id, kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until`

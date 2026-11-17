@@ -328,7 +328,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		}
 		steps = append(steps, parsed[0])
 	}
-	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, HasSteps: true, Steps: steps}}}
+	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))

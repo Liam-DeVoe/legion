@@ -48,6 +48,8 @@ func TestMain(m *testing.M) {
 //     result;
 //   - "handoff ok": a `legion` handoff_complete call and its result;
 //   - "say <text>": an assistant message of text;
+//   - "models <model>…": an assistant message of text for each model named, each naming its own
+//     model, as Claude Code names the model that wrote each message;
 //   - "held <name>": the re-emission only once the test releases name (rig.release);
 //   - "wait <name>": an assistant message "done" only once the test releases name;
 //   - "die": exits, never re-emitting it;
@@ -157,6 +159,11 @@ func fakeClaude() int {
 			assistant(text("completed"))
 		case strings.HasPrefix(body, "say "):
 			assistant(text(strings.TrimPrefix(body, "say ")))
+		case strings.HasPrefix(body, "models "):
+			for _, model := range strings.Fields(strings.TrimPrefix(body, "models ")) {
+				emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "model": model,
+					"content": []map[string]any{text("answered")}}})
+			}
 		case strings.HasPrefix(body, "api-error-529 "):
 			assistant(text(strings.TrimPrefix(body, "api-error-529 ")))
 			providerFailed(529)
@@ -343,12 +350,22 @@ func (r *rig) nextRaw() map[string]any {
 	}
 }
 
-// next is the next frame the bridge wrote that is not a pane summary (tool_execution_start) and
-// not the name of the model that answered (answerFrame): the cases that read next are about turns.
+// nextWithSummaries is the next frame the bridge wrote that is not the name of the model that
+// answered (answerFrame), pane summaries (tool_execution_start) included.
+func (r *rig) nextWithSummaries() map[string]any {
+	r.t.Helper()
+	for {
+		if frame := r.nextRaw(); !answerFrame(frame) {
+			return frame
+		}
+	}
+}
+
+// next is nextWithSummaries without the pane summaries: the cases that read next are about turns.
 func (r *rig) next() map[string]any {
 	r.t.Helper()
 	for {
-		if frame := r.nextRaw(); frame["type"] != "tool_execution_start" && !answerFrame(frame) {
+		if frame := r.nextWithSummaries(); frame["type"] != "tool_execution_start" {
 			return frame
 		}
 	}
@@ -791,10 +808,7 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 	r.open()
 	var types []string
 	for ends := 0; ends < 2; {
-		frame := r.nextRaw()
-		if answerFrame(frame) {
-			continue
-		}
+		frame := r.nextWithSummaries()
 		typ, _ := frame["type"].(string)
 		types = append(types, typ)
 		if typ == "agent_end" {
@@ -814,8 +828,9 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 
 // Each answer of Claude Code's model reaches the daemon as Oh My Pi's message_end names one: the
 // model under message.model, the provider anthropic. That is what the record of a step names as
-// the model that served it. A message no model wrote — Claude Code's `<synthetic>` answer to a
-// provider's 429 — names no model.
+// the model that served it, so each message names the model that wrote it: two models answering
+// in one turn are named in their order, neither as the model of the recording nor as the one before.
+// A message no model wrote — Claude Code's `<synthetic>` answer to a provider's 429 — names no model.
 func TestTheBridgeNamesClaudesModel(t *testing.T) {
 	framesUntilResult := func(r *rig) []map[string]any {
 		var frames []map[string]any
@@ -845,6 +860,19 @@ func TestTheBridgeNamesClaudesModel(t *testing.T) {
 		t.Fatal("the turn the model answered wrote no message_end naming its model")
 	}
 
+	changed := newRig(t, "-p", "--resume", sessionID)
+	changed.prompt("p1", "models claude-first-1 claude-second-2")
+	var named []any
+	for _, frame := range framesUntilResult(changed) {
+		if answerFrame(frame) {
+			message, _ := frame["message"].(map[string]any)
+			named = append(named, message["model"])
+		}
+	}
+	if want := []any{"claude-first-1", "claude-second-2"}; !slices.Equal(named, want) {
+		t.Fatalf("a turn two models answered in names %v, want %v: each message names the model that wrote it", named, want)
+	}
+
 	failed := newRig(t, "-p", "--resume", sessionID)
 	failed.prompt("p1", "replay api-error-429.jsonl")
 	failed.open()
@@ -865,10 +893,7 @@ func TestABackgroundTaskFinishingDuringATurnDoesNotEndIt(t *testing.T) {
 	// The turn's two tool calls, the background command and the foreground one; the task's three
 	// lines come between the second call and the turn's result, which the gate holds back.
 	for i := range 2 {
-		frame := r.nextRaw()
-		for answerFrame(frame) {
-			frame = r.nextRaw()
-		}
+		frame := r.nextWithSummaries()
 		if frame["type"] != "tool_execution_start" {
 			t.Fatalf("got %v, want tool call %d of the turn", frame, i+1)
 		}

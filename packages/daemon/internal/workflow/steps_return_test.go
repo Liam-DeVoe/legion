@@ -39,7 +39,7 @@ func returnEngine() *Engine {
 func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint64, words ...string) {
 	t.Helper()
 	v := record.PlanVersion{Issue: key, Generation: generation, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
-		GivenBy: claim.Token(token(t, key, claim.RoleArchitect)), GivenAt: stepClock}
+		GivenBy: claim.Token(treeRoleToken(t, key, claim.RoleArchitect)), GivenAt: stepClock}
 	task := record.PlanTask{Issue: key, Generation: generation, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
 	roles := plan.BuiltinRoles()
 	steps := make([]record.PlanStep, 0, len(words))
@@ -194,7 +194,7 @@ func TestAFailedStepReturnsAndNoCountStopsATask(t *testing.T) {
 	})
 
 	t.Run("I-2: a plan whose one step is the tester is refused, so it waits for slice 6", func(t *testing.T) {
-		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", HasSteps: true, Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
+		given := plan.Plan{ArtifactID: "plan-artifact", Version: 2, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "tester"}}, Text: "Test it."}}}
 		refusals := append(plan.Validate(given, builtinDeployment), plan.Supported(given)...)
 		want := plan.Refusal{Task: "a", Reason: "task a has no step implementer. This release of Legion does not carry it out yet."}
 		if len(refusals) != 1 || refusals[0] != want {

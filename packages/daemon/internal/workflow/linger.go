@@ -110,7 +110,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 		issue.Hold = nil
-		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+		if err := e.WriteIssue(ctx, tx, issue); err != nil {
 			return err
 		}
 	}
@@ -224,17 +224,25 @@ func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
 // its key: its record's phase is done, so todo with the label re-admits it as a closed root's does,
-// and nothing else is written. Its claims, its pod and its tree's cleanup are the operator's, which
-// share the root's tokens and names, so no suspend, IssueSuspend, linger close or disarm is queued
-// for the workflow's record, and the workflow never ran a phase of it to check in production.
+// and its task, where it has one, ends as a leave's does; nothing else is written. Its claims, its
+// pod and its tree's cleanup are the operator's, which share the root's tokens and names, so no
+// suspend, IssueSuspend, linger close or disarm is queued for the workflow's record, and the
+// workflow never ran a phase of it to check in production.
 func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
-	// The record's phase is done and its task keeps its place (moveTask): this takes the root out of
-	// the workflow without ending its task, which the workflow never started, since the operator's
-	// tree runs the work under this key. A todo re-admits it as a closed root's does.
-	root.Phase, root.Hold, root.Awaiting = phase.Done, nil, nil
-	return e.store.PutIssue(ctx, tx, root)
+	// The record's phase is done, and its task ends with its run where it stands, as every leave's
+	// does (moveTask, leaveState), though the workflow never started it: the operator's tree runs
+	// the work under this key. A todo re-admits it as a closed root's does.
+	w, err := e.walk(ctx, tx, root)
+	if err != nil {
+		return err
+	}
+	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
+		return err
+	}
+	root.Hold, root.Awaiting = nil, nil
+	return e.WriteIssue(ctx, tx, root)
 }
 
 // LeaveUnslotted takes out of the workflow a root admission found in it with neither a slot nor a
@@ -357,14 +365,17 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	root.Hold, root.Awaiting = nil, nil
-	if err := e.store.PutIssue(ctx, tx, root); err != nil {
+	if err := e.WriteIssue(ctx, tx, root); err != nil {
 		return err
 	}
 	for _, member := range members {
 		// The linger stops every member's step, the root's being leave's. A member that awaits its
 		// merge keeps its merge step open: the merge that lands ends it passed (closeMerged), the
 		// hand-over at the linger's close or the promotion of the tree again stops it (admit's
-		// readmit, startMidPhaseMembers), so Dispatch never holds a stopped merge that landed.
+		// readmit, startMidPhaseMembers), the linger's close stops one it hands over to nobody whose
+		// pull request is not open (lingerExpired), and the unmerged close of a pull request after
+		// the linger's close stops one that close left open (closed), so Dispatch never holds a
+		// stopped merge that landed, nor an open one.
 		if member.Key != root.Key && !awaitsMerge(member) {
 			if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
 				return err
@@ -535,6 +546,29 @@ func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.Linge
 	handed, err := e.unfinishedHandOvers(ctx, tx, *issue, members)
 	if err != nil {
 		return intake.Result{}, err
+	}
+	// The close retires every member. One that still awaits its merge and is not handed over
+	// (unfinishedHandOvers: under a parked root, a member held from merging, or one whose pull
+	// request is not open) has its merge step open still, which the linger left open for the
+	// merge to end (beginLinger). Its step ends here, stopped, where its pull request is not open:
+	// that merge can no longer land. Where it is open, the merge can still land, and its close in
+	// the lingering tree ends the step passed (closeMerged), or the pull request closes unmerged
+	// and that close ends it, stopped (closed's endMergeOfAClosedTree). A member handed over keeps
+	// the step open for its readmit to end (admit's readmit).
+	for _, member := range members {
+		if member.Key == issue.Key || !awaitsMerge(member) || slices.ContainsFunc(handed, func(h record.Issue) bool { return h.Key == member.Key }) {
+			continue
+		}
+		pr, err := e.store.PullRequest(ctx, tx, member.Key)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if pr != nil && pr.State == record.PullRequestOpen {
+			continue
+		}
+		if err := e.endStep(ctx, tx, member, stepStopped); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if err := e.warnKeptDecisionsOfAClosedTree(ctx, tx, *issue, handed); err != nil {
 		return intake.Result{}, err

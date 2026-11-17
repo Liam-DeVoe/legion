@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,12 +30,8 @@ func stepWrites(t *testing.T, pool *pgxpool.Pool, issue string) []record.StepRec
 	defer rows.Close()
 	var got []record.StepRecord
 	for rows.Next() {
-		var payload []byte
-		if err := rows.Scan(&payload); err != nil {
-			t.Fatalf("scan a step record of %s: %v", issue, err)
-		}
 		var write record.StepRecord
-		if err := json.Unmarshal(payload, &write); err != nil {
+		if err := rows.Scan(&write); err != nil {
 			t.Fatalf("decode a step record of %s: %v", issue, err)
 		}
 		got = append(got, write)
@@ -91,7 +86,7 @@ func assertStepWrites(t *testing.T, pool *pgxpool.Pool, key string, want ...step
 		if g.Result != nil {
 			result = *g.Result
 		}
-		if g.ID != workflow.StepID(key, w.generation, "default", w.kind, w.step, w.starts) || g.Kind != w.kind || g.Step != w.step ||
+		if g.ID != workflow.StepID(key, w.generation, record.StepPlace{Task: "default", Kind: w.kind, Place: w.step}, w.starts) || g.Kind != w.kind || g.Step != w.step ||
 			g.Generation != w.generation || (g.EndedAt != nil) != (w.end != "") || result != w.end {
 			fail(fmt.Sprintf("row %d is not %+v", i, w))
 		}
@@ -264,7 +259,9 @@ func TestAReadmittedTreeEndsTheOpenMergeStepBeforeItStartsTheMemberAgain(t *test
 // stopped, and the promotion starts a new run of the same place, another record. A member whose
 // phase worker the promotion starts gets it from that start (workflow.Engine.StartPromotedWorker);
 // a member in accepting, whose role is the tree's architect, and one held from testing, whose hold
-// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord).
+// starts no worker, get it from the promotion's own start (workflow.Engine.StartStepRecord). The
+// member in accepting is its tree's work: each write of its record names the tree's architect,
+// never an architect of the member's own.
 func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	members := []struct {
@@ -281,4 +278,10 @@ func TestATreeAdmittedAgainStartsEachMemberAgain(t *testing.T) {
 		assertStepWrites(t, pool, member.key, start(member.kind, member.step, 1, 1), end("stopped", member.kind, member.step, 1, 1), start(member.kind, member.step, 1, 2))
 	}
 	assertStepWrites(t, pool, unstarted)
+	architect, own := architectToken(t, finishedRoot), architectToken(t, inAccepting)
+	for _, w := range stepWrites(t, pool, inAccepting) {
+		if w.Agent != string(architect) || w.Agent == string(own) {
+			t.Fatalf("a write of %s's acceptance names agent %q, want the tree's architect %s, not its own %s", inAccepting, w.Agent, architect, own)
+		}
+	}
 }

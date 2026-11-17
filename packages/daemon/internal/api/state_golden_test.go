@@ -1497,7 +1497,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 
-// The two routes of the owner's plan (contract 156) each have a fixture, named for its route as
+// The two routes of the owner's plan (contract 162) each have a fixture, named for its route as
 // the routes above are. register_plan answers the plan it took, each task with the steps its block
 // names as the plan writes them (registeredPlan), and stop_task answers the empty object of a
 // fact route. `@legion/contracts` parses both, so a field the daemon adds to either is caught
@@ -1507,9 +1507,8 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
 		Version:    4,
 		Tasks: []plan.Task{{
-			ID:       "a",
-			HasSteps: true,
-			Steps:    []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
 	})})
 	golden(t, "task-stop.json", EmptyResponse{})

@@ -119,19 +119,13 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 	return phase.Admitted
 }
 
-// moveTask is the one writer of where a task stands (C8): it moves w's task to the place of to in
-// state (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the
-// phase that place derives (issuePhaseOf), in the caller's transaction and before the caller's
-// write of issue (record.Store.PutIssue), so the two never disagree in the store. w then stands
-// where the task does, for whatever the caller reads of it after the move. A run with no plan rows
-// has no task to move, and issue.Phase is to, as it always was. A move to where the task already
-// stands writes nothing. The caller clears or keeps issue.Hold itself.
-//
-// A write of issues.phase that does not move the task keeps its place and says so where it is
-// made: a hold, which overlays held on the derived phase (claimFailed); the retry of a hold, which
-// puts back Hold.From, the derived phase (retryPhase); a root's wait on a person before its first
-// step (enterAwaiting); a root the operator's tree holds, whose task never started
-// (leaveUnderOperator); and an adopted member parked at a new run (moveIntoTree).
+// moveTask is the one writer of where a task stands: it moves w's task to the place of to in state
+// (record.Store.MoveTask), keeping its place on a move to done, and sets issue.Phase to the phase
+// that place derives (issuePhaseOf), in the caller's transaction and before the caller's write of
+// issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
+// the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
+// move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
+// itself.
 func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, state string) error {
 	if !w.Stored {
 		issue.Phase = to
@@ -152,6 +146,36 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	}
 	issue.Phase = issuePhaseOf(*w, place, state)
 	return nil
+}
+
+// WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
+// and of admission: no other code of either package calls a store's PutIssue (the scan of
+// TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace). issues.phase and the place of the
+// run's task are two records of where the issue stands, and WriteIssue refuses a write in which
+// they disagree: the issue stands in the phase its task's place and state derive (issuePhaseOf), a
+// hold overlays that phase and names it (record.StandsAt), and a root that waits on a person
+// before its first step stands in awaiting_person over the admitted of a task at no act. It reads
+// the walk in the caller's transaction, after any move of the task (moveTask), so a write that
+// names its phase itself is checked against the store and not against the caller's copy: one read
+// of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
+// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows.
+func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if w.Stored {
+		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
+		if at != task && (at != phase.AwaitingPerson || task != phase.Admitted) {
+			stands := string(at)
+			if at != issue.Phase {
+				stands = "held from " + stands
+			}
+			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
+				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
+		}
+	}
+	return e.store.PutIssue(ctx, tx, issue)
 }
 
 // row is the row of w's table that moves an issue standing in from on trigger, into target where
@@ -185,9 +209,9 @@ func returnsWork(trigger TriggerKind) bool {
 // effects become the effects of a move into target (effectsInto). A target that is not a step of
 // the task before from returns nothing.
 func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phase, snapshot Snapshot) (Row, bool) {
-	at, ok := w.PlaceOf(from)
-	to, before := w.PlaceOf(target)
-	if !ok || !before || at.Kind != record.PlaceStep || to.Kind != record.PlaceStep || to.Position >= at.Position {
+	at, _ := w.PlaceOf(from)
+	to, _ := w.PlaceOf(target)
+	if at.Kind != record.PlaceStep || to.Kind != record.PlaceStep || to.Position >= at.Position {
 		return Row{}, false
 	}
 	for _, row := range w.table() {
@@ -206,8 +230,8 @@ func (w Walk) returnRow(from phase.Phase, trigger TriggerKind, target phase.Phas
 // hold comes after its implementer (plan.Supported), so only a stored type that no plan gives
 // reaches that answer.
 func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
-	at, ok := w.PlaceOf(from)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(from)
+	if at.Kind != record.PlaceStep {
 		return "", false
 	}
 	for i, step := range w.Steps[:at.Position-1] {
@@ -216,6 +240,26 @@ func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
 		}
 	}
 	return "", false
+}
+
+// returnOf is the row the failed step of w's task standing where issue stands moves by on trigger
+// when its completion names no step to return to (target ""): the return of its work to the step
+// its plan reads from the steps' recorded types (returnTarget), or stops, where no step before it
+// can take the work and the task stops instead (stopUnreturned). A run with no plan rows, and
+// every other move, keeps row, whose target for a failed step is implementing, as today's line's.
+func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Phase, row Row, snapshot Snapshot) (Row, bool, error) {
+	if !w.Stored || !returnsWork(trigger) || target != "" {
+		return row, false, nil
+	}
+	to, found := w.returnTarget(issue.Phase)
+	if !found {
+		return Row{}, true, nil
+	}
+	returned, ok := w.row(issue.Phase, trigger, to, snapshot)
+	if !ok {
+		return Row{}, false, fmt.Errorf("return the work of %s from %s to %s: its line %v holds no such return", issue.Key, issue.Phase, to, w.Line)
+	}
+	return returned, false, nil
 }
 
 // returnStep is the phase of step n of w's task, the step that the report of the failed step
@@ -232,8 +276,8 @@ func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Ph
 		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
 			n, issue.Key), nil
 	}
-	at, ok := w.PlaceOf(failed)
-	if !ok || at.Kind != record.PlaceStep {
+	at, _ := w.PlaceOf(failed)
+	if at.Kind != record.PlaceStep {
 		return "", "", fmt.Errorf("judge returnTo %d of %s: the failed phase %s is no step of the line %v of its task %s", n, issue.Key, failed, w.Line, w.Task)
 	}
 	role := w.Steps[at.Position-1].Role

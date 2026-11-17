@@ -18,11 +18,10 @@ import (
 // putPullRequest records pr and marks its issue moved where the write is news of the pull
 // request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
 // in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
-// it but two: the row is written from ten places — a pull request opened, reopened,
-// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review, the
-// task of the run named on it (nameTaskOnPullRequest) — and a write site added later would
-// otherwise have to remember the mark. Routing them through one function is what makes
-// forgetting it hard rather than easy.
+// it but two: the row is written from nine places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review —
+// and a write site added later would otherwise have to remember the mark. Routing them through
+// one function is what makes forgetting it hard rather than easy.
 //
 // The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
 // stands. The first is the listener's duplicate of a settlement the pass already built
@@ -57,30 +56,6 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 		return nil
 	}
 	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
-}
-
-// pullRequestTask is the task the pull request of w's run names (record.PullRequest.Task): the
-// run's one task, and none for a run with no plan rows, which names a task nowhere (R20).
-func pullRequestTask(w Walk) string {
-	if !w.Stored {
-		return ""
-	}
-	return w.Task
-}
-
-// nameTaskOnPullRequest writes the task of w's run on issue's pull request row, where the record
-// holds one that names another (record.PullRequest.Task). Every other write keeps the task the
-// row was read with; these two name it again: the first step of a run, whose open pull request can
-// outlive an earlier run of another plan (planFirstStep), and the start of the task a version put
-// in the place of a stopped one (restartTask). An issue with no pull request recorded has nothing
-// to name it on, and its opened names the task when it arrives (pullRequestOpened).
-func (e *Engine) nameTaskOnPullRequest(ctx context.Context, tx pgx.Tx, issue string, w Walk) error {
-	pr, err := e.store.PullRequest(ctx, tx, issue)
-	if err != nil || pr == nil || pr.Task == pullRequestTask(w) {
-		return err
-	}
-	pr.Task = pullRequestTask(w)
-	return e.putPullRequest(ctx, tx, *pr)
 }
 
 // pullRequestNews says whether the write of after over before is news of the pull request: the
@@ -150,9 +125,7 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // deletes a pull request that is not open, and all of them with it. An issue that waits to close on
 // its recorded merge (awaitsMerge) keeps that merge: GitHub never sends the merge again, so a pull
 // request opened from its branch is not recorded, while an issue set back to todo reruns and its
-// branch's new pull request replaces the merged one. The row of a pull request the record does
-// not hold is the row's first write, so it names the task of the issue's run (pullRequestTask); a
-// reopen keeps the task its row names, as every later write does.
+// branch's new pull request replaces the merged one.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || issue == nil {
@@ -194,8 +167,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		// The reopen keeps the pushes - facts about commits - and the head run, so a push that
 		// arrives after the reopen settles the move the reopen made as it would have had it
-		// arrived first (classify.Reopen); the CI settlement starts afresh. It keeps the task its
-		// row names too.
+		// arrived first (classify.Reopen); the CI settlement starts afresh.
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
 		pr.ReviewSeen = recorded.ReviewSeen
 		pr.Pushes, pr.Moves, pr.Run = carried.Pushes, carried.Moves, carried.Run
@@ -207,13 +179,6 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 			pr.Base = recorded.Base
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
-		pr.Task = recorded.Task
-	} else {
-		w, err := e.walk(ctx, tx, *issue)
-		if err != nil {
-			return intake.Result{}, err
-		}
-		pr.Task = pullRequestTask(w)
 	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
@@ -518,12 +483,12 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 		return nil, nil
 	}
 	status := PhaseStatus(row.To)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return nil, err
 	}
 	// The merge ends the merge step the linger left open (beginLinger), passed: no transition runs
 	// in a lingering tree, so this write is the step's end.
-	if err := e.endStep(ctx, tx, issue, StepEnd{Result: "passed"}); err != nil {
+	if err := e.endStep(ctx, tx, issue, StepEnd{Result: ResultPassed}); err != nil {
 		return nil, err
 	}
 	if err := e.moveTask(ctx, tx, &issue, &w, row.To, record.TaskDone); err != nil {
@@ -533,7 +498,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.store.PutIssue(ctx, tx, issue); err != nil {
+	if err := e.WriteIssue(ctx, tx, issue); err != nil {
 		return nil, err
 	}
 	e.logOnCommit(ctx, "workflow: a lingering tree's member closed at its merge", "issue", issue.Key, "tree", issue.Tree, "pullRequest", pr.Number, "status", issue.Status)
@@ -554,7 +519,8 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // whose reopen has not been delivered yet, and the architect is told; at the record's clock or with
 // no clock it is a redelivery, and it tells the architect nothing more. A close of a merged pull
 // request changes nothing: GitHub never closes one, so the close is older than the merge, which
-// carries no clock to fence it.
+// carries no clock to fence it. The first close also ends the merge step its tree's linger close
+// left open (endMergeOfAClosedTree).
 func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestClosed) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged || classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
@@ -573,8 +539,34 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
+	if err := e.endMergeOfAClosedTree(ctx, tx, *issue); err != nil {
+		return intake.Result{}, err
+	}
 	return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("pull request #%d closed without merging while %s was in %s", pr.Number, issue.Key, issue.Phase)})
+}
+
+// endMergeOfAClosedTree ends, stopped, the merge step of issue, whose pull request has just closed
+// unmerged, where the close of its tree's linger left that step open: the close ends no merge whose
+// pull request is open (lingerExpired), and once that pull request closes no write is left to end
+// the merge. The deadline of the linger is what tells the close's side from the linger's: a pull
+// request that closes inside the linger can open again and land there, and the close ends that
+// merge itself if it does not. A member the close handed over keeps its step open for its readmit
+// to end (admit's readmit), and an issue that awaits no merge, or whose tree does not linger, ends
+// nothing here.
+func (e *Engine) endMergeOfAClosedTree(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if !awaitsMerge(issue) {
+		return nil
+	}
+	root, err := e.store.Issue(ctx, tx, issue.Tree)
+	if err != nil || root == nil || !root.Lingers() || record.Lingering(*root, e.now()) {
+		return err
+	}
+	handover, err := e.store.Handover(ctx, tx, issue.Key)
+	if err != nil || handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation {
+		return err
+	}
+	return e.endStep(ctx, tx, issue, stepStopped)
 }
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge

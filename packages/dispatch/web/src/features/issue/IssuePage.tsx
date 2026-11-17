@@ -521,7 +521,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         id="issue-steps-panel"
         role="tabpanel"
       >
-        {activatedTabs.steps ? <StepsTab issueKey={issueKey} /> : null}
+        {activatedTabs.steps ? (
+          <StepsTab active={activeTab === "steps"} issueKey={issueKey} />
+        ) : null}
       </div>
       <div
         aria-hidden={activeTab !== "conversation"}

@@ -47,7 +47,7 @@ func TestChangedTasksReadsStepsTextAndAttributes(t *testing.T) {
 	}
 
 	defaults, _ := ParseSteps("planner implementer tester reviewer acceptance:owner")
-	heldDefault := Plan{Tasks: []Task{{ID: "default", HasSteps: true, Steps: defaults, Text: "The project's default steps."}}}
+	heldDefault := Plan{Tasks: []Task{{ID: "default", Steps: defaults, Text: "The project's default steps."}}}
 	next := planOf(t, 1, task(map[string]string{"steps": "implementer reviewer"}, "Do the change."))
 	if got, want := ChangedTasks(heldDefault, next), []string{"a", "default"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChangedTasks(default, {a}) = %#v, want %#v (one new, one gone)", got, want)

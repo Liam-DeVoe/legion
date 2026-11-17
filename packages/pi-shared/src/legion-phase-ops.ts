@@ -1,7 +1,10 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
-  LegionHandoffCompleteRequest,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
   LegionInstant,
   type LegionIssue,
   type LegionPhase,
@@ -92,28 +95,41 @@ const nextLook = rfc3339String(
   "handoff_complete's wake_at is an RFC 3339 time, as 2026-11-02T09:00:00Z is"
 );
 
-/** The refusal of a `plan_rating` that is not one of the scale's five whole numbers. */
-const PLAN_RATING_REFUSAL = "handoff_complete's plan_rating is a whole number from 1 to 5";
+/** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
+const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
 
 /** `handoff_complete`'s `plan_rating`: the rating of the plan the issue ran, which the agent that
  * does the retro gives in the completion that ends the retro, from 1 (the plan cost the work) to 5
- * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire). */
+ * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire).
+ * The scale is the contract's own (`LEGION_PLAN_RATING_LEAST`, `LEGION_PLAN_RATING_MOST`), which
+ * the contract test holds to the daemon's. */
 const planRating = z
   .number({ error: PLAN_RATING_REFUSAL })
   .int({ error: PLAN_RATING_REFUSAL })
-  .min(1, { error: PLAN_RATING_REFUSAL })
-  .max(5, { error: PLAN_RATING_REFUSAL });
+  .min(LEGION_PLAN_RATING_LEAST, { error: PLAN_RATING_REFUSAL })
+  .max(LEGION_PLAN_RATING_MOST, { error: PLAN_RATING_REFUSAL });
+
+/** The most characters of a `plan_reason` as this tool's sentences write it: 2,000, the contract's
+ * `LEGION_PLAN_REASON_MAX`. */
+const PLAN_REASON_MOST = LEGION_PLAN_REASON_MAX.toLocaleString("en-US");
+
+/** The refusal of a `plan_reason` that is missing or blank. */
+const PLAN_REASON_REQUIRED = "handoff_complete requires plan_reason";
 
 /** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
- * blank one is refused as missing (requiredString); its bound is the contract's own, at most 2,000
- * characters counted as the daemon counts them, read here so that this tool refuses exactly the
- * reasons the daemon refuses, by the field's name rather than as the request schema's parse
- * failure. */
-const planReason = requiredString("handoff_complete", "plan_reason").refine(
-  (value) =>
-    value.trim() === "" || LegionHandoffCompleteRequest.shape.planReason.safeParse(value).success,
-  { error: "handoff_complete's plan_reason holds at most 2,000 characters" }
-);
+ * blank one is refused as missing, blank as the daemon's strings.TrimSpace reads it
+ * (`goBlankPattern`) rather than by JavaScript's trim, which the tool's other fields read
+ * (requiredString), and that refusal is its only one (`abort`); a reason that is not blank holds
+ * at most `LEGION_PLAN_REASON_MAX` characters, counted in code points as the daemon and the
+ * contract's `planReason` count them, never in a string's UTF-16 `length`. Both are read here so
+ * that this tool refuses exactly the reasons the daemon refuses, by the field's name rather than
+ * as the request schema's parse failure; the daemon's case golden holds the two to each other. */
+const planReason = z
+  .string({ error: PLAN_REASON_REQUIRED })
+  .refine((value) => !goBlankPattern.test(value), { error: PLAN_REASON_REQUIRED, abort: true })
+  .refine((value) => [...value].length <= LEGION_PLAN_REASON_MAX, {
+    error: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
+  });
 
 /** The refusal of a `return_to` that is not the place of a step. */
 const RETURN_TO_REFUSAL =
@@ -187,7 +203,17 @@ export const PhaseOpArguments = z.discriminatedUnion(
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
       return_to: returnTo.optional(),
-    }),
+    })
+      // A rating of the plan carries its reason, and the daemon takes neither alone
+      // (PLAN_RATING_INPUT): one without the other is refused with the call's other problems,
+      // naming the one missing.
+      .refine((args) => args.plan_rating === undefined || args.plan_reason !== undefined, {
+        error:
+          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together",
+      })
+      .refine((args) => args.plan_reason === undefined || args.plan_rating !== undefined, {
+        error: `handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}, the two together`,
+      }),
     operation("request_backward_move", {
       // The issue the move names: the tree architect's move names the issue it returns from
       // accepting (its grant serves its whole tree); a phase worker's leaves it out, or names its
@@ -236,14 +262,7 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
       const field = declared instanceof z.ZodOptional ? declared.unwrap() : declared;
       if (field instanceof z.ZodString) fields[name] = api.string().optional();
       else if (field instanceof z.ZodNumber) {
-        const { isInt, minValue, maxValue } = field;
-        fields[name] = api
-          .number({
-            int: isInt,
-            ...(minValue === null ? {} : { min: minValue }),
-            ...(maxValue === null ? {} : { max: maxValue }),
-          })
-          .optional();
+        fields[name] = api.number(declaredNumber(name, field)).optional();
       } else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
       else if (field instanceof z.ZodEnum) {
         const [first, ...rest] = field.options.map(String);
@@ -255,6 +274,52 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
   // Built from the options' shapes, whose keys are exactly `PhaseOpField`.
   const byField = fields as Record<PhaseOpField, z.ZodType>;
   return byField;
+}
+
+/** A number field of a phase op as a host declares it: whole or not, and each bound it has. */
+export interface DeclaredNumber {
+  readonly int: boolean;
+  readonly min?: number;
+  readonly max?: number;
+}
+
+/** How a host declares the number field `name` of a phase op (`DeclaredNumber`), read from the
+ * field's checks in whatever order they were written: whole where one is `int()`, and on each
+ * side the tightest inclusive bound, none where no check bounds that side. zod's own readings are
+ * not used: `minValue` and `maxValue` fold an exclusive bound into an inclusive one (`gt(0)` reads
+ * as a minValue of 0) and give an unbounded side as -Infinity or Infinity, and `int()` writes the
+ * safe integer range into `_zod.bag` as it attaches, over any bound written before it. An
+ * exclusive bound, which the host's number takes no form of, throws, as any other check does, so
+ * a new check is mapped on purpose. */
+export function declaredNumber(name: string, field: z.ZodNumber): DeclaredNumber {
+  let int = false;
+  let min: number | undefined;
+  let max: number | undefined;
+  for (const check of field._zod.def.checks ?? []) {
+    if (check instanceof z.core.$ZodCheckNumberFormat && check._zod.def.format === "safeint") {
+      int = true;
+    } else if (
+      check instanceof z.core.$ZodCheckGreaterThan ||
+      check instanceof z.core.$ZodCheckLessThan
+    ) {
+      const { value, inclusive } = check._zod.def;
+      if (!inclusive) {
+        throw new Error(
+          `phase op field ${name} has an exclusive bound, which phaseOpParameters does not map`
+        );
+      }
+      if (typeof value !== "number") {
+        throw new Error(`phase op field ${name} has a bound that is not a number`);
+      }
+      if (check instanceof z.core.$ZodCheckGreaterThan) min = Math.max(min ?? value, value);
+      else max = Math.min(max ?? value, value);
+    } else {
+      throw new Error(
+        `phase op field ${name} has a ${check._zod.def.check} check, which phaseOpParameters does not map`
+      );
+    }
+  }
+  return { int, ...(min === undefined ? {} : { min }), ...(max === undefined ? {} : { max }) };
 }
 
 /** The `legion` tool's sentences on `read_record`, `read_release_records` and
@@ -334,9 +399,9 @@ export function legionToolDescription(host: {
     "(CHECK_WAKE_UNEXPECTED), and a pending on any other look is refused without one (CHECK_WAKE_REQUIRED). A report on an issue whose check is " +
     "closed or never opened is refused (CHECK_NOT_OPEN), and so is one from a role the check does not record (CHECK_ROLE_MISMATCH). " +
     "The agent that does the retro rates the plan the issue ran, its steps and the role that worked each (not the planner's `plan.md`), in the " +
-    "completion that ends the retro: `plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work), and " +
+    `completion that ends the retro: \`plan_rating\`, a whole number from ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work), and ` +
     "`plan_reason`, one sentence of why, the two together. Any other completion that carries them is refused (PLAN_RATING_UNEXPECTED), and so is " +
-    "a rating outside 1 to 5 or a reason that is blank or longer than 2,000 characters (PLAN_RATING_INPUT), and the completion that ends the " +
+    `a rating outside ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST} or a reason that is blank or longer than ${PLAN_REASON_MOST} characters (PLAN_RATING_INPUT), and the completion that ends the ` +
     "retro without them (PLAN_RATING_REQUIRED). " +
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
@@ -412,12 +477,12 @@ const ROOT_COMPLETION_REFUSAL =
  * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
  * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
  * first, then a root architect's completion,
- * then each problem with the operation's own fields in the order it takes them; then what the
- * record decides (a check report's verdict, its claim's role against the check's own, its
- * `wake_at`, `pending` or `wake_at` on a phase completion, the issue a completion or a move
- * names, a completion's `plan_rating` or `plan_reason` without the other, its `return_to` without
- * the verdict `fail` or on a done issue), then a refused handoff report (`findHandoffReport`). A
- * daemon refusal throws its code and sentence.
+ * then each problem with the operation's own fields in the order it takes them, and a completion's
+ * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
+ * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
+ * `wake_at` on a phase completion, the issue a completion or a move names, a completion's
+ * `return_to` without the verdict `fail` or on a done issue), then a refused handoff report
+ * (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
  * A completion is a phase's or a look's report on the closed issue's production check. The daemon
  * tells them apart by the caller's own live assignment (`api.handoffComplete`,
@@ -472,18 +537,6 @@ export async function executePhaseOp(
       if (named !== "" && named !== claim.issue) {
         throw new Error(
           `handoff_complete reports this session's own issue ${claim.issue}; leave issue out, or name ${claim.issue}, not ${named}`
-        );
-      }
-      // A rating of the plan carries its reason, and the daemon takes neither alone
-      // (PLAN_RATING_INPUT): one without the other is refused here, naming the one missing.
-      if (args.plan_rating !== undefined && args.plan_reason === undefined) {
-        throw new Error(
-          "handoff_complete names plan_rating without plan_reason: send the rating of the plan with one sentence of why, the two together"
-        );
-      }
-      if (args.plan_reason !== undefined && args.plan_rating === undefined) {
-        throw new Error(
-          "handoff_complete names plan_reason without plan_rating: send the reason with the rating of the plan, a whole number from 1 to 5, the two together"
         );
       }
       // Only a step that failed names the step its task returns to, and the daemon refuses one on
@@ -782,11 +835,18 @@ async function completeHandoff(
 }
 
 /** The rating of the plan a completion carries, under the daemon's names (`planRating`,
- * `planReason`), or nothing; `executePhaseOp` has refused one without the other. */
-function planRatingOf(
-  args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>
-): { readonly planRating?: number; readonly planReason?: string } {
-  return args.plan_rating === undefined || args.plan_reason === undefined
-    ? {}
-    : { planRating: args.plan_rating, planReason: args.plan_reason };
+ * `planReason`): the two, or `undefined` for a completion that carries neither. `PhaseOpArguments`
+ * refuses one without the other, so a lone one reaching here throws rather than go unsent. */
+function planRatingOf(args: {
+  readonly plan_rating?: number | undefined;
+  readonly plan_reason?: string | undefined;
+}): { readonly planRating: number; readonly planReason: string } | undefined {
+  const { plan_rating: planRating, plan_reason: planReason } = args;
+  if (planRating === undefined && planReason === undefined) return undefined;
+  if (planRating === undefined || planReason === undefined) {
+    throw new Error(
+      "handoff_complete's plan_rating and plan_reason come together, and one reached the request alone"
+    );
+  }
+  return { planRating, planReason };
 }

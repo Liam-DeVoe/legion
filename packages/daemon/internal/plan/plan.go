@@ -58,15 +58,16 @@ type Task struct {
 	PartOf, Owner string
 	// Merges is `merges`: true unless the block leaves the attribute out or writes `false`.
 	Merges bool
-	// HasSteps says whether the block names a step at all: a block with no `steps`, or with
-	// `steps` of no word, has none, and runs the project's default steps (StepsOf, R5).
-	HasSteps bool
-	// Steps are the steps the block names, in order; nil when HasSteps is false.
+	// Steps are the steps the block names, in order; none where its `steps` has no word or it has
+	// no `steps`, and then the task runs the project's default steps (StepsOf).
 	Steps []Step
 	// Text is the block's text, which says what each step must do (R2) and which a later version
 	// changes a task by (ChangedTasks).
 	Text string
 }
+
+// NamesSteps says whether t's block names a step at all.
+func (t Task) NamesSteps() bool { return len(t.Steps) > 0 }
 
 // RoleDef is a role a step can name: its name, its type, and the phase of today's line it runs as
 // in this release, where each step is a phase.
@@ -141,7 +142,7 @@ func ParseSteps(text string) ([]Step, error) {
 // when it names neither steps nor a sub-owner (R5), and none for the task of a sub-owner, whose
 // work is its parts. The answer is t's or defaults' own slice, which the caller does not change.
 func StepsOf(t Task, defaults []Step) []Step {
-	if t.HasSteps {
+	if t.NamesSteps() {
 		return t.Steps
 	}
 	if t.Owner == "" {

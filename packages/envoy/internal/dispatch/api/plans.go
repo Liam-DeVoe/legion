@@ -48,7 +48,9 @@ type planRecordInput struct {
 }
 
 // planTaskInput is one task of a written plan: its id and its steps in order, each a role or
-// `role:key`.
+// `role:key`. It has the fields of workflowstore.PlanTask and model.PlanTask, so a task converts
+// between the three, and a field added to one of them alone fails the build rather than being
+// dropped on the way.
 type planTaskInput struct {
 	ID    string   `json:"id" required:"true"`
 	Steps []string `json:"steps" required:"true"`
@@ -63,12 +65,8 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
 	if !ok {
-		return
-	}
-	key := r.PathValue("key")
-	if !requireIssueDaemon(w, actor, key, "a plan") {
 		return
 	}
 
@@ -82,16 +80,18 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A body with no tasks stays nil, which the store refuses as a list left out (tasks is
+	// required), apart from an empty list, which it refuses as a plan with no task.
 	var tasks []workflowstore.PlanTask
 	if input.Tasks != nil {
 		tasks = make([]workflowstore.PlanTask, len(input.Tasks))
 		for index, task := range input.Tasks {
-			tasks[index] = workflowstore.PlanTask{ID: task.ID, Steps: task.Steps}
+			tasks[index] = workflowstore.PlanTask(task)
 		}
 	}
 	written, err := workflowstore.PutPlan(r.Context(), tx, workflowstore.PlanWrite{
 		ID: r.PathValue("id"), Issue: issue, Project: &project, Source: input.Source,
-		ArtifactID: input.ArtifactID, Generation: input.Generation, Version: input.Version, Tasks: tasks,
+		Generation: input.Generation, Document: input.document(), Tasks: tasks,
 	}, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrPlanInput):
@@ -111,13 +111,31 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, planRecord(written))
 }
 
+// document is the owner's document input states as the store's one value: nil where the body
+// names neither its artifact_id nor its version (each left out, null, "" or 0), and else both,
+// the one the body leaves out "" or 0, which the store refuses, naming it, after it has checked
+// the plan's generation and source.
+func (input planRecordInput) document() *workflowstore.PlanDocument {
+	var document workflowstore.PlanDocument
+	if input.ArtifactID != nil {
+		document.ArtifactID = *input.ArtifactID
+	}
+	if input.Version != nil {
+		document.Version = *input.Version
+	}
+	if document == (workflowstore.PlanDocument{}) {
+		return nil
+	}
+	return &document
+}
+
 // listProjectPlans is each finished issue of one project, newest close first:
 // GET /api/v1/projects/{key}/plans, its close bounded by ?since= and ?until=.
 func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	since, until, err := parsePlansWindow(r.URL.Query())
+	window, err := parsePlansWindow(r.URL.Query())
 	if err != nil {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
@@ -127,7 +145,7 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, since, until)
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, window)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -144,9 +162,12 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 			listed.Plan = &plan
 		}
 		for place, rating := range issue.Ratings {
-			listed.Ratings[place] = model.PlanRating{Rating: rating.Rating, Reason: rating.Reason, StepID: rating.StepID, EndedAt: rating.EndedAt}
+			listed.Ratings[place] = model.PlanRating(rating)
 		}
-		if issue.StartedAt != nil && issue.EndedAt != nil {
+		// The span is known only where the latest end is not before the earliest start: a run whose
+		// start Dispatch never got that ended before a later run started, whose end has not landed,
+		// holds no time to count.
+		if issue.StartedAt != nil && issue.EndedAt != nil && !issue.EndedAt.Before(*issue.StartedAt) {
 			seconds := int64(issue.EndedAt.Sub(*issue.StartedAt) / time.Second)
 			listed.DurationSeconds = &seconds
 		}
@@ -156,10 +177,11 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 }
 
 // parsePlansWindow is the plans read's [since, until) window on the close: each bound an RFC 3339
-// time, nil when the query leaves it out or blank, and since before until when both are given. Its
-// error is the text of the route's 400 INVALID_QUERY.
-func parsePlansWindow(query url.Values) (since, until *time.Time, err error) {
-	bounds := [2]*time.Time{}
+// time, nil when the query leaves it out or blank, and since before until when both are given, as
+// the caller wrote them; the read rounds each up to the microsecond it compares. Its error is the
+// text of the route's 400 INVALID_QUERY.
+func parsePlansWindow(query url.Values) (workflowstore.Window, error) {
+	var bounds [2]*time.Time
 	for index, bound := range []string{"since", "until"} {
 		text := strings.TrimSpace(query.Get(bound))
 		if text == "" {
@@ -167,14 +189,14 @@ func parsePlansWindow(query url.Values) (since, until *time.Time, err error) {
 		}
 		parsed, err := time.Parse(time.RFC3339, text)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
+			return workflowstore.Window{}, fmt.Errorf("%s must be an RFC 3339 time, such as 2026-11-01T00:00:00Z", bound)
 		}
 		bounds[index] = &parsed
 	}
 	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
-		return nil, nil, errors.New("since must be before until")
+		return workflowstore.Window{}, errors.New("since must be before until")
 	}
-	return bounds[0], bounds[1], nil
+	return workflowstore.Window{Since: bounds[0], Until: bounds[1]}, nil
 }
 
 // planRecord is a plan as the routes answer it: the owner's document and version are null for a
@@ -184,16 +206,12 @@ func planRecord(plan workflowstore.Plan) model.PlanRecord {
 		ID: plan.ID, Issue: plan.Issue, Generation: plan.Generation, Source: plan.Source,
 		Tasks: make([]model.PlanTask, len(plan.Tasks)),
 	}
-	if plan.ArtifactID != "" {
-		artifact := plan.ArtifactID
-		record.ArtifactID = &artifact
-	}
-	if plan.Version != 0 {
-		version := plan.Version
-		record.Version = &version
+	if plan.Document != nil {
+		document := *plan.Document
+		record.ArtifactID, record.Version = &document.ArtifactID, &document.Version
 	}
 	for index, task := range plan.Tasks {
-		record.Tasks[index] = model.PlanTask{ID: task.ID, Steps: task.Steps}
+		record.Tasks[index] = model.PlanTask(task)
 	}
 	return record
 }

@@ -854,13 +854,13 @@ func TestHandoffCompleteRecordsRetroAtTheCommitItStandsOn(t *testing.T) {
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	named := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee", HandoffID: implementer.writeHandoff("implement", 3), HandoffVersion: 3,
-		PlanRating: new(4), PlanReason: "The plan fit the work."}),
+		PlanRating: new(4), PlanReason: new("The plan fit the work.")}),
 		http.StatusConflict, "HANDOFF_RECORD_MISMATCH")
 	if !strings.Contains(named, "phase retro of LEGION-208 ends with no handoff record") {
 		t.Fatalf("retro naming a record was refused with %q; want the phase named", named)
 	}
 	recorder := h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-		PlanRating: new(4), PlanReason: "The plan fit the work."})
+		PlanRating: new(4), PlanReason: new("The plan fit the work.")})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("retro handoff = %d: %s", recorder.Code, recorder.Body)
 	}

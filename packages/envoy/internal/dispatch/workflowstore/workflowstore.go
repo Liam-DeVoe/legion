@@ -11,11 +11,12 @@
 // the retro's run, in any order with the other two. It writes a run's plan under one id too, when
 // the work starts and again at each later version of the owner's plan that Legion takes. So a
 // write never refuses for its order, and makes the node when none exists. A run's write sets each
-// field the node does not hold yet and leaves each field it holds (PutStep). A plan's source,
-// document, version and tasks are one fact, which a write of a higher version replaces whole and
-// any other write leaves (PutPlan). The read of an issue (IssueSteps) answers each run with its
-// attempt, which no write stores, and the read of a project (ProjectPlans) answers each of its
-// finished issues with its plan, its ratings, its time and its count of failed steps.
+// field the node does not hold yet, but returned_to, which only the write that sets the result
+// sets, and leaves each field it holds (PutStep). A plan's source, document, version and tasks are
+// one fact, which a write of a higher version replaces whole and any other write leaves (PutPlan).
+// The read of an issue (IssueSteps) answers each run with its attempt, which no write stores, and
+// the read of a project (ProjectPlans) answers each of its finished issues with its plan, its
+// ratings, its time and its count of failed steps.
 //
 // The vocabulary is the node and tuple store's, which legion/INFRA-1149 is to add and this tree
 // does not hold yet, as internal/dispatch/prioritystore's is: the rows copy into that store's
@@ -105,8 +106,9 @@ const (
 )
 
 // The attributes of a plan beside its issue, its project and its generation: its source, the
-// owner's document and version it was read from (neither for the source default), and its tasks,
-// whose value tuple holds them as JSON text.
+// owner's document and version it was read from (both held empty for the source default, so no
+// later write gives a default plan a document), and its tasks, whose value tuple holds them as
+// JSON text.
 const (
 	AttributeSource     = "source"
 	AttributeArtifactID = "artifact_id"
@@ -144,25 +146,38 @@ var (
 
 // Step is one run of one step, as its node holds it. Place is the step's place in its task, the
 // attribute `step`: from 1 for kind step, 0 for a retro and a merge; it is not named Step, which
-// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place,
-// ReturnedTo and Rating 0, and a time nil.
+// StepRead's embedded Step would shadow. A text field the node does not hold reads "", Place 0,
+// and a time, ReturnedTo or Rating nil; a ReturnedTo of 0 is place 0 (StepWrite).
 type Step struct {
-	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report, RatingReason string
-	Generation                                                                                      int64
-	Place, ReturnedTo, Rating                                                                       int
-	StartedAt, EndedAt                                                                              *time.Time
+	ID, Issue, Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report string
+	Generation                                                                        int64
+	Place                                                                             int
+	ReturnedTo                                                                        *int
+	Rating                                                                            *StepRating
+	StartedAt, EndedAt                                                                *time.Time
+}
+
+// StepRating is the rating the agent that did a retro gave the plan its issue ran, 1 to 5, with
+// its reason: one value, so a rating is never held or written without its reason, nor a reason
+// without its rating. A write's Reason "" states no reason, which the write refuses.
+type StepRating struct {
+	Rating int
+	Reason string
 }
 
 // StepWrite is one write of a run: the id and the issue it writes, and each field it states, nil
-// where it states nothing. An empty text and a ReturnedTo of 0 state nothing either, so a write
-// that knows no model leaves the model to a later write that knows it. Rating and RatingReason are
-// stated together or not at all, and only of a retro.
+// where it states nothing. An empty text states nothing either, so a write that knows no model
+// leaves the model to a later write that knows it. ReturnedTo is the place a run returned its task
+// to, and 0 is a place: the retro's and the merge's, which a place alone does not tell apart.
+// Nothing moves back to the merge, the last phase, so a ReturnedTo of 0 is a return to the retro.
+// Only a retro takes a Rating.
 type StepWrite struct {
-	ID, Issue                                                                            string
-	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report, RatingReason *string
-	Generation                                                                           *int64
-	Place, ReturnedTo, Rating                                                            *int
-	StartedAt, EndedAt                                                                   *time.Time
+	ID, Issue                                                              string
+	Project, Task, Kind, Role, Type, Agent, Session, Model, Result, Report *string
+	Generation                                                             *int64
+	Place, ReturnedTo                                                      *int
+	Rating                                                                 *StepRating
+	StartedAt, EndedAt                                                     *time.Time
 }
 
 // StepRead is a run as the read of its issue answers it: its node, and its attempt, the place of
@@ -173,36 +188,46 @@ type StepRead struct {
 }
 
 // PlanTask is one task of a plan: its id, a slug unique in the plan, and its steps in order, each
-// a role or `role:key` (`acceptance:owner`).
+// a role or `role:key` (`acceptance:owner`). It has the fields of model.PlanTask and of the plan
+// write's body, which the route converts between, so a field added to one alone fails the build.
 type PlanTask struct {
 	ID    string   `json:"id"`
 	Steps []string `json:"steps"`
 }
 
 // Plan is the plan one run of an issue ran from, as its node holds it: its source, the owner's
-// document and version ("" and 0 for the source default) and its tasks.
+// document (nil for the source default) and its tasks.
 type Plan struct {
-	ID, Issue, Project, Source, ArtifactID string
-	Generation                             int64
-	Version                                int
-	Tasks                                  []PlanTask
+	ID, Issue, Project, Source string
+	Generation                 int64
+	Document                   *PlanDocument
+	Tasks                      []PlanTask
+}
+
+// PlanDocument is the document an owner gave as an issue's plan: its artifact id and the version
+// of it Legion took, one value, so a plan never holds or names a document without its version, nor
+// a version without its document. A write's ArtifactID "" or Version 0 states none of that half,
+// which an owner's plan refuses.
+type PlanDocument struct {
+	ArtifactID string
+	Version    int
 }
 
 // PlanWrite is one write of a plan: the id and the issue it writes, and each field it states. A
-// plan write names its generation, its source and its tasks, and an owner's plan its document and
-// version; the project is set once, never required.
+// plan write names its generation, its source and its tasks, and an owner's plan its document; the
+// project is set once, never required.
 type PlanWrite struct {
-	ID, Issue                   string
-	Project, Source, ArtifactID *string
-	Generation                  *int64
-	Version                     *int
-	Tasks                       []PlanTask
+	ID, Issue       string
+	Project, Source *string
+	Generation      *int64
+	Document        *PlanDocument
+	Tasks           []PlanTask
 }
 
 // IssuePlan is one finished issue of a project as the read of the project answers it: its plan
-// (the node of its newest run, nil where it has none), the rating of each retro of its runs, the
-// earliest start and the latest end its runs hold (each nil where none holds one), and its count
-// of runs of kind step that failed.
+// (the node of its newest run, nil where it has none), the rating of each retro of its runs (nil
+// where no retro rated it; the route answers that as []), the earliest start and the latest end its
+// runs hold (each nil where none holds one), and its count of runs of kind step that failed.
 type IssuePlan struct {
 	Issue, Title       string
 	ClosedAt           time.Time
@@ -213,12 +238,21 @@ type IssuePlan struct {
 }
 
 // Rating is the rating of one retro: the rating and its reason, the id of the retro's run and the
-// moment it ended, nil where its end never arrived.
+// moment it ended, nil where its end never arrived. It has the fields of model.PlanRating, which the
+// route converts it to, so a field added to one alone fails the build rather than being dropped.
 type Rating struct {
 	Rating  int
 	Reason  string
 	StepID  string
 	EndedAt *time.Time
+}
+
+// Window bounds the close of the issues a read of a project lists to [Since, Until), each nil for
+// no bound. It is one value so a read cannot take the two bounds in the wrong order. A bound need
+// not be a whole microsecond: the read rounds each up to the next one (microsecondCeiling), which
+// keeps its meaning against a close PostgreSQL holds to the microsecond.
+type Window struct {
+	Since, Until *time.Time
 }
 
 // Queryer is the query surface shared by a pool and a transaction. A write takes a pgx.Tx instead,

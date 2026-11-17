@@ -72,6 +72,11 @@ type Options struct {
 	ConsumerLag func(ctx context.Context) []intake.ConsumerLag
 	// Supervisor is the claims the claim and operator routes post their requests to.
 	Supervisor Supervisor
+	// AwaitStream waits, bounded, until the claim's machine has handled every worker-stream event
+	// the daemon had read when it was called (the daemon's awaitStream). A route that applies an
+	// agent's own request ending the agent's step calls it first, so the record of that step names
+	// the model whose answer the stream read ahead of the request. Nil waits for nothing.
+	AwaitStream func(ctx context.Context, token claim.Token)
 	// PodUpdateRounds answers what the daemon's last pod-update sweep decided, which the claim
 	// listing carries beside the claims (the daemon's podUpdateRoundsView). Nil answers the zero
 	// record, which says the daemon has not swept yet: a deployment that serves the route with no
@@ -251,6 +256,14 @@ type Options struct {
 	// store — on a context that outlives the agent's connection, and the route answers the agent
 	// once it has returned.
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
+	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
+	// not the controller: the daemon queues the publication of that issue's role sessions to
+	// Dispatch, which reads the live set from the store when it runs. The ready is what sends the
+	// claim its first task, so the publication is queued before any task goes. An error refuses
+	// the ready with 503: the machine has not taken it, no task goes, and the plugin tries the
+	// ready again. Nil queues nothing.
+	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
 	// 500 and changes nothing else.
@@ -296,6 +309,8 @@ type server struct {
 	consumerLag func(ctx context.Context) []intake.ConsumerLag
 	callerPod   func(addr netip.Addr) (string, bool)
 	supervisor  Supervisor
+	// awaitStream is Options.AwaitStream (awaitStreamOf).
+	awaitStream func(ctx context.Context, token claim.Token)
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -353,6 +368,8 @@ type server struct {
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// roleHoldersChanged is Options.RoleHoldersChanged.
+	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -387,6 +404,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
+		awaitStream:        opts.AwaitStream,
 		podUpdateRounds:    opts.PodUpdateRounds,
 		bootTokens:         opts.BootTokens,
 		project:            opts.Project,
@@ -420,6 +438,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		handoffCompleted:   opts.HandoffCompleted,
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
+		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		readiness:          opts.Ready,
@@ -459,53 +478,14 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		s.decisions = NewRouteDecisions()
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /legion/v1/state", s.stateRoute)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
-	mux.HandleFunc("GET /readyz", s.readyz)
-
-	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
-	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
-	mux.HandleFunc("POST /legion/v1/claims/ready-for-update", s.readyForUpdate)
-	mux.HandleFunc("POST /legion/v1/claims/exit", s.exit)
-	mux.HandleFunc("POST /legion/v1/claims/turn-outcome", s.turnOutcome)
-	mux.HandleFunc("POST /legion/v1/claims/activity", s.activity)
-	mux.HandleFunc("POST /legion/v1/claims/release-records", s.releaseRecords)
-	mux.HandleFunc("POST /legion/v1/grants", s.grant)
-	mux.HandleFunc("POST /legion/v1/controller/secret", s.controllerSecret)
-	mux.HandleFunc("POST /legion/v1/controller/github-credential", s.controllerGitHubCredential)
-	mux.HandleFunc("POST /legion/v1/handoff/complete", s.handoffComplete)
-	mux.HandleFunc("POST /legion/v1/issues/status", s.issueStatus)
-	mux.HandleFunc("POST /legion/v1/claims/fresh-session", s.claimFreshSession)
-	mux.HandleFunc("POST /legion/v1/claims/compact", s.claimCompact)
-	mux.HandleFunc("POST /legion/v1/gates/register", s.gateRegister)
-	mux.HandleFunc("POST /legion/v1/plans/register", s.registerPlan)
-	mux.HandleFunc("POST /legion/v1/tasks/stop", s.stopTask)
-	mux.HandleFunc("POST /legion/v1/waves/release", s.waveRelease)
-	mux.HandleFunc("POST /legion/v1/phase/backward", s.phaseBackward)
-	mux.HandleFunc("POST /legion/v1/phase/retry", s.phaseRetry)
-	mux.HandleFunc("POST /legion/v1/signoff", s.signOff)
-	mux.HandleFunc("POST /legion/v1/roots/close", s.closeRoot)
-	mux.HandleFunc("POST /legion/v1/children/park", s.parkChild)
-	mux.HandleFunc("POST /legion/v1/children/rerun", s.rerunChild)
-
-	mux.HandleFunc("POST /legion/v1/operator/claims", s.operator(s.spawn))
-	mux.HandleFunc("GET /legion/v1/operator/claims", s.operator(s.list))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent)))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession))
-	mux.HandleFunc("POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree))
-
+	mux := &routeMux{mux: http.NewServeMux()}
+	for _, route := range s.routes() {
+		mux.handle(route.pattern, route.handler)
+	}
 	// The catch-all answers every unrouted request, including a known path asked for with the
 	// wrong method: "no route" is the whole story the plugin, the operator's CLI, or a proof
 	// script needs.
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+	mux.handle("/", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no route"})
 	})
 
@@ -516,6 +496,82 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 }
 
+// route is one route of the daemon's API: its ServeMux pattern and the handler that serves it.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routeMux is the mux the daemon's API is served from, with the pattern of every route mounted on
+// it in the order NewServer mounted them. handle is the one way to mount a route on it, so its
+// patterns are what the server serves, a route mounted beside the table included, and a test of a
+// rule every route keeps walks them (TestNoRouteTakesABodyStringHoldingANul).
+type routeMux struct {
+	mux      *http.ServeMux
+	patterns []string
+}
+
+// handle mounts handler at pattern and records the pattern.
+func (m *routeMux) handle(pattern string, handler http.HandlerFunc) {
+	m.mux.HandleFunc(pattern, handler)
+	m.patterns = append(m.patterns, pattern)
+}
+
+func (m *routeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	m.mux.ServeHTTP(w, r)
+}
+
+// routes is every route the daemon's API serves but the catch-all, in the one table NewServer
+// mounts. A route is mounted through routeMux.handle and nowhere else, and a test of a rule every
+// route keeps walks what the server's mux recorded (TestNoRouteTakesABodyStringHoldingANul) rather
+// than a list of its own that a new route never joins, so a route mounted beside the table is
+// walked too.
+func (s *server) routes() []route {
+	return []route{
+		{"GET /legion/v1/state", s.stateRoute},
+		{"GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		}},
+		{"GET /readyz", s.readyz},
+
+		{"POST /legion/v1/claims/register", s.register},
+		{"POST /legion/v1/claims/ready", s.ready},
+		{"POST /legion/v1/claims/ready-for-update", s.readyForUpdate},
+		{"POST /legion/v1/claims/exit", s.exit},
+		{"POST /legion/v1/claims/turn-outcome", s.turnOutcome},
+		{"POST /legion/v1/claims/activity", s.activity},
+		{"POST /legion/v1/claims/release-records", s.releaseRecords},
+		{"POST /legion/v1/grants", s.grant},
+		{"POST /legion/v1/controller/secret", s.controllerSecret},
+		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
+		{"POST /legion/v1/handoff/complete", s.handoffComplete},
+		{"POST /legion/v1/issues/status", s.issueStatus},
+		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
+		{"POST /legion/v1/claims/compact", s.claimCompact},
+		{"POST /legion/v1/gates/register", s.gateRegister},
+		{"POST /legion/v1/plans/register", s.registerPlan},
+		{"POST /legion/v1/tasks/stop", s.stopTask},
+		{"POST /legion/v1/waves/release", s.waveRelease},
+		{"POST /legion/v1/phase/backward", s.phaseBackward},
+		{"POST /legion/v1/phase/retry", s.phaseRetry},
+		{"POST /legion/v1/signoff", s.signOff},
+		{"POST /legion/v1/roots/close", s.closeRoot},
+		{"POST /legion/v1/children/park", s.parkChild},
+		{"POST /legion/v1/children/rerun", s.rerunChild},
+
+		{"POST /legion/v1/operator/claims", s.operator(s.spawn)},
+		{"GET /legion/v1/operator/claims", s.operator(s.list)},
+		{"POST /legion/v1/operator/claims/{token}/deliver", s.operator(s.claimRequest("deliver", s.deliverEvent))},
+		{"POST /legion/v1/operator/claims/{token}/suspend", s.operator(s.claimRequest("suspend", suspendEvent))},
+		{"POST /legion/v1/operator/claims/{token}/resume", s.operator(s.claimRequest("resume", resumeEvent))},
+		{"POST /legion/v1/operator/claims/{token}/stop", s.operator(s.claimRequest("stop", stopEvent))},
+		{"POST /legion/v1/operator/claims/{token}/retry", s.operator(s.retryClaim)},
+		{"POST /legion/v1/operator/claims/{token}/compact", s.operator(s.compactClaim)},
+		{"POST /legion/v1/operator/claims/{token}/forget-session", s.operator(s.forgetSession)},
+		{"POST /legion/v1/operator/claims/{token}/close", s.operator(s.closeTree)},
+	}
+}
+
 // trackTransactions marks every request's context for the daemon's pool, in this one place
 // because every route is a caller of it: a route that asks the pool for a second connection
 // while it holds one — the state route's projection reading past its own transaction, say — is
@@ -523,9 +579,15 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 // transaction can give back. A request handled on a goroutine of its own, outliving the request
 // or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
 func trackTransactions(handler http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
-	})
+	return transactionTracking{next: handler}
+}
+
+// transactionTracking is the handler trackTransactions returns: next serves each request, its
+// context marked. It is a type of its own so a test can reach the mux it serves (routeMux).
+type transactionTracking struct{ next http.Handler }
+
+func (t transactionTracking) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	t.next.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
 }
 
 // readyz answers the kubelet's readiness probe, which carries no token, from the daemon's

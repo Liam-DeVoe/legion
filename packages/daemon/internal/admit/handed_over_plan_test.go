@@ -46,7 +46,7 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 			records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: root, Phase: phase.Done, Generation: 1, Status: "done", LingerUntil: &until}),
 			records.PutIssue(ctx, tx, record.Issue{Key: child, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: testProject, Title: child, Parent: &parent, Phase: phase.Reviewing, Generation: 1, Status: "retro", Rank: "B", LastDispatchSeq: 1}),
 			records.PutGate(ctx, tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
-			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen, Task: "a"}),
+			records.PutPullRequest(ctx, tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: record.PullRequestOpen}),
 			records.PutHandover(ctx, tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
 			records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps),
 		} {

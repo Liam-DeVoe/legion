@@ -47,14 +47,14 @@ func planHarness(t *testing.T) (*harness, *factRecorder, *statusRecorder) {
 	seedIssueAt(t, h, "LEGION-208", phase.Admitted)
 	statuses.documents = map[string]string{planDoc: "LEGION-208", childDoc: "LEGION-209"}
 	statuses.approvals = map[string]dispatch.Approval{planDoc: {State: "none", LatestVersion: 9}, childDoc: {State: "none", LatestVersion: 3}}
-	statuses.plans = map[string]dispatch.PlanDocument{}
+	statuses.plans = map[string]dispatch.DocumentVersion{}
 	return h, facts, statuses
 }
 
 // givePlan makes version of the document artifactID hold blocks, on the issue the fake files the
 // document under.
 func (r *statusRecorder) givePlan(artifactID string, version int, blocks ...dispatch.DocumentBlock) {
-	r.plans[planVersion(artifactID, version)] = dispatch.PlanDocument{ArtifactID: artifactID, IssueKey: r.documents[artifactID], Version: version, Blocks: blocks}
+	r.plans[planVersion(artifactID, version)] = dispatch.DocumentVersion{ArtifactID: artifactID, IssueKey: r.documents[artifactID], Version: version, Blocks: blocks}
 }
 
 func registerPlan(h *harness, grant, issue, artifactID string, version int) *httptest.ResponseRecorder {
@@ -99,7 +99,7 @@ func assertPlanRefused(t *testing.T, recorder *httptest.ResponseRecorder, reason
 // givenPlan is the fact a plan of one task a with steps records.
 func givenPlan(issue string, generation uint64, by claim.Token, artifactID string, version int, steps ...plan.Step) intake.PlanGiven {
 	return intake.PlanGiven{Issue: issue, Generation: generation, GivenBy: by, Plan: plan.Plan{ArtifactID: artifactID, Version: version,
-		Tasks: []plan.Task{{ID: "a", HasSteps: len(steps) > 0, Steps: steps, Text: "Do the change."}}}}
+		Tasks: []plan.Task{{ID: "a", Steps: steps, Text: "Do the change."}}}}
 }
 
 var implementerReviewer = []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}

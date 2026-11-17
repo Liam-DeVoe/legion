@@ -178,19 +178,55 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 	return e.store.Enqueue(ctx, tx, row)
 }
 
-// status queues the Dispatch write for a status the workflow has just given issue. A status that
-// reads as out of the workflow is the daemon's own close — the done a merge writes — and it goes
-// as a close row, fenced on the run it ends (record.CloseStatusWrite): the ordinary rule drops a
-// row whose issue has left the workflow, which is every close, so a close judged by it would be
-// lost on its first ISSUE_CHANGED and leave the issue open in Dispatch for good.
-func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+// status queues the Dispatch write for a status the workflow has just given issue. reason is the
+// text the write posts on the issue before the status lands (record.StatusWrite.Reason), which
+// transition gives only for a move nothing else on Dispatch explains (moveReason), and is empty
+// for every other write. A status that reads as out of the workflow is the daemon's own close — the
+// done a merge writes — and it goes as a close row, fenced on the run it ends
+// (record.CloseStatusWrite): the ordinary rule drops a row whose issue has left the workflow, which
+// is every close, so a close judged by it would be lost on its first ISSUE_CHANGED and leave the
+// issue open in Dispatch for good.
+func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status, reason string) error {
 	if status == "" || issue.Status == status {
 		return nil
 	}
 	if record.OutOfWorkflow(status) {
 		return e.enqueue(ctx, tx, issue.Key, record.CloseStatusWrite(status, issue.Status, "", issue.Generation))
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, ""))
+	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
+}
+
+// moveReason is what a move's status write posts on the issue, for the one move the daemon makes on
+// its own: a head that conflicts with its base (TriggerConflict). Every other move is a worker's
+// act — a tester's verdict, a review, a hand-off, a backward move a worker asked for — and Dispatch
+// already holds that act, so it posts nothing: transition also carries a review's whole body and a
+// backward move's own reason, and neither goes on the issue a second time. A conflict's reason
+// reached the architect, the role whose phase ended and the implementer's task over Envoy only, and
+// the issue itself showed a bare status change that no person or census could read a cause from.
+// A person reads this text on the issue, so it is built from the pull request, not from the
+// conflict handler's sentence to the implementer.
+func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest) string {
+	if trigger != TriggerConflict {
+		return ""
+	}
+	what, base := "its pull request", "its base"
+	if pr != nil {
+		if pr.Number != 0 {
+			what = fmt.Sprintf("pull request #%d", pr.Number)
+			if head := pr.HeadSHA; head != "" {
+				if len(head) > 12 {
+					head = head[:12]
+				}
+				what += " at head " + head
+			}
+		}
+		if pr.Base != "" {
+			base = pr.Base
+		}
+	}
+	return fmt.Sprintf("Legion moved this issue from %s back to %s, because %s conflicts with %s. "+
+		"GitHub runs no checks on a head that conflicts with its base, so the implementer merges %s forward.",
+		from, to, what, base, base)
 }
 
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
@@ -765,8 +801,8 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		if w, err = e.walk(ctx, tx, issue); err != nil {
 			return 0, err
 		}
-		if _, step, _, _, ok := stepAt(w, record.StandsAt(issue)); w.Stored && ok {
-			row.StepTask, row.StepPlace = w.Task, step
+		if place, _, _, ok := stepAt(w, record.StandsAt(issue)); w.Stored && ok {
+			row.StepTask, row.StepPlace = w.Task, place.Place
 		}
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
@@ -917,7 +953,7 @@ func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return "", err
 	}
 	var rows []record.PhaseRow
-	if place, ok := w.PlaceOf(issue.Phase); w.Stored && ok && place.Kind == record.PlaceStep {
+	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return "", err
 		}
