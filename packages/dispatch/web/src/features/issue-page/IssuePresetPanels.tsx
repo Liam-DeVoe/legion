@@ -1,8 +1,57 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+import { useNavigate } from "react-router-dom";
 
-import type { Artifact } from "../../api/types";
+import type { Artifact, IssueDetails } from "../../api/types";
 import type { DocumentToolbar } from "../doc/ProofDocument";
+import { buildIssuePath } from "../refs/routes";
 import { StagedDocument } from "./StagedDocument";
+import { useToolbarSink } from "./useDocumentToolbars";
+
+/**
+ * How a body that draws the outline's rows lets one be edited in its document's one editor:
+ * `onEditing`, handed to the rows, names the document a row is being edited in, and `panels` is
+ * that document's editor (`IssuePresetPanels`), drawn by the body for the row to take onto its
+ * own stage, where a version picked opens that document at it. The toolbar sink is read alone,
+ * which never changes: the toolbars it fills are no part of the body, so each one an editor
+ * publishes while a row is edited draws the body no more.
+ *
+ * It is exported because part K imports it, so a step of its Plan view is edited as a row of the
+ * outline is (the architect's decision 94).
+ */
+export function useOutlineEditing(issue: IssueDetails): {
+  readonly onEditing: (artifactId: string | undefined) => void;
+  readonly panels: ReactNode;
+} {
+  const navigate = useNavigate();
+  const toolbarSink = useToolbarSink();
+  const [editing, setEditing] = useState<string | undefined>(undefined);
+  const edited =
+    editing === undefined
+      ? undefined
+      : issue.artifacts?.find((artifact) => artifact.id === editing);
+  return {
+    onEditing: setEditing,
+    panels: (
+      <IssuePresetPanels
+        editedDocument={edited}
+        isClosed={issue.closed_at !== null}
+        issueKey={issue.key}
+        onToolbarSink={toolbarSink}
+        // A version picked in the edited document's own editor opens that document at it.
+        onVersionChange={(artifact, version) =>
+          navigate(
+            buildIssuePath({
+              key: issue.key,
+              kind: "artifact",
+              slug: artifact.slug,
+              ...(version === null ? {} : { version }),
+            })
+          )
+        }
+      />
+    ),
+  };
+}
 
 /**
  * What the body draws under the outline (dispatch://INFRA-1196 R3, `slots/body.tsx`): the one
