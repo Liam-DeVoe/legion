@@ -527,10 +527,11 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
 // choice in the Outline sheet, by pointer and by Enter from the foot of the page, leaves the
 // focused row below the sticky view row, not behind it (decision 113). Where the row stands is
 // part D's `scroll-padding-top` - the larger of the band's and the view row's heights - and part
-// G's `useRowOnScreen` correction, so until both are under J the row is skipped.
+// G's `useRowOnScreen` correction, so until both are under J the row is skipped. Its `@owed` tag
+// is what c-rows' run leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
 // SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, and two choices in the
 // Outline sheet, each waited on until the focus lands and the page redraws.
-test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only", async ({
+test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only @owed", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -1214,10 +1215,11 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
 // A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (7)'s
 // column heads stay at the top after a scroll, under the header's band, whose height part P
 // publishes on the document's root as `--issue-identity-height` (reading (l) of the part's plan,
-// decision 80). Until P does, the row is skipped.
+// decision 80). Until P does, the row is skipped. Its `@owed` tag is what c-rows' run leaves out
+// (`--grep-invert @owed`), since a pass counts no skipped case.
 // SLOW(>=2s): the whole seeded issue, a load of the Spec view and a scroll, waited on until the
 // page redraws.
-test("the Spec view's column heads stay under the header's band after a scroll", async ({
+test("the Spec view's column heads stay under the header's band after a scroll @owed", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
