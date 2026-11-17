@@ -71,7 +71,7 @@ other `src/` modules: a queued task acts through a handle that refuses every ste
 task's deadline, or once its session is no longer the open session.
 
 A session pod's launch names the role its session holds in `ENVOY_SESSION_ROLE`, which
-agent-infra's sessions workload sets once t-e-32 renames its `RoleEnv` (it sets
+deployment's sessions workload sets once t-e-32 renames its `RoleEnv` (it sets
 `AGENT_SESSION_ROLE` today). While the session's own records name no other role, every
 pass that registers the session — its start, each session event and each heartbeat — claims that
 role for it outright, last-claim-wins, under the session's own credential, which the listener

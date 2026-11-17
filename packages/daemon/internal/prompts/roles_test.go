@@ -39,7 +39,7 @@ var (
 		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
 		// is case-sensitive, so the deployment's name stands here in both the forms a part could
 		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
-		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+		"theorem", "Theorem", "deployment", "running-heavy-jobs", "gs://",
 	}
 )
 

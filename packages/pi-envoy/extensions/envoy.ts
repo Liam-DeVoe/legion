@@ -323,7 +323,7 @@ export function resetNatsConnectForTests(): void {
 }
 
 /**
- * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`; agent-infra's
+ * The Envoy role a session pod's launch named for its session (`ENVOY_SESSION_ROLE`; deployment's
  * sessions workload sets it once t-e-32 renames its `RoleEnv`, `AGENT_SESSION_ROLE` today), taken
  * into a process-wide slot when this module loads. Every extension instance of the process reads
  * it from the slot, an instance a later load of this entry makes included (a `task` subagent's, or

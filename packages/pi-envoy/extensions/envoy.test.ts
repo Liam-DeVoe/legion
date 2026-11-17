@@ -1483,7 +1483,7 @@ function roleClaimBody(session: string, role: string, rest: Record<string, unkno
 
 /**
  * A fresh session in a session pod whose launch named `sessionRole` in `ENVOY_SESSION_ROLE`
- * (agent-infra's sessions workload); with no `sessionRole` the environment is left as it is. Every
+ * (deployment's sessions workload); with no `sessionRole` the environment is left as it is. Every
  * registration and every role claim the listener is sent lands in `seen`, in the order sent; a
  * role lookup names `sessionID` as the holder. `heartbeat` runs one heartbeat pass and lets it
  * settle, and `records` reads the role claim records the session's transcript holds.

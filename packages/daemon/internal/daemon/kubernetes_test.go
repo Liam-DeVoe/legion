@@ -523,7 +523,7 @@ func TestKubernetesSkillsRepositoryReachesTheSandboxRuntime(t *testing.T) {
 		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
 		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
 	}
-	k.SkillsRepository = ghrepo.MustParse("theorem-labs/verification-skills")
+	k.SkillsRepository = ghrepo.MustParse("example-org/verification-skills")
 	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
