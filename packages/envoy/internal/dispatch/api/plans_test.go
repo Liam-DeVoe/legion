@@ -501,13 +501,27 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 	}
 }
 
-// An issue that ran twice has two retros, and the read lists both ratings, in the order they ran.
+// An issue that ran twice has two plans and two retros. The second run's plan is its owner's, with
+// the document, the version and two tasks in the order the owner gave them, not by id; the plan write
+// answers it whole. The read lists that plan, the highest generation, though the first run's plan
+// was written after it, and both ratings, in the order the retros ran.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := stepIssues(t, handler, "LEG", 1)[0]
 	daemon := daemonSession("LEG")
+	document, version := uuid.NewString(), 3
+	owners := model.PlanRecord{ID: uuid.NewString(), Issue: issue, Generation: 2, Source: "owner", ArtifactID: &document, Version: &version,
+		Tasks: []model.PlanTask{{ID: "web", Steps: []string{"planner", "implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer:security"}}}}
+	written := putPlanRecordOK(t, handler, issue, owners.ID, map[string]any{
+		"actor": daemon, "generation": 2, "source": "owner", "artifact_id": document, "version": version,
+		"tasks": []map[string]any{
+			{"id": "web", "steps": []string{"planner", "implementer"}}, {"id": "api", "steps": []string{"implementer", "reviewer:security"}},
+		},
+	})
+	if !reflect.DeepEqual(written, owners) {
+		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
+	}
 	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 1))
-	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 2))
 	for generation, retro := range map[int]struct {
 		started time.Time
 		rating  int
@@ -523,6 +537,9 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	read := readPlans(t, handler, "LEG", "")
 	if len(read.Issues) != 1 {
 		t.Fatalf("the read lists %d issues, want %s", len(read.Issues), issue)
+	}
+	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, owners) {
+		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 2, %+v", plan, owners)
 	}
 	var got []string
 	for _, rating := range read.Issues[0].Ratings {
