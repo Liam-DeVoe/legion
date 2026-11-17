@@ -1364,13 +1364,14 @@ test("Load older pressed as the focus reaches it keeps the focus in view while t
 // once it shows in Details' view (`clamp-measurer.ts`), so a long turn the reader jumped past is
 // still drawn whole above them. When it shows and is cut, the browser itself first pulls the
 // scroll back to the history's new end, by the room that was below the view, and the place
-// keeper takes that scroll for one of the reader's own: it keeps the moved place and puts nothing
-// back, so the entries the reader is on move up by that room. Found by the tester on a running
+// keeper took that scroll for one of the reader's own: it kept the moved place and put nothing
+// back, so the entries the reader is on moved up by that room. Found by the tester on a running
 // build of 23d42292 with a copy of a large real issue, on the third and last press of Load older
 // made as the focus reached it: a turn above was cut from 5,184 px to 190 px after the page
 // landed, the browser moved the scroll 3,143 px to the new end, the place keeper kept that, and
 // the focused time link went from 853 px to 455 px above Details' view at 1440 px, in three runs
-// of four.
+// of four. The place keeper now puts the row back where the reader last saw it when the browser
+// pulls the box back to its end (`ViewportAnchor.tsx`).
 test("the reader's place in the history holds when a turn above it is cut by more than the history holds below the view", async ({
   browser,
 }) => {
@@ -1469,12 +1470,14 @@ test("the reader's place in the history holds when a turn above it is cut by mor
 // The focus a control holds at the foot of a long agents' turn that has not shown yet. Load
 // older's own hand-on can give the focus to such a control: the first new control in view can be
 // a turn's Reply while the turn's head is above the view, the turn still drawn whole. Once the
-// turn shows it is cut to six lines (`clamp-measurer.ts`), and the place keeper keeps the turn's
-// top where it was, so its Reply rises with the cut, by thousands of pixels, out of Details' view.
+// turn shows it is cut to six lines (`clamp-measurer.ts`). The place keeper kept the turn's top
+// where it was, so its Reply rose with the cut, by thousands of pixels, out of Details' view.
 // Found by the tester on a running build of eed73c9a with a copy of a large real issue: the
 // second press of Load older, made as the focus reached it, put the focus on a turn's Reply at
 // 270 px, the turn was cut, and the Reply stood at -50 px above Details' view (53 to 900) at
 // 1440 px, in two runs of six. Here the focus goes to such a Reply as the hand-on puts it there.
+// The place keeper now keeps a focused control's own place when the focus is inside the row it
+// holds (`ViewportAnchor.tsx`).
 test("a control at the foot of a long turn keeps the focus in view when the turn it is in is cut", async ({
   browser,
 }) => {

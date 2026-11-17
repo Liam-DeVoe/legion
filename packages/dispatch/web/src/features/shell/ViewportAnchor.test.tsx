@@ -56,21 +56,40 @@ function List({
   );
 }
 
-// A fixed geometry: rows are ROW_HEIGHT tall, stacked from `listTop` in DOM order, in a
-// VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or, where the list is rendered
-// in a scroller, through that element's `scrollTop`, the scroller itself filling the window and
-// never moving. `listTop` starts at LIST_TOP; a test lowers it to shrink content above the rows
-// without moving what scrolls them, which is what a card collapsing in a commit of its own does.
+// A fixed geometry: rows are ROW_HEIGHT tall unless a case gives one another height
+// (`heights`), stacked from `listTop` in DOM order, in a VIEWPORT_HEIGHT window that scrolls
+// through `window.scrollY` - or, where the list is rendered in a scroller, through that element's
+// `scrollTop`, the scroller itself filling the window and never moving. A row's control is
+// CONTROL_HEIGHT tall and stands at the row's foot. `listTop` starts at LIST_TOP; a test lowers
+// it to shrink content above the rows without moving what scrolls them, which is what a card
+// collapsing in a commit of its own does.
+const CONTROL_HEIGHT = 20;
 const rows = () => [...document.querySelectorAll<HTMLElement>("[data-row]")];
 const viewportTop = (id: string) =>
   document.querySelector(`[data-row="${id}"]`)?.getBoundingClientRect().top;
+const controlTop = (id: string) =>
+  document.querySelector(`[data-row="${id}"] button`)?.getBoundingClientRect().top;
 
 let listTop = LIST_TOP;
 let contentLeft = 0;
 let contentWidth = 100;
+/** The rows a case draws at another height than ROW_HEIGHT, by id. */
+let heights: Record<string, number> = {};
 let scrollYDescriptor: PropertyDescriptor | undefined;
 let originalScrollBy: typeof window.scrollBy;
 let restoreSpies: (() => void)[] = [];
+
+const heightOf = (row: Element) => heights[row.getAttribute("data-row") ?? ""] ?? ROW_HEIGHT;
+const listHeight = () => rows().reduce((sum, row) => sum + heightOf(row), 0);
+/** How far below the list's top `row` starts: the heights of the rows before it. */
+function rowOffset(row: Element): number {
+  let offset = 0;
+  for (const one of rows()) {
+    if (one === row) break;
+    offset += heightOf(one);
+  }
+  return offset;
+}
 
 function setScrollY(value: number): void {
   Object.defineProperty(window, "scrollY", { configurable: true, value, writable: true });
@@ -82,6 +101,7 @@ beforeEach(() => {
   listTop = LIST_TOP;
   contentLeft = 0;
   contentWidth = 100;
+  heights = {};
   setScrollY(0);
   window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
     const top = typeof x === "number" ? y : x.top;
@@ -95,17 +115,24 @@ beforeEach(() => {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
-    const all = rows();
     // Whatever scrolls the rows carries them: the window, or the scroller when one is rendered.
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
     const isScroller = this.hasAttribute("data-scroller");
-    const isRow = this.hasAttribute("data-row");
-    const top = isScroller
-      ? 0
-      : isRow
-        ? listTop + all.indexOf(this as HTMLElement) * ROW_HEIGHT - offset
-        : listTop - offset;
-    const height = isScroller ? VIEWPORT_HEIGHT : isRow ? ROW_HEIGHT : all.length * ROW_HEIGHT;
+    const row = this.closest("[data-row]");
+    let top = listTop - offset;
+    let height: number;
+    if (isScroller) {
+      top = 0;
+      height = VIEWPORT_HEIGHT;
+    } else if (row === null) {
+      height = listHeight();
+    } else if (row === this) {
+      top += rowOffset(row);
+      height = heightOf(row);
+    } else {
+      top += rowOffset(row) + heightOf(row) - CONTROL_HEIGHT;
+      height = CONTROL_HEIGHT;
+    }
     return {
       bottom: top + height,
       height,
@@ -120,9 +147,12 @@ beforeEach(() => {
   });
   const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
     if (_x < 0 || _x > 100) return null;
-    const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
-    const index = Math.floor((offset + y - listTop) / ROW_HEIGHT);
-    return rows()[index] ?? null;
+    let top = listTop - (scrollerRef.current?.scrollTop ?? window.scrollY);
+    for (const row of rows()) {
+      if (y >= top && y < top + heightOf(row)) return row;
+      top += heightOf(row);
+    }
+    return null;
   });
   restoreSpies = [() => rect.mockRestore(), () => point.mockRestore()];
 });
@@ -479,6 +509,184 @@ test("a box the browser pulls back to its end after its content shrank keeps the
   } finally {
     view.unmount();
     globalThis.ResizeObserver = RealResizeObserver;
+  }
+});
+
+/**
+ * Draws `drawn` in a scroller that keeps its offset as the browser's box does: VIEWPORT_HEIGHT
+ * tall, its content running from its top to the last row's foot, and a `scrollTop` that stays
+ * between its top and its end. happy-dom keeps any offset it is given, lays nothing out, and
+ * never calls a ResizeObserver back, so `settle` stands in for the browser's frames after a
+ * change. In each frame the box is pulled back to its end where its content no longer reaches
+ * that far, one scroll event is raised for whatever moved it since the frame before, and the
+ * root's resize is observed where the list's height changed.
+ */
+function drawInBox(drawn: string[]) {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const observers: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  const view = render(<List rows={drawn} scroller={scrollerRef} />);
+  const scroller = scrollerRef.current;
+  if (scroller === null) throw new Error("scroller missing");
+  const end = () => Math.max(0, listTop + listHeight() - VIEWPORT_HEIGHT);
+  let offset = 0;
+  let moved = false;
+  let observed = listHeight();
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
+  Object.defineProperty(scroller, "scrollHeight", {
+    configurable: true,
+    get: () => listTop + listHeight(),
+  });
+  Object.defineProperty(scroller, "scrollTop", {
+    configurable: true,
+    get: () => offset,
+    set: (value: number) => {
+      const next = Math.max(0, Math.min(value, end()));
+      if (next !== offset) moved = true;
+      offset = next;
+    },
+  });
+  const frame = () => {
+    // The pull-back: the setter keeps the offset within the content as it is now.
+    scroller.scrollTop = offset;
+    if (moved) {
+      moved = false;
+      fireEvent.scroll(scroller);
+    }
+    if (listHeight() !== observed) {
+      observed = listHeight();
+      for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
+    }
+  };
+  return {
+    rerender: (next: string[]) => view.rerender(<List rows={next} scroller={scrollerRef} />),
+    scroller,
+    settle: () => {
+      frame();
+      // The scroll event of a put-back the anchor made in that frame.
+      if (moved) frame();
+    },
+    unmount: () => {
+      view.unmount();
+      globalThis.ResizeObserver = RealResizeObserver;
+    },
+  };
+}
+
+// A control at the foot of a long row holds the focus while the row's head is above the view,
+// as a Reply under an agents' turn still drawn whole does. The row is then cut short by a
+// commit of its own, which the anchor sees only as its root resized: that moves the control up
+// by the cut and leaves the row's top where it was. The reader is on the control, so the
+// control is what stays.
+test("a focused control at the foot of a long row keeps its place when the row's own content above it shrinks", () => {
+  heights = { r3: 1000 };
+  const box = drawInBox(ids(40));
+  try {
+    const focused = document.querySelector<HTMLElement>('[data-row="r3"] button');
+    if (focused === null) throw new Error("r3 button missing");
+    focused.focus();
+    // The reader scrolls to the control: r3 runs from 200 to 1,200 px down the content, and its
+    // control stands at its foot.
+    box.scroller.scrollTop = 1000;
+    box.settle();
+    expect(viewportTop("r3")).toBe(-800);
+    const held = controlTop("r3");
+    expect(held).toBe(180);
+
+    // r3 is cut to 200 px, which raises its control by 800 px.
+    heights = { r3: 200 };
+    box.settle();
+    expect(controlTop("r3")).toBe(held);
+    expect(box.scroller.scrollTop).toBe(200);
+
+    // A commit that adds a row above holds r3 at the top that puts its control back, so the
+    // control stays there too.
+    box.rerender(["new", ...ids(40)]);
+    expect(controlTop("r3")).toBe(held);
+    box.settle();
+    expect(controlTop("r3")).toBe(held);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The reader is at the very end of the box when content above their row shrinks outside a
+// commit: the browser pulls the box back by the whole shrink, which leaves the row where it
+// was. The place is kept at the offset the box was left at, so when the content above grows
+// again, with the box no longer at its end, the row still stays.
+test("a box pulled back to its end by the whole shrink above the row keeps the row's place for the next change", () => {
+  heights = { r2: 150 };
+  const box = drawInBox(ids(40));
+  try {
+    // The reader scrolls to the box's end (2,200 - 600 = 1,600 px) and rests the pointer on r34.
+    box.scroller.scrollTop = 1600;
+    box.settle();
+    const hovered = document.querySelector<HTMLElement>('[data-row="r34"]');
+    if (hovered === null) throw new Error("r34 missing");
+    // user-event's hover sends no clientX/clientY of its own, and the pointer's place is what this row measures.
+    fireEvent.pointerOver(hovered, { clientX: 20, clientY: 270 });
+    expect(viewportTop("r34")).toBe(250);
+
+    // r2 is cut by 100 px, and the browser pulls the box back by as much, to its new end.
+    heights = {};
+    box.settle();
+    expect(box.scroller.scrollTop).toBe(1500);
+    expect(viewportTop("r34")).toBe(250);
+
+    // r2 grows back by those 100 px, in no commit of the anchor's.
+    heights = { r2: 150 };
+    box.settle();
+    expect(viewportTop("r34")).toBe(250);
+  } finally {
+    box.unmount();
+  }
+});
+
+// Content below the reader's row shrinks outside a commit by more than the room below the view:
+// the browser pulls the box back to its new end, which moves the row down, and no scroll can
+// put it back. Where the pull-back left the row is where the reader now sees it, and the place
+// kept from then on, so a later growth below, which gives the box room again, leaves it there.
+// The focus is on a control at the foot of that row, and its own place is kept from there too.
+test("a box pulled back past the room below the row keeps the row where the pull-back left it, and the focused control's own place from there", () => {
+  heights = { r18: 200, r20: 350 };
+  const box = drawInBox(ids(20));
+  try {
+    const focused = document.querySelector<HTMLElement>('[data-row="r18"] button');
+    if (focused === null) throw new Error("r18 button missing");
+    focused.focus();
+    // The reader scrolls to 100 px short of the box's end (1,550 - 600 = 950 px).
+    box.scroller.scrollTop = 850;
+    box.settle();
+    expect(viewportTop("r18")).toBe(100);
+    expect(controlTop("r18")).toBe(280);
+
+    // r20 is cut by 300 px, three times the room below the view: the browser pulls the box back
+    // 200 px to its new end, which moves r18 down by as much.
+    heights = { r18: 200 };
+    box.settle();
+    expect(box.scroller.scrollTop).toBe(650);
+    expect(viewportTop("r18")).toBe(300);
+    expect(controlTop("r18")).toBe(480);
+
+    // r20 grows back, which gives the box room below the view again.
+    heights = { r18: 200, r20: 350 };
+    box.settle();
+    expect(viewportTop("r18")).toBe(300);
+    expect(controlTop("r18")).toBe(480);
+
+    // r18's own content above its control is cut by 100 px: the control stays where it was.
+    heights = { r18: 100, r20: 350 };
+    box.settle();
+    expect(controlTop("r18")).toBe(480);
+  } finally {
+    box.unmount();
   }
 });
 

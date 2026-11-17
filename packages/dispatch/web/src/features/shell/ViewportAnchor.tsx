@@ -141,10 +141,23 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  a scroll whose event has not arrived yet; in a named box the browser does not cover it,
    *  which is what `contentResized` stands in for.
    *
+   *  Where the focus is on a control inside the row, the place is that control's own (`focus`):
+   *  the control and its viewport top then. A long row whose head is above the view is read at
+   *  the control, and its own words above the control can change height, which moves the
+   *  control and leaves the row's top where it was. `top` is then the row's top that puts the
+   *  control back at its own (`contentResized` keeps the two together), so a commit, which
+   *  measures the row, moves the control back with it.
+   *
    *  A different `scrollTop` means the view moved without this component hearing of it, and a
    *  different `group` means the row was relocated rather than shifted. On either the top no
    *  longer says where the reader's place is, and the commit measures the row instead. */
-  private held: { group: string | null; id: string; scrollTop: number; top: number } | null = null;
+  private held: {
+    focus: { element: Element; top: number } | null;
+    group: string | null;
+    id: string;
+    scrollTop: number;
+    top: number;
+  } | null = null;
   private contentSize: ResizeObserver | null = null;
   /** Set by a scroll this component made, so the scroll event it raises is not read as the
    *  reader moving the view. Scroll events run before resize observations in a frame, so
@@ -173,7 +186,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   }
 
   /** Records where the hand's row sits now as the place to keep it, with the box offset and the
-   *  group that place belongs to. Called where the view is the reader's own: the pointer moving
+   *  group that place belongs to, and, where a control inside the row holds the focus, that
+   *  control and where it sits. Called where the view is the reader's own: the pointer moving
    *  onto a row or off one, and a scroll they made. A host whose rows scroll in the document
    *  keeps nothing. */
   private readonly rememberHeld = (): void => {
@@ -183,7 +197,14 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
       this.held = null;
       return;
     }
+    // A row chosen by the focus has the focus within it; the row itself holding it says no more
+    // than the row's own top.
+    const active = current.via === "focus" ? document.activeElement : null;
     this.held = {
+      focus:
+        active === null || active === current.row
+          ? null
+          : { element: active, top: active.getBoundingClientRect().top },
       group: this.groupOf(current.row),
       id: current.id,
       scrollTop: scroller.scrollTop,
@@ -191,10 +212,11 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     };
   };
 
-  /** The kept top for `id`, while it is still the place the reader saw: the box the host named
-   *  has not moved since, or moved only because the browser pulled it back to its end
-   *  (`pulledBack`), and the row is still in the group it was saved in. Null otherwise, and the
-   *  caller measures the row. */
+  /** The kept top of the row `id` (with a focused control kept in it, the row's top that puts
+   *  that control back at its own: `held`), while it is still the place the reader saw: the box
+   *  the host named has not moved since, or moved only because the browser pulled it back to
+   *  its end (`pulledBack`), and the row is still in the group it was saved in. Null otherwise,
+   *  and the caller measures the row. */
   private heldTop(id: string, group: string | null): number | null {
     const held = this.held;
     const scroller = this.scrollerElement();
@@ -219,7 +241,8 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   /** Called once a compensation has put `id` back at `top`: the row is at the kept place again,
    *  so that place belongs to the offset the compensation left behind. Without this the first
-   *  compensation would invalidate the kept place for every later one. */
+   *  compensation would invalidate the kept place for every later one. A focused control kept
+   *  in the row keeps its own top: `top` is the row's top that puts it there. */
   private restampHeld(id: string, top: number): void {
     const held = this.held;
     const scroller = this.scrollerElement();
@@ -258,19 +281,22 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     }
     // The browser pulling the box back to its end after its content shrank is no scroll of the
     // reader's. Keeping the row's place here would keep it where the shrink moved it, so it goes
-    // back where the reader last saw it, as on any other change of the content's height.
+    // back where the reader last saw it, as on any other change of the content's height. The
+    // place is then recorded as after any other scroll, at the offset the box is left at: the
+    // row back where it was, or, where the box's end left no room to put it back, where the
+    // pull-back moved it, which is where the reader now sees it.
     const held = this.held;
     if (held !== null && scroller !== null && this.pulledBack(held.scrollTop, scroller)) {
       this.contentResized();
-      return;
     }
     this.rememberHeld();
   };
 
   /** The root's content changed height outside a commit of this component's. Puts the hand's
-   *  row back where the reader last saw it, in the box the host named; with no such box the
-   *  document's own scroll anchoring owns this and nothing here runs. The kept place is used
-   *  under the same conditions a commit uses it under, the row's group included. */
+   *  row back where the reader last saw it, or, where a control inside it is kept with the
+   *  place, that control (`held`), in the box the host named; with no such box the document's
+   *  own scroll anchoring owns this and nothing here runs. The kept place is used under the
+   *  same conditions a commit uses it under, the row's group included. */
   private readonly contentResized = (): void => {
     const held = this.held;
     const root = this.root;
@@ -286,10 +312,20 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     }
     const top = this.heldTop(held.id, this.groupOf(element));
     if (top === null) return;
-    const delta = element.getBoundingClientRect().top - top;
+    const at = element.getBoundingClientRect().top;
+    // While the kept control still holds the focus inside the row, the row goes where that
+    // control is back at its own top, and that is the row's kept top from then on: the row's
+    // own words above the control can change height and leave the row's top where it was.
+    const focus = held.focus;
+    const kept =
+      focus !== null && focus.element === document.activeElement && element.contains(focus.element)
+        ? at - (focus.element.getBoundingClientRect().top - focus.top)
+        : top;
+    held.top = kept;
+    const delta = at - kept;
     if (delta === 0) return;
     this.scrollBy(delta);
-    this.restampHeld(held.id, top);
+    this.restampHeld(held.id, kept);
   };
 
   componentDidMount(): void {
