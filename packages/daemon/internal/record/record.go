@@ -1801,9 +1801,10 @@ type Store interface {
 	// PlansOfEarlierOwners is the version in force of each generation of issue whose giver is no
 	// architect of the issue's tree now (ArchitectOfTree): the plans its first step passes over.
 	PlansOfEarlierOwners(ctx context.Context, tx pgx.Tx, issue Issue) ([]PlanVersion, error)
-	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands;
-	// without, each task waiting at no act with its counts at 0. It writes nothing where from has
-	// no plan rows, and gives the pull request row of issue the id of the new plan's one task.
+	// CarryPlan copies the plan of issue at from to to: with carried, each task where it stands,
+	// with its branch and the needs whose join conflicted, and every name from gave a task; without,
+	// each task waiting at no act with its counts at 0 and no branch. It writes nothing where from
+	// has no plan rows, and gives the pull request row of issue the id of the new plan's one task.
 	CarryPlan(ctx context.Context, tx pgx.Tx, issue string, from, to uint64, carried bool) error
 	// DeletePlan deletes the plan of issue at generation from its three tables.
 	DeletePlan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) error
@@ -1814,6 +1815,14 @@ type Store interface {
 	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error
 	// StopTask writes task stopped for reason, at the place it stands.
 	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
+	// AssignTaskBranch gives task its GitHub branch, once, and answers it: the issue's own branch
+	// for the first task of the generation to start, else the first give of the task's slug that
+	// the generation has given no task, even one a later version removed. The generation's task
+	// rows are locked first, so two starts at one time never take one name.
+	AssignTaskBranch(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (string, error)
+	// SetJoinConflicts writes the needs of task whose join into its branch GitHub refused as a
+	// conflict, in place of what the task held.
+	SetJoinConflicts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, needs []string) error
 	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,
 	// on the implementer's phases row for one with none.
 	ReturnCounts(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string) (ReturnCounts, error)
