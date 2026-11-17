@@ -690,7 +690,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 		// The typed pass moves a node's supertag or state and no block's words, so it marks no
 		// node changed (blockNode): the block index marks each block whose words the version
 		// moved.
-		nodes = append(nodes, blockNode(address, document, facts.versionOf(id).At, graphstore.StateLive, facts.supertags[id], false))
+		nodes = append(nodes, blockNode(address, document, document.writer, facts.versionOf(id).At, graphstore.StateLive, facts.supertags[id], false))
 	}
 	var tuples []graphstore.Tuple
 	// Each author's node and the aliases the server proved of it are stated once however many
@@ -744,7 +744,7 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, facts
 	for _, id := range facts.typed {
 		only[id] = struct{}{}
 	}
-	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only)
+	_, parents, err := reconcileBlockParents(ctx, tx, artifactID, document, facts.nodes, facts.fits, facts.askParents, only, authoredSources{})
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

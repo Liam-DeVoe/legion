@@ -677,9 +677,18 @@ var indexPasses = map[string]string{
 	// that release dropped, so it also reads what the store still asserts of the document
 	// (heldDocumentBlocks); what it states of those - gone, retracted - is decided by the render
 	// that does not hold them, as reconcileBlockParents reads the parents the store asserts to
-	// state the render's.
-	"refs/blocks.go#IndexBlocks":                "the version's render, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
-	"refs/block_nodes.go#reconcileBlockParents": "the version's render",
+	// state the render's. Of each block whose row it writes first and whose node records its
+	// authors (dispatch://INFRA-1253's T7), it reads the authors of the version that first holds
+	// it, off that version's own row, and whether the node states its authors already, off the
+	// store's own authored_by, which it reads only to add none where the node's first write did.
+	"refs/blocks.go#IndexBlocks": "the version's render, the authors of the versions its blocks first stand in, each decision's stored decided_by, the pointer tuples the store holds at each block the render drops, and where another release indexed the document since the store stated it, what the store still asserts against that render",
+	// The parents of a version's blocks, from its render. An authored node's first parent is its
+	// author's (D4 of dispatch://INFRA-1253's plan): the targets its parent attribute, its serves
+	// pointer and its From: line name in the render, read where they stand - a conversation item's
+	// issue and R2's test, a block's document - and after that its parent moves only where its
+	// parent attribute names another target than the parent value the store holds of it, which is
+	// read with its placement and its part_of to state what moved, never to mend a row.
+	"refs/block_nodes.go#reconcileBlockParents": "the version's render, and of each authored node the placement, part_of and parent value the store holds of it",
 	"refs/blocks.go#replaceBlockRefs":           "the version's render, and each decision's stored decided_by",
 	// The typed-node pass: the decision and reading nodes of the version, their values and their
 	// authors, from the version's render and the credential the version's write proved, and above

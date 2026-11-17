@@ -14,8 +14,9 @@ import (
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
 // and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
-// block's row, and the document each block of an issue room is in against its issue_room_blocks
-// row (room_block).
+// block's row, the document each block of an issue room is in against its issue_room_blocks
+// row (room_block), and who wrote each block whose node records its authors against the version
+// that first held it (block_author).
 //
 // A row of an issue room is keyed by the room's tree artifact, and the document the block is in
 // is the one its issue_room_blocks row names (refs.BlockDocumentSQL), whose in_document the block
@@ -32,21 +33,24 @@ var blockProjections = []projection{{
 		" issue for a block of an issue's spec, Verification or plan document, the document itself for any other -" +
 		" against the in_document and part_of tuples the node states now, a block with no part_of telling itself from" +
 		" one at its document's top and a part_of to an ask's node read as the ask's block in the node's own document;" +
-		" a row of an issue room's tree artifact reads its document from its issue_room_blocks row, and one of a room" +
-		" that owes its block index is owed",
+		" an authored node's row with no parent_block_id states a part_of to no block of its artifact, and the node's" +
+		" part_of to anything but a block of its own artifact - its issue, a conversation node, another artifact's" +
+		" block - reads as that; a row of an issue room's tree artifact reads its document from its issue_room_blocks" +
+		" row, and one of a room that owes its block index is owed",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
 		`'`+refs.TupleInDocument+`>artifact:' || document.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then `+refs.DocumentTopSQL("document")+`
-		      else '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id end`,
+		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
+		      when d.type in `+refs.AuthoredTypesSQL+` then '`+outsideArtifact+`' || a.ref_key
+		      else `+refs.DocumentTopSQL("document")+` end`,
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
 		join artifacts document on document.id = ` + refs.BlockDocumentSQL("d") + `
 		where octet_length(d.node_id) <= ` + addressBound + ` and not (a.kind = 'tree' and ` + roomOwed("d.artifact_id") + `)`,
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + placedLinks(kindIn("t.kind", blockLinkKinds)) + `)
+		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockLinkKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + lensBlock("n"),
 	pastBound: `
 		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
@@ -186,7 +190,7 @@ var blockProjections = []projection{{
 		join artifacts tree on tree.id = r.tree_artifact_id
 		where octet_length(tree.ref_key || '#' || r.block_id) > ` + addressBound,
 	emptyAgrees: true,
-}}
+}, blockAuthorProjection}
 
 // blockLinkKind is true of the tuple or block_refs kind the SQL expression kind names while it is
 // a link of a block the block_ref kind holds: a kind refs.IndexBlocks writes into block_refs
@@ -197,6 +201,134 @@ var blockProjections = []projection{{
 func blockLinkKind(kind string) string {
 	return `(` + kind + ` in (` + refs.BlockRefKindsSQL + `) and ` + kind + ` not in ('` + refs.TupleShaped + `', '` +
 		refs.TupleFromAsk + `', '` + graphstore.TupleDecidedBy + `'))`
+}
+
+// outsideArtifact starts the part_of link the block kind reads an authored node's place by where
+// that place is no block of the node's own artifact, followed by that artifact's ref_key: the
+// rule document_blocks.parent_block_id projects an authored node's part_of by (refs'
+// placeAuthored) holds the parent's block id where the parent is a block of the same indexed
+// artifact and nothing where it is the issue, a conversation node or a block of another artifact,
+// so a null column tells only that the parent is none of the artifact's blocks.
+const outsideArtifact = "outside:"
+
+// blockPlacedLinks is placedLinks of a block node n, but where n is an authored node - its
+// placement value refs.PlacementAuthored - a part_of whose far end is no block of n's own
+// artifact is written outside:<that artifact's ref_key>, which is what its row's null
+// parent_block_id states (outsideArtifact), and a part_of to an ask's node is read as that far
+// end too, never as the ask's block, which only a reading's row names. A ref_key holds no '#', so
+// n's artifact is the part of its id before the first one.
+func blockPlacedLinks(kinds string) string {
+	return `(select coalesce(string_agg(placed.link, ',' order by placed.link), '')
+	 from (
+		select case when held.kind = '` + graphstore.TuplePartOf + `' and authored.held
+		            then case when held.to_kind = '` + refs.BlockNodeKind + `' and split_part(held.to_id, '#', 1) = split_part(n.id, '#', 1)
+		                      then held.kind || '>' || held.to_kind || ':' || held.to_id
+		                      else held.kind || '>` + outsideArtifact + `' || split_part(n.id, '#', 1) end
+		            when held.kind = '` + graphstore.TuplePartOf + `' and held.to_kind = '` + graphstore.KindAsk + `'
+		            then coalesce(held.kind || '>` + refs.BlockNodeKind + `:' || split_part(n.id, '#', 1) || '#' || ` +
+		askBlockID(`held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
+		            else held.kind || '>' || held.to_kind || ':' || held.to_id end as link
+		from (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = n.id
+		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
+		) held
+		cross join lateral (select coalesce(` + currentValue(refs.AttributePlacement) + ` = '` + refs.PlacementAuthored + `', false) as held) authored
+		where held.asserted
+	 ) placed)`
+}
+
+// blockFirstAuthors is the FROM and WHERE text over each document_blocks row d whose node records
+// its authors (refs.RecordsAuthorsSQL: an authored node, or a block of an issue's tree artifact but
+// a decision and a reading), or states an authored_by while it is no decision and no reading - a
+// block retyped away from an authored type, which keeps the authors its first version gave it, who
+// still wrote it - of a document that owes no block index (roomOwed), with each author of the
+// version v that first held its block, as graphstore.AuthorOf names an actor (author.kind,
+// author.id; an actor naming nobody is left out). The version is the lowest one
+// document_block_texts records a text of the block in, read against the block's own document
+// (refs.BlockDocumentSQL), the one refs.IndexBlocks takes the block's authors from: the block
+// index states one authored_by per author of it through graphstore.AuthorFacts, which makes the
+// author's person or session node, for every such block of every document it indexes, a block
+// an earlier build wrote included, so once a document owes nothing each of its blocks names those
+// authors (blockAuthorProjection) and each author is a node the store holds (storedAuthors). A
+// document still owed is on neither side, since the pass that drains it writes them.
+var blockFirstAuthors = `
+	from document_blocks d
+	join artifacts a on a.id = d.artifact_id
+	cross join lateral (
+		select t.version from document_block_texts t
+		where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
+		order by t.version limit 1
+	) first
+	join artifact_versions v on v.artifact_id = ` + refs.BlockDocumentSQL("d") + ` and v.number = first.version
+	cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
+	cross join lateral (select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `) author (kind, id)
+	where d.node_kind = '` + refs.BlockNodeKind + `' and author.kind is not null
+	  and (` + refs.RecordsAuthorsSQL("d", "a") + `
+	       or (d.type not in ('` + refs.DecisionSupertag + `', '` + refs.ReadingSupertag + `') and exists (
+	           select 1 from (
+	             ` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
+	`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleAuthoredBy+`'
+	               and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+	           ) held where held.asserted)))
+	  and not ` + roomOwed("d.artifact_id")
+
+// blockVersionAuthors are those authors as (kind, id, at) (storedAuthors), at the version's time.
+var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
+
+// blockAuthorProjection is the census's kind of each block's authors (T7 of
+// dispatch://INFRA-1253's plan), held triple by triple: each row is an authored_by of the block's
+// node to one author of the version that first held the block (blockFirstAuthors), against every
+// authored_by a present block node states now - a reading's aside, whose author the typed-node
+// pass states (a decision states none), and a lens's finding's, which no document holds. So an
+// authored node of a document that owes nothing and states no authored_by is a row no tuple
+// states, an author it names that its version does not is a tuple no row projects, and a node of
+// a document still owed is on neither side.
+var blockAuthorProjection = projection{
+	name:     "block_author",
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_blocks, artifact_versions.authors",
+	note: "who wrote each block whose node records its authors, held triple by triple: each row is an authored_by" +
+		" of the node of a document_blocks row of an authored node, or of a block of an issue's tree artifact but a" +
+		" decision and a reading, to each author of the version that first held the block, against every authored_by" +
+		" a present block node but a reading and a lens's finding states now; a block of a document that owes its" +
+		" block index is on neither side",
+	rows: `
+		select distinct 'block_author ' || d.node_id || ' ' || author.kind || ':' || author.id, d.node_kind, d.node_address,
+		       '` + graphstore.TupleAuthoredBy + `', author.kind, author.id` + blockFirstAuthors + `
+		  and octet_length(d.node_id) <= ` + addressBound + ` and octet_length(author.id) <= ` + addressBound,
+	tuples: `
+		select n.kind, n.id, held.kind, held.to_kind, held.to_id
+		from graph_nodes n
+		cross join lateral (
+			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
+		`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleAuthoredBy+`'
+			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `
+		) held
+		where n.kind = '` + refs.BlockNodeKind + `' and n.state <> '` + graphstore.StateGone + `' and not ` + lensBlock("n") + `
+		  and n.supertag not in ('` + refs.ReadingSupertag + `', '` + refs.DecisionSupertag + `') and held.asserted`,
+	owed:        blockDocumentOwed("node"),
+	emptyAgrees: true,
+}
+
+// authorNodeKind and authorNodeID are the kind and the id of the node graphstore.AuthorOf names of
+// the actor a jsonb holds, as authorNode writes them together: a person by the login its actor
+// carries, or by the owner a personal token's carries, canonicalised as recordedPeople does, and a
+// session by its id; null for an actor that names nobody.
+func authorNodeKind(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> '' then '` + graphstore.KindPerson + `'
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> '' then '` + graphstore.KindSession + `'
+			when coalesce(` + actor + `->>'owner', '') <> '' then '` + graphstore.KindPerson + `'
+		end`
+}
+
+func authorNodeID(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> '' then user_threads_login(` + actor + `->>'id')
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> '' then ` + actor + `->>'id'
+			when coalesce(` + actor + `->>'owner', '') <> '' then user_threads_login(` + actor + `->>'owner')
+		end`
 }
 
 // documentOwed is true of the document whose id the SQL expression artifactID names while it owes

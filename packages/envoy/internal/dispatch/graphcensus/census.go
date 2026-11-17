@@ -725,6 +725,12 @@ func recordedPeople(authors string) string {
 // tie and not the node is a difference here. An ask a build before the store wrote states no
 // authored_by until the backfill marks its row, so it names no author here.
 //
+// The authors of artifact_versions name people and sessions too (dispatch://INFRA-1253's T7):
+// every author of the version that first held each block whose node records its authors, an
+// authored node or a block of an issue room, of a document that owes no block index
+// (blockVersionAuthors), since the block index states an authored_by to each of them through
+// graphstore.AuthorFacts, which writes the author's node.
+//
 // A node is history and never goes: a decision or a reading deleted or retyped since takes its
 // row and its current tie away and leaves its author's node standing, so every person and session
 // a block's decided_by or authored_by ever named, asserted or retracted since, is read too, off
@@ -747,6 +753,8 @@ var storedAuthors = `
 	` + currentAuthors(`held.kind = '`+refs.BlockNodeKind+`' and held.supertag = '`+refs.ReadingSupertag+`'`) + `
 	union all
 	` + currentAuthors(`held.kind = '`+graphstore.KindAsk+`'`) + `
+	union all
+	` + blockVersionAuthors + `
 	union all
 	` + writtenHistory + `
 	union all

@@ -268,8 +268,10 @@ var storeWriteCallSites = []string{
 	// its record of a fallback pass, which splices in what each published copy delivered.
 	"outbox/mentions.go#recordFallbackCopies",
 	"outbox/publisher.go#recordBatch",
-	// The block index: its nodes inside the revision fence, whose tuples and cause wait for the
-	// event that recorded the version (the sites of Caused above).
+	// The block index: its nodes inside the revision fence, with the person and session nodes of
+	// the authors of each block whose node records them (dispatch://INFRA-1253's T7) in the same
+	// node write, whose tuples and cause wait for the event that recorded the version (the sites
+	// of Caused above).
 	"refs/blocks.go#IndexBlocks",
 	// The typed-node pass (dispatch://INFRA-1150): the decision and reading nodes of a version and
 	// their authors' nodes, in the transaction that accepts it, under the document's owner row its
