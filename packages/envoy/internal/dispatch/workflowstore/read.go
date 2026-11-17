@@ -106,9 +106,15 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 	}
 	defer rows.Close()
 
-	var finished []IssuePlan
-	var runs [][]Step
-	var planMade []time.Time
+	// gathering is one finished issue as its rows build it: its answer, its runs, folded into the
+	// answer once every row is read, and the moment the plan it holds was made, which picks between
+	// two plans of one generation.
+	type gathering struct {
+		issue    IssuePlan
+		runs     []Step
+		planMade time.Time
+	}
+	var issues []gathering
 	for rows.Next() {
 		var key, title string
 		var closed time.Time
@@ -118,12 +124,10 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 		if err := rows.Scan(&key, &title, &closed, &kind, &id, &attributes, &made); err != nil {
 			return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 		}
-		if len(finished) == 0 || finished[len(finished)-1].Issue != key {
-			finished = append(finished, IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC(), Ratings: []Rating{}})
-			runs = append(runs, nil)
-			planMade = append(planMade, time.Time{})
+		if len(issues) == 0 || issues[len(issues)-1].issue.Issue != key {
+			issues = append(issues, gathering{issue: IssuePlan{Issue: key, Title: title, ClosedAt: closed.UTC(), Ratings: []Rating{}}})
 		}
-		last := len(finished) - 1
+		last := &issues[len(issues)-1]
 		switch {
 		case kind == nil:
 		case *kind == KindStep:
@@ -131,14 +135,14 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 			if err != nil {
 				return nil, err
 			}
-			runs[last] = append(runs[last], step)
+			last.runs = append(last.runs, step)
 		case *kind == KindPlan:
 			plan, err := planFrom(*id, attributes)
 			if err != nil {
 				return nil, err
 			}
-			if newerPlan(plan, *made, finished[last].Plan, planMade[last]) {
-				finished[last].Plan, planMade[last] = &plan, *made
+			if newerPlan(plan, *made, last.issue.Plan, last.planMade) {
+				last.issue.Plan, last.planMade = &plan, *made
 			}
 		}
 	}
@@ -146,10 +150,11 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 		return nil, fmt.Errorf("read the plans of %s: %w", project, err)
 	}
 
-	for index := range finished {
-		issue := &finished[index]
-		slices.SortFunc(runs[index], compareRuns)
-		for _, step := range runs[index] {
+	var finished []IssuePlan
+	for _, gathered := range issues {
+		issue := gathered.issue
+		slices.SortFunc(gathered.runs, compareRuns)
+		for _, step := range gathered.runs {
 			if step.StartedAt != nil && (issue.StartedAt == nil || step.StartedAt.Before(*issue.StartedAt)) {
 				issue.StartedAt = step.StartedAt
 			}
@@ -163,6 +168,7 @@ func ProjectPlans(ctx context.Context, q Queryer, project string, since, until *
 				issue.Ratings = append(issue.Ratings, Rating{Rating: step.Rating, Reason: step.RatingReason, StepID: step.ID, EndedAt: step.EndedAt})
 			}
 		}
+		finished = append(finished, issue)
 	}
 	return finished, nil
 }
