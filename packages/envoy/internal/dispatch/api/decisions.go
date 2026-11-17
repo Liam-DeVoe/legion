@@ -508,12 +508,8 @@ func decisionSums(markdown string) map[sectionKey]string {
 			break
 		}
 		trimmed := strings.TrimRight(line, "\n")
-		if fence := codeFence(trimmed); fence != "" {
-			if fenced == "" {
-				fenced = fence
-			} else if strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced) {
-				fenced = ""
-			}
+		var fenceLine bool
+		if fenced, fenceLine = fenceAfter(fenced, trimmed); fenceLine {
 			offset += len(line)
 			continue
 		}
@@ -567,6 +563,23 @@ func codeFence(line string) string {
 		}
 	}
 	return ""
+}
+
+// fenceAfter is the fence a fenced code block stands open under once line is read, where fenced is
+// the one it stood open under before ("" for none), and whether line is a fence line, which is the
+// block's own and no text of the document's: a fence line opens a block where none is open, and
+// closes the open one where it is a fence of the same marker at least as long.
+func fenceAfter(fenced, line string) (string, bool) {
+	fence := codeFence(line)
+	switch {
+	case fence == "":
+		return fenced, false
+	case fenced == "":
+		return fence, true
+	case strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced):
+		return "", true
+	}
+	return fenced, true
 }
 
 // markdownHeading is a line's ATX heading level and title, or level 0 for a line that is no

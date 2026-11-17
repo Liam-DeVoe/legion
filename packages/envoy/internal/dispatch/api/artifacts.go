@@ -530,10 +530,8 @@ func (s *server) storeArtifact(
 			return
 		}
 		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
-			// The document is the node this create makes, so it is marked changed
-			// (graphstore.Node's Changed): a create made for a run names it as changed by it.
-			node := graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, time.Now().UTC())
-			node.Changed = true
+			// The document is the node this create makes (graphstore.Created).
+			node := graphstore.Created(graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, time.Now().UTC()))
 			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil)
 			if err != nil {
 				s.writeHandlerError(w, err)

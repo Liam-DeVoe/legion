@@ -5,7 +5,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -20,9 +19,9 @@ import (
 )
 
 // statePath is the route path, under /api/v1/issues/{key}, of a node's state route or its settle,
-// the node's address one escaped segment.
+// the node's address one escaped segment (nodePath).
 func statePath(issue, address, route string) string {
-	return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
+	return "/api/v1/issues/" + issue + nodePath(address, route)
 }
 
 // writeStateAs is POST .../nodes/{id}/state of state on the node address names, as login's cookie.
@@ -141,20 +140,13 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 	requireRefused(t, "settled through the state route", writeStateAs(t, rig.handler, rig.issue, rig.requirement, graphstore.StateSettled, "alice"),
 		http.StatusConflict, codeStateNotWritable, "is live and takes no settled here: a proposed node is settled by POST")
 
-	tuples := func() int {
-		var count int
-		if err := rig.database.Pool.QueryRow(ctx, `select count(*) from graph_tuples where kind = $1`, graphstore.AttributeState).Scan(&count); err != nil {
-			t.Fatalf("count the state tuples: %v", err)
-		}
-		return count
+	tuples := func() int64 {
+		return countRows(t, rig.database, `select count(*) from graph_tuples where kind = $1`, graphstore.AttributeState)
 	}
 	before := tuples()
 	requireRefused(t, "a word that is no value", writeStateAs(t, rig.handler, rig.issue, rig.requirement, "propsed", "alice"),
 		http.StatusBadRequest, "INVALID_ATTRIBUTE_VALUE", `the node state "propsed" is none of live, gone, proposed, settled, overtaken`)
-	var misspelled int
-	if err := rig.database.Pool.QueryRow(ctx, `select count(*) from graph_tuples where to_id = 'propsed'`).Scan(&misspelled); err != nil {
-		t.Fatalf("count the tuples at propsed: %v", err)
-	}
+	misspelled := countRows(t, rig.database, `select count(*) from graph_tuples where to_id = 'propsed'`)
 	if misspelled != 0 || tuples() != before {
 		t.Fatalf("the refused write stored %d tuples at propsed and moved the state tuples from %d to %d", misspelled, before, tuples())
 	}
@@ -162,13 +154,10 @@ func TestTheStateRouteTakesTheFiveValuesWhereTheyApplyAndRefusesTheRest(t *testi
 
 	hidden := rig.invoke(rig.spec, "trade-off", "alice", map[string]any{"visibility": graphstore.VisibilityAuthor})
 	nobody := graphstore.KindLens + "/" + uuid.NewString()
-	seen := writeStateAs(t, rig.handler, rig.issue, graphstore.KindLens+"/"+hidden.ID, graphstore.StateProposed, "bob")
-	unwritten := writeStateAs(t, rig.handler, rig.issue, nobody, graphstore.StateProposed, "bob")
-	if seen.Code != http.StatusNotFound || unwritten.Code != seen.Code ||
-		!bytes.Equal(seen.Body.Bytes(), bytes.ReplaceAll(unwritten.Body.Bytes(), []byte(nobody), []byte(graphstore.KindLens+"/"+hidden.ID))) {
-		t.Fatalf("bob's write on alice's hidden lens answers %d %s, and on a lens nobody wrote %d %s",
-			seen.Code, seen.Body.String(), unwritten.Code, unwritten.Body.String())
-	}
+	requireNobodysAnswer(t, "bob's write on alice's hidden lens",
+		writeStateAs(t, rig.handler, rig.issue, graphstore.KindLens+"/"+hidden.ID, graphstore.StateProposed, "bob"),
+		writeStateAs(t, rig.handler, rig.issue, nobody, graphstore.StateProposed, "bob"),
+		graphstore.KindLens+"/"+hidden.ID, nobody)
 }
 
 // threeRequirements is a spec marking three requirements, r1, r2 and r3.

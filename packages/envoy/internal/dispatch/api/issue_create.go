@@ -387,13 +387,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project; what that write states waits for
-	// the issue.created event below (graphstore.Caused). Both are nodes this write creates, so
-	// each is marked changed (graphstore.Node's Changed): a create made for a run names them as
-	// changed by it.
+	// the issue.created event below (graphstore.Caused). Both are nodes this write creates
+	// (graphstore.Created).
 	createdAt := time.Now().UTC()
-	issueNode := graphstore.IssueNode(key, input.Project, actor, createdAt)
-	specNode := graphstore.ArtifactNode(graphstore.ArtifactRefKey(key, input.Project, "", "spec"), input.Project, "", actor, createdAt)
-	issueNode.Changed, specNode.Changed = true, true
+	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
+	specNode := graphstore.Created(graphstore.ArtifactNode(graphstore.ArtifactRefKey(key, input.Project, "", "spec"), input.Project, "", actor, createdAt))
 	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode}, nil)
 	if err != nil {
 		s.writeHandlerError(w, err)

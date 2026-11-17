@@ -411,8 +411,9 @@ func writeGoingRequestNotFound(w http.ResponseWriter) {
 // whose author names nobody is nobody's, and that is a test of its own - graphstore.ProvesAuthor
 // again, asked here of the author the row holds - because SameCredential calls two credentials
 // that name nobody the one credential: without it, such a row would be served to every holder of
-// the deployment's shared token, which resolves as {} exactly as that author does. The POST
-// refuses such an asker before anything is recorded, so no row this route writes carries one.
+// the deployment's shared token, which resolves as {} exactly as that author does, and a write
+// that token makes would count as made for that run. The POST refuses such an asker before
+// anything is recorded, so no row the POST writes carries one.
 func goingRunIsTheCallers(author, caller model.Actor) bool {
 	return graphstore.ProvesAuthor(author) && author.SameCredential(caller)
 }

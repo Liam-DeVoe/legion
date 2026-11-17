@@ -157,19 +157,11 @@ func TestTheReasoningRoutesWriteEachNodeAndAnswerItsShape(t *testing.T) {
 		t.Errorf("the lens stands on %v, want the spec by its ref_key", got)
 	}
 	// The findings rank in the order they were written: the seq of their part_of tuples.
-	var ranked []string
-	rows, err := rig.database.Pool.Query(context.Background(), `
+	ranked, err := readStrings(context.Background(), rig.database.Pool, `
 		select from_id from graph_tuples where kind = $1 and to_kind = $2 and to_id = $3 and from_kind = 'block' order by seq
 	`, graphstore.TuplePartOf, graphstore.KindLens, lens.ID)
 	if err != nil {
 		t.Fatalf("read the findings' part_of tuples: %v", err)
-	}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("scan a finding's part_of: %v", err)
-		}
-		ranked = append(ranked, id)
 	}
 	if want := []string{lens.Findings[0].ID, lens.Findings[1].ID}; !slices.Equal(ranked, want) {
 		t.Errorf("the findings rank %v, want %v", ranked, want)

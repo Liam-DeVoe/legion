@@ -13,8 +13,8 @@ import (
 	"testing"
 )
 
-// TestNoRouteOrFieldTheForkPointServedIsGone is the half of c-no-regression that needs the build
-// before this child: every route the table held at the fork point, and every field of every shape
+// TestNoRouteOrFieldTheForkPointServedIsGone is the half of c-no-regression that needs the fork
+// point's build: every route the table held at the fork point, and every field of every shape
 // it declared, read against what this build's table answers.
 //
 // The fork point is `git merge-base origin/main HEAD`, and what it served is the OpenAPI document
@@ -23,8 +23,8 @@ import (
 // side is the render of its own table, taken now, so nothing committed beside this test can stand
 // in for what the table answers. A route of the fork point that this table no longer serves fails
 // here, and so does a schema, a field or a query parameter it no longer declares, a field that is
-// no longer required, and any of them whose shape moved. A route, a schema or a field this child
-// added is no regression and is not read.
+// no longer required, and any of them whose shape moved. A route, a schema or a field added since
+// the fork point is no regression and is not read.
 //
 // Two moves are no regression. One is a field that now names the values it takes, as an `enum`
 // over the type it had, where the fork point named none, in a schema this build answers and never
@@ -40,8 +40,7 @@ import (
 // it refuses bodies the fork point took.
 //
 // It runs under the build tag `basebuild` because it reads the repository's history: a checkout
-// with no `origin/main` (a shallow clone, an archive) has no fork point to read, which is the
-// reason cmd/dispatch's older-build test reads its base the same way.
+// with no `origin/main` (a shallow clone, an archive) has no fork point to read.
 func TestNoRouteOrFieldTheForkPointServedIsGone(t *testing.T) {
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
 	commit := gitOutput(t, root, "merge-base", "origin/main", "HEAD")
@@ -383,38 +382,23 @@ func requestSchemas(t *testing.T, document []byte) map[string]bool {
 		if err := json.Unmarshal(next, &value); err != nil {
 			t.Fatalf("decode a part of the document a request carries: %v", err)
 		}
-		for _, ref := range schemaRefs(value) {
+		walkOpenAPI(value, "", func(_ string, object map[string]any) {
+			ref, isRef := object["$ref"].(string)
+			if !isRef {
+				return
+			}
 			section, name, found := strings.Cut(strings.TrimPrefix(ref, "#/components/"), "/")
 			if !found || seen[ref] {
-				continue
+				return
 			}
 			seen[ref] = true
 			if section == "schemas" {
 				reached[name] = true
 			}
 			pending = append(pending, raw.Components[section][name])
-		}
+		})
 	}
 	return reached
-}
-
-// schemaRefs is every `$ref` value holds, at any depth.
-func schemaRefs(value any) []string {
-	var refs []string
-	switch typed := value.(type) {
-	case map[string]any:
-		if ref, isRef := typed["$ref"].(string); isRef {
-			refs = append(refs, ref)
-		}
-		for _, inner := range typed {
-			refs = append(refs, schemaRefs(inner)...)
-		}
-	case []any:
-		for _, inner := range typed {
-			refs = append(refs, schemaRefs(inner)...)
-		}
-	}
-	return refs
 }
 
 // servedDocument is an OpenAPI document as this test compares two of them: each operation's

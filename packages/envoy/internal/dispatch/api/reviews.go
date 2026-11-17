@@ -809,9 +809,8 @@ func (s *server) openApprovalAsk(
 	}
 	nodes, facts, marked := graphstore.AskFacts(ask.ID, project, parties, actor, createdAt, graphstore.NoEvent, places)
 	// The approval request's ask is the node this write makes, first of the nodes AskFacts
-	// answers, marked changed (graphstore.Node's Changed) so a request made for a run names it as
-	// changed by it.
-	nodes[0].Changed = true
+	// answers (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode, err := graphstore.WriteUncaused(ctx, tx, nodes, facts)
 	if err != nil {
 		return nil, model.Event{}, err

@@ -52,12 +52,6 @@ const (
 	codeSettleNotPermitted = "SETTLE_NOT_PERMITTED"
 )
 
-// standaloneKinds are the kinds of node that belong to no document, as the graph addresses them:
-// the one kinds the state route writes gone on. A block of a document is gone when a version of
-// its document drops it, and an issue, a document, an ask, a comment and a message are taken out
-// by their own routes, so none of them is gone through this one.
-var standaloneKinds = []string{graphstore.KindConstraint, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}
-
 // itemBlockRefusal is the 409 NODE_STATE_NOT_WRITABLE of a write of asked on target, held at held,
 // where target is a block of an ask, a comment or a message, which a tuple names by its item's
 // block kind (refs.ItemKind.BlockKind, farEndOf) and the store holds no row of; nil for any other
@@ -94,9 +88,9 @@ var goneNodeUnderIssueQuery = `
 // state route still refuses by name. Anything else is FindNodeUnderIssue's own 404, word for word,
 // so a refusal tells nothing of a node the caller may not see.
 func findStateTarget(ctx context.Context, q refs.Queryer, who model.Actor, key, id string) (stateTarget, error) {
-	node, end, err := findStoredNodeUnderIssue(ctx, q, who, key, id)
+	node, end, err := findEndUnderIssue(ctx, q, who, key, id)
 	if err == nil {
-		return stateTarget{kind: node.Kind, address: cmp.Or(node.Ref, id), end: end}, nil
+		return stateTarget{kind: node.Kind, address: cmp.Or(node.Ref, id), end: end.stored()}, nil
 	}
 	var refusal *apiError
 	if !errors.As(err, &refusal) || refusal.status != http.StatusNotFound {
@@ -106,10 +100,7 @@ func findStateTarget(ctx context.Context, q refs.Queryer, who model.Actor, key, 
 	if !ok {
 		return stateTarget{}, err
 	}
-	stored := storedEnd{kind: kind, id: address}
-	if kind == graphstore.KindLensBlock {
-		stored.kind = refs.BlockNodeKind
-	}
+	stored := storedEnd{kind: kind, id: address}.stored()
 	var gone bool
 	readErr := q.QueryRow(ctx, goneNodeUnderIssueQuery, stored.kind, stored.id, graphstore.StateGone, key, refs.VisibilityArg(who)).Scan(&gone)
 	if errors.Is(readErr, pgx.ErrNoRows) {
@@ -163,7 +154,7 @@ func stateRefusal(target stateTarget, held, asked string) error {
 		return refused("a proposed node is settled by POST /api/v1/issues/{key}/nodes/{id}/settle alone")
 	case held == graphstore.StateGone:
 		return refused("a gone node takes no state through this route, since writing one would bring back a node its writer took out")
-	case asked == graphstore.StateGone && !slices.Contains(standaloneKinds, target.kind):
+	case asked == graphstore.StateGone && !slices.Contains(refs.StandingKinds(), target.kind):
 		return refused("a document's own write removes its block and its own routes take out an issue, a document, an ask, " +
 			"a comment or a message, so this route writes gone only on a lens, a finding, a risk or a constraint")
 	}
@@ -271,17 +262,15 @@ func (s *server) settleNode(w http.ResponseWriter, r *http.Request) {
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
-	proving, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	proving, resolved, ok := s.resolveCaller(w, r)
+	if !ok {
 		return
 	}
 	var writer model.Actor
-	var ok bool
 	if proving.Credential.Holds(model.ScopePerson) {
-		writer, ok = s.actingPerson(w, r)
+		writer, ok = s.actingPerson(w, resolved)
 	} else {
-		writer, ok = s.requireActor(w, r, input.Actor)
+		writer, ok = s.requireActor(w, resolved, input.Actor)
 	}
 	if !ok {
 		return
@@ -366,19 +355,19 @@ var issueProposedQuery = `
 // proposed and that the caller may see (issueProposedQuery), each answered through the read
 // registry's loader of its kind (refs.ExcerptedNodes), which binds that kind's predicate again and
 // answers the node whole with its excerpt. It takes no parameter but the issue. An issue nobody
-// holds is 404 NOT_FOUND.
+// holds is 404 NOT_FOUND; an issue that holds a proposed node exists, so only an empty list asks
+// whether the issue does.
 func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
-	actor, _, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	reader, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	ctx, key, reader := r.Context(), r.PathValue("key"), actor.Recorded()
-	if err := s.requireIssueExists(ctx, key); err != nil {
+	ctx, key := r.Context(), r.PathValue("key")
+	pool, err := s.readyPool()
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	pool := s.deps.Store.Pool
 	rows, err := pool.Query(ctx, issueProposedQuery, key, refs.VisibilityArg(reader))
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("read the proposed nodes of %s: %w", key, err))
@@ -399,20 +388,24 @@ func (s *server) listIssueProposed(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, fmt.Errorf("read the proposed nodes of %s: %w", key, err))
 		return
 	}
-	read := issueProposed{Issue: key, Nodes: []proposedNode{}}
-	if len(targets) > 0 {
-		// The store keys a document by its ref_key, which is the id its loader reads it by.
-		resolved, err := refs.ExcerptedNodes(ctx, pool, reader, true, targets)
-		if err != nil {
+	if len(targets) == 0 {
+		if err := s.requireIssueExists(ctx, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		for _, target := range targets {
-			// A node its loader answers none of - a block no version holds now - is no node of
-			// the graph, and the read leaves it out as every read of the graph does.
-			if node, found := resolved[target]; found {
-				read.Nodes = append(read.Nodes, proposedNode{Node: node.Node, Excerpt: node.Excerpt})
-			}
+	}
+	// The store keys a document by its ref_key, which is the id its loader reads it by.
+	resolved, err := refs.ExcerptedNodes(ctx, pool, reader, true, targets)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	read := issueProposed{Issue: key, Nodes: []proposedNode{}}
+	for _, target := range targets {
+		// A node its loader answers none of - a block no version holds now - is no node of the
+		// graph, and the read leaves it out as every read of the graph does.
+		if node, found := resolved[target]; found {
+			read.Nodes = append(read.Nodes, proposedNode{Node: node.Node, Excerpt: node.Excerpt})
 		}
 	}
 	WriteJSON(w, http.StatusOK, read)

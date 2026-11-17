@@ -445,7 +445,7 @@ func (r *storeWriterRig) goingFrame() storeWriter {
 				hold: func(t *testing.T, ctx context.Context, holder pgx.Tx, run storeWriterRun) {
 					holdRow(t, ctx, holder, `select 1 from graph_nodes where kind = 'interaction' and id = $1 for no key update`, run.made.ID)
 				},
-				at:    goingNodeLock,
+				at:    graphstore.NodeRowLockSQL,
 				takes: []tableLock{{"graph_nodes", rowShareMode}},
 			},
 			{

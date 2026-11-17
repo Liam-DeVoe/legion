@@ -35,13 +35,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// checkBlockType is the block type of a check, read off its document_blocks row, the one block a
-// risk's prevented_by may point at (graphstore's pointerRules).
-const checkBlockType = "check"
-
 // PremortemConverter is the actor `envoy-dispatch premortem-convert` writes as: the server's own
 // credential, which proves no author a node could be reserved for and names no person or session
-// an authored_by tuple could point at, as graphstore.LensKindWriter is the catalogue command's.
+// an authored_by tuple could point at, as the catalogue command's writer is (graphstore.AddLensKind).
 var PremortemConverter = model.Actor{Kind: "system", ID: "premortem-convert"}
 
 // PremortemEntry is one entry of the map from each risk of a pre-mortem to the checks that prevent
@@ -222,15 +218,8 @@ func parsePremortem(markdown string) (premortem, error) {
 	var headings []documentHeading
 	fenced := ""
 	for index, line := range lines {
-		if fence := codeFence(line); fence != "" {
-			if fenced == "" {
-				fenced = fence
-			} else if strings.HasPrefix(fence, fenced[:1]) && len(fence) >= len(fenced) {
-				fenced = ""
-			}
-			continue
-		}
-		if fenced != "" {
+		var fenceLine bool
+		if fenced, fenceLine = fenceAfter(fenced, line); fenceLine || fenced != "" {
 			continue
 		}
 		if level, text := markdownHeading(line); level > 0 {
@@ -505,7 +494,7 @@ func premortemChecks(ctx context.Context, q refs.Queryer, who model.Actor, entri
 			standing = append(standing, node.ID)
 		}
 	}
-	rows, err := q.Query(ctx, `select node_id from document_blocks where node_id = any($1) and type = $2`, standing, checkBlockType)
+	rows, err := q.Query(ctx, `select node_id from document_blocks where node_id = any($1) and type = $2`, standing, graphstore.BlockTypeCheck)
 	if err != nil {
 		return nil, fmt.Errorf("read the types of the blocks the map names: %w", err)
 	}
@@ -640,7 +629,7 @@ func ConvertPremortem(ctx context.Context, tx pgx.Tx, proving, recorded model.Ac
 	lens := refs.StoreRef(graphstore.KindLens, lensID)
 	convert := func(q pgx.Tx) (model.Event, error) {
 		if _, err := writeReasoningNodes(ctx, q, reasoningWrite{
-			issue: key, proving: proving, recorded: recorded, at: at, nodes: nodes,
+			reasoningCaller: reasoningCaller{proving: proving, recorded: recorded}, issue: key, at: at, nodes: nodes,
 		}); err != nil {
 			return model.Event{}, err
 		}
