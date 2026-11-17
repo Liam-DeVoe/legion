@@ -195,3 +195,61 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		}
 	})
 }
+
+// stepOfRow is the step role's phases row of key names (record.PhaseRow.StepTask, StepPlace), as
+// `task/place`, and the row's entry, which says the row was raised at all.
+func stepOfRow(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role) (string, int64) {
+	t.Helper()
+	row := roleRowOf(t, pool, engine, key, role)
+	return fmt.Sprintf("%s/%d", row.StepTask, row.StepPlace), row.Entry
+}
+
+// assertRowsName fails unless each role's phases row of key was raised and names the step want
+// gives it, as `task/place`.
+func assertRowsName(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, when string, want map[claim.Role]string) {
+	t.Helper()
+	for role, step := range want {
+		if got, entry := stepOfRow(t, pool, engine, key, role); got != step || entry == 0 {
+			t.Fatalf("%s, the %s's row of %s names the step %q at entry %d, want %q on a raised entry", when, role, key, got, entry, step)
+		}
+	}
+}
+
+// Each phases row of an issue with plan rows names the step its role runs (C2-5): the task and
+// the step's place in it, written by the start that raises the row's entry (enter), so the facts
+// of that row are the facts of that step's run. The implementer's row names its step 1 until the
+// retro's start raises it again, at the retro's place 0, and the merger's names the merge, at 0.
+// An issue with no plan rows keeps no task and place 0 on each row, as it always did (R20).
+func TestEachPhaseRowNamesItsStep(t *testing.T) {
+	t.Run("the plan implementer reviewer", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		assertRowsName(t, pool, engine, root.Key, "after the implementer's start", map[claim.Role]string{claim.RoleImplementer: "a/1"})
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		assertRowsName(t, pool, engine, root.Key, "after the reviewer's start",
+			map[claim.Role]string{claim.RoleReviewer: "a/2", claim.RoleImplementer: "a/1"})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		assertRowsName(t, pool, engine, root.Key, "at the retro",
+			map[claim.Role]string{claim.RoleImplementer: "a/0", claim.RoleReviewer: "a/2"})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		assertPhase(t, pool, phase.Merging)
+		assertRowsName(t, pool, engine, root.Key, "at the merge", map[claim.Role]string{claim.RoleMerger: "a/0", claim.RoleImplementer: "a/0"})
+	})
+
+	t.Run("an issue with no plan rows keeps no step on each row", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Implementing)
+		move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerTesterPassed, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerReviewApproved, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerSignOff, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerRetroCompleted, "", record.PhaseRow{})
+		assertPhase(t, pool, phase.Merging)
+		assertRowsName(t, pool, engine, root.Key, "at the merge of an issue with no plan rows", map[claim.Role]string{
+			claim.RoleTester: "/0", claim.RoleReviewer: "/0", claim.RoleImplementer: "/0", claim.RoleMerger: "/0"})
+	})
+}

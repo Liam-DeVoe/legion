@@ -601,6 +601,9 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		if row.Entry != 1 || !strings.Contains(row.EntryTask, told) {
 			t.Fatalf("the implementer's row has entry %d and task %q, want entry 1, raised, whose task holds %q", row.Entry, row.EntryTask, told)
 		}
+		if row.StepTask != "a" || row.StepPlace != 1 {
+			t.Fatalf("the implementer's row names step %d of task %q, want step 1 of task a, the step its start raised it for", row.StepPlace, row.StepTask)
+		}
 		if starts := startsOf(t, pool, key, claim.RoleImplementer); len(starts) != 1 || starts[0].Phase != phase.Implementing || starts[0].Entry != row.Entry {
 			t.Fatalf("the starts of the implementer = %+v, want one, of implementing at entry %d", starts, row.Entry)
 		}

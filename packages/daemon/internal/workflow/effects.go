@@ -746,6 +746,12 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // verbatim is whether the sweep's send of a root architect's entry again sends that task as
 // written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
 // raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
+//
+// For an issue with plan rows, a phase worker's raise also writes the step the entry is a run of
+// (record.PhaseRow.StepTask, StepPlace): the walk's task and the place of the step the issue stands
+// in (stepAt), from 1 for a step and 0 for the retro on the implementer's row and the merge on the
+// merger's, so the row's facts are the facts of that step's run. An issue with no plan rows keeps
+// no task and place 0 (R20), and the architect's entry is no step of the issue's task.
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
@@ -753,18 +759,23 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	}
 	row.Entry++
 	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
+	worker := role != claim.RoleArchitect
+	var w Walk
+	if worker {
+		if w, err = e.walk(ctx, tx, issue); err != nil {
+			return 0, err
+		}
+		if _, step, _, _, ok := stepAt(w, record.StandsAt(issue)); w.Stored && ok {
+			row.StepTask, row.StepPlace = w.Task, step
+		}
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
-	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
-	// entry is no step of the issue's task.
-	if role != claim.RoleArchitect && recordsSteps(issue) {
+	// and the promotion's start of a mid-phase member (StartPromotedWorker).
+	if worker && recordsSteps(issue) {
 		agent, err := stepClaim(issue, issue.Key, role)
-		if err != nil {
-			return 0, err
-		}
-		w, err := e.walk(ctx, tx, issue)
 		if err != nil {
 			return 0, err
 		}
