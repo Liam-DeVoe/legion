@@ -293,6 +293,20 @@ func TestWriteDirChangesAllOrNone(t *testing.T) {
 	})
 }
 
+// writeKilledRecord writes beside the spec directory the record that a run of print writes before
+// its exchange (writeRecord), with the text of each spec file that it read, files, for staging, the
+// directory that the test leaves there as a killed run leaves it.
+func writeKilledRecord(t *testing.T, staging string, files map[string]string) {
+	t.Helper()
+	texts := make(map[string][]byte, len(files))
+	for name, text := range files {
+		texts[name] = []byte(text)
+	}
+	if err := writeRecord(osFileSystem{}, staging, texts); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // callFault is one fault of a call of the seam in a test: the call op of the path that ends in
 // name answers err and changes nothing.
 type callFault struct {
@@ -424,6 +438,7 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 		if err := os.Rename(old, staging); err != nil {
 			t.Fatal(err)
 		}
+		writeKilledRecord(t, staging, map[string]string{"terms.yaml": strings.Replace(term, "unit", "part", 1)})
 		code, stderr := run(t, dir)
 		want := "spec-check: print finished " + staging + ", the directory that a killed run of print put out of the place of " + dir + ": it moved each entry that is no spec file into " + dir + "\n" +
 			"spec-check: warning: " + filepath.Join(dir, "README") + ": not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it\n" +
@@ -436,6 +451,58 @@ func TestPrintRemovesWhatAKilledRunLeft(t *testing.T) {
 		}
 		if got := inodeOf(t, filepath.Join(dir, "notes")); got != notes {
 			t.Errorf("notes is inode %d, was %d", got, notes)
+		}
+		if names := dirNames(t, root); !slices.Equal(names, []string{"spec"}) {
+			t.Errorf("the parent holds %q, want spec alone", names)
+		}
+	})
+	// The old directory of a killed run whose record is gone: print cannot tell a text that the run
+	// read from one that another program wrote there, so it removes only the second names of the
+	// files of the directory, keeps the old directory and exits 1.
+	t.Run("the old directory of a killed run with no record", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+		old := filepath.Join(root, "old")
+		if err := os.Mkdir(old, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(old, "terms.yaml"), []byte(strings.Replace(term, "unit", "part", 1)))
+		staging := stagingPath(dir, inodeOf(t, old))
+		if err := os.Rename(old, staging); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr := run(t, dir)
+		names := dirNames(t, root)
+		if len(names) != 2 || names[1] != "spec" || !strings.HasPrefix(names[0], filepath.Base(staging)+"-kept-") {
+			t.Fatalf("the parent holds %q, want spec and the old directory that print kept", names)
+		}
+		kept := filepath.Join(root, names[0])
+		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: it holds terms.yaml, and print has no record of the texts that the run that left it read, so compare each with the entry of that name in " + dir + "\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+		if got := specFiles(t, kept); !maps.Equal(got, map[string]string{"terms.yaml": strings.Replace(term, "unit", "part", 1)}) {
+			t.Errorf("%s holds %q, want the text that no record holds", kept, got)
+		}
+	})
+	// A record whose directory is gone, which a run killed after it finished its old directory
+	// leaves, is removed.
+	t.Run("a record whose directory is gone", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(term))
+		writeKilledRecord(t, stagingPath(dir, inodeOf(t, dir)+7), map[string]string{"terms.yaml": term})
+		if code, stderr := run(t, dir); code != 0 || stderr != "" {
+			t.Fatalf("print: exit %d, stderr %q, want exit 0 and nothing", code, stderr)
 		}
 		if names := dirNames(t, root); !slices.Equal(names, []string{"spec"}) {
 			t.Errorf("the parent holds %q, want spec alone", names)
@@ -568,12 +635,59 @@ func TestPrintExitsOneWhenItKeepsAnEntryOfAnotherProgram(t *testing.T) {
 		if err := os.Rename(old, staging); err != nil {
 			t.Fatal(err)
 		}
+		writeKilledRecord(t, staging, map[string]string{})
 		code, stderr := run(t, dir, osFileSystem{})
 		kept := keptBeside(t, dir)
 		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed notes there while print ran, so compare each with the entry of that name in " + dir + "\n" +
 			"spec-check: warning: " + filepath.Join(dir, "notes") + ": not a spec file (directory); the importer passes over it\n"
 		if code != 1 || stderr != want {
 			t.Fatalf("print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+	})
+	// The loss path: the run cannot give the old directory, which holds the change of another program,
+	// another name, because the system refuses the rename (here its parent became a directory that
+	// the process may not write, after the exchange), so the old directory stays at the name of print's
+	// own directory beside dir. The next run finishes it as print's own, and removes no change that its
+	// run did not record: it keeps the directory with the change, and exits 1 naming it.
+	t.Run("a change of another program in an old directory that print cannot rename, which the next run keeps", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root may write a directory of mode 555, so the rename that the row needs to fail does not fail")
+		}
+		root := t.TempDir()
+		dir := filepath.Join(root, "spec")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(dir, "terms.yaml"), []byte(first))
+		staging := stagingPath(dir, inodeOf(t, dir))
+		t.Cleanup(func() { _ = os.Chmod(root, 0o755) })
+		parentLocked := callFS{func(op, path string, do func() error) error {
+			if op == "move" && path == staging {
+				if err := os.Chmod(root, 0o555); err != nil {
+					return err
+				}
+			}
+			return changeAtExchange.call(op, path, do)
+		}}
+		code, stderr := run(t, dir, parentLocked)
+		if code != 1 || !strings.HasPrefix(stderr, "spec-check: print could not remove "+staging+", which held "+dir+" before the run, and holds terms.yaml, which another program made or changed there while print ran: ") {
+			t.Fatalf("print: exit %d, stderr %q, want exit 1 and the line of %s, which it could not rename", code, stderr, staging)
+		}
+		if err := os.Chmod(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		code, stderr = run(t, dir, osFileSystem{})
+		kept := keptBeside(t, dir)
+		want := "spec-check: print kept " + kept + ", which held " + dir + " before the run: another program made or changed terms.yaml there while print ran, so compare each with the entry of that name in " + dir + "\n"
+		if code != 1 || stderr != want {
+			t.Fatalf("the next print: exit %d, stderr %q, want exit 1 and %q", code, stderr, want)
+		}
+		if got := specFiles(t, kept); !maps.Equal(got, map[string]string{"terms.yaml": other}) {
+			t.Errorf("%s holds %q, want the change of the other program", kept, got)
+		}
+		if got := specFiles(t, dir); !maps.Equal(got, map[string]string{"terms.yaml": second}) {
+			t.Errorf("%s holds %q, want the run's text", dir, got)
 		}
 	})
 	t.Run("the control: no other program", func(t *testing.T) {

@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,9 +16,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
-	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // stagingInfix is the part of the name of the directory that a run of print builds beside its spec
@@ -27,6 +27,52 @@ const stagingInfix = ".spec-check-print-"
 // run: one run at a time holds the lock of dir, so one name serves each run.
 func stagingPath(dir string, ino uint64) string {
 	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+stagingInfix+strconv.FormatUint(ino, 10))
+}
+
+// recordSuffix ends the name of the record of a run beside its spec directory: the name of the
+// run's directory and recordSuffix (recordPath).
+const recordSuffix = ".texts"
+
+// recordPath is the record of the run whose directory beside the spec directory is staging: the
+// SHA-256 of the text of each spec file of the spec directory that the run read (textsRead), which
+// the run writes before the exchange and removes when it has finished the old directory. A run that
+// finishes the old directory of a run that it did not see end (cleanLeftovers) removes a spec file
+// of it only where the record holds its text, so it removes no change that another program made
+// there, also when the run that made the directory could not give it another name (keep).
+func recordPath(staging string) string { return staging + recordSuffix }
+
+// textsRead is the SHA-256 of each text of files, in hex, by the name of its file.
+func textsRead(files map[string][]byte) map[string]string {
+	read := make(map[string]string, len(files))
+	for name, text := range files {
+		sum := sha256.Sum256(text)
+		read[name] = hex.EncodeToString(sum[:])
+	}
+	return read
+}
+
+// writeRecord writes the record of the run whose directory is staging: textsRead of files, the
+// text of each spec file of the spec directory when the run read it.
+func writeRecord(fsys fileSystem, staging string, files map[string][]byte) error {
+	data, err := json.Marshal(textsRead(files))
+	if err != nil {
+		return err
+	}
+	return writeSynced(fsys, recordPath(staging), append(data, '\n'), 0o644)
+}
+
+// readRecord is the record of the run whose directory is staging, and nil when the run left none
+// or one that is not in the form of writeRecord.
+func readRecord(staging string) map[string]string {
+	data, err := os.ReadFile(recordPath(staging))
+	if err != nil {
+		return nil
+	}
+	var read map[string]string
+	if json.Unmarshal(data, &read) != nil {
+		return nil
+	}
+	return read
 }
 
 // fileSystem is each call by which print changes the file system or makes a change durable: print
@@ -87,17 +133,19 @@ func (osFileSystem) remove(path string) error                  { return os.Remov
 // one, exchanges the two directories with one call (exchange), syncs their parent, and finishes
 // the old directory (finishOld): it moves each entry that is no spec file, a file of another name,
 // a symbolic link or a subdirectory, which print neither reads nor changes, into dir, the same
-// entry, and removes the rest. A step that fails before the exchange removes the new directory and
-// leaves dir as it was; a system that cannot exchange two directories refuses the exchange, so
-// print refuses with dir as it was, and names the way out where it knows one (exchangeRefusal). A
-// run that is killed leaves the new or the old directory beside dir, which the next run finishes
-// (cleanLeftovers). A directory that the process may not write is refused, as the files of such a
-// directory were, and so is a parent that it may not write, where the new directory goes, and an
-// owner that it may not give the new directory, each with the way out (writable, sameOwner).
-// warnings is a line for each step after the exchange that did not finish, or for
-// an entry that another program changed while the run built the new directory, which writeDir
-// keeps beside dir; kept is whether it kept such an entry, which a person must compare with dir.
-// Each change that it makes in the file system goes through fsys.
+// entry, and removes the rest. Before the exchange it writes its record beside dir (recordPath):
+// the text of each spec file that it read, so that a later run removes from the old directory only
+// what this run read. A step that fails before the exchange removes the new directory and its
+// record and leaves dir as it was; a system that cannot exchange two directories refuses the
+// exchange, so print refuses with dir as it was, and names the way out where it knows one
+// (exchangeRefusal). A run that is killed leaves the new or the old directory beside dir, with its
+// record, which the next run finishes (cleanLeftovers). A directory that the process may not write
+// is refused, as the files of such a directory were, and so is a parent that it may not write,
+// where the new directory goes, and an owner that it may not give the new directory, each with the
+// way out (writable, sameOwner). warnings is a line for each step after the exchange that did not
+// finish, or for an entry that another program changed while the run built the new directory,
+// which writeDir keeps beside dir; kept is whether it kept such an entry, which a person must
+// compare with dir. Each change that it makes in the file system goes through fsys.
 func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[string][]byte) (warnings []string, kept bool, err error) {
 	var changed []string
 	for _, name := range slices.Sorted(maps.Keys(after)) {
@@ -153,6 +201,9 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 	if err := fsys.sync(built); err != nil {
 		return nil, false, err
 	}
+	if err := writeRecord(fsys, staging, files); err != nil {
+		return nil, false, err
+	}
 	if err := fsys.exchange(staging, dir); err != nil {
 		return nil, false, exchangeRefusal(err)
 	}
@@ -160,7 +211,7 @@ func writeDir(fsys fileSystem, dir string, lock *specDirLock, files, after map[s
 	if err := syncDir(fsys, filepath.Dir(dir)); err != nil {
 		warnings = append(warnings, fmt.Sprintf("%s: the system did not sync the directory that holds it, so a power loss can undo the run: %s", dir, err))
 	}
-	lines, kept := finishOld(fsys, staging, dir, files)
+	lines, kept := finishOld(fsys, staging, dir, textsRead(files))
 	return append(warnings, lines...), kept, nil
 }
 
@@ -198,14 +249,22 @@ func exchangeRefusal(err error) error {
 }
 
 // removeNew removes staging, a new directory that the run built and did not exchange, which holds
-// only files that the run made: each file, then staging. What it cannot remove, the next run
-// removes (cleanLeftovers).
+// only files that the run made: each file, then staging, then its record where the run wrote one.
+// What it cannot remove, the next run removes (cleanLeftovers).
 func removeNew(fsys fileSystem, staging string) {
 	list, _ := os.ReadDir(staging)
 	for _, entry := range list {
 		_ = fsys.remove(filepath.Join(staging, entry.Name()))
 	}
 	_ = fsys.remove(staging)
+	removeRecord(fsys, staging)
+}
+
+// removeRecord removes the record of the run whose directory is staging, where there is one.
+func removeRecord(fsys fileSystem, staging string) {
+	if _, err := os.Lstat(recordPath(staging)); err == nil {
+		_ = fsys.remove(recordPath(staging))
+	}
 }
 
 // linkOrCopy puts at to the spec file from, which the run does not change and whose text is
@@ -263,14 +322,17 @@ func syncDir(fsys fileSystem, dir string) error {
 
 // finishOld finishes old, the directory that a run of print exchanged out of dir: it moves each
 // entry that dir does not hold into dir, the same entry, and removes each spec file of old that
-// dir holds in its new text, then old. files is the text of each spec file of dir when the run
-// read it: a spec file of old is removed when it is a second name of the file that dir holds, or
-// when its text is the text that the run read. A run that finishes a killed run (cleanLeftovers)
-// passes no files, and removes each spec file of old that dir holds. An entry that it can neither
-// move nor remove, which another program made or changed in old while the run built the new
-// directory, it keeps, with old under another name (keep), and it answers a line that names them
-// and where it kept them, and kept true. It answers no line when it finished old.
-func finishOld(fsys fileSystem, old, dir string, files map[string][]byte) (lines []string, kept bool) {
+// dir holds in its new text, then old and the record of its run (recordPath). read is textsRead
+// of the text of each spec file of dir when the run read it: a spec file of old is removed when it
+// is a second name of the file that dir holds, or when read holds its text. The run passes what it
+// read; a run that finishes a killed run (cleanLeftovers) passes the killed run's record, or nil
+// where it has none, and then removes only second names. An entry that it can neither move nor
+// remove, which another program made or changed in old while the run built the new directory, it
+// keeps, with old under another name (keep), and it answers a line that names them and where it
+// kept them, and kept true. Where it cannot give old another name, old keeps the name of print's
+// own directory and its record, so the next run finishes it with the same record and removes no
+// such change. It answers no line when it finished old.
+func finishOld(fsys fileSystem, old, dir string, read map[string]string) (lines []string, kept bool) {
 	list, err := os.ReadDir(old)
 	if err != nil {
 		return []string{fmt.Sprintf("print could not read %s, which held %s before the run, so it leaves it: %s", old, dir, err)}, false
@@ -286,11 +348,12 @@ func finishOld(fsys fileSystem, old, dir string, files map[string][]byte) (lines
 			}
 			continue
 		}
-		if err != nil || !entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, files, name) || fsys.remove(path) != nil {
+		if err != nil || !entry.Type().IsRegular() || !current.Mode().IsRegular() || !removable(path, current, read, name) || fsys.remove(path) != nil {
 			names = append(names, name)
 		}
 	}
 	if len(names) == 0 && fsys.remove(old) == nil {
+		removeRecord(fsys, old)
 		return nil, false
 	}
 	what := strings.Join(names, ", ")
@@ -298,36 +361,41 @@ func finishOld(fsys fileSystem, old, dir string, files map[string][]byte) (lines
 		what = "an entry" // made in old after the run read it, so old was not empty
 	}
 	path, err := keep(fsys, old)
-	if err != nil {
+	switch {
+	case err != nil && read == nil:
+		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, and print has no record of the texts that the run that left it read: %s", old, dir, what, err)}, true
+	case err != nil:
 		return []string{fmt.Sprintf("print could not remove %s, which held %s before the run, and holds %s, which another program made or changed there while print ran: %s", old, dir, what, err)}, true
+	}
+	removeRecord(fsys, old)
+	if read == nil {
+		return []string{fmt.Sprintf("print kept %s, which held %s before the run: it holds %s, and print has no record of the texts that the run that left it read, so compare each with the entry of that name in %s",
+			path, dir, what, dir)}, true
 	}
 	return []string{fmt.Sprintf("print kept %s, which held %s before the run: another program made or changed %s there while print ran, so compare each with the entry of that name in %s",
 		path, dir, what, dir)}, true
 }
 
 // removable reports whether finishOld may remove the regular file path of an old directory, whose
-// name in dir is the regular file that current describes: it is a second name of that file; or
-// files is nil and name is the name of a spec file; or its text is files[name], the text that the
-// run read.
-func removable(path string, current fs.FileInfo, files map[string][]byte, name string) bool {
+// name in dir is the regular file that current describes: it is a second name of that file, or
+// read holds its text, the text of name that the run read.
+func removable(path string, current fs.FileInfo, read map[string]string, name string) bool {
 	info, err := os.Lstat(path)
 	switch {
 	case err != nil:
 		return false
 	case os.SameFile(info, current):
 		return true
-	case files == nil:
-		return specgraph.IsFile(name, notes.KindFile)
 	}
-	text, held := files[name]
+	sum, held := read[name]
 	content, err := os.ReadFile(path)
-	return held && err == nil && bytes.Equal(content, text)
+	return held && err == nil && textsRead(map[string][]byte{name: content})[name] == sum
 }
 
 // undoNew removes staging, a new directory that a killed run of print built beside dir and did not
-// exchange: it holds only new files and second names of the spec files of dir. An entry that it
-// cannot remove, it keeps, with staging under another name (keep), and answers a line that names it
-// and where it kept it, and kept true. It answers no line when it removed staging.
+// exchange, and its record: it holds only new files and second names of the spec files of dir. An
+// entry that it cannot remove, it keeps, with staging under another name (keep), and answers a line
+// that names it and where it kept it, and kept true. It answers no line when it removed staging.
 func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 	list, err := os.ReadDir(staging)
 	if err != nil {
@@ -340,6 +408,7 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 		}
 	}
 	if len(names) == 0 && fsys.remove(staging) == nil {
+		removeRecord(fsys, staging)
 		return nil, false
 	}
 	what := strings.Join(names, ", ")
@@ -350,6 +419,7 @@ func undoNew(fsys fileSystem, staging, dir string) (lines []string, kept bool) {
 	if err != nil {
 		return []string{fmt.Sprintf("print could not remove %s, which a killed run of print left beside %s, and holds %s, which print did not make: %s", staging, dir, what, err)}, true
 	}
+	removeRecord(fsys, staging)
 	return []string{fmt.Sprintf("print kept %s, which a killed run of print left beside %s: it holds %s, which print did not make", path, dir, what)}, true
 }
 
@@ -366,9 +436,11 @@ func keep(fsys fileSystem, path string) (string, error) {
 // makes its directory beside dir until it has removed it, so each such directory is a dead run's.
 // A directory is print's own when its name is the name that stagingPath gives and the inode in that
 // name is the inode of dir, then it is a new directory that the run did not exchange (undoNew), or
-// its own inode, then it is the old directory that the run exchanged out of dir (finishOld); the
-// line says that print removed or finished it, or, where it could not, what it left and where.
-// Each other entry of that form it passes over with a line that says so.
+// its own inode, then it is the old directory that the run exchanged out of dir, which it finishes
+// with the record of that run (finishOld, readRecord); the line says that print removed or finished
+// it, or, where it could not, what it left and where. Each other entry of that form it passes over
+// with a line that says so. A record whose directory is gone, which a run killed after it finished
+// that directory left, it removes.
 func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, kept bool) {
 	parent, prefix := filepath.Dir(dir), "."+filepath.Base(dir)+stagingInfix
 	list, err := os.ReadDir(parent)
@@ -377,11 +449,23 @@ func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, ke
 	}
 	for _, entry := range list {
 		rest, ok := strings.CutPrefix(entry.Name(), prefix)
+		rest, record := strings.CutSuffix(rest, recordSuffix)
 		made, err := strconv.ParseUint(rest, 10, 64)
 		if !ok || err != nil || strconv.FormatUint(made, 10) != rest {
 			continue
 		}
 		path := filepath.Join(parent, entry.Name())
+		if record {
+			staging := strings.TrimSuffix(path, recordSuffix)
+			if _, err := os.Lstat(staging); errors.Is(err, fs.ErrNotExist) && entry.Type().IsRegular() {
+				if _, err := os.Lstat(path); err == nil {
+					if err := fsys.remove(path); err != nil {
+						lines = append(lines, fmt.Sprintf("print could not remove %s, the record of a killed run of print on %s: %s", path, dir, err))
+					}
+				}
+			}
+			continue
+		}
 		info, err := entry.Info()
 		switch {
 		case err != nil || !entry.IsDir():
@@ -393,7 +477,7 @@ func cleanLeftovers(fsys fileSystem, dir string, ino uint64) (lines []string, ke
 			}
 			lines, kept = append(lines, left...), kept || k
 		case made == inode(info):
-			left, k := finishOld(fsys, path, dir, nil)
+			left, k := finishOld(fsys, path, dir, readRecord(path))
 			if len(left) == 0 {
 				left = []string{fmt.Sprintf("print finished %s, the directory that a killed run of print put out of the place of %s: it moved each entry that is no spec file into %s", path, dir, dir)}
 			}
