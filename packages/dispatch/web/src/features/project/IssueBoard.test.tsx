@@ -1,5 +1,5 @@
-import { expect, jest, spyOn, test } from "bun:test";
-import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
+import { afterEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import * as dndCore from "@dnd-kit/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -16,722 +16,844 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { installCountingStorage } from "../../__tests__/counting-storage";
-import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import {
+  type FakeLiveSockets,
+  installFakeLiveSockets,
+  snapshotFrame,
+} from "../../__tests__/live-socket-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import type { Issue, IssueSummary, UserState } from "../../api/types";
+import type {
+  Issue,
+  IssueClaim,
+  IssueSummary,
+  LegionBoardCard,
+  LegionBoardFacts,
+  LegionBoardResponse,
+  LegionSetting,
+  UpdateIssueInput,
+} from "../../api/types";
+import * as routeReach from "../issue/RouteReach";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { issueStatuses } from "./board-model";
+import { DAEMON_SETS_PHASE } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
-import { IssueBoard } from "./IssueBoard";
+import { IssuesTable } from "./IssuesTable";
+import { LEGION_PHASES, type LegionPhase } from "./issues-legion";
+import { MEASURE_METHODS } from "./issues-table-model";
 
-function CurrentRoute(): ReactNode {
-  const location = useLocation();
-  return <output data-testid="current-route">{location.pathname}</output>;
-}
-
-function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
+function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
+    key,
     advances: [],
     advances_revision: 0,
+    title: `Work ${key}`,
+    status: "todo",
+    priority: null,
+    rank: key,
+    labels: [],
+    parent: null,
+    blocked_by: [],
+    assignee: null,
+    claim: null,
+    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
     route: null,
     repo: null,
     resolved_repo: null,
     route_status: null,
     route_holder: null,
     route_status_reason: null,
-    key: "CORE-1",
-    labels: [],
-    last_seq: 1,
+    last_seq: 2,
     open_asks: 0,
     progress: { tasks: null, children: null },
-    parent: null,
-    blocked_by: [],
-    primary_artifact_id: "artifact-1",
-    assignee: null,
-    claim: null,
-    components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-    rank: "U",
-    priority: null,
-    status: "triage",
-    title: "Plan the work",
-    updated_at: "2026-09-13T00:00:00Z",
-    closed_at: overrides.status === "done" ? "2026-09-13T00:00:00Z" : null,
-    created_by: null,
-    created_at: "2026-09-13T00:00:00Z",
+    primary_artifact_id: "spec",
+    created_by: { kind: "user", id: "alice" },
+    created_at: "2026-09-10T00:00:00Z",
+    updated_at: "2026-09-10T00:00:00Z",
+    closed_at: overrides.status === "done" ? "2026-09-10T00:00:00Z" : null,
     ...overrides,
   };
 }
 
-const issues: IssueSummary[] = [
-  issue(),
-  issue({ key: "CORE-2", last_seq: 3, rank: "k", status: "todo", title: "Ship the work" }),
-  issue({ key: "CORE-3", rank: "p", status: "done", title: "Shipped" }),
-];
+/** What a PATCH answers with: the issue `key` as the server saved it. */
+function saved(key: string, overrides: Partial<Issue> = {}): Issue {
+  return {
+    ...issue(key),
+    labels: [],
+    project: "CORE",
+    number: Number(key.split("-")[1]),
+    closed_at: null,
+    external_links: [],
+    decisions_artifact_id: "",
+    plan_artifact_id: "",
+    verification_artifact_id: "",
+    ...overrides,
+  };
+}
 
-function renderBoard(
-  state: UserState = {},
-  showEdges?: boolean,
-  list: IssueSummary[] = issues,
-  initialEntry = "/projects/CORE",
-  lanes?: boolean
-) {
-  const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
-    const labels = options.label ?? [];
-    return labels.length === 0
-      ? list
-      : list.filter((entry) => labels.every((label) => (entry.labels ?? []).includes(label)));
+function Route(): ReactNode {
+  useKeymapScope("project");
+  const location = useLocation();
+  return (
+    <>
+      <output data-testid="route">{location.pathname}</output>
+      <output data-testid="route-search">{location.search}</output>
+    </>
+  );
+}
+
+const restores: (() => void)[] = [];
+afterEach(() => {
+  for (const restore of restores.splice(0)) restore();
+  localStorage.clear();
+});
+
+/** A project's daemon setting that names a daemon. */
+const DAEMON: LegionSetting = {
+  created_by: { kind: "user", id: "alice" },
+  project: "CORE",
+  state_url: "http://legion.test",
+  updated_at: "2026-11-01T00:00:00Z",
+};
+
+/**
+ * Draws the Issues tab of CORE at `/projects/CORE/issues<search>` over `issues`, as the listing
+ * route answers them: `open` leaves the closed rows out and `status` keeps the rows in those
+ * statuses. `daemon` is the project's Legion daemon setting, none by default.
+ */
+function board(issues: IssueSummary[], search: string, daemon: LegionSetting | null = null) {
+  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
+    issues.filter(
+      (row) =>
+        (!options.open || row.status !== "done") &&
+        (options.status === undefined || options.status.includes(row.status))
+    )
+  );
+  const page = spyOn(api, "listIssuePage").mockImplementation(async (options) => {
+    const rows = issues.filter(
+      (row) =>
+        (!options.open || row.status !== "done") &&
+        (options.status === undefined || options.status.includes(row.status))
+    );
+    return {
+      issues: rows.slice(0, options.limit),
+      limit: options.limit,
+      offset: 0,
+      total: rows.length,
+    };
   });
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const setting = spyOn(api, "getLegionDaemon").mockResolvedValue(daemon);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const agents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const viewer = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    login: "alice",
+    kind: "user",
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", login: "alice", kind: "user" });
   const view = render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={queryClient}>
+    <MemoryRouter initialEntries={[`/projects/CORE/issues${search}`]}>
+      <QueryClientProvider client={client}>
         <KeymapProvider>
-          <CurrentRoute />
-          <IssueBoard lanes={lanes} project="CORE" showEdges={showEdges} />
+          <Route />
+          <IssuesTable listing={{ project: "CORE" }} />
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+  restores.push(() => {
+    view.unmount();
+    client.clear();
+    listing.mockRestore();
+    page.mockRestore();
+    setting.mockRestore();
+    state.mockRestore();
+    agents.mockRestore();
+    viewer.mockRestore();
+  });
+  return { client, listing };
+}
+
+/** The address the page is at now. */
+const routeSearch = () => new URLSearchParams(screen.getByTestId("route-search").textContent ?? "");
+
+/** The Board, once it is drawn. */
+const boardRegion = () => screen.findByRole("region", { name: "Project board" });
+
+/** The ids of the columns and rails the Board draws, in its order. */
+function columnIds(region: HTMLElement): (string | null)[] {
+  return [...region.querySelectorAll("[data-board-column]")].map((column) =>
+    column.getAttribute("data-board-column")
+  );
+}
+
+/** The keys of the cards a column or a region draws, in their order. */
+function cardKeys(region: HTMLElement): (string | null)[] {
+  return [...region.querySelectorAll("[data-board-card]")].map((card) =>
+    card.getAttribute("data-board-card")
+  );
+}
+
+const liveRegion = () => screen.getByRole("status", { name: "Board announcements" });
+
+/** Lets `ms` of real time pass, and React draw whatever it set off. */
+async function waitMs(ms: number): Promise<void> {
+  await act(async () => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, ms);
+    await promise;
+  });
+}
+
+/** A PATCH that never answers: the Board stays as the move placed it. */
+function patchInFlight() {
+  const patch = answerIssuePatches().mockImplementation(
+    () => Promise.withResolvers<Issue>().promise
+  );
+  restores.push(() => patch.mockRestore());
+  return patch;
+}
+
+/** A card of the Legion board, with no fact but its key. */
+function legionCard(key: string, overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
   return {
-    listIssues,
-    queryClient,
-    cleanup() {
-      view.unmount();
-      listIssues.mockRestore();
-      getMyState.mockRestore();
-    },
+    blocked_by: null,
+    children: 0,
+    key,
+    phase: "implementing",
+    phase_since: null,
+    priority: null,
+    roles: null,
+    slot: null,
+    slot_since: null,
+    slot_use: null,
+    title: `Work ${key}`,
+    tree: key,
+    tree_slot: null,
+    waiting: null,
+    waiting_on: null,
+    waiting_place: null,
+    ...overrides,
   };
 }
 
-test("board collapses Icebox and Done into droppable rails by default", async () => {
-  const { cleanup } = renderBoard();
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const headers = within(board).getAllByTestId("board-column-header");
-    expect(headers).toHaveLength(issueStatuses.length - 2);
-    expect(headers.every((header) => header.classList.contains("min-h-[52px]"))).toBe(true);
-    const rails = within(board).getAllByTestId("board-column-rail");
-    expect(rails).toHaveLength(2);
-    const done = within(board).getByRole("region", { name: "Done (collapsed)" });
-    expect(done).toHaveTextContent("Done");
-    expect(done).toHaveTextContent("1");
-    expect(within(done).queryByRole("article")).not.toBeInTheDocument();
-    expect(within(board).getByRole("region", { name: "Icebox (collapsed)" })).toBeDefined();
-  } finally {
-    cleanup();
+/** The facts the board's map holds for an issue with `workHours` of work. */
+function boardFacts(workHours: number): LegionBoardFacts {
+  return {
+    closed_at: null,
+    hours_by_phase: { implementing: workHours },
+    opened_at: "2026-11-01T00:00:00Z",
+    review_rounds: 0,
+    root_key: "CORE-1",
+    slot_hours: workHours,
+    tree_depth: 0,
+    updated_at: "2026-11-17T08:00:00Z",
+    waiting_reason: "",
+    work_first_at: "2026-11-02T00:00:00Z",
+    work_hours: workHours,
+    work_last_at: "2026-11-10T00:00:00Z",
+  };
+}
+
+/** The board route's answer: its eleven columns with `cards` in them, and the facts its map
+ *  holds. */
+function legionBoard(
+  cards: Partial<Record<LegionPhase, LegionBoardCard[]>>,
+  issues: Record<string, LegionBoardFacts> = {}
+): LegionBoardResponse {
+  return {
+    columns: LEGION_PHASES.map((phase) => ({
+      id: phase.id,
+      label: phase.title,
+      cards: cards[phase.id] ?? [],
+    })),
+    computed_at: "2026-11-17T08:00:00Z",
+    header: {
+      facts_cursor_age_seconds: null,
+      facts_updated_at: null,
+      queue_length: (cards.queue ?? []).length,
+      read_at: "2026-11-17T08:00:00Z",
+      read_error: null,
+      read_ok: true,
+      slot_cap: 4,
+      slots_in_use: 1,
+      trees: 1,
+    },
+    issues,
+    project: "CORE",
+    settings: null,
+  };
+}
+
+/** The live sockets the page opens, for the rest of the test. */
+function liveSockets(): FakeLiveSockets {
+  const sockets = installFakeLiveSockets();
+  restores.push(() => sockets.restore());
+  return sockets;
+}
+
+/** Dispatch answers the page's board subscription with `answer`. */
+async function answerBoard(sockets: FakeLiveSockets, answer: LegionBoardResponse): Promise<void> {
+  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
+  const socket = sockets.latest();
+  if (socket.readyState !== 1) act(() => socket.open());
+  const { sub } = await waitFor(() => socket.subscribed("legion"));
+  act(() => socket.receive(snapshotFrame(sub, answer)));
+}
+
+/** Every listing read the page made: none of them is the full listing, which names neither
+ *  `open` nor `status`. */
+function expectNoFullListing(listing: Mock<typeof api.listIssues>) {
+  expect(listing).toHaveBeenCalled();
+  for (const [options] of listing.mock.calls) {
+    expect(options?.project).toBe("CORE");
+    expect(options?.open === true || options?.status !== undefined).toBe(true);
+    expect(options?.label).toBeUndefined();
   }
+}
+
+/** A row of each status, Done among them. */
+const STATUS_ROWS = () => [
+  issue("CORE-1", { status: "triage" }),
+  issue("CORE-2", { status: "icebox" }),
+  issue("CORE-3", { status: "todo" }),
+  issue("CORE-4", { status: "in_progress" }),
+  issue("CORE-5", { status: "done" }),
+];
+
+// By Status, Open picks the eight open statuses: a column for each, an empty one too, with the
+// Icebox rail and its count after Triage, and the Done rail, with no count, since Open lists no
+// done issue and so reads none.
+test("Open's Board draws the open statuses, the Icebox rail with its count and the Done rail", async () => {
+  const user = userEvent.setup();
+  const { listing } = board(STATUS_ROWS(), "?layout=board");
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-1", "CORE-3", "CORE-4"]));
+  expect(columnIds(region)).toEqual([
+    "triage",
+    "icebox",
+    "backlog",
+    "todo",
+    "in_progress",
+    "testing",
+    "needs_review",
+    "retro",
+    "done",
+  ]);
+  const icebox = within(region).getByRole("region", { name: "Icebox (collapsed)" });
+  expect(icebox.textContent).toBe("1Icebox");
+  expect(within(region).getByRole("region", { name: "Done (collapsed)" }).textContent).toBe("Done");
+  expect(
+    within(within(region).getByRole("region", { name: "Backlog" })).getByText("Nothing here")
+  ).toBeDefined();
+  expect(region.querySelector("[data-testid=board-column-header]")?.textContent).toBe("Triage1");
+  expectNoFullListing(listing);
+  expect(listing.mock.calls.every(([options]) => options?.open === true)).toBe(true);
+
+  // Show Icebox turns the rail into the Icebox column, with its cards.
+  await user.click(screen.getByRole("button", { name: "Show Icebox" }));
+  expect(cardKeys(within(region).getByRole("region", { name: "Icebox" }))).toEqual(["CORE-2"]);
+  expect(within(region).queryByRole("region", { name: "Icebox (collapsed)" })).toBeNull();
 });
 
-test("board shows all nine columns when the edges are expanded", async () => {
-  const { cleanup } = renderBoard({}, true);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    expect(within(board).getAllByTestId("board-column-header")).toHaveLength(issueStatuses.length);
-    expect(within(board).queryAllByTestId("board-column-rail")).toHaveLength(0);
-    expect(
-      within(within(board).getByRole("region", { name: "Done" })).getByRole("article", {
-        name: "CORE-3 Shipped",
-      })
-    ).toBeDefined();
-  } finally {
-    cleanup();
-  }
+test.each([
+  // A Status filter's picks are the columns, with the Done rail.
+  ["status=triage", "?layout=board&status=triage", ["triage", "done"], ["CORE-1"]],
+  // No Status filter: each status a row is in, and the Done column with the done cards, since
+  // the view lists done issues.
+  [
+    "nofilter=1",
+    "?layout=board&nofilter=1",
+    ["triage", "icebox", "todo", "in_progress", "done"],
+    ["CORE-1", "CORE-3", "CORE-4", "CORE-5"],
+  ],
+  // Done: its done cards in the Done column.
+  ["view=done", "?view=done&layout=board", ["done"], ["CORE-5"]],
+])("by Status with %s the Board draws its columns and cards", async (_name, search, columns, cards) => {
+  const { listing } = board(STATUS_ROWS(), search);
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toEqual(cards));
+  expect(columnIds(region)).toEqual(columns);
+  expectNoFullListing(listing);
+  if (columns.includes("done") && cards.includes("CORE-5"))
+    expect(cardKeys(within(region).getByRole("region", { name: "Done" }))).toEqual(["CORE-5"]);
 });
 
-test("the whole card is the drag activator: no Reorder button, no status pill, still an article", async () => {
-  const { cleanup } = renderBoard();
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const card = within(board).getByRole("article", { name: "CORE-1 Plan the work" });
-    expect(card.tagName).toBe("ARTICLE");
-    expect(card).toHaveAttribute("tabindex", "-1");
-    expect(within(board).queryAllByRole("button", { name: /^Reorder/ })).toHaveLength(0);
-    // The column header names the status; the card does not repeat it.
-    expect(within(card).queryByText("Triage")).not.toBeInTheDocument();
-    expect(within(card).getByRole("link", { name: /CORE-1/ })).toBeDefined();
-    expect(within(card).getByRole("combobox", { name: "Priority of CORE-1" })).toBeDefined();
-  } finally {
-    cleanup();
-  }
-});
-
-test("board cards show the unread dot when events are newer than the viewer's last read", async () => {
-  const { cleanup } = renderBoard({
-    "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-    "CORE-2": { dismissed: [], last_read_seq: 2, pinned: false, seq: 0 },
+/** Open's rows on a project with a daemon: an Implementing card, a Queue card, and two rows with
+ *  no card. */
+const PHASE_ROWS = () => [
+  issue("CORE-1", { status: "in_progress" }),
+  issue("CORE-2", { status: "todo" }),
+  issue("CORE-3", { status: "todo" }),
+  issue("CORE-4", { status: "backlog" }),
+];
+const PHASE_BOARD = () =>
+  legionBoard({
+    implementing: [legionCard("CORE-1")],
+    queue: [legionCard("CORE-2", { phase: "admitted", waiting_place: 1 })],
   });
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const unread = within(board).getByRole("article", { name: "CORE-2 Ship the work" });
-    await waitFor(() => {
-      expect(unread.querySelector('[title="Unread"]')).not.toBeNull();
-    });
-    const read = within(board).getByRole("article", { name: "CORE-1 Plan the work" });
-    expect(read.querySelector('[title="Unread"]')).toBeNull();
-  } finally {
-    cleanup();
-  }
-});
 
-test("board shows a shared empty state when the project has no issues", async () => {
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider
-        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-      >
-        <IssueBoard project="CORE" />
-      </QueryClientProvider>
-    </MemoryRouter>
+// By Legion phase: one column for each of the board's eleven columns in its order, empty ones
+// included, then the None rail with the count of the rows with no card; no Show Icebox and no
+// Done rail.
+test("by Legion phase the Board draws the eleven phases and the None rail, and no Show Icebox", async () => {
+  const sockets = liveSockets();
+  const { listing } = board(PHASE_ROWS(), "?layout=board&group=legion_phase", DAEMON);
+  // The view's columns read the board, so it waits for it.
+  expect(await screen.findByRole("status", { name: "Loading issues" })).toBeDefined();
+  await answerBoard(sockets, PHASE_BOARD());
+  const region = await boardRegion();
+  expect(columnIds(region)).toEqual([...LEGION_PHASES.map((phase) => phase.id), "none"]);
+  expect(
+    [...region.querySelectorAll("[data-testid=board-column-header]")].map(
+      (header) => header.firstElementChild?.firstElementChild?.textContent
+    )
+  ).toEqual(LEGION_PHASES.map((phase) => phase.title));
+  expect(cardKeys(within(region).getByRole("region", { name: "Queue" }))).toEqual(["CORE-2"]);
+  expect(cardKeys(within(region).getByRole("region", { name: "Implementing" }))).toEqual([
+    "CORE-1",
+  ]);
+  expect(within(region).getByRole("region", { name: "None (collapsed)" }).textContent).toBe(
+    "2None"
   );
-
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    expect(
-      within(board).getByRole("region", { name: "Empty project board" }).textContent
-    ).toContain("No issues in this project.");
-  } finally {
-    view.unmount();
-    listIssues.mockRestore();
-    getMyState.mockRestore();
-  }
+  expect(within(region).queryByRole("region", { name: "Done (collapsed)" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Show Icebox" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Lanes" })).toBeDefined();
+  expectNoFullListing(listing);
 });
 
-const patched: Issue = {
-  advances: [],
-  advances_revision: 0,
-  closed_at: null,
-  created_at: "2026-09-13T00:00:00Z",
-  created_by: { id: "alice", kind: "user" },
-  external_links: [],
-  key: "CORE-1",
-  labels: [],
-  last_seq: 1,
-  number: 1,
-  parent: null,
-  blocked_by: [],
-  assignee: null,
-  claim: null,
-  components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
-  plan_artifact_id: "",
-  decisions_artifact_id: "",
-  primary_artifact_id: "artifact-1",
-  verification_artifact_id: "",
-  priority: null,
-  project: "CORE",
-  rank: "U",
-  route: null,
-  repo: null,
-  resolved_repo: null,
-  status: "todo",
-  title: "Plan the work",
-  updated_at: "2026-09-13T00:00:00Z",
+test.each([
+  ["implementing", ["implementing"], ["CORE-1"]],
+  ["none", ["none"], []],
+])("a Legion phase filter of %s keeps only its columns", async (pick, columns, cards) => {
+  const sockets = liveSockets();
+  board(PHASE_ROWS(), `?layout=board&group=legion_phase&f.legion_phase=${pick}`, DAEMON);
+  await answerBoard(sockets, PHASE_BOARD());
+  const region = await boardRegion();
+  expect(columnIds(region)).toEqual(columns);
+  expect(cardKeys(region)).toEqual(cards);
+});
+
+// Group by on the Board: Status and Legion phase where the project has a daemon, kept in the
+// address as `group=legion_phase`, and no menu with no daemon.
+test("the Board's Group by picks Status or Legion phase, and a project with no daemon draws none", async () => {
+  const user = userEvent.setup();
+  const sockets = liveSockets();
+  board(PHASE_ROWS(), "?layout=board", DAEMON);
+  await answerBoard(sockets, PHASE_BOARD());
+  await boardRegion();
+  await user.click(screen.getByRole("button", { name: "Group by" }));
+  expect(screen.getAllByRole("radio")).toHaveLength(2);
+  expect(screen.getByRole("radio", { name: "Legion phase" })).not.toBeChecked();
+  expect(screen.getByRole("radio", { name: "Status" })).toBeChecked();
+  await user.click(screen.getByRole("radio", { name: "Legion phase" }));
+  await waitFor(() => expect(routeSearch().get("group")).toBe("legion_phase"));
+  await waitFor(async () => expect(columnIds(await boardRegion())).toContain("none"));
+  await user.click(screen.getByRole("radio", { name: "Status" }));
+  await waitFor(() => expect(routeSearch().has("group")).toBe(false));
+  await waitFor(async () => expect(columnIds(await boardRegion())).toContain("done"));
+});
+
+test("a Board with no Legion daemon draws no Group by menu", async () => {
+  board(STATUS_ROWS(), "?layout=board");
+  await boardRegion();
+  expect(screen.queryByRole("button", { name: "Group by" })).toBeNull();
+});
+
+const CLAIM: IssueClaim = {
+  actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
+  at: "2026-09-24T06:00:00Z",
 };
 
-function renderMoves(
-  queryClient: QueryClient,
-  labels: readonly string[] = [],
-  isVisible?: (candidate: IssueSummary) => boolean
-) {
-  return renderHook(() => useBoardMoves("CORE", labels, isVisible), {
-    wrapper: ({ children }: { children: ReactNode }) => (
-      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-    ),
+// A card shows today's card and, for an issue with a card on the Legion board, its Legion fields
+// from the board route, each left out where the board gives it no value.
+test("a card draws its Legion fields and leaves out every one the board gives no value", async () => {
+  const user = userEvent.setup();
+  const sockets = liveSockets();
+  const since = new Date(Date.now() - (2 * 60 + 5) * 60_000).toISOString();
+  board(
+    [
+      issue("CORE-1", { status: "in_progress", claim: CLAIM, open_asks: 2 }),
+      issue("CORE-2", { status: "todo", open_asks: 1 }),
+      issue("CORE-3", { status: "todo" }),
+    ],
+    "?layout=board",
+    DAEMON
+  );
+  await answerBoard(
+    sockets,
+    legionBoard(
+      {
+        implementing: [
+          legionCard("CORE-1", {
+            phase_since: since,
+            roles: ["implementer", "tester"],
+            slot: 2,
+            waiting: { reason: "blocked", since, blocked_by: ["CORE-9"] },
+            waiting_on: {
+              kind: "ask",
+              since: "2026-11-16T10:00:00Z",
+              answered_at: "2026-11-16T11:00:00Z",
+            },
+            children: 1,
+          }),
+        ],
+        queue: [legionCard("CORE-2", { phase: "admitted", slot: 1, waiting_place: 2 })],
+      },
+      { "CORE-1": boardFacts(3) }
+    )
+  );
+  const region = await boardRegion();
+  const first = await waitFor(() => {
+    const card = within(region).getByRole("article", { name: "CORE-1 Work CORE-1" });
+    expect(card.querySelector("[data-legion-fact=phase-time]")).not.toBeNull();
+    return card;
   });
-}
-
-test("a failed move rolls the board back, refetches it and tells the truth about a stale rank", async () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
-  queryClient.setQueryData(queryKey, issues);
-  const patchIssue = answerIssuePatches().mockRejectedValue(
-    new ApiError(400, { code: "RANK_INPUT", error: "rank neighbors are not ordered" })
+  const fact = (card: HTMLElement, hook: string) =>
+    card.querySelector<HTMLElement>(`[data-legion-fact=${hook}]`);
+  expect(fact(first, "phase-time")?.textContent).toBe("Time in Legion phase2 h 5 m");
+  expect(fact(first, "work-time")?.textContent).toBe("Work time3 h 0 m");
+  expect(fact(first, "roles")?.textContent).toBe("WorkersImplementer, Tester");
+  // `blocked_by` names no blocker, so the wait's blockers do.
+  expect(fact(first, "blocked-by")?.textContent).toBe("Blocked by CORE-9");
+  expect(fact(first, "waiting-on")?.textContent).toBe(
+    `Waiting on ask since ${new Date("2026-11-16T10:00:00Z").toLocaleString()}, answered`
   );
-  const hook = renderMoves(queryClient);
-  try {
-    await act(() => hook.result.current.moveCard("CORE-1", "todo", 1));
-    expect(patchIssue).toHaveBeenCalledWith(
-      "CORE-1",
-      {
-        rank: { after: "CORE-2" },
-        status: "todo",
-      },
-      keyedAttempt
-    );
-    expect(hook.result.current.error).toBe(staleBoardMessage);
-    expect(queryClient.getQueryData<IssueSummary[]>(queryKey)).toEqual(issues);
-    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
-  } finally {
-    hook.unmount();
-    patchIssue.mockRestore();
-  }
-});
+  expect(fact(first, "children")?.textContent).toBe("1 issue of this tree not started");
+  // The claim chip writes the holder's whole name over its age and state.
+  expect(first.querySelector("[data-claim-stacked]")).not.toBeNull();
+  // No slot number, and no word "slot"; and no Place, which the board gives this card none of.
+  expect(first.textContent).not.toMatch(/slot|#/i);
+  expect(first.querySelector("[data-queue-place]")).toBeNull();
 
-test("any other failure shows the server's message and still refetches", async () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
-  queryClient.setQueryData(queryKey, issues);
-  const patchIssue = answerIssuePatches().mockRejectedValue(
-    new ApiError(403, { code: "FORBIDDEN", error: "not your project" })
+  // Each measure opens its column's method in the shared tooltip, from the keyboard and the
+  // pointer, and carries no native title.
+  const phaseTime = fact(first, "phase-time") as HTMLElement;
+  expect(phaseTime).toHaveAttribute("tabindex", "0");
+  expect(phaseTime.hasAttribute("title")).toBe(false);
+  act(() => phaseTime.focus());
+  expect((await screen.findByRole("tooltip")).textContent).toBe(MEASURE_METHODS.time_in_phase);
+  act(() => phaseTime.blur());
+  await user.hover(fact(first, "work-time") as HTMLElement);
+  expect((await screen.findByRole("tooltip")).textContent).toBe(MEASURE_METHODS.work_hours);
+  await user.unhover(fact(first, "work-time") as HTMLElement);
+
+  // The open asks badge says what it counts in the tooltip, is a tab stop, and has no title.
+  const asks = first.querySelector<HTMLElement>("[data-open-asks]") as HTMLElement;
+  expect(asks).toHaveAttribute("tabindex", "0");
+  expect(asks.hasAttribute("title")).toBe(false);
+  expect(asks.textContent).toBe("2 open asks");
+  act(() => asks.focus());
+  expect((await screen.findByRole("tooltip")).textContent).toBe("2 open asks");
+  act(() => asks.blur());
+  const second = within(region).getByRole("article", { name: "CORE-2 Work CORE-2" });
+  expect(second.querySelector("[data-open-asks]")?.textContent).toBe("1 open ask");
+
+  // A card with a card on the board and no value for any fact draws none: no Workers with no
+  // worker, no time with no phase entry, no Work time with no facts, and never a dash.
+  expect(second.querySelector("[data-legion-fact]")).toBeNull();
+  expect(second.textContent).not.toContain("—");
+  // A Queue card draws its Place in the Legion queue beside its key.
+  expect(second.querySelector("[data-queue-place]")?.textContent).toBe("#2");
+  expect(second.querySelector("[data-issue-link]")?.firstElementChild?.textContent).toBe(
+    "CORE-2#2"
   );
-  const hook = renderMoves(queryClient);
-  try {
-    await act(() => hook.result.current.moveCard("CORE-1", "todo", 1));
-    expect(hook.result.current.error).toBe("not your project");
-    expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
-  } finally {
-    hook.unmount();
-    patchIssue.mockRestore();
-  }
+  // A row with no card draws today's card alone, with no Place.
+  const third = within(region).getByRole("article", { name: "CORE-3 Work CORE-3" });
+  expect(third.querySelector("[data-legion-fact]")).toBeNull();
+  expect(third.querySelector("[data-queue-place]")).toBeNull();
+  expect(third.textContent).not.toContain("#");
 });
 
-test("two rapid moves on one board run one after the other, the second from the optimistic state", async () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const queryKey = ["issues", "project", "CORE"] as const;
-  queryClient.setQueryData(queryKey, issues);
-  const settle: Array<(issue: Issue) => void> = [];
-  const patchIssue = answerIssuePatches().mockImplementation(
-    () =>
-      new Promise<Issue>((resolve) => {
-        settle.push(resolve);
-      })
-  );
-  const hook = renderMoves(queryClient);
-  try {
-    let first: Promise<void> = Promise.resolve();
-    let second: Promise<void> = Promise.resolve();
-    act(() => {
-      first = hook.result.current.moveCard("CORE-1", "todo", 1);
-      second = hook.result.current.moveCard("CORE-3", "todo", 0);
-    });
-    // Both optimistic placements are on the board before either request is answered...
-    expect(
-      (queryClient.getQueryData(queryKey) as IssueSummary[])
-        .filter((item) => item.status === "todo")
-        .map((item) => item.key)
-    ).toEqual(["CORE-3", "CORE-2", "CORE-1"]);
-    // ...but only the first PATCH is in flight.
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    expect(patchIssue.mock.calls[0]).toEqual([
-      "CORE-1",
-      { rank: { after: "CORE-2" }, status: "todo" },
-      keyedAttempt,
-    ]);
-    await act(async () => {
-      settle[0]?.(patched);
-      await first;
-    });
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
-    // The second move's neighbours come from the board as the first move left it.
-    expect(patchIssue.mock.calls[1]).toEqual([
-      "CORE-3",
-      { rank: { before: "CORE-2" }, status: "todo" },
-      keyedAttempt,
-    ]);
-    await act(async () => {
-      settle[1]?.({ ...patched, key: "CORE-3" });
-      await second;
-    });
-    expect(hook.result.current.error).toBeUndefined();
-  } finally {
-    hook.unmount();
-    patchIssue.mockRestore();
-  }
-});
-
-// Todo: Alpha, Bravo, Charlie; In progress: Delta - the keyboard rows' seed.
-const keyboardIssues: IssueSummary[] = [
-  issue({ key: "CORE-1", rank: "a", status: "todo", title: "Alpha" }),
-  issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
-  issue({ key: "CORE-3", rank: "c", status: "todo", title: "Charlie" }),
-  issue({ key: "CORE-4", rank: "d", status: "in_progress", title: "Delta" }),
-];
-
-/** A PATCH that never answers: the board stays as the move placed it, so a test reads the
- *  optimistic placement rather than the seed the mocked refetch would hand back. */
-function patchInFlight() {
-  return answerIssuePatches().mockImplementation(() => new Promise<Issue>(() => {}));
-}
-
-test("Shift+J moves the focused card down through moveCard, announces the new position and keeps focus on it; Shift+K at the top does nothing", async () => {
-  const user = userEvent.setup();
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    const status = within(board).getByRole("status", { name: "Board announcements" });
-    expect(status).toHaveClass("sr-only");
-    act(() => alpha.focus());
-    expect(alpha).toHaveFocus();
-
-    await user.keyboard("{Shift>}K{/Shift}");
-    expect(patchIssue).not.toHaveBeenCalled();
-    expect(status.textContent).toBe("");
-
-    await user.keyboard("{Shift>}J{/Shift}");
-    expect(patchIssue).toHaveBeenCalledWith(
-      "CORE-1",
-      {
-        rank: { after: "CORE-2", before: "CORE-3" },
-      },
-      keyedAttempt
-    );
-    expect(status.textContent).toBe("CORE-1 → Todo, position 2 of 3");
-    const todo = within(board).getByRole("region", { name: "Todo" });
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.textContent)
-      ).toEqual([
-        expect.stringContaining("Bravo"),
-        expect.stringContaining("Alpha"),
-        expect.stringContaining("Charlie"),
-      ])
-    );
-    expect(within(board).getByRole("article", { name: "CORE-1 Alpha" })).toHaveFocus();
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("Shift+L moves the focused card to the top of the next status and focus follows the remounted card", async () => {
-  const user = userEvent.setup();
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    act(() => bravo.focus());
-    await user.keyboard("{Shift>}L{/Shift}");
-    expect(patchIssue).toHaveBeenCalledWith(
-      "CORE-2",
-      {
-        rank: { before: "CORE-4" },
-        status: "in_progress",
-      },
-      keyedAttempt
-    );
-    expect(within(board).getByRole("status", { name: "Board announcements" }).textContent).toBe(
-      "CORE-2 → In progress, position 1 of 2"
-    );
-    const inProgress = within(board).getByRole("region", { name: "In progress" });
-    await waitFor(() =>
-      expect(
-        within(inProgress)
-          .getAllByRole("article")
-          .map((node) => node.textContent)
-      ).toEqual([expect.stringContaining("Bravo"), expect.stringContaining("Delta")])
-    );
-    expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-const laneIssues: IssueSummary[] = [
-  issue({ key: "CORE-1", priority: 0, rank: "a", status: "todo", title: "P0 card" }),
-  issue({ key: "CORE-2", priority: 3, rank: "b", status: "todo", title: "P3 card" }),
-  issue({
-    key: "CORE-3",
-    priority: null,
-    rank: "c",
-    status: "in_progress",
-    title: "No priority card",
+// Todo: Alpha, Bravo, Charlie; In progress: Delta - the keyboard rows' seed. No row is in the
+// Legion queue, so Open's sort, Queue, orders them by rank.
+const keyboardIssues = () => [
+  issue("CORE-1", {
+    rank: "a",
+    status: "todo",
+    title: "Alpha",
+    created_at: "2026-09-01T00:00:00Z",
   }),
+  issue("CORE-2", {
+    rank: "b",
+    status: "todo",
+    title: "Bravo",
+    created_at: "2026-09-03T00:00:00Z",
+  }),
+  issue("CORE-3", {
+    rank: "c",
+    status: "todo",
+    title: "Charlie",
+    created_at: "2026-09-02T00:00:00Z",
+  }),
+  issue("CORE-4", { rank: "d", status: "in_progress", title: "Delta" }),
 ];
 
-test("lanes group the board into priority bands, each with its own set of columns", async () => {
-  const { cleanup } = renderBoard({}, undefined, laneIssues, "/projects/CORE", true);
-  try {
-    const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
-    expect(within(p0Lane).getAllByTestId("board-column-header")).toHaveLength(7);
-    expect(within(p0Lane).getAllByTestId("board-column-rail")).toHaveLength(2);
-    expect(
-      within(within(p0Lane).getByRole("region", { name: "Todo" })).getByRole("article", {
-        name: "CORE-1 P0 card",
-      })
-    ).toBeDefined();
-
-    const p3Lane = screen.getByRole("region", { name: "P3 lane" });
-    expect(
-      within(within(p3Lane).getByRole("region", { name: "Todo" })).getByRole("article", {
-        name: "CORE-2 P3 card",
-      })
-    ).toBeDefined();
-    // The P0 lane's Todo column holds only the P0 card, not the P3 one.
-    expect(within(p0Lane).getByRole("region", { name: "Todo" }).textContent).not.toContain(
-      "P3 card"
-    );
-
-    const noPriorityLane = screen.getByRole("region", { name: "No priority lane" });
-    expect(
-      within(within(noPriorityLane).getByRole("region", { name: "In progress" })).getByRole(
-        "article",
-        { name: "CORE-3 No priority card" }
-      )
-    ).toBeDefined();
-  } finally {
-    cleanup();
-  }
-});
-
-test("without the lanes prop the board renders the flat columns, no lane headings", async () => {
-  const { cleanup } = renderBoard({}, undefined, laneIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    expect(within(board).queryByRole("region", { name: "P0 lane" })).not.toBeInTheDocument();
-    expect(
-      within(within(board).getByRole("region", { name: "Todo" })).getAllByRole("article")
-    ).toHaveLength(2);
-  } finally {
-    cleanup();
-  }
-});
-
-test("within a lane, Shift+L moves a card to the next status in the same lane without touching priority", async () => {
+test("Shift+J under the Place sort writes the rank, reads the card's place out and keeps focus; Shift+K at the top does nothing", async () => {
   const user = userEvent.setup();
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, laneIssues, "/projects/CORE", true);
-  try {
-    const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
-    const p0Card = within(p0Lane).getByRole("article", { name: "CORE-1 P0 card" });
-    act(() => p0Card.focus());
-    await user.keyboard("{Shift>}L{/Shift}");
-    // Same lane, so only status and rank move - priority is not part of this PATCH.
-    expect(patchIssue).toHaveBeenCalledWith(
-      "CORE-1",
-      { rank: {}, status: "in_progress" },
-      keyedAttempt
-    );
-    const movedInProgress = within(p0Lane).getByRole("region", { name: "In progress" });
-    await waitFor(() =>
-      expect(within(movedInProgress).getByRole("article", { name: "CORE-1 P0 card" })).toBeDefined()
-    );
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
+  const patch = patchInFlight();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
+  expect(liveRegion()).toHaveClass("sr-only");
+  act(() => alpha.focus());
+
+  await user.keyboard("{Shift>}K{/Shift}");
+  expect(patch).not.toHaveBeenCalled();
+  expect(liveRegion().textContent).toBe("");
+
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(patch).toHaveBeenCalledWith(
+    "CORE-1",
+    { rank: { after: "CORE-2", before: "CORE-3" } },
+    keyedAttempt
+  );
+  expect(liveRegion().textContent).toBe("CORE-1 → Todo, position 2 of 3");
+  const todo = within(region).getByRole("region", { name: "Todo" });
+  await waitFor(() => expect(cardKeys(todo)).toEqual(["CORE-2", "CORE-1", "CORE-3"]));
+  expect(within(region).getByRole("article", { name: "CORE-1 Alpha" })).toHaveFocus();
 });
 
-test("with lanes on, the first roving key before anything is focused lands in the first lane's first cell, not flat cross-lane order", async () => {
+test("Shift+L sets the next status, to the top where the rank rule lets it, and focus follows the card", async () => {
   const user = userEvent.setup();
-  // CORE-1 (P3) sorts first by rank in the merged Todo column a flat board would use; the fix
-  // lands in the first swimlane (P0) instead, on CORE-2.
-  const firstLaneIssues: IssueSummary[] = [
-    issue({ key: "CORE-1", priority: 3, rank: "a", status: "todo", title: "P3 card" }),
-    issue({ key: "CORE-2", priority: 0, rank: "b", status: "todo", title: "P0 card" }),
-  ];
-  const { cleanup } = renderBoard({}, undefined, firstLaneIssues, "/projects/CORE", true);
-  try {
-    const p0Lane = await screen.findByRole("region", { name: "P0 lane" });
-    const p0Card = within(p0Lane).getByRole("article", { name: "CORE-2 P0 card" });
-    await user.keyboard("j");
-    expect(p0Card).toHaveFocus();
-  } finally {
-    cleanup();
-  }
+  const patch = patchInFlight();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  act(() => within(region).getByRole("article", { name: "CORE-2 Bravo" }).focus());
+  await user.keyboard("{Shift>}L{/Shift}");
+  expect(patch).toHaveBeenCalledWith(
+    "CORE-2",
+    { status: "in_progress", rank: { before: "CORE-4" } },
+    keyedAttempt
+  );
+  expect(liveRegion().textContent).toBe("CORE-2 → In progress, position 1 of 2");
+  const inProgress = within(region).getByRole("region", { name: "In progress" });
+  await waitFor(() => expect(cardKeys(inProgress)).toEqual(["CORE-2", "CORE-4"]));
+  await waitFor(() =>
+    expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus()
+  );
 });
 
-function articleLabels(region: HTMLElement): (string | null)[] {
-  return within(region)
-    .queryAllByRole("article")
-    .map((node) => node.getAttribute("aria-label"));
-}
-
-const boardListKey = ["issues", "project", "CORE"] as const;
-
-test("a board refetch already on the wire when a card moves is dropped: the card stays where it moved and keeps focus", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const patchIssue = patchInFlight();
-  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    // An event-stream refetch goes out before the move, and its answer - the board as it was -
-    // arrives after the move has placed the card.
-    const inFlight = Promise.withResolvers<IssueSummary[]>();
-    listIssues.mockImplementationOnce(() => inFlight.promise);
-    await act(async () => {
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    });
-    await waitFor(() => expect(listIssues).toHaveBeenCalledTimes(2));
-    act(() => bravo.focus());
-    await user.keyboard("{Shift>}L{/Shift}");
-    const inProgress = within(board).getByRole("region", { name: "In progress" });
-    await waitFor(() =>
-      expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"])
-    );
-
-    await act(async () => {
-      inFlight.resolve(keyboardIssues);
-    });
-    await waitFor(() => expect(queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle"));
-    // The stale answer, had it landed, has notified the board by now: query-core notifies on a
-    // zero-delay timer queued when the data is written, ahead of this one.
-    await tick(0);
-    expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
-    expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
-  } finally {
-    realClock();
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("a board refetch asked for while a move is unanswered waits for the answer, then reads the moved board", async () => {
+// Shift+L through every column that takes a drop, to the Done rail, which closes the issue: the
+// card leaves Open, and the focus lands on the rail.
+test("Shift+L walks a card to the Done rail, which closes it", async () => {
   const user = userEvent.setup();
-  const answer = Promise.withResolvers<Issue>();
-  const patchIssue = answerIssuePatches().mockImplementation(() => answer.promise);
-  const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    act(() => bravo.focus());
-    await user.keyboard("{Shift>}L{/Shift}");
-    const inProgress = within(board).getByRole("region", { name: "In progress" });
-    await waitFor(() =>
-      expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"])
-    );
-    expect(listIssues).toHaveBeenCalledTimes(1);
+  const patch = patchInFlight();
+  board([issue("CORE-1", { status: "retro", title: "Last" })], "?layout=board");
+  const region = await boardRegion();
+  act(() => within(region).getByRole("article", { name: "CORE-1 Last" }).focus());
+  await user.keyboard("{Shift>}L{/Shift}");
+  expect(patch).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt);
+  expect(liveRegion().textContent).toBe("CORE-1 → Done, closed");
+  await waitFor(() => expect(cardKeys(region)).toEqual([]));
+  await waitFor(() =>
+    expect(within(region).getByRole("region", { name: "Done (collapsed)" })).toHaveFocus()
+  );
+  // At the Board's edge a move does nothing.
+  patch.mockClear();
+  await user.keyboard("{Shift>}L{/Shift}");
+  expect(patch).not.toHaveBeenCalled();
+});
 
-    // An event arrives while the PATCH is unanswered. The server has not applied the move, so a
-    // GET now would answer with Bravo still in Todo: none goes out.
-    await act(async () => {
-      void queryClient.invalidateQueries({ queryKey: ["issues"] });
-    });
-    expect(listIssues).toHaveBeenCalledTimes(1);
-    expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
+// A sorted Board takes no move within a column, at its end too, since the sort would put the
+// card back; a move into another column sets the status and writes no rank, the card landing
+// where the sort puts it.
+test("under another sort a move within a column is refused with the sort named, and a status move writes no rank", async () => {
+  const user = userEvent.setup();
+  const patch = patchInFlight();
+  board(keyboardIssues(), "?layout=board&sort=-created");
+  const region = await boardRegion();
+  const todo = within(region).getByRole("region", { name: "Todo" });
+  await waitFor(() => expect(cardKeys(todo)).toEqual(["CORE-2", "CORE-3", "CORE-1"]));
+  const refusal = "Sorted by Created. Sort by Queue to move cards in a column.";
+  act(() => within(region).getByRole("article", { name: "CORE-1 Alpha" }).focus());
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(liveRegion().textContent).toBe(refusal);
+  expect(screen.getByTestId("board-refusal").textContent).toBe(refusal);
+  await user.keyboard("{Shift>}K{/Shift}");
+  expect(patch).not.toHaveBeenCalled();
 
-    // The server applies the move and answers; the refetch goes out and reads the moved board.
-    listIssues.mockResolvedValue(
-      keyboardIssues.map((entry) =>
-        entry.key === "CORE-2" ? { ...entry, status: "in_progress" } : entry
-      )
-    );
-    await act(async () => {
-      answer.resolve({ ...patched, key: "CORE-2", status: "in_progress" });
-    });
-    await waitFor(() => expect(listIssues.mock.calls.length).toBeGreaterThan(1));
-    await waitFor(() => expect(queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle"));
-    expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
-    expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
+  await user.keyboard("{Shift>}L{/Shift}");
+  expect(patch).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt);
+  expect(screen.queryByTestId("board-refusal")).toBeNull();
+  const inProgress = within(region).getByRole("region", { name: "In progress" });
+  // Where the sort put it: newest first, after CORE-4, which was created after it.
+  await waitFor(() => expect(cardKeys(inProgress)).toEqual(["CORE-4", "CORE-1"]));
+  await waitFor(() =>
+    expect(liveRegion().textContent).toBe("CORE-1 → In progress, position 2 of 2")
+  );
+});
+
+// Under the Place sort a card with a place in the Legion queue (here Start next's, the Todo
+// issues labelled `legion`, with no daemon) sorts before every card with none, so the rank
+// decides a move only among cards that all have a place or all have none.
+test("a move between cards with a place and cards with none is refused with why", async () => {
+  const user = userEvent.setup();
+  const patch = patchInFlight();
+  board(
+    [
+      issue("CORE-1", { rank: "a", labels: ["legion"], title: "First" }),
+      issue("CORE-2", { rank: "b", labels: ["legion"], title: "Second" }),
+      issue("CORE-3", { rank: "c", title: "Unplaced" }),
+    ],
+    "?layout=board"
+  );
+  const region = await boardRegion();
+  act(() => within(region).getByRole("article", { name: "CORE-3 Unplaced" }).focus());
+  await user.keyboard("{Shift>}K{/Shift}");
+  expect(liveRegion().textContent).toBe(
+    "A card with no place in the Legion queue stays after the cards with a place."
+  );
+  act(() => within(region).getByRole("article", { name: "CORE-2 Second" }).focus());
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(liveRegion().textContent).toBe(
+    "A card with a place in the Legion queue stays before the cards with no place."
+  );
+  expect(patch).not.toHaveBeenCalled();
+  await user.keyboard("{Shift>}K{/Shift}");
+  expect(patch).toHaveBeenCalledWith("CORE-2", { rank: { before: "CORE-1" } }, keyedAttempt);
+  expect(liveRegion().textContent).toBe("CORE-2 → Todo, position 1 of 3");
+});
+
+// By Legion phase the daemon sets each card's column: a move within Queue writes the rank, and
+// a Queue card takes its new place on the daemon's next read; every other key move is refused,
+// at the column's end too.
+test("by Legion phase only a move within Queue is taken, and every other key move is refused", async () => {
+  const user = userEvent.setup();
+  const patch = patchInFlight();
+  const sockets = liveSockets();
+  board(
+    [
+      issue("CORE-1", { status: "in_progress", title: "Building" }),
+      issue("CORE-2", { status: "in_progress", title: "Testing" }),
+      issue("CORE-3", { status: "todo", title: "Next" }),
+      issue("CORE-4", { status: "todo", title: "Later" }),
+    ],
+    "?layout=board&group=legion_phase",
+    DAEMON
+  );
+  await answerBoard(
+    sockets,
+    legionBoard({
+      implementing: [legionCard("CORE-1"), legionCard("CORE-2")],
+      queue: [
+        legionCard("CORE-3", { phase: "admitted", waiting_place: 1 }),
+        legionCard("CORE-4", { phase: "admitted", waiting_place: 2 }),
+      ],
+    })
+  );
+  const region = await boardRegion();
+  act(() => within(region).getByRole("article", { name: "CORE-2 Testing" }).focus());
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(liveRegion().textContent).toBe(DAEMON_SETS_PHASE);
+  await user.keyboard("{Shift>}K{/Shift}");
+  await user.keyboard("{Shift>}L{/Shift}");
+  await user.keyboard("{Shift>}H{/Shift}");
+  expect(screen.getByTestId("board-refusal").textContent).toBe(DAEMON_SETS_PHASE);
+  expect(patch).not.toHaveBeenCalled();
+
+  act(() => within(region).getByRole("article", { name: "CORE-3 Next" }).focus());
+  await user.keyboard("{Shift>}J{/Shift}");
+  expect(patch).toHaveBeenCalledWith("CORE-3", { rank: { after: "CORE-4" } }, keyedAttempt);
+  // The place the card takes once the daemon reads the rank.
+  expect(liveRegion().textContent).toBe("CORE-3 → Queue, position 2 of 2");
+  await user.keyboard("{Shift>}L{/Shift}");
+  expect(liveRegion().textContent).toBe(DAEMON_SETS_PHASE);
+  expect(patch).toHaveBeenCalledTimes(1);
 });
 
 test("j/k/h/l rove real focus over cards, columns and rails", async () => {
   const user = userEvent.setup();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    const bravo = within(board).getByRole("article", { name: "CORE-2 Bravo" });
-    const delta = within(board).getByRole("article", { name: "CORE-4 Delta" });
-    await user.keyboard("j");
-    expect(alpha).toHaveFocus();
-    await user.keyboard("j");
-    expect(bravo).toHaveFocus();
-    await user.keyboard("{ArrowUp}");
-    expect(alpha).toHaveFocus();
-    await user.keyboard("l");
-    expect(delta).toHaveFocus();
-    await user.keyboard("l");
-    expect(within(board).getByRole("region", { name: "Testing" })).toHaveFocus();
-    await user.keyboard("h");
-    expect(delta).toHaveFocus();
-    for (const _ of ["testing", "needs_review", "retro", "done"]) {
-      await user.keyboard("l");
-    }
-    const doneRail = within(board).getByRole("region", { name: "Done (collapsed)" });
-    expect(doneRail).toHaveFocus();
-    await user.keyboard("l");
-    expect(doneRail).toHaveFocus();
-    await user.keyboard("{Escape}");
-    expect(document.body).toHaveFocus();
-    await user.keyboard("k");
-    expect(delta).toHaveFocus();
-  } finally {
-    cleanup();
-  }
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
+  const bravo = within(region).getByRole("article", { name: "CORE-2 Bravo" });
+  const delta = within(region).getByRole("article", { name: "CORE-4 Delta" });
+  await user.keyboard("j");
+  expect(alpha).toHaveFocus();
+  await user.keyboard("j");
+  expect(bravo).toHaveFocus();
+  await user.keyboard("{ArrowUp}");
+  expect(alpha).toHaveFocus();
+  await user.keyboard("l");
+  expect(delta).toHaveFocus();
+  await user.keyboard("l");
+  expect(within(region).getByRole("region", { name: "Testing" })).toHaveFocus();
+  await user.keyboard("h");
+  expect(delta).toHaveFocus();
+  for (const _ of ["testing", "needs_review", "retro", "done"]) await user.keyboard("l");
+  const doneRail = within(region).getByRole("region", { name: "Done (collapsed)" });
+  expect(doneRail).toHaveFocus();
+  await user.keyboard("l");
+  expect(doneRail).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(document.body).toHaveFocus();
+  await user.keyboard("k");
+  expect(delta).toHaveFocus();
+  // Back to Todo, and h onto the Icebox rail.
+  await user.keyboard("h");
+  await user.keyboard("h");
+  await user.keyboard("h");
+  expect(within(region).getByRole("region", { name: "Icebox (collapsed)" })).toHaveFocus();
 });
 
 test("Enter and o open the focused card once, p focuses its priority select, Escape returns to the card and then out", async () => {
   const user = userEvent.setup();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    const link = within(alpha).getByRole("link");
-    let clicks = 0;
-    link.addEventListener("click", () => (clicks += 1));
-    act(() => alpha.focus());
-
-    await user.keyboard("p");
-    const select = within(alpha).getByRole("combobox", { name: "Priority of CORE-1" });
-    expect(select).toHaveFocus();
-    // Single letters never fire on an editable target.
-    await user.keyboard("j");
-    expect(select).toHaveFocus();
-    await user.keyboard("{Escape}");
-    expect(alpha).toHaveFocus();
-    await user.keyboard("{Escape}");
-    expect(document.body).toHaveFocus();
-
-    act(() => alpha.focus());
-    await user.keyboard("{Enter}");
-    expect(clicks).toBe(1);
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
-  } finally {
-    cleanup();
-  }
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
+  const link = within(alpha).getByRole("link", { name: /CORE-1/ });
+  let clicks = 0;
+  link.addEventListener("click", () => {
+    clicks += 1;
+  });
+  act(() => alpha.focus());
+  await user.keyboard("p");
+  const select = within(alpha).getByRole("combobox", { name: "Priority of CORE-1" });
+  expect(select).toHaveFocus();
+  await user.keyboard("j");
+  expect(select).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(alpha).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(document.body).toHaveFocus();
+  act(() => alpha.focus());
+  await user.keyboard("{Enter}");
+  expect(clicks).toBe(1);
+  expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-1");
 });
 
 test("Space on a focused card lifts nothing, and the card's instructions name the registry keys, not dnd-kit's grammar", async () => {
   const user = userEvent.setup();
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    act(() => alpha.focus());
-    await user.keyboard("[Space]");
-    await user.keyboard("{ArrowDown}");
-    await user.keyboard("[Space]");
-    await act(async () => {});
-    expect(patchIssue).not.toHaveBeenCalled();
-    expect(board.querySelector(".opacity-50")).toBeNull();
-    const describedBy = alpha.getAttribute("aria-describedby");
-    expect(describedBy).not.toBeNull();
-    const instructions = document.getElementById(describedBy as string)?.textContent ?? "";
-    expect(instructions).toContain("Shift with J, K, H or L");
-    expect(instructions).not.toContain("space bar");
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
+  const patch = patchInFlight();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
+  act(() => alpha.focus());
+  await user.keyboard("[Space]");
+  await user.keyboard("{ArrowDown}");
+  await user.keyboard("[Space]");
+  await act(async () => {});
+  expect(patch).not.toHaveBeenCalled();
+  expect(region.querySelector(".opacity-50")).toBeNull();
+  const describedBy = alpha.getAttribute("aria-describedby");
+  expect(describedBy).not.toBeNull();
+  const instructions = document.getElementById(describedBy as string)?.textContent ?? "";
+  expect(instructions).toContain("Shift with J, K, H or L");
+  expect(instructions).not.toContain("space bar");
 });
 
 // The click the browser fires after a drop is the drag's, however late the main thread delivers
 // it: a busy tab can take far longer than any window of milliseconds between the drop and the
-// click, and a drop that navigates to the issue page loses the board the reader was arranging.
+// click, and a drop that navigates to the issue page loses the Board the reader was arranging.
 /** Press a card and move far enough to lift it, then release it where it was picked up. */
 async function dropInPlace(card: HTMLElement): Promise<void> {
   await act(async () => {
-    // dnd-kit's pointer sensor is driven by this mouse press; user-event's pointer API sends a
-    // fixed sequence that never lifts the card.
+    // dnd-kit's mouse sensor is driven by this press; user-event's pointer API sends a fixed
+    // sequence that never lifts the card.
     fireEvent.mouseDown(card, { button: 0, clientX: 10, clientY: 10 });
   });
   await act(async () => {
@@ -745,746 +867,432 @@ async function dropInPlace(card: HTMLElement): Promise<void> {
   });
 }
 
-/** The card as the drop re-rendered it: the drag replaces the node it began on. */
+/** The card as the drop drew it. */
 async function droppedCard(): Promise<HTMLElement> {
-  return within(await screen.findByRole("region", { name: "Project board" })).getByRole("article", {
-    name: "CORE-1 Alpha",
-  });
+  return within(await boardRegion()).getByRole("article", { name: "CORE-1 Alpha" });
 }
 
-/** Wait until a click reaches React again: dnd-kit stops click propagation for 50 ms after a
- * drop, so a route is no evidence of what a click did until that listener is gone. The fake
- * clock the test installed moves past the 50 ms, so that timer has fired when this resolves. */
-async function pastDndKitClickGuard(): Promise<void> {
-  await tick(80);
+/** A PATCH that answers at once with the issue as it was. */
+function patchAnswered() {
+  const patch = answerIssuePatches().mockImplementation(async (key) => saved(key));
+  restores.push(() => patch.mockRestore());
+  return patch;
 }
 
 test("the click that trails a drop never follows the card's link, however late it arrives", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+  patchAnswered();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  await dropInPlace(await within(region).findByRole("article", { name: "CORE-1 Alpha" }));
+  const link = within(await droppedCard()).getByRole("link", { name: /CORE-1/ });
+  const now = spyOn(performance, "now").mockReturnValue(performance.now() + 1000);
+  let trailingFollowed = true;
   try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    await dropInPlace(within(board).getByRole("article", { name: "CORE-1 Alpha" }));
-    // The click reaches the page a second later, as a stalled main thread delivers it. What
-    // stops the browser following the anchor is the board cancelling the click
-    // (`defaultPrevented`); a rendered route would say nothing, since dnd-kit's own
-    // `stopPropagation` keeps this click from React for 50 ms after the drop either way.
-    const link = within(await droppedCard()).getByRole("link");
-    const now = spyOn(performance, "now").mockReturnValue(performance.now() + 1000);
-    let trailingFollowed = true;
-    try {
-      await act(async () => {
-        // The assertion reads fireEvent's boolean: whether the click was cancelled.
-        trailingFollowed = fireEvent.click(link, { button: 0 });
-      });
-    } finally {
-      now.mockRestore();
-    }
-    expect(trailingFollowed).toBe(false);
-    expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-// Only the drag's own click is the drag's. A drop draws no click of its own on every surface -
-// a touch drag makes no tap, and a cancelled drag releases outside the page - so the mark a
-// drop leaves must not outlive the gesture that follows it, by pointer or by key.
-test("a drop that draws no click leaves the next press on the board working", async () => {
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    await dropInPlace(within(board).getByRole("article", { name: "CORE-1 Alpha" }));
-    const card = await droppedCard();
-    await pastDndKitClickGuard();
-    act(() => card.focus());
-    await user.keyboard("{Enter}");
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
-  } finally {
-    realClock();
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-// Escape cancels a drag, and that key drops the mark like any other press, so the cancel has to
-// put it back: the button is still down, and its release draws the same trailing click a drop
-// does (`onDragCancel` on the board's `DndContext`).
-test("a drag cancelled with Escape keeps its own release off the card's link", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    await act(async () => {
-      // The press that starts a dnd-kit drag, as in `dropInPlace` above.
-      fireEvent.mouseDown(alpha, { button: 0, clientX: 10, clientY: 10 });
-    });
-    await act(async () => {
-      // The move that lifts the card: user-event sends no mousemove of its own.
-      fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
-    });
-    await act(async () => {
-      // dnd-kit's own cancel reads `code`, not `key` (`core.esm.js` `handleKeydown`), and this
-      // key is one step of the mouse drag above, which user-event cannot drive.
-      fireEvent.keyDown(document, { code: "Escape", key: "Escape" });
-    });
-    await act(async () => {
-      // The release of that same drag, with the button still down.
-      fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
-    });
-    // The cancel landed: the lifted card is no longer the one dnd-kit is dragging.
-    expect(board.querySelector(".opacity-50")).toBeNull();
-    let followed = true;
     await act(async () => {
       // The assertion reads fireEvent's boolean: whether the click was cancelled.
-      followed = fireEvent.click(within(await droppedCard()).getByRole("link"), { button: 0 });
+      trailingFollowed = fireEvent.click(link, { button: 0 });
     });
-    expect(followed).toBe(false);
-    expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE");
   } finally {
-    cleanup();
-    patchIssue.mockRestore();
+    now.mockRestore();
   }
+  expect(trailingFollowed).toBe(false);
+  expect(screen.getByTestId("route").textContent).toBe("/projects/CORE/issues");
 });
 
-// The press of a pointer drops the mark as a key press does. `fireEvent.mouseDown` emits no
-// `pointerdown`, so the drag above cannot reach that listener; this row presses one itself.
-test("a pointer press on a card after a drop that drew no click follows its link", async () => {
-  jest.useFakeTimers();
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    await dropInPlace(within(board).getByRole("article", { name: "CORE-1 Alpha" }));
-    const link = within(await droppedCard()).getByRole("link");
-    await pastDndKitClickGuard();
-    await act(async () => {
-      // The press and the click it draws are one gesture in one task, which user-event's own
-      // pointer sequence would not reproduce.
-      fireEvent.pointerDown(link, { button: 0 });
-      // Its trailing click, in the same task: user-event's click would re-send the press.
-      fireEvent.click(link, { button: 0 });
-    });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
-  } finally {
-    realClock();
-    cleanup();
-    patchIssue.mockRestore();
-  }
+// Only the drag's own click is the drag's: the mark a drop leaves does not outlive the gesture
+// that follows it, by pointer or by key.
+test("a drop that draws no click leaves the next press on the Board working", async () => {
+  const user = userEvent.setup();
+  patchAnswered();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  await dropInPlace(await within(region).findByRole("article", { name: "CORE-1 Alpha" }));
+  // dnd-kit stops click propagation for 50 ms after a drop.
+  await waitMs(80);
+  act(() => within(region).getByRole("article", { name: "CORE-1 Alpha" }).focus());
+  await user.keyboard("{Enter}");
+  expect(screen.getByTestId("route").textContent).toBe("/issues/CORE-1");
 });
 
-// The mark is the board's own: a link anywhere else on the page follows itself while one is
-// pending, which is the whole point of the containment test on the click's target.
-test("a drop's mark never cancels a click outside the board", async () => {
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues);
+test("a drag cancelled with Escape keeps its own release off the card's link", async () => {
+  patchAnswered();
+  board(keyboardIssues(), "?layout=board");
+  const region = await boardRegion();
+  const alpha = await within(region).findByRole("article", { name: "CORE-1 Alpha" });
+  await act(async () => {
+    fireEvent.mouseDown(alpha, { button: 0, clientX: 10, clientY: 10 });
+  });
+  await act(async () => {
+    fireEvent.mouseMove(document, { clientX: 10, clientY: 40 });
+  });
+  await act(async () => {
+    // dnd-kit's own cancel reads `code`, not `key`, and this key is one step of the mouse drag
+    // above, which user-event cannot drive.
+    fireEvent.keyDown(document, { code: "Escape", key: "Escape" });
+  });
+  await act(async () => {
+    fireEvent.mouseUp(document, { clientX: 10, clientY: 40 });
+  });
+  expect(region.querySelector(".opacity-50")).toBeNull();
+  let followed = true;
+  await act(async () => {
+    followed = fireEvent.click(within(region).getByRole("link", { name: /CORE-1/ }), {
+      button: 0,
+    });
+  });
+  expect(followed).toBe(false);
+  expect(screen.getByTestId("route").textContent).toBe("/projects/CORE/issues");
+});
+
+test("a drop's mark never cancels a click outside the Board", async () => {
+  patchAnswered();
+  board(keyboardIssues(), "?layout=board");
   const elsewhere = document.createElement("a");
   elsewhere.href = "/issues/CORE-2";
   document.body.append(elsewhere);
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    await dropInPlace(within(board).getByRole("article", { name: "CORE-1 Alpha" }));
-    let followed = false;
-    await act(async () => {
-      // The assertion reads fireEvent's boolean: whether the click was cancelled.
-      followed = fireEvent.click(elsewhere, { button: 0 });
-    });
-    expect(followed).toBe(true);
-  } finally {
-    elsewhere.remove();
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-// The control row's filters on the board: Todo holds Alpha, Bravo, Charlie; only Alpha and Charlie
-// contain an "h", so `?q=h` hides Bravo (and In progress's Delta).
-test("the control row's search hides board cards, counts the visible column, and drags name visible neighbours", async () => {
-  const user = userEvent.setup();
-  const patchIssue = patchInFlight();
-  const { cleanup } = renderBoard({}, undefined, keyboardIssues, "/projects/CORE?q=h");
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const todo = within(board).getByRole("region", { name: "Todo" });
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-1 Alpha", "CORE-3 Charlie"])
-    );
-    expect(within(board).queryByRole("article", { name: "CORE-2 Bravo" })).not.toBeInTheDocument();
-    // The column header counts what is on screen, not the whole column.
-    expect(within(todo).getByTestId("board-column-header")).toHaveTextContent("2");
-    const inProgress = within(board).getByRole("region", { name: "In progress" });
-    expect(within(inProgress).queryAllByRole("article")).toHaveLength(0);
-    expect(within(inProgress).getByTestId("board-column-header")).toHaveTextContent("0");
-
-    // A keyboard move computes against the visible column: Alpha lands after Charlie, the
-    // hidden Bravo is not a neighbour, and the announcement counts 2 visible cards.
-    const alpha = within(board).getByRole("article", { name: "CORE-1 Alpha" });
-    act(() => alpha.focus());
-    await user.keyboard("{Shift>}J{/Shift}");
-    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { rank: { after: "CORE-3" } }, keyedAttempt);
-    expect(within(board).getByRole("status", { name: "Board announcements" }).textContent).toBe(
-      "CORE-1 → Todo, position 2 of 2"
-    );
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-3 Charlie", "CORE-1 Alpha"])
-    );
-    expect(within(board).queryByRole("article", { name: "CORE-2 Bravo" })).not.toBeInTheDocument();
-  } finally {
-    cleanup();
-    patchIssue.mockRestore();
-  }
-});
-
-test("Needs you and Unread from the URL keep only matching cards on the board", async () => {
-  const { cleanup } = renderBoard(
-    {
-      "CORE-1": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-2": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-      "CORE-3": { dismissed: [], last_read_seq: 1, pinned: false, seq: 0 },
-    },
-    undefined,
-    [
-      issue({ key: "CORE-1", last_seq: 4, open_asks: 1, status: "todo", title: "Wanted" }),
-      issue({ key: "CORE-2", last_seq: 4, open_asks: 0, status: "todo", title: "No asks" }),
-      issue({ key: "CORE-3", last_seq: 1, open_asks: 2, status: "todo", title: "Already read" }),
-    ],
-    "/projects/CORE?needs-you=1&unread=1"
-  );
-  try {
-    const board = await screen.findByRole("region", { name: "Project board" });
-    const todo = within(board).getByRole("region", { name: "Todo" });
-    await waitFor(() =>
-      expect(
-        within(todo)
-          .getAllByRole("article")
-          .map((node) => node.getAttribute("aria-label"))
-      ).toEqual(["CORE-1 Wanted"])
-    );
-    expect(within(todo).getByTestId("board-column-header")).toHaveTextContent("1");
-  } finally {
-    cleanup();
-  }
-});
-
-test("a labelled move writes the rendered list, names its neighbours, and refetches both lists", async () => {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const labels = ["keep"] as const;
-  const labelledKey = ["issues", "project", "CORE", "labels", labels] as const;
-  const baseKey = ["issues", "project", "CORE"] as const;
-  const alpha = issue({ key: "CORE-1", labels: ["keep"], rank: "a", status: "todo" });
-  const bravo = issue({ key: "CORE-2", rank: "b", status: "todo" });
-  const charlie = issue({ key: "CORE-3", labels: ["keep"], rank: "c", status: "todo" });
-  const delta = issue({ key: "CORE-4", labels: ["keep"], rank: "d", status: "todo" });
-  // The server answers the labelled query without the unlabelled card.
-  queryClient.setQueryData(labelledKey, [alpha, charlie, delta]);
-  queryClient.setQueryData(baseKey, [alpha, bravo, charlie, delta]);
-  const patchIssue = answerIssuePatches().mockResolvedValue(patched);
-  const hook = renderMoves(queryClient, labels);
-  try {
-    await act(() => hook.result.current.moveCard("CORE-4", "todo", 1));
-    expect(patchIssue).toHaveBeenCalledWith(
-      "CORE-4",
-      {
-        rank: { after: "CORE-1", before: "CORE-3" },
-      },
-      keyedAttempt
-    );
-    expect(
-      queryClient.getQueryData<IssueSummary[]>(labelledKey)?.map((entry) => entry.key)
-    ).toEqual(["CORE-1", "CORE-4", "CORE-3"]);
-    // The unfiltered list's ranks changed too: both queries refetch.
-    expect(queryClient.getQueryState(labelledKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(baseKey)?.isInvalidated).toBe(true);
-  } finally {
-    hook.unmount();
-    patchIssue.mockRestore();
-  }
-});
-
-// What `IssueFilters.test.tsx` proved about the Board's filter strip, now that the Board draws
-// that strip itself as the one shared control row (INFRA-3135): the trigger over the filter
-// panel, the chips of the narrowings that are on, and the open-or-closed state the reader's
-// browser keeps under `project.issue-filters`.
-function LocationSearch(): ReactNode {
-  return <output data-testid="location-search">{useLocation().search}</output>;
-}
-
-/** Opens the row's filter panel if it is closed. */
-async function openFilters(): Promise<void> {
-  const user = userEvent.setup();
-  const disclosure = await screen.findByRole("button", { name: /^Filters · \d+$/ });
-  if (disclosure.getAttribute("aria-expanded") === "false") {
-    await user.click(disclosure);
-  }
-}
-
-/** Opens the `Labels` picker inside the filter panel if it is closed and toggles one option. */
-async function pickOption(picker: "Labels", option: string): Promise<void> {
-  const user = userEvent.setup();
-  const trigger = screen.getByRole("button", { name: new RegExp(`^${picker}( · \\d+)?$`) });
-  if (trigger.getAttribute("aria-expanded") === "false") {
-    await user.click(trigger);
-  }
-  await user.click(screen.getByRole("option", { name: option }));
-}
-
-function renderControlRow(
-  list: IssueSummary[],
-  state: UserState = {},
-  initialEntry = "/projects/CORE",
-  login = "alice"
-) {
-  const listIssues = spyOn(api, "listIssues").mockImplementation(async (options = {}) => {
-    const labels = options.label ?? [];
-    return labels.length === 0
-      ? list
-      : list.filter((entry) => labels.every((label) => (entry.labels ?? []).includes(label)));
+  restores.push(() => elsewhere.remove());
+  const region = await boardRegion();
+  await dropInPlace(await within(region).findByRole("article", { name: "CORE-1 Alpha" }));
+  let followed = false;
+  await act(async () => {
+    followed = fireEvent.click(elsewhere, { button: 0 });
   });
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  queryClient.setQueryData(["whoami"], { kind: "user", login });
-  const view = render(
-    <MemoryRouter initialEntries={[initialEntry]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <IssueBoard project="CORE" showEdges />
-          <LocationSearch />
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { getMyState, listIssues, view };
+  expect(followed).toBe(true);
+});
+
+// A listing read asked for while a move is unanswered waits for the answer: the server may not
+// have applied the move, and its list would put the card back.
+test("a listing read asked for while a move is unanswered waits for the answer, then reads the moved Board", async () => {
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<Issue>();
+  const patch = answerIssuePatches().mockImplementation(() => answer.promise);
+  restores.push(() => patch.mockRestore());
+  const rows = keyboardIssues();
+  const { client, listing } = board(rows, "?layout=board");
+  const region = await boardRegion();
+  act(() => within(region).getByRole("article", { name: "CORE-2 Bravo" }).focus());
+  await user.keyboard("{Shift>}L{/Shift}");
+  const inProgress = within(region).getByRole("region", { name: "In progress" });
+  await waitFor(() => expect(cardKeys(inProgress)).toEqual(["CORE-2", "CORE-4"]));
+  const reads = listing.mock.calls.length;
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: ["issues"] });
+  });
+  expect(listing.mock.calls.length).toBe(reads);
+  expect(cardKeys(inProgress)).toEqual(["CORE-2", "CORE-4"]);
+
+  rows[1] = { ...(rows[1] as IssueSummary), status: "in_progress", rank: "0" };
+  await act(async () => {
+    answer.resolve(saved("CORE-2", { status: "in_progress" }));
+  });
+  await waitFor(() => expect(listing.mock.calls.length).toBeGreaterThan(reads));
+  await waitFor(() => expect(cardKeys(inProgress)).toEqual(["CORE-2", "CORE-4"]));
+  expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
+});
+
+/** The move hook alone, over a client that holds `open` as the open listing. */
+function renderMoves(open: IssueSummary[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const key = ["issues", "project", "CORE", "open"] as const;
+  client.setQueryData(key, open);
+  const hook = renderHook(() => useBoardMoves("CORE"), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+  restores.push(() => hook.unmount());
+  return { client, hook, key };
 }
 
-test("Needs you keeps only issues with open asks and lives in the URL", async () => {
-  const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderControlRow([
-    issue({ key: "CORE-1", open_asks: 1, title: "Answer me" }),
-    issue({ key: "CORE-2", title: "Quiet" }),
-  ]);
-
-  try {
-    await screen.findByText("Answer me");
-    await openFilters();
-    await user.click(screen.getByRole("button", { name: "Needs you" }));
-    expect(screen.getByText("Answer me")).toBeTruthy();
-    expect(screen.queryByText("Quiet")).not.toBeInTheDocument();
-    expect(screen.getByTestId("location-search").textContent).toBe("?needs-you=1");
-    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
-    expect(screen.getByTestId("location-search").textContent).toBe("");
-    expect(await screen.findByText("Quiet")).toBeTruthy();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
+const move = (input: UpdateIssueInput, rank?: string) => ({
+  input,
+  ...(rank === undefined ? {} : { rank }),
 });
 
-test("Unread keeps only issues with events past last_read_seq and lives in the URL", async () => {
+test("a failed move puts the listing back, reads it again and tells the truth about a stale rank", async () => {
+  const open = keyboardIssues();
+  const { client, hook, key } = renderMoves(open);
+  const patch = answerIssuePatches().mockRejectedValue(
+    new ApiError(400, { code: "RANK_INPUT", error: "rank neighbors are not ordered" })
+  );
+  restores.push(() => patch.mockRestore());
+  await act(() =>
+    hook.result.current.move(
+      "CORE-1",
+      move({ status: "in_progress", rank: { before: "CORE-4" } }, "")
+    )
+  );
+  expect(patch).toHaveBeenCalledWith(
+    "CORE-1",
+    { status: "in_progress", rank: { before: "CORE-4" } },
+    keyedAttempt
+  );
+  expect(hook.result.current.error).toBe(staleBoardMessage);
+  expect(client.getQueryData(key)).toEqual(open);
+  expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+});
+
+test("any other failed move shows the server's message and reads the listing again", async () => {
+  const { client, hook, key } = renderMoves(keyboardIssues());
+  const patch = answerIssuePatches().mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not your project" })
+  );
+  restores.push(() => patch.mockRestore());
+  await act(() => hook.result.current.move("CORE-1", move({ status: "backlog" })));
+  expect(hook.result.current.error).toBe("not your project");
+  expect(client.getQueryState(key)?.isInvalidated).toBe(true);
+});
+
+// Every listing a view reads that holds the card takes the move at once, its other issues kept
+// as they were, and two moves on one Board go out one after the other.
+test("a move writes every listing that holds the card at once, and two moves go out one after the other", async () => {
+  const { client, hook, key } = renderMoves(keyboardIssues());
+  const doneKey = ["issues", "project", "CORE", "done", "", ""] as const;
+  const closed = [issue("CORE-7", { status: "done" })];
+  client.setQueryData(doneKey, closed);
+  const settle: ((issue: Issue) => void)[] = [];
+  const patch = answerIssuePatches().mockImplementation(() => {
+    const { promise, resolve } = Promise.withResolvers<Issue>();
+    settle.push(resolve);
+    return promise;
+  });
+  restores.push(() => patch.mockRestore());
+  const before = client.getQueryData<IssueSummary[]>(key) ?? [];
+  let first: Promise<void> = Promise.resolve();
+  let second: Promise<void> = Promise.resolve();
+  act(() => {
+    first = hook.result.current.move(
+      "CORE-1",
+      move({ status: "in_progress", rank: { before: "CORE-4" } }, "")
+    );
+    second = hook.result.current.move("CORE-7", move({ status: "todo" }));
+  });
+  const after = client.getQueryData<IssueSummary[]>(key) ?? [];
+  expect(after.find((row) => row.key === "CORE-1")).toMatchObject({
+    status: "in_progress",
+    rank: "",
+  });
+  // An issue the move left alone keeps its object.
+  expect(after[1]).toBe(before[1] as IssueSummary);
+  expect(client.getQueryData<IssueSummary[]>(doneKey)?.[0]?.status).toBe("todo");
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+  await act(async () => {
+    settle[0]?.(saved("CORE-1"));
+    await first;
+  });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
+  expect(patch.mock.calls[1]?.[0]).toBe("CORE-7");
+  await act(async () => {
+    settle[1]?.(saved("CORE-7"));
+    await second;
+  });
+  expect(hook.result.current.error).toBeUndefined();
+});
+
+// The control row above the Board: the view's search and the Filters panel, with the Labels
+// picker and the three flags, and a chip for every narrowing that differs from the view's own.
+test("every narrowing that differs from the view's own is a chip, and Clear filters takes them all off", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderControlRow(
+  board(
     [
-      issue({ key: "CORE-1", last_seq: 4, title: "Unread" }),
-      issue({ key: "CORE-2", last_seq: 3, title: "Read" }),
+      issue("CORE-1", { labels: ["frontend"], title: "core work", priority: 0 }),
+      issue("CORE-2", { labels: ["frontend"], title: "other work", priority: 0 }),
+      issue("CORE-3", { title: "core work", priority: 1 }),
     ],
-    {
-      "CORE-1": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
-      "CORE-2": { dismissed: [], last_read_seq: 3, pinned: false, seq: 0 },
-    }
+    "?layout=board&label=frontend&q=core&status=todo&f.priority=0&needs-you=1"
   );
-
-  try {
-    await screen.findByRole("link", { name: /CORE-1.*Unread/ });
-    await openFilters();
-    await user.click(screen.getByRole("button", { name: "Unread" }));
-    expect(screen.getByRole("link", { name: /CORE-1.*Unread/ })).toBeTruthy();
-    expect(screen.queryByText("Read")).not.toBeInTheDocument();
-    expect(screen.getByTestId("location-search").textContent).toBe("?unread=1");
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
+  await boardRegion();
+  expect(screen.getByRole("button", { name: "Filters · 5" })).toBeDefined();
+  for (const chip of [
+    "Label: frontend",
+    "Search: core",
+    "Needs you",
+    "Status: Todo",
+    "Priority: P0",
+  ])
+    expect(screen.getByRole("button", { name: `Remove ${chip} filter` })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Remove Priority: P0 filter" }));
+  await waitFor(() => expect(routeSearch().has("f.priority")).toBe(false));
+  expect(screen.getByRole("button", { name: "Filters · 4" })).toBeDefined();
+  await user.click(screen.getByRole("button", { name: "Clear filters" }));
+  await waitFor(() => expect(routeSearch().toString()).toBe("layout=board"));
+  expect(screen.getByRole("button", { name: "Filters · 0" })).toBeDefined();
+  expect(screen.queryByRole("button", { name: "Clear filters" })).toBeNull();
 });
 
-test("label chips send every selection to the API and retain only AND matches", async () => {
-  const { getMyState, listIssues, view } = renderControlRow([
-    issue({ key: "CORE-1", labels: ["frontend", "api"], title: "Navigation" }),
-    issue({ key: "CORE-2", labels: ["frontend", "docs"], title: "Guidance" }),
-    issue({ key: "CORE-3", labels: ["backend", "docs"], title: "Endpoint" }),
-  ]);
-
-  try {
-    await screen.findByText("Navigation");
-    await openFilters();
-    await pickOption("Labels", "frontend");
-    await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend"], project: "CORE" })
-    );
-    await pickOption("Labels", "docs");
-    await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["frontend", "docs"], project: "CORE" })
-    );
-    expect(screen.getByText("Guidance")).toBeTruthy();
-    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
-    expect(screen.queryByText("Endpoint")).not.toBeInTheDocument();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
-});
-
-test("restores every filter from the URL and writes changes back to it", async () => {
+test("the Labels picker writes label=, shows its chip, and the cards are the view's rows of that address", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderControlRow(
+  const { listing } = board(
     [
-      issue({ key: "CORE-1", labels: ["docs"], title: "Guidance" }),
-      issue({ key: "CORE-2", labels: ["frontend"], title: "Navigation" }),
+      issue("CORE-1", { labels: ["frontend", "api"], title: "Navigation" }),
+      issue("CORE-2", { labels: ["docs"], title: "Guidance" }),
     ],
-    {},
-    "/projects/CORE?label=docs"
+    "?layout=board"
   );
-
-  try {
-    await screen.findByText("Guidance");
-    await openFilters();
-    await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["docs"], project: "CORE" })
-    );
-    await user.click(screen.getByRole("button", { name: "Labels · 1" }));
-    expect(screen.getByRole("option", { name: "docs" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs");
-
-    await pickOption("Labels", "frontend");
-    await waitFor(() =>
-      expect(listIssues).toHaveBeenCalledWith({ label: ["docs", "frontend"], project: "CORE" })
-    );
-    expect(screen.getByTestId("location-search").textContent).toBe("?label=docs&label=frontend");
-
-    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
-    await user.paste("guid");
-    expect(screen.getByTestId("location-search").textContent).toBe(
-      "?label=docs&label=frontend&q=guid"
-    );
-    await user.click(screen.getByRole("button", { name: "Remove Search: guid filter" }));
-
-    // Clicking into the search box closed the label picker, as it does in a browser, and the
-    // press on the chip beside it closed the filter panel the picker was in; Clear labels is
-    // inside that panel, so the reader opens it again.
-    await openFilters();
-    await user.click(screen.getByRole("button", { name: "Labels · 2" }));
-    await user.click(screen.getByRole("button", { name: "Clear labels" }));
-    expect(screen.getByTestId("location-search").textContent).toBe("");
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-1", "CORE-2"]));
+  await user.click(screen.getByRole("button", { name: "Filters · 0" }));
+  await user.click(screen.getByRole("button", { name: "Labels" }));
+  await user.click(screen.getByRole("option", { name: "docs" }));
+  await waitFor(() => expect(routeSearch().getAll("label")).toEqual(["docs"]));
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-2"]));
+  expect(screen.getByRole("button", { name: "Remove Label: docs filter" })).toBeDefined();
+  // The view narrows the listing it read: no read names the label.
+  expectNoFullListing(listing);
 });
 
-test("a search restored from ?q= narrows the list before anyone types", async () => {
-  const { getMyState, listIssues, view } = renderControlRow(
-    [issue({ key: "CORE-1", title: "Guidance" }), issue({ key: "CORE-2", title: "Navigation" })],
-    {},
-    "/projects/CORE?q=guid"
-  );
-
-  try {
-    await screen.findByText("Guidance");
-    expect(screen.queryByText("Navigation")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Search: guid filter" })).toBeTruthy();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
-});
-
-test("the search filter writes at most SEARCH_QUERY_MAX characters into the page URL", async () => {
+test("the search box is the view's search, and a search the address brings is a chip", async () => {
   const user = userEvent.setup();
-  const { getMyState, listIssues, view } = renderControlRow([
-    issue({ key: "CORE-1", title: "Guidance" }),
-  ]);
-
-  try {
-    await screen.findByText("Guidance");
-    await openFilters();
-    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
-    await user.paste("x".repeat(SEARCH_QUERY_MAX + 500));
-    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
-    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX));
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-test("a ?q= over the cap from a link is cut on a code point, never leaving half an emoji", async () => {
-  const user = userEvent.setup();
-  const long = `${"x".repeat(SEARCH_QUERY_MAX - 1)}😀`;
-  const { getMyState, listIssues, view } = renderControlRow(
-    [issue({ key: "CORE-1", title: "Guidance" })],
-    {},
-    `/projects/CORE?q=${encodeURIComponent(long)}`
+  board(
+    [issue("CORE-1", { title: "Guidance" }), issue("CORE-2", { title: "Navigation" })],
+    "?layout=board&q=guid"
   );
-
-  try {
-    await openFilters();
-    const search = screen.getByRole("searchbox", { name: "Search issues" });
-    await user.clear(search);
-    await user.click(search);
-    await user.paste(`${long}y`);
-    const written = new URLSearchParams(screen.getByTestId("location-search").textContent ?? "");
-    expect(written.get("q")).toBe("x".repeat(SEARCH_QUERY_MAX - 1));
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-1"]));
+  expect(screen.getByRole("button", { name: "Remove Search: guid filter" })).toBeDefined();
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  expect(search).toHaveValue("guid");
+  await user.clear(search);
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-1", "CORE-2"]));
+  expect(routeSearch().has("q")).toBe(false);
 });
 
-test("collapses filter controls by default and retains the disclosure preference per login", async () => {
-  const user = userEvent.setup();
-  window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
-
-  try {
-    await screen.findByText("Core work");
-    const disclosure = screen.getByRole("button", { name: "Filters · 0" });
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument();
-
-    await user.click(disclosure);
-    await user.click(screen.getByRole("button", { name: "Needs you" }));
-    expect(screen.getByRole("button", { name: "Filters · 1" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
-    );
-
-    await user.click(screen.getByRole("button", { name: "Filters · 1" }));
-    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
-    expect(screen.getByRole("button", { name: "Filters · 0" })).toBeTruthy();
-    expect(
-      window.localStorage.getItem(userPreferenceStorageKey("alice", "project.issue-filters"))
-    ).toBe("collapsed");
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-test("collapses a saved filter disclosure when no filters are active", async () => {
-  window.localStorage.setItem(
-    userPreferenceStorageKey("alice", "project.issue-filters"),
-    "expanded"
-  );
-  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
-
-  try {
-    await screen.findByText("Core work");
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Filters · 0" })).toHaveAttribute(
-        "aria-expanded",
-        "false"
-      )
-    );
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-test("a pending viewer keeps a URL-only filter disclosure collapsed without persisting", async () => {
-  const pendingKey = "dispatch.project.issue-filters:undefined";
-  window.localStorage.removeItem(pendingKey);
-  const whoAmI = spyOn(api, "whoAmI").mockImplementation(
-    () => Promise.withResolvers<never>().promise
-  );
-  const listIssues = spyOn(api, "listIssues").mockResolvedValue([
-    issue({ key: "CORE-1", title: "Guidance" }),
-  ]);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/projects/CORE?q=guid"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <IssueBoard project="CORE" showEdges />
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-
-  try {
-    const disclosure = await screen.findByRole("button", { name: "Filters · 1" });
-    expect(disclosure).toHaveAttribute("aria-expanded", "false");
-    expect(window.localStorage.getItem(pendingKey)).toBeNull();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    whoAmI.mockRestore();
-    window.localStorage.removeItem(pendingKey);
-  }
-});
-
-test("a ?status= in the URL is neither counted nor chipped by the control row", async () => {
-  const { getMyState, listIssues, view } = renderControlRow(
-    [issue({ title: "Core work" })],
-    {},
-    "/projects/CORE?label=x&status=done"
-  );
-
-  try {
-    await screen.findByRole("button", { name: "Filters · 1" });
-    expect(screen.queryByRole("button", { name: "Status" })).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Remove Status: Done filter" })
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Remove Label: x filter" })).toBeTruthy();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-// INFRA-3135, review round 1 (the architect's rule of 2026-11-15): the stored choice opens or
-// shuts the panel as the Board loads and takes no focus, and only the reader's own open or close
-// writes it.
 const PANEL_CHOICE = userPreferenceStorageKey("alice", "project.issue-filters");
 
-test("a panel the stored choice opens as the Board loads takes no focus, and a press opens it into the focus", async () => {
+// The stored choice opens or shuts the Filters panel as the Board loads and takes no focus, and
+// only the reader's own open or close writes it.
+test("a Filters panel the stored choice opens takes no focus, and only the reader's open and close write it", async () => {
   const user = userEvent.setup();
-  window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderControlRow(
-    [issue({ labels: ["bug"], title: "Core work" })],
-    {},
-    "/projects/CORE?label=bug"
+  const storage = installCountingStorage();
+  restores.push(() => storage.restore());
+  board([issue("CORE-1", { labels: ["bug"], title: "Core work" })], "?layout=board&label=bug");
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toEqual(["CORE-1"]));
+  const trigger = screen.getByRole("button", { name: "Filters · 1" });
+  // Nothing is stored and a narrowing is on: the panel stands open, with no focus in it.
+  expect(trigger).toHaveAttribute("aria-expanded", "true");
+  expect(document.activeElement).toBe(document.body);
+  expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([]);
+  await user.click(trigger);
+  await user.click(trigger);
+  expect(
+    within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
+      name: "Labels · 1",
+    })
+  ).toHaveFocus();
+  await user.keyboard("{Escape}");
+  expect(trigger).toHaveAttribute("aria-expanded", "false");
+  expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([
+    [PANEL_CHOICE, "collapsed"],
+    [PANEL_CHOICE, "expanded"],
+    [PANEL_CHOICE, "collapsed"],
+  ]);
+});
+
+/** Open's rows for the redraw rows: `count` cards, a third of them In progress. */
+const manyRows = (count: number) =>
+  Array.from({ length: count }, (_, index) =>
+    issue(`CORE-${1000 + index}`, {
+      rank: String(1000 + index),
+      status: index % 3 === 0 ? "in_progress" : "todo",
+    })
   );
 
-  try {
-    await screen.findByText("Core work");
-    const trigger = screen.getByRole("button", { name: "Filters · 1" });
-    // Nothing is stored and a filter is on: the panel stands open, as the stored choice says.
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    const panel = screen.getByRole("dialog", { name: "Filters" });
-    // The focus starts where the page starts, not on the panel's first control.
-    expect(within(panel).getByRole("button", { name: "Labels · 1" })).not.toHaveFocus();
-    expect(document.activeElement).toBe(document.body);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBeNull();
+/** Counts the card bodies and card shells a change draws: every card body draws
+ *  `UnreachableRouteMarker` once, and every card shell calls `useDraggable` once, and on the
+ *  Board nothing else does either. */
+function countCards() {
+  const bodies = spyOn(routeReach, "UnreachableRouteMarker");
+  const shells = spyOn(dndCore, "useDraggable");
+  restores.push(() => {
+    bodies.mockRestore();
+    shells.mockRestore();
+  });
+  return {
+    clear() {
+      bodies.mockClear();
+      shells.mockClear();
+    },
+    bodies: () => bodies.mock.calls.length,
+    shells: () => shells.mock.calls.length,
+  };
+}
 
-    // The reader's own press closes it, and their next one opens it with the focus in it.
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
+// R11: a live change to one issue draws that issue's card, not the Board's others.
+test("a live read that moves one card of 120 draws that card alone", async () => {
+  const rows = manyRows(120);
+  const { client } = board(rows, "?layout=board");
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toHaveLength(120));
+  const counts = countCards();
+  counts.clear();
+  const index = rows.findIndex((row) => row.status === "todo");
+  const key = rows[index]?.key ?? "";
+  rows[index] = {
+    ...(rows[index] as IssueSummary),
+    status: "in_progress",
+    updated_at: "2026-11-17T09:00:00Z",
+  };
+  await act(async () => {
+    await client.invalidateQueries({ queryKey: ["issues"] });
+  });
+  await waitFor(() =>
     expect(
-      within(screen.getByRole("dialog", { name: "Filters" })).getByRole("button", {
-        name: "Labels · 1",
-      })
-    ).toHaveFocus();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-test("the trigger's press either way, Escape and a press outside that closes the panel each write the stored choice", async () => {
-  const user = userEvent.setup();
-  window.localStorage.clear();
-  const { getMyState, listIssues, view } = renderControlRow([issue({ title: "Core work" })]);
-
-  try {
-    await screen.findByText("Core work");
-    const trigger = screen.getByRole("button", { name: "Filters · 0" });
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
-
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
-    await user.keyboard("{Escape}");
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
-
-    await user.click(trigger);
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("expanded");
-    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(window.localStorage.getItem(PANEL_CHOICE)).toBe("collapsed");
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-test("nothing but the reader's open and close writes the stored choice: not a press while the panel is shut, a chip's removal or a press in the Labels list", async () => {
-  const user = userEvent.setup();
-  // Every write of the stored choice, in order, kept by a storage that counts them.
-  const storage = installCountingStorage({ [PANEL_CHOICE]: "collapsed" });
-  const { getMyState, listIssues, view } = renderControlRow(
-    [issue({ labels: ["bug"], title: "Core work" })],
-    {},
-    "/projects/CORE?label=bug&needs-you=1"
+      region.querySelector(`[data-board-column="in_progress"] [data-board-card="${key}"]`)
+    ).not.toBeNull()
   );
+  // Whatever the change still draws after the card lands is counted too.
+  await waitMs(100);
+  expect(counts.bodies()).toBeGreaterThan(0);
+  expect(counts.bodies()).toBeLessThanOrEqual(2);
+  expect(counts.shells()).toBeLessThanOrEqual(2);
+});
 
-  try {
-    await screen.findByRole("button", { name: "Filters · 2" });
-    const trigger = screen.getByRole("button", { name: "Filters · 2" });
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    // A press while the panel is shut.
-    await user.click(screen.getByRole("searchbox", { name: "Search issues" }));
-    // A chip's removal.
-    await user.click(screen.getByRole("button", { name: "Remove Needs you filter" }));
-    expect(screen.getByRole("button", { name: "Filters · 1" })).toBe(trigger);
-    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([]);
-
-    // One open, one close, and between them a pick in the Labels list and the Escape that
-    // closes that list alone.
-    await user.click(trigger);
-    await pickOption("Labels", "bug");
-    await user.keyboard("{Escape}");
-    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
-    expect(trigger).toHaveAttribute("aria-expanded", "true");
-    await user.keyboard("{Escape}");
-    expect(trigger).toHaveAttribute("aria-expanded", "false");
-    expect(storage.writes.filter(([key]) => key === PANEL_CHOICE)).toEqual([
-      [PANEL_CHOICE, "expanded"],
-      [PANEL_CHOICE, "collapsed"],
-    ]);
-  } finally {
-    view.unmount();
-    storage.restore();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
+// A card compares the Time in Legion phase text it draws, not the clock: a draw in a new minute
+// draws again only the cards whose time reads differently.
+test("a draw in a new minute draws again only the cards whose Time in Legion phase text changed", async () => {
+  const start = new Date("2026-11-17T12:00:30Z");
+  setSystemTime(start);
+  restores.push(() => setSystemTime());
+  const sockets = liveSockets();
+  const rows = manyRows(30);
+  const minutes = (count: number) => new Date(start.getTime() - count * 60_000).toISOString();
+  board(rows, "?layout=board", DAEMON);
+  const cards = rows.map((row, index) =>
+    // One card counts minutes; every other card has been in its phase for days, which reads the
+    // same a minute on.
+    legionCard(row.key, { phase_since: index === 1 ? minutes(30) : minutes(3 * 24 * 60 + 7) })
+  );
+  await answerBoard(sockets, legionBoard({ implementing: cards }));
+  const region = await boardRegion();
+  await waitFor(() => expect(cardKeys(region)).toHaveLength(30));
+  const ticking = rows[1]?.key ?? "";
+  expect(
+    region.querySelector(`[data-board-card="${ticking}"] [data-legion-fact=phase-time]`)
+      ?.textContent
+  ).toBe("Time in Legion phase30 m");
+  const counts = countCards();
+  counts.clear();
+  setSystemTime(new Date(start.getTime() + 60_000));
+  // Another reader's change to one other issue draws the Board again.
+  const changed = rows[5]?.key ?? "";
+  await answerBoard(
+    sockets,
+    legionBoard({
+      implementing: cards.map((card) =>
+        card.key === changed ? { ...card, roles: ["implementer"] } : card
+      ),
+    })
+  );
+  await waitFor(() =>
+    expect(
+      region.querySelector(`[data-board-card="${changed}"] [data-legion-fact=roles]`)
+    ).not.toBeNull()
+  );
+  expect(
+    region.querySelector(`[data-board-card="${ticking}"] [data-legion-fact=phase-time]`)
+      ?.textContent
+  ).toBe("Time in Legion phase31 m");
+  expect(counts.bodies()).toBeGreaterThanOrEqual(2);
+  expect(counts.bodies()).toBeLessThanOrEqual(4);
 });

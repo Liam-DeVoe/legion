@@ -9,7 +9,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
-import type { IssueStatus } from "../project/board-model";
+import type { BoardChange } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
 import { IssuePage } from "./IssuePage";
@@ -1118,9 +1118,9 @@ test("a board move then a header status change land in press order after an outa
   const { artifacts: _artifacts, children: _children, open_asks: _asks, ...fields } = issue;
   const summary: IssueSummary = { ...fields, open_asks: 0 };
   queryClient.setQueryData(projectIssuesQueryKey("CORE", []), [summary]);
-  let moveCard: ((key: string, status: IssueStatus, index: number) => Promise<void>) | undefined;
+  let move: ((key: string, change: BoardChange) => Promise<void>) | undefined;
   function Board(): null {
-    moveCard = useBoardMoves("CORE").moveCard;
+    move = useBoardMoves("CORE").move;
     return null;
   }
   const board = render(
@@ -1132,7 +1132,7 @@ test("a board move then a header status change land in press order after an outa
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
     let moved: Promise<void> | undefined;
     act(() => {
-      moved = moveCard?.("CORE-1", "in_progress", 0);
+      moved = move?.("CORE-1", { input: { status: "in_progress", rank: {} } });
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     await user.selectOptions(status, "backlog");

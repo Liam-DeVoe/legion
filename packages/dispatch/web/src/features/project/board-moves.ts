@@ -5,47 +5,39 @@ import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
+import type { BoardChange } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
 
 export const staleBoardMessage =
   "The board changed while you were moving this card - refreshed, try again.";
 
-const everyIssue = () => true;
+/** The issue as a move leaves it on the page until the server answers: its new status, its new
+ *  priority and a rank between its new neighbours, where the move writes each. */
+function movedIssue(issue: IssueSummary, { input, rank }: BoardChange): IssueSummary {
+  return {
+    ...issue,
+    ...(typeof input.status === "string" ? { status: input.status } : {}),
+    ...(input.priority === undefined ? {} : { priority: input.priority }),
+    ...(rank === undefined ? {} : { rank }),
+  };
+}
 
 /**
- * The one path every board move takes - pointer, touch and keyboard drops alike. `moveCard`
- * places the card optimistically, sends the PATCH naming the visible neighbours, and refetches
- * the project list once the server has answered. Moves on one board are serialised through a
- * single mutation scope, so a second drop computes its neighbours from the first drop's
- * optimistic state and never overtakes it on the wire. A list the server answered before the
- * move never lands over the optimistic placement: a fetch already on the wire is cancelled at the
- * optimistic write, and one that starts while a move is unanswered waits for the answer
- * (`projectIssuesQuery`, keyed on `boardMoveMutationKey`). Any failure rolls the board back,
- * refetches it, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the drag)
- * gets `staleBoardMessage`; anything else the server's message.
- *
- * With filters active, `labels` names the query the board actually renders (the same key the
- * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
- * successful move also refetches the unfiltered list, whose rank changed too. `isVisible` is the
- * board's filter predicate: insertion indices count visible cards, the PATCH names visible
- * neighbours, and hidden issues keep their cache positions.
+ * The one path every Board move takes - pointer, touch and keyboard drops alike. `move` places
+ * the card on the page at once, in every listing the views read that holds it (the open listing
+ * and the reads of done issues, under `projectIssuesQueryKey(project, [])`), sends the PATCH the
+ * Board's rules planned (`planMove`), and reads the listings again once the server has answered.
+ * Moves on one Board are serialised through a single mutation scope, so a second drop is planned
+ * from the first one's placement and never overtakes it on the wire. A listing the server
+ * answered before the move never lands over the placement: a fetch already on the wire is
+ * cancelled as the move writes, and one that starts while a move is unanswered waits for the
+ * answer (`projectIssuesQuery`, keyed on `boardMoveMutationKey`). Any failure puts the listings
+ * back, reads them again, and says so: a stale rank (`RANK_INPUT`, the neighbours moved under the
+ * drag) gets `staleBoardMessage`; anything else the server's message.
  */
-export function useBoardMoves(
-  project: string,
-  labels: readonly string[] = [],
-  isVisible: (issue: IssueSummary) => boolean = everyIssue
-): {
+export function useBoardMoves(project: string): {
   error: string | undefined;
-  moveCard: (key: string, targetStatus: IssueStatus, insertionIndex: number) => Promise<void>;
-  /** The lane-aware twin of `moveCard`, for a board grouped into swimlanes: moving a card into
-   *  another lane reassigns its priority along with its status and rank. */
-  moveCardToLane: (
-    key: string,
-    targetStatus: IssueStatus,
-    targetLane: PriorityLane,
-    insertionIndex: number
-  ) => Promise<void>;
+  move: (key: string, change: BoardChange) => Promise<void>;
 } {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string>();
@@ -61,30 +53,32 @@ export function useBoardMoves(
     scope: { id: `board:${project}` },
   });
   const { mutateAsync } = patch;
-  const queryKey = projectIssuesQueryKey(project, labels);
-  /** Commits an already-computed move: optimistic write, PATCH, rollback-and-refetch on
-   *  failure, refetch on success - the one tail `moveCard` and `moveCardToLane` share. */
-  const commit = useCallback(
-    async (
-      key: string,
-      moved: { issues: IssueSummary[]; input: UpdateIssueInput } | undefined,
-      previous: IssueSummary[]
-    ) => {
-      if (moved === undefined) {
-        return;
+  const move = useCallback(
+    async (key: string, change: BoardChange) => {
+      const listings = projectIssuesQueryKey(project, []);
+      // A listing query holds the issues `listIssues` answers; the page reads and the counts
+      // under the same prefix hold no such list, and no card.
+      const held = queryClient
+        .getQueriesData<unknown>({ queryKey: listings })
+        .flatMap(([queryKey, data]) =>
+          Array.isArray(data) && (data as IssueSummary[]).some((issue) => issue.key === key)
+            ? [{ queryKey, issues: data as IssueSummary[] }]
+            : []
+        );
+      for (const { queryKey, issues } of held) {
+        // Not awaited: the cancel takes effect synchronously, and the write must land in this
+        // tick so a second move is planned from it. The read below restores what it drops.
+        void queryClient.cancelQueries({ queryKey, exact: true });
+        queryClient.setQueryData(
+          queryKey,
+          issues.map((issue) => (issue.key === key ? movedIssue(issue, change) : issue))
+        );
       }
-      // Not awaited: the cancel takes effect synchronously, and the write must land in this
-      // tick so a second move computes from it. The refetch below restores what it drops.
-      void queryClient.cancelQueries({ queryKey, exact: true });
-      queryClient.setQueryData(queryKey, moved.issues);
       try {
-        await mutateAsync({ input: moved.input, key });
+        await mutateAsync({ input: change.input, key });
         setError(undefined);
-        if (labels.length > 0) {
-          await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
-        }
       } catch (cause) {
-        queryClient.setQueryData(queryKey, previous);
+        for (const { queryKey, issues } of held) queryClient.setQueryData(queryKey, issues);
         setError(
           cause instanceof ApiError
             ? cause.code === "RANK_INPUT"
@@ -93,43 +87,10 @@ export function useBoardMoves(
             : "Could not move the card."
         );
       } finally {
-        await queryClient.invalidateQueries({ queryKey });
+        await queryClient.invalidateQueries({ queryKey: listings });
       }
     },
-    [labels, mutateAsync, project, queryClient, queryKey]
+    [mutateAsync, project, queryClient]
   );
-  const moveCard = useCallback(
-    async (key: string, targetStatus: IssueStatus, insertionIndex: number) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
-      await commit(
-        key,
-        moveIssue(previous, key, targetStatus, insertionIndex, isVisible),
-        previous
-      );
-    },
-    [commit, isVisible, queryClient, queryKey]
-  );
-  const moveCardToLane = useCallback(
-    async (
-      key: string,
-      targetStatus: IssueStatus,
-      targetLane: PriorityLane,
-      insertionIndex: number
-    ) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
-      if (previous === undefined) {
-        return;
-      }
-      await commit(
-        key,
-        moveIssueToLane(previous, key, targetStatus, targetLane, insertionIndex, isVisible),
-        previous
-      );
-    },
-    [commit, isVisible, queryClient, queryKey]
-  );
-  return { error, moveCard, moveCardToLane };
+  return { error, move };
 }

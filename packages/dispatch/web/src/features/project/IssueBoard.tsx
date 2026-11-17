@@ -6,28 +6,33 @@ import {
   MouseSensor,
   pointerWithin,
   TouchSensor,
+  useDraggable,
   useDroppable,
   useSensor,
   useSensors,
 } from "@dnd-kit/core";
-import { SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { CSSProperties, ReactNode } from "react";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 
-import { projectIssuesQuery, userStateQuery } from "../../api/queries";
-import type { IssueSummary, UserState } from "../../api/types";
+import type { UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { Chip } from "../../components/Chip";
 import { ControlRow } from "../../components/ControlRow";
-import { EmptyState } from "../../components/EmptyState";
-import { filterChips } from "../../components/filter-chips";
-import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { DisplayMenu } from "../../components/DisplayMenu";
+import { type FilterChip, filterChips } from "../../components/filter-chips";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { SearchBox } from "../../components/SearchBox";
+import { Tooltip, useTooltip } from "../../components/Tooltip";
 import { useNestedPanels } from "../../components/useNestedPanels";
 import { copyText } from "../../lib/clipboard";
 import {
@@ -41,6 +46,7 @@ import {
   selectedCardBorder,
   surfaceMutedBg,
   textMutedOnCanvas,
+  textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -58,29 +64,33 @@ import {
   announceMove,
   type BoardFocus,
   focusTarget,
+  type KeyColumn,
   keyboardMove,
   type MoveDirection,
   type RoveKey,
 } from "./board-keys";
 import {
-  type BoardColumn,
-  type BoardLane,
-  dropTarget,
-  groupIssuesByLane,
-  groupIssuesByStatus,
-  type IssueStatus,
-  laneColumnId,
-  laneDropTarget,
-  laneFromKey,
+  type BoardBy,
+  type BoardCell,
+  type BoardLine,
+  boardColumns,
+  boardLines,
+  cardDropId,
+  cellId,
+  columnTitle,
+  dropPlace,
+  keyRefusal,
   laneKey,
   laneLabel,
-  type PriorityLane,
-  statusLabel,
+  type MovePlan,
+  type MoveRules,
+  planMove,
 } from "./board-model";
 import { useBoardMoves } from "./board-moves";
-import { CollapsedColumn } from "./CollapsedColumn";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
-import { projectIssuesQueryKey, useIssueFilters } from "./issue-filters";
+import { useIssueFilters } from "./issue-filters";
+import { formatPhaseTime, formatWorkTime } from "./issues-legion";
+import { type Item, MEASURE_METHODS, sinceMs, workerName, workHoursOf } from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 const boardCollisionDetection: CollisionDetection = (args) => {
@@ -97,6 +107,19 @@ const COLUMN_SELECTOR = "[data-board-column]";
 /** The focus ring every board focus target draws: cards, columns and rails alike. */
 const boardFocusRing = `outline-none focus-visible:ring-2 ${focusVisibleRing}`;
 
+// The sensors' options and the card's drag attributes, made once: `useSensor` keeps its sensor
+// while its options are the same object, and a new object on each render would hand dnd-kit new
+// activators, whose context then draws every card's drag hooks again.
+const MOUSE_OPTIONS = { activationConstraint: { distance: 8 } };
+const TOUCH_OPTIONS = { activationConstraint: { delay: 150, tolerance: 5 } };
+const CARD_ATTRIBUTES = { role: "article", roleDescription: "card", tabIndex: -1 };
+const BOARD_ACCESSIBILITY = {
+  screenReaderInstructions: {
+    draggable:
+      "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
+  },
+};
+
 function cardAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, CARD_SELECTOR);
 }
@@ -105,55 +128,224 @@ function columnAround(node: Element | null): HTMLElement | null {
   return closestMatching(node, COLUMN_SELECTOR);
 }
 
+/** One Legion fact of a card: its name, then its value. A measure's fact says how its value is
+ *  taken (`method`, its column's sentence) in the shared tooltip, on hover and on keyboard focus,
+ *  as the measure's table header does, so it is a tab stop. */
+function Fact({
+  hook,
+  label,
+  method,
+  value,
+}: {
+  hook: string;
+  label: string;
+  method?: string;
+  value: string;
+}): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
+  return (
+    <span
+      {...(method === undefined ? {} : { ...tooltip.props, tabIndex: 0 })}
+      className={`inline-flex gap-1 rounded-sm ${textSecondaryOnSurface} ${method === undefined ? "" : boardFocusRing}`}
+      data-legion-fact={hook}
+      ref={anchor}
+    >
+      <span className={textMutedOnSurface}>{label}</span>
+      <span>{value}</span>
+      {method === undefined ? null : (
+        <Tooltip anchorRef={anchor} trigger={tooltip}>
+          {method}
+        </Tooltip>
+      )}
+    </span>
+  );
+}
+
+/** A card's open asks: the count, which says what it counts in the shared tooltip, on hover and
+ *  on keyboard focus, so it is a tab stop. It carries no native title. */
+function OpenAsks({ count }: { count: number }): ReactNode {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const tooltip = useTooltip();
+  const noun = count === 1 ? "ask" : "asks";
+  return (
+    <span
+      {...tooltip.props}
+      className={`inline-flex rounded-sm ${boardFocusRing}`}
+      data-open-asks={count}
+      ref={anchor}
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: the tab stop opens the tooltip that says what the count is.
+      tabIndex={0}
+    >
+      <AttentionBadge count={count} />
+      <span className="sr-only"> open {noun}</span>
+      <Tooltip anchorRef={anchor} trigger={tooltip}>
+        {count} open {noun}
+      </Tooltip>
+    </span>
+  );
+}
+
+/** The Time in Legion phase a card draws at `nowMs`, or undefined for a card with none: the one
+ *  text on a card that counts from the Board's clock. A claim's age keeps itself current through
+ *  `Timestamp`'s own tick, and a wait's since is a date. */
+function phaseTimeOf(item: Item, nowMs: number): string | undefined {
+  const since = item.card?.card.phase_since ?? null;
+  return sinceMs(since) === undefined ? undefined : formatPhaseTime(since, nowMs);
+}
+
+/** What a card on the Legion board shows beside today's card, from the board route, each fact
+ *  left out where the board gives it no value, never drawn as 0 or a dash. */
+function LegionFacts({ item, phaseTime }: { item: Item; phaseTime?: string }): ReactNode {
+  const legion = item.card?.card;
+  if (legion === undefined) return null;
+  // Workers are the roles in a turn: a card whose issue has none running leaves the fact out
+  // rather than say None, which every queued card would carry.
+  const roles = (legion.roles ?? []).map(workerName);
+  const own = legion.blocked_by ?? [];
+  const blockedBy = own.length > 0 ? own : (legion.waiting?.blocked_by ?? []);
+  const workHours = workHoursOf(item);
+  const waitingOn = legion.waiting_on;
+  return (
+    <>
+      {phaseTime === undefined && workHours === undefined && roles.length === 0 ? null : (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          {phaseTime === undefined ? null : (
+            <Fact
+              hook="phase-time"
+              label="Time in Legion phase"
+              method={MEASURE_METHODS.time_in_phase}
+              value={phaseTime}
+            />
+          )}
+          {workHours === undefined ? null : (
+            <Fact
+              hook="work-time"
+              label="Work time"
+              method={MEASURE_METHODS.work_hours}
+              value={formatWorkTime(workHours)}
+            />
+          )}
+          {roles.length === 0 ? null : (
+            <Fact hook="roles" label="Workers" value={roles.join(", ")} />
+          )}
+        </div>
+      )}
+      {blockedBy.length === 0 ? null : (
+        <p
+          className={`mt-2 border-t pt-2 text-xs ${borderDefault} ${textSecondaryOnSurface}`}
+          data-legion-fact="blocked-by"
+        >
+          Blocked by {blockedBy.join(", ")}
+        </p>
+      )}
+      {waitingOn === null ? null : (
+        <p
+          className={`mt-2 border-t pt-2 text-xs ${borderDefault} ${textSecondaryOnSurface}`}
+          data-legion-fact="waiting-on"
+        >
+          Waiting on {waitingOn.kind}
+          {waitingOn.since === null ? "" : ` since ${new Date(waitingOn.since).toLocaleString()}`}
+          {waitingOn.answered_at === null ? "" : ", answered"}
+        </p>
+      )}
+      {legion.children === 0 ? null : (
+        <p className={`mt-2 text-xs ${textMutedOnSurface}`} data-legion-fact="children">
+          {legion.children} {legion.children === 1 ? "issue" : "issues"} of this tree not started
+        </p>
+      )}
+    </>
+  );
+}
+
+/** What a card is drawn from. A card draws again only when one of these changes (`sameCard`):
+ *  the issue, its Legion card, its facts and its Place keep their objects or values across reads
+ *  that did not change them (the listings pair a read's issues with the cached ones by key,
+ *  `api/queries.ts`), and its time is the text it draws, so a live change to one issue draws
+ *  that issue's card, not every card of the Board, and a new minute draws only the cards whose
+ *  time reads differently. */
+interface CardProps {
+  readonly item: Item;
+  /** The Time in Legion phase the card draws (`phaseTimeOf`); undefined where it draws none. */
+  readonly phaseTime?: string;
+  /** The cell the card stands in, by its drop id (`cellId`). */
+  readonly place: string;
+  readonly unread: boolean;
+}
+
+const sameCard = (a: CardProps, b: CardProps): boolean =>
+  a.item.issue === b.item.issue &&
+  a.item.place === b.item.place &&
+  a.item.card?.card === b.item.card?.card &&
+  a.item.facts === b.item.facts &&
+  a.phaseTime === b.phaseTime &&
+  a.place === b.place &&
+  a.unread === b.unread;
+
 /**
- * The whole card is the drag activator: press and move 8 px (mouse) or hold 150 ms (touch)
- * anywhere on it to lift it, so a plain click on the title still follows the link and a
+ * One card. The whole card is the drag activator: press and move 8 px (mouse) or hold 150 ms
+ * (touch) anywhere on it to lift it, so a plain click on the title still follows the link and a
  * vertical swipe still scrolls. Mouse and touch are separate sensors on purpose: a pointer
- * sensor would also see a finger's first pointermove and lift the card for an instant before
- * the browser's pan cancels it. The keyboard never lifts a card: the board's registry rows
- * (`j`/`k`/`h`/`l` rove focus, `Shift+J/K/H/L` move through `moveCard`) are the accessible path,
- * so the card is `tabIndex={-1}` - reached by those keys, not by Tab - and `data-board-card`
- * names it for them. dnd-kit's default drag attributes would make the card a `button`; it stays
- * an `article` so nothing interactive is nested in a control.
+ * sensor would also see a finger's first pointermove and lift the card for an instant before the
+ * browser's pan cancels it. The keyboard never lifts a card: the Board's registry rows
+ * (`j`/`k`/`h`/`l` rove focus, `Shift+J/K/H/L` move it by the Board's rules) are the accessible
+ * path, so the card is `tabIndex={-1}` - reached by those keys, not by Tab - and
+ * `data-board-card` names it for them. dnd-kit's default drag attributes would make the card a
+ * `button`; it stays an `article` so nothing interactive is nested in a control. The card is a
+ * drop target too, so a drop onto it lands at its place. Its drag hooks draw it again whenever
+ * the drag context changes, so what it shows is a body of its own (`CardBody`), drawn again only
+ * when its data changes.
  */
-function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }): ReactNode {
-  const {
-    attributes,
-    isDragging,
-    listeners,
-    setActivatorNodeRef,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({
-    attributes: { role: "article", roleDescription: "card", tabIndex: -1 },
+const BoardCard = memo(function BoardCard({
+  item,
+  phaseTime,
+  place,
+  unread,
+}: CardProps): ReactNode {
+  const { issue } = item;
+  const { attributes, isDragging, listeners, setNodeRef, transform } = useDraggable({
+    attributes: CARD_ATTRIBUTES,
     id: issue.key,
   });
+  const drop = useDroppable({ id: cardDropId(issue.key) });
+  const setDropRef = drop.setNodeRef;
   const setCardRef = useCallback(
     (node: HTMLElement | null) => {
       setNodeRef(node);
-      setActivatorNodeRef(node);
+      setDropRef(node);
     },
-    [setActivatorNodeRef, setNodeRef]
+    [setDropRef, setNodeRef]
   );
   const style: CSSProperties = {
     transform:
       transform === null ? undefined : `translate3d(${transform.x}px, ${transform.y}px, 0)`,
-    transition,
   };
-
   return (
     <article
       aria-label={`${issue.key} ${issue.title}`}
       className={`cursor-grab rounded-xl border p-3 ${card} ${cardHoverBorder} ${boardFocusRing} ${
-        isDragging ? "opacity-50" : ""
-      }`}
+        isDragging ? "relative z-50 opacity-50" : ""
+      } ${drop.isOver && !isDragging ? selectedCardBorder : ""}`}
       data-board-card={issue.key}
+      data-board-place={place}
       ref={setCardRef}
       style={style}
       {...attributes}
       {...listeners}
     >
+      <CardBody item={item} phaseTime={phaseTime} place={place} unread={unread} />
+    </article>
+  );
+}, sameCard);
+
+/** What a card shows inside its drag handle: today's card (key, title, unread dot, priority,
+ *  claim, progress, route reach, labels, open asks), its Place in the Legion queue beside its key
+ *  where it has one (the Queue column's number), and, for an issue with a card on the Legion
+ *  board, its Legion facts. It draws no slot number. */
+const CardBody = memo(function CardBody({ item, phaseTime, unread }: CardProps): ReactNode {
+  const { issue } = item;
+  return (
+    <>
       {/* Below `xl` every anchor is `inline-flex` with centred items (the 44 px touch rule in
           styles.css), so the key and title are stacked and start-aligned explicitly. */}
       <Link
@@ -162,7 +354,14 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
         to={buildIssuePath({ key: issue.key, kind: "issue" })}
         {...referenceTriggerProps({ key: issue.key, kind: "issue" })}
       >
-        <span className="self-start font-semibold">{issue.key}</span>
+        <span className="inline-flex items-center gap-1.5 self-start font-semibold">
+          {issue.key}
+          {item.place === undefined ? null : (
+            <span className={`font-normal ${textMutedOnSurface}`} data-queue-place={item.place}>
+              #{item.place}
+            </span>
+          )}
+        </span>
         <span className={`mt-1 self-start ${textPrimaryOnSurface}`}>{issue.title}</span>
       </Link>
       <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -172,48 +371,47 @@ function IssueCard({ issue, unread }: { issue: IssueSummary; unread: boolean }):
           issueKey={issue.key}
           priority={issuePriority(issue.priority)}
         />
-        <ClaimChip claim={issue.claim} />
+        {/* A card is too narrow for the holder's name on one line: the chip writes it on as
+            many lines as it needs, with the age and the state under it. */}
+        <ClaimChip claim={issue.claim} stacked />
         <ProgressChips progress={issue.progress} />
         <UnreachableRouteMarker issue={issue} />
         {(issue.labels ?? []).map((label) => (
           <LabelPill key={label}>{label}</LabelPill>
         ))}
-        {issue.open_asks === 0 ? null : (
-          <span title={`${issue.open_asks} open asks`}>
-            <AttentionBadge count={issue.open_asks} />
-          </span>
-        )}
+        {issue.open_asks === 0 ? null : <OpenAsks count={issue.open_asks} />}
       </div>
-    </article>
+      <LegionFacts item={item} phaseTime={phaseTime} />
+    </>
   );
-}
+}, sameCard);
 
 /**
- * One lifecycle column: the `status:<s>` droppable (`lane:<l>|status:<s>` inside a swimlane).
- * Every column stretches to the board's height, so a card can be dropped anywhere in a column's
- * body - below its last card, or into an empty column whose header has scrolled out of view on
- * a phone - not only on the header.
+ * One column: its title, its count and its cards. The whole column is its cell's drop target
+ * (`cellId`), and every column stretches to the Board's height, so a card can be dropped anywhere
+ * in a column's body - below its last card, or into an empty column whose header has scrolled out
+ * of view on a phone - not only on the header.
  */
-const BoardColumnView = memo(function BoardColumnView({
-  column,
-  lane,
+function BoardColumnView({
+  by,
+  cell,
+  nowMs,
   userState,
 }: {
-  column: BoardColumn;
-  /** The swimlane this column sits inside, when it does; the flat board omits it. */
-  lane?: PriorityLane;
+  by: BoardBy;
+  cell: BoardCell;
+  nowMs: number;
   userState: UserState | undefined;
 }): ReactNode {
-  const { isOver, setNodeRef } = useDroppable({
-    id: lane === undefined ? `status:${column.status}` : laneColumnId(column.status, lane),
-  });
-
+  const place = cellId(cell.column.id, cell.lane);
+  const { isOver, setNodeRef } = useDroppable({ id: place });
+  const title = columnTitle(cell.column.id, by);
   return (
     <section
-      aria-label={statusLabel(column.status)}
+      aria-label={title}
       className={`w-72 shrink-0 snap-start ${boardFocusRing}`}
-      data-board-column={column.status}
-      data-board-lane={lane === undefined ? undefined : laneKey(lane)}
+      data-board-column={cell.column.id}
+      data-board-lane={cell.lane === undefined ? undefined : laneKey(cell.lane)}
       ref={setNodeRef}
       tabIndex={-1}
     >
@@ -226,14 +424,12 @@ const BoardColumnView = memo(function BoardColumnView({
         <div
           className={`flex items-center justify-between gap-2 text-base font-semibold ${textPrimaryOnSurface}`}
         >
-          <StatusPill>{statusLabel(column.status)}</StatusPill>
-          <Pill>{column.issues.length}</Pill>
+          {by === "status" ? <StatusPill>{title}</StatusPill> : <span>{title}</span>}
+          <Pill>{cell.items.length}</Pill>
         </div>
       </header>
-      {column.issues.length === 0 ? (
-        // An empty column rendered as a bare header: the board lost its shape wherever a
-        // status had no work, and the droppable - which is the whole section - was 52 px tall.
-        // A dashed body keeps the column's width and its drop area visible.
+      {cell.items.length === 0 ? (
+        // An empty column keeps its width and its drop area in sight with a dashed body.
         <div
           className={`mt-3 min-h-40 rounded-xl border border-dashed px-3 py-6 text-center text-xs ${textMutedOnCanvas} ${
             isOver ? selectedCardBorder : borderStrong
@@ -242,130 +438,160 @@ const BoardColumnView = memo(function BoardColumnView({
           Nothing here
         </div>
       ) : (
-        <SortableContext
-          items={column.issues.map((issue) => issue.key)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className="mt-3 space-y-3">
-            {column.issues.map((issue) => (
-              <IssueCard
-                issue={issue}
-                key={issue.key}
-                unread={issueIsUnread(issue, userState?.[issue.key]?.last_read_seq ?? 0)}
-              />
-            ))}
-          </div>
-        </SortableContext>
+        <div className="mt-3 space-y-3">
+          {cell.items.map((item) => (
+            <BoardCard
+              item={item}
+              key={item.issue.key}
+              phaseTime={phaseTimeOf(item, nowMs)}
+              place={place}
+              unread={issueIsUnread(item.issue, userState?.[item.issue.key]?.last_read_seq ?? 0)}
+            />
+          ))}
+        </div>
       )}
     </section>
   );
-});
+}
 
 /**
- * One swimlane: a heading naming the priority band and its issue count, then the same
- * horizontally scrolling row of nine lifecycle columns a flat board renders - each column's
- * droppable id scoped to this lane (`laneColumnId`) so a card dropped in it takes on the lane's
- * priority along with its status.
+ * A rail: a narrow column with its name and, but on the Done rail, its count, and no card. Icebox
+ * is one until Show Icebox is on, Done while the view lists no done issue, and None on a Board by
+ * Legion phase. It is its cell's drop target as a column is, and spans the Board's height: a card
+ * dropped on the Done rail closes its issue. Like a column it is a `tabIndex={-1}` focus target
+ * for the Board's `h`/`l` keys, and a card moved into it by `Shift+H/L` hands the focus to it.
  */
-const BoardLaneRow = memo(function BoardLaneRow({
-  boardLane,
-  dragging,
-  isCollapsed,
-  userState,
-}: {
-  boardLane: BoardLane;
-  dragging: boolean;
-  isCollapsed: (status: IssueStatus) => boolean;
-  userState: UserState | undefined;
-}): ReactNode {
-  const count = boardLane.columns.reduce((total, column) => total + column.issues.length, 0);
+function Rail({ by, cell }: { by: BoardBy; cell: BoardCell }): ReactNode {
+  const { isOver, setNodeRef } = useDroppable({ id: cellId(cell.column.id, cell.lane) });
+  const title = columnTitle(cell.column.id, by);
   return (
-    <section aria-label={`${laneLabel(boardLane.lane)} lane`}>
-      <h2
-        className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
-      >
-        {laneLabel(boardLane.lane)}
-        <Pill>{count}</Pill>
-      </h2>
+    <section
+      aria-label={`${title} (collapsed)`}
+      className={`w-10 shrink-0 snap-start ${boardFocusRing}`}
+      data-board-column={cell.column.id}
+      data-board-lane={cell.lane === undefined ? undefined : laneKey(cell.lane)}
+      ref={setNodeRef}
+      tabIndex={-1}
+    >
       <div
-        className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-        data-testid="board-lane-scroll-container"
+        className={`flex h-full min-h-[52px] flex-col items-center gap-3 rounded-xl border px-1 py-3 ${borderDefault} ${surfaceMutedBg} ${
+          isOver ? selectedCardBorder : ""
+        }`}
+        data-testid="board-column-rail"
       >
-        <div className="flex w-max items-stretch gap-4">
-          {boardLane.columns.map((column) =>
-            isCollapsed(column.status) ? (
-              <CollapsedColumn column={column} key={column.status} lane={boardLane.lane} />
-            ) : (
-              <BoardColumnView
-                column={column}
-                key={column.status}
-                lane={boardLane.lane}
-                userState={userState}
-              />
-            )
-          )}
-        </div>
+        {/* The Done rail stands for done issues the view does not list, so it has no count. */}
+        {cell.column.id === "done" ? null : <Pill>{cell.items.length}</Pill>}
+        <span
+          className={`text-sm font-semibold tracking-wide ${textPrimaryOnSurface}`}
+          style={{ writingMode: "vertical-rl" }}
+        >
+          {title}
+        </span>
       </div>
     </section>
   );
-});
+}
 
-export function IssueBoard({
-  controls: pageControls,
-  project,
-  showEdges = false,
-  lanes = false,
+/** One line of the Board's columns, in a box that scrolls sideways. While a card is in flight
+ *  the box does not snap: dnd-kit scrolls the Board when the pointer nears an edge, and with
+ *  mandatory snapping every scroll tick jumps a whole column. `relative` keeps a card's `sr-only`
+ *  text, which is placed absolutely, inside the box rather than widening the page. */
+function BoardLineView({
+  by,
+  dragging,
+  line,
+  nowMs,
+  testId,
+  userState,
 }: {
-  /** The page's own controls in the Board's control row: the layout switch and the Board's
-   *  toggles, before the display menu. */
-  controls?: ReactNode;
-  project: string;
-  /** Render Icebox and Done as full columns instead of collapsed rails. */
-  showEdges?: boolean;
-  /** Group the board into swimlanes by priority - rows across the nine status columns, one band
-   *  per priority plus one for no priority - rank still ordering cards within a lane+column
-   *  cell. */
-  lanes?: boolean;
+  by: BoardBy;
+  dragging: boolean;
+  line: BoardLine;
+  nowMs: number;
+  testId: string;
+  userState: UserState | undefined;
 }): ReactNode {
-  const queryClient = useQueryClient();
-  const filters = useIssueFilters();
-  const { activeFilterCount, activeFilters, labels, matches, setLabels } = filters;
-  // The same query-key pair the List keeps: the plain project list, or the server-filtered
-  // list while labels are active - shared keys, shared caches.
-  const queryKey = projectIssuesQueryKey(project, labels);
-  const allIssues = useQuery(projectIssuesQuery(project, []));
-  const labelledIssues = useQuery({
-    ...projectIssuesQuery(project, labels),
-    enabled: labels.length > 0,
-  });
-  const issues = labels.length === 0 ? allIssues : labelledIssues;
-  const userState = useQuery(userStateQuery());
-  const availableLabels = useMemo(
-    () =>
-      [...new Set((allIssues.data ?? []).flatMap((issue) => issue.labels ?? []))].sort(
-        (left, right) => left.localeCompare(right)
-      ),
-    [allIssues.data]
+  return (
+    <div
+      className={`relative overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
+      data-testid={testId}
+    >
+      <div className="flex w-max items-stretch gap-4">
+        {line.cells.map((cell) =>
+          cell.column.rail ? (
+            <Rail by={by} cell={cell} key={cell.column.id} />
+          ) : (
+            <BoardColumnView
+              by={by}
+              cell={cell}
+              key={cell.column.id}
+              nowMs={nowMs}
+              userState={userState}
+            />
+          )
+        )}
+      </div>
+    </div>
   );
+}
+
+/**
+ * The control row above the Board: the view's search, the Filters panel with the Labels picker
+ * (which writes `label=`, as the table's Labels column filter does) and the three flags, a chip
+ * for each narrowing that differs from the view's own (the page's `chips`, since the Board has no
+ * header to show a column's filter), Clear filters while there is one, the page's own controls
+ * and, in a project with a Legion daemon, the Group by menu that picks the Board's columns.
+ *
+ * The saved preference `project.issue-filters` is the only owner of the panel's open state: the
+ * row reads it when it mounts and when the signed-in identity resolves, never because the count
+ * moved. Arriving from another page, tab or project mounts a new row, so that read covers the
+ * narrowings the route brings. On a row that is up the count moves when the reader narrows the
+ * view, and when Back or Forward crosses entries of the Issues tab. A re-read would close the
+ * panel the moment the last narrowing goes (clearing the search box), taking the control being
+ * typed in with it, or open or close it against the reader's choice on the others, while its
+ * trigger and chips already show every narrowing. So it stays as they left it until they close
+ * it or leave the project or its Issues tab.
+ */
+export function BoardControlRow({
+  chips,
+  controls,
+  groupBy,
+  labelOptions,
+  onClear,
+  onSearch,
+  search,
+  selection,
+}: {
+  /** Every narrowing of the view that differs from the view's own, the chip of the issues a
+   *  link names aside, which the trigger does not count. */
+  chips: readonly FilterChip[];
+  /** The page's own controls: the layout switch, the Board's toggles and the view's controls. */
+  controls: ReactNode;
+  /** The Board's grouping and the way to change it, in a project with a Legion daemon; unset,
+   *  no Group by menu draws, since Status would be its one choice. */
+  groupBy?: { readonly value: BoardBy; readonly onChange: (by: BoardBy) => void };
+  /** The labels the Labels picker offers. */
+  labelOptions: readonly string[];
+  onClear: (() => void) | undefined;
+  onSearch: (search: string) => void;
+  /** The view's search. */
+  search: string;
+  /** The chip of the issues a link names (`only=`), drawn first. */
+  selection?: FilterChip;
+}): ReactNode {
+  const filters = useIssueFilters();
+  const { labels, setLabels } = filters;
+  const count = chips.length;
   const noIdentityFiltersExpanded = labels.length > 0;
-  // The saved preference is the only owner of the panel's open state: the Board reads it when it
-  // mounts and when the signed-in identity resolves, never because the filter count moved.
-  // Arriving from another page, tab or project mounts a new board, so that read covers the
-  // filters the route brings. On a board that is up the count moves when the reader filters in
-  // it, and when Back or Forward crosses entries of the Issues tab. A re-read would close the
-  // panel the moment the last filter goes (clearing the search box), taking the control being
-  // typed in with it, or open or close it against the reader's choice on the others, while its
-  // trigger and chips already show every filter. So it stays as they left it until they close it
-  // or leave the project or its Issues tab.
   const [filtersExpanded, setFiltersExpanded] = useUserPreference(
     "project.issue-filters",
-    (stored) => activeFilterCount > 0 && stored !== "collapsed",
+    (stored) => count > 0 && stored !== "collapsed",
     (open) => (open ? "expanded" : "collapsed"),
     { failed: noIdentityFiltersExpanded, pending: noIdentityFiltersExpanded }
   );
   const filterPanel = useNestedPanels<"labels">(filtersExpanded);
   // Whether the panel stands open because the reader pressed it open. A panel the stored choice
-  // opens - as the Board mounts, or as the signed-in identity resolves - moves no focus into
+  // opens - as the row mounts, or as the signed-in identity resolves - moves no focus into
   // itself, so the focus starts where the page starts and the reader is not put in a panel they
   // did not open.
   const [pressedOpen, setPressedOpen] = useState(false);
@@ -381,21 +607,148 @@ export function IssueBoard({
     setPressedOpen(open);
     if (open !== filtersExpanded) setFiltersExpanded(open);
   };
-  /** The control row's client-side filters against this viewer's read state: what the board renders,
-   *  what drop indices count, and what the PATCH names as neighbours. */
-  const isVisible = useCallback(
-    (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
-    [matches, userState.data]
+  const [groupOpen, setGroupOpen] = useState(false);
+  return (
+    <>
+      <ControlRow
+        chips={filterChips(selection === undefined ? chips : [selection, ...chips])}
+        className="mb-4"
+        display={
+          groupBy === undefined ? undefined : (
+            <DisplayMenu
+              label="Group by"
+              onOpenChange={setGroupOpen}
+              open={groupOpen}
+              sections={[
+                {
+                  id: "group",
+                  label: "Group by",
+                  onChange: (value) =>
+                    groupBy.onChange(value === "legion_phase" ? "legion_phase" : "status"),
+                  options: [
+                    { label: "Status", value: "status" },
+                    { label: "Legion phase", value: "legion_phase" },
+                  ],
+                  value: groupBy.value,
+                },
+              ]}
+            />
+          )
+        }
+        onClear={onClear}
+        search={
+          <SearchBox
+            className="w-full"
+            label="Search issues"
+            onChange={onSearch}
+            placeholder="Search issues: key, title, assignee, author, labels"
+            value={search}
+          />
+        }
+        trigger={
+          <PanelTrigger
+            count={count}
+            focusOnOpen={pressedOpen}
+            label="Filters"
+            onOpenChange={openFilterPanel}
+            open={filtersExpanded}
+            stacked
+          >
+            {() => (
+              <>
+                <MultiSelect
+                  {...filterPanel("labels")}
+                  emptyMessage="No labels yet."
+                  label="Labels"
+                  onChange={setLabels}
+                  options={labelOptions}
+                  searchLabel="Search labels"
+                  selected={labels}
+                />
+                <IssueFlagChips />
+                <Chip
+                  onClick={() => filters.setUnclaimed(!filters.unclaimed)}
+                  selected={filters.unclaimed}
+                >
+                  Unclaimed
+                </Chip>
+              </>
+            )}
+          </PanelTrigger>
+        }
+      >
+        {controls}
+      </ControlRow>
+      <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
+    </>
   );
-  const { error, moveCard, moveCardToLane } = useBoardMoves(project, labels, isVisible);
+}
+
+/**
+ * The Board: a layout of the current view. It draws every row the view lists (`rows`, in the
+ * view's sort, so each column's cards are in that sort), in columns by status, or, in a project
+ * with a Legion daemon, by Legion phase, as Group by picks (`boardColumns`), in one line or in a
+ * lane for each priority. It draws no bar: each column carries its count.
+ *
+ * A drop or a key move follows the Board's rules (`planMove`): by Status a move into another
+ * column sets that status and into another lane that priority, and a move within a column writes
+ * the rank only where the rank decides where the card lands, which is while the view sorts by
+ * Place, first to last (`rankRefusal`); by Legion phase the daemon sets each card's column, and
+ * the one move taken is one within Queue. A refused move says why over the Board and in its live
+ * region, where every key move is read out too, with the place the card lands.
+ *
+ * A live change to one issue draws that issue's card alone: the cards are memoised on what they
+ * draw (`sameCard`), the sensors' options are made once, and a card compares the Time in Legion
+ * phase text it draws, while the Board reads the clock on each render.
+ */
+export function IssueBoard({
+  by,
+  lanes,
+  listsDone,
+  phasePicks,
+  project,
+  rankRefusal,
+  rows,
+  showIcebox,
+  statusPicks,
+  userState,
+}: {
+  by: BoardBy;
+  /** Group the Board into swimlanes by priority, one band per priority and one for none. */
+  lanes: boolean;
+  /** The view lists done issues: the Done rail opens into a column with their cards. */
+  listsDone: boolean;
+  /** The picks of the view's Legion phase filter, none for no filter. */
+  phasePicks: readonly string[];
+  project: string;
+  /** Why the view's sort lets no rank decide where a card lands within a column (`rankRefusal` in
+   *  `board-model.ts`); undefined while the view sorts by Place, first to last. */
+  rankRefusal: string | undefined;
+  /** The view's rows, in the view's sort. */
+  rows: readonly Item[];
+  /** Icebox is a column, and not a rail. */
+  showIcebox: boolean;
+  /** The picks of the view's Status filter, none for no filter. */
+  statusPicks: readonly string[];
+  userState: UserState | undefined;
+}): ReactNode {
+  const { error, move } = useBoardMoves(project);
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
+    useSensor(MouseSensor, MOUSE_OPTIONS),
+    useSensor(TouchSensor, TOUCH_OPTIONS)
   );
-  // While a card is in flight the scroller must not snap: dnd-kit auto-scrolls the board when
-  // the pointer nears an edge, and with mandatory snapping every scroll tick jumps a whole
-  // column, so one drag near the edge flies to the far end. Snapping is for finger swipes at
-  // rest, so it is switched off from lift to drop.
+  // The time each card's Time in Legion phase counts to. A card compares the text it draws, not
+  // this, so a render draws again only the cards whose time reads differently.
+  const nowMs = Date.now();
+  const lines = boardLines(
+    rows,
+    boardColumns({ by, listsDone, phasePicks, rows, showIcebox, statusPicks }),
+    by,
+    lanes
+  );
+  const rules: MoveRules = { by, lanes, rankRefusal };
+  // While a card is in flight the scroller must not snap (`BoardLineView`), so snapping is
+  // switched off from lift to drop.
   const [dragging, setDragging] = useState(false);
   // The click that trails a drop (mouseup or touchend on the card) is stopped by dnd-kit before
   // React sees it, which is enough for buttons but not for the title link: the browser's own
@@ -436,6 +789,10 @@ export function IssueBoard({
       window.removeEventListener("click", cancelTrailingClick, { capture: true });
     };
   }, []);
+  // A refused move's text, over the Board, until the next move.
+  const [refusal, setRefusal] = useState<string>();
+  // One `aria-live` sentence per key move and per refusal.
+  const [announcement, setAnnouncement] = useState("");
   // The title link is both the hover-card trigger and part of the whole-card drag activator, and
   // the click that would dismiss an open card after the drop is the one swallowed above - so a
   // lift closes the card (open or still pending) itself. The lift marks the gesture's click as
@@ -445,156 +802,167 @@ export function IssueBoard({
   const liftCard = () => {
     clickBelongsToDrop.current = true;
     closeRefPreview();
+    setRefusal(undefined);
     setDragging(true);
   };
   const landCard = () => {
     clickBelongsToDrop.current = true;
     setDragging(false);
   };
-  const columns = useMemo(
-    () => (issues.data === undefined ? [] : groupIssuesByStatus(issues.data.filter(isVisible))),
-    [issues.data, isVisible]
-  );
-  const boardLanes = useMemo(
-    () =>
-      !lanes || issues.data === undefined ? [] : groupIssuesByLane(issues.data.filter(isVisible)),
-    [lanes, issues.data, isVisible]
-  );
+  /** Takes a planned move: a refusal says why, and a move is written. */
+  const take = (plan: MovePlan | undefined) => {
+    if (plan === undefined) return;
+    if (plan.kind === "refused") {
+      setRefusal(plan.text);
+      setAnnouncement(plan.text);
+      return;
+    }
+    setRefusal(undefined);
+    void move(plan.key, plan.change);
+  };
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
-    const current = queryClient.getQueryData<IssueSummary[]>(queryKey);
-    if (over === null || current === undefined) {
-      return;
-    }
-    // Indices count the rendered - visible - cards, so a move sends visible neighbours.
-    const visible = current.filter(isVisible);
-    if (lanes) {
-      const target = laneDropTarget(visible, String(active.id), String(over.id));
-      if (target !== undefined) {
-        void moveCardToLane(String(active.id), target.status, target.lane, target.insertionIndex);
-      }
-      return;
-    }
-    const target = dropTarget(visible, String(active.id), String(over.id));
-    if (target !== undefined) {
-      void moveCard(String(active.id), target.status, target.insertionIndex);
-    }
+    if (over === null) return;
+    const key = String(active.id);
+    const place = dropPlace(lines, key, String(over.id));
+    if (place !== undefined) take(planMove(lines, rules, key, place));
   };
-  /** Icebox and Done are rails - no cards to focus, still a move target - while the edges are
-   *  hidden. The render below and the roving keys read the same rule. Memoised so a toggle
-   *  that does not change `showEdges` leaves `BoardLaneRow`'s memo intact. */
-  const isCollapsed = useCallback(
-    (status: IssueStatus) => !showEdges && (status === "icebox" || status === "done"),
-    [showEdges]
-  );
 
-  // One `aria-live` sentence per keyboard move; `focusAfterMove` names the card focus follows
-  // once the optimistic list has rendered (a status move remounts the article under its new
-  // column, so the old node cannot keep focus; a card moved into a rail has no node, and focus
-  // lands on the rail). The effect runs on the `columns`/`boardLanes` render - the
-  // announcement's own render comes first, before the query observer has notified, and would
-  // focus the doomed node.
-  const [announcement, setAnnouncement] = useState("");
-  const focusAfterMove = useRef<{
+  // The card the focus follows once a key move has been drawn: a move into another column draws
+  // the card again under it, so the old node cannot keep the focus, and a card moved into a rail,
+  // or out of the view, has no node, so the focus lands on the column or rail. Where the view's
+  // sort puts the card (`announce`), the live region reads its place once the move is drawn.
+  const afterMove = useRef<{
     key: string;
-    status: IssueStatus;
+    column: string;
     laneId: string | null;
+    announce: boolean;
   } | null>(null);
   const boardNode = (selector: string) => boardRef.current?.querySelector<HTMLElement>(selector);
-  /** The `data-board-column` selector for `status`, scoped to `laneId` (`null` outside a
+  /** The `data-board-column` selector for `column`, scoped to `laneId` (`null` outside a
    *  swimlane). */
-  const laneColumnSelector = (status: IssueStatus, laneId: string | null): string =>
+  const columnSelector = (column: string, laneId: string | null): string =>
     laneId === null
-      ? `[data-board-column="${status}"]`
-      : `[data-board-column="${status}"][data-board-lane="${laneId}"]`;
-  // biome-ignore lint/correctness/useExhaustiveDependencies: `columns`/`boardLanes` are the trigger, not a read; `boardNode` reads a ref
+      ? `[data-board-column="${column}"]`
+      : `[data-board-column="${column}"][data-board-lane="${laneId}"]`;
+  // After every render, since the render that draws a move is one the listing's write starts.
   useEffect(() => {
-    const pending = focusAfterMove.current;
-    if (pending === null) {
-      return;
+    const pending = afterMove.current;
+    if (pending === null) return;
+    const cell = lines
+      .flatMap((line) => line.cells)
+      .find((candidate) => candidate.items.some((item) => item.issue.key === pending.key));
+    // Not drawn yet: the card still stands in the column it left.
+    if (cell !== undefined && cell.column.id !== pending.column) return;
+    afterMove.current = null;
+    if (pending.announce) {
+      const index = cell?.items.findIndex((item) => item.issue.key === pending.key) ?? -1;
+      setAnnouncement(
+        announceMove(
+          pending.key,
+          pending.column,
+          columnTitle(pending.column, by),
+          cell === undefined ? undefined : { at: index + 1, of: cell.items.length }
+        )
+      );
     }
-    focusAfterMove.current = null;
     (
       boardNode(`[data-board-card="${pending.key}"]`) ??
-      boardNode(laneColumnSelector(pending.status, pending.laneId))
+      boardNode(columnSelector(pending.column, pending.laneId))
     )?.focus();
-  }, [columns, boardLanes]);
-  /** The columns `j`/`k`/`h`/`l` and `Shift+J/K/H/L` act on: the swimlane holding the current
-   *  focus (by its `data-board-lane` key) while lanes are on, the board's flat columns
-   *  otherwise. */
-  const focusedLaneColumns = (laneId: string | null): BoardColumn[] =>
+  });
+  /** The line the keys act on: the swimlane holding the focus (by its `data-board-lane` key)
+   *  while lanes are on, the Board's one line otherwise. */
+  const lineOf = (laneId: string | null): BoardLine | undefined =>
     lanes && laneId !== null
-      ? (boardLanes.find((entry) => laneKey(entry.lane) === laneId)?.columns ?? [])
-      : columns;
-  /** The focused card or column's lane key; outside lane mode, or with nothing focused yet,
-   *  `null`. With lanes on and nothing focused, the first roving key lands in the first band
-   *  (P0) rather than the flat board's cross-lane order. */
+      ? lines.find((line) => line.lane !== undefined && laneKey(line.lane) === laneId)
+      : lines[0];
+  /** The focused card or column's lane key; outside lane mode `null`. With lanes on and nothing
+   *  focused, the first band (P0), so the first roving key lands there rather than in the
+   *  Board's order across lanes. */
   const currentLaneId = (): string | null => {
-    const explicit = columnAround(document.activeElement)?.dataset.boardLane;
-    if (explicit !== undefined) {
-      return explicit;
-    }
-    return lanes ? laneKey(boardLanes[0]?.lane ?? null) : null;
+    if (!lanes) return null;
+    const lane = lines[0]?.lane;
+    return (
+      columnAround(document.activeElement)?.dataset.boardLane ??
+      (lane === undefined ? null : laneKey(lane))
+    );
   };
-  /** Where keyboard focus sits on the board right now, or `null` when it is elsewhere. */
-  const currentFocus = (): BoardFocus | null => {
+  const keyColumns = (line: BoardLine | undefined): KeyColumn[] =>
+    (line?.cells ?? []).map((cell) => ({
+      id: cell.column.id,
+      rail: cell.column.rail,
+      size: cell.items.length,
+    }));
+  /** Where keyboard focus sits on the Board right now, or `null` when it is elsewhere. */
+  const currentFocus = (line: BoardLine | undefined): BoardFocus | null => {
     const active = document.activeElement;
-    const column = columnAround(active);
-    if (column === null) {
-      return null;
-    }
-    const status = column.dataset.boardColumn as IssueStatus;
+    const column = columnAround(active)?.dataset.boardColumn;
+    if (column === undefined) return null;
     const key = cardAround(active)?.dataset.boardCard;
     const index =
       key === undefined
         ? -1
-        : (focusedLaneColumns(column.dataset.boardLane ?? null)
-            .find((entry) => entry.status === status)
-            ?.issues.findIndex((issue) => issue.key === key) ?? -1);
-    return { status, index: index === -1 ? null : index };
+        : (line?.cells
+            .find((cell) => cell.column.id === column)
+            ?.items.findIndex((item) => item.issue.key === key) ?? -1);
+    return { column, index: index === -1 ? null : index };
   };
   const rove = (key: RoveKey) => {
     const laneId = currentLaneId();
-    const laneColumns = focusedLaneColumns(laneId);
-    const target = focusTarget(laneColumns, isCollapsed, currentFocus(), key);
-    const issue =
+    const line = lineOf(laneId);
+    const target = focusTarget(keyColumns(line), currentFocus(line), key);
+    if (target === undefined) return;
+    const item =
       target.index === null
         ? undefined
-        : laneColumns.find((entry) => entry.status === target.status)?.issues[target.index];
-    (issue === undefined
-      ? boardNode(laneColumnSelector(target.status, laneId))
-      : boardNode(`[data-board-card="${issue.key}"]`)
+        : line?.cells.find((cell) => cell.column.id === target.column)?.items[target.index];
+    (item === undefined
+      ? boardNode(columnSelector(target.column, laneId))
+      : boardNode(`[data-board-card="${item.issue.key}"]`)
     )?.focus();
   };
-  const move = (direction: MoveDirection) => {
+  const moveFocused = (direction: MoveDirection) => {
     const key = cardAround(document.activeElement)?.dataset.boardCard;
-    if (key === undefined) {
-      return;
-    }
+    if (key === undefined) return;
     const laneId = currentLaneId();
-    const laneColumns = focusedLaneColumns(laneId);
-    const target = keyboardMove(laneColumns, key, direction);
-    if (target === undefined) {
+    const line = lineOf(laneId);
+    const cell = line?.cells.find((candidate) =>
+      candidate.items.some((item) => item.issue.key === key)
+    );
+    if (line === undefined || cell === undefined) return;
+    // The refusal first, then the Board's edge: a key the rules refuse says so at the column's
+    // end too.
+    const refused = keyRefusal(
+      rules,
+      cell.column.id,
+      direction === "down" || direction === "up" ? "within" : "across"
+    );
+    if (refused !== undefined) {
+      take({ kind: "refused", text: refused });
       return;
     }
-    // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
-    const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
-    if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex);
-    } else {
-      void moveCard(key, target.status, target.insertionIndex);
-    }
-    // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
-      (issue) =>
-        issue.status === target.status &&
-        isVisible(issue) &&
-        (lane === undefined || issue.priority === lane)
-    );
-    const position = column.findIndex((issue) => issue.key === key);
-    setAnnouncement(announceMove(key, target.status, position + 1, column.length));
-    focusAfterMove.current = { key, status: target.status, laneId };
+    const index = cell.items.findIndex((item) => item.issue.key === key);
+    const target = keyboardMove(keyColumns(line), { column: cell.column.id, index }, direction);
+    if (target === undefined) return;
+    const plan = planMove(lines, rules, key, {
+      column: target.column,
+      lane: cell.lane,
+      index: target.index,
+    });
+    take(plan);
+    if (plan?.kind !== "move") return;
+    // The move writes the listing at once, so where the rank decides the place the card lands
+    // is known now; elsewhere the view's sort puts it, which the drawn move tells.
+    const { position } = plan;
+    if (position !== undefined)
+      setAnnouncement(announceMove(key, target.column, columnTitle(target.column, by), position));
+    afterMove.current = {
+      key,
+      column: target.column,
+      laneId,
+      announce: position === undefined,
+    };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
   /** Copies the focused card's key or `dispatch://` reference and announces which. */
@@ -641,28 +1009,28 @@ export function IssueBoard({
       id: "move-down",
       keys: "Shift+J",
       label: "Move card down",
-      run: () => move("down"),
+      run: () => moveFocused("down"),
       when: focusedCard,
     },
     {
       id: "move-up",
       keys: "Shift+K",
       label: "Move card up",
-      run: () => move("up"),
+      run: () => moveFocused("up"),
       when: focusedCard,
     },
     {
       id: "move-next",
       keys: "Shift+L",
       label: "Move card to the next status",
-      run: () => move("next"),
+      run: () => moveFocused("next"),
       when: focusedCard,
     },
     {
       id: "move-previous",
       keys: "Shift+H",
       label: "Move card to the previous status",
-      run: () => move("prev"),
+      run: () => moveFocused("prev"),
       when: focusedCard,
     },
     {
@@ -712,11 +1080,11 @@ export function IssueBoard({
       label: "Back to the card, then out",
       run: () => {
         const active = document.activeElement;
-        const card = cardAround(active);
-        if (card === active || (card === null && columnAround(active) === active)) {
+        const around = cardAround(active);
+        if (around === active || (around === null && columnAround(active) === active)) {
           (active as HTMLElement).blur();
         } else {
-          card?.focus();
+          around?.focus();
         }
       },
       when: () =>
@@ -724,155 +1092,74 @@ export function IssueBoard({
         columnAround(document.activeElement) === document.activeElement,
     },
   ]);
-  // One row holds the Board's search and filtering, above whatever the board itself is showing
-  // - its cards, the skeleton or a refusal - so a reader who has narrowed the list keeps the
-  // controls that did it (INFRA-3135, R1). Nothing they can press here makes the header taller:
-  // the filter panel is portalled over the page (`AnchoredPanel`), and the chips are the one
-  // part of the row that may take a second line.
-  const controls = (
-    <>
-      <ControlRow
-        chips={filterChips(activeFilters)}
-        className="mb-4"
-        search={
-          <SearchBox
-            className="w-full"
-            label="Search issues"
-            onChange={filters.setSearch}
-            placeholder="Issue key or title"
-            value={filters.search}
-          />
-        }
-        trigger={
-          <PanelTrigger
-            count={activeFilterCount}
-            focusOnOpen={pressedOpen}
-            label="Filters"
-            onOpenChange={openFilterPanel}
-            open={filtersExpanded}
-            stacked
-          >
-            {() => (
-              <>
-                <MultiSelect
-                  {...filterPanel("labels")}
-                  emptyMessage="No labels yet."
-                  label="Labels"
-                  onChange={setLabels}
-                  options={availableLabels}
-                  searchLabel="Search labels"
-                  selected={labels}
-                />
-                <IssueFlagChips />
-                <Chip
-                  onClick={() => filters.setUnclaimed(!filters.unclaimed)}
-                  selected={filters.unclaimed}
-                >
-                  Unclaimed
-                </Chip>
-              </>
-            )}
-          </PanelTrigger>
-        }
-      >
-        {pageControls}
-      </ControlRow>
-      <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
-    </>
-  );
-  if (issues.isPending) {
-    return (
-      <>
-        {controls}
-        <LoadingSkeleton label="Loading board" />
-      </>
-    );
-  }
-  if (issues.isError) {
-    return (
-      <>
-        {controls}
-        <p className={textSecondaryOnSurface}>Could not load board.</p>
-      </>
-    );
-  }
 
   return (
-    <>
-      {controls}
-      <section aria-label="Project board" className="min-w-0" ref={boardRef}>
-        {error === undefined ? null : (
-          <div
-            aria-live="assertive"
-            className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
-            role="alert"
-          >
-            {error}
-          </div>
-        )}
-        <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
-          {announcement}
+    <section aria-label="Project board" className="min-w-0" data-board-by={by} ref={boardRef}>
+      {error === undefined ? null : (
+        <div
+          aria-live="assertive"
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+      {/* A refusal is read out in the live region below, so this line is for the eye alone. */}
+      {refusal === undefined ? null : (
+        <p
+          className={`mb-4 rounded-xl border px-4 py-3 text-sm ${card} ${textPrimaryOnSurface}`}
+          data-testid="board-refusal"
+        >
+          {refusal}
         </p>
-        {issues.data.length === 0 ? (
-          // The active query is the label-filtered list, so an empty answer under a label filter
-          // means "nothing matches", not "empty project" - the same copy the List shows.
-          labels.length === 0 ? (
-            <EmptyState label="Empty project board" message="No issues in this project." />
-          ) : (
-            <EmptyState
-              label="No matching project issues"
-              message="No issues match these filters."
-            />
-          )
-        ) : (
-          <DndContext
-            accessibility={{
-              screenReaderInstructions: {
-                draggable:
-                  "Focus a card and press Shift with J, K, H or L to move it; press ? for every shortcut.",
-              },
-            }}
-            collisionDetection={boardCollisionDetection}
-            onDragCancel={landCard}
-            onDragEnd={onDragEnd}
-            onDragStart={liftCard}
-            sensors={sensors}
-          >
-            {lanes ? (
-              <div className="flex flex-col gap-6" data-testid="board-lanes-container">
-                {boardLanes.map((boardLane) => (
-                  <BoardLaneRow
-                    boardLane={boardLane}
+      )}
+      <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
+        {announcement}
+      </p>
+      <DndContext
+        accessibility={BOARD_ACCESSIBILITY}
+        collisionDetection={boardCollisionDetection}
+        onDragCancel={landCard}
+        onDragEnd={onDragEnd}
+        onDragStart={liftCard}
+        sensors={sensors}
+      >
+        {lanes ? (
+          <div className="flex flex-col gap-6" data-testid="board-lanes-container">
+            {lines.map((line) => {
+              const lane = line.lane ?? null;
+              const count = line.cells.reduce((total, cell) => total + cell.items.length, 0);
+              return (
+                <section aria-label={`${laneLabel(lane)} lane`} key={laneKey(lane)}>
+                  <h2
+                    className={`mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide ${textSecondaryOnSurface}`}
+                  >
+                    {laneLabel(lane)}
+                    <Pill>{count}</Pill>
+                  </h2>
+                  <BoardLineView
+                    by={by}
                     dragging={dragging}
-                    isCollapsed={isCollapsed}
-                    key={laneKey(boardLane.lane)}
-                    userState={userState.data}
+                    line={line}
+                    nowMs={nowMs}
+                    testId="board-lane-scroll-container"
+                    userState={userState}
                   />
-                ))}
-              </div>
-            ) : (
-              <div
-                className={`overflow-x-auto pb-3 ${dragging ? "" : "snap-x snap-mandatory"}`}
-                data-testid="board-scroll-container"
-              >
-                <div className="flex w-max items-stretch gap-4">
-                  {columns.map((column) =>
-                    isCollapsed(column.status) ? (
-                      <CollapsedColumn column={column} key={column.status} />
-                    ) : (
-                      <BoardColumnView
-                        column={column}
-                        key={column.status}
-                        userState={userState.data}
-                      />
-                    )
-                  )}
-                </div>
-              </div>
-            )}
-          </DndContext>
+                </section>
+              );
+            })}
+          </div>
+        ) : lines[0] === undefined ? null : (
+          <BoardLineView
+            by={by}
+            dragging={dragging}
+            line={lines[0]}
+            nowMs={nowMs}
+            testId="board-scroll-container"
+            userState={userState}
+          />
         )}
-      </section>
-    </>
+      </DndContext>
+    </section>
   );
 }

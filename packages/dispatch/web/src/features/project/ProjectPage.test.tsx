@@ -534,9 +534,13 @@ test("the table and the Board's control row share the URL's status, labels and s
     expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
     expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Board" }));
-    expect(await screen.findByRole("button", { name: "Filters · 2" })).toBeTruthy();
+    // The Board has no header to show a column's filter, so the Status pick that differs from
+    // Open's own is a chip of its control row too.
+    expect(await screen.findByRole("button", { name: "Filters · 3" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove Status: Todo filter" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveValue("core");
     await user.click(screen.getByRole("button", { name: "Table" }));
     expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
     expect(screen.getByTestId("location").textContent).toContain("status=todo");

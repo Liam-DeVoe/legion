@@ -1,5 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import type { FilterFn, RowSelectionState, VisibilityState } from "@tanstack/react-table";
+import type {
+  Column,
+  FilterFn,
+  GroupingState,
+  RowSelectionState,
+  VisibilityState,
+} from "@tanstack/react-table";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiErrorMessage } from "../../api/client";
 import {
@@ -17,7 +23,11 @@ import {
   type RowNoun,
   useDataTable,
 } from "../../components/DataTable";
-import type { FilterChip } from "../../components/filter-chips";
+import {
+  columnFilterChip,
+  columnFilterPicks,
+  type FilterChip,
+} from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import type { PagerOptions } from "../../components/Pager";
@@ -49,8 +59,9 @@ import { setSelectedIssues } from "../search/bar-scope";
 import { useKeymap } from "../shell/keymap";
 import { COMPACT_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useUserPreference } from "../shell/userPreference";
+import { type BoardBy, rankRefusal } from "./board-model";
 import { ConfirmDialog } from "./ConfirmDialog";
-import { IssueBoard } from "./IssueBoard";
+import { BoardControlRow, IssueBoard } from "./IssueBoard";
 import {
   DaemonHint,
   IssueViewTabs,
@@ -59,7 +70,7 @@ import {
   ToggleButton,
   ViewControls,
 } from "./IssueViewTabs";
-import { useIssueFilters } from "./issue-filters";
+import { type IssueFiltersState, useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
 import { countStatuses, IssueStatusBar } from "./issues-table-bar";
 import {
@@ -233,6 +244,101 @@ function listsClosed(query: URLSearchParams): boolean {
   const expanded = expandView(query);
   const statuses = expanded.getAll("status");
   return statuses.includes("done") || (statuses.length === 0 && expanded.get("nofilter") === "1");
+}
+
+/** The table's grouping on the Board, whose Group by picks the Board's columns instead: its rows
+ *  are then the view's rows in the view's sort alone. */
+const NO_GROUPING: GroupingState = [];
+const NO_ITEMS: readonly Item[] = [];
+const NO_PICKS: readonly string[] = [];
+
+/** What a column filter of `filters` picks, as strings; none where it has no such filter. */
+function picksOf(filters: View["filters"], id: string): readonly string[] {
+  const value = filters.find((filter) => filter.id === id)?.value;
+  return Array.isArray(value) ? value.map(String) : NO_PICKS;
+}
+
+const sameSet = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((value) => b.includes(value));
+
+/**
+ * The chips of the Board's control row: each narrowing of the view that differs from `own`, the
+ * view the open tab opens, added or replacing one of its values, since the Board has no header
+ * to show a column's filter (the spec's Design, "The Board"). In the order the Board has always
+ * drawn its own: each label (`Label: <value>`, the words the table's row gives `?label=` too), the
+ * search, the three flags, then every other column filter in the table's column order, in its
+ * header's words (`columnFilterChip`). A chip's press takes its narrowing back to the view's own.
+ */
+function boardChips({
+  columns,
+  flags,
+  own,
+  search,
+  setSearch,
+}: {
+  columns: readonly Column<Item, unknown>[];
+  flags: IssueFiltersState;
+  own: URLSearchParams;
+  search: string;
+  setSearch: (search: string) => void;
+}): FilterChip[] {
+  const expanded = expandView(own);
+  const ownView = readUrl(expanded);
+  const ownFilter = (id: string) => ownView.filters.find((filter) => filter.id === id)?.value;
+  const labels: FilterChip[] = [];
+  const named: FilterChip[] = [];
+  let unclaimed = false;
+  for (const column of columns) {
+    const picks = columnFilterPicks(column.getFilterValue());
+    const kept = columnFilterPicks(ownFilter(column.id));
+    if (column.id === "labels") {
+      for (const value of picks.filter((pick) => !kept.includes(pick)))
+        labels.push({
+          key: `label:${value}`,
+          label: `Label: ${value}`,
+          remove: () => {
+            const rest = picks.filter((pick) => pick !== value);
+            column.setFilterValue(rest.length === 0 ? undefined : rest);
+          },
+        });
+    } else if (column.id === "claim") {
+      // Claimed by's "Nobody or lapsed" is the Unclaimed flag, which has a chip of its own.
+      unclaimed = picks.includes(UNCLAIMED_FACET) && !kept.includes(UNCLAIMED_FACET);
+      const others = picks.filter((pick) => pick !== UNCLAIMED_FACET);
+      const ownOthers = kept.filter((pick) => pick !== UNCLAIMED_FACET);
+      if (others.length > 0 && !sameSet(others, ownOthers))
+        named.push(
+          columnFilterChip(column, others, () => {
+            const rest = [...ownOthers, ...picks.filter((pick) => pick === UNCLAIMED_FACET)];
+            column.setFilterValue(rest.length === 0 ? undefined : rest);
+          })
+        );
+    } else if (picks.length > 0 && !sameSet(picks, kept)) {
+      named.push(
+        columnFilterChip(column, picks, () => column.setFilterValue(ownFilter(column.id)))
+      );
+    }
+  }
+  return [
+    ...labels,
+    ...(search.trim() === "" || search === ownView.search
+      ? []
+      : [
+          {
+            key: "search",
+            label: `Search: ${search.trim()}`,
+            remove: () => setSearch(ownView.search),
+          },
+        ]),
+    ...(flags.needsYou && expanded.get("needs-you") !== "1"
+      ? [{ label: "Needs you", remove: () => flags.setNeedsYou(false) }]
+      : []),
+    ...(flags.unread && expanded.get("unread") !== "1"
+      ? [{ label: "Unread", remove: () => flags.setUnread(false) }]
+      : []),
+    ...(unclaimed ? [{ label: "Unclaimed", remove: () => flags.setUnclaimed(false) }] : []),
+    ...named,
+  ];
 }
 
 /**
@@ -604,8 +710,8 @@ function IssueTableBody({
   // status: one page of them while it is sorted by Closed, newest first, and narrowed by nothing
   // but a Closed window, and every done issue the window holds otherwise. A listing that
   // advances a priority reads its whole listing once closed issues are let through.
-  const statusValue = filters.find((filter) => filter.id === "status")?.value;
-  const statusPicks = Array.isArray(statusValue) ? statusValue.map(String) : [];
+  const statusPicks = picksOf(filters, "status");
+  const onBoard = tab !== undefined && tab.layout === "board";
   const listsDone = !whole && (statusPicks.length === 0 || statusPicks.includes("done"));
   const readsOpen =
     project === undefined || statusPicks.length === 0 || statusPicks.some((s) => s !== "done");
@@ -620,7 +726,7 @@ function IssueTableBody({
   const firstSort = sorting[0];
   const pageRead =
     tab !== undefined &&
-    tab.layout === "table" &&
+    !onBoard &&
     statusPicks.length === 1 &&
     statusPicks[0] === "done" &&
     sorting.length === 1 &&
@@ -758,7 +864,13 @@ function IssueTableBody({
     getRowId: (item) => item.issue.key,
     layout,
     names: moveFrom === "row" ? ISSUE_TABLE_BESIDE_NAMES : ISSUE_TABLE_NAMES,
-    state: { sorting, grouping, columnFilters: filters, globalFilter: search, pagination },
+    state: {
+      sorting,
+      grouping: onBoard ? NO_GROUPING : grouping,
+      columnFilters: filters,
+      globalFilter: search,
+      pagination,
+    },
     onSortingChange: setSorting,
     onGroupingChange: setGrouping,
     onColumnFiltersChange: setFilters,
@@ -772,6 +884,23 @@ function IssueTableBody({
     ...(doneTotal === undefined ? {} : { serverPage: { rowCount: doneTotal } }),
   });
   const { table } = model;
+  // The Board's cards: every row the view lists, in the view's sort, on no page. The table is
+  // held ungrouped on the Board (`NO_GROUPING`), so its sorted rows are those rows alone.
+  const sortedRows = table.getSortedRowModel();
+  const boardRows = useMemo(
+    () => (onBoard ? sortedRows.rows.map((row) => row.original) : NO_ITEMS),
+    [onBoard, sortedRows]
+  );
+  // The labels the Board's Labels picker offers: every label of the rows the view has read.
+  const labelOptions = useMemo(
+    () =>
+      onBoard
+        ? [...new Set(allItems.flatMap((item) => item.issue.labels ?? []))].sort((a, b) =>
+            a.localeCompare(b)
+          )
+        : NO_PICKS,
+    [onBoard, allItems]
+  );
   // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
   // last, else the first row's, else the search box once no row is listed. A row the window has
   // not drawn is scrolled to and takes the focus as it lands (`focusRow`).
@@ -1004,32 +1133,141 @@ function IssueTableBody({
     );
   const layoutSwitch =
     tab === undefined ? null : <LayoutSwitch layout={tab.layout} onLayout={tab.setLayout} />;
+  // What the listing reads say over the rows, in both layouts, once the rows are in: a failed read
+  // of the listing with its Retry, and the done issues still being read beside the open ones.
+  const listingNotices = loaded ? (
+    <>
+      {listingError ? (
+        <p className={dangerText} role="alert">
+          Could not load {done !== undefined ? "closed " : ""}issues.{" "}
+          <button
+            type="button"
+            aria-label={done !== undefined ? "Retry loading closed issues" : "Retry loading issues"}
+            onClick={() => void listingError.refetch()}
+          >
+            Retry
+          </button>
+        </p>
+      ) : null}
+      {done !== undefined && readsOpen && doneRead.isPending ? (
+        <p aria-live="polite" className={textMutedOnCanvas}>
+          Loading closed issues…
+        </p>
+      ) : null}
+    </>
+  ) : null;
+  // What stands in place of the rows while the reads they wait on are out or have failed.
+  const readStates = (
+    <>
+      {loading ? <LoadingSkeleton label="Loading issues" /> : null}
+      {failed ? (
+        <p className={dangerText} role="alert">
+          Could not load issues.{" "}
+          <button
+            type="button"
+            onClick={() => {
+              if (readsOpen) void issues.refetch();
+              else void doneRead.refetch();
+              void userState.refetch();
+            }}
+          >
+            Retry loading issues
+          </button>
+        </p>
+      ) : null}
+      {legionFailed ? (
+        boardWaits && board.isError ? (
+          <QueryError
+            message="Could not read the Legion board, which this view needs."
+            onRetry={() => void board.refetch()}
+            retrying={board.isFetching}
+          />
+        ) : (
+          <QueryError
+            message="Could not read the Legion facts, which this view needs."
+            onRetry={() => void factsRead.refetch()}
+            retrying={factsRead.isFetching}
+          />
+        )
+      ) : null}
+    </>
+  );
 
-  if (tab !== undefined && tab.layout === "board")
-    // The Board of the view, as the project's Board draws it, with the view's controls in its
-    // control row.
+  if (tab !== undefined && onBoard) {
+    // The Board of the view: the view's rows, in columns by status or, in a project with a
+    // Legion daemon, by Legion phase (`group=legion_phase`, which the table groups by too).
+    const by: BoardBy = hasLegion && grouping[0] === "legion_phase" ? "legion_phase" : "status";
     return (
       <section aria-label={name} className="space-y-3 sm:pb-24">
         {tabs}
-        <IssueBoard
+        {listingNotices}
+        <BoardControlRow
+          chips={boardChips({
+            columns: table.getAllLeafColumns(),
+            flags,
+            own: tab.ownAddress,
+            search,
+            setSearch,
+          })}
           controls={
             <>
               {layoutSwitch}
-              <ToggleButton onChange={tab.setShowIcebox} pressed={tab.showIcebox}>
-                Show Icebox
-              </ToggleButton>
+              {/* Icebox and Done are the status Board's own: by Legion phase no drop changes a
+                  status, so it draws neither the Icebox rail nor the Done rail. */}
+              {by === "status" ? (
+                <ToggleButton onChange={tab.setShowIcebox} pressed={tab.showIcebox}>
+                  Show Icebox
+                </ToggleButton>
+              ) : null}
               <ToggleButton onChange={tab.setLanes} pressed={tab.lanes}>
                 Lanes
               </ToggleButton>
               {viewControls}
             </>
           }
-          lanes={tab.lanes}
-          project={tab.project}
-          showEdges={tab.showIcebox}
+          groupBy={
+            hasLegion
+              ? {
+                  value: by,
+                  onChange: (next) => setGrouping(next === "legion_phase" ? [next] : []),
+                }
+              : undefined
+          }
+          labelOptions={labelOptions}
+          onClear={
+            narrowingsDiffer(params, tab.ownAddress)
+              ? () => update((current) => clearNarrowings(current, tab.ownAddress))
+              : undefined
+          }
+          onSearch={setSearch}
+          search={search}
+          selection={pickedChip}
         />
+        {readStates}
+        {loaded ? (
+          <IssueBoard
+            by={by}
+            lanes={tab.lanes}
+            listsDone={listsDone}
+            phasePicks={picksOf(filters, "legion_phase")}
+            project={tab.project}
+            rankRefusal={rankRefusal(
+              firstSort,
+              String(
+                firstSort === undefined
+                  ? ""
+                  : (table.getColumn(firstSort.id)?.columnDef.header ?? firstSort.id)
+              )
+            )}
+            rows={boardRows}
+            showIcebox={tab.showIcebox}
+            statusPicks={statusPicks}
+            userState={userState.data}
+          />
+        ) : null}
       </section>
     );
+  }
 
   // The toolbar is drawn in every branch, at the one place in the tree, as the Board draws its
   // `controls`: a filter press that sends the List off to read issues it has not loaded - Clear
@@ -1040,55 +1278,33 @@ function IssueTableBody({
     <section aria-label={name} className="space-y-3 sm:pb-24" onFocus={noteFocus} ref={sectionRef}>
       <div className="space-y-3" ref={attachAbove}>
         {tabs}
-        {loaded ? (
-          <>
-            {listingError ? (
-              <p className={dangerText} role="alert">
-                Could not load {done !== undefined ? "closed " : ""}issues.{" "}
-                <button
-                  type="button"
-                  aria-label={
-                    done !== undefined ? "Retry loading closed issues" : "Retry loading issues"
-                  }
-                  onClick={() => void listingError.refetch()}
-                >
-                  Retry
-                </button>
-              </p>
-            ) : null}
-            {done !== undefined && readsOpen && doneRead.isPending ? (
-              <p aria-live="polite" className={textMutedOnCanvas}>
-                Loading closed issues…
-              </p>
-            ) : null}
-            {tab === undefined ? (
-              // A priority page's table: its strip of every status the table holds, a press
-              // showing only that status and a second press every status.
-              <IssueTableStatus table={table} items={allItems} />
-            ) : tab.base.bar && counted ? (
-              // The rows the table lists by status; a server's page of done rows counts its
-              // total, which is every row it lists.
-              <IssueStatusBar
-                counts={
-                  doneTotal === undefined
-                    ? countStatuses(listedRows.map((row) => row.original.issue.status))
-                    : new Map([["done", doneTotal]])
-                }
-                narrowTo={(status) => {
-                  const column = table.getColumn("status");
-                  if (status !== undefined) {
-                    column?.setFilterValue([status]);
-                    return;
-                  }
-                  const own = expandView(tab.ownAddress);
-                  column?.setFilterValue(
-                    own.get("nofilter") === "1" ? undefined : own.getAll("status")
-                  );
-                }}
-                picked={statusPicks}
-              />
-            ) : null}
-          </>
+        {listingNotices}
+        {!loaded ? null : tab === undefined ? (
+          // A priority page's table: its strip of every status the table holds, a press showing
+          // only that status and a second press every status.
+          <IssueTableStatus table={table} items={allItems} />
+        ) : tab.base.bar && counted ? (
+          // The rows the table lists by status; a server's page of done rows counts its total,
+          // which is every row it lists.
+          <IssueStatusBar
+            counts={
+              doneTotal === undefined
+                ? countStatuses(listedRows.map((row) => row.original.issue.status))
+                : new Map([["done", doneTotal]])
+            }
+            narrowTo={(status) => {
+              const column = table.getColumn("status");
+              if (status !== undefined) {
+                column?.setFilterValue([status]);
+                return;
+              }
+              const own = expandView(tab.ownAddress);
+              column?.setFilterValue(
+                own.get("nofilter") === "1" ? undefined : own.getAll("status")
+              );
+            }}
+            picked={statusPicks}
+          />
         ) : null}
 
         <IssueTableToolbar
@@ -1156,37 +1372,7 @@ function IssueTableBody({
         ) : null}
       </div>
 
-      {loading ? <LoadingSkeleton label="Loading issues" /> : null}
-      {failed ? (
-        <p className={dangerText} role="alert">
-          Could not load issues.{" "}
-          <button
-            type="button"
-            onClick={() => {
-              if (readsOpen) void issues.refetch();
-              else void doneRead.refetch();
-              void userState.refetch();
-            }}
-          >
-            Retry loading issues
-          </button>
-        </p>
-      ) : null}
-      {legionFailed ? (
-        boardWaits && board.isError ? (
-          <QueryError
-            message="Could not read the Legion board, which this view needs."
-            onRetry={() => void board.refetch()}
-            retrying={board.isFetching}
-          />
-        ) : (
-          <QueryError
-            message="Could not read the Legion facts, which this view needs."
-            onRetry={() => void factsRead.refetch()}
-            retrying={factsRead.isFetching}
-          />
-        )
-      ) : null}
+      {readStates}
       {loaded ? (
         <>
           <DataTable
