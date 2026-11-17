@@ -50,10 +50,14 @@
 #      runs), and its if: as the module names it, with no key but name and id free (an `if:
 #      false`, a continue-on-error: or a timeout-minutes: can end it with its decision thrown
 #      away); its job's version and skip outputs as the module names them, since the publish steps
-#      read the decision there (a `skip: "true"` skips the release the step chose); every if: that
-#      reads the decision - those outputs, the step's own, or an earlier reader step's outcome -
-#      the one DECISION_READERS names, by the step's id:, name: or position, and no reader it does
-#      not name (an `if: false` on a publish step skips the release as surely); every step
+#      read the decision there (a `skip: "true"` skips the release the step chose); the if:s that
+#      read the decision - dotted references, in any case, to those outputs, to the step's own, or
+#      to an earlier reader step's outcome - each the one DECISION_READERS names, by the step's
+#      id:, name: or position, in its order, with the four decision jobs' own if: and the steps
+#      a listed if: reads, no continue-on-error: on a listed step, no two steps of one name in a
+#      listed job, and no reader it does not name (an `if: false` on a publish step skips the
+#      release as surely); every if: of the two workflows reaching the needs or steps context by
+#      dotted names alone, no `[` and no `.*`; every step
 #      before it one of STEPS_BEFORE_VERSION_STEPS on every key but name, id, if, timeout-minutes
 #      and continue-on-error; the workflow's env: a literal mapping of WORKFLOW_ENV_KEYS' variables
 #      alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is refused as one more unlisted
@@ -62,8 +66,9 @@
 #      first); the workflow with no defaults but `run: {shell: bash}`; and the step under `bash`
 #      itself (`bash --rcfile x -i {0}` sources x first). An expression in place of any of those
 #      mappings is refused, since no one can read what it sets. Whether a release workflow runs
-#      at all - its on: triggers, a job's if:, concurrency: and timeout-minutes: where they do not
-#      read the decision, the runner image behind the label - is outside this rule;
+#      at all - its on: triggers, concurrency: and timeout-minutes:, a job's if: outside the four
+#      decision jobs, the runner image behind the label - is outside this rule, and so is the
+#      decision passed on through the env context or another step's output, env: or run:;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
