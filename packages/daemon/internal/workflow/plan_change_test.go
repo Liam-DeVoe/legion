@@ -631,3 +631,121 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 			intake.PlanRefused([]plan.Refusal{intake.StartedBeforePlans(root.Key)}), before)
 	})
 }
+
+// walkStanding is where an issue's run stands after one move of its walk, as the store holds it:
+// its phase, its one task's place and state, every version of its plan, and the task's steps
+// (none where the run has no plan rows).
+type walkStanding struct {
+	phase    phase.Phase
+	place    record.TaskPlace
+	state    string
+	versions []string
+	steps    []string
+}
+
+func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, generation uint64) walkStanding {
+	t.Helper()
+	now := planStandingOf(t, pool, engine, key, generation)
+	at := walkStanding{phase: now.issue.Phase, versions: now.versions}
+	if now.plan != nil {
+		task := now.task(t)
+		at.place, at.state, at.steps = task.Place, task.State, stepsOfTask(now.plan, task.Task)
+	}
+	return at
+}
+
+// A version of the plan document that nobody gave Legion changes nothing (R5, R16; the review
+// focus of the part, case 2). Legion reads a plan document only at the version an owner gives
+// with register_plan (api's planAt, the one caller of dispatch.HTTPClient.PlanDocument), so
+// version 2, which Dispatch holds and nobody registered, never reaches the workflow. The issue
+// walks the line of version 1, implementing, reviewing, retro, merging and done, and its run's plan
+// holds version 1 alone at each move. With the daemon booted in the middle of the walk, the engine
+// built again on the same store, the walk is the same. The control: version 2 given while the
+// task waits, before its first step, is taken, and the walk starts planning. The twin (R20): an
+// issue given no plan walks today's line, and its walk writes no plan rows.
+func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
+	const merged = "merge-42"
+	versionOne := []string{"implementer/implementation", "reviewer/review"}
+	want := []walkStanding{
+		{phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"1 owner"}, versionOne},
+		{phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning, []string{"1 owner"}, versionOne},
+		{phase.Retro, record.TaskPlace{Kind: record.PlaceRetro}, record.TaskRunning, []string{"1 owner"}, versionOne},
+		{phase.Merging, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning, []string{"1 owner"}, versionOne},
+		{phase.Done, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskDone, []string{"1 owner"}, versionOne},
+	}
+	// walk gives version 1, holds version 2 as Dispatch does without giving it, and walks the issue
+	// to done, building the engine again after the move bootAfter (none for -1). It answers where
+	// the run stood after each move.
+	walk := func(t *testing.T, bootAfter int) []walkStanding {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		key, gen := root.Key, root.Generation
+		mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(key, gen, 1),
+			ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		// Dispatch's version 2 of the same document, which no owner gives Legion.
+		unregistered := planID(key, gen, 2)
+		moves := []func(){
+			func() { move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerReviewApproved, "", record.PhaseRow{}) },
+			func() { move(t, pool, engine, key, TriggerRetroCompleted, "", record.PhaseRow{}) },
+			func() {
+				if result := applyFacts(t, pool, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: merged}); result.Refusal != nil {
+					t.Fatalf("the merge was refused: %+v", result.Refusal)
+				}
+			},
+		}
+		var walked []walkStanding
+		for i, next := range moves {
+			next()
+			walked = append(walked, walkStandingOf(t, pool, engine, key, gen))
+			if i == bootAfter {
+				engine = returnEngine()
+			}
+		}
+		if processed(t, pool, unregistered) {
+			t.Fatalf("version 2, which nobody gave, is marked processed")
+		}
+		return walked
+	}
+
+	t.Run("the walk of version 1", func(t *testing.T) {
+		if got := walk(t, -1); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the walk of version 1 =\n%+v\nwant\n%+v", got, want)
+		}
+	})
+
+	t.Run("the walk of version 1 with the daemon booted in reviewing", func(t *testing.T) {
+		if got := walk(t, 1); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the walk of version 1 with a boot in reviewing =\n%+v\nwant\n%+v", got, want)
+		}
+	})
+
+	t.Run("control: version 2 given while the task waits is taken, and the walk starts planning", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		apply := applyFacts(t, pool, engine)
+		root := stepRoot(t, pool, phase.Admitted)
+		key, gen := root.Key, root.Generation
+		mustTake(t, "version 1", apply(planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		mustTake(t, "version 2", apply(planID(key, gen, 2), ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "planner", "implementer", "tester"))))
+		move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{})
+		got := walkStandingOf(t, pool, engine, key, gen)
+		if wantAt := (walkStanding{phase.Planning, record.TaskPlace{Kind: record.PlaceStep, Position: 1}, record.TaskRunning, []string{"1 owner", "2 owner"},
+			[]string{"planner/planning", "implementer/implementation", "tester/testing"}}); !reflect.DeepEqual(got, wantAt) {
+			t.Fatalf("after version 2 and the gate's opening %s stands at %+v, want %+v", key, got, wantAt)
+		}
+	})
+
+	t.Run("the twin: an issue given no plan walks today's line and writes no plan rows", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		move(t, pool, engine, root.Key, TriggerPlannerCompleted, "", record.PhaseRow{})
+		if got := walkStandingOf(t, pool, engine, root.Key, root.Generation); !reflect.DeepEqual(got, walkStanding{phase: phase.Implementing}) {
+			t.Fatalf("%s given no plan stands at %+v after planning, want implementing with no plan rows", root.Key, got)
+		}
+	})
+}
