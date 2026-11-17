@@ -284,7 +284,7 @@ func TestAnApprovalTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) 
 // TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes: the person who decides the request
 // today answered while the judge was reading, or its operator withheld the name, so the judge's
 // own approval lands on a request the decision transaction refuses. That is the ordinary end of
-// a race the judge is built to lose, and the deployment's alarms read the broker's ERROR lines,
+// a race the judge is built to lose, and a broker ERROR line reports a failure a person must read,
 // so it leaves none, and the row it writes carries no error either — "error" is the model call's
 // own failure, and nothing failed here. A refusal of any other kind is a judge that reached a
 // request it should not have, and that does raise one, naming the record a person has to look

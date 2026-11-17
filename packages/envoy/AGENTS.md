@@ -6200,7 +6200,8 @@ each set it publishes is compared with the one before, and `policy.RefusedMessag
 A pod's first load writes one line for each secret it refuses or finds waiting, with `first_load=true`, and `broker_unservable_secrets` (`policy.NewUnservableSecrets`) holds the standing state, one series for each refused secret, and none for one waiting for its value, which is no refusal.
 The reload loop writes `policy.LoadFailedMessage` at the first failure of a run of failed reloads and `policy.LoadRecoveredMessage` at the reload that ends the run, and a failed reload keeps the last set;
 a reload cut short because `NewCurrent`'s context ended (the broker shutting down) is no failed load and logs nothing.
-The operate guide documents these message texts and a reader of the broker's log filters on them, so a text changes only with that guide.
+The operate guide documents these message texts, so a text changes only with that guide.
+No alert this repository describes reads these lines: the alerts of the guide's "What to alert on" read `broker_unservable_secrets` for a secret the broker cannot serve and `broker_answers_total{outcome="refused"}` for refusals.
 `Current` also reads each kind secret's value once for each version (`secrets.Listing.Version`), kind and shape it lists, at the pod's first load too, counted as `read=value` in `broker_policy_store_reads_total`, and decodes it with `secrets.ParseValue`, the one decoder of a stored value, which the four minters and `agent-secrets secret` call as well:
 a value it refuses, or one the store answers as no text (`secrets.ErrValueNotText`: an empty value, a Secrets Manager `SecretBinary` with no `SecretString`, or a Secret Manager payload that is not UTF-8), leaves the secret out under `policy.ReasonValueMalformed` until a read under another version, kind or shape decodes, or a read of another version fails;
 a mint whose decode refuses marks it the same way (`Current.RefuseValue`);
