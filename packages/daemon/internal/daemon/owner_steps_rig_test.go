@@ -148,28 +148,42 @@ func planOf(steps ...string) string {
 	return ":::plan_task{#a steps=\"" + strings.Join(steps, " ") + "\"}\nMake the change the issue asks for.\n:::\n"
 }
 
-// document uploads markdown as the document name onto the walk's issue, as a person through
-// Dispatch's route, and answers its id. Dispatch stores it at version 1.
+// document uploads markdown as the document name onto the walk's issue (documentOf).
 func (r *ownerStepsRig) document(name, markdown string) string {
+	r.t.Helper()
+	return r.documentOf(r.key, name, markdown)
+}
+
+// documentOf uploads markdown as the document name onto issue, as a person through Dispatch's
+// route, and answers its id. Dispatch stores it at version 1.
+func (r *ownerStepsRig) documentOf(issue, name, markdown string) string {
 	r.t.Helper()
 	var created struct {
 		Artifact struct {
 			ID string `json:"id"`
 		} `json:"artifact"`
 	}
-	r.person(http.MethodPost, "/api/v1/issues/"+r.key+"/artifacts", map[string]string{"name": name, "content": markdown}, http.StatusCreated, &created)
+	r.person(http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": name, "content": markdown}, http.StatusCreated, &created)
 	if created.Artifact.ID == "" {
-		r.t.Fatalf("Dispatch answered the upload of %s on %s with no artifact id", name, r.key)
+		r.t.Fatalf("Dispatch answered the upload of %s on %s with no artifact id", name, issue)
 	}
 	return created.Artifact.ID
 }
 
 // registerPlan is the architect of the walk's issue giving Legion version of the document artifact
-// as the issue's plan (register_plan), answered as the daemon's status and body.
+// as the issue's plan (registerPlanOf).
 func (r *ownerStepsRig) registerPlan(artifact string, version int) (int, string) {
 	r.t.Helper()
+	return r.registerPlanOf(r.key, artifact, version)
+}
+
+// registerPlanOf is the architect of the walk's issue giving Legion version of the document
+// artifact as the plan of issue, an issue of its tree (register_plan), answered as the daemon's
+// status and body.
+func (r *ownerStepsRig) registerPlanOf(issue, artifact string, version int) (int, string) {
+	r.t.Helper()
 	status, body := r.d.request(http.MethodPost, "/legion/v1/plans/register", api.PlanRegisterRequest{
-		GrantID: r.worker(claim.RoleArchitect).grant(), Issue: r.key, ArtifactID: artifact, Version: version}, false)
+		GrantID: r.worker(claim.RoleArchitect).grant(), Issue: issue, ArtifactID: artifact, Version: version}, false)
 	return status, string(body)
 }
 
