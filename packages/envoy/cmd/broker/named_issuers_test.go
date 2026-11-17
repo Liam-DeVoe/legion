@@ -559,24 +559,31 @@ func TestAKeySetTheBrokerCannotReadIsAnswered503(t *testing.T) {
 // TestTheExchangeTakesTheIssuersItNames: with BROKER_EXCHANGE_K8S_AUDIENCE set and three issuers
 // named, A, B and C, the broker refuses to boot, naming BROKER_EXCHANGE_K8S_ISSUER, when that
 // setting is missing, names an issuer the list does not hold, or is set without the exchange's
-// audience, and when an entry of BROKER_EXCHANGE_ACCOUNTS names an issuer the setting does not
-// name or names one twice. With the setting naming A and B, the exchange takes a token of A and a
-// token of B for an account whose entry names both, and refuses with 400 invalid_request and no
-// access token a token of C, a token of B for an account whose entry names A alone, and a token of
-// B for an account whose entry names no issuer, which takes A, the first, alone. With B's
-// discovery document failing, the broker boots, the exchange takes a token of A, and a token of B
-// gets 503 OIDC_ISSUER_UNAVAILABLE. With one issuer and no BROKER_EXCHANGE_K8S_ISSUER, the
-// exchange takes that issuer's token for an entry that names no issuer, whether the issuer is
-// named or is one bare URL.
+// audience, when an entry of BROKER_EXCHANGE_ACCOUNTS names an issuer the setting does not name
+// or names one twice, and when the setting leaves out A beside an entry of
+// BROKER_EXCHANGE_READ_ACCOUNTS, which names no issuer and so takes A alone. With the setting
+// naming A and B, the exchange takes a token of A and a token of B for an account whose entry
+// names both, and refuses with 400 invalid_request and no access token a token of C, a token of B
+// for an account whose entry names A alone, and a token of B for an account whose entry names no
+// issuer, which takes A, the first, alone. It takes a read entry's account's token of A, and
+// refuses one of B and one of C. With B's discovery document failing, the broker boots, the
+// exchange takes a token of A, and a token of B gets 503 OIDC_ISSUER_UNAVAILABLE. With one issuer
+// and no BROKER_EXCHANGE_K8S_ISSUER, the exchange takes that issuer's token for an entry that
+// names no issuer, whether the issuer is named or is one bare URL.
 func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 	const (
 		// namingA's entry names A alone, and namingNone's names no issuer; namedWorker's names A
 		// and B. Each fixes a session of its own, so its pods exchange with no registration.
-		namingA        = "system:serviceaccount:legion:legion-worker-a"
-		namingNone     = "system:serviceaccount:legion:legion-worker-none"
-		sessionOfA     = "example-session-a"
-		sessionOfNone  = "example-session-none"
-		exchangeIssuer = "BROKER_EXCHANGE_K8S_ISSUER"
+		// reading is a read entry's account, and readEntry the setting listing it, whose entry
+		// fixes sessionOfReading, as every read entry fixes its session, and names no issuer.
+		namingA          = "system:serviceaccount:legion:legion-worker-a"
+		namingNone       = "system:serviceaccount:legion:legion-worker-none"
+		reading          = "system:serviceaccount:legion:legion-reader"
+		sessionOfA       = "example-session-a"
+		sessionOfNone    = "example-session-none"
+		sessionOfReading = "example-session-reading"
+		readEntry        = "BROKER_EXCHANGE_READ_ACCOUNTS=" + reading + "=legion-reader=" + sessionOfReading
+		exchangeIssuer   = "BROKER_EXCHANGE_K8S_ISSUER"
 	)
 	binary := buildBroker(t)
 	a, b, c := oidctest.New(t), oidctest.New(t), oidctest.New(t)
@@ -602,6 +609,9 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 		{"an entry of BROKER_EXCHANGE_ACCOUNTS names one issuer twice",
 			[]string{audience, exchangeIssuer + "=a,b", "BROKER_EXCHANGE_ACCOUNTS=" + namedWorker + "=ACME=ada@example.com==a,a"},
 			[]string{exchangeIssuer, "BROKER_EXCHANGE_ACCOUNTS", `\"a\"`}},
+		{"BROKER_EXCHANGE_K8S_ISSUER leaves out A beside an entry of BROKER_EXCHANGE_READ_ACCOUNTS",
+			[]string{audience, exchangeIssuer + "=b,c", readEntry},
+			[]string{exchangeIssuer, "BROKER_EXCHANGE_READ_ACCOUNTS", reading, `\"a\"`}},
 	} {
 		t.Run("the broker refuses to boot when "+refusal.name, func(t *testing.T) {
 			out := runRefusedBroker(t, binary, append([]string{
@@ -640,7 +650,7 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 
 	t.Run("with the setting naming A and B", func(t *testing.T) {
 		broker := startBroker(t, brokerOptions{Binary: binary, Env: namedIssuersEnv(t, storetest.URL(t), threeIssuers,
-			audience, exchangeIssuer+"=a,b", accounts)})
+			audience, exchangeIssuer+"=a,b", accounts, readEntry)})
 		broker.Await(t, "token exchange")
 		for _, row := range []struct {
 			name    string
@@ -656,6 +666,9 @@ func TestTheExchangeTakesTheIssuersItNames(t *testing.T) {
 			{"the exchange refuses a token of B for an account whose entry names A alone", b, bKey, namingA, sessionOfA, false},
 			{"the exchange takes a token of A for an account whose entry names no issuer", a, aKey, namingNone, sessionOfNone, true},
 			{"the exchange refuses a token of B for an account whose entry names no issuer", b, bKey, namingNone, sessionOfNone, false},
+			{"the exchange takes a token of A for a read entry's account, which takes A alone", a, aKey, reading, sessionOfReading, true},
+			{"the exchange refuses a token of B for a read entry's account, which takes A alone", b, bKey, reading, sessionOfReading, false},
+			{"the exchange refuses a token of C for a read entry's account", c, cKey, reading, sessionOfReading, false},
 		} {
 			t.Run(row.name, func(t *testing.T) {
 				status, body := exchange(t, broker.Addr, row.issuer, row.key, row.account, row.session)

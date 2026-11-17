@@ -43,3 +43,9 @@ body: |-
   `first,second`: write those names after an empty session,
   `<service account>=<project>=<person>==first,second`. An entry that names no project names its
   issuers the same way, `<service account>==<person>==first,second`.
+  A read entry of `BROKER_EXCHANGE_READ_ACCOUNTS` names no issuer, so the exchange takes its
+  account's token from the first issuer of `BROKER_K8S_OIDC_ISSUER` alone, as it does for an
+  exchange entry that names none, and a token of any other issuer is `400 invalid_request`, so a
+  read account's pods stay on that first issuer's cluster. The broker refuses to start, naming
+  `BROKER_EXCHANGE_READ_ACCOUNTS`, the entry and `BROKER_EXCHANGE_K8S_ISSUER`, on a read entry
+  while `BROKER_EXCHANGE_K8S_ISSUER` leaves out that first issuer.
