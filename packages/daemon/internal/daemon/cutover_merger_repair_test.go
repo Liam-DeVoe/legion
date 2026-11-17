@@ -884,7 +884,7 @@ func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	if stands == nil {
 		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
-	want := workflow.ResumePhaseTask(*stands, workflow.WorkingCopy(*stands, nil), "")
+	want := workflow.ResumePhaseTask(*stands, rigWorkingCopy(r.cfg, *stands), "")
 	if told := r.tasks(issue.merger); len(told) != 1 || told[0] != want {
 		t.Fatalf("%s's merger was given the tasks %q, want once with its merging task %q", issue.key, told, want)
 	}
