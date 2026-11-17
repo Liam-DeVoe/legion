@@ -728,7 +728,7 @@ func (s *server) answerIssueListV2(w http.ResponseWriter, r *http.Request, proje
 		}
 		login = actor.ID
 	}
-	labels, err := normalizeIssueLabels(filters.Label)
+	labels, err := normalizeLabels(filters.Label, labelFilterLimit)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return

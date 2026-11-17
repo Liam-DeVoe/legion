@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -203,13 +204,21 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 		capExceeded(w, r, "title", length, contracts.IssueTitleMax)
 		return
 	}
-	if usingDefaultProject {
-		input.Labels = append(input.Labels, repoLabelPrefix+externalRepo)
-	}
 	labels, err := normalizeIssueLabels(input.Labels)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
+	}
+	if usingDefaultProject {
+		// The repo: label is Dispatch's record of the repository the issue came from, not a label
+		// of the caller's, so it joins once the caller's labels have met their limits and neither
+		// the 40 units nor the 20 bind it: a repository name of any length imports (R14). A caller
+		// label of the same name, in any case, is the same label. externalRepo is lower-case
+		// (canonicalRepo).
+		generated := repoLabelPrefix + externalRepo
+		if !slices.ContainsFunc(labels, func(label string) bool { return strings.ToLower(label) == generated }) {
+			labels = append(labels, generated)
+		}
 	}
 	priority, _, err := parseIssuePriority(input.Priority)
 	if err != nil {

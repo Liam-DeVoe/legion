@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -125,9 +127,22 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 		return
 	}
 	if input.Labels != nil {
-		var err error
-		labels, err = normalizeIssueLabels(*input.Labels)
-		if err != nil {
+		// Every label is judged here, before the issue is locked and before it is answered missing or
+		// closed, as it always has been, so a bad label answers 400 first. A repo: label may be the
+		// issue's own, which no caller limit binds (ownRepoLabel), so a replacement naming one reads
+		// which label that is first; a missing issue owns none. The set is judged again against the
+		// issue the row lock reads, below, since a write between the two reads can change it.
+		own := ""
+		if slices.ContainsFunc(*input.Labels, func(value string) bool {
+			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), repoLabelPrefix)
+		}) {
+			var err error
+			if own, err = heldOwnRepoLabel(r.Context(), s.deps.Store.Pool, r.PathValue("key")); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
+		}
+		if _, err := normalizeLabels(*input.Labels, replacementLabelLimit(own)); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
@@ -339,7 +354,7 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 		set("parent_key", parentValue)
 	}
 	if input.LabelsAdd != nil {
-		labels, err = mergeIssueLabels(before.Labels, labelsAdd)
+		labels, err = mergeIssueLabels(before.Labels, labelsAdd, ownRepoLabel(before.Labels, before.ExternalLinks))
 		if err != nil {
 			s.writeHandlerError(w, r, err)
 			return
@@ -347,6 +362,13 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 		set("labels", labels)
 	}
 	if input.Labels != nil {
+		// The issue's own repo: label as its row lock read it, which the check before the lock
+		// read without one.
+		labels, err = normalizeLabels(*input.Labels, replacementLabelLimit(ownRepoLabel(before.Labels, before.ExternalLinks)))
+		if err != nil {
+			s.writeHandlerError(w, r, err)
+			return
+		}
 		set("labels", labels)
 	}
 	if input.Route != nil {
@@ -631,10 +653,92 @@ func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input upda
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }
 
-// mergeIssueLabels adds labels to existing without dropping a concurrent writer's labels. The total
-// still passes through the same cap and de-duplication as a full labels replacement.
-func mergeIssueLabels(existing, added []string) ([]string, error) {
-	return normalizeIssueLabels(append(append([]string{}, existing...), added...))
+// githubIssueLink is the link an import records for the GitHub issue it imports (externalURL),
+// its group the repository's <owner>/<repo>.
+var githubIssueLink = regexp.MustCompile(`^https://github\.com/([^/]+/[^/]+)/issues/[0-9]+$`)
+
+// ownRepoLabel is the lower-cased key of the issue's own repo: label, or "" where it holds none:
+// the first of labels equal, case-insensitively, to repoLabelPrefix and the <owner>/<repo> of one
+// of links that names a GitHub issue, the label an import through the default project writes
+// beside the link it records (createIssueFrom). That label is Dispatch's record of the issue's
+// source repository, and no caller limit binds it. An issue can also hold a repo: label a caller
+// set, which is an ordinary label, held to a caller's limits as any other. The web label editor
+// reads the same rule (ownRepoLabelKey, packages/dispatch/web/src/features/issue/IssueLabels.tsx).
+func ownRepoLabel(labels []string, links []model.ExternalLink) string {
+	for _, label := range labels {
+		key := strings.ToLower(label)
+		repo, isRepoLabel := strings.CutPrefix(key, repoLabelPrefix)
+		if !isRepoLabel {
+			continue
+		}
+		for _, link := range links {
+			if match := githubIssueLink.FindStringSubmatch(link.URL); match != nil && strings.ToLower(match[1]) == repo {
+				return key
+			}
+		}
+	}
+	return ""
+}
+
+// heldOwnRepoLabel is ownRepoLabel of the issue key as it stands, read without a lock, and "" for
+// an issue that does not exist.
+func heldOwnRepoLabel(ctx context.Context, q queryer, key string) (string, error) {
+	var labels []string
+	if err := q.QueryRow(ctx, `select labels from issues where key = $1`, key).Scan(&labels); errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	} else if err != nil {
+		return "", err
+	}
+	rows, err := q.Query(ctx, issueExternalLinksStatement, key)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	links, err := scanExternalLinks(rows)
+	if err != nil {
+		return "", err
+	}
+	return ownRepoLabel(labels, links), nil
+}
+
+// replacementLabelLimit holds a labels replacement: the issue's own repo: label (own, its key),
+// which the replacement keeps when it sends it back in any case, counts toward neither of a
+// caller's limits, and every other label meets both.
+func replacementLabelLimit(own string) labelLimit {
+	return func(key string) (int, bool) {
+		if own != "" && key == own {
+			return 0, false
+		}
+		return maxIssueLabel16, true
+	}
+}
+
+// mergeIssueLabels adds labels, already held to a caller's limits, to existing without dropping a
+// concurrent writer's labels. It keeps the labels the issue holds as they are, its own repo: label
+// (own, its key) among them whatever its length, and holds the merged labels other than that one
+// to maxIssueLabels.
+func mergeIssueLabels(existing, added []string, own string) ([]string, error) {
+	labels := append(make([]string, 0, len(existing)+len(added)), existing...)
+	seen := make(map[string]struct{}, len(existing)+len(added))
+	for _, label := range existing {
+		seen[strings.ToLower(label)] = struct{}{}
+	}
+	for _, label := range added {
+		key := strings.ToLower(label)
+		if _, held := seen[key]; held {
+			continue
+		}
+		seen[key] = struct{}{}
+		labels = append(labels, label)
+	}
+	counted := len(labels)
+	if own != "" {
+		counted--
+	}
+	if counted > maxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
+	}
+	return labels, nil
 }
 
 // isExternalLinksSubset reports whether every URL in requested already belongs to existing. The

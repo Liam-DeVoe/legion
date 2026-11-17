@@ -399,6 +399,10 @@ func issueSummaryJoins(readAdvances bool) string {
 const (
 	maxIssueLabels  = 20
 	maxIssueLabel16 = 40
+	// maxRepoLabel16 bounds a `label` filter value that names a repository (repoLabelPrefix):
+	// the prefix, an owner of up to 39 characters, a slash and a name of up to 100, GitHub's own
+	// limits.
+	maxRepoLabel16 = len(repoLabelPrefix) + 39 + 1 + 100
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
@@ -574,18 +578,54 @@ func (a *advancesScan) resolve() []model.IssueAdvance {
 	return entries
 }
 
+// normalizeIssueLabels holds the labels a caller names to a caller's limits (callerLabelLimit).
 func normalizeIssueLabels(values []string) ([]string, error) {
-	if len(values) > maxIssueLabels {
-		return nil, countExceededError(apicode.LabelsInput, "labels", len(values), maxIssueLabels)
+	return normalizeLabels(values, callerLabelLimit)
+}
+
+// labelLimit is what one label is held to, by its lower-cased key: the most UTF-16 units it may
+// run to, with no bound where that is 0, and whether it counts toward maxIssueLabels. Every limit
+// bounds the empty key, the blank label every write and filter refuses.
+type labelLimit func(key string) (units int, counted bool)
+
+// callerLabelLimit is a caller's limits: every label counts, and runs to maxIssueLabel16 units.
+func callerLabelLimit(string) (int, bool) {
+	return maxIssueLabel16, true
+}
+
+// labelFilterLimit holds a `label` filter value to a caller's limits, except one that names a
+// repository (repoLabelPrefix), which runs to maxRepoLabel16 units: the repo: label an import
+// through the default project writes is held to no caller's 40 (createIssueFrom), and it exists
+// so that its repository stays filterable.
+func labelFilterLimit(key string) (int, bool) {
+	if strings.HasPrefix(key, repoLabelPrefix) {
+		return maxRepoLabel16, true
+	}
+	return maxIssueLabel16, true
+}
+
+// normalizeLabels trims values and folds them case-insensitively, keeping each label's first
+// spelling. It refuses a blank label, one past the units its limit gives it, and more than
+// maxIssueLabels values that their limits count, counted before the fold as they always were.
+func normalizeLabels(values []string, limit labelLimit) ([]string, error) {
+	counted := 0
+	for _, value := range values {
+		if _, counts := limit(strings.ToLower(strings.TrimSpace(value))); counts {
+			counted++
+		}
+	}
+	if counted > maxIssueLabels {
+		return nil, countExceededError(apicode.LabelsInput, "labels", counted, maxIssueLabels)
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		label := strings.TrimSpace(value)
-		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(apicode.LabelsInput, "each label must be 1 to %d characters", maxIssueLabel16)
-		}
 		key := strings.ToLower(label)
+		units, _ := limit(key)
+		if length := itemblocks.Units16(label); length == 0 || (units > 0 && length > units) {
+			return nil, errorf(apicode.LabelsInput, "each label must be 1 to %d characters", units)
+		}
 		if _, duplicate := seen[key]; duplicate {
 			continue
 		}
@@ -611,7 +651,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	project := strings.TrimSpace(query.Get("project"))
 	statuses := parseStatusFilter(query["status"])
 	parent := strings.TrimSpace(query.Get("parent"))
-	labels, err := normalizeIssueLabels(query["label"])
+	labels, err := normalizeLabels(query["label"], labelFilterLimit)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
