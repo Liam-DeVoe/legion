@@ -502,6 +502,28 @@ func TestAnUnansweredHoldAtAResumeChargesNothing(t *testing.T) {
 	}
 }
 
+// ReleaseAfter is written to the second, so it is rounded up: a time written to the second is never
+// before the release statement's own gate, the switch plus ReleaseWindow (review round 6 of #4220).
+// A claim that never switched has none.
+//
+// The control (the pull request records the run): ReleaseAfter without the rounding answers
+// 01:00:00.4, which RFC3339 writes as 01:00:00, before the gate.
+func TestReleaseAfterIsNeverBeforeTheGate(t *testing.T) {
+	switched := time.Date(2026, 11, 16, 12, 0, 0, 400_000_000, time.UTC)
+	gate := switched.Add(ReleaseWindow)
+	got := ReleaseAfter(Claim{Abandoned: AbandonedSession{Session: "ses_old", At: switched}})
+	if got.Before(gate) || got.Nanosecond() != 0 || got.Sub(gate) >= time.Second {
+		t.Fatalf("ReleaseAfter of a switch at %s is %s; want the gate %s rounded up to the second", switched.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano), gate.Format(time.RFC3339Nano))
+	}
+	whole := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
+	if got := ReleaseAfter(Claim{Abandoned: AbandonedSession{Session: "ses_old", At: whole}}); !got.Equal(whole.Add(ReleaseWindow)) {
+		t.Fatalf("ReleaseAfter of a switch at a whole second is %s, want %s", got, whole.Add(ReleaseWindow))
+	}
+	if got := ReleaseAfter(Claim{}); !got.IsZero() {
+		t.Fatalf("ReleaseAfter of a claim that never switched is %s, want none", got)
+	}
+}
+
 // A claim holds at most MaxHeldNamesPerClaim names of sessions (review N2 of #4220): nothing
 // deletes a hold, so without a bound one role could grow the daemon's record without end. A
 // registration whose new names would take the claim past it is refused 409 with
@@ -554,8 +576,9 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 		if release, ok := lines[0].attr("release"); !ok || release.String() != ReleaseOldNamesStatement(h.claim().Project, h.token) {
 			t.Fatalf("the refusal's line gives the statement %v, want %q", release, ReleaseOldNamesStatement(h.claim().Project, h.token))
 		}
-		// A claim that never switched sessions frees its holds by their age alone.
-		if after, ok := lines[0].attr("release_after"); !ok || !strings.HasPrefix(after.String(), "now: ") {
+		// A claim that never switched sessions has no single time: the statement frees its holds by
+		// their own age, and only those whose names contain no id of its session.
+		if after, ok := lines[0].attr("release_after"); !ok || !strings.HasPrefix(after.String(), "none: the claim has never switched sessions") {
 			t.Fatalf("the refusal's line gives release_after %v, want the never-switched answer", after)
 		}
 	})

@@ -49,16 +49,23 @@ const heldNamesCapLine = "supervise: refused a session whose names would take th
 const ReleaseWindow = 13 * time.Hour
 
 // ReleaseAfter is the earliest time ReleaseOldNamesStatement can free any of the claim's holds: its
-// last session switch plus ReleaseWindow, or the zero time for a claim that has never switched,
-// whose holds are freed by their age alone. A claim refused at the cap that needs a new session was
-// usually just given one by an operator's forget-session, so the statement frees nothing for a
-// whole ReleaseWindow after it (review round 5 of #4220); the claim's record does not show the
-// switch on any operator's view, so the refusal's line gives the time.
+// last session switch plus ReleaseWindow, rounded up to the second so a time written to the second
+// is never before the statement's own gate, or the zero time for a claim that has never switched.
+// The statement frees a never-switched claim's holds by their own age, and only those whose names
+// contain no id of its session, so no single time is that claim's (heldNamesCapLine's field says
+// so). A claim refused at the cap that needs a new session was usually just given one by an
+// operator's forget-session, so the statement frees nothing for a whole ReleaseWindow after it
+// (review round 5 of #4220); the claim's record does not show the switch on any operator's view, so
+// the refusal's line gives the time.
 func ReleaseAfter(c Claim) time.Time {
 	if c.Abandoned.At.IsZero() {
 		return time.Time{}
 	}
-	return c.Abandoned.At.Add(ReleaseWindow).UTC()
+	after := c.Abandoned.At.Add(ReleaseWindow).UTC()
+	if whole := after.Truncate(time.Second); !whole.Equal(after) {
+		after = whole.Add(time.Second)
+	}
+	return after
 }
 
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
@@ -85,20 +92,23 @@ func ReleaseAfter(c Claim) time.Time {
 // within the project is readable to its roles anyway. A claim that has never switched, whose
 // abandoned session is empty, frees by its holds' age alone.
 //
-// One case the 13 hours do not cover (review round 5 of #4220): a lease does not run while no
-// broker is serving, and the daemon's revoke is three tries ten seconds apart (revokeAttempts), so
-// after a broker outage longer than about 45 minutes an enrollment the revoke missed can lapse, and
-// go dormant, later than an hour after its process ended. The daemon logs that missed revoke at
-// Error, `supervise: agent-secrets: enrollment not revoked after every attempt; the lease ends it`.
-// An operator who finds that line for the claim waits 13 hours after it, not after the switch,
-// before running the statement.
+// One case the 13 hours do not cover (review rounds 5 and 6 of #4220): a lease does not run while
+// no broker is serving. When a broker serves again, it caps every running lease at its return plus
+// one lease, BROKER_LEASE_SECONDS (envoy's enroll.ServingClock, which logs `broker: gave back the
+// time no broker was serving to every lease still running when the last broker served`), so an
+// enrollment whose revoke the daemon missed goes dormant up to one lease, and a sweep, after the
+// broker's return. If the broker came back later than an hour less one lease after the claim's last
+// switch, the switch plus 13 hours is too soon; the daemon cannot see this, and its own missed
+// revoke may log nothing, since it can exit between tries and its boot does not retry them. So an
+// operator who finds that broker line after the claim's last switch waits 13 hours after the
+// line, not after the switch, before running the statement.
 //
 // The daemon is not told the broker's settings: they are the broker's own (envoy's broker/config),
 // read by its sweeper and answered on no route the daemon calls, so the statement writes the
 // defaults, and a deployment with a longer carry window puts that window plus an hour in both
 // intervals. The project and token are written as SQL literals, their quotes doubled.
 func ReleaseOldNamesStatement(project string, token claim.Token) string {
-	window := fmt.Sprintf("interval '%d hours'", int(ReleaseWindow/time.Hour))
+	window := fmt.Sprintf("interval '%d seconds'", int64(ReleaseWindow/time.Second))
 	return "delete from claim_sessions h using claims c" +
 		" where c.project = h.project and c.token = h.claim" +
 		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
@@ -241,7 +251,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		holders, err = m.deps.Store.HoldSessions(ctx, m.claim.Project, m.claim.Token, ask)
 		return err
 	}); errors.Is(err, ErrHeldNamesCap) {
-		releaseAfter := "now: the claim has never switched sessions, so its holds go by their own age"
+		releaseAfter := "none: the claim has never switched sessions; the statement frees only holds more than 13 hours old whose names contain no id of its session"
 		if after := ReleaseAfter(m.claim); !after.IsZero() {
 			releaseAfter = after.Format(time.RFC3339)
 		}
