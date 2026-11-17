@@ -1120,6 +1120,10 @@ function drawSpec(
   client.setQueryData(issueResultsQuery(KEY).queryKey, results);
   client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
   client.setQueryData(artifactBlocksQuery(issue.primary_artifact_id).queryKey, []);
+  // The tree read and the Spec view's read, held answered with no node, as the page holds them
+  // once read: the body takes its decisions from the view read and reads nothing on its own.
+  client.setQueryData(issueTreeKey(KEY), readAnswer([]));
+  client.setQueryData(viewKey(KEY, "spec"), readAnswer([]));
   const spies = [
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "getIssueCoverage").mockResolvedValue(coverageRead([])),
@@ -2298,6 +2302,7 @@ function planBody(
               isClosed: false,
               onEditing: () => {},
               plan,
+              planBlocks: undefined,
               reveal,
               root,
               rootRow: false,

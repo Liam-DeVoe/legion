@@ -12,6 +12,7 @@ import {
 import type { NodeType } from "../web/src/features/issue-page/page-words";
 import { baseUrlOf, getIssueCoverage, getIssueResults, userHeaders } from "./api";
 import { issuePage } from "./issue-page";
+import type { Gate, TreeAnswerWatch } from "./issue-page-t";
 
 /**
  * What the rows of part W of dispatch://INFRA-1196 (dispatch://INFRA-4065,
@@ -35,10 +36,13 @@ import { issuePage } from "./issue-page";
  *   `[data-lens-chain-entry]`), a row by the id the tree read gives its node
  *   (`data-node-read-id`), and the page's own words.
  * - **The tree read**: what the page received of `GET /api/v1/issues/{key}/tree` - its newest
- *   read whose every page answered (`treeAnswerOf`, part T's, held here until T's export reaches
- *   this branch), the pages of each read (`treePagesOf`) - and the read ids of the nodes
- *   `seedLenses` wrote, read from that answer (`lensReadIds`), so a row names each node by the
- *   id the page itself received and never builds one.
+ *   read whose every page answered, part T's `treeAnswerOf` (`e2e/issue-page-t.ts`), held until
+ *   it holds what a row waits for (`heldTreeAnswer`), and the pages of each read
+ *   (`treePagesOf`) - and the read ids of the nodes `seedLenses` wrote, read from that answer
+ *   (`lensReadIds`), so a row names each node by the id the page itself received and never
+ *   builds one.
+ * - **The gate** GF (`findingGate`), which a clause of a row waits on as the rows wait on part
+ *   T's gates: a `Gate` of T's, read by T's `owedUnless`.
  */
 
 /** What `POST /api/v1/issues/{key}/lenses` answers: the lens, with its findings. */
@@ -491,89 +495,16 @@ function treeReadAnswer(response: Response): boolean {
   );
 }
 
-// The tree read as part T keeps it. This section goes once T's `e2e/issue-page-t.ts`
-// (INFRA-4062 at fb231b9e85) is merged under W: `issue-page-w.e2e.ts` then imports
-// `treeAnswerOf` from `./issue-page-t`, whose export has this signature and this behaviour, and
-// nothing else changes.
-
-/** What the page received of the tree route with no view. */
-export interface TreeAnswerWatch {
-  /** The newest read whose every page has answered, its pages merged; undefined until one has. */
-  answer(): IssueTreeAnswer | undefined;
-}
-
-/** One page of a read as the page received it: in which place it arrived, the cursor its request
- *  sent (none for a read's first page), and the page. */
-interface ReceivedPage {
-  readonly arrived: number;
-  readonly cursor: string | null;
-  readonly page: IssueTreeAnswer;
-}
-
-/** The tree read the page receives with no view, every page of its newest read merged. Start it
- *  before the navigation, so the first load's read is kept. */
-export function treeAnswerOf(page: Page): TreeAnswerWatch {
-  const received: ReceivedPage[] = [];
-  let arrivals = 0;
-  page.on("response", (response) => {
-    if (!treeReadAnswer(response)) return;
-    const arrived = arrivals;
-    arrivals += 1;
-    const cursor = new URL(response.url()).searchParams.get("cursor");
-    void response.json().then(
-      (body: IssueTreeAnswer) => {
-        received.push({ arrived, cursor, page: body });
-      },
-      // A body the browser let go of before it was read, as the page moved on, is no answer.
-      () => undefined
-    );
-  });
-  return { answer: () => newestRead(received) };
-}
-
-/** The newest read every page of which has answered: a read starts at a page its request sent no
- *  cursor for, and goes on with each page whose cursor the page before it answered. */
-function newestRead(received: readonly ReceivedPage[]): IssueTreeAnswer | undefined {
-  const reads: IssueTreeAnswer[][] = [];
-  for (const { cursor, page } of [...received].sort((a, b) => a.arrived - b.arrived)) {
-    const read = reads[reads.length - 1];
-    if (cursor === null) reads.push([page]);
-    else if (read !== undefined && read[read.length - 1]?.cursor === cursor) read.push(page);
-  }
-  for (let at = reads.length - 1; at >= 0; at -= 1) {
-    const [first, ...rest] = reads[at] ?? [];
-    if (first !== undefined && (rest[rest.length - 1] ?? first).cursor === null) {
-      return mergedPages(first, rest);
-    }
-  }
-  return undefined;
-}
-
-/** The pages of one read as one answer, as `tree-read/tree-read.ts`' `mergeTreePages` merges
- *  them: every page's nodes and tuples in the order the pages came, and what describes the issue
- *  rather than a page from the first. */
-function mergedPages(first: IssueTreeAnswer, rest: readonly IssueTreeAnswer[]): IssueTreeAnswer {
-  if (rest.length === 0) return first;
-  const pages = [first, ...rest];
-  return {
-    ...first,
-    cursor: null,
-    nodes: pages.flatMap((one) => one.nodes),
-    tuples: pages.flatMap((one) => one.tuples),
-  };
-}
-
-// The end of the section that goes once part T's export is merged under W.
-
-/** How long `heldTreeAnswer` waits for a read: a load's, or the one a write sends again. */
+/** How long `heldTreeAnswer` waits for the read a write, or a reload, sends again. */
 const TREE_HELD_MS = 30_000;
 
-/** Waits until the newest read `watch` holds (`treeAnswerOf`) is one `holds` is true of - any
- *  read, unless it says otherwise - and answers it. */
+/** Waits until the newest read `watch` holds (part T's `treeAnswerOf`) is one `holds` is true
+ *  of, and answers it: T's `heldAnswer` answers any read whose every page answered, and this the
+ *  read a write or a reload sent again, once it holds what that write or reload changed. */
 export async function heldTreeAnswer(
-  watch: { answer(): IssueTreeAnswer | undefined },
+  watch: TreeAnswerWatch,
   what: string,
-  holds: (answer: IssueTreeAnswer) => boolean = () => true
+  holds: (answer: IssueTreeAnswer) => boolean
 ): Promise<IssueTreeAnswer> {
   const message = `${what} never answered the read the row waits for`;
   await expect
@@ -679,4 +610,64 @@ export function lensReadIds(answer: IssueTreeAnswer, key: string, seeded: LensSe
 /** The read id of every lens `answer` holds, in its order. */
 export function lensIdsIn(answer: IssueTreeAnswer): string[] {
   return answer.nodes.flatMap((node) => (node.supertag === "lens" ? [node.id] : []));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The gate: a clause whose gate is not on W's base is a row of its own, which skips.
+// ---------------------------------------------------------------------------------------------
+
+/** The decisions every owed row cites, as part T's gates cite them (INFRA-1196's 61, 127 and
+ *  135, as decision 170 reads them). */
+const OWED_BY = "decisions 61, 127, 135";
+
+/** Issue `key`'s tree read with no view, every page of it in order, read through the signed-in
+ *  page's own request context, as part T's gates read it. */
+async function requestedTreeRead(page: Page, key: string): Promise<IssueTreeAnswer> {
+  const pageAt = async (cursor: string | null): Promise<IssueTreeAnswer> => {
+    const path = routeUrl(
+      "/api/v1/issues/{key}/tree",
+      { key },
+      cursor === null ? undefined : { cursor }
+    );
+    const response = await page.request.get(path);
+    if (!response.ok()) {
+      throw new Error(`GET ${path} failed: ${response.status()} ${await response.text()}`);
+    }
+    return (await response.json()) as IssueTreeAnswer;
+  };
+  const first = await pageAt(null);
+  const pages = [first];
+  let cursor = first.cursor;
+  while (cursor !== null) {
+    const next = await pageAt(cursor);
+    pages.push(next);
+    cursor = next.cursor;
+  }
+  return {
+    ...first,
+    cursor: null,
+    nodes: pages.flatMap((one) => one.nodes),
+    tuples: pages.flatMap((one) => one.tuples),
+  };
+}
+
+/**
+ * GF: INFRA-1950's commit 5c85ffdc1b on the model, which makes a lens invoked on a finding point
+ * at it as `lens_block`, the kind the graph addresses a finding by, so the tree read stands that
+ * lens under the finding. The probe invokes a lens on the finding `seedLenses` wrote on issue
+ * `key` (`invokeLens`) and reads every page of the issue's tree read through the signed-in
+ * page's own request context, as T's `treeReadGate` reads it: met only where that read holds a
+ * lens whose parent is the finding. The probe's lens stays, a lens on the finding before the
+ * row's own.
+ */
+export async function findingGate(page: Page, key: string, seeded: LensSeed): Promise<Gate> {
+  await invokeLens(key, { kind: "trade-off", on: seeded.finding.address });
+  const answer = await requestedTreeRead(page, key);
+  const { finding } = lensReadIds(answer, key, seeded);
+  return {
+    met: answer.nodes.some((node) => node.supertag === "lens" && node.parent === finding),
+    owed:
+      "owed on GF: INFRA-1950's 5c85ffdc1b (a lens invoked on a finding stands under no finding " +
+      `of the tree read here); ${OWED_BY}`,
+  };
 }

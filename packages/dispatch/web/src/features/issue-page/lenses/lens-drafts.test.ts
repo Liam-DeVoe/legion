@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import type { Actor, Artifact, CheckBlock, DisplayTree, IssueDetails } from "../../../api/types";
+import type { Actor, Artifact, DisplayTree } from "../../../api/types";
 import { issueAddress, pathToTarget } from "../issue-address";
 import {
   buildIssueTree,
@@ -12,9 +12,11 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import { chipWords } from "../node-row-chip";
+import { artifact, issueDetails } from "../spec-filter/spec-fixtures";
 import { blockNodeId, treeContext } from "../tree-drafts";
 import { type TreeWords, treeDraftsFrom } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
+import { check } from "../verification-filter/verification-fixtures";
 import { kindWords, type LensFacts } from "./lens-drafts";
 import { type LensInvoked, lensReadId } from "./lens-reads";
 
@@ -32,71 +34,9 @@ const KEY = "CORE-1";
 
 const ALICE: Actor = { id: "alice", kind: "user" };
 
-function artifact(id: string, slug: string, name: string, primary = false): Artifact {
-  return {
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: ALICE,
-    id,
-    issue_key: KEY,
-    kind: "doc",
-    name,
-    primary,
-    project: "CORE",
-    ref_key: `artifact:${id}`,
-    session_id: null,
-    slug,
-    versions: [],
-  };
-}
-
-const SPEC = artifact("artifact-spec", "spec", "spec.md", true);
-const PLAN = artifact("artifact-plan", "plan-md", "plan.md");
-const VERIFICATION = artifact("artifact-verification", "verification-md", "verification.md");
-
-function issueDetails(): IssueDetails {
-  return {
-    advances: [],
-    advances_revision: 0,
-    artifacts: [SPEC, PLAN, VERIFICATION],
-    assignee: null,
-    blocked_by: [],
-    children: [],
-    claim: null,
-    closed_at: null,
-    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: ALICE,
-    design_gates: [],
-    external_links: [],
-    key: KEY,
-    labels: [],
-    last_seq: 1,
-    number: 1,
-    open_asks: [],
-    parent: null,
-    plan_artifact_id: "",
-    decisions_artifact_id: "",
-    primary_artifact_id: SPEC.id,
-    verification_artifact_id: "",
-    priority: null,
-    project: "CORE",
-    progress: { children: null, tasks: null },
-    rank: "U",
-    referenced_by_count: 0,
-    repo: null,
-    resolved_repo: null,
-    route: null,
-    route_holder: null,
-    route_status: null,
-    route_status_reason: null,
-    holder_state: null,
-    last_seen: null,
-    takeable_at: null,
-    status: "todo",
-    title: "The issue page draws its lenses",
-    updated_at: "2026-11-05T00:00:00Z",
-  };
-}
+const SPEC = artifact("artifact-spec", "spec", true);
+const PLAN = artifact("artifact-plan", "plan-md");
+const VERIFICATION = artifact("artifact-verification", "verification-md");
 
 /** The server's reading of a text of one paragraph per string. */
 function reading(...paragraphs: string[]): DisplayTree {
@@ -224,8 +164,13 @@ function naming(reads: IssueTreeReads): TreeWords {
   return { ...treeContext(reads, chipLine), chipLine, lineWords };
 }
 
-/** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it. */
-function drawn(tree: TreeAnswer, reads: IssueTreeReads = { issue: issueDetails() }) {
+/** The tree `buildIssueTree` builds from `tree`, and the drafts `treeDraftsFrom` makes of it, on
+ *  J's issue holding the three documents the cases write their blocks in, unless a case gives
+ *  reads of its own. */
+function drawn(
+  tree: TreeAnswer,
+  reads: IssueTreeReads = { issue: { ...issueDetails(), artifacts: [SPEC, PLAN, VERIFICATION] } }
+) {
   return {
     drafts: treeDraftsFrom(tree, reads, naming(reads)),
     root: buildIssueTree({ ...reads, tree }),
@@ -279,26 +224,6 @@ function factsOf(row: TreeNode): LensFacts {
 
 /** The lens facts of a node that carries no chip and no fact of its own. */
 const NO_FACTS = { constrainedBy: [], preventedBy: [], triggered: [], triggeredBy: [] };
-
-/** A check of the results read, at the address that read gives it. */
-function check(blockId: string): CheckBlock {
-  return {
-    artifact_id: VERIFICATION.id,
-    block_id: blockId,
-    compared_with: null,
-    issue_key: KEY,
-    negative_control: "",
-    pass_stands: { answer: "unknown" },
-    ref: `dispatch://${KEY}/verification#b-${blockId}`,
-    results: null,
-    run: "",
-    sha256: "",
-    surface: "",
-    text: `Words of ${blockId}.`,
-    version: 1,
-    when: "",
-  };
-}
 
 /** Three lenses' ids, which sort against the order they were invoked in. */
 const FIRST = "c3000000-0000-4000-8000-000000000003";
@@ -532,8 +457,12 @@ test("a check's chip takes its words from its node", () => {
       [tuple("has_kind", FIRST, PRE_MORTEM.id), tuple("prevented_by", "risk-b", "c1")]
     ),
     {
-      issue: issueDetails(),
-      results: { checks: [check("c1")], issue: KEY, verification_artifact_id: VERIFICATION.id },
+      issue: { ...issueDetails(), artifacts: [SPEC, PLAN, VERIFICATION] },
+      results: {
+        checks: [check({ block_id: "c1", ref: `dispatch://${KEY}/verification#b-c1` })],
+        issue: KEY,
+        verification_artifact_id: VERIFICATION.id,
+      },
     }
   );
   const checkRow = rowOf(root, blockNodeId("verification-md", "c1"));
@@ -737,7 +666,9 @@ test("a catalogue constraint is no row and its chip has no link", () => {
 });
 
 // R7: `?node=` with the id the 201 of an invocation gives (`lensReadId`) opens the path to that
-// lens's row, and the row's reference, which Copy reference copies, is the lens's address.
+// lens's row, and the row's reference, which Copy reference copies, is the lens's address. A
+// statement's and a check's read ids, which their tree ids (`<slug>#b-<id>`) are not, open the
+// paths to their rows alike: the links of a risk's Prevented by chip and of a statement's address.
 test("a lens row is reached by its ?node= id", () => {
   const invoked: LensInvoked = {
     address: `dispatch://lens/${FIRST}`,
@@ -754,7 +685,13 @@ test("a lens row is reached by its ?node= id", () => {
   };
   const { root } = drawn(
     answer(
-      [block("r1", "requirement", KEY, SPEC, 0), lens(FIRST, "r1"), lens(SECOND, "r1"), TRADE_OFF],
+      [
+        block("r1", "requirement", KEY, SPEC, 0),
+        block("c1", "check", "r1", VERIFICATION, 0),
+        lens(FIRST, "r1"),
+        lens(SECOND, "r1"),
+        TRADE_OFF,
+      ],
       [tuple("has_kind", FIRST, TRADE_OFF.id), tuple("has_kind", SECOND, TRADE_OFF.id)]
     )
   );
@@ -769,6 +706,15 @@ test("a lens row is reached by its ?node= id", () => {
   expect(address.target).toEqual({ id: FIRST, kind: "node" });
   expect(path?.map((one) => one.id)).toEqual([KEY, blockNodeId("spec", "r1"), FIRST]);
   expect(path?.at(-1)?.reference).toBe(invoked.address);
+  for (const [readId, chain] of [
+    ["r1", [KEY, blockNodeId("spec", "r1")]],
+    ["c1", [KEY, blockNodeId("spec", "r1"), blockNodeId("verification-md", "c1")]],
+  ] as const) {
+    const { target } = issueAddress({ key: KEY, kind: "issue" }, `?node=${readId}`, "", "spec");
+
+    expect(target).toEqual({ id: readId, kind: "node" });
+    expect(pathToTarget(root, target)?.map((one) => one.id)).toEqual([...chain]);
+  }
 });
 
 // t3's copy line in `assemble`: each draft's lens facts are the tree node's, whole - a lens's,
