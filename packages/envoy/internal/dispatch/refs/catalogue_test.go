@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,11 +19,11 @@ import (
 
 // withTestOnlyKinds installs a registry entry for each of kinds the real registry does not hold,
 // for the length of the test, as TestAnOlderBuildSkipsItemBlockRows swaps nodeRegistry: each with
-// the project scope and a loader over graph_nodes (loadStoreNodes), which is how the node-types
-// work's T7 registers lens_kind and constraint (the private-projects plan's contract on that work's
-// kinds). It adds nothing for a kind the registry holds, so once T7 is in the build these tests
-// read its entries, and it logs each entry it installs, so a run says which kinds it could not
-// read from the real registry.
+// the project scope and a loader over graph_nodes (loadStoreNodes), which is how the change that
+// registers the node-types spec's kinds registers lens_kind and constraint (the private-projects
+// plan's contract on those kinds). It adds nothing for a kind the registry holds, so once that
+// change is in the build these tests read its entries, and it logs each entry it installs, so a
+// run says which kinds it could not read from the real registry.
 func withTestOnlyKinds(t *testing.T, kinds ...string) {
 	t.Helper()
 	registry, resolved := nodeRegistry, nodeKinds
@@ -31,7 +33,7 @@ func withTestOnlyKinds(t *testing.T, kinds ...string) {
 			continue
 		}
 		extended[kind] = resolvedKind(loadStoreNodes, nodeVisibility{scope: projectScope})
-		t.Logf("test-only registry entry: %s (the node-types work's T7 not in this build)", kind)
+		t.Logf("test-only registry entry: %s (no change in this build registers it)", kind)
 	}
 	nodeRegistry = extended
 	nodeKinds = resolvedNodeKinds()
@@ -158,7 +160,9 @@ func TestAProjectConstraintOfAHiddenProjectStaysHidden(t *testing.T) {
 // one that a current tuple of its relation reaches from its from-kind - names no project and no
 // parties, and every node of an entry with no Via was written by a migration (the sentinel event
 // and a system actor). The arm itself also requires no project, so a seed that stated one would
-// leave the node to its project's rule; this names such a node instead of hiding it.
+// leave the node to its project's rule; this names such a node instead of hiding it. The scan is
+// shown able to fail first: a constraint planted in PRIV and reached by a constrained_by tuple is
+// named, and is then taken out again before the seed's own nodes are checked.
 func TestEveryCatalogueNodeHoldsNoProject(t *testing.T) {
 	withTestOnlyKinds(t, "lens_kind", "constraint")
 	tx := beginSeed(t)
@@ -166,7 +170,37 @@ func TestEveryCatalogueNodeHoldsNoProject(t *testing.T) {
 	seedLensKind(t, tx, "contract-gap", uuid.NewString(), "")
 	seedLensKind(t, tx, "missing-test", uuid.NewString(), "")
 
+	planted := uuid.NewString()
+	if _, err := tx.Exec(context.Background(), "savepoint planted"); err != nil {
+		t.Fatalf("savepoint: %v", err)
+	}
+	seedLensKind(t, tx, "planted", planted, "PRIV")
+	if _, violations := catalogueViolations(t, tx); !slices.ContainsFunc(violations, func(violation string) bool {
+		return strings.Contains(violation, "constraint/"+planted+" names project \"PRIV\"")
+	}) {
+		t.Fatalf("the scan does not name the constraint planted in PRIV, so it can name none:\n%s", strings.Join(violations, "\n"))
+	}
+	if _, err := tx.Exec(context.Background(), "rollback to savepoint planted"); err != nil {
+		t.Fatalf("take the planted constraint out: %v", err)
+	}
+
+	checked, violations := catalogueViolations(t, tx)
+	for _, violation := range violations {
+		t.Error(violation)
+	}
+	if checked == 0 {
+		t.Fatal("no catalogue node was read, so none was checked")
+	}
+	t.Logf("checked %d catalogue nodes", checked)
+}
+
+// catalogueViolations reads, through tx, every node a catalogue arm matches by its kind and its
+// tuple, and answers how many it read and a line for each that names a project or parties, or,
+// for an entry with no Via, was not written by a migration.
+func catalogueViolations(t *testing.T, tx pgx.Tx) (int, []string) {
+	t.Helper()
 	checked := 0
+	var violations []string
 	for _, entry := range catalogue {
 		statement := `select n.kind, n.id, n.project_key, n.parties, n.source_event, coalesce(n.made_by->>'kind', '')
 			from graph_nodes n where n.kind = $1`
@@ -194,12 +228,12 @@ func TestEveryCatalogueNodeHoldsNoProject(t *testing.T) {
 			}
 			checked++
 			if project != nil || parties != nil {
-				t.Errorf("the catalogue node %s/%s names project %v and parties %v: a catalogue node holds no project's content (%s)",
-					kind, id, deref(project), parties, entry.Source)
+				violations = append(violations, fmt.Sprintf("the catalogue node %s/%s names project %v and parties %v: a catalogue node holds no project's content (%s)",
+					kind, id, deref(project), parties, entry.Source))
 			}
 			if entry.Via == nil && (event != 0 || writer != "system") {
-				t.Errorf("the catalogue node %s/%s was written at event %d by a %q actor: every node of the kind is seeded by a migration (%s)",
-					kind, id, event, writer, entry.Source)
+				violations = append(violations, fmt.Sprintf("the catalogue node %s/%s was written at event %d by a %q actor: every node of the kind is seeded by a migration (%s)",
+					kind, id, event, writer, entry.Source))
 			}
 		}
 		rows.Close()
@@ -207,10 +241,7 @@ func TestEveryCatalogueNodeHoldsNoProject(t *testing.T) {
 			t.Fatalf("read the nodes the %s arm matches: %v", entry.Kind, err)
 		}
 	}
-	if checked == 0 {
-		t.Fatal("no catalogue node was read, so none was checked")
-	}
-	t.Logf("checked %d catalogue nodes", checked)
+	return checked, violations
 }
 
 func deref(value *string) string {
