@@ -119,10 +119,27 @@ func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
 	}
 }
 
+// captureReviewClaim is CAPTURE-1's reviewer claim as the daemon names it (claim.NewToken of the
+// issue's project, key and role): the claim the daemon starts the reviewer under and records its
+// session on, and the claim each of the reviewer's completions carries.
+const captureReviewClaim claim.Token = "legion-capture-capture-1-reviewer"
+
+// seedCaptureReviewerSession records CAPTURE-1's reviewer claim with session, as the daemon
+// records the claim it starts the reviewer under.
+func seedCaptureReviewerSession(t *testing.T, pool *store.Pool, session string) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'CAPTURE', 'CAPTURE-1', 'CAPTURE-1', 'reviewer', 1, $2, '', 'working', 0, 0, 0, 0)`, string(captureReviewClaim), session); err != nil {
+		t.Fatalf("seed the reviewer's claim session: %v", err)
+	}
+}
+
 // completedReviewer is CAPTURE-1's reviewer having completed its round naming handoff record
-// handoff, no review recorded as deciding it.
+// handoff, no review recorded as deciding it. Its row names the claim its completion carried, the
+// claim the daemon starts the reviewer under (captureReviewClaim).
 func completedReviewer(handoff string) record.PhaseRow {
-	return record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", HandoffRecord: handoff, HandoffVersion: 1, LastHandoff: handoff,
+	return record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: captureReviewClaim, HandoffRecord: handoff, HandoffVersion: 1, LastHandoff: handoff,
 		Summary: "reviewed", CompletedAt: time.Date(2026, 10, 8, 22, 16, 6, 0, time.UTC)}
 }
 
@@ -541,11 +558,7 @@ func TestTheReadSetsAsideAReviewAppReviewFromAnotherSession(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
 	captureHeadAt(t, pool, captureHead)
-	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ('review-claim', 'CAPTURE', 'CAPTURE-1', 'CAPTURE-1', 'reviewer', 1, 'ses-reviewer', '', 'working', 0, 0, 0, 0)`); err != nil {
-		t.Fatalf("seed the reviewer's claim session: %v", err)
-	}
+	seedCaptureReviewerSession(t, pool, "ses-reviewer")
 	body := func(session string) string {
 		return "reviewed" + legionFooter(session, captureHead)
 	}
