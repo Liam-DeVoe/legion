@@ -199,7 +199,7 @@ func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testi
 	want := map[string]string{
 		"example-org":             "implement-token-for-example-org/deployment",
 		"example-org/nats-server": "implement-read-for-example-org/nats-server",
-		"cybermonklabs":            "implement-read-for-cybermonklabs/legion",
+		"cybermonklabs":           "implement-read-for-cybermonklabs/legion",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v", got, want)
@@ -741,7 +741,7 @@ func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testi
 		"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
 		"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
 		"sjawhar":             "implement-token-for-cybermonklabs/legion",
-		"example-org":        "implement-read-for-example-org/deployment+nats-server",
+		"example-org":         "implement-read-for-example-org/deployment+nats-server",
 	}
 	if !maps.Equal(tokens, want) {
 		t.Errorf("tokens = %v, want %v", tokens, want)
@@ -885,7 +885,7 @@ func TestGitHubCredentialLeavesOutASiblingRepositoryGitHubRefuses(t *testing.T) 
 	}
 	want := map[string]string{
 		"cybermonklabs": "implement-read-for-cybermonklabs/legion",
-		"example-org":  "implement-token-for-example-org/deployment",
+		"example-org":   "implement-token-for-example-org/deployment",
 	}
 	if got := bundleTokens(t, bundle); !maps.Equal(got, want) {
 		t.Errorf("tokens = %v, want %v: the refused repository's directory is left out and the rest whole", got, want)
