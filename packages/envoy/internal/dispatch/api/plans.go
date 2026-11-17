@@ -76,6 +76,8 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A body with no tasks stays nil, which the store refuses as a list left out (tasks is
+	// required), apart from an empty list, which it refuses as a plan with no task.
 	var tasks []workflowstore.PlanTask
 	if input.Tasks != nil {
 		tasks = make([]workflowstore.PlanTask, len(input.Tasks))
