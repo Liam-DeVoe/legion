@@ -352,6 +352,20 @@ func TestCheckState(t *testing.T) {
 			c.Subject.Commit = "c2"
 			c.Uncited = map[string]map[string]string{"c2": {c.check: "test-not-in-code"}}
 		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		// R48: "At that commit, such a check reads unknown, and no earlier result of it counts." A
+		// refusal counts wherever the results of its commit count, a failing example's commit too,
+		// and for a program check of production the commit of its test.
+		{name: "R48, a refusal at the commit of the caught failing example alone, whose results count at c2", change: func(c *checkCase) {
+			c.commit("x1", "c1", "docs/x.md")
+			c.commit("c2", "c1", "docs/x.md")
+			c.Subject.Commit = "c2"
+			c.Results[1].Commit = "x1"
+			c.Uncited = map[string]map[string]string{"x1": {c.check: "test-not-in-code"}}
+		}, want: CheckState{State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
+		{name: "R48, a program check of production that CI refused at the commit of the test that caught its fault", change: func(c *checkCase) {
+			c.productionProgram("docs/x.md", "c1")
+			c.Uncited = map[string]map[string]string{"c1": {checkStateProductionProgram.ID: "test-not-in-code"}}
+		}, want: CheckState{ID: checkStateProductionProgram.ID, State: "unknown", Reason: "uncited", Detail: "test-not-in-code"}},
 		{name: "R9, the job ended with no result", change: func(c *checkCase) {
 			c.commit("c2", "c1", "packages/envoy/cmd/listener/main.go")
 			c.Subject.Commit = "c2"

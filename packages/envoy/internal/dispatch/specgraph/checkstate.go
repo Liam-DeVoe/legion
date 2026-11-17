@@ -526,16 +526,18 @@ func (j *checkJudge) carries(check, commit string) bool {
 // of a result of a check of the code, the TestCommit of a result of a program check of production or
 // of the graph; and whether there is one.
 func (j *checkJudge) refusalWhereItCounts(c Check, runs, faults []Result) (string, bool) {
-	for _, r := range slices.Concat(runs, faults) {
-		commit := r.Commit
-		switch {
-		case readsProduction(c) && c.Procedure == ProcedureProgram:
-			commit = r.TestCommit
-		case readsProduction(c):
-			continue
-		}
-		if rule, refused := j.in.Uncited[commit][c.ID]; refused && j.carries(c.ID, commit) {
-			return rule, true
+	if readsProduction(c) && c.Procedure != ProcedureProgram {
+		return "", false
+	}
+	for _, results := range [2][]Result{runs, faults} {
+		for _, r := range results {
+			commit := r.Commit
+			if readsProduction(c) {
+				commit = r.TestCommit
+			}
+			if rule, refused := j.in.Uncited[commit][c.ID]; refused && j.carries(c.ID, commit) {
+				return rule, true
+			}
 		}
 	}
 	return "", false
