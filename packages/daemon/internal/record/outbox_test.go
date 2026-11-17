@@ -438,10 +438,10 @@ func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T)
 // The rating of the plan is written by the retro (workflow's rateRetro), onto the retro's record:
 // its kind retro, its place 0, its role the implementer and its type empty. A rating without its
 // reason, or a reason without its rating, is refused where the record is queued and where a stored
-// row is read (TestDecodeOutboxPayloadRefusesInvalidRows): the two are written together or not at
-// all, and a reason alone would go to the step route, which takes no reason and answers 200, so it
-// would be lost with no line. A retro's write with no rating is taken, and so is one with both; each
-// is queued as the payload the release before stored, and that payload, read back, is the record.
+// row is read (TestDecodeOutboxPayloadRefusesInvalidRows); validateOutboxPayload says why the
+// daemon refuses the two apart rather than leaving them to Dispatch. A retro's write with no rating
+// is taken, and so is one with both; each is queued as the payload the stored rows already hold,
+// and that payload, read back, is the record.
 func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
 	retro := StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
 		Agent: "legion-leg-leg-1-implementer", Generation: 1}
