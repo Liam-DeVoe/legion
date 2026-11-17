@@ -19,7 +19,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { type StepRow, stepTasks } from "./steps-model";
+import { type StepRow, stepTasks, stepVariant } from "./steps-model";
 
 const COLUMNS = [
   "Step",
@@ -292,8 +292,11 @@ export function StepsTab({ active, issueKey }: { active: boolean; issueKey: stri
       <EmptyState label="Steps empty state" message="No step of this issue has run in Legion." />
     );
   }
+  // The experiment a draw put the issue in, with the variant it drew, once above the tasks.
+  const variant = stepVariant(query.data);
   return (
     <div className="min-w-0 space-y-6">
+      {variant === null ? null : <p className={`text-sm ${textSecondaryOnCanvas}`}>{variant}</p>}
       {tasks.map(({ rows, task }) => (
         <TaskTable key={task} rows={rows} task={task} />
       ))}
