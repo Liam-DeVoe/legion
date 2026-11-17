@@ -41,7 +41,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 	}
 	// A role the plan's own role block defines is defined (Supported refuses the role block).
 	defined := oneTask("a", "implementer prober")
-	defined.RoleBlocks = []string{"prober"}
+	defined.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
 	if r := Validate(defined, d); len(r) != 0 {
 		t.Fatalf("Validate(a role the plan defines) = %+v, want none", r)
 	}
@@ -105,7 +105,11 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "step 1 of task a names the key owner." + yet}}},
 		{name: "a key on acceptance but owner", plan: oneTask("a", "implementer acceptance:r"),
 			want: []Refusal{{Task: "a", Reason: "step 2 of task a names the key r." + yet}}},
-		{name: "a role block", plan: func() Plan { p := oneTask("a", "implementer"); p.RoleBlocks = []string{"prober"}; return p }(),
+		{name: "a role block", plan: func() Plan {
+			p := oneTask("a", "implementer")
+			p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting}}
+			return p
+		}(),
 			want: []Refusal{{Task: "", Reason: "the plan defines the role prober." + yet}}},
 		{name: "merges", plan: withTask(Task{ID: "a", Merges: true, HasSteps: true, Steps: implementer}),
 			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},

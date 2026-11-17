@@ -34,9 +34,9 @@ func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
 	}
-	defined := make(map[string]bool, len(p.RoleBlocks))
-	for _, role := range p.RoleBlocks {
-		defined[role] = true
+	defined := make(map[string]bool, len(p.Roles))
+	for _, role := range p.Roles {
+		defined[role.Name] = true
 	}
 	var refusals []Refusal
 	for _, task := range p.Tasks {
@@ -69,8 +69,8 @@ func Supported(p Plan) []Refusal {
 		refusals = append(refusals, Refusal{Reason: fmt.Sprintf(
 			"the plan has %d tasks (%s), and this release runs one task for each issue.", len(p.Tasks), strings.Join(ids, ", ")) + notYet})
 	}
-	for _, role := range p.RoleBlocks {
-		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role + "." + notYet})
+	for _, role := range p.Roles {
+		refusals = append(refusals, Refusal{Reason: "the plan defines the role " + role.Name + "." + notYet})
 	}
 	for _, task := range p.Tasks {
 		for _, reason := range taskReasons(task) {

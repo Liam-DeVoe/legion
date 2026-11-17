@@ -89,13 +89,32 @@ type Task struct {
 	Text string
 }
 
-// RoleDef is a role a step can name: its name, its type, and the phase of today's line it runs as
-// in this release, where each step is a phase.
+// RoleDef is a role a step can name: its name, its type, the phase of today's line it runs as in
+// this release, where each step is a phase, and the model and the harness its agent starts on.
 type RoleDef struct {
 	Name  string
 	Type  Type
 	Phase phase.Phase
+	// Model is the model its agent starts with: "" for the deployment's default model.
+	Model string
+	// Backend is the harness its agent runs on, in the words of runtime.Backend: "omp" or
+	// "claude".
+	Backend string
 }
+
+// PlanRole is one `plan_role` block: the role's name (the block's id), its type, its model (""
+// names none, and the role's agent starts on the default model), and its prompt (the block's
+// text).
+type PlanRole struct {
+	Name   string
+	Type   Type
+	Model  string
+	Prompt string
+}
+
+// planRoleBackend is the harness of every role a plan defines: a role of a plan runs on Oh My Pi
+// (runtime.BackendOmp's word), and no setting changes it.
+const planRoleBackend = "omp"
 
 // Plan is one version of an owner's plan document as Legion reads it.
 type Plan struct {
@@ -103,14 +122,39 @@ type Plan struct {
 	Version    int
 	// Tasks are the document's `plan_task` blocks, in its order.
 	Tasks []Task
-	// RoleBlocks are the names of the roles the plan defines, one for each `plan_role` block, in
-	// the document's order.
-	RoleBlocks []string
+	// Roles are the roles the plan defines, one for each `plan_role` block, in the document's
+	// order.
+	Roles []PlanRole
 }
 
-// Deployment is what the deployment gives a plan: the roles a step can name, by name. In this
-// release that is BuiltinRoles alone (B-18).
-type Deployment struct{ Roles map[string]RoleDef }
+// Deployment is what the deployment gives a plan: the roles a step can name, by name, the models a
+// role may name, and the owner's own role. In this release its callers give BuiltinRoles alone
+// (B-18).
+type Deployment struct {
+	Roles map[string]RoleDef
+	// Models are the models the deployment lists.
+	Models []string
+	// Owner is the role of the owner of the plan's tasks: its name, its model and its harness.
+	Owner RoleDef
+}
+
+// RolesOf is the roles the steps of p can name: each role of d, then each role p defines that d
+// does not, as a RoleDef of its name, its type and its model on Oh My Pi. It is the one place that
+// answers which role a step names, and of which type, model and harness. The answer is a fresh
+// map, so a caller that changes it leaves d's roles whole.
+func RolesOf(p Plan, d Deployment) map[string]RoleDef {
+	roles := make(map[string]RoleDef, len(d.Roles)+len(p.Roles))
+	for name, role := range d.Roles {
+		roles[name] = role
+	}
+	for _, role := range p.Roles {
+		if _, ok := roles[role.Name]; ok {
+			continue
+		}
+		roles[role.Name] = RoleDef{Name: role.Name, Type: role.Type, Model: role.Model, Backend: planRoleBackend}
+	}
+	return roles
+}
 
 // Refusal is one reason Legion does not take a plan: the task it names, "" for a cause of the
 // whole plan, and the reason as the owner reads it.

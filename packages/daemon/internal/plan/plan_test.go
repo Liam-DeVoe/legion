@@ -154,8 +154,9 @@ func TestATaskWithNoStepsRunsTheDefaultSteps(t *testing.T) {
 
 // FromBlocks reads each `plan_task` block as a task, in the document's order, with what each
 // attribute says; each `needs` and `part_of` value is kept whole, as the block writes it. Each
-// `plan_role` block is a role the plan defines, named by its id. Every other block is the
-// document's prose and no part of the plan.
+// `plan_role` block is a role the plan defines, read whole: its name (the block's id), its type,
+// its model and its prompt (the block's text). Every other block is the document's prose and no
+// part of the plan.
 func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	p, err := FromBlocks("plan-md", 3, []Block{
 		{ID: "intro", Type: "paragraph", Text: "Why the issue is split so."},
@@ -168,12 +169,14 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 		{ID: "f1", Type: "plan_task", Attributes: map[string]string{
 			"part_of": "dispatch://ACME-1/artifact/plan-md#b-f", "steps": "implementer reviewer", "merges": "true",
 		}, Text: "What task F1 does."},
-		{ID: "prober", Type: RoleBlockType, Attributes: map[string]string{"type": "testing"}, Text: "You probe."},
+		{ID: "prober", Type: RoleBlockType, Attributes: map[string]string{"type": "testing", "model": "listed-model"}, Text: "# Prober\n\nYou probe."},
 	})
 	if err != nil {
 		t.Fatalf("FromBlocks: %v", err)
 	}
-	want := Plan{ArtifactID: "plan-md", Version: 3, RoleBlocks: []string{"prober"}, Tasks: []Task{
+	want := Plan{ArtifactID: "plan-md", Version: 3, Roles: []PlanRole{
+		{Name: "prober", Type: "testing", Model: "listed-model", Prompt: "# Prober\n\nYou probe."},
+	}, Tasks: []Task{
 		{ID: "d", Needs: []string{"dispatch://ACME-1/artifact/plan-md#b-a", "dispatch://ACME-1/artifact/plan-md#b-c@v2"}, HasSteps: true,
 			Steps: []Step{{Role: "implementer", Key: "cd"}, {Role: "reviewer", Key: "r"}}, Text: "What task D does."},
 		{ID: "f", Owner: "architect", Text: "What this part must reach."},
@@ -212,5 +215,28 @@ func TestFromBlocksReadsTaskAndRoleBlocks(t *testing.T) {
 	// A document with no task block is read, as a plan with no task, which Validate refuses.
 	if p, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}}); err != nil || len(p.Tasks) != 0 {
 		t.Fatalf("FromBlocks(no task block) = %+v, %v, want a plan with no task and no error", p, err)
+	}
+}
+
+// The roles a step can name are the deployment's, then the plan's own, each a role of Oh My Pi
+// with its type and its model. A role of the deployment wins over a role of the plan of one name
+// (Validate refuses that plan), and the answer is a fresh map, so the deployment's roles stay as
+// they were.
+func TestRolesOfIsTheDeploymentsRolesThenThePlans(t *testing.T) {
+	d := Deployment{Roles: BuiltinRoles()}
+	p := oneTask("a", "implementer prober")
+	p.Roles = []PlanRole{{Name: "prober", Type: TypeTesting, Model: "m"}, {Name: "reviewer", Type: TypeTesting}}
+	roles := RolesOf(p, d)
+	if want := (RoleDef{Name: "prober", Type: "testing", Model: "m", Backend: "omp"}); roles["prober"] != want {
+		t.Errorf("RolesOf[prober] = %+v, want %+v", roles["prober"], want)
+	}
+	if got := roles["reviewer"].Type; got != TypeReview {
+		t.Errorf("RolesOf[reviewer].Type = %q, want %q: the deployment's reviewer wins over the plan's", got, TypeReview)
+	}
+	if len(roles) != 6 {
+		t.Errorf("RolesOf has %d roles (%+v), want 6: Legion's five and prober", len(roles), roles)
+	}
+	if !reflect.DeepEqual(d.Roles, BuiltinRoles()) {
+		t.Errorf("RolesOf changed the deployment's roles: %+v", d.Roles)
 	}
 }
