@@ -381,13 +381,13 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // and description.
 //
 // An answer the redactor did not print whole - every answer beside an address that carries a
-// credential, which the broker or anyone answering for it can repeat back, and one with an
-// error_uri - is still the broker's refusal, so it is a BrokerError of its status alone: no code
-// and no word of its description, which are the very text the redactor withheld, so no BrokerError
-// holds a part of the credential either. Its words read brokeraddr.WordsNotPrinted beside an
-// address that is not clean, and are empty beside a clean one. requestReach.settle reads its
-// status, so a 4xx refusal is reported as one and not as an unknown outcome. The answer is read as
-// the broker's own (redact.BrokerAnswer), never through errors.As: Class and Masked hold others'.
+// credential, which the broker or anyone answering for it can repeat back, one with an error_uri,
+// and one with no error code - is still the broker's refusal, a BrokerError of its status alone:
+// no code and no word of its description, which are the very text the redactor withheld, so no
+// BrokerError holds a part of the credential either. Its words read brokeraddr.WordsNotPrinted
+// beside an address that is not clean, and are empty beside a clean one. requestReach.settle
+// reads its status, so a 4xx refusal is reported as one and not as an unknown outcome. It reads
+// the broker's own answer (redact.BrokerAnswer), never errors.As: Class and Masked hold others'.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
