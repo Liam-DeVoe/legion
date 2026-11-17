@@ -295,6 +295,8 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document is of node "a-page-shows-all", not "a-page-shows-it"`},
 		{"a document of two nodes", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", doc("a-page-shows-it", `The page shows it.\n---\ntype: term\nid: page\nname: page\ndefinition:\n  - A page is a view.`)) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: bad-approved-document: the document holds 2 nodes, not one`},
+		{"a document whose parent is no id", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind: behavior\nparent: ' '\ntext:\n  - The page shows it.\n"`) + `]}]}`,
+			`approved node "a-page-shows-it" version 1: bad-approved-document: parent " " is no id`},
 		{"a document that Print does not write", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10T00:00:00Z", `"---\ntype: requirement\nid: a-page-shows-it\nkind:  behavior\ntext:\n  - The page shows it.\n"`) + `]}]}`,
 			`approved node "a-page-shows-it" version 1: not-printed: line 4 is "kind:  behavior\n", and print writes "kind: behavior\n" there (other spaces)`},
 		// A problem of the schema that keeps the node leaves the printed form to the reader, which

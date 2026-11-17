@@ -16,19 +16,22 @@ const (
 	removedID
 	approvedNodeCount
 	approvedOtherNode
+	approvedNotAnID
 	approvedNotPrinted
 	numApprovalKinds
 )
 
 // approvalKinds is the format of the Detail of each kind of problem of a comparison with the
 // approved spec, which begins with its rule: Compare's rules, and bad-approved-document for a
-// document of no node or of two, of a node with another id, or not as Print writes its node.
+// document of no node or of two, of a node with another id, with a value at an id place that is
+// not an id, or not as Print writes its node.
 var approvalKinds = [numApprovalKinds]string{
 	unapprovedID:       "unapproved-id: the approved spec never held this id",
 	unapprovedText:     "unapproved-text: the approved spec never held this text",
 	removedID:          "removed-id: the approved spec removed this id and never held this text for it",
 	approvedNodeCount:  "bad-approved-document: the document holds %d nodes, not one",
 	approvedOtherNode:  "bad-approved-document: the document is of node %s, not %s",
+	approvedNotAnID:    "bad-approved-document: %s %s is no id",
 	approvedNotPrinted: "bad-approved-document: the document is not as Print writes it",
 }
 

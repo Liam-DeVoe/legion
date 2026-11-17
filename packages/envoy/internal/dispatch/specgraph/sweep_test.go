@@ -73,17 +73,7 @@ func notRepoPaths(path string) []string {
 // that run, and the check would read true (legFault refuses it).
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
-	if err != nil || len(dirs) < 7 {
-		t.Fatalf("the scenarios: %q, %v", dirs, err)
-	}
-	bases := map[string]fstest.MapFS{}
-	for _, dir := range dirs {
-		bases[filepath.Base(dir)] = scenarioFS(t, dir)
-	}
-	dropped := maps.Clone(bases["silent-leg"])
-	dropped["jobs.json"] = &fstest.MapFile{Data: []byte(`[{"job":"go-checks","leg":"","commit":"m2","ended":true}]`)}
-	bases["silent-leg with its matrix dropped at m2"] = dropped
+	bases := sweepBases(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -121,6 +111,25 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 				len(inputs), refused, same, moved, legs)
 		})
 	}
+}
+
+// sweepBases is what the sweeps of the JSON files and of the YAML documents read, by its name: each
+// scenario of testdata/scenarios, and silent-leg with the job's matrix dropped after c1, the shape
+// that no scenario holds (TestNoInputThatSaysNothingMovesAStateTowardTrue).
+func sweepBases(t *testing.T) map[string]fstest.MapFS {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
+	if err != nil || len(dirs) < 7 {
+		t.Fatalf("the scenarios: %q, %v", dirs, err)
+	}
+	bases := map[string]fstest.MapFS{}
+	for _, dir := range dirs {
+		bases[filepath.Base(dir)] = scenarioFS(t, dir)
+	}
+	dropped := maps.Clone(bases["silent-leg"])
+	dropped["jobs.json"] = &fstest.MapFile{Data: []byte(`[{"job":"go-checks","leg":"","commit":"m2","ended":true}]`)}
+	bases["silent-leg with its matrix dropped at m2"] = dropped
+	return bases
 }
 
 // sweepInput is one input of the sweep: what it changed, and the files of the scenario with it.

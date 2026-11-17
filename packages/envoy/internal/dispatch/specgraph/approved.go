@@ -241,10 +241,10 @@ func (a Approved) Since(id string) time.Time {
 // versionText is the tree of the one node that version v of the approved node id holds, at the
 // position "approved <id> version <n>". problems is each reason it holds none: a problem of the
 // reader in the document (bad-yaml, no-node, bad-time-limit, not-printed), or bad-approved-document
-// (approvalKinds) for a document of no node or of two, of a node with another id, or not as Print
-// writes its node. The
-// schema's problems are the rules' of the files, as Validate's are, and pass here: an approved text
-// that breaks a rule reads as its node, so a check with no failing example reads as such (R9).
+// (approvalKinds) for a document of no node or of two, of a node with another id, with a value at an
+// id place that is not an id (notAnID), or not as Print writes its node. The schema's other
+// problems are the rules' of the files, as Validate's are, and pass here: an approved text that
+// breaks a rule reads as its node, so a check with no failing example reads as such (R9).
 func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	name := fmt.Sprintf("approved %s version %d", id, v.Version)
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
@@ -266,12 +266,55 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	case nodes[0].id != id:
 		return refuse(approvedOtherNode, quoted(nodes[0].id), quoted(id))
 	}
+	if member, value, found := notAnID(nodes[0].node); found {
+		return refuse(approvedNotAnID, member, quoted(value))
+	}
 	if printedFormUnchecked {
 		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
 			return refuse(approvedNotPrinted)
 		}
 	}
 	return tree, nil
+}
+
+// notAnID is the first value of node, the one node of an approved document, at a place that names
+// a node and not in the shape of an id, by its member: its id, its parent, and each node that it
+// serves, is about or joins, the places that the schema gives the definition id (#/$defs/id, or an
+// item of #/$defs/ids). The derivation reads a relation only by an id (isIDShape), so a relation of
+// another value, a name of no letter and no digit among them, would read as no relation: a
+// statement at the top of the tree in place of under its parent, which can make that parent met.
+// The schema refuses such a value in the files; in an approved document its problems pass, so
+// versionText refuses it here. An id or a parent "" is one that the node does not set, and each
+// entry of a list is set.
+func notAnID(node any) (member, value string, found bool) {
+	type place struct {
+		member, value string
+		entry         bool
+	}
+	entries := func(member string, ids []string) []place {
+		places := make([]place, len(ids))
+		for i, id := range ids {
+			places[i] = place{member, id, true}
+		}
+		return places
+	}
+	var places []place
+	switch n := node.(type) {
+	case Statement:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("serves", n.Serves), entries("about", n.About))
+	case Check:
+		places = []place{{"id", n.ID, false}, {"serves", n.Serves, false}}
+	case Component:
+		places = slices.Concat([]place{{"id", n.ID, false}, {"parent", n.Parent, false}}, entries("joins", n.Joins))
+	case Term:
+		places = []place{{"id", n.ID, false}}
+	}
+	for _, p := range places {
+		if (p.entry || p.value != "") && !isIDShape(p.value) {
+			return p.member, p.value, true
+		}
+	}
+	return "", "", false
 }
 
 // idProblem is the problem detail of the node id at pos: its rule is the word before the

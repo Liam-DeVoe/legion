@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"path"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -20,10 +19,10 @@ import (
 )
 
 // The spec files are an input of the derivation too, and the rules that the JSON files of a
-// scenario keep hold for them (members.go, sweep_test.go): a null and an empty value say nothing,
-// so the reader refuses each at each place; each member of each node has a mark, nonzero or zero,
-// that the schema holds; and no input that says nothing at one place of a spec file moves a state
-// toward true.
+// scenario keep hold for them (members.go, sweep_test.go): a null, an empty value and a name of no
+// letter and no digit say nothing, so the files refuse each at each place; each member of each node
+// has a mark, nonzero or zero, that the schema holds; and no input that says nothing at one place of
+// a spec file moves a state toward true.
 
 // fullNodes is one node of each kind, with each member of its document set: a statement with a
 // parent, a statement that it serves and a node that it is about; a program check with its test
@@ -254,6 +253,130 @@ func TestTheReaderRefusesAnEmptyValueAtEachPlaceOfADocument(t *testing.T) {
 	t.Logf("%d places", checked)
 }
 
+// nameAt is a copy of doc with the value at place, a text, written as name.
+func nameAt(doc *yaml.Node, place yamlPlace, name string) *yaml.Node {
+	c := copyNode(doc)
+	parent, last := holderAt(c, place)
+	parent.Content[last] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}
+	return c
+}
+
+// A name of no letter and no digit names nothing, and the readers of the JSON files of a scenario
+// refuse one at each place, as a value or as the key of a map (nameFault, hasWord). Each text of a
+// document is a name or a line: an id, a parent or an entry of serves, about or joins; a runner, a
+// selector or a job of a test; a name of a component or of a term; a kind, a subject, a procedure
+// or a time limit; a line of a text. So the files refuse a document of each kind with the text at
+// any place written as a name of no letter and no digit, "" and " " as the sweeps write them and a
+// format character (U+200B): the reader, by the schema or by its rule of the time limit, or the
+// rules of the files that `spec-check tree` runs and the scenario reader asks of each spec file
+// (Validate), by the one test of a missing text (hasWord). A document holds no key that its writer
+// picks and no repository path, so the other forms of the sweep of the JSON files have no place in
+// it.
+func TestTheFilesRefuseANameOfNoLetterAndNoDigitAtEachPlaceOfADocument(t *testing.T) {
+	t.Parallel()
+	checked := 0
+	for _, n := range fullNodes {
+		printed, err := n.Print()
+		if err != nil {
+			t.Fatal(err)
+		}
+		tree, problems := Parse(map[string][]byte{"x.yaml": []byte(printed)})
+		if len(problems) != 0 {
+			t.Fatalf("the control %q: %+v", printed, problems)
+		}
+		// A node alone names nodes that its file does not hold: those problems are the control's.
+		control := Validate(tree, Options{})
+		docs := specDocuments(t, []byte(printed))
+		for _, place := range yamlPlaces(docs[0]) {
+			if parent, last := holderAt(docs[0], place); parent.Content[last].Kind != yaml.ScalarNode {
+				continue
+			}
+			for _, name := range append(slices.Clone(namesOfNothing), "\u200b") {
+				text := writeDocuments(t, []*yaml.Node{nameAt(docs[0], place, name)})
+				tree, problems := Parse(map[string][]byte{"x.yaml": text})
+				for _, p := range Validate(tree, Options{}) {
+					if !slices.Contains(control, p) {
+						problems = append(problems, p)
+					}
+				}
+				if len(problems) == 0 {
+					t.Errorf("%s of %s as %q: the files take %q", place.pointer, nodeID(n), name, text)
+				}
+				checked++
+			}
+		}
+	}
+	t.Logf("%d places and names", checked)
+}
+
+// An approved document names each node by an id: its own, and each node that it relates to, its
+// parent and each node that it serves, is about or joins, the places that the schema gives the
+// definition id (#/$defs/id, or an item of #/$defs/ids). The derivation reads a relation only by an
+// id (isIDShape), so a value of another shape there, a name of no letter and no digit among them,
+// would read as no relation: a statement at the top of the tree in place of under its parent, which
+// can make that parent met. The problems of the schema in an approved document pass, as the rules
+// of the files do, so versionText refuses such a value itself, at each id place of a node of each
+// kind. At a place that names no node, such as a claim, the same values do not read as an id, and
+// some read as the node (the control), as an approved text that breaks a rule of the files does.
+func TestAnApprovedDocumentNamesEachNodeByAnID(t *testing.T) {
+	t.Parallel()
+	defs, _ := schemaDefinitions(t)
+	at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	refused, read := 0, 0
+	for _, n := range fullNodes {
+		printed, err := n.Print()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, problems := versionText(nodeID(n), ApprovedVersion{Version: 1, At: at, Document: printed}); len(problems) != 0 {
+			t.Fatalf("the control %q: %+v", printed, problems)
+		}
+		file, _ := fileOf(n)
+		def := ""
+		for name, typ := range nodeFileTypes {
+			if typ == reflect.TypeOf(file) {
+				def = name
+			}
+		}
+		properties, _ := defs[def]["properties"].(map[string]any)
+		docs := specDocuments(t, []byte(printed))
+		for _, place := range yamlPlaces(docs[0]) {
+			if holder, last := holderAt(docs[0], place); holder.Content[last].Kind != yaml.ScalarNode {
+				continue
+			}
+			member, _, _ := strings.Cut(strings.TrimPrefix(place.pointer, "/"), "/")
+			property, _ := properties[member].(map[string]any)
+			names := member == "id" || property["$ref"] == "#/$defs/id" || property["$ref"] == "#/$defs/ids"
+			for _, value := range []string{" ", "\u200b", "Not-An-Id"} {
+				text := string(writeDocuments(t, []*yaml.Node{nameAt(docs[0], place, value)}))
+				id := nodeID(n)
+				if member == "id" {
+					id = value
+				}
+				_, problems := versionText(id, ApprovedVersion{Version: 1, At: at, Document: text})
+				want := "bad-approved-document: " + member + " " + quoted(value) + " is no id"
+				// The printer sorts the ids of a list, so a value in a list can also break its order,
+				// and the reader refuses that document as not printed first.
+				notPrinted := len(problems) == 1 && problems[0].Rule == "not-printed"
+				switch noID := slices.ContainsFunc(problems, func(p Problem) bool { return p.Detail == want }); {
+				case names && !(noID && len(problems) == 1 || notPrinted):
+					t.Errorf("%s of %s as %q: versionText gives %+v, want the one problem %q", place.pointer, nodeID(n), value, problems, want)
+				case names:
+					refused++
+				case noID:
+					t.Errorf("%s of %s names no node, and versionText refuses %q at it as no id", place.pointer, nodeID(n), value)
+				case len(problems) == 0:
+					read++
+				}
+			}
+		}
+	}
+	if read == 0 {
+		t.Error("versionText refuses each value at each place that names no node, so the test cannot tell an id place from another")
+	}
+	t.Logf("%d values at an id place refused; %d at another place read as the node", refused, read)
+}
+
 // schemaDefinitions is each definition of the schema, by its name, and the members that the root
 // of the schema requires of each node.
 func schemaDefinitions(t *testing.T) (map[string]map[string]any, []any) {
@@ -428,8 +551,9 @@ type documentInput struct {
 }
 
 // documentInputs is each input at one place of docs: each document as null and null at each place
-// of each document, an empty value at each place (emptyAt), and with leftOut each member of each
-// mapping left out.
+// of each document, an empty value at each place (emptyAt), each text written as each name of no
+// letter and no digit that the sweep of the JSON files writes (namesOfNothing; its "" is the empty
+// value), and with leftOut each member of each mapping left out.
 func documentInputs(t *testing.T, docs []*yaml.Node, leftOut bool) []documentInput {
 	t.Helper()
 	var inputs []documentInput
@@ -444,6 +568,13 @@ func documentInputs(t *testing.T, docs []*yaml.Node, leftOut bool) []documentInp
 			inputs = append(inputs, documentInput{where + " as null", with(changedAt(doc, place, false))}, documentInput{where + " empty", with(emptyAt(doc, place))})
 			if leftOut && place.member {
 				inputs = append(inputs, documentInput{where + " left out", with(changedAt(doc, place, true))})
+			}
+			if holder, last := holderAt(doc, place); holder.Content[last].Kind == yaml.ScalarNode {
+				for _, name := range namesOfNothing {
+					if name != "" {
+						inputs = append(inputs, documentInput{fmt.Sprintf("%s as %q", where, name), with(nameAt(doc, place, name))})
+					}
+				}
 			}
 		}
 	}
@@ -475,28 +606,26 @@ func approvedDocuments(t *testing.T, data []byte) map[[2]int]string {
 
 // The sweep of TestNoInputThatSaysNothingMovesAStateTowardTrue reads each JSON file of a scenario
 // as a tree; the spec files at each commit and the documents of the approved spec are YAML
-// documents in the printer's form, inputs too. A null says nothing, and so does an empty value,
-// since the printer writes neither, so no null and no empty value at one place of such a document
-// may move a check toward true, a statement or its own state toward met, or a wait toward ends. A
-// member left out is another case: the printer writes a zero value as no key, so a document with a
-// member left out is the printed text of another node. In the spec files that is a text that the
-// approved spec never held, which may move no state toward true either. In the approved spec it is
-// another approved text, the person's to approve, such as a statement that is at the top of the
-// tree in place of under its parent, which can make that parent met; so the sweep leaves no member
-// out of an approved document. Each *.yaml file of each scenario and each document of its
-// approved.json is read as YAML, and the sweep derives the states of each of those inputs: a file
-// as null, each document as null, null and an empty value at each place, and in the spec files
-// each member of each mapping left out. The reader may refuse the input. The documents written
-// again unchanged must give each text byte for byte, so the sweep writes each input in the
-// printer's form, and an input that leaves out a member that the node does not need reads as a
-// node, not as a text that is not printed: some inputs must read, or the sweep could not see a
-// state move.
+// documents in the printer's form, inputs too. A null says nothing, and so do an empty value and a
+// name of no letter and no digit, since the printer writes no null and no empty value and a text
+// of no letter and no digit names nothing, so no null, no empty value and no such name at one place
+// of such a document may move a check toward true, a statement or its own state toward met, or a
+// wait toward ends. A member left out is another case: the printer writes a zero value as no key,
+// so a document with a member left out is the printed text of another node. In the spec files that
+// is a text that the approved spec never held, which may move no state toward true either. In the
+// approved spec it is another approved text, the person's to approve, such as a statement that is
+// at the top of the tree in place of under its parent, which can make that parent met; so the
+// sweep leaves no member out of an approved document. Each *.yaml file of each scenario and each
+// document of its approved.json is read as YAML, and the sweep derives the states of each of those
+// inputs: a file as null, each document as null, null, an empty value and " " at each place (each
+// text for " "), and in the spec files each member of each mapping left out. It reads each base
+// that the sweep of the JSON files reads (sweepBases), silent-leg with its matrix dropped at m2
+// among them. The reader may refuse the input. The documents written again unchanged must give
+// each text byte for byte, so the sweep writes each input in the printer's form, and an input that
+// leaves out a member that the node does not need reads as a node, not as a text that is not
+// printed: some inputs must read, or the sweep could not see a state move.
 func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
-	dirs, err := filepath.Glob(filepath.Join("testdata", "scenarios", "*"))
-	if err != nil || len(dirs) < 7 {
-		t.Fatalf("the scenarios: %q, %v", dirs, err)
-	}
 	// read counts the inputs that the reader read, of each scenario: in a scenario whose tree each
 	// left-out member breaks, such as a statement whose parent then has no check, the reader refuses
 	// each input, and only the scenarios together can show that the sweep sees a state.
@@ -506,10 +635,11 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 			t.Error("each input of the YAML documents of each scenario is refused, so the sweep could not see a state move")
 		}
 	})
-	for _, dir := range dirs {
-		t.Run(filepath.Base(dir), func(t *testing.T) {
+	bases := sweepBases(t)
+	for _, scenario := range slices.Sorted(maps.Keys(bases)) {
+		t.Run(scenario, func(t *testing.T) {
 			t.Parallel()
-			base := scenarioFS(t, dir)
+			base := bases[scenario]
 			whole, err := sweepStates(base)
 			if err != nil {
 				t.Fatalf("the scenario: %v", err)
@@ -557,8 +687,11 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 					})
 				}
 			}
-			refused, same, moved := 0, 0, 0
+			refused, same, moved, names := 0, 0, 0, 0
 			for _, in := range inputs {
+				if strings.HasSuffix(in.what, ` as " "`) {
+					names++
+				}
 				got, err := sweepStates(in.fsys)
 				switch {
 				case err != nil:
@@ -573,8 +706,8 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 				}
 			}
 			read.Add(int64(same + moved))
-			t.Logf("%d inputs of %d spec files and %d approved documents: %d refused, %d read as the whole scenario, %d read another state",
-				len(inputs), files, len(documents), refused, same, moved)
+			t.Logf(`%d inputs of %d spec files and %d approved documents: %d refused, %d read as the whole scenario, %d read another state; %d of them a text written as " "`,
+				len(inputs), files, len(documents), refused, same, moved, names)
 		})
 	}
 }
