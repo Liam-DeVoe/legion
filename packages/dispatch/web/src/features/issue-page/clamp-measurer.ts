@@ -19,6 +19,10 @@ const NEAR_BAND = "100% 0px";
  *  frames after it, each slice reading before it writes. */
 const SLICE_MS = 50;
 
+/** A row of the outline, of any kind: the rows a slice holds in place stand one under another,
+ *  siblings in document order, as `ConversationRows` draws them. */
+const ROW = "[data-node-row]";
+
 /** What a row draws of words it cuts: how tall it draws them, how many words it holds back,
  *  and whether the cut was moved to the foot of a row of pictures the sixth line crossed. */
 export interface Clamp {
@@ -78,10 +82,11 @@ interface Watched {
  * measured yet, and their cuts the frame after moved the content in view (-1,141 px once in five
  * jumps from 60,000 px to 15,000 px): the browser's own scroll anchoring holds the view only
  * while the rows that shrink are outside it. So a slice whose cuts change a row in view or above
- * the view reads the top of the first row wholly in view among its reads, writes its cuts at once
- * (`flushSync`) rather than in a later render, and then scrolls the page by however far that row
- * moved, in the same frame: that scroll is its last write. A slice that changes only rows below
- * the view does none of it.
+ * the view reads, before any write, the top of the first row of the outline wholly in view, of
+ * any kind, or of the row that spans the view's top where none is wholly in view; writes its cuts
+ * at once (`flushSync`) rather than in a later render; and then scrolls the page by however far
+ * that row moved, in the same frame: that scroll is its last write. A slice that changes only
+ * rows below the view does none of it.
  */
 class ClampMeasurer {
   readonly #rows = new Map<Element, Watched>();
@@ -197,8 +202,8 @@ class ClampMeasurer {
 
   /** One slice of the batch: reads for at most `SLICE_MS`, then every write of what it read,
    *  so the page is laid out once for all of them; the rest of the batch goes on next frame.
-   *  Where those writes change a row in view or above it, the first row wholly in view is read
-   *  before them and held where it stood after them (`#anchorOf`). */
+   *  Where those writes change a row in view or above it, a row of the outline near the view's
+   *  top is read before them and held where it stood after them (`#anchorOf`). */
   readonly #measure = (): void => {
     this.#frame = undefined;
     const until = performance.now() + SLICE_MS;
@@ -237,24 +242,15 @@ class ClampMeasurer {
     if (this.#due.size > 0) this.#frame = window.requestAnimationFrame(this.#measure);
   };
 
-  /** The row a slice that read `read` holds in place: the first row wholly in view, its top read
-   *  before the slice writes anything, where one of the slice's cuts changes a row whose top is
-   *  in view or above it; `undefined` where every change is below the view, which moves nothing
-   *  in it, or no row it watches stands wholly in view. */
+  /** The row a slice that read `read` holds in place, with its top read before the slice writes
+   *  anything (`anchorRow`), where one of the slice's cuts changes a row whose top is in view or
+   *  above it; `undefined` where every change is below the view, which moves nothing in it. */
   #anchorOf(read: readonly Measured[]): Anchor | undefined {
     const screen = window.innerHeight;
-    const shifts = read.some(
+    const changed = read.find(
       ({ clamp, element, top }) => top < screen && !sameClamp(this.#rows.get(element)?.clamp, clamp)
     );
-    if (!shifts) return undefined;
-    let anchor: Anchor | undefined;
-    for (const [element, watched] of this.#rows) {
-      if (!watched.near || !(element instanceof HTMLElement)) continue;
-      const box = element.getBoundingClientRect();
-      if (box.height === 0 || box.top < 0 || box.bottom > screen) continue;
-      if (anchor === undefined || box.top < anchor.top) anchor = { element, top: box.top };
-    }
-    return anchor;
+    return changed === undefined ? undefined : anchorRow(changed.element, screen);
   }
 }
 
@@ -283,6 +279,41 @@ function withinBand(box: DOMRect): boolean {
   if (box.width === 0 && box.height === 0) return false;
   const screen = window.innerHeight;
   return box.bottom >= -screen && box.top <= 2 * screen;
+}
+
+/**
+ * The row of the outline a slice holds in place, among the rows `element`'s own row stands with,
+ * with its top: the first row wholly in view, of any kind, or where none is, the row whose box
+ * spans the view's top. It reads only the rows near the view's top: a binary search over the
+ * rows' boxes finds the first whose foot is below the top, and the walk from there ends at the
+ * first row that starts in view. Words outside the outline's rows hold nothing in place.
+ */
+function anchorRow(element: HTMLElement, screen: number): Anchor | undefined {
+  const rows = element.closest(ROW)?.parentElement?.children;
+  if (rows === undefined) return undefined;
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if ((rows[middle]?.getBoundingClientRect().bottom ?? 0) > 0) high = middle;
+    else low = middle + 1;
+  }
+  let spanning: Anchor | undefined;
+  for (let at = low; at < rows.length; at += 1) {
+    const row = rows[at];
+    if (!(row instanceof HTMLElement) || !row.matches(ROW)) continue;
+    const box = row.getBoundingClientRect();
+    if (box.height === 0) continue;
+    if (box.top >= screen) break;
+    if (box.top >= 0) {
+      // Every row after it starts lower, so where this one is cut off by the view's foot, no
+      // row is wholly in view.
+      if (box.bottom <= screen) return { element: row, top: box.top };
+      break;
+    }
+    spanning ??= { element: row, top: box.top };
+  }
+  return spanning;
 }
 
 /** Whether two cuts draw a row alike: the same height, the same words held back and the same
