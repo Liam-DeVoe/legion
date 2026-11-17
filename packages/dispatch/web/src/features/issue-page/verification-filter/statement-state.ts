@@ -2,6 +2,7 @@ import type { CheckBlock } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import type { CheckState, StatementState } from "../page-words";
 import { checkStanding, namedCommit, newestFirst } from "../tree-drafts";
+import { outOfCounts } from "../tree-fold";
 
 /**
  * How each statement of the issue stands, and the one commit the page names for its results
@@ -147,6 +148,12 @@ export function verificationReading({
  * (`coverage.go`, `TreeNode.counts`).
  */
 function carriesCheck(node: TreeNode, checks: readonly CheckReading[]): boolean {
+  // A proposed statement carries no check, and a proposed check, or one at or under an
+  // overtaken node, covers no statement (dispatch://INFRA-4063 R3). The coverage read's count
+  // below still counts a proposed check: leaving it out there is the server's.
+  if (outOfCounts(node)) return false;
+  const counted = inCounts(checks);
+  if (counted.length < checks.length) return carriesCheck(node, counted);
   return checks.length > 0 || (node.counts?.checks ?? 0) > 0;
 }
 
@@ -190,6 +197,10 @@ export function statementStandings(
  * stands in any of the other five states (R17).
  */
 export function statementState(checks: readonly CheckReading[]): StatementState {
+  // A proposed check, and one at or under an overtaken node, serves no statement: it is neither
+  // evidence for it nor against it (dispatch://INFRA-4063 R3).
+  const counted = inCounts(checks);
+  if (counted.length < checks.length) return statementState(counted);
   if (checks.length === 0) return "unknown";
   if (checks.every((check) => check.state === "passed" && check.atNamedCommit)) return "met";
   if (checks.some((check) => check.state === "failed" && check.atNamedCommit)) return "not_met";
@@ -200,9 +211,21 @@ export function statementState(checks: readonly CheckReading[]): StatementState 
 export function statementCounts(
   statements: readonly StatementReading[]
 ): Readonly<Record<StatementState, number>> {
+  // A proposed statement, and one at or under an overtaken node, is in none of the three
+  // (dispatch://INFRA-4063 R3).
+  const counted = inCounts(statements);
+  if (counted.length < statements.length) return statementCounts(counted);
   const counts: Record<StatementState, number> = { met: 0, not_met: 0, unknown: 0 };
   for (const statement of statements) counts[statement.state] += 1;
   return counts;
+}
+
+/** What a count reads of `readings` (dispatch://INFRA-4063 R3): each one but those whose node is
+ *  a proposed statement or check or sits at or under an overtaken node (`outOfCounts`). */
+function inCounts<Reading extends { readonly node: TreeNode }>(
+  readings: readonly Reading[]
+): readonly Reading[] {
+  return readings.filter((reading) => !outOfCounts(reading.node));
 }
 
 /** The commit the page names for `checks`' results, and how one check node of the tree reads at

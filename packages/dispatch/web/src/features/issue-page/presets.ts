@@ -5,6 +5,7 @@ import {
   type NodeType,
   type Preset,
 } from "./page-words";
+import { outOfCounts } from "./tree-fold";
 
 /**
  * The page with no filter on, and the four filters, as views of the one tree
@@ -252,6 +253,15 @@ export interface PresetSignal {
 function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boolean): number {
   const found = new Set<string>();
   const walk = (node: TreeNode): void => {
+    // No flag counts a node at or under an overtaken one, since a later node took its place, nor
+    // a proposed check, which is only put forward; what hangs under a proposed check is walked
+    // all the same, and a proposed decision that waits is still counted (dispatch://INFRA-4063
+    // R3). The view's own count, `matches`, keeps both: it counts the query's every node.
+    if (node.closed === true) return;
+    if (outOfCounts(node)) {
+      for (const child of node.children) walk(child);
+      return;
+    }
     if (node.type === type && counts(node)) found.add(node.id);
     for (const child of node.children) walk(child);
   };

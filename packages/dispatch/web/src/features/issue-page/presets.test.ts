@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 
 import type { DisplayTree } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
+import { heldBy } from "./issue-tree";
+import { type NodeStates, stampStates } from "./node-states/node-states";
 import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
@@ -365,4 +367,105 @@ test("the words filter matches the words a node draws, never its stored source",
   const markup = presetView(root, "conversation", "**");
   expect(markup.matches).toBe(0);
   expect(markup.root.children).toEqual([]);
+});
+
+/** `root` with the tree read's states put on it by node id, as the page puts them
+ *  (`node-states.ts`): an overtaken node and every node under it are `closed`. */
+function stamped(root: TreeNode, states: Readonly<Record<string, NodeStates>>): TreeNode {
+  return stampStates(root, new Map(Object.entries(states)), heldBy);
+}
+
+// dispatch://INFRA-4063 R3 and root c-presets: a filter control's count counts its query's own
+// nodes, a proposed one and one at or under an overtaken node among them, under a words filter
+// too. Only what asks something of the reader leaves them out (the next row).
+test("a filter's count counts proposed and overtaken query nodes", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("ask-1", "ask", [
+        node("spec#b-r1", "requirement", [
+          node("verification#b-c1", "check", [], { state: "failed" }),
+        ]),
+        node("plan#b-t1", "plan_task"),
+      ]),
+      node("spec#b-r2", "requirement", [
+        node("verification#b-c2", "check", [], { state: "failed" }),
+        node("plan#b-t2", "plan_task"),
+      ]),
+      node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+      node("decision-2", "decision", [], { state: "kept" }),
+    ]),
+    {
+      "ask-1": { life: "overtaken" },
+      "decision-1": { life: "proposed" },
+      "decision-2": { life: "overtaken" },
+      "plan#b-t2": { life: "proposed" },
+      "spec#b-r2": { life: "proposed" },
+      "verification#b-c2": { life: "proposed" },
+    }
+  );
+
+  expect(presetView(root, "spec", "").matches).toBe(2);
+  expect(presetView(root, "verification", "").matches).toBe(2);
+  expect(presetView(root, "plan", "").matches).toBe(2);
+  expect(presetView(root, "decisions", "").matches).toBe(3);
+  const signals = filterSignals(root, "");
+  expect(signals.spec.count).toBe(2);
+  expect(signals.verification.count).toBe(2);
+  expect(signals.plan.count).toBe(2);
+  expect(signals.decisions.count).toBe(3);
+  // The query's own nodes: the proposed statement alone, and the one under the overtaken ask.
+  expect(filterSignals(root, "b-r2").spec.count).toBe(1);
+  expect(filterSignals(root, "b-r1").spec.count).toBe(1);
+  expect(filterSignals(root, "b-t").plan.count).toBe(2);
+});
+
+// dispatch://INFRA-4063 R3: no count treats a proposed check as failing, nor a node at or under an
+// overtaken one as open: the failing flag counts neither a proposed failed check nor one under an
+// overtaken statement, and the to-review flag no overtaken decision that waits, nor one under an
+// overtaken comment, which the Decisions filter lifts out from under it. The same tree with no
+// states raises both flags, so the states are what take them away.
+test("no flag counts them", () => {
+  const live = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [node("verification#b-c1", "check", [], { state: "failed" })]),
+    node("spec#b-r2", "requirement", [node("verification#b-c2", "check", [], { state: "failed" })]),
+    node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+    node("comment-1", "comment", [
+      node("decision-2", "decision", [], { state: "waiting_review", waiting: true }),
+    ]),
+  ]);
+  expect(filterSignals(live, "")).toEqual({
+    decisions: { count: 2, flag: { count: 2, word: "to_review" } },
+    plan: { count: 0, unit: "steps" },
+    spec: { count: 2 },
+    verification: { count: 2, flag: { count: 2, word: "failing" } },
+  });
+
+  const root = stamped(live, {
+    "comment-1": { life: "overtaken" },
+    "decision-1": { life: "overtaken" },
+    "spec#b-r2": { life: "overtaken" },
+    "verification#b-c1": { life: "proposed" },
+  });
+  expect(filterSignals(root, "")).toEqual({
+    decisions: { count: 2 },
+    plan: { count: 0, unit: "steps" },
+    spec: { count: 2 },
+    verification: { count: 2 },
+  });
+});
+
+// dispatch://INFRA-4063 R3: what asks the reader stays. A proposed decision that waits for review
+// is on the review list as today, so the to-review flag counts it.
+test("a proposed decision waiting for review is still on the to-review flag", () => {
+  const root = stamped(
+    node("CORE-1", "issue", [
+      node("decision-1", "decision", [], { state: "waiting_review", waiting: true }),
+      node("decision-2", "decision", [], { state: "waiting_review", waiting: true }),
+    ]),
+    { "decision-1": { life: "proposed" }, "decision-2": { life: "overtaken" } }
+  );
+  expect(filterSignals(root, "").decisions).toEqual({
+    count: 2,
+    flag: { count: 1, word: "to_review" },
+  });
 });
