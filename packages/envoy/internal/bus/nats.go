@@ -338,6 +338,12 @@ type Client struct {
 	// connection installed, and a disconnect, reconnect or close of a connection the client dialled.
 	// ConnectionChanged makes the next one when a caller takes it.
 	connChanged chan struct{}
+	// life is the life of lifeConn that requests are bound to (Request, requestLife), under mu: a
+	// context endLife ends, with ErrConnectionLost as its cause, at that connection's loss. nil
+	// before the client's first request on a connected connection.
+	life     context.Context
+	endLife  context.CancelCauseFunc
+	lifeConn *nats.Conn
 
 	// reconnectWaits counts the waits ensureConnWithContext makes for a connection nats.go is
 	// reconnecting, one per pass of its loop that waits; a test reads it to bound them.
@@ -550,6 +556,10 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 // (registerClient), the constructor's own step: install runs only from the constructor and only
 // a client it returns gets this far, so a caller holding a connection can find the client that
 // owns it (clientOwning) for as long as that client is a caller's to use.
+//
+// The JetStream context the client keeps is bound to the life of its connection (bindJetStream).
+// The ensure here runs on the unbound one, because nc is not the client's connection until the end
+// of this call: a start whose ensure loses its answer waits out the context's MaxWait and fails.
 func (c *Client) install(nc *nats.Conn, ensure bool) error {
 	js, err := nc.JetStream(nats.MaxWait(10*time.Second), nats.PublishAsyncTimeout(publishAcknowledgementTimeout))
 	if err != nil {
@@ -561,7 +571,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, js
+	c.Conn, c.js = nc, bindJetStream(c, js)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so nothing has
 	// been recorded (recordPublishDenial records only for c.Conn) and this clear finds it empty.
@@ -605,7 +615,7 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
 	if err == nil {
-		err = c.ensureStream(js, serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
+		err = c.ensureStream(bindJetStream(c, js), serverDefaultsAnUnsetCap(conn.ConnectedServerVersion()))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -621,7 +631,7 @@ func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bo
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(js); err == nil {
+		if subjects, err = readStreamSubjects(bindJetStream(c, js)); err == nil {
 			c.deployedSubjects.Store(&subjects)
 			return true
 		}
@@ -1562,7 +1572,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = js
+		c.js = bindJetStream(c, js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()
@@ -2107,6 +2117,8 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // duplicate, which counts as stored. An error here is the publish's own, before any reply could
 // arrive (a refused, denied or invalid forward, a connection that never came back within
 // timeout); every returned forward must be waited for, which releases its reply subscription.
+// The forward is bound to the life of the connection it is published on (Request), from the
+// publish to the end of its Wait.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
@@ -2119,15 +2131,17 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 	if err := c.ensureConnWithContext(ctx); err != nil {
+		cancel()
 		return nil, err
 	}
-	deadline, _ := ctx.Deadline()
+	bound, finish := c.bindRequest(ctx)
 	conn := c.Conn
 	inbox := nats.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
+		err = finish(err)
+		cancel()
 		return nil, err
 	}
 	forward := &nats.Msg{
@@ -2136,19 +2150,25 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		Data:    data,
 		Header:  nats.Header{nats.MsgIdHdr: []string{msgID}},
 	}
-	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
+	err = c.publishConfirmed(bound, conn, forward, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		_ = replies.Unsubscribe()
+		err = finish(err)
+		cancel()
 		return nil, err
 	}
-	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
+	return &PendingForward{replies: replies, ctx: bound, finish: finish, cancel: cancel, unconfirmed: err}, nil
 }
 
 // PendingForward is a forward StartRequestStoredTo published, whose replies Wait reads.
 type PendingForward struct {
 	// replies is the forward's reply inbox, which the stream answers on.
-	replies  *nats.Subscription
-	deadline time.Time
+	replies *nats.Subscription
+	// ctx ends at the forward's deadline and at the loss of the connection it was published on;
+	// finish names a wait the loss cut off (bindRequest), and cancel releases the deadline.
+	ctx    context.Context
+	finish func(error) error
+	cancel context.CancelFunc
 	// unconfirmed is publishConfirmed's error for a publish it could not confirm, which the
 	// stream's acknowledgement may still overrule; nil when it confirmed the publish.
 	unconfirmed error
@@ -2158,19 +2178,21 @@ type PendingForward struct {
 // ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
 // error answer, and the server's no-responders answer (nothing captured the subject) are each
 // ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that.
+// publish, the reason for that. A forward whose connection is lost before the acknowledgement
+// comes is ErrForwardNotStored wrapping ErrConnectionLost, at the loss.
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
+	defer f.cancel()
+	defer f.finish(nil)
 	for {
-		remaining := time.Until(f.deadline)
-		if remaining <= 0 {
-			break
-		}
-		response, err := f.replies.NextMsg(remaining)
-		if errors.Is(err, nats.ErrTimeout) {
-			break
-		}
+		response, err := f.replies.NextMsgWithContext(f.ctx)
 		if err != nil {
+			if lost := f.finish(err); errors.Is(lost, ErrConnectionLost) {
+				return fmt.Errorf("%w: %w", ErrForwardNotStored, lost)
+			}
+			if f.ctx.Err() != nil {
+				break
+			}
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
 				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)

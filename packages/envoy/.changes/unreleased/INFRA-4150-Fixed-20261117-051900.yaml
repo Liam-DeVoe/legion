@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  A NATS request whose reply a dropped connection lost no longer waits for its whole timeout: it
+  fails within the moment nats.go reports the loss, with `bus.ErrConnectionLost`, where it waited
+  5 s to 10 s. Every request of the listener and its relays goes through one helper bound to the
+  connection's life (`bus.Request`): the stream read the session consumers share, every session
+  consumer call and pull, the connection probe, forwards, KV reads and writes, and the JetStream
+  calls of every context the listener opens. A registration, a relay restart, a consumer delete, a
+  filter write and a consumer repair that lose a request release the session's lock while they
+  wait for the connection, and make the request again once it is back, inside their own budget.
+  So a session registration sent after a reconnect is answered 200 rather than 503: the shared
+  stream read and the relay restart that held the session's lock no longer wait out a reply the
+  drop took.
+time: 2026-11-17T05:19:00Z
+custom:
+    Issue: INFRA-4150

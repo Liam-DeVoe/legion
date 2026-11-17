@@ -340,7 +340,7 @@ func (w *Watcher) Start() {
 // Either way the wait armed at the stop reports the outage once, at bus.RepairGrace (closed). The
 // error is returned unchanged, which its caller already logs.
 func (w *Watcher) Rewatch(conn *nats.Conn) error {
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return fmt.Errorf("open %s JetStream: %w", w.name, err)
 	}

@@ -1055,9 +1055,10 @@ func maxConsumersRefused(err error) bool {
 }
 
 // unanswered reports whether err is a JetStream request's wait running out with no answer, rather
-// than the server's refusal.
+// than the server's refusal, or the loss of the connection the request was sent on before its
+// answer came (ErrConnectionLost), which leaves the request as unanswered as a wait that ran out.
 func unanswered(err error) bool {
-	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
+	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrConnectionLost)
 }
 
 // unansweredSends bounds how many times a caller sends one JetStream request the server left
@@ -1123,6 +1124,11 @@ const unansweredSends = 3
 //
 // So a start that opens a bucket through a member in one of those states waits its whole bound
 // out and ends the program over one send that was never going to be answered.
+//
+// A send the connection's loss cut off (ErrConnectionLost) is sent again too, once the client is
+// connected again, a wait of at most RequestTimeout (Reconnected), so a start whose connection
+// drops under one of its requests waits no longer than a send that drew no answer, and goes on
+// once the bus is back.
 func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 	var answer T
 	var err error
@@ -1133,9 +1139,18 @@ func sentAgain[T any](request string, send func() (T, error)) (T, error) {
 		if sends < unansweredSends {
 			slog.Warn("envoy nats stream request unanswered; sending it again",
 				slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
+			awaitReconnect(err)
 		}
 	}
 	return answer, err
+}
+
+// awaitReconnect waits, at most RequestTimeout, for the client a request the connection's loss cut
+// off (err) was sent through to be connected again; it returns at once for any other err.
+func awaitReconnect(err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
+	defer cancel()
+	Reconnected(ctx, err)
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of

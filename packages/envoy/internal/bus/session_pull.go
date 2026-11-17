@@ -77,6 +77,13 @@ var ErrSessionPullStalled = errors.New("bus: the session consumer's pull heard n
 type SessionPull struct {
 	conn *nats.Conn
 	sub  *nats.Subscription
+	// life is the life of conn the pull's requests are sent in (Client.requestLife), and lost the
+	// error Next answers once it ends with client still running (lostConnection): a pull request
+	// standing at the server goes with the connection, and a pull that waited for it would hear
+	// nothing until it stalled.
+	client *Client
+	life   context.Context
+	lost   error
 	// name is the consumer's, next its pull request subject, inbox the subject the server answers
 	// on, and request the pull request's body.
 	name, next, inbox string
@@ -108,6 +115,10 @@ type SessionPull struct {
 // wait in the pull for Next. Release ends it and hands every one of them back to the server at
 // once; Stop ends it and leaves them, so the server delivers each message it delivered and was
 // not acked for again only once its ack wait has passed, or at a restart (RestartAtFloor).
+//
+// The pull lasts as long as the connection it is made on (Client.requestLife): once that
+// connection is lost, Next hands over what the pull already holds and then answers
+// ErrConnectionLost, whose retry (Reconnected) is a new pull on the new connection.
 func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*SessionPull, error) {
 	name, err := sessionConsumerNameOf(sessionID)
 	if err != nil {
@@ -124,8 +135,13 @@ func (s *SessionConsumers) Pull(ctx context.Context, sessionID string) (*Session
 	if err != nil {
 		return nil, err
 	}
+	life := s.client.requestLife()
+	lost := &connectionLost{client: s.client}
+	if life.Err() != nil {
+		return nil, lost
+	}
 	conn := s.client.Connection()
-	p := &SessionPull{conn: conn, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
+	p := &SessionPull{conn: conn, client: s.client, life: life, lost: lost, name: name, next: consumerAPI("MSG.NEXT", name), inbox: conn.NewInbox(), request: request, heartbeat: s.pullHeartbeat, wake: make(chan struct{}, 1)}
 	if p.sub, err = conn.Subscribe(p.inbox, p.receive); err != nil {
 		return nil, err
 	}
@@ -172,8 +188,13 @@ func pullStatus(msg *nats.Msg) (status, description string) {
 	return msg.Header.Get("Status"), msg.Header.Get("Description")
 }
 
-// pull sends a pull request for sessionPullBatch messages.
+// pull sends a pull request for sessionPullBatch messages, on the pull's connection while its life
+// lasts: one sent after the loss on the reconnected connection would draw messages to an inbox the
+// pull is about to leave, which the server then holds until their ack wait passes.
 func (p *SessionPull) pull() error {
+	if p.lostConnection() {
+		return p.lost
+	}
 	p.mu.Lock()
 	p.heard = time.Now()
 	p.mu.Unlock()
@@ -185,8 +206,9 @@ func (p *SessionPull) pull() error {
 }
 
 // Next returns the next message the pull holds, waiting for one until ctx ends. It returns
-// ErrSessionConsumerNotFound once the stream holds no such consumer, and ErrSessionPullStalled
-// once the server has sent nothing for twice sessionPullHeartbeat.
+// ErrSessionConsumerNotFound once the stream holds no such consumer, ErrSessionPullStalled
+// once the server has sent nothing for twice sessionPullHeartbeat, and ErrConnectionLost once the
+// pull's connection is lost and the pull holds nothing more.
 func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 	for {
 		if p.remaining == 0 {
@@ -213,8 +235,18 @@ func (p *SessionPull) Next(ctx context.Context) (SessionMessage, error) {
 	}
 }
 
+// lostConnection reports whether the pull's connection was lost: its life ended while its client
+// still runs. A client that stopped (Close, Drain) ended that life itself, and its pull goes on
+// waiting for its caller as it always did, so a relay stopped after its connection closed still
+// hands back what it holds, and says it could not (sessionRelays' hand-over).
+func (p *SessionPull) lostConnection() bool {
+	return p.life.Err() != nil && !p.client.stopped()
+}
+
 // take returns the first message the server sent that Next has not read, waiting until one comes,
-// ctx ends, or the server has sent nothing for twice sessionPullHeartbeat.
+// ctx ends, the pull's connection is lost (ErrConnectionLost, lostConnection), or the server has
+// sent nothing for twice sessionPullHeartbeat. What the pull already holds is handed over before
+// the loss is.
 func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 	for {
 		p.mu.Lock()
@@ -227,13 +259,22 @@ func (p *SessionPull) take(ctx context.Context) (*nats.Msg, error) {
 		}
 		stalled := time.Until(p.heard.Add(2 * p.heartbeat))
 		p.mu.Unlock()
+		if p.lostConnection() {
+			return nil, p.lost
+		}
 		if stalled <= 0 {
 			return nil, ErrSessionPullStalled
+		}
+		// A life already ended belongs to a stopped client, which ends no wait here.
+		ended := p.life.Done()
+		if p.life.Err() != nil {
+			ended = nil
 		}
 		timer := time.NewTimer(stalled)
 		select {
 		case <-p.wake:
 		case <-timer.C:
+		case <-ended:
 		case <-ctx.Done():
 			timer.Stop()
 			return nil, ctx.Err()

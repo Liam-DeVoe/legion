@@ -354,7 +354,7 @@ func Open(nc *nats.Conn, logger *logging.Logger, opts ...Option) (*Store, error)
 	for _, f := range opts {
 		f(&o)
 	}
-	js, err := nc.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(nc, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}

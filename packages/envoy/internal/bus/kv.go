@@ -59,6 +59,11 @@ type KeyValue struct {
 	// handle over), so two reads of one handle at once -- a watcher's stream probe beside its
 	// completion check -- race on it.
 	streams jetstream.JetStream
+	// owner is the client whose connection the handle was opened on (clientOwning), whose life
+	// every request of the handle is bound to (Request, RequestBounded): a read or write whose
+	// answer that connection's loss cut off answers ErrConnectionLost at the loss. nil for a
+	// handle on a connection no client owns (a test's own), whose requests wait out their bounds.
+	owner *Client
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -494,11 +499,12 @@ func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (K
 	if err != nil {
 		return KeyValue{}, err
 	}
+	owner := clientOwning(conn)
 	request := "KV_" + kv.Bucket() + " handle open"
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()
-		return js.KeyValue(ctx, kv.Bucket())
+		return Request(ctx, owner, func(ctx context.Context) (jetstream.KeyValue, error) { return js.KeyValue(ctx, kv.Bucket()) })
 	}
 	if sendAgain {
 		send := open
@@ -513,12 +519,12 @@ func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (K
 	if err != nil {
 		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), err)
 	}
-	return KeyValue{legacy: kv, watch: watch, streams: js}, nil
+	return KeyValue{legacy: kv, watch: watch, streams: js, owner: owner}, nil
 }
 
 // NewKeyValue pairs kv with watch, a jetstream handle of the same bucket, and streams, the jetstream
 // context its stream is read through, without a round trip: for a test that wraps any of them to
-// inject a fault.
+// inject a fault. Its requests are bound to no client's connection.
 func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.JetStream) KeyValue {
 	return KeyValue{legacy: kv, watch: watch, streams: streams}
 }
@@ -560,6 +566,12 @@ func (kv KeyValue) Bucket() string {
 // js.go:299). The watcher sends a nil entry once it has delivered every existing key, and closes
 // its updates only once its subscription has ended; whoever stops it keeps reading it until then,
 // since nats.go's delivery blocks on a full 256-entry buffer.
+//
+// The watch is not bound to the connection's life (Request), because the one ctx is both the
+// create's bound and the watch's life: a ctx the next disconnect ends would end every watch that
+// follows its bucket at each disconnect, where nats.go's ordered consumer carries a watch over a
+// reconnect by itself. A read that is over when its watch ends is bound by its caller instead
+// (ReadHistory), and a watch's install waits on its create holding no lock (kvwatch).
 func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
@@ -661,8 +673,15 @@ func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
 	}
-	entry, err := kv.legacy.Get(key)
+	entry, err := kvRequest(kv, func() (nats.KeyValueEntry, error) { return kv.legacy.Get(key) })
 	return entry, invalidKey(key, err)
+}
+
+// kvRequest is call, one request of kv's legacy handle, which takes no context, bound to the life
+// of the connection of the client that owns kv's (RequestBounded): it answers ErrConnectionLost
+// when that connection's loss cut its answer off. A handle no client owns runs call as it is.
+func kvRequest[T any](kv KeyValue, call func() (T, error)) (T, error) {
+	return RequestBounded(context.Background(), kv.owner, call)
 }
 
 // RefusesRead answers the refusal a Get of key through this handle would answer before anything is
@@ -709,7 +728,7 @@ func natsKeyValid(key string) bool {
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
 // only nats.go's alphabet check refuses a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
-	entry, err := kv.legacy.GetRevision(key, revision)
+	entry, err := kvRequest(kv, func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
 	return entry, invalidKey(key, err)
 }
 
@@ -717,7 +736,7 @@ func (kv KeyValue) Put(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := kv.legacy.Put(key, value)
+	revision, err := kvRequest(kv, func() (uint64, error) { return kv.legacy.Put(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -725,7 +744,7 @@ func (kv KeyValue) PutString(key string, value string) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := kv.legacy.PutString(key, value)
+	revision, err := kvRequest(kv, func() (uint64, error) { return kv.legacy.PutString(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -733,7 +752,7 @@ func (kv KeyValue) Create(key string, value []byte) (uint64, error) {
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := kv.legacy.Create(key, value)
+	revision, err := kvRequest(kv, func() (uint64, error) { return kv.legacy.Create(key, value) })
 	return revision, invalidKey(key, err)
 }
 
@@ -741,7 +760,7 @@ func (kv KeyValue) Update(key string, value []byte, last uint64) (uint64, error)
 	if err := kv.write(key); err != nil {
 		return 0, err
 	}
-	revision, err := kv.legacy.Update(key, value, last)
+	revision, err := kvRequest(kv, func() (uint64, error) { return kv.legacy.Update(key, value, last) })
 	return revision, invalidKey(key, err)
 }
 
@@ -757,7 +776,8 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	return invalidKey(key, kv.legacy.Delete(key, opts...))
+	_, err := kvRequest(kv, func() (struct{}, error) { return struct{}{}, kv.legacy.Delete(key, opts...) })
+	return invalidKey(key, err)
 }
 
 // DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
@@ -792,14 +812,15 @@ func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {
 	if err := kv.check(key, putOverhead(kv.Bucket())); err != nil {
 		return err
 	}
-	return invalidKey(key, kv.legacy.Purge(key, opts...))
+	_, err := kvRequest(kv, func() (struct{}, error) { return struct{}{}, kv.legacy.Purge(key, opts...) })
+	return invalidKey(key, err)
 }
 
 // Status reads the bucket's status through the legacy handle, which waits out that handle's
 // JetStream MaxWait: the open-time read of a bucket's TTL and a store's health probe, whose
 // openers chose that wait. A read held to RequestTimeout instead is ReadStreamState.
 func (kv KeyValue) Status() (nats.KeyValueStatus, error) {
-	return kv.legacy.Status()
+	return kvRequest(kv, kv.legacy.Status)
 }
 
 // Bounded is call, a bucket call that takes no context, as a caller holding ctx waits for it:
@@ -857,11 +878,14 @@ type StreamState struct {
 // gate, completion check and Check, and each read of the interest marker collector. The legacy
 // handle's Status would wait out that handle's JetStream MaxWait, which its opener chose for its
 // own reads, however short, so this read bounds itself. A stream that is gone is
-// nats.ErrStreamNotFound, however the jetstream package names it.
+// nats.ErrStreamNotFound, however the jetstream package names it. The read is bound to the life of
+// the handle's connection (Request), so one the connection's loss cut off is ErrConnectionLost.
 func (kv KeyValue) ReadStreamState() (StreamState, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 	defer cancel()
-	stream, err := kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+	stream, err := Request(ctx, kv.owner, func(ctx context.Context) (jetstream.Stream, error) {
+		return kv.streams.Stream(ctx, "KV_"+kv.Bucket())
+	})
 	if errors.Is(err, jetstream.ErrStreamNotFound) {
 		return StreamState{}, fmt.Errorf("read the stream of KV bucket %s: %w: %w", kv.Bucket(), nats.ErrStreamNotFound, err)
 	}
@@ -887,31 +911,35 @@ func (kv KeyValue) ReadStreamState() (StreamState, error) {
 // ended, or its subscription did -- is an error rather than the revisions that arrived, which is
 // what nats.go's History would return: a caller that takes the last one for the key's latest would
 // take an older revision for it. Once complete, the watch is stopped and read until it closes, since
-// nats.go's delivery blocks on a full 256-entry buffer holding the watcher's lock.
+// nats.go's delivery blocks on a full 256-entry buffer holding the watcher's lock. The watch is
+// bound to the life of the handle's connection (Request): the connection's loss ends it as ctx
+// ending does, and the read answers ErrConnectionLost.
 func (kv KeyValue) ReadHistory(ctx context.Context, key string) ([]jetstream.KeyValueEntry, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	watcher, err := kv.WatchKeys(ctx, key, jetstream.IncludeHistory())
-	if err != nil {
-		return nil, err
-	}
-	var entries []jetstream.KeyValueEntry
-	for entry := range watcher.Updates() {
-		if entry != nil {
-			entries = append(entries, entry)
-			continue
+	return Request(ctx, kv.owner, func(ctx context.Context) ([]jetstream.KeyValueEntry, error) {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		watcher, err := kv.WatchKeys(ctx, key, jetstream.IncludeHistory())
+		if err != nil {
+			return nil, err
 		}
-		_ = watcher.Stop()
-		go DrainWatcher(watcher)
-		if len(entries) == 0 {
-			return nil, fmt.Errorf("read the history of key %s: %w", key, nats.ErrKeyNotFound)
+		var entries []jetstream.KeyValueEntry
+		for entry := range watcher.Updates() {
+			if entry != nil {
+				entries = append(entries, entry)
+				continue
+			}
+			_ = watcher.Stop()
+			go DrainWatcher(watcher)
+			if len(entries) == 0 {
+				return nil, fmt.Errorf("read the history of key %s: %w", key, nats.ErrKeyNotFound)
+			}
+			return entries, nil
 		}
-		return entries, nil
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("read the history of key %s of KV bucket %s: %w", key, kv.Bucket(), err)
-	}
-	return nil, fmt.Errorf("read the history of key %s of KV bucket %s: the watch ended after %d revisions, before it had delivered them all", key, kv.Bucket(), len(entries))
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("read the history of key %s of KV bucket %s: %w", key, kv.Bucket(), err)
+		}
+		return nil, fmt.Errorf("read the history of key %s of KV bucket %s: the watch ended after %d revisions, before it had delivered them all", key, kv.Bucket(), len(entries))
+	})
 }
 
 // DrainWatcher reads watcher's updates until nats.go closes them, which it does once the

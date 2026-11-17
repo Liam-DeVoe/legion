@@ -146,7 +146,7 @@ func (b *brokerTokens) open(conn *nats.Conn, replicas int) error {
 	if b == nil {
 		return nil
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return fmt.Errorf("%s needs JetStream for the spent-proof bucket %s: %w", EnvBrokerURL, bus.DPoPProofBucket, err)
 	}

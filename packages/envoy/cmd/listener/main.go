@@ -604,14 +604,15 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		for _, c := range d.caches {
 			if answered, err := healthzPing(ctx, c.cache); err != nil {
-				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed))
+				writeDependencyHealth(w, c.name+" KV", err, !answered || c.cache.WatchErr() != nil || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, bus.ErrConnectionLost))
 				return
 			}
 		}
 		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
 		if err != nil {
-			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			// A read ctx ended did not answer, the info read's own form of healthzPing's
+			// unanswered, and neither did one whose connection was lost (bus.ErrConnectionLost).
+			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, bus.ErrConnectionLost) || errors.Is(err, nats.ErrConsumerNotFound))
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the

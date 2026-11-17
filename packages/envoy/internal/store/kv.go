@@ -107,7 +107,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	for _, o := range options {
 		o(&opts)
 	}
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (r *Registry) roles() bus.KeyValue {
 func (r *Registry) Rewatch(conn *nats.Conn) error {
 	// The role bucket opens first, so a failure leaves both handles on the previous connection
 	// rather than the interests on conn and the roles behind.
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := bus.JetStream(conn, nats.MaxWait(10*time.Second))
 	if err != nil {
 		return fmt.Errorf("open role registry JetStream: %w", err)
 	}

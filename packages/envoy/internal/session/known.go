@@ -290,7 +290,7 @@ func OpenKnownSessions(conn *nats.Conn, options ...KnownSessionsOption) (*KnownS
 // knownJetStream is the JetStream context one attempt to open the bucket asks through: its
 // requests wait knownBucketOpenWait rather than the 10 seconds nats.go gives its own by default.
 func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
-	return conn.JetStream(nats.MaxWait(knownBucketOpenWait))
+	return bus.JetStream(conn, nats.MaxWait(knownBucketOpenWait))
 }
 
 // openKnownBucket makes one attempt to open the bucket on conn, creating it with the retention
@@ -325,7 +325,7 @@ func openKnownBucket(conn *nats.Conn, replicas int) (bus.KeyValue, error) {
 	} else if err != nil {
 		return bus.KeyValue{}, err
 	}
-	serving, err := conn.JetStream(nats.MaxWait(knownBucketServeWait))
+	serving, err := bus.JetStream(conn, nats.MaxWait(knownBucketServeWait))
 	if err != nil {
 		return bus.KeyValue{}, err
 	}

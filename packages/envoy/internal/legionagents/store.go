@@ -72,7 +72,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	js, err := conn.JetStream(nats.MaxWait(openTimeout))
+	js, err := bus.JetStream(conn, nats.MaxWait(openTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
@@ -97,7 +97,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 // and its wait for the next key is the read's own context, and ReadTimeout as the scan's idle
 // bound (list).
 func openHandle(conn *nats.Conn) (bus.KeyValue, error) {
-	js, err := conn.JetStream(nats.MaxWait(ReadTimeout))
+	js, err := bus.JetStream(conn, nats.MaxWait(ReadTimeout))
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
