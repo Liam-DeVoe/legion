@@ -109,51 +109,53 @@ func TestAReadRemovesAScannedKeyTheBucketDeletedInItsWindow(t *testing.T) {
 	}
 }
 
-// The order the round-3 review of #4238 derived from nats.go's watcher (jetstream/kv.go:1322-1328,
-// which ends a scan once it has counted as many records as were pending when its consumer was made)
-// and a bucket keeping one record per key: candidate keys hold A@1 and K@2, written in the read's
-// window, and the read's barrier is B@3. While the read reads past its barrier another connection
-// writes A@4 and then K@5, which replaces K@2 before a watch delivers it; a watch filtered on the
-// keys then delivers A@1, B@3 and A@4, counts three records, ends its scan, and delivers K@5 only
-// after that. The read keeps K, which the bucket held throughout.
+// A key the read has evidence of only through a write the bucket then replaces ahead of the read's
+// own consumer: window writes A@1 and K@2 reach the copy before the read begins, the read's barrier
+// is B@3, and while the read waits past it another connection writes A@4 and K@5, replacing A@1
+// and K@2 before the consumer has reached them. The read keeps A and K, which the bucket held
+// throughout.
 //
-// A build that reads its candidate keys through such a filtered watch (3fcfb97789's
-// bus.KeyValue.ReadLatest) is handed exactly that delivery by the handle's WatchFiltered here, and
-// removes K. This build reads its own consumer past the barrier until nothing is pending, and makes
-// no filtered watch.
-func TestAReadKeepsAKeyTheBucketReplacedBeforeAWatchDeliveredIt(t *testing.T) {
+// The order is the real server's, on the consumer under test: that consumer is paused from its
+// creation until the replacements are stored (pausedWatch), so its cursor is still behind A@1 when
+// the bucket removes it, and the counts its deliveries carry are the server's own. The round-3
+// review of #4238 derived the order against a filtered watch of the candidate keys (3fcfb97789's
+// bus.KeyValue.ReadLatest), which this build no longer makes; TestAReadKeepsRowsAFalseZeroPendingCountWouldSweep
+// is the same order with the barrier's pending count the server can misreport.
+func TestAReadKeepsAKeyTheBucketReplacedAheadOfItsConsumer(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	_, other := bucket(t, uri)
-	held := newHeldCreate(t)
-	script := scripted(kv, held.step())
+	paused := newPausedWatch(t, kv.Streams(), false)
 	barrier := &replacingBarrier{JetStream: kv.Streams(), other: other, replace: []string{"a", "k"}, written: map[string]uint64{}}
-	compacted := &compactedFilteredWatch{scriptedKV: script, barrier: barrier}
 	cache := newWindowCache(1)
 	timers := &pending{}
-	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), compacted, barrier), cache,
-		kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), scripted(kv, paused.step()), barrier), cache,
+		kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0), kvwatch.WithScanIdleTimeout(7*time.Hour))
 	t.Cleanup(w.Stop)
 	t.Cleanup(cache.letGo)
 	w.Start()
 
-	wait(t, held.created, "the first read's watch to make its consumer")
+	wait(t, paused.held.created, "the read's watch to make and pause its consumer")
 	for _, key := range []string{"a", "k"} {
 		if outcome := cache.writeThrough(t, w, key); outcome != kvwatch.Applied {
 			t.Fatalf("the window write of %s came to outcome %d, want Applied (%d)", key, outcome, kvwatch.Applied)
 		}
 	}
-	compacted.firstA = lastRevision(t, kv, "a")
-	held.let()
-	eventually(t, "the read's completion", cache.targetDone)
+	paused.held.let()
+	eventually(t, "the read to wait past its barrier", func() bool { return len(timers.armed(7*time.Hour)) == 2 })
 	if err := barrier.failure(); err != nil {
 		t.Fatalf("the writes after the barrier: %v", err)
 	}
+	if done := len(cache.completions()); done != 0 {
+		t.Fatalf("%d reads completed while the read's consumer was paused, want none", done)
+	}
+	paused.resume(t)
+	eventually(t, "the read's completion", cache.targetDone)
 	if got, want := bucketKeys(t, kv), []string{"a", "k"}; !slices.Equal(got, want) {
 		t.Fatalf("the bucket holds %v, want %v", got, want)
 	}
 	if !cache.has("k") || !cache.has("a") {
-		t.Fatalf("the completed read left the copy holding %v, want a and k: k was replaced, never removed", cache.keyList())
+		t.Fatalf("the completed read left the copy holding %v, want a and k: the bucket replaced them, never removed them", cache.keyList())
 	}
 }
 
@@ -397,28 +399,6 @@ func (s *replacingBarrier) failure() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.err
-}
-
-// compactedFilteredWatch is a bucket's jetstream handle whose filtered watch delivers what nats.go's
-// watcher delivers when the bucket replaces K before the watch reaches it: A at firstA, the barrier,
-// A's replacement, the end of the scan (three records counted), and K's replacement after it.
-// Its watches of the whole bucket are the scriptedKV's.
-type compactedFilteredWatch struct {
-	*scriptedKV
-	barrier *replacingBarrier
-	firstA  uint64
-}
-
-func (w *compactedFilteredWatch) WatchFiltered(context.Context, []string, ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
-	w.barrier.mu.Lock()
-	defer w.barrier.mu.Unlock()
-	updates := make(chan jetstream.KeyValueEntry, 5)
-	updates <- scriptedRecord{key: "a", revision: w.firstA, delta: 2, op: jetstream.KeyValuePut}
-	updates <- scriptedRecord{key: bus.BarrierKey, revision: w.barrier.barrier, delta: 1, op: jetstream.KeyValueDelete}
-	updates <- scriptedRecord{key: "a", revision: w.barrier.written["a"], delta: 1, op: jetstream.KeyValuePut}
-	updates <- nil
-	updates <- scriptedRecord{key: "k", revision: w.barrier.written["k"], delta: 0, op: jetstream.KeyValuePut}
-	return &scriptedWatcher{updates: updates}, nil
 }
 
 // scriptedRecord is a record a scripted watch delivers, with the pending count it is delivered with.
