@@ -1837,6 +1837,8 @@ TEST_LIB = f"{SCRIPTS}/test-lib.sh"
 # their harnesses read that environment with.
 GO_OFFLINE = f"{SCRIPTS}/go_offline.py"
 GO_OFFLINE_STAND_IN = f"{SCRIPTS}/go-offline-test-lib.sh"
+# The shell scanner check-release-credentials.sh and check-legion-version-inputs.sh read a run: with.
+SHELL_COMMANDS = f"{SCRIPTS}/shell_commands.py"
 
 
 def harness(filter, step, harness_script, subjects, lib=True):
@@ -1968,6 +1970,8 @@ SCRIPT_TEST_GATES = [
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [
         (f"{SCRIPTS}/check-release-credentials.sh", "the script under test"),
+        (SHELL_COMMANDS, "the shell scanner the script imports, symlinked into every fixture "
+                         "(check-release-credentials.test.sh:41)"),
     ]),
     harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
         (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
@@ -2063,6 +2067,7 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
         (VERSION_INPUTS, "the script under test, symlinked into every fixture (check-legion-version-inputs.test.sh:48-50)"),
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
+        (SHELL_COMMANDS, "the shell scanner the script reads a version step with, linked in beside it"),
         (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go its offline case reads the "
                               "script's go commands' environment with"),
     ]),
@@ -3107,6 +3112,7 @@ GATES = [
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it"),
         (GO_OFFLINE, f"ci_filter_coverage.py and {VERSION_INPUTS} run every go command through it"),
+        (SHELL_COMMANDS, f"{VERSION_INPUTS} reads each release version step's run: with it"),
         ("package.json", "ci_job_reads.py reads the workspace list from the root manifest"),
         (GO_TARGETS, f"ci_job_reads.py expands the notices and pack runs over it, and {VERSION_INPUTS} its listings"),
         (CLIENT_TARGETS, f"ci_job_reads.py expands the notices runs over it, and {VERSION_INPUTS} its agent-secrets listings"),

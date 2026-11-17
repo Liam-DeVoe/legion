@@ -45,7 +45,7 @@ fixture() {
     "$root/packages/envoy/gamma" "$root/packages/envoy/internal/delta" "$root/packages/envoy/infra/x" \
     "$root/packages/envoy/cmd/listener" "$root/packages/envoy/cmd/agent-secrets" \
     "$root/packages/envoy/cmd/agent-secrets-helper"
-  for linked in check-legion-version-inputs.sh go_offline.py; do
+  for linked in check-legion-version-inputs.sh go_offline.py shell_commands.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.22\n\nuse (\n\t./packages/daemon\n\t./packages/envoy\n)\n' > "$root/go.work"
@@ -78,8 +78,32 @@ env:
     --patch-path .github/go-release-targets.json
 $envoy_args
 $envoy_modules
-jobs: {}
 EOF
+  cat >> "$root/.github/workflows/release-envoy-listener.yaml" <<'YAML'
+jobs:
+  release_build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Determine next version
+        id: version
+        run: |
+          # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list
+          .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
+  release_publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Confirm the version
+        id: confirm
+        env:
+          VERSION: ${{ needs.release_build.outputs.version }}
+        run: |
+          status=0
+          .github/scripts/release-push.sh version legion-envoy-v --expect "$VERSION" $LEGION_ENVOY_VERSION_ARGS >/dev/null || status=$?
+          case $status in
+            0) echo "release=true" >> "$GITHUB_OUTPUT" ;;
+            4) .github/scripts/release-push.sh restart release-envoy-listener.yaml 0 ;;
+          esac
+YAML
   cat > "$root/.github/workflows/release.yaml" <<EOF
 name: Release Packages
 on:
@@ -213,6 +237,70 @@ replace "$root/.github/workflows/release.yaml" ' $LEGION_GO_INPUTS >>' ' >>'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step and the command" "$(contains "$out" "legion_build's step \`version\` must run \`$handoff\`")"
+check "and what it runs instead" \
+  "$(contains "$out" 'it runs `.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS`')"
+
+# A value the command reads in place of the workflow's, each of the ways a step can get one.
+echo "case: the version step's own env: sets the block's variable"
+root=$(written stepenv)
+replace "$root/.github/workflows/release.yaml" $'        id: version\n' $'        id: version\n        env:\n          LEGION_GO_INPUTS: ""\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the override" \
+  "$(contains "$out" "legion_build's step \`version\` reads LEGION_GO_INPUTS from its own env:, not the workflow's")"
+
+echo "case: the job's env: sets the hand-written variable"
+root=$(written jobenv)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    env:\n      LEGION_VERSION_ARGS: -- packages/daemon/\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the override" "$(contains "$out" "reads LEGION_VERSION_ARGS from its job's env:, not the workflow's")"
+
+echo "case: the command left in a shell comment"
+root=$(written comment)
+replace "$root/.github/workflows/release.yaml" "          $handoff" "          # $handoff"$'\n'"          echo skipped"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the step runs no such command" "$(contains "$out" 'it runs no such command (one in a comment is none)')"
+
+echo "case: the block's variable quoted, so its paths are one word"
+root=$(written quoted)
+replace "$root/.github/workflows/release.yaml" ' $LEGION_GO_INPUTS >>' ' "$LEGION_GO_INPUTS" >>'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "shows the quoted word" \
+  "$(contains "$out" 'it runs `.github/scripts/release-push.sh version legion-v $LEGION_VERSION_ARGS "$LEGION_GO_INPUTS"`')"
+
+echo "case: the run: empties the variable before the command"
+root=$(written assigned)
+replace "$root/.github/workflows/release.yaml" "          $handoff" "          LEGION_GO_INPUTS="$'\n'"          $handoff"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the assignment" "$(contains "$out" 'names LEGION_GO_INPUTS in `LEGION_GO_INPUTS=`')"
+
+echo "case: an earlier step of the job writes \$GITHUB_ENV"
+root=$(written githubenv)
+replace "$root/.github/workflows/release.yaml" $'    steps:\n' $'    steps:\n      - run: echo "LEGION_GO_INPUTS=" >> "$GITHUB_ENV"\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the earlier step's write" \
+  "$(contains "$out" "a step of legion_build before legion_build's step \`version\` writes \$GITHUB_ENV")"
+
+echo "case: the version step runs under another shell"
+root=$(written shell)
+replace "$root/.github/workflows/release.yaml" $'        id: version\n' $'        id: version\n        shell: python\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the shell" "$(contains "$out" "runs under \`python\`, not bash")"
+
+echo "case: the listener's confirm step sets its paths' variable"
+root=$(written confirmenv)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'          VERSION: ${{ needs.release_build.outputs.version }}\n' \
+  $'          VERSION: ${{ needs.release_build.outputs.version }}\n          LEGION_ENVOY_VERSION_ARGS: -- packages/envoy/\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the override" \
+  "$(contains "$out" "release_publish's step \`confirm\` reads LEGION_ENVOY_VERSION_ARGS from its own env:")"
 
 echo "case: an exclude among LEGION_VERSION_ARGS's paths drops a path go names"
 root=$(written magic)

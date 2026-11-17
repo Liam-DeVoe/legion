@@ -1407,6 +1407,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-release-credentials.test.sh'
               - '.github/scripts/check-release-credentials.sh'
+              # The shell scanner the script imports, symlinked into every fixture.
+              - '.github/scripts/shell_commands.py'
             repo_paths_test: &repo_paths_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1548,10 +1550,11 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-legion-version-inputs.test.sh'
-              # The script under test and the module its go commands run through, symlinked into
-              # every fixture, and the stand-in go its offline case reads their environment with.
+              # The script under test and the two modules it imports, symlinked into every
+              # fixture, and the stand-in go its offline case reads their environment with.
               - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/go_offline.py'
+              - '.github/scripts/shell_commands.py'
               - '.github/scripts/go-offline-test-lib.sh'
             check_ts_filters_test: &check_ts_filters_test
               - *ci_router
@@ -4314,6 +4317,7 @@ jobs:
               - '.github/scripts/ci_job_reads.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/go_offline.py'
+              - '.github/scripts/shell_commands.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/go-release-targets.json'
               - '.github/agent-secrets-client-targets.json'
