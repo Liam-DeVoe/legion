@@ -46,12 +46,13 @@ const levelTwoWorkGrowth = 6
 // judgment (specFormOf) of a document of four times as many statements sends as many statements to
 // the database, so it reads the database once for the document and not once for each text, and
 // its work grows less than levelTwoWorkGrowth times, so it does no work for each pair of texts.
-// The work is the CPU time of the thread that judges, measured as the form's own table measures
-// it (cputest.Growth, as specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText does): a wait
-// for a core is not in it, work that allocates nothing is, and the work of Postgres is not, which
-// the count of statements bounds. All the documents stand under the root before any is judged,
-// since the judgment reads each other covered document under it. Through the request route, the
-// broken document of 301 statements is refused, and the clean one opens.
+// The work is the user CPU time of the thread that judges, the work of the judgment's own code,
+// measured as the form's own table measures it (cputest.Growth, as
+// specform.TestTheWorkOfAJudgmentGrowsInProportionToItsText does): a wait for a core is not in it,
+// nor the kernel's work for the thread, nor the work of Postgres, which the count of statements
+// bounds; work that allocates nothing is in it. All the documents stand under the root before any
+// is judged, since the judgment reads each other covered document under it. Through the request
+// route, the broken document of 301 statements is refused, and the clean one opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	served := &server{deps: tree.deps}
