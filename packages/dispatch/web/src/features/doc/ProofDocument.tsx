@@ -1110,9 +1110,15 @@ export function ProofDocument({
             version.
           </p>
           <button
+            // Inside `NoTooltips` the button keeps its focus while it rebuilds: it is
+            // `aria-disabled` then, in place of `disabled`, and a press does nothing. Outside it
+            // is `disabled` while it rebuilds, as on `main` (decision 162 of
+            // dispatch://INFRA-1196/artifact/part-decisions-md).
+            aria-disabled={(!tooltips && rebuild.isPending) || undefined}
             className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${tooltips ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}` : controlOnPage}`}
-            disabled={rebuild.isPending}
+            disabled={tooltips && rebuild.isPending}
             onClick={() => {
+              if (rebuild.isPending) return;
               if (
                 window.confirm(
                   "Rebuild this document from its latest version? This discards its unreadable history."

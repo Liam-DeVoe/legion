@@ -149,6 +149,31 @@ export function IssuePriorityLine({
     setAdding(false);
     focusAddControl.current = true;
   };
+  // Inside `NoTooltips` a press of a priority's Remove is remembered with the issue's own entries
+  // drawn after it and then before it, the nearest first, and each Remove is kept by its entry's
+  // id. Once the write is no longer out, a focus that fell to the document (`focusOnDocument`)
+  // goes to the pressed Remove while its entry is drawn, else to the Remove of the nearest of
+  // those entries still drawn, else to the add control; the press is forgotten once its entry is
+  // gone or the write failed. A focus anywhere else is left where it is (decision 162 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md).
+  const removePressed = useRef<{ id: string; nearest: readonly string[] } | null>(null);
+  const removeButtons = useRef(new Map<string, HTMLButtonElement>());
+  useEffect(() => {
+    const pressed = removePressed.current;
+    if (pressed === null || write.isPending) return;
+    const drawn = (issue.advances ?? []).some(
+      (entry) => entry.id === pressed.id && !entry.inherited
+    );
+    if (focusOnDocument()) {
+      const buttons = removeButtons.current;
+      const target = drawn
+        ? buttons.get(pressed.id)
+        : (pressed.nearest.map((id) => buttons.get(id)).find((button) => button !== undefined) ??
+          addControl.current);
+      target?.focus();
+    }
+    if (!drawn || write.isError) removePressed.current = null;
+  }, [issue.advances, write.isError, write.isPending]);
   // Inside `NoTooltips` each colour is one of the new issue page's (dispatch://INFRA-3935 R6,
   // decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md): the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
@@ -220,7 +245,20 @@ export function IssuePriorityLine({
                 aria-label={`Remove ${label} from ${issue.key}`}
                 className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
                 disabled={busy}
-                onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
+                onClick={() => {
+                  if (page !== null) {
+                    const at = own.indexOf(entry.id);
+                    removePressed.current = {
+                      id: entry.id,
+                      nearest: [...own.slice(at + 1), ...own.slice(0, at).reverse()],
+                    };
+                  }
+                  writeOwn(own.filter((id) => id !== entry.id));
+                }}
+                ref={(button) => {
+                  if (button === null) removeButtons.current.delete(entry.id);
+                  else removeButtons.current.set(entry.id, button);
+                }}
                 type="button"
                 {...page?.pageChrome}
               >

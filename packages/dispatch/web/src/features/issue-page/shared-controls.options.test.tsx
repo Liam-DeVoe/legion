@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
-import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
+import { type ArtifactRebuildReport, MAX_ISSUE_ADVANCES } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { type RenderResult, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -3506,6 +3506,167 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
       configurable: true,
       value: originalExecCommand,
     });
+  }
+});
+
+/** CORE-1's priority line on the issue as `read` answers it: a write of what the issue advances
+ *  invalidates that read, and the line draws what the read answers next. */
+function ReadPriorityLine({
+  read,
+}: {
+  read: () => Promise<Pick<Issue, "advances" | "advances_revision" | "key">>;
+}): ReactNode {
+  const issue = useQuery({ queryFn: read, queryKey: ["issue", "CORE-1"] });
+  return issue.data === undefined ? null : (
+    <IssuePriorityLine disabled={false} issue={issue.data} />
+  );
+}
+
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: a priority's Remove is
+// disabled while its write is out and leaves the page with its entry once the issue reads it gone,
+// and either drops its focus to the body. Inside `NoTooltips`, once the entry is gone the focus goes
+// to the Remove of the entry after it, else of the entry before it, else to the add control, and
+// once the write failed it returns to the pressed Remove. R1 of dispatch://INFRA-3935: outside
+// `NoTooltips` the line moves no focus, and it stays on the body.
+test("inside NoTooltips a priority's Remove pressed by Enter hands its focus to the next priority's Remove", async () => {
+  const user = userEvent.setup();
+  // The priorities read names a third priority after the fixture's two.
+  const listed = priorities.priorities ?? [];
+  const first = listed[0];
+  if (first === undefined) throw new Error("the fixture lists no priority");
+  stubs.listPriorities.mockResolvedValue({
+    ...priorities,
+    priorities: [
+      ...listed,
+      { ...first, id: "lean-proofs", rank: "lean-proofs", title: "Lean proofs checked" },
+    ],
+  });
+  const evals = "Remove P1 Evals collecting data now from CORE-1";
+  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
+  const lean = "Remove P3 Lean proofs checked from CORE-1";
+  for (const surface of ["inside", "outside"] as const) {
+    for (const write of ["lands", "fails"] as const) {
+      let held = ["evals-now", "rocq-lean", "lean-proofs"];
+      const read = async () => ({
+        advances: held.map((id) => ({ id, inherited: false })),
+        advances_revision: 1,
+        key: "CORE-1",
+      });
+      const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
+        // A browser drops the focus of a button that turns disabled to the body (the focus
+        // fixup rule); happy-dom keeps it on the disabled button and will not blur it there, so
+        // the write puts it on the body while it is out.
+        document.body.focus();
+        if (write === "fails") throw new Error("the connection dropped");
+        held = input.advances ?? held;
+        return {} as Issue;
+      });
+      const view = draw(<ReadPriorityLine read={read} />, surface);
+      try {
+        const scope = within(view.container);
+        // Presses Enter on the Remove named `name` and lets its write and the read after it
+        // land; answers the Remove, which is gone where the write landed.
+        const press = async (name: string) => {
+          const remove = await scope.findByRole("button", { name });
+          await waitFor(() => expect(remove).not.toBeDisabled());
+          const calls = patchIssue.mock.calls.length;
+          remove.focus();
+          await user.keyboard("{Enter}");
+          await waitFor(() => expect(patchIssue.mock.calls.length).toBeGreaterThan(calls));
+          if (write === "lands") {
+            await waitFor(() => expect(scope.queryByRole("button", { name })).toBeNull());
+          } else {
+            await scope.findByRole("alert");
+          }
+          await settleReads();
+          return remove;
+        };
+        if (write === "lands") {
+          // The first of three: the focus goes to the Remove of the entry after it.
+          await press(evals);
+          expect(document.activeElement).toBe(
+            surface === "inside" ? scope.getByRole("button", { name: rocq }) : document.body
+          );
+          // The last of two: the focus goes to the Remove of the entry before it.
+          await press(lean);
+          expect(document.activeElement).toBe(
+            surface === "inside" ? scope.getByRole("button", { name: rocq }) : document.body
+          );
+          // The only one left: the focus goes to the add control.
+          await press(rocq);
+          expect(document.activeElement).toBe(
+            surface === "inside"
+              ? scope.getByRole("button", { name: addPriorityControlName("CORE-1") })
+              : document.body
+          );
+        } else {
+          // The write failed and the entry stays: the focus goes back to the pressed Remove.
+          const remove = await press(rocq);
+          expect(remove.isConnected && !remove.hasAttribute("disabled")).toBe(true);
+          expect(document.activeElement).toBe(surface === "inside" ? remove : document.body);
+        }
+      } finally {
+        patchIssue.mockRestore();
+        undraw(view);
+      }
+    }
+  }
+});
+
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: Rebuild is refused while its
+// write is out. Inside `NoTooltips` it says so with `aria-disabled` in place of `disabled`, which
+// drops the focus in a browser, so it keeps its focus, and a press then asks nothing and sends no
+// second rebuild. R1 of dispatch://INFRA-3935: outside `NoTooltips` it is `disabled` while it
+// rebuilds, as on `main`.
+test("inside NoTooltips Rebuild keeps its focus while it rebuilds", async () => {
+  const user = userEvent.setup();
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  try {
+    for (const surface of ["inside", "outside"] as const) {
+      confirm.mockClear();
+      stubs.getArtifactText.mockRejectedValueOnce(
+        new ApiError(409, { code: "DOCUMENT_UNLOADABLE", error: "The stored history cannot load." })
+      );
+      const rebuilt = Promise.withResolvers<ArtifactRebuildReport>();
+      const rebuildArtifact = spyOn(api, "rebuildArtifact").mockImplementation(
+        () => rebuilt.promise
+      );
+      const view = draw(proofDocument(), surface);
+      try {
+        const scope = within(view.container);
+        const rebuild = await scope.findByRole("button", {
+          name: "Rebuild from the latest version",
+        });
+        rebuild.focus();
+        await user.keyboard("{Enter}");
+        await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(rebuild.textContent).toBe("Rebuilding…"));
+        if (surface === "inside") {
+          expect(rebuild.getAttribute("aria-disabled")).toBe("true");
+          expect(rebuild.hasAttribute("disabled")).toBe(false);
+          expect(document.activeElement).toBe(rebuild);
+          await user.keyboard("{Enter}");
+          await settleReads();
+          expect(document.activeElement).toBe(rebuild);
+        } else {
+          expect(rebuild.hasAttribute("aria-disabled")).toBe(false);
+          expect(rebuild.hasAttribute("disabled")).toBe(true);
+        }
+        expect(confirm).toHaveBeenCalledTimes(1);
+        expect(rebuildArtifact).toHaveBeenCalledTimes(1);
+      } finally {
+        rebuilt.reject(
+          new ApiError(422, {
+            code: "REBUILD_REFUSED",
+            error: "The history cannot be rebuilt now.",
+          })
+        );
+        undraw(view);
+        rebuildArtifact.mockRestore();
+      }
+    }
+  } finally {
+    confirm.mockRestore();
   }
 });
 
