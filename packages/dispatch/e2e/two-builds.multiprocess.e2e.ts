@@ -1,8 +1,11 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
+import type { Result } from "../web/src/api/paths";
 import type { ArtifactUploadResponse } from "../web/src/api/types";
+import { NODE_REFERENCES_WORDS, sentenceCase } from "../web/src/features/issue-page/page-words";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
+import { buildRunPath } from "../web/src/features/refs/routes";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   baseUrl,
@@ -191,6 +194,26 @@ async function uploadAgentPicture(sessionID: string): Promise<string> {
   return uploaded.artifact.slug;
 }
 
+/** The question alice asks the command bar, whose run's own page the walk opens. */
+const runQuestion = "What is rolling out in Core?";
+
+/** The heading of a run's own page: the word for what a run is (`RunPage`). */
+const runWord = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+
+/** Asks `runQuestion` of CORE as alice, as the command bar does, and answers the run's id. */
+async function askRun(): Promise<string> {
+  const response = await fetch(new URL("/api/v1/going/requests", baseUrl), {
+    body: JSON.stringify({ project: "CORE", words: runQuestion }),
+    headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (response.status !== 201) {
+    throw new Error(`command bar run: ${response.status} ${await response.text()}`);
+  }
+  const run = (await response.json()) as Result<"/api/v1/going/requests", "post">;
+  return run.id;
+}
+
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -198,6 +221,7 @@ interface Seeded {
   readonly issue: string;
   readonly issueArtifact: string;
   readonly priority: string;
+  readonly run: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
@@ -287,6 +311,8 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id);
+  // A command bar run's own page draws only a run its reader asked.
+  const run = await askRun();
   await seedDeliveryFixture();
   return {
     agentArtifact,
@@ -295,6 +321,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
+    run,
   };
 }
 
@@ -554,6 +581,18 @@ function visits(seed: Seeded): readonly Visit[] {
           .getByRole("heading", { exact: true, level: 1, name: shown.issue }),
       ],
       url: issue,
+    },
+    {
+      // A run's own page is drawn only for a reader with the new issue page turned on, so this
+      // visit is last for the same reason as the one before it. It needs the server to answer
+      // the run's own read, which INFRA-1950 adds.
+      route: "/runs/:id",
+      shows: (page) => [
+        page
+          .locator("[data-issue-page]")
+          .getByRole("heading", { exact: true, level: 1, name: runWord }),
+      ],
+      url: buildRunPath(seed.run),
     },
   ];
 }

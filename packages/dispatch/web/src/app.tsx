@@ -57,6 +57,7 @@ import {
   liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
+  RUN_PATH,
   routeFillsViewport,
   routeHasMargin,
   routeIsInbox,
@@ -187,6 +188,9 @@ const PipelinePage = lazy(() =>
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+);
+const RunRoute = lazy(() =>
+  import("./features/issue-page/run-page/RunRoute").then((module) => ({ default: module.RunRoute }))
 );
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
@@ -1044,6 +1048,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
+                <Route element={<RunRoute />} path={RUN_PATH} />
                 {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
                 <Route
                   element={
