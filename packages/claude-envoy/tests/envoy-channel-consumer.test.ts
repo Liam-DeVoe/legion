@@ -265,7 +265,7 @@ for (const refusal of [
   { status: 503, reason: "no_grant" },
   { status: 409, reason: "not_requested" },
 ] as const) {
-  test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with one notice naming it, and the next heartbeat asks again`, async () => {
+  test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with one notice naming it, the next heartbeat asks again, and the accepted registration is told once`, async () => {
     const directory = scratchState()
     const nats = new FakeNats()
     const notifier = heldNotifier()
@@ -305,10 +305,17 @@ for (const refusal of [
       await waitFor(async () => registrations.length >= asked + 2, "two more registrations")
       expect(notices()).toHaveLength(1)
 
-      // Accepted at last: what the stream kept for the session arrives on its relay.
+      // Accepted at last: the session is told once that it receives again, and what the stream
+      // kept for the session arrives on its relay.
       refusing = false
       const accepted = registrations.length
       await waitFor(async () => registrations.length > accepted, "the accepted registration")
+      // Every write is let through as it comes: the notice, then the one behind it.
+      await waitFor(async () => {
+        for (const write of notifier.pending) write.resolve()
+        return notices().length === 2
+      }, "the notice that the session receives again")
+      expect(notices()[1]?.content).toContain("Envoy inbound restored")
       const message = peerMessage("after-refusal")
       nats.emitRelay(SESSION, {
         subject: DIRECT,
@@ -316,11 +323,14 @@ for (const refusal of [
         raw: message.raw,
         reply: "_INBOX.after-refusal",
       })
-      // Every write is let through as it comes: the notice, then the frame behind it.
       await waitFor(async () => {
         for (const write of notifier.pending) write.resolve()
         return notifier.written.some((written) => written.eventId === message.id)
       }, "the frame after the refusal")
+      // The heartbeats after the accepted one tell nothing more.
+      const after = registrations.length
+      await waitFor(async () => registrations.length >= after + 2, "two more registrations")
+      expect(notices()).toHaveLength(2)
     } finally {
       for (const write of notifier.pending) write.resolve()
       await session.shutdown()

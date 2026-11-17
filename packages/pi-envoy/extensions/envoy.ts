@@ -36,6 +36,7 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
   registerWithRelay,
@@ -3057,15 +3058,27 @@ export default function envoyExtension(pi: PiApi): void {
   // reason is the listener's own, one of those `ErrorWireSchema.reason` lists
   // (`@legion/envoy-client`'s `transport.ts`), carried in the error's message, which
   // `inboundUnavailableNoticeText` words for every host, and the heartbeat registers again
-  // every tick until one is accepted.
-  const inboundOutage = inboundUnavailable((why) => {
-    logger.warn(`envoy: this session receives nothing: ${why}`);
-    activeSessionContext?.ui.notify(
-      `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
-      "warning"
-    );
-    unwritten.sendNotice(inboundUnavailableNoticeText(why));
-  });
+  // every tick until one is accepted. A session whose first relay open is still being tried at
+  // its start is told only once `INBOUND_FIRST_OPEN_BOUND_MS` has passed. Once a registration is
+  // accepted after a told outage, the session is told once that it receives again, by the same
+  // path, so it learns that what the stream stored meanwhile is arriving.
+  const inboundOutage = inboundUnavailable(
+    (why) => {
+      logger.warn(`envoy: this session receives nothing: ${why}`);
+      activeSessionContext?.ui.notify(
+        `envoy: inbound messages are unavailable (${why}); registering again every heartbeat`,
+        "warning"
+      );
+      unwritten.sendNotice(inboundUnavailableNoticeText(why));
+    },
+    {
+      restored: () => {
+        logger.info("envoy: this session receives again: a registration was accepted");
+        activeSessionContext?.ui.notify("envoy: inbound messages are back", "info");
+        unwritten.sendNotice(inboundRestoredNoticeText());
+      },
+    }
+  );
 
   // Where this session's pane sits in tmux, so Dispatch can draw the machine's layout from what
   // the sessions themselves report. The reading runs between registrations, never inside one: a

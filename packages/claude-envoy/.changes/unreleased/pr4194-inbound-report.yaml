@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Once a registration is accepted after the session was told "Envoy inbound unavailable", the
+  server says once that the session receives again: a notice "Envoy inbound restored", which says
+  that what the stream stored meanwhile arrives now, and one stderr line. Before this the session
+  never learned that its inbound came back.
+time: 2026-11-17T03:00:17Z
+custom:
+    Issue: pr4194

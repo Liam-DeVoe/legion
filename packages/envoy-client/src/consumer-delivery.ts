@@ -830,35 +830,109 @@ export function inboundUnavailableNoticeText(why: string): string {
   });
 }
 
-/** One session's outage report (`inboundUnavailable`). */
-export interface InboundUnavailable {
-  /**
-   * A registration was refused or failed: tells the session, through the host's `tell`, unless
-   * this outage already told it.
-   */
-  refused(error: unknown): void;
-  /** A registration was accepted: the next outage tells the session again. */
-  accepted(): void;
+/**
+ * What a session is told when a registration is accepted after it was told that it receives
+ * nothing (`inboundUnavailableNoticeText`), worded once for every host and shown where that
+ * notice was shown.
+ */
+export function inboundRestoredNoticeText(): string {
+  return envoyNoticeText({
+    notice: "Envoy inbound restored",
+    detail:
+      "The listener accepted a registration of this session, so the session receives Envoy messages again. What the stream stored while it received nothing arrives now.",
+  });
 }
 
 /**
- * Says once per outage that the session receives nothing. The listener refuses a registration it
- * can give no consumer, and the host registers again at every heartbeat, so a host that told the
- * session each time would tell it every tick for as long as the outage lasts; one that never told
- * it again would leave a second outage silent. `tell` takes the listener's own message
- * (`messageFor`), which each host words with `inboundUnavailableNoticeText` and shows where it
- * shows a gap notice.
+ * How long a session that has had no accepted registration yet may hold no relay subject before
+ * it is told that it receives nothing (`inboundUnavailable`). At a pod's start the first NATS
+ * dial can fail, and the relay opens on a later try. That race closes within about a minute
+ * (dispatch://INFRA-3589, R24): on 2026-11-16 an Oh My Pi session whose NATS was held closed
+ * for its first pass took 67 s from its start to its first accepted registration. pi-envoy tries
+ * again every 15 s (`NATS_RETRY_INTERVAL_MS`), so a real outage is told within about 135 s of
+ * the start, inside the listener's 300 s live window.
  */
-export function inboundUnavailable(tell: (why: string) => void): InboundUnavailable {
+export const INBOUND_FIRST_OPEN_BOUND_MS = 120_000;
+
+/** One session's outage report (`inboundUnavailable`). */
+export interface InboundUnavailable {
+  /**
+   * No registration was sent, because the session holds no relay subject. Before the session's
+   * first accepted registration this is the start race, held until the bound passes; after it,
+   * a relay that was open was lost, which tells the session at once. Either way it is told once
+   * per outage.
+   */
+  noRelay(error: unknown): void;
+  /**
+   * A registration was refused or failed: tells the session at once, through the host's `tell`,
+   * unless this outage already told it.
+   */
+  refused(error: unknown): void;
+  /**
+   * A registration was accepted: an outage the session was told of ends with `restored`, and the
+   * next outage tells the session again. An outage held and never told ends with nothing said.
+   */
+  accepted(): void;
+}
+
+/** What `inboundUnavailable` takes besides `tell`. */
+export interface InboundUnavailableOptions {
+  /** The clock the bound is read on; `Date.now` unless a test passes its own. */
+  readonly now?: () => number;
+  /** How long the start race is held (`INBOUND_FIRST_OPEN_BOUND_MS` unless a test passes one). */
+  readonly firstOpenBoundMs?: number;
+  /** Tells the session once that it receives again, after it was told that it receives nothing. */
+  readonly restored?: () => void;
+}
+
+/**
+ * Says once per outage that the session receives nothing, and once that it receives again. The
+ * listener refuses a registration it can give no consumer, and the host registers again at every
+ * heartbeat, so a host that told the session each time would tell it every tick for as long as
+ * the outage lasts; one that never told it again would leave a second outage silent. `tell` takes
+ * the listener's own message (`messageFor`), which each host words with
+ * `inboundUnavailableNoticeText` and shows where it shows a gap notice; `restored` shows
+ * `inboundRestoredNoticeText` in the same place.
+ *
+ * A session whose first relay open is still being tried holds no relay subject for a while at
+ * its start, and it receives once the relay opens. So until the session's first accepted
+ * registration, an outage with no relay subject is held: the first such call starts the bound,
+ * and only a call at or after its end tells the session. A refusal is told at once, as is an
+ * outage with no relay subject after the first accepted registration.
+ */
+export function inboundUnavailable(
+  tell: (why: string) => void,
+  {
+    now = () => Date.now(),
+    firstOpenBoundMs = INBOUND_FIRST_OPEN_BOUND_MS,
+    restored,
+  }: InboundUnavailableOptions = {}
+): InboundUnavailable {
   let told = false;
+  let everAccepted = false;
+  let heldSince: number | undefined;
+  const say = (error: unknown) => {
+    if (told) return;
+    told = true;
+    tell(messageFor(error));
+  };
   return {
+    noRelay(error) {
+      if (!everAccepted) {
+        const at = now();
+        heldSince ??= at;
+        if (at < heldSince + firstOpenBoundMs) return;
+      }
+      say(error);
+    },
     refused(error) {
-      if (told) return;
-      told = true;
-      tell(messageFor(error));
+      say(error);
     },
     accepted() {
+      everAccepted = true;
+      if (!told) return;
       told = false;
+      restored?.();
     },
   };
 }
@@ -898,7 +972,8 @@ export interface RelayRegistration<Result> {
  * A session with no relay subject open is refused here rather than registered: every
  * registration asks for consumer delivery, a session receives only what its own consumer holds,
  * and one carrying no relay would be refused `409 not_requested` and leave nothing registered.
- * The host's next heartbeat tries again.
+ * The outage report holds this at the session's start (`InboundUnavailable.noRelay`), and the
+ * host's next try opens the relay and registers.
  */
 export function registerWithRelay<Result>({
   relay,
@@ -913,7 +988,7 @@ export function registerWithRelay<Result>({
     const refused = new Error(
       "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
     );
-    outage.refused(refused);
+    outage.noRelay(refused);
     return Promise.reject(refused);
   }
   const topics = registrationTopics(ownAgentSubject, followed, roles);

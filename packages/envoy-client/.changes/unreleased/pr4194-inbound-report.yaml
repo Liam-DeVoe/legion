@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The inbound outage report, `inboundUnavailable`, tells a session that it receives nothing only
+  when that is so, and tells it when it receives again. `registerWithRelay` now reports a
+  registration with no relay subject apart from a refusal (`InboundUnavailable.noRelay`). Until
+  the session's first accepted registration, such an outage is held: it is told once only when
+  `INBOUND_FIRST_OPEN_BOUND_MS` (two minutes) has passed since the first one, so a relay that
+  opens on a later try at the pod's start tells nothing. A refusal is told at once, as before,
+  and so is a lost relay subject after the first accepted registration. The first registration
+  accepted after a told outage calls the new `restored` option once, which a host words with the
+  new `inboundRestoredNoticeText`: the session receives again, and what the stream stored
+  meanwhile arrives now. `inboundUnavailable` takes `{ now, firstOpenBoundMs, restored }` as its
+  second argument.
+time: 2026-11-17T03:00:15Z
+custom:
+    Issue: pr4194

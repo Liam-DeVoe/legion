@@ -45,8 +45,12 @@ its own starts its consumer at the stream's end, so it is shown nothing publishe
 first registered. A registration the listener can give no consumer is refused by name, with the
 reason the one canonical list holds (`ErrorWireSchema.reason`,
 `packages/envoy-client/src/transport.ts`), and nothing is
-registered: the server says so on stderr and asks again at each heartbeat. There is no second
-path to fall back to.
+registered: the server says so once, on stderr and as a notice to the session
+(`inboundUnavailableNoticeText`), and asks again at each heartbeat. The first registration
+accepted after that is said once the same two ways (`inboundRestoredNoticeText`): the session
+receives again, and what the stream stored meanwhile arrives now. The outage report is
+`inboundUnavailable` in `@legion/envoy-client/consumer-delivery`, which pi-envoy uses too. There
+is no second path to fall back to.
 
 A message published while the session was not running or its connection was down waits in that
 consumer and is relayed when the session returns, inside the stream's 72 hours, through the same

@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A session whose first NATS dial fails at its start no longer shows "Envoy inbound unavailable"
+  while the background retry opens its relay. It is told only when no registration was accepted
+  within two minutes. A refusal by the listener is still told at once, and so is a relay lost
+  after the first accepted registration. Once a registration is accepted after a told outage, the
+  session says once that its inbound is back: a card "Envoy inbound restored", which says that
+  what the stream stored meanwhile arrives now, the UI note `envoy: inbound messages are back`,
+  and one info log line.
+time: 2026-11-17T03:00:16Z
+custom:
+    Issue: pr4194

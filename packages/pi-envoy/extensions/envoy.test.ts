@@ -19149,10 +19149,12 @@ console.log(JSON.stringify(args));
       true
     );
     // With no connection the session holds no relay subject, so the listener can give it no
-    // consumer and its registration is refused until the retry connects.
+    // consumer and its registration is refused until the retry connects. The relay may still
+    // open: the start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`), so the session
+    // is not told that it receives nothing.
     expect(
       notifications.some((message) => message.includes("inbound messages are unavailable"))
-    ).toBe(true);
+    ).toBe(false);
     expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(false);
     const retry = intervals.at(-1);
     if (retry === undefined) throw new Error("retry interval was not registered");
@@ -19164,6 +19166,9 @@ console.log(JSON.stringify(args));
     expect(notifications.some((message) => message.includes("this session is registered"))).toBe(
       true
     );
+    // The relay opened inside the bound, so the session was told nothing, and it is told nothing
+    // about receiving again either.
+    expect(notifications.filter((message) => message.includes("inbound messages are"))).toEqual([]);
     const connectionsAfterRecovery = natsState.connectedNames.length;
 
     retry.callback();
@@ -19911,7 +19916,8 @@ console.log(JSON.stringify(args));
     expect(scheduled).toHaveLength(1);
     expect(registrations).toBe(1);
 
-    // The next tick lands: the registration is accepted and the cadence is the interval's again.
+    // The next tick lands: the registration is accepted and the cadence is the interval's again,
+    // and the session is told once that it receives again.
     registryDown = false;
     warned = Promise.withResolvers<void>();
     const beforeHealthy = attempted;
@@ -19919,6 +19925,9 @@ console.log(JSON.stringify(args));
     await afterAttempts(beforeHealthy + 1);
     expect(registrations).toBe(2);
     expect(scheduled).toHaveLength(1);
+    expect(
+      notifications.filter((message) => message.includes("inbound messages are back"))
+    ).toHaveLength(1);
 
     // And the success restored the budget: the failure after it buys an extra call of its own.
     registryDown = true;
@@ -20661,6 +20670,7 @@ describe("consumer delivery", () => {
     });
     const prior = options.entries ?? [];
     const base = sessionContext(SESSION);
+    const notifications: string[] = [];
     const context: SessionContext = {
       ...base,
       sessionManager: {
@@ -20674,6 +20684,7 @@ describe("consumer delivery", () => {
       },
       isIdle: () => turn === "idle",
       hasPendingMessages: () => held.length > 0,
+      ui: { ...base.ui, notify: (message) => notifications.push(message) },
       ...(options.runEphemeralTurn !== undefined && { runEphemeralTurn: options.runEphemeralTurn }),
     };
     await fixture.handlers.get("session_start")?.({}, context);
@@ -20687,6 +20698,8 @@ describe("consumer delivery", () => {
       events,
       registrations,
       dispatchReplies,
+      /** Every warning and note the session showed in its UI, in order. */
+      notifications,
       /** Every subject this process holds a live NATS subscription on, sorted. */
       subscriptions: () => natsState.controls.open(),
       /** The listener stops refusing: the next registration is answered a consumer. */
@@ -20694,11 +20707,11 @@ describe("consumer delivery", () => {
         refusing = undefined;
       },
       entries: () => [...prior, ...fixture.entries, ...written],
-      /** The `envoy-message` cards handed for `eventID`. */
-      cards: (eventID: string) =>
+      /** The `envoy-message` cards handed whose text holds `text`: a frame's event id, or the
+       *  name of a notice the session tells itself ("Envoy inbound unavailable"). */
+      cards: (text: string) =>
         fixture.deliveries.filter(
-          (delivery) =>
-            delivery.customType === "envoy-message" && delivery.content.includes(eventID)
+          (delivery) => delivery.customType === "envoy-message" && delivery.content.includes(text)
         ),
       /** The listener relays stored message `seq`; answers the reply inbox it carried. */
       relay: (
@@ -20733,6 +20746,16 @@ describe("consumer delivery", () => {
         const before = registrations.length;
         for (const interval of intervals) interval();
         await until(() => registrations.length > before, "the heartbeat's registration");
+        await settle();
+      },
+      /**
+       * One heartbeat tick while NATS refuses every dial, run until its pass dialled and settled:
+       * the session holds no relay subject, so no registration reaches the listener.
+       */
+      tickWithoutNats: async () => {
+        const dials = natsState.failConnects;
+        for (const interval of intervals) interval();
+        await until(() => natsState.failConnects < dials, "the tick's NATS dial");
         await settle();
       },
       /** nats.js reports a reconnect. */
@@ -21033,7 +21056,7 @@ describe("consumer delivery", () => {
     { status: 503, reason: "no_grant" },
     { status: 409, reason: "not_requested" },
   ] as const) {
-    test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, and the next heartbeat asks again`, async () => {
+    test(`a registration refused ${refusal.status} ${refusal.reason} leaves the session running with a notice naming it, the next heartbeat asks again, and the accepted registration is told once`, async () => {
       const session = await bootConsumer(`consumer-refused-${refusal.reason}`, {
         refuse: refusal,
       });
@@ -21050,12 +21073,113 @@ describe("consumer delivery", () => {
 
       session.accept();
       await session.tick();
+      // The accepted registration tells the session once that it receives again.
+      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
       const inbox = session.relay(3, peer(`after-${refusal.reason}`));
       await until(() => session.replies(inbox).includes("done"), "the frame's done");
 
       expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
+      await session.tick();
+      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
     });
   }
+
+  // At a pod's start the first NATS dial can fail, and a later try opens the relay (R24 of
+  // dispatch://INFRA-3589). Until the session's first accepted registration, an outage with no
+  // relay subject is held for the start race's bound (`INBOUND_FIRST_OPEN_BOUND_MS`, two
+  // minutes): a session whose relay opens inside it is told nothing, and one whose relay is still
+  // closed past it is told once, then once that it receives again. A refusal is told at once.
+  test("a session whose NATS connection opens a few seconds after its start shows no inbound-unavailable notice and receives a message sent to it", async () => {
+    natsState.failConnects = 99;
+    const session = await bootConsumer("consumer-start-race", { withoutRelay: true });
+    const start = Date.now();
+    try {
+      // The background retry 15 s after the start finds NATS still closed.
+      setSystemTime(new Date(start + 15_000));
+      await session.tickWithoutNats();
+      // NATS opens before the retry 30 s after the start.
+      natsState.failConnects = 0;
+      setSystemTime(new Date(start + 30_000));
+      await session.tick();
+      const inbox = session.relay(1, peer("start-race"));
+      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+
+      expect(session.cards("evt-start-race")).toHaveLength(1);
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+      expect(
+        session.notifications.filter((message) =>
+          message.includes("inbound messages are unavailable")
+        )
+      ).toEqual([]);
+      // The session was told nothing, so it is told nothing about receiving again either.
+      expect(session.cards("Envoy inbound restored")).toEqual([]);
+    } finally {
+      setSystemTime();
+      await session.stop();
+    }
+  });
+
+  test("a session whose relay open still fails past the bound is told once, then told once that its inbound is back, and the message stored meanwhile arrives", async () => {
+    natsState.failConnects = 99;
+    const session = await bootConsumer("consumer-start-outage", { withoutRelay: true });
+    const start = Date.now();
+    // Past the start race's two minutes (`INBOUND_FIRST_OPEN_BOUND_MS`).
+    const pastBound = start + 2 * 60_000 + 1_000;
+    try {
+      setSystemTime(new Date(pastBound));
+      await session.tickWithoutNats();
+      expect(session.cards("Envoy inbound unavailable")).toHaveLength(1);
+      // A later tick of the same outage tells nothing more.
+      setSystemTime(new Date(pastBound + 15_000));
+      await session.tickWithoutNats();
+      expect(session.cards("Envoy inbound unavailable")).toHaveLength(1);
+      expect(
+        session.notifications.filter((message) =>
+          message.includes("inbound messages are unavailable")
+        )
+      ).toHaveLength(1);
+
+      // NATS opens, and the next tick's registration is accepted.
+      natsState.failConnects = 0;
+      setSystemTime(new Date(pastBound + 30_000));
+      await session.tick();
+      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+      expect(
+        session.notifications.filter((message) => message.includes("inbound messages are back"))
+      ).toHaveLength(1);
+      // What the stream stored while the session received nothing arrives.
+      const inbox = session.relay(4, peer("stored-meanwhile"), {
+        storedAt: new Date(pastBound + 5_000),
+      });
+      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      expect(session.cards("evt-stored-meanwhile")).toHaveLength(1);
+
+      // A later accepted registration tells nothing more.
+      await session.tick();
+      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+      expect(session.cards("Envoy inbound unavailable")).toHaveLength(1);
+    } finally {
+      setSystemTime();
+      await session.stop();
+    }
+  });
+
+  test("a registration the listener refuses is told at once", async () => {
+    const session = await bootConsumer("consumer-refused-at-once", {
+      refuse: { status: 503, reason: "no_grant" },
+    });
+
+    // The relay was open, so the start race's bound holds nothing back: no clock moves here.
+    expect(session.registrations[0]?.relaySubscribed).toBe(true);
+    const told = session.cards("Envoy inbound unavailable");
+    expect(told).toHaveLength(1);
+    expect(told[0]?.content).toContain("no_grant");
+    expect(
+      session.notifications.filter((message) =>
+        message.includes("inbound messages are unavailable (")
+      )
+    ).toHaveLength(1);
+  });
 
   test("a late BTW is shown as a card that starts no turn, and runs no side turn", async () => {
     let sideTurns = 0;

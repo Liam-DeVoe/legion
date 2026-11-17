@@ -1125,30 +1125,128 @@ describe("one registration", () => {
     expect([result, answers, told]).toEqual(["registered", ["registered"], []]);
   });
 
-  test("a session holding no relay subject registers nothing and is told once", async () => {
-    const told: string[] = [];
-    const outage = inboundUnavailable((why) => told.push(why));
-    const sent: unknown[] = [];
-    const register = () =>
-      registerWithRelay({
-        relay: undefined,
-        ownAgentSubject: AGENT,
-        followed: [TEAM],
-        outage,
-        send: (topics) => {
-          sent.push(topics);
-          return Promise.resolve("registered");
-        },
-        answered: () => undefined,
-      });
+  /** The start race's bound in these rows; production's is `INBOUND_FIRST_OPEN_BOUND_MS`. */
+  const BOUND = 60_000;
+  const NO_RELAY =
+    "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing";
 
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    // The second outage tick says nothing more: the session was told once.
-    await expect(register()).rejects.toThrow("holds no relay subject");
-    expect(sent).toEqual([]);
-    expect(told).toEqual([
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing",
-    ]);
+  /**
+   * One session's outage report on a clock the row moves (`at`), with what it told, the clock at
+   * each time it said the session receives again, and the two registrations a row makes: one with
+   * no relay subject, and one whose send answers `answer`.
+   */
+  function reportOnClock() {
+    let clock = 0;
+    const told: string[] = [];
+    const restored: number[] = [];
+    const sent: unknown[] = [];
+    const outage = inboundUnavailable((why) => told.push(why), {
+      now: () => clock,
+      firstOpenBoundMs: BOUND,
+      restored: () => restored.push(clock),
+    });
+    return {
+      told,
+      restored,
+      sent,
+      at: (ms: number) => {
+        clock = ms;
+      },
+      withoutRelay: () =>
+        registerWithRelay({
+          relay: undefined,
+          ownAgentSubject: AGENT,
+          followed: [TEAM],
+          outage,
+          send: (topics) => {
+            sent.push(topics);
+            return Promise.resolve("registered");
+          },
+          answered: () => undefined,
+        }),
+      withRelay: (answer: Promise<string>) =>
+        registerWithRelay({
+          relay: fakeRelay(),
+          ownAgentSubject: AGENT,
+          followed: [TEAM],
+          outage,
+          send: (topics) => {
+            sent.push(topics);
+            return answer;
+          },
+          answered: () => undefined,
+        }),
+    };
+  }
+
+  test("a session holding no relay subject at its start registers nothing, and is told once only when the bound has passed", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    // The relay may still open: inside the bound the session is told nothing.
+    expect(report.told).toEqual([]);
+
+    report.at(BOUND);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    // The next outage tick says nothing more: the session was told once.
+    report.at(BOUND + 15_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.sent).toEqual([]);
+    expect(report.told).toEqual([NO_RELAY]);
+  });
+
+  test("a session whose relay opens inside the bound and whose registration is accepted is told nothing at all", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND - 1);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(await report.withRelay(Promise.resolve("registered"))).toBe("registered");
+
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("a session holding no relay subject past the bound is told once, then once that it receives again, and a second accepted registration tells nothing", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(BOUND);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect(report.told).toEqual([NO_RELAY]);
+
+    report.at(BOUND + 15_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect(report.restored).toEqual([BOUND + 15_000]);
+    report.at(BOUND + 105_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], [BOUND + 15_000]]);
+  });
+
+  test("a registration refused while the start race is held is told at once", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    report.at(1_000);
+    await expect(report.withRelay(Promise.reject(new Error("no_grant")))).rejects.toThrow(
+      "no_grant"
+    );
+
+    expect(report.told).toEqual(["no_grant"]);
+  });
+
+  test("a session that loses its relay subject after its first accepted registration is told at once, and once that it receives again", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withoutRelay()).rejects.toThrow("holds no relay subject");
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], []]);
+
+    report.at(16_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[NO_RELAY], [16_000]]);
   });
 
   test("a refused registration tells the session once and takes no answer", async () => {

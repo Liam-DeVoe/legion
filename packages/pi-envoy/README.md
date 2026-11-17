@@ -113,8 +113,11 @@ session file keeps what it was shown, so a restart shows nothing again (up to 20
 shown in 72 hours); a crash between
 showing a message and recording it can show it twice, never lose it. A registration the listener
 can give no consumer is refused by name, and the session says once that Envoy inbound is
-unavailable and asks again at every heartbeat. "Each frame shown once" in `AGENTS.md` has the
-full rules.
+unavailable and asks again at every heartbeat. When a registration is accepted after that, the
+session says once that Envoy inbound is restored and that what the stream stored meanwhile
+arrives now. At the session's start the first NATS dial can fail: the session says nothing of it
+unless no registration is accepted within two minutes. "Each frame shown once" in `AGENTS.md` has
+the full rules.
 
 ## Session identity
 

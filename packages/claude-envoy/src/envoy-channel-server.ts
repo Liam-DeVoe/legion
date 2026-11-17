@@ -15,6 +15,7 @@ import {
   type ConsumerGapNotice,
   createConsumerDelivery,
   gapNoticeText,
+  inboundRestoredNoticeText,
   inboundUnavailable,
   inboundUnavailableNoticeText,
   registerWithRelay,
@@ -1045,18 +1046,34 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * and receives nothing. The session still runs, and the heartbeat registers again every tick
    * until one is accepted; the reason is the listener's own, one of those
    * `ErrorWireSchema.reason` lists (`@legion/envoy-client`'s `transport.ts`), which the error
-   * carries in its message and which `inboundUnavailableNoticeText` words for every host.
+   * carries in its message and which `inboundUnavailableNoticeText` words for every host. Once a
+   * registration is accepted after a told outage, the session is told once that it receives
+   * again, by the same path, so it learns that what the stream stored meanwhile is arriving.
    */
-  const inboundOutage = inboundUnavailable((why) => {
-    process.stderr.write(
-      `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
-    )
-    delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
+  const inboundOutage = inboundUnavailable(
+    (why) => {
       process.stderr.write(
-        `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
+        `envoy-channel: this session receives nothing (${why}); registering again every heartbeat\n`,
       )
-    })
-  })
+      delivery.notice(inboundUnavailableNoticeText(why)).catch((noticeError: unknown) => {
+        process.stderr.write(
+          `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
+        )
+      })
+    },
+    {
+      restored: () => {
+        process.stderr.write(
+          "envoy-channel: this session receives again: a registration was accepted\n",
+        )
+        delivery.notice(inboundRestoredNoticeText()).catch((noticeError: unknown) => {
+          process.stderr.write(
+            `envoy-channel: the session could not be told that it receives again — ${messageFor(noticeError)}\n`,
+          )
+        })
+      },
+    },
+  )
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
