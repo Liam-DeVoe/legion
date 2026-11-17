@@ -89,14 +89,13 @@ type ToolbarPanel = "flags" | "view";
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
  * draws), the page's own controls (the columns menu where the page gives none), and the display
- * menu carrying the grouping (INFRA-3135, R1 and R3). A column's filter is set on that column's
- * header, where `ColumnFilter` draws it, and its chip is drawn here as well, so a column the
- * reader hid keeps its narrowing in sight.
+ * menu, named Group by for the grouping it holds (INFRA-3135, R1 and R3). A column's filter is
+ * set on that column's header, where `ColumnFilter` draws it, and its chip is drawn here as
+ * well, so a column the reader hid keeps its narrowing in sight.
  */
 export function IssueTableToolbar({
   clear,
   controls,
-  displayLabel = "View",
   ownStatuses,
   searchRef,
   selection,
@@ -110,8 +109,6 @@ export function IssueTableToolbar({
   clear?: { readonly on: boolean; readonly run: () => void };
   /** The page's own controls, in the place of the columns menu the row draws by itself. */
   controls?: ReactNode;
-  /** The display menu's name: Group by on the Issues tab. */
-  displayLabel?: string;
   /** The statuses the view lists by itself, which draw no chip and which taking the Status
    *  chip off goes back to: the open statuses where unset. */
   ownStatuses?: readonly string[];
@@ -227,7 +224,7 @@ export function IssueTableToolbar({
         chips={chips}
         display={
           <DisplayMenu
-            label={displayLabel}
+            label="Group by"
             onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
             open={openPanel === "view"}
             sections={[

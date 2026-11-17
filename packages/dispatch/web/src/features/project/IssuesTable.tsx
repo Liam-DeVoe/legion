@@ -1354,7 +1354,6 @@ function IssueTableBody({
               </>
             )
           }
-          displayLabel={tab === undefined ? undefined : "Group by"}
           ownStatuses={tab?.base.statuses}
           searchRef={searchRef}
           selection={pickedChip}

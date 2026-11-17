@@ -4,12 +4,12 @@ import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
 import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
 
-/** The statuses each count column adds up. In flight is the statuses an issue is being worked
- *  in (`runningIssueStatuses`), which no status bar counts as one: Open's `IssueStatusBar` on the
+/** The statuses each count column adds up. Active is the statuses an issue is being worked in
+ *  (`runningIssueStatuses`), which no status bar counts as one: Open's `IssueStatusBar` on the
  *  Issues tab and `IssueTableStatus` on the priority pages' embedded tables count each status on
- *  its own. Waiting is work admitted and not started; parked is work that stands in the backlog
- *  or the icebox. The three together are every open status, so no open issue under a priority is
- *  uncounted. */
+ *  its own. Triage, Todo is work admitted and not started; Backlog, icebox is work that stands in
+ *  the backlog or the icebox. The three together are every open status, so no open issue under a
+ *  priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
 /** The one list of the parked statuses: the parked count here and the parked fault list of the
  *  priorities page (`PrioritiesPage.tsx`) both read it. */
@@ -92,11 +92,12 @@ export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
 /** The four count columns are alike: a number, filtered by picking the numbers the rows hold,
- *  which is how a reader asks for the priorities with nothing in flight. */
+ *  which is how a reader asks for the priorities with nothing active. */
 const COUNT_WIDTH = { size: 132, min: 132 };
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
- *  the left edge while the counts scroll. */
+ *  the left edge while the counts scroll. A column keeps the id the address and a stored layout
+ *  have always named it by, whatever its header reads. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "order", header: "Order", size: 88, min: 88, pinned: true, text: (item) => item.order },
   {
@@ -115,11 +116,11 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "In flight", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
-  { id: "waiting", header: "Waiting", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
+  { id: "in-flight", header: "Active", ...COUNT_WIDTH, values: (i) => [String(i.inFlight)] },
+  { id: "waiting", header: "Triage, Todo", ...COUNT_WIDTH, values: (i) => [String(i.waiting)] },
   {
     id: "parked",
-    header: "In backlog or icebox",
+    header: "Backlog, icebox",
     size: 180,
     min: 180,
     values: (item) => [String(item.parked)],

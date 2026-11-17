@@ -2,7 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the drag of a row onto another below is a drag and a drop, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
@@ -197,28 +197,43 @@ const FIFTEEN = body({
   ],
 });
 
-test("the page draws the priorities table above both fault lists", async () => {
+// R13: the page has no subtitle, and each section heading reads its name and one count, with no
+// rule and no line of counts under it.
+test("the page draws the priorities table above both fault lists, each heading with one count", async () => {
   page(
     body({
       ...FIFTEEN,
-      work_under_no_priority: { by_project: { CORE: 1 }, count: 1, issues: null },
+      work_under_no_priority: { by_project: { CORE: 1, OPS: 1 }, count: 2, issues: null },
       priority_work_parked: { by_priority: { "linkage-closure": 1 }, count: 1, issues: null },
     }),
-    [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
+    [issue("CORE-1"), issue("OPS-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
   const priorities = await screen.findByRole("table", { name: "Priorities table" });
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues active under no priority table",
   });
-  const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
-  });
+  const parked = await screen.findByRole("table", { name: "Parked priority issues table" });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
-  expect(headings).toEqual([
-    "Priorities",
-    "In flight under no priority",
-    "Priority work in backlog or icebox",
-  ]);
+  expect(headings).toEqual(["Priorities", "Active under no priority 2", "Parked priority work 1"]);
+  // The page's name stands alone, with no subtitle under it.
+  const title = screen.getByRole("heading", { level: 1, name: "Priorities" });
+  expect(title.nextElementSibling).toBe(screen.getByRole("region", { name: "Priorities" }));
+  expect(screen.queryByText(/Every project, read now/)).toBeNull();
+  // Each heading carries its one count, and the issue table follows it with nothing between.
+  for (const [region, count, list] of [
+    ["Active under no priority", "2", "Issues active under no priority"],
+    ["Parked priority work", "1", "Parked priority issues"],
+  ] as const) {
+    const section = screen.getByRole("region", { name: region });
+    const heading = within(section).getByRole("heading", { level: 2 });
+    expect(heading).toHaveAccessibleName(`${region} ${count}`);
+    expect(heading.querySelector("span")?.textContent).toBe(count);
+    expect(heading.nextElementSibling).toBe(within(section).getByRole("region", { name: list }));
+  }
+  // Neither the rules nor the counts by project or by priority are drawn.
+  const text = document.body.textContent ?? "";
+  expect(text).not.toMatch(/advances no priority|stands in the backlog|No reason is recorded/);
+  expect(text).not.toMatch(/CORE 1|OPS 1|\d+ issues? ·/);
   // The priorities come first, which is what the page's own name says it is about.
   expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
@@ -226,11 +241,6 @@ test("the page draws the priorities table above both fault lists", async () => {
   expect(faults.compareDocumentPosition(parked) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
   );
-  // Each fault stands under its rule in plain words, with its count and where it falls.
-  expect(screen.getByText(/advances no priority, its own or one it inherits/)).toBeDefined();
-  expect(screen.getByText(/stands in the backlog or the icebox/)).toBeDefined();
-  expect(screen.getByText(/1 issue · CORE 1/)).toBeDefined();
-  expect(screen.getByText(/1 issue · Linkage closure eval 1/)).toBeDefined();
   // Each list holds its own fault's rows and no other's.
   expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
@@ -251,11 +261,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
   ]);
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues active under no priority table",
   });
-  const parked = await screen.findByRole("table", {
-    name: "Priority issues in backlog or icebox table",
-  });
+  const parked = await screen.findByRole("table", { name: "Parked priority issues table" });
   // The narrowing is the server's: the no-priority list names the statuses work is done in, and
   // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
   expect(listing).toHaveBeenCalledWith({
@@ -294,9 +302,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
 
   // The no-priority list names each row's project and when it last changed, which is how long it
   // has stood as it is (R6), and shows none of the parked columns.
-  const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
-  expect(inFlight("Project").textContent).toBe("OPS");
-  expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+  const unprioritized = await cellsOf(faults, "OPS-12 Work OPS-12");
+  expect(unprioritized("Project").textContent).toBe("OPS");
+  expect(within(unprioritized("Updated")).getByRole("time").getAttribute("datetime")).toBe(
     "2026-11-01T00:00:00Z"
   );
   const faultHeaders = within(faults)
@@ -342,10 +350,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
 
   // Nor does the list under no priority offer the parked columns among those a reader may show.
   await user.click(
-    within(screen.getByRole("region", { name: "In flight under no priority" })).getByRole(
-      "button",
-      { name: "Columns" }
-    )
+    within(screen.getByRole("region", { name: "Active under no priority" })).getByRole("button", {
+      name: "Columns",
+    })
   );
   const menu = screen.getByRole("dialog", { name: "Columns" });
   expect(within(menu).getByRole("checkbox", { name: "Project" })).toBeChecked();
@@ -371,14 +378,36 @@ test("with no priority a reader who may not write one is shown only the sentence
   expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
-test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
+/** The words of each column header of `table`, left to right: its sort button's, without the
+ *  sort mark. */
+function headerWords(table: HTMLElement): string[] {
+  return within(table)
+    .getAllByRole("columnheader")
+    .map((header) => (header.querySelector("button")?.textContent ?? "").replace(/[▲▼]/g, ""));
+}
+
+// R13: "In flight", "Waiting" and "In backlog or icebox" read "Active", "Triage, Todo" and
+// "Backlog, icebox", and count as they did; no header is longer than 16 characters.
+test("a row counts the work Active, in Triage, Todo, in Backlog, icebox and closed in 7 days", async () => {
   page(FIFTEEN);
   const row = await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  const headers = headerWords(screen.getByRole("table", { name: "Priorities table" }));
+  expect(headers).toEqual([
+    "Order",
+    "Priority",
+    "Owner",
+    "Active",
+    "Triage, Todo",
+    "Backlog, icebox",
+    "Closed, 7 days",
+    "Newest event",
+  ]);
+  expect(headers.filter((header) => header.length > 16)).toEqual([]);
   const cells = within(row)
     .getAllByRole("cell")
     .map((cell) => cell.textContent);
-  // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
-  // third count is backlog and icebox; the fourth is what the read says closed in 7 days.
+  // Active is in_progress, testing, needs_review and retro; Triage, Todo is those two; Backlog,
+  // icebox is those two; the fourth is what the read says closed in 7 days.
   expect(cells.slice(3, 7)).toEqual(["7", "12", "0", "22"]);
   // The newest event is read as a time, whose words follow the clock.
   expect(within(row).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
@@ -389,6 +418,58 @@ test("a row counts the work in flight, waiting, parked and closed in the last 7 
       .map((cell) => cell.textContent)
       .slice(3)
   ).toEqual(["1", "0", "3", "2", "Never"]);
+});
+
+// R13: Active names the four statuses In progress, Testing, Needs review and Retro, and no other
+// label of the page uses the word: not the strip's status names, not the claim chip, not another
+// heading. No heading, column header or strip entry says "In flight" or "running" for that set.
+test("no label of the page but the four-status set's uses Active, and none says In flight", async () => {
+  page(
+    body({
+      ...FIFTEEN,
+      work_under_no_priority: { by_project: { CORE: 1 }, count: 1, issues: null },
+    }),
+    [
+      issue("CORE-1", [], {
+        claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
+      }),
+    ]
+  );
+  const section = await screen.findByRole("region", { name: "Active under no priority" });
+  const faults = await within(section).findByRole("table", {
+    name: "Issues active under no priority table",
+  });
+  const row = await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" });
+  // The strip names the status itself, and the claim chip names its holder.
+  const strip = within(section).getByRole("group", { name: "Issues by status" });
+  expect(within(strip).getByRole("button").textContent).toBe("In progress 1");
+  expect(row.textContent).toContain("Claimed by");
+  // Every text the page draws, and every name it gives an element.
+  const texts: string[] = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node !== null; node = walker.nextNode())
+    texts.push((node.textContent ?? "").trim());
+  const labels = [...document.body.querySelectorAll("[aria-label]")].map(
+    (element) => element.getAttribute("aria-label") ?? ""
+  );
+  // Active is the priorities table's column, its filter and the heading of the work in those
+  // statuses under no priority, with that heading's table: nothing else.
+  expect(texts.filter((text) => /active/i.test(text))).toEqual([
+    "Active",
+    "Active under no priority",
+  ]);
+  expect(labels.filter((label) => /active/i.test(label))).toEqual([
+    "Filter Active",
+    "Active under no priority",
+    "Issues active under no priority",
+    "Issues active under no priority table",
+  ]);
+  const named = [
+    ...screen.getAllByRole("heading"),
+    ...screen.getAllByRole("columnheader"),
+    ...within(strip).getAllByRole("button"),
+  ].map((element) => element.textContent ?? "");
+  expect([...named, ...labels].filter((text) => /in flight|running/i.test(text))).toEqual([]);
 });
 
 test("the first line of a description shows on a closed row and the whole of it when it opens", async () => {
@@ -528,15 +609,131 @@ test("the page carries no estimate, no forecast, no percentage and no written st
   expect(/estimate|forecast|on track|at risk/i.test(text)).toBe(false);
 });
 
-// R13: the pager under the priorities table draws the range of rows, the page, its steps and the
-// page size, and no total, as on the Issues tab.
-test("the priorities table's pager draws no total", async () => {
-  page(FIFTEEN);
-  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  const pager = screen.getByTestId("priorities-table-pager");
-  expect(within(pager).getByText("Rows 1–3")).toBeDefined();
-  expect(within(pager).getByText("Page 1 of 1")).toBeDefined();
-  expect(pager.textContent).not.toMatch(/of 3|priorities|issues/);
+/** The page with two rows in each of its tables: the priorities, the work active under no
+ *  priority, the parked priority work, and the work advancing P1 once that row is opened. */
+function everyTableTwice(): void {
+  page(
+    body({
+      priorities: [
+        priority("legion-first", { title: "Legion works reliably first" }),
+        priority("linkage-closure", { title: "Linkage closure eval" }),
+      ],
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+      priority_work_parked: { by_priority: { "linkage-closure": 2 }, count: 2, issues: null },
+    }),
+    [
+      issue("CORE-1"),
+      issue("CORE-2"),
+      issue("CORE-8", ["linkage-closure"], { status: "backlog" }),
+      issue("CORE-9", ["linkage-closure"], { status: "icebox" }),
+      issue("OPS-1", ["legion-first"]),
+      issue("OPS-2", ["legion-first"]),
+    ]
+  );
+}
+
+/** Opens P1, and gives back the region of the work advancing it once its rows are drawn. */
+async function openFirst(user: UserEvent): Promise<HTMLElement> {
+  await user.click(
+    await screen.findByRole("button", { name: "Open P1 Legion works reliably first" })
+  );
+  const work = await screen.findByRole("region", {
+    name: "Work advancing Legion works reliably first",
+  });
+  await within(work).findByRole("row", { name: "OPS-2 Work OPS-2" });
+  return work;
+}
+
+// R13: the pager under every table of the page draws the range of rows, the page, its steps and
+// the page size, and no total, as on the Issues tab.
+test("every table's pager draws no total", async () => {
+  const user = userEvent.setup();
+  everyTableTwice();
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await screen.findByRole("row", { name: "CORE-9 Work CORE-9" });
+  const work = await openFirst(user);
+  const pagerOf = (name: string) =>
+    within(screen.getByRole("region", { name })).getByTestId("issues-table-pager");
+  // Each pager with the lines it draws: the work under an opened row opens grouped by status, so
+  // its two rows stand under one heading.
+  const pagers: [HTMLElement, string][] = [
+    [screen.getByTestId("priorities-table-pager"), "Rows 1–2"],
+    [pagerOf("Issues active under no priority"), "Rows 1–2"],
+    [pagerOf("Parked priority issues"), "Rows 1–2"],
+    [within(work).getByTestId("issues-table-pager"), "Rows 1–3"],
+  ];
+  for (const [pager, range] of pagers) {
+    expect(within(pager).getByText(range)).toBeDefined();
+    expect(within(pager).getByText("Page 1 of 1")).toBeDefined();
+    expect(pager.textContent).not.toMatch(/of [23]|priorit|issue/);
+  }
+});
+
+// R13: each table's display menu reads Group by, the priorities table's own and every issue
+// table's beside it; no table draws view tabs; and each sortable header's hint is in the shared
+// tooltip, with no native title on its sort button (R11).
+test("every table names its display menu Group by, draws no view tab, and its sort buttons no title", async () => {
+  const user = userEvent.setup();
+  everyTableTwice();
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await screen.findByRole("row", { name: "CORE-9 Work CORE-9" });
+  for (const region of ["Priorities", "Active under no priority", "Parked priority work"]) {
+    const menu = within(screen.getByRole("region", { name: region })).getByRole("button", {
+      name: "Group by",
+    });
+    await user.click(menu);
+    const panel = screen.getByRole("dialog", { name: "Group by" });
+    expect(within(panel).getByRole("radio", { name: "Nothing" })).toBeDefined();
+    await user.keyboard("{Escape}");
+  }
+  const work = await openFirst(user);
+  expect(within(work).getByRole("button", { name: "Group by" })).toBeDefined();
+  expect(screen.getAllByRole("button", { name: "Group by" })).toHaveLength(4);
+  expect(screen.queryByRole("button", { name: "View" })).toBeNull();
+  // No table draws the Issues tab's views: no tab row, no tab, no Table and Board switch.
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(screen.queryAllByRole("tab")).toEqual([]);
+  expect(screen.queryByRole("group", { name: "Layout" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Board" })).toBeNull();
+  // A sort button is every header button that is no control of its own, such as a filter.
+  const tables = screen.getAllByRole("table");
+  expect(tables).toHaveLength(4);
+  for (const table of tables) {
+    const sorts = [...table.querySelectorAll("th button:not([data-control])")];
+    expect(sorts.length, table.getAttribute("aria-label") ?? "").toBeGreaterThan(3);
+    expect(sorts.filter((button) => button.hasAttribute("title"))).toEqual([]);
+  }
+  await user.hover(
+    within(screen.getByRole("table", { name: "Priorities table" })).getByRole("button", {
+      name: "Active",
+    })
+  );
+  expect(screen.getByRole("tooltip").textContent).toBe(
+    "Sort (shift-click to add a second sort); drag to move the column"
+  );
+});
+
+// R13: the embedded issue tables' Open asks filter picks With open asks or No open asks.
+test("each issue table's Open asks filter picks With open asks or No open asks", async () => {
+  const user = userEvent.setup();
+  everyTableTwice();
+  await screen.findByRole("row", { name: "CORE-2 Work CORE-2" });
+  await screen.findByRole("row", { name: "CORE-9 Work CORE-9" });
+  const work = await openFirst(user);
+  for (const table of [
+    screen.getByRole("table", { name: "Issues active under no priority table" }),
+    screen.getByRole("table", { name: "Parked priority issues table" }),
+    within(work).getByRole("table"),
+  ]) {
+    await user.click(within(table).getByRole("button", { name: "Filter Open asks" }));
+    const picks = screen.getByRole("listbox", { name: "Open asks options" });
+    expect(
+      within(picks)
+        .getAllByRole("option")
+        .map((option) => option.textContent?.replace(/\d+$/, ""))
+    ).toEqual(["With open asks", "No open asks"]);
+    await user.keyboard("{Escape}");
+  }
 });
 
 test("a fault row tells no reader that an issue nobody claims is claimed", async () => {
@@ -548,7 +745,7 @@ test("a fault row tells no reader that an issue nobody claims is claimed", async
     }),
   ]);
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues active under no priority table",
   });
   await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" });
   const headers = within(faults)
@@ -579,14 +776,18 @@ test("a grouped table counts each group in the plural its rows are called by", a
     [issue("CORE-1"), issue("CORE-2")]
   );
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
-  // Group by is a section of each table's own display menu (`components/DisplayMenu.tsx`), the
-  // same one the project List draws.
+  // Group by is each table's own display menu (`components/DisplayMenu.tsx`), named for the one
+  // section it holds, the same menu the project List draws.
   const groupBy = async (region: string, column: string) => {
     await user.click(
-      within(screen.getByRole("region", { name: region })).getByRole("button", { name: "View" })
+      within(screen.getByRole("region", { name: region })).getByRole("button", {
+        name: "Group by",
+      })
     );
     await user.click(
-      within(screen.getByRole("dialog", { name: "View" })).getByRole("radio", { name: column })
+      within(screen.getByRole("dialog", { name: "Group by" })).getByRole("radio", {
+        name: column,
+      })
     );
   };
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
@@ -597,7 +798,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
   await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  await groupBy("In flight under no priority", "Status");
+  await groupBy("Active under no priority", "Status");
   expect(
     await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
   ).toBeDefined();
@@ -677,7 +878,7 @@ test("j and k walk the priorities from outside every table, and each issue table
   );
   const priorities = await screen.findByRole("table", { name: "Priorities table" });
   const faults = await screen.findByRole("table", {
-    name: "Issues in flight under no priority table",
+    name: "Issues active under no priority table",
   });
   await within(faults).findByRole("row", { name: "CORE-2 Work CORE-2" });
   const priorityRows = rowsOf(priorities, "data-priority-row");

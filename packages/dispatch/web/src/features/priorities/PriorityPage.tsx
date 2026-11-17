@@ -154,11 +154,6 @@ export function PriorityPage(): ReactNode {
                 <span>{ownerOf(item)}</span>
               </span>
             )}
-            <p>Order {item.order}, dragged on the priorities page</p>
-            <p>
-              In flight {item.inFlight} · waiting {item.waiting} · in backlog or icebox{" "}
-              {item.parked}
-            </p>
           </div>
         </header>
 
@@ -186,20 +181,19 @@ export function PriorityPage(): ReactNode {
 
         <section aria-label="Work advancing this priority" className="space-y-2">
           {byProject.size === 0 ? null : (
-            <p className={`text-sm ${textSecondaryOnCanvas}`}>
-              Leave this scope:{" "}
+            <p className={`flex flex-wrap gap-x-3 text-sm ${textSecondaryOnCanvas}`}>
               {[...byProject.entries()]
                 .sort((a, b) => a[0].localeCompare(b[0]))
                 .map(([project, keys]) => (
                   <Link
-                    className={`mr-3 ${linkText} ${linkHoverText}`}
+                    className={`${linkText} ${linkHoverText}`}
                     key={project}
                     to={addressPath(
                       buildProjectPath({ kind: "issues", project }),
                       selectIssues(copyAddress(), keys, title)
                     )}
                   >
-                    {project}’s issues table
+                    Open in {project}
                   </Link>
                 ))}
             </p>

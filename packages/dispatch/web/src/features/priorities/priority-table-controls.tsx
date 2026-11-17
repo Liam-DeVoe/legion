@@ -9,12 +9,12 @@ import { SearchBox } from "../../components/SearchBox";
 /**
  * The one row a table of these pages draws its controls in, as the project List draws its own
  * (`features/project/issues-table-page.tsx`): the search box at the head of the row, the page's
- * own controls beside it with the columns menu, the display menu at the right end carrying the
- * grouping, and the chips of the column filters that are on. The table has no narrowing that is
- * not one of its columns, so the row draws no filter trigger: every column's filter is set on
- * its own header (`ColumnFilter`). Its chip is drawn here as well, whether the column is shown
- * or hidden, so a column the reader hid with the columns menu keeps its narrowing in sight, and
- * the chip's press takes it off (INFRA-3135, R1).
+ * own controls beside it with the columns menu, the display menu at the right end, named Group
+ * by for the grouping it holds, and the chips of the column filters that are on. The table has
+ * no narrowing that is not one of its columns, so the row draws no filter trigger: every column's
+ * filter is set on its own header (`ColumnFilter`). Its chip is drawn here as well, whether the
+ * column is shown or hidden, so a column the reader hid with the columns menu keeps its
+ * narrowing in sight, and the chip's press takes it off (INFRA-3135, R1).
  */
 export function TableToolbar<Row>({
   children,
@@ -28,16 +28,16 @@ export function TableToolbar<Row>({
   searchPlaceholder: string;
   table: Table<Row>;
 }): ReactNode {
-  const [viewOpen, setViewOpen] = useState(false);
+  const [groupOpen, setGroupOpen] = useState(false);
   const { globalFilter: search, grouping } = table.getState();
   return (
     <ControlRow
       chips={filterChips(columnFilterChips(table.getAllLeafColumns()), "compact")}
       display={
         <DisplayMenu
-          label="View"
-          onOpenChange={setViewOpen}
-          open={viewOpen}
+          label="Group by"
+          onOpenChange={setGroupOpen}
+          open={groupOpen}
           sections={[
             {
               id: "group",

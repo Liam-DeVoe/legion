@@ -154,7 +154,8 @@ function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   return { listing, patch, view };
 }
 
-test("the header carries the order, the title in place, the owner and the three counts", async () => {
+// R13: the page carries no line of counts and no line about its order.
+test("the header carries the order, the title in place and the owner, with no line of counts", async () => {
   page();
   const title = await screen.findByRole("textbox", { name: "Title" });
   expect((title as HTMLInputElement).value).toBe("Rocq and Lean speed work restarted");
@@ -162,8 +163,11 @@ test("the header carries the order, the title in place, the owner and the three 
   // The owner is the picker the page is drawn as: it offers the owners the deployment already
   // uses and takes one nobody has written yet, so it is a combobox and not a plain field.
   expect(screen.getByRole("combobox", { name: "Owner" })).toBeDefined();
-  expect(screen.getByText("Order P2, dragged on the priorities page")).toBeDefined();
-  expect(screen.getByText(/In flight 3 · waiting 11 · in backlog or icebox 5/)).toBeDefined();
+  const header = document.querySelector("header");
+  expect(header?.querySelectorAll("p")).toHaveLength(0);
+  const text = document.body.textContent ?? "";
+  expect(text).not.toMatch(/dragged on the priorities page|Order P2/);
+  expect(text).not.toMatch(/In flight|waiting \d|backlog or icebox \d|Active \d/i);
   expect(screen.getByRole("link", { name: "‹ Priorities" }).getAttribute("href")).toBe(
     "/priorities"
   );
@@ -288,12 +292,22 @@ test("the page carries no tab strip, no version control and no delete", async ()
   expect(/\bv\d+\b|Versions|Comments on this description/.test(text)).toBe(false);
 });
 
-test("one link out leaves the scope, naming the issues and why", async () => {
-  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
-  const out = await screen.findByRole("link", { name: "CORE’s issues table" });
+// R13: the link to a project's issues reads "Open in <KEY>", one for each project the work is in.
+test("each link out reads Open in its project, naming the issues and why", async () => {
+  page("rocq-lean", [
+    issue("CORE-1", ["rocq-lean"]),
+    issue("CORE-4", ["rocq-lean"]),
+    issue("OPS-2", ["rocq-lean"]),
+  ]);
+  const out = await screen.findByRole("link", { name: "Open in CORE" });
   expect(out.getAttribute("href")).toBe(
     "/projects/CORE/issues?only=CORE-1%2CCORE-4&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
   );
+  expect(screen.getByRole("link", { name: "Open in OPS" }).getAttribute("href")).toBe(
+    "/projects/OPS/issues?only=OPS-2&onlyLabel=Rocq+and+Lean+speed+work+restarted&nofilter=1"
+  );
+  const text = document.body.textContent ?? "";
+  expect(text).not.toMatch(/Leave this scope|issues table/);
 });
 
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
@@ -304,6 +318,45 @@ test("the work under the priority is the issues table, scoped and under its own 
   ).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
+});
+
+// R13: the work table's display menu reads Group by, its pager draws no total, each sortable
+// header's hint is in the shared tooltip with no native title, and Open asks picks With open
+// asks or No open asks.
+test("the work table names its display menu Group by, pages with no total and keeps its sort hints in the tooltip", async () => {
+  const user = userEvent.setup();
+  page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
+  const work = await screen.findByRole("region", { name: "Work advancing this priority" });
+  const table = await within(work).findByRole("table");
+  await within(table).findByRole("row", { name: "CORE-4 Work CORE-4" }, { timeout: 3000 });
+
+  await user.click(within(work).getByRole("button", { name: "Group by" }));
+  expect(screen.getByRole("dialog", { name: "Group by" })).toBeDefined();
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("button", { name: "View" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Layout" })).toBeNull();
+
+  const pager = within(work).getByTestId("issues-table-pager");
+  expect(within(pager).getByText("Rows 1–2")).toBeDefined();
+  expect(within(pager).getByText("Page 1 of 1")).toBeDefined();
+  expect(pager.textContent).not.toMatch(/of 2|issue/);
+
+  const sorts = [...table.querySelectorAll("th button:not([data-control])")];
+  expect(sorts.length).toBeGreaterThan(3);
+  expect(sorts.filter((button) => button.hasAttribute("title"))).toEqual([]);
+  await user.hover(within(table).getByRole("button", { name: "Status" }));
+  expect(screen.getByRole("tooltip").textContent).toBe(
+    "Sort (shift-click to add a second sort); drag to move the column"
+  );
+  await user.unhover(within(table).getByRole("button", { name: "Status" }));
+
+  await user.click(within(table).getByRole("button", { name: "Filter Open asks" }));
+  const picks = screen.getByRole("listbox", { name: "Open asks options" });
+  expect(
+    within(picks)
+      .getAllByRole("option")
+      .map((option) => option.textContent?.replace(/\d+$/, ""))
+  ).toEqual(["With open asks", "No open asks"]);
 });
 
 // INFRA-3135's review round 1, R10: the work table registers `j` and `k` in the `project` scope,
