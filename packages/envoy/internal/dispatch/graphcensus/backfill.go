@@ -114,11 +114,11 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 		report.Kinds = append(report.Kinds, done)
 		writeKindBackfill(out, done)
 	}
-	// The project of every node (dispatch://INFRA-3862): the node of each issue, document, ask
-	// and message written before its kind's writer wrote one, and the project of each comment
-	// and block node written before a node named its project. Both run after the passes above,
-	// so a comment or a block those passes wrote a node for takes its project from them, and the
-	// fill finds nothing of it to do.
+	// The project of every node, which a read limited to a project depends on: the node of each
+	// issue, document, ask and message written before its kind's writer wrote one, and the
+	// project of each comment and block node written before a node named its project. Both run
+	// after the passes above, so a comment or a block those passes wrote a node for takes its
+	// project from them, and the fill finds nothing of it to do.
 	for _, write := range []func(context.Context, *store.Store) ([]KindBackfill, error){
 		backfillObjectNodes, backfillScopes,
 	} {

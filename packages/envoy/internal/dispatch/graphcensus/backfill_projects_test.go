@@ -16,8 +16,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheBackfillGivesEveryRowItsNodeAndProject is the backfill of the project of every node
-// (dispatch://INFRA-3862) under INFRA-1149's r-view-end contract. A database holds the rows a build
+// TestTheBackfillGivesEveryRowItsNodeAndProject is the backfill of the project of every node,
+// which walks only the rows its marker does not mark. A database holds the rows a build
 // before the node writers wrote: an issue, its document, a project's document, a conversation's
 // file, an ask, a message on the issue, a direct message and its session's reply, with no node;
 // and a comment whose node the comment writer stored with no project. Before the run the census

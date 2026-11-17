@@ -153,8 +153,8 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  16. the new ask's id (select gen_random_uuid()::text);
 //  17. the latest approved review the request carries (docs.LatestApprovedReview);
 //  18. the ask's node, in its document's project, written before the ask row that holds it
-//     (graphstore.WriteUncaused, dispatch://INFRA-3862); the project is the document's, read with
-//     it, so it costs no round trip of its own;
+//     (graphstore.WriteUncaused); the project is the document's, read with it, so it costs no
+//     round trip of its own;
 //  19. the ask row (openApprovalAsk);
 //  20. the question's references, none of which it names (replaceReferences);
 //  21. the row the ask owes the grammar's re-index queue, deleted where it has one

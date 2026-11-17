@@ -69,7 +69,7 @@ func runFollow(t *testing.T, database *store.Store, what string, write func(cont
 // requireOneCause holds a session's node and its base attributes to naming the one event: the
 // node row's source_event is cause, and so is each base attribute tuple's, with exactly one of
 // its visibility and of its state, and none of a project or parties, which a session's node
-// does not carry (dispatch://INFRA-3862).
+// does not carry.
 func requireOneCause(t *testing.T, database *store.Store, session string, cause int64) {
 	t.Helper()
 	ctx := context.Background()

@@ -1122,7 +1122,7 @@ func (r *projectionRun) relations(t *testing.T, ctx context.Context, kind string
 // moves - the kinds the three projected tables of migration 20261109022248 name - less the
 // kinds the store holds of people and agents and the two its block schema writes, which no
 // projection backs, and the four kinds whose nodes name the project a read is limited by
-// (dispatch://INFRA-3862): an issue, a document, an ask and a message, each written at its own
+// - an issue, a document, an ask and a message, each written at its own
 // create site, beside the rows it writes, which carry no node columns.
 func requireOnlyTheMovedKindsReachedTheStore(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
