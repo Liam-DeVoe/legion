@@ -13,6 +13,7 @@ import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { stateForIssue } from "../issue/pins";
 import { MarginProvider } from "../margin/margin-context";
+import { blurWhenDisabled } from "./blur-when-disabled";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -258,24 +259,6 @@ test("a failed release is said in the page's colours, with Retry", async () => {
     subscribers.mockRestore();
   }
 });
-
-/** Moves the focus to the page's body whenever the element that holds it turns disabled, as
- *  Chromium does and happy-dom does not, until the function it returns is called. A copy of
- *  `IssueMargin.test.tsx`'s, since a test file that imports another runs that file's cases too. */
-function blurWhenDisabled(): () => void {
-  const watching = new MutationObserver(() => {
-    const focused = document.activeElement;
-    if (!(focused instanceof HTMLElement) || !focused.hasAttribute("disabled")) return;
-    // happy-dom's `blur()` does nothing on a disabled element, so the attribute comes off for the
-    // blur alone and goes back at once.
-    const value = focused.getAttribute("disabled") ?? "";
-    focused.removeAttribute("disabled");
-    focused.blur();
-    focused.setAttribute("disabled", value);
-  });
-  watching.observe(document, { attributeFilter: ["disabled"], attributes: true, subtree: true });
-  return () => watching.disconnect();
-}
 
 // Release turned disabled while its release was out, which lost the focus of a reader who
 // pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to the

@@ -29,7 +29,9 @@ export interface DetailsErrorLineProps {
   /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
   /** Whether the request Retry sent again is still out: Retry reads busy (`aria-busy`, and a
-   *  quieter look) and stays enabled, and the caller drops a press made meanwhile. */
+   *  quieter look) and stays enabled, and the caller drops a press made meanwhile. Busy and not
+   *  `aria-disabled` is by design: Retry stays pressable, while a control whose own write is out,
+   *  as Release is, is `aria-disabled` behind a guard. */
   readonly retrying?: boolean;
 }
 
@@ -131,12 +133,13 @@ export function useSaidFailure<Variables>(
 }
 
 /**
- * The ref of an element that may leave the page with the focus inside it - a line whose request
- * was answered, with its Retry - which hands that focus to the element `to` finds once the
- * element has left, rather than leave it on the page's body, where Chromium puts the focus of an
- * element that leaves. The focus moves as the commit that took the element away ends, so an
- * element that commit draws in its place can take it, and `to` is asked only then. A focus
- * anywhere else is the reader's, and stays where it is.
+ * The ref of an element that may leave the page with the focus inside it. As React takes the
+ * element off the page, the ref notes whether the focus is inside it; if it is, the hook's next
+ * layout effect, which runs in each commit that renders the component calling the hook, focuses
+ * what `to` returns, without scrolling. `to` is called only then, after that commit has changed
+ * the page, so it can return an element the commit drew. Where it returns none, or an element
+ * that takes no focus, the focus stays where the browser put it; a focus outside the element as
+ * it leaves is not moved.
  */
 export function useFocusHandOff(
   to: () => HTMLElement | null | undefined
