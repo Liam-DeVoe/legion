@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
@@ -167,6 +168,71 @@ func TestAnAdmittedRootHoldingASlotIsDesignAndTheRestIsQueue(t *testing.T) {
 		t.Errorf("the planner bar = %g h, want 4: hours 4 to 8", got)
 	}
 	partitionsItsWorkTime(t, root)
+}
+
+// TestANullPhaseMarkEndsNoPhase: a read that no longer carries a field of an issue writes a `null`
+// row for it, so an observed timeline can hold a `null` phase mark between two phases, or after
+// the last one. That mark names no phase and ends none: the phase before it runs on to the next
+// mark that carries a phase, or to the close where none follows, so the bars of the issue still
+// add up to its work time (the spec's "Parked and pre-work hours in phase time": "So the bars of
+// an issue add up to its work time, and the two cards agree"). The first case is implementing
+// from hour 0, `null` at hour 2 and implementing again at hour 4, closed at hour 6: six hours of
+// work time, of which a `null` that ended the phase before it left two on no bar.
+func TestANullPhaseMarkEndsNoPhase(t *testing.T) {
+	cases := []struct {
+		name     string
+		issue    *Issue
+		timeline []string
+	}{
+		{
+			name: "a null between two phases",
+			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observe(legion.FieldPhase, hour(2), "null").
+				observeString(legion.FieldPhase, hour(4), "implementing"),
+			timeline: []string{"implementing 0-4", "implementing 4-6"},
+		},
+		{
+			// The daemon stopped reporting the issue: the hours after the `null` stay on the bar
+			// of the phase it was last seen in.
+			name: "a null after the last phase",
+			issue: newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(6)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observe(legion.FieldPhase, hour(2), "null"),
+			timeline: []string{"implementing 0-6"},
+		},
+	}
+
+	for _, each := range cases {
+		t.Run(each.name, func(t *testing.T) {
+			partitionsItsWorkTime(t, each.issue)
+			population := fixture(hour(-24), hour(24), each.issue)
+			if work := Compute(population, ScopeAll, hour(24)).WorkTime.Issues[0].Hours; work != 6 {
+				t.Errorf("work time = %g h, want 6: hours 0 to 6", work)
+			}
+			if got := timelineOf(population, each.issue); !reflect.DeepEqual(got, each.timeline) {
+				t.Errorf("the timeline is %v, want %v: a null mark ends no phase", got, each.timeline)
+			}
+		})
+	}
+}
+
+// TestANullPhaseMarkEndsNoWaitOnAPerson: segment 1 holds while "the daemon recorded the root in
+// `awaiting_person`" (the spec's metric 2), and it reads the root's phase marks as the timeline
+// does. A `null` phase mark is the daemon no longer reporting the root, not a change of its phase,
+// so the root waits on a person through it. The root below is in `awaiting_person` from hour 0,
+// has a `null` phase mark at hour 2 and closes at hour 4: its four hours are on the no-role bar,
+// and all four are waiting on a person.
+func TestANullPhaseMarkEndsNoWaitOnAPerson(t *testing.T) {
+	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(4)).
+		observeString(legion.FieldPhase, hour(0), "awaiting_person").
+		observe(legion.FieldPhase, hour(2), "null")
+	partitionsItsWorkTime(t, root)
+	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), barNoRole)
+	if bar.Hours != 4 || bar.Segments.WaitingOnPerson != 4 {
+		t.Errorf("the no-role bar = %g hours, %+v, want all four waiting on a person: a null phase mark ends no wait",
+			bar.Hours, bar.Segments)
+	}
 }
 
 // partitionsItsWorkTime is the identity itself: an issue's seven bars add up to its own

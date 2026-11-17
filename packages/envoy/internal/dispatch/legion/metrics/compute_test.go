@@ -3,6 +3,7 @@ package metrics
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
@@ -938,6 +939,49 @@ func TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline(t *t
 	}
 }
 
+// TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack: metric 3's share sent back counts "a
+// move from `testing`, `reviewing`, `accepting` `retro`, `merging` or `awaiting_merge` to
+// `implementing`" (the spec's metric 3), and a head that starts conflicting with its base sends
+// the issue back out of any of them (the daemon workflow's TriggerConflict). Each of the six
+// phases is a row of its own, observed for the hour between two stretches of implementing, so a
+// phase the rule leaves out fails its own row.
+func TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack(t *testing.T) {
+	for _, phase := range []string{"testing", "reviewing", "accepting", "retro", "merging", "awaiting_merge"} {
+		t.Run(phase, func(t *testing.T) {
+			issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
+				observeString(legion.FieldPhase, hour(0), "implementing").
+				observeString(legion.FieldPhase, hour(1), phase).
+				observeString(legion.FieldPhase, hour(2), "implementing")
+			report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+			if row := report.Rework.Issues[0]; !row.SentBack {
+				t.Fatalf("sent_back = %t, want the move from %s back to implementing at hour 2 counted", row.SentBack, phase)
+			}
+		})
+	}
+}
+
+// TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted: a send-back is read off the status
+// history before the issue's first observation and off the observed timeline from it on
+// (sentBackOnce), and the move can fall between the two. The issue below is in `testing` by its
+// status at hour 1, and the sampler's first read finds it implementing at hour 2, with no
+// `in_progress` before that read in its status history: the move from the event log's last phase
+// into the first observed one is the send-back, and the status half has none to count.
+func TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted(t *testing.T) {
+	issue := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(4)).
+		statusAt(hour(1), "testing").
+		observeString(legion.FieldPhase, hour(2), "implementing")
+	population := fixture(hour(-24), hour(24), issue)
+	want := []string{"implementing 0-1", "testing 1-2", "implementing 2-4"}
+	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the timeline is %v, want %v: the event log's phases up to the first observation at hour 2 and the daemon's from it on",
+			got, want)
+	}
+	if row := Compute(population, ScopeAll, hour(24)).Rework.Issues[0]; !row.SentBack {
+		t.Fatalf("sent_back = %t, want the move from the event log's testing into the implementing first observed at hour 2 counted",
+			row.SentBack)
+	}
+}
+
 // TestBeforeObservationsReviewRoundsAreEntriesIntoNeedsReview: an issue the sampler never saw
 // counts its review rounds from the status the workflow set, and its send-back from the same
 // statuses: the move out of `needs_review` into `in_progress` at hour 3 is the reviewer asking
@@ -1135,6 +1179,30 @@ func TestEachWeeksFinishedCountFollowsTheScope(t *testing.T) {
 				t.Fatalf("scope %s answers the weeks %+v, want one week that finished %d", one.scope, weeks, one.finished)
 			}
 		})
+	}
+}
+
+// TestAWeekRunsFromMondayToMondayInUTC: "A week is a calendar week in UTC, from Monday 00:00 to
+// the next Monday 00:00 (ISO 8601)" (the spec's metric 4). The three filings below fall on the
+// Saturday and the Sunday before Monday 2026-10-05 and half an hour into that Monday: the first
+// two are the week of Monday 2026-09-28, and the third the week that Monday starts. The weeks are
+// written out rather than computed, so a week that starts on a Sunday, or at another hour, fails.
+func TestAWeekRunsFromMondayToMondayInUTC(t *testing.T) {
+	population := fixture(hour(-24), hour(24*14))
+	controller := legion.SessionTitle{Role: "controller", Project: "INFRA", Controller: true}
+	population.Filed = []Filed{
+		{Key: "INFRA-11", At: time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC), Filer: controller},
+		{Key: "INFRA-12", At: time.Date(2026, 10, 4, 23, 0, 0, 0, time.UTC), Filer: controller},
+		{Key: "INFRA-13", At: time.Date(2026, 10, 5, 0, 30, 0, 0, time.UTC), Filer: controller},
+	}
+	filed := map[string]int{}
+	for _, week := range Compute(population, ScopeAll, hour(24*14)).Splitting.Weeks {
+		filed[week.Week.Format(time.RFC3339)] = week.Filed[ClassByTheController]
+	}
+	want := map[string]int{"2026-09-28T00:00:00Z": 2, "2026-10-05T00:00:00Z": 1}
+	if !reflect.DeepEqual(filed, want) {
+		t.Fatalf("the filings fall in the weeks %v, want %v: Saturday 2026-10-03 12:00 and Sunday 2026-10-04 23:00 in the week of Monday 2026-09-28, and Monday 2026-10-05 00:30 in the week it starts",
+			filed, want)
 	}
 }
 

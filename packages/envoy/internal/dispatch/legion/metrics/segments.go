@@ -33,9 +33,9 @@ type segmentRule struct {
 //
 // Segment 3, CI wait, keeps its place in that order and has no rule: it is not measured since
 // cybermonklabs/legion#2539 took the CI verdict and the required-check mark out of the daemon's
-// state, so no source says when a pull request waits on CI (spec version 38). An hour it would
-// have held goes to the next segment that holds — waiting on children, for a root while a child
-// works, else idle.
+// state, so no source says when a pull request waits on CI (the spec's phase time, segment 3). An
+// hour it would have held goes to the next segment that holds — waiting on children, for a root
+// while a child works, else idle.
 var precedence = []segmentRule{
 	{SegmentWaitingOnPerson, waitingOnPersonSpans},
 	{SegmentInATurn, inATurnSpans},
@@ -134,15 +134,23 @@ func (v *issueView) claims(index int) []Span {
 // a session of the tree opened was on the person's turn (`ask.opened` or `ask.handed_back`, until
 // `ask.answered`, `ask.resolved`, or `waitingOn.answeredAt`)".
 //
+// The recorded half reads the root's phase marks as its timeline does (phaseStretches): a `null`
+// phase mark ends no wait, so a root recorded in `awaiting_person` waits on a person on to the
+// next mark that carries a phase, or to its end where none follows. A `null` claim mark is another
+// field's, and it does end a turn (inATurnSpans).
+//
 // The ask half is the issue's own `AskTurns` and no other issue's: the spec's "Whose ask counts
 // as waiting on a person" is two conditions, "opened **on that issue** by any Legion session of
 // the issue's tree", and `keepTreeAsks` has already applied the tree test and attached each turn
 // it kept to the issue the ask was opened on. Reading the tree again here would count one child's
 // ask for its root and for every sibling.
 func waitingOnPersonSpans(view *issueView) []Span {
-	spans := markSpans(view.root.Observed[legion.FieldPhase], view.population.issueEnd(view.root), func(value string) bool {
-		return legion.JSONString([]byte(value)) == legion.PhaseAwaitingPerson
-	})
+	var spans []Span
+	for stretch := range view.population.phaseStretches(view.root) {
+		if stretch.Phase == legion.PhaseAwaitingPerson {
+			spans = append(spans, stretch.Span)
+		}
+	}
 	answered := answeredAts(view.root)
 	for _, turn := range view.issue.AskTurns {
 		if at, found := answeredWithin(answered, turn); found {

@@ -122,9 +122,9 @@ func TestASegmentAloneClaimsItsHour(t *testing.T) {
 	}
 }
 
-// TestCIWaitIsEmptyOnEveryRead is segment 3 as spec version 38 has it: CI wait is not measured,
-// because cybermonklabs/legion#2539 took the required-check mark and the CI verdict out of the
-// daemon's state, so an issue whose pull request stands open the whole phase still books no
+// TestCIWaitIsEmptyOnEveryRead is segment 3 as the spec's phase time has it: CI wait is not
+// measured, because cybermonklabs/legion#2539 took the required-check mark and the CI verdict out
+// of the daemon's state, so an issue whose pull request stands open the whole phase still books no
 // CI-wait hour, and the bar's three hours are idle.
 func TestCIWaitIsEmptyOnEveryRead(t *testing.T) {
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
@@ -136,7 +136,7 @@ func TestCIWaitIsEmptyOnEveryRead(t *testing.T) {
 	root.MergedAt = &merged
 	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), "implementer")
 	if bar.Segments.CIWait != 0 {
-		t.Fatalf("CI wait = %g hours, want 0: spec version 38 does not measure segment 3, so no read books a CI-wait hour: %+v", bar.Segments.CIWait, bar.Segments)
+		t.Fatalf("CI wait = %g hours, want 0: the spec's phase time does not measure segment 3, so no read books a CI-wait hour: %+v", bar.Segments.CIWait, bar.Segments)
 	}
 }
 
@@ -214,5 +214,40 @@ func TestAChildInDesignDoesNotMakeItsRootWaitOnChildren(t *testing.T) {
 	if bar.Hours != 4 || bar.Segments.WaitingOnChildren != 1 || bar.Segments.Idle != 3 {
 		t.Fatalf("the root's planner bar = %g hours, %+v, want one hour waiting on the child's planning and three idle, its design hour among them",
 			bar.Hours, bar.Segments)
+	}
+}
+
+// TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait: segment 4 holds while "the issue
+// is a root with a child in a phase from planning to awaiting merge" (the spec's metric 2), which
+// is eight phases: planning, implementing, testing, reviewing, accepting, retro, merging and
+// awaiting_merge. The child below is in one phase for the second of its root's three hours of
+// planning, all of that hour its own work time. A child in any of the eight makes that hour the
+// root's waiting on children, and a child in design or done leaves it idle.
+func TestAChildInAPhaseFromPlanningToAwaitingMergeMakesItsRootWait(t *testing.T) {
+	for _, each := range []struct {
+		phase   string
+		waiting float64
+	}{
+		{"planning", 1}, {"implementing", 1}, {"testing", 1}, {"reviewing", 1},
+		{"accepting", 1}, {"retro", 1}, {"merging", 1}, {"awaiting_merge", 1},
+		{"design", 0}, {"done", 0},
+	} {
+		t.Run(each.phase, func(t *testing.T) {
+			root := newIssue("INFRA-1").worked("planner", hour(0)).closedAt(hour(3)).
+				observeString(legion.FieldPhase, hour(0), "planning").
+				observeString(legion.FieldPhase, hour(3), "done")
+			child := newIssue("INFRA-2").under("INFRA-1").worked("implementer", hour(1)).closedAt(hour(2))
+			if each.phase == "design" {
+				// The daemon names no design phase: an admitted issue holding a slot is in design.
+				child.observeString(legion.FieldPhase, hour(1), "admitted").observe(legion.FieldSlot, hour(1), "1")
+			} else {
+				child.observeString(legion.FieldPhase, hour(1), each.phase)
+			}
+			bar := barOf(t, Compute(fixture(hour(-24), hour(24), root, child), ScopeRoots, hour(24)), "planner")
+			if bar.Hours != 3 || bar.Segments.WaitingOnChildren != each.waiting || bar.Segments.Idle != 3-each.waiting {
+				t.Fatalf("with its child in %s for hour 1 to 2, the root's planner bar = %g hours, %+v, want %g hours waiting on children and the rest idle",
+					each.phase, bar.Hours, bar.Segments, each.waiting)
+			}
+		})
 	}
 }

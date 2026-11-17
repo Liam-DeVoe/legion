@@ -2,8 +2,8 @@ package metrics
 
 import "testing"
 
-// TestAnAskCountsOnlyForTheIssueItWasOpenedOn: spec version 8's "Whose ask counts as waiting on
-// a person" reads "An ask counts for an issue when it is opened **on that issue** by any Legion
+// TestAnAskCountsOnlyForTheIssueItWasOpenedOn: the spec's "Whose ask counts as waiting on a
+// person" reads "An ask counts for an issue when it is opened **on that issue** by any Legion
 // session of the issue's tree". Two conditions, not one: the opener must be of the issue's tree,
 // and the ask must be on that issue. `keepTreeAsks` applies the first and attaches each turn to
 // the issue it was opened on, and then `waitingOnPersonSpans` collects the ask turns of every
@@ -40,8 +40,8 @@ func TestAnAskCountsOnlyForTheIssueItWasOpenedOn(t *testing.T) {
 	}
 }
 
-// TestAReAdmissionDoesNotReopenTheDesignPhase: spec version 8's "Which issues have a design
-// phase" reads "The design phase runs from the issue's first slot, or else from that architect's
+// TestAReAdmissionDoesNotReopenTheDesignPhase: the spec's "Which issues have a design phase"
+// reads "The design phase runs from the issue's first slot, or else from that architect's
 // first event, **to the first planner event**". One interval, ending where planning begins, so
 // nothing later can reopen it. `statusPhase` instead maps every entry into `in_progress` out of
 // nothing, the queue or parked to the design phase whenever the issue has architect events, so an

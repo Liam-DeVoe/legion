@@ -317,7 +317,7 @@ Each item below names a task and where its code is, then notes on it.
 
   A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`, with no route listing every project's).
   `sampler.go` reads each configured daemon's state every minute, one replica at a time under the `legion-state` lease, and records what moved (`state.go`, migration `20261103170923_legion_state`);
-  `api/legion_board.go` serves `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view from those records, and `metrics/` computes from them the four Legion delivery metrics, which no route serves and the evals of dispatch://INFRA-2916 call; no dashboard page draws either
+  `api/legion_board.go` serves `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view from those records, and `metrics/` computes from them the four Legion delivery metrics, which no route serves: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today; no dashboard page draws either
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`
 

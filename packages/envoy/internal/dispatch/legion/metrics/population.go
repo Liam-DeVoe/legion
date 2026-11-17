@@ -1,7 +1,7 @@
 // Package metrics computes the four Legion delivery metrics — work time to merge, phase time by
 // worker type, rework, and splitting and follow-ups (dispatch://INFRA-1077, the spec's "The four
-// Legion metrics" and "Rule details"). No route serves them (compute.go's Report): the evals of
-// dispatch://INFRA-2916 call this package.
+// Legion metrics" and "Rule details"). No route serves them (compute.go's Report): it is here for
+// the evals of dispatch://INFRA-2916 to call, and only tests call it today.
 //
 // It is split the way api/delivery_pipeline.go is split: Read makes every database and GitHub read
 // one answer needs, and Compute turns that population into the answer and touches nothing.
