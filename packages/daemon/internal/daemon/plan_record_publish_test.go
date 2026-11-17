@@ -2,14 +2,12 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"reflect"
 	"slices"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -174,10 +172,10 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 // A Dispatch older than the plan route or the rating route answers its router's 404 under the
 // code NOT_FOUND, which is no refusal of the write: the row retries on its backoff until the
 // upgraded Dispatch takes it, which is what lets the daemon and Dispatch deploy in either order.
-// 404 ISSUE_NOT_FOUND is Dispatch holding no such issue, which no retry changes: the code tells the
-// two apart, never the status. And nothing retries a 400 INVALID_JSON for the rating: a Dispatch
-// ignores a body member it does not declare, so no Dispatch refuses the rating by name, and such a
-// refusal is a body no Dispatch will take.
+// 404 ISSUE_NOT_FOUND, Dispatch holding no such issue, ends the row instead
+// (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and TestAStepRecordThatDispatchRefusesEndsWithAWarning
+// for the step record a rating is), and so does a 400 INVALID_JSON naming the rating, which the
+// first of those holds.
 func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
@@ -188,25 +186,6 @@ func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 		{name: "the rating route", payload: ratingRecordOf()},
 	} {
 		t.Run(route.name, func(t *testing.T) {
-			row := mustOutboxRow(t, stepIssue, route.payload, time.Now())
-			for _, tc := range []struct {
-				name      string
-				err       *dispatch.Error
-				permanent bool
-			}{
-				{name: "404 NOT_FOUND", err: notFound, permanent: false},
-				{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}, permanent: true},
-				{name: "400 INVALID_JSON naming the rating", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON",
-					Message: `invalid JSON body: json: unknown field "rating"`}, permanent: true},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					wrapped := fmt.Errorf("write the record of %s: %w", stepIssue, tc.err)
-					if got := permanentRefusal(row, wrapped); got != tc.permanent {
-						t.Fatalf("permanentRefusal(%v) = %v, want %v", tc.err, got, tc.permanent)
-					}
-				})
-			}
-
 			rig := newRecordRig(t, route.payload, answersInTurn(notFound, notFound))
 			for attempt := 1; attempt <= 2; attempt++ {
 				rig.run()
@@ -232,7 +211,9 @@ func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 // What no retry changes ends a plan record after its one run, and the one Warn line says the plan
 // was dropped, naming the issue, the plan's id and Dispatch's code, since nothing else would: an
 // issue Dispatch does not have, a plan Dispatch will never take, a writer the route refuses, and an
-// id of another issue's plan. The row's failure is not logged as a failed attempt besides.
+// id of another issue's plan. A 400 INVALID_JSON naming the rating is such a body too: a Dispatch
+// ignores a body member it does not declare, so no Dispatch refuses the rating by name, and nothing
+// retries it. The row's failure is not logged as a failed attempt besides.
 func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -241,6 +222,8 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		{name: "404 ISSUE_NOT_FOUND", err: &dispatch.Error{Status: http.StatusNotFound, Code: dispatch.IssueNotFound, Message: "no issue LEGION-1"}},
 		{name: "400 PLAN_INPUT", err: &dispatch.Error{Status: http.StatusBadRequest, Code: dispatch.PlanInput, Message: "source must be one of default owner"}},
 		{name: "400 INVALID_JSON", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body: unexpected EOF"}},
+		{name: "400 INVALID_JSON naming the rating", err: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON",
+			Message: `invalid JSON body: json: unknown field "rating"`}},
 		{name: "403 STEP_WRITER", err: &dispatch.Error{Status: http.StatusForbidden, Code: dispatch.StepWriter, Message: "only the session legion-daemon:LEGION writes a plan of LEGION-1"}},
 		{name: "409 PLAN_OTHER_ISSUE", err: &dispatch.Error{Status: http.StatusConflict, Code: dispatch.PlanOtherIssue, Message: "the plan belongs to LEGION-9"}},
 	} {
