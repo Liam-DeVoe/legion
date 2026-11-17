@@ -346,35 +346,15 @@ func (r *stepRecordsRig) databaseNow() time.Time {
 	return now
 }
 
-// rollBackStepRecords runs the way back the roll forward's migration carries in its header, from
-// its insert into step_starts_rollback to the delete of its own version row, as an operator runs it
-// with the daemon stopped.
+// rollBackStepRecords runs the way back the roll forward's migration carries in its header
+// (migrations.WayBack), as an operator runs it with the daemon stopped.
 func (r *stepRecordsRig) rollBackStepRecords() {
-	t := r.t
-	t.Helper()
-	all, err := migrations.All()
+	r.t.Helper()
+	block, err := migrations.WayBack(stepRecordsRollForward)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		r.t.Fatalf("read the way back of the roll forward: %v", err)
 	}
-	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForward)
-	for _, migration := range all {
-		if migration.Version != stepRecordsRollForward {
-			continue
-		}
-		var block []string
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
-				continue
-			}
-			block = append(block, strings.TrimPrefix(line, "-- "))
-			if line == mark {
-				r.exec(strings.Join(block, "\n"))
-				return
-			}
-		}
-		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
-	}
-	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
+	r.exec(block)
 }
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,

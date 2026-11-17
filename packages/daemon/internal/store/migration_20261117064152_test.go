@@ -18,35 +18,16 @@ import (
 // back.
 const stepRecordsRollForwardVersion = 20261117064152
 
-// stepRecordsWayBack is the way back the roll forward's header carries, from its insert into
-// step_starts_rollback to the delete of its own version row, without the comment markers: the
+// stepRecordsWayBack is the way back the roll forward's header carries (migrations.WayBack): the
 // statements an operator runs (docs/kubernetes.md carries the same block, and internal/textcheck
 // holds the two to one text).
 func stepRecordsWayBack(t *testing.T) string {
 	t.Helper()
-	all, err := migrations.All()
+	block, err := migrations.WayBack(stepRecordsRollForwardVersion)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back of the roll forward: %v", err)
 	}
-	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForwardVersion)
-	for _, migration := range all {
-		if migration.Version != stepRecordsRollForwardVersion {
-			continue
-		}
-		var block []string
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
-				continue
-			}
-			block = append(block, strings.TrimPrefix(line, "-- "))
-			if line == mark {
-				return strings.Join(block, "\n")
-			}
-		}
-		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
-	}
-	t.Fatalf("no embedded migration has version %d", stepRecordsRollForwardVersion)
-	return ""
+	return block
 }
 
 // rollBackStore is a store migrated to this release, on which a test seeds issues and their

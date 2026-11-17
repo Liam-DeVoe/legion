@@ -2,8 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -201,34 +199,17 @@ func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
 // way back, which the way back re-arms and the roll forward applies again.
 const stepRecordsRollForward = 20261117064152
 
-// rollBackStepRecords runs the way back the roll forward's migration carries in its header, as an
-// operator runs it with the daemon stopped (docs/kubernetes.md, "Rolling back the release that
-// records each step", carries the same block; internal/textcheck holds the two to one text).
+// rollBackStepRecords runs the way back the roll forward's migration carries in its header
+// (migrations.WayBack), as an operator runs it with the daemon stopped (docs/kubernetes.md,
+// "Rolling back the release that records each step", carries the same block; internal/textcheck
+// holds the two to one text).
 func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	all, err := migrations.All()
+	block, err := migrations.WayBack(stepRecordsRollForward)
 	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+		t.Fatalf("read the way back of the roll forward: %v", err)
 	}
-	mark := fmt.Sprintf("-- delete from schema_version where version = %d;", stepRecordsRollForward)
-	for _, migration := range all {
-		if migration.Version != stepRecordsRollForward {
-			continue
-		}
-		var block []string
-		for _, line := range strings.Split(migration.SQL, "\n") {
-			if block == nil && !strings.HasPrefix(line, "-- insert into step_starts_rollback") {
-				continue
-			}
-			block = append(block, strings.TrimPrefix(line, "-- "))
-			if line == mark {
-				execSQL(t, pool, strings.Join(block, "\n"))
-				return
-			}
-		}
-		t.Fatalf("%s carries no way back from its insert into step_starts_rollback to %q", migration.Name, mark)
-	}
-	t.Fatalf("no embedded migration has version %d, the step records' roll forward", stepRecordsRollForward)
+	execSQL(t, pool, block)
 }
 
 // rollForwardStepRecords is the newer image's boot over the store the earlier release left: its
