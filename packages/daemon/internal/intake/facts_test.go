@@ -133,6 +133,7 @@ func TestLegionEntryReadsTheEntryTheReviewSaysItIsOf(t *testing.T) {
 		{name: "digits and a word", body: footer("\"07x\""), want: 0},
 		{name: "zero as a string", body: footer("\"0\""), want: 0},
 		{name: "a negative entry as a string", body: footer("\"-1\""), want: 0},
+		{name: "a signed entry as a string", body: footer("\"+7\""), want: 0},
 		{name: "a fraction as a string", body: footer("\"1.5\""), want: 0},
 		{name: "null", body: footer("null"), want: 0},
 		{name: "true", body: footer("true"), want: 0},
