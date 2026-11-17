@@ -1003,3 +1003,66 @@ func TestThePlannerAddsNoTaskBlockToAnOwnersPlan(t *testing.T) {
 		t.Errorf("the composed planner prompt still says %q, which adds a block to an owner's plan", retired)
 	}
 }
+
+// The two architect role parts name a step only where the issue's task holds it. An owner's plan
+// can leave out the planner, the tester, the reviewer and the owner's own acceptance, so each
+// sentence that named one of them as if every issue ran it now says where it runs and, where it
+// does not, who holds its duty: the order of the starts is the order of the steps of the issue's
+// plan; `accepting` and the sign-off are the owner's only where the task holds `acceptance:owner`;
+// the move back names an earlier step's phase; a failed step goes back to the implementer or to
+// the earlier step its completion names. A parent with no `acceptance:owner` step gets no reading
+// of its finished whole from its owner, and each part says so in one sentence where it speaks of a
+// parent and its children. Each part gives `register_plan` and `stop_task` with the arguments of
+// the daemon's routes. The words the parts carried before are gone from both. This shows the text
+// is loaded, never that an owner follows it.
+func TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns(t *testing.T) {
+	const parentRuling = "A parent whose plan has no step `acceptance:owner` gets no reading of its finished whole from you: Legion holds it before its retro while issues beneath it are still in the workflow (`retro-held`) and starts the retro once they have left, so give a parent whose finished work you want to read the step `acceptance:owner`."
+	shared := []string{
+		parentRuling,
+		"`register_plan` (`issue`, `artifactId`, `version`)",
+		"`stop_task` (`issue`, `task`)",
+		"in the order of the steps of",
+		"holds your step `acceptance:owner`",
+		"A task with no `acceptance:owner` step has no `accepting`",
+		"the phase of an earlier step of the task: `implementing`, or `testing` where the task has a tester step",
+		"is a gap that a tester step and a reviewer step name and neither refuses",
+		"goes back to the implementer, or to the earlier step its completion names",
+	}
+	retired := []string{
+		"fixed workflow table",
+		"by the daemon's table",
+		"the tester and the reviewer name and neither refuses",
+		"`implementing` or `testing`",
+		"at the approved head",
+		"reviewed head",
+		"the planner's `plan` handoff",
+		"so its planner may already be reading it",
+		"since the reviewer approves only",
+		"the reviewer's approval moves an issue to `accepting`",
+		"The reviewer's approval moves this child to `accepting`",
+		"is mandatory after your acceptance",
+		"Your last act is `sign_off` of this child in `accepting`",
+		"a parent only on an approved head",
+	}
+	for _, tc := range []struct {
+		part string
+		want []string
+	}{
+		{"architect-root.md", append(slices.Clone(shared), "each issue's `plan.md`", "before `register_gate`")},
+		{"architect.md", append(slices.Clone(shared), "the agent of its first step may already be reading it", "given it its plan with `register_plan`")},
+	} {
+		t.Run(tc.part, func(t *testing.T) {
+			text := foldWhitespace(rolePart(t, tc.part))
+			for _, phrase := range tc.want {
+				if !strings.Contains(text, phrase) {
+					t.Errorf("roles/%s omits %q", tc.part, phrase)
+				}
+			}
+			for _, phrase := range retired {
+				if strings.Contains(text, phrase) {
+					t.Errorf("roles/%s still says %q", tc.part, phrase)
+				}
+			}
+		})
+	}
+}
