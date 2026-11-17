@@ -4878,7 +4878,7 @@ the task the daemon prompts the reviewer with in its second round holds ` Last r
 It runs where [`handoff-records.sh`](#handoff-recordssh) runs, with the same inputs and refusals:
 `go`, `git`, `jj` 0.38 or later, `awk`, `bun` (after `bun install` at the checkout's root) and `python3`, and a loopback `LEGION_TEST_PG_DSN` whose role may create and drop Dispatch's database, on a server that offers `pgvector`.
 The broker is the run's own, as for [`child-adoption.sh`](#child-adoptionsh).
-A run took 38 s on a devbox with a warm Go build cache: 14 s building the driver and 16 s for the proof, whose first 3 s build Dispatch.
+A run took 28 s on a devbox with a warm Go build cache: 1 s for the prerequisites, 1 s for the broker, 12 s building the driver and 14 s for the proof, whose first 3 s build Dispatch.
 The four checks are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, and the `driver` check builds a test binary of `TestReviewRangeLive` (`internal/daemon/review_range_live_test.go`, `-tags e2e`).
 
 The rig is `handoff-records.sh`'s (`startOnDispatch` and `seedIssues`, in `internal/daemon/handoff_records_live_test.go`):
