@@ -2,6 +2,7 @@ package specgraph
 
 import (
 	"cmp"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -173,7 +174,7 @@ func TestCheckState(t *testing.T) {
 		{name: "v-state 13: a tie that is not known does not carry", change: func(c *checkCase) {
 			c.commit("c2", "c1", "docs/x.md")
 			c.Subject.Commit = "c2"
-			c.Ties[c.check] = Tie{Known: false, Why: "the test's imports could not be read"}
+			c.Ties["c2"][c.check] = Tie{Known: false, Why: "the test's imports could not be read"}
 		}, want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "v-state 15: the author of the test wrote the fault", change: func(c *checkCase) { c.Results[1].FaultAuthor = "author-a" },
 			want: CheckState{State: "unknown", Reason: "fault_by_test_author"}},
@@ -538,7 +539,7 @@ func TestARunOfProductionOrTheGraphCountsForTheCodeThatRanIt(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
 			s.add(row.check)
-			s.Ties[row.check.ID] = s.Ties[s.check]
+			s.tieLikeC(row.check.ID)
 			s.commit("c2", "c1", row.changed)
 			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: "tx1"}
 			run := Result{Check: row.check.ID, Kind: ResultRun, Outcome: OutcomePass, Job: row.check.Test.Job, TestCommit: row.runCommit, At: checkStateRun.Add(time.Hour)}
@@ -657,7 +658,7 @@ func newCheckCase(t *testing.T) *checkCase {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Ties = map[string]Tie{s.check: tie, checkStateProductionProgram.ID: tie}
+	s.Ties = CommitTies{"c1": {s.check: tie, checkStateProductionProgram.ID: tie}}
 	s.Subject = Point{Commit: "c1", Branch: "b"}
 	s.Results = []Result{checkRun("c1", OutcomePass, checkStateRun), caughtFault("c1", checkStateRun.Add(5*time.Minute))}
 	return s
@@ -803,7 +804,8 @@ func (s *checkCase) add(c Check) {
 }
 
 // commit adds commit id to the history, with the tree of commit from and each path of changed given
-// a label that no other commit gives it. It returns the tree, which a row can change further.
+// a label that no other commit gives it, and gives id the ties of from. It returns the tree, which a
+// row can change further.
 func (s *checkCase) commit(id, from string, changed ...string) map[string]string {
 	s.t.Helper()
 	i := slices.IndexFunc(s.history.Commits, func(c FixtureCommit) bool { return c.ID == from })
@@ -818,7 +820,17 @@ func (s *checkCase) commit(id, from string, changed ...string) map[string]string
 		files[path] = id
 	}
 	s.history.Commits = append(s.history.Commits, FixtureCommit{ID: id, Parent: from, Files: files})
+	s.Ties[id] = map[string]Tie{}
+	maps.Copy(s.Ties[id], s.Ties[from])
 	return files
+}
+
+// tieLikeC gives the check id the tie of C at each commit of the case, and commit gives it to each
+// commit after that as it gives C's.
+func (s *checkCase) tieLikeC(id string) {
+	for _, ties := range s.Ties {
+		ties[id] = ties[s.check]
+	}
 }
 
 // productionProgram is the case of item 19: the program check Q of production, with a pass under

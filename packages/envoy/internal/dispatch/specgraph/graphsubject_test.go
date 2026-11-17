@@ -109,7 +109,7 @@ func TestAGraphCheckReadsTheTransactionOfTheSubject(t *testing.T) {
 			t.Parallel()
 			s := newCheckCase(t)
 			s.add(row.check)
-			s.Ties[row.check.ID] = s.Ties[s.check]
+			s.tieLikeC(row.check.ID)
 			s.commit("c2", "c1", "packages/envoy/cmd/listener/restart_test.go")
 			s.Subject = Point{Commit: "c2", Deploy: "d2", GraphTx: row.tx}
 			if row.branch != "" {

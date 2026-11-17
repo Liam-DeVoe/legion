@@ -20,7 +20,9 @@
 //	spec-check state --scenario <dir> [--json]
 //	  (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
 //	  a check of production or of the graph is judged only at a deploy, and one of the graph reads
-//	  unknown there when no result read the subject's graph_tx)
+//	  unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
+//	  by commit, and a result at one commit counts at another only when the check's tie is known at
+//	  both and no path that changed between them is covered by the tie at either)
 //
 // tree judges one directory. It exits 0 for a valid tree, with the count line "spec-check: <dir>:
 // 3 statements, 4 checks, 2 components, 1 interface, 1 term; the tree is valid" on standard output.
@@ -132,6 +134,10 @@
 // names graph_tx only with a deploy, each name of a subject has a letter or a digit, and a result
 // names one subject, so the reader refuses graph_tx on a branch, a commit, branch, deploy or
 // graph_tx of no letter and no digit, and a result that names two of commit, deploy and graph_tx.
+// ties.json holds the tie of each check at each commit, and a result at one commit counts at another
+// only when the check's tie is known at both commits and no path that changed between them is
+// covered by the tie at either commit; the reader refuses a commit of ties.json of no letter and no
+// digit, as it refuses such a commit of a subject.
 //
 // Every subcommand exits 2 for a directory it cannot read, a file it cannot read or arguments it
 // does not take, with one line naming the case, or the usage, and for a file or a device on
@@ -176,7 +182,9 @@ const usage = `usage: spec-check tree --dir <dir> [--allow-empty] [--retired <fi
        spec-check state --scenario <dir> [--json]
          (each subject of <dir>/subjects.json: commit, branch or deploy, and graph_tx with a deploy;
          a check of production or of the graph is judged only at a deploy, and one of the graph reads
-         unknown there when no result read the subject's graph_tx)`
+         unknown there when no result read the subject's graph_tx; <dir>/ties.json holds each check's tie
+         by commit, and a result at one commit counts at another only when the check's tie is known at
+         both and no path that changed between them is covered by the tie at either)`
 
 // prefix is the fixed text that starts every line the command prints but the usage, the JSON of
 // checks and of state, and the statement, check and wait lines of state.

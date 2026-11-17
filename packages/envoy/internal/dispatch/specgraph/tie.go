@@ -3,6 +3,8 @@ package specgraph
 import (
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -31,6 +33,40 @@ func NewTie(paths []string) (Tie, error) {
 		}
 	}
 	return Tie{Paths: slices.Compact(slices.Sorted(slices.Values(paths))), Known: true}, nil
+}
+
+// CommitTies is the tie of each check at each commit, by commit and then by check id, since a tie
+// is a fact of a commit (R18: "At each commit, Dispatch derives four ties"). A check that the map
+// of a commit does not hold has a tie that is not known at that commit, and so has each check at a
+// commit that it does not hold.
+type CommitTies map[string]map[string]Tie
+
+// ReadCommitTies reads ties in the form of a scenario's ties.json,
+// {"<commit>":{"<check id>":["<path or pattern>", …]}}, each tie as NewTie takes it. It reads the
+// JSON with decodeJSON, the package's one reader of a JSON file of a format, so it refuses what
+// that reader refuses. It refuses a commit of no letter and no digit (hasWord), as the scenario
+// reader refuses such a commit of a subject, since it names no commit, and it names the commit and
+// the check of a tie that NewTie refuses.
+func ReadCommitTies(r io.Reader) (CommitTies, error) {
+	var paths map[string]map[string][]string
+	if err := decodeJSONFrom(r, &paths); err != nil {
+		return nil, err
+	}
+	ties := make(CommitTies, len(paths))
+	for _, commit := range slices.Sorted(maps.Keys(paths)) {
+		if !hasWord(commit) {
+			return nil, fmt.Errorf("commit %q: a commit of no letter and no digit names no commit", commit)
+		}
+		ties[commit] = make(map[string]Tie, len(paths[commit]))
+		for _, check := range slices.Sorted(maps.Keys(paths[commit])) {
+			tie, err := NewTie(paths[commit][check])
+			if err != nil {
+				return nil, fmt.Errorf("commit %q: check %q: %w", commit, check, err)
+			}
+			ties[commit][check] = tie
+		}
+	}
+	return ties, nil
 }
 
 // isTieEntry is whether entry has one of the three forms of a tie.

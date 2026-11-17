@@ -61,3 +61,44 @@ func TestNewTieRefusesAnotherForm(t *testing.T) {
 		t.Error("NewTie accepts a tie of no path")
 	}
 }
+
+// ReadCommitTies reads the tie of each check at each commit (R18: "At each commit, Dispatch derives
+// four ties"). A check that the object of a commit does not name, and each check at a commit that
+// the form does not name, has a tie that is not known. It refuses a commit of no letter and no digit,
+// as the scenario reader refuses such a commit of a subject, a tie that NewTie refuses, naming its
+// commit and its check, and the form by check alone, which names no commit.
+func TestReadCommitTies(t *testing.T) {
+	t.Parallel()
+	ties, err := ReadCommitTies(strings.NewReader(`{"c1":{"a":["p/**","go.work"],"b":["go.work"]},"c2":{"a":["go.work"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct {
+		commit, check string
+		want          Tie
+	}{
+		{"c1", "a", Tie{Paths: []string{"go.work", "p/**"}, Known: true}},
+		{"c1", "b", Tie{Paths: []string{"go.work"}, Known: true}},
+		{"c2", "a", Tie{Paths: []string{"go.work"}, Known: true}},
+		{"c2", "b", Tie{}},
+		{"c3", "a", Tie{}},
+	} {
+		if got := ties[row.commit][row.check]; got.Known != row.want.Known || !slices.Equal(got.Paths, row.want.Paths) {
+			t.Errorf("the tie of %s at %s = %+v, want %+v", row.check, row.commit, got, row.want)
+		}
+	}
+	for text, want := range map[string]string{
+		`{" \t ":{"a":["go.work"]}}`:         `commit " \t ": a commit of no letter and no digit names no commit`,
+		`{"":{"a":["go.work"]}}`:             `commit "": a commit of no letter and no digit names no commit`,
+		`{"c1":{"a":["p/*.go"]}}`:            `commit "c1": check "a": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`,
+		`{"c1":{"a":[]}}`:                    `commit "c1": check "a": specgraph: a tie holds no path`,
+		`{"c1":{"a":["go.work"],"a":["x"]}}`: `member "/c1/a" is in one object two times`,
+	} {
+		if _, err := ReadCommitTies(strings.NewReader(text)); err == nil || err.Error() != want {
+			t.Errorf("ReadCommitTies(%s): %v, want %s", text, err, want)
+		}
+	}
+	if _, err := ReadCommitTies(strings.NewReader(`{"a":["go.work"]}`)); err == nil {
+		t.Error("ReadCommitTies takes ties by check, which name no commit")
+	}
+}
