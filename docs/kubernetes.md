@@ -1972,10 +1972,10 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that records each step
 
-This release adds one outbox kind, `step_record`, and its migration `20261117000528_outbox_kinds_with_the_step_record` adds the name to the outbox's kind check (`outbox_kind_check`).
+This release adds one outbox kind, `step_record`, and one table, `step_starts`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
-The migration changes no column.
+That migration changes no column.
 
 Run this with the daemon stopped, before the earlier image is pinned:
 
@@ -1989,6 +1989,12 @@ An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbo
 It waits through the rollback and writes its record at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks.
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+The table `step_starts` (`20261117004117_step_starts`) stays in place, and the rollback needs no statement for it: an earlier release names it in no statement, so that release boots with the table and its rows there.
+It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`).
+What a rollback and a roll forward cost is the record of each step that started under the earlier release, which writes no start and raises no count.
+At the roll forward, the end of such a step reads the count of its place's last run under this release: where that run had ended, the end writes nothing and the step has no record;
+where that run was still open at the rollback, the end ends that run's record, with the moment and the result of the later run.
 
 #### Rolling back the release whose update round ends at its bound
 
