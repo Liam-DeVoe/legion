@@ -1366,7 +1366,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 	// so the record and the row hold that edit's source alone.
 	waitForLandedAppends(t, service, artifactID)
 	alicesRoom := service.srv.GetDoc(artifactID)
-	editor := model.Actor{Kind: "user", ID: "alice"}
+	editor := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	service.recordActor(t, artifactID, editor)
 	// A landed browser edit's staging writes the document's pending-settlement row as well as
 	// the record (recordActor), and the move this test reads is the close's. So the row is put
@@ -1489,7 +1489,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	// the head is read, so the head stands still unless her keystroke moves it.
 	waitForLandedAppends(t, service, artifactID)
 	head := storedHead(t, database, artifactID)
-	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
 	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
@@ -1537,7 +1537,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	waitFor(t, "the record of the room that loaded while the close waited to hold bob's browser alone", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
-	bobsEdit := model.Actor{Kind: "user", ID: "bob"}
+	bobsEdit := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	typeOver(t, bob, "alice typed", "bob typed while the close waited")
 	waitFor(t, "bob's keystroke to write him to the pending-settlement row of "+artifactID, func() bool {
 		named := pendingSettlementActor(t, service, artifactID)
@@ -1615,7 +1615,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 	// the head is read, so the head stands still unless her keystroke moves it.
 	waitForLandedAppends(t, taskA, artifactID)
 	head := storedHead(t, database, artifactID)
-	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
 	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
@@ -1717,7 +1717,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereItsSnapshotRead
 	waitForLandedAppends(t, taskA, artifactID)
 	settleTheDocumentNow(t, taskA, artifactID)
 	requireNoPendingSettlement(t, taskA, artifactID, "the settlement before the close")
-	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	taskA.recordActor(t, artifactID, alicesEdit)
 	// A landed browser edit's staging writes the row that edit leaves (recordActor), and a
 	// document owing no settlement is the state this test stages: the row goes again, so the
@@ -1827,7 +1827,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourc
 	// the head is read, so the head stands still unless her keystroke moves it.
 	waitForLandedAppends(t, service, artifactID)
 	head := storedHead(t, database, artifactID)
-	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
 	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
@@ -2087,7 +2087,7 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 	// the head is read, so the head stands still unless her keystroke moves it.
 	waitForLandedAppends(t, taskA, artifactID)
 	head := storedHead(t, database, artifactID)
-	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
 	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
