@@ -1454,6 +1454,20 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 		"the plan in force of %s is document %s; give a later version of that document.", issue, artifact)}
 }
 
+// InGroup is the sentence that names the group of issue: the variant of the experiment it was
+// drawn into, and how that variant's issues are done, by the arm's `plan` (group, a
+// config.PlanGroup word): `default`, whose issues run the project's default steps, or
+// `owner-alone`, whose owner does the whole issue itself in one step. It is the one spelling of a
+// group that the refusals of register_plan and stop_task (PlanNotTaken, TaskNotStopped) and the
+// plan-not-taken notice of the issue's first step give the owner.
+func InGroup(issue, experiment, variant, group string) string {
+	done := "issues run the project's default steps"
+	if group == "owner-alone" {
+		done = "owner does the whole issue itself in one step"
+	}
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose %s.", issue, variant, experiment, done)
+}
+
 // PlanOfDoneTask is the 409 TASK_DONE refusal of a version that changes task of issue, which is
 // done: nothing of it is left to change, and the code is that of a stop of a done task.
 func PlanOfDoneTask(issue, task string) *Refusal {
