@@ -901,12 +901,12 @@ const MANY_ROWS = 5000;
 /** The most elements whose style one added row may recalculate: the row and its neighbours. */
 const RECALCULATED_FOR_ONE_ROW = 100;
 
-// A change the new page makes recalculates the style of what it changed, not of the whole page
-// (decision 176 of INFRA-1196's parts): adding one row to a page of `MANY_ROWS` rows recalculates
-// the style of that row alone. The view row's scroll margin once read `html:has([data-issue-page])
-// [data-filter-row] *`. A selector whose subject is universal under an `html:has()` ancestor made
-// each element added with an attribute recalculate every element, so part G's rows drew four
-// times slower. The reading is Chrome's own count of the elements a style recalculation visits
+// A change the new page makes recalculates the style of what it changed, not of the whole page:
+// adding one row to a page of `MANY_ROWS` rows recalculates the style of that row alone. The
+// view row's scroll margin once read `html:has([data-issue-page]) [data-filter-row] *`. A
+// selector whose subject is universal under an `html:has()` ancestor made each element added
+// with an attribute recalculate every element, so the issue page's rows drew four times
+// slower. The reading is Chrome's own count of the elements a style recalculation visits
 // (`UpdateLayoutTree`'s `elementCount`), not a time. On a reduced page of 5000 rows in Chrome 158,
 // one added row recalculated 10012 elements with that rule, and 3 (1440 px) or 5 (390 px)
 // without it. So with it this row fails on "adding one row recalculated the style of".
