@@ -34,7 +34,7 @@ func TestAHeldTextIsInNoPersonsReadUntilItPosts(t *testing.T) {
 	served := httptest.NewServer(rig.handler)
 	t.Cleanup(served.Close)
 	socket := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(served.URL, "http")+"/ws/live",
-		http.Header{"X-Dispatch-User": {"alice"}}).read()
+		http.Header{"X-Dispatch-User": {"alice"}}).servedBy(rig.database).read()
 	subscribeEvents(t, socket, "events", nil)
 
 	comment := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/comments", map[string]any{
