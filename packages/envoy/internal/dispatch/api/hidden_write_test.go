@@ -834,6 +834,13 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 		map[string]any{"body": "s-pub works on PUB.", "actor": map[string]any{"kind": "session", "id": "s-pub"}}))
 	// dana is a full member no list of PRIV names: hidden from every caller that sees PRIV alone.
 	seedPeople(t, seed.database, hiddenPerson)
+	// An architecture source of PRIV from acme/walked, the repository the source rows' {owner}/{repo}
+	// name. Written to the store: the route's PUT asks GitHub, which the test server has not got.
+	if _, err := seed.database.Pool.Exec(context.Background(), `
+		insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
+		values ($1, 'acme/walked', 'main', 1, '{"kind":"user","id":"carol@example.com"}')`, seedPrivate); err != nil {
+		t.Fatalf("give PRIV an architecture source: %v", err)
+	}
 	var carolsToken string
 	if err := seed.database.Pool.QueryRow(context.Background(), `select id::text from agent_tokens where name = $1`,
 		string(callerCarolPrivToken)).Scan(&carolsToken); err != nil {

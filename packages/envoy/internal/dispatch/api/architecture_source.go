@@ -150,8 +150,7 @@ func (s *server) putArchitectureSource(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.deps.Store.Pool.QueryRow(r.Context(), "select key from projects where key = $1 and "+
-		access.ProjectClause("key", "$2"), key, refs.VisibilityArg(who)).Scan(new(string)); err != nil {
+	if err := s.requireVisibleProject(r.Context(), who, key); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -255,6 +254,9 @@ func (s *server) deleteArchitectureSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	repo := owner + "/" + name
+	if !s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) }) {
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -308,6 +310,9 @@ func (s *server) syncArchitectureSource(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	repo := owner + "/" + name
+	if !s.sourceProjectVisible(w, r, key, func() { writeSourceNotFound(w, key, repo) }) {
+		return
+	}
 	source, err := s.deps.Architecture.Sync(r.Context(), key, repo)
 	switch {
 	case err == nil:
@@ -375,9 +380,12 @@ func (s *server) syncSingularArchitectureSource(w http.ResponseWriter, r *http.R
 // that could not be recorded on its row.
 func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]model.ArchitectureSource, bool) {
 	key := r.PathValue("key")
+	if !s.sourceProjectVisible(w, r, key, func() { writeProjectSourceNotFound(w, key) }) {
+		return nil, false
+	}
 	results, err := s.deps.Architecture.SyncProject(r.Context(), key)
 	if errors.Is(err, architecture.ErrNoSource) || (err == nil && len(results) == 0) {
-		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+key)
+		writeProjectSourceNotFound(w, key)
 		return nil, false
 	}
 	if err != nil {
@@ -397,6 +405,32 @@ func (s *server) syncProjectSources(w http.ResponseWriter, r *http.Request) ([]m
 
 func writeSourceNotFound(w http.ResponseWriter, key, repo string) {
 	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source from "+repo+" configured for "+key)
+}
+
+func writeProjectSourceNotFound(w http.ResponseWriter, key string) {
+	writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+key)
+}
+
+// sourceProjectVisible reports whether the caller sees project key (requireVisibleProject), and,
+// where it does not, answers notFound, the answer of a source nobody configured, before any lock,
+// delete, GitHub call or sync: a source write to a hidden project answers exactly as one to a
+// project with no such source (TestNoWriteReachesAHiddenObject). A key no project holds answers
+// the same. A read that fails otherwise answers the handler error.
+func (s *server) sourceProjectVisible(w http.ResponseWriter, r *http.Request, key string, notFound func()) bool {
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return false
+	}
+	err := s.requireVisibleProject(r.Context(), who, key)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, pgx.ErrNoRows):
+		notFound()
+	default:
+		s.writeHandlerError(w, err)
+	}
+	return false
 }
 
 // sourcePathRepo reads the {owner}/{repo} path segments as parseSourceRepo reads a repository.
