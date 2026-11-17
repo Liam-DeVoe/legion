@@ -190,12 +190,8 @@ test("a decision written as a list keeps its link and its key, and anchors its C
 // block is drawn once, with its own text and nothing else. The reading this row refuses is the
 // one two rounds of this change got wrong: a body handed a text that is not its own draws that
 // whole text in every slot.
-// No `@pr` tag: the pull-request lane's real-stack budget is full, and with the landing's own
-// row beside them this is the row of the Decisions tab the lane answers least - its claim is
-// also made by two unit rows of `DecisionsPanel.test.tsx`, which draw an answer with no reading
-// block by block and hold each block to its own markdown. It runs on the full lane at the merge
-// queue.
-test("a decision whose answer carries no reading is drawn block by block", async ({ page }) => {
+// @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
+test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",

@@ -22,6 +22,7 @@ import {
   holdAsset,
   missEntryChunk,
   pageAssetPath,
+  recordFailureHandling,
   shellLoads,
   tabReloads,
 } from "./shell";
@@ -212,26 +213,27 @@ test("an entry chunk's reloads and a page chunk's share the tab's three @pr", as
 // which comes down before any key opens the bar (`web/src/features/search/SearchPaletteHost.tsx`,
 // `prefetchChunk`). Its failure says only that the download has not happened yet, so it reloads
 // nothing and spends nothing of the tab's budget (`web/src/features/shell/DeploymentResilience.tsx`).
-// The download is failed once the margin's and the preview layer's chunks are in: a failure while
-// a render waits on a chunk of its own is that reader's, and reloads whatever chunk it was.
+// The download is failed once the margin and the preview layer have rendered from their chunks: a
+// failure while a render waits on a chunk of its own is that reader's, and reloads whatever chunk
+// it was.
 test("a chunk the shell only prefetched reloads nothing when it fails @pr", async ({
   baseURL,
   page,
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const load = shellLoads(page);
-  const failed = await failAssetWhen(
-    page,
-    /\/assets\/SearchPalette-[^/]+\.js$/u,
-    () => load().settled
+  const judged = await recordFailureHandling(page);
+  const load = await shellLoads(page);
+  const failed = await failAssetWhen(page, /\/assets\/SearchPalette-[^/]+\.js$/u, () =>
+    load().settled()
   );
 
   await page.goto("/agents");
   await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
   await expect.poll(failed).toBeGreaterThan(0);
-  // A reload the failure started would already be out; four frames of margin for it.
-  await sleep(250);
+  // Both judges have seen the failure - the inline script its preload link's `error` event, the
+  // bundle its import's - and a reload either began would have begun inside that event.
+  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
   expect(counts).toEqual({ documents: 1, entryRequests: 1 });
   expect(await tabReloads(page)).toBeNull();
 });
@@ -247,18 +249,19 @@ test("a module preload that fails for a chunk the shell only prefetched is left 
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const load = shellLoads(page);
-  const failed = await failAssetWhen(
-    page,
-    /\/assets\/ShortcutHelp-[^/]+\.js$/u,
-    () => load().settled
+  const judged = await recordFailureHandling(page);
+  const load = await shellLoads(page);
+  const failed = await failAssetWhen(page, /\/assets\/ShortcutHelp-[^/]+\.js$/u, () =>
+    load().settled()
   );
 
   await page.goto("/agents");
   await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
   await expect.poll(failed).toBeGreaterThan(0);
-  // A reload the failure started would already be out; four frames of margin for it.
-  await sleep(250);
+  // Both judges have seen the failure - the inline script the link's own `error` event, the
+  // bundle the bar's import that failed with it - and a reload either began would have begun
+  // inside that event.
+  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
   expect(counts).toEqual({ documents: 1, entryRequests: 1 });
   expect(await tabReloads(page)).toBeNull();
 });
@@ -275,21 +278,23 @@ test("a route chunk nothing prefetched reloads for its failure while another chu
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const load = shellLoads(page);
+  const judged = await recordFailureHandling(page);
+  const load = await shellLoads(page);
   await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
   await failAssetWhen(page, /\/assets\/BroadcastsPage-[^/]+\.js$/u, async () => {
     const current = load();
-    await Promise.all([current.settled, current.peekAsked]);
+    await Promise.all([current.settled(), current.peekAsked]);
   });
 
   await page.goto("/agents/broadcasts", { waitUntil: "commit" });
   await expect.poll(() => counts.documents).toBe(4);
+  // The fourth load's failure has passed both judges with the tab's three reloads spent, so a
+  // fifth load would have begun inside it; each load before it began one. Read before the
+  // boundary, which a fifth load would take off the page before it could be read.
+  expect((await judged(4)).map((one) => one.reloaded)).toEqual([true, true, true, false]);
   await expect(page.getByTestId("error-boundary")).toContainText(
     "Failed to fetch dynamically imported module"
   );
-  // The recovery's reload starts from the failed-asset handler of the load whose boundary is
-  // drawn above, so a fifth document request would already be out; four frames of margin.
-  await sleep(250);
   expect(counts).toEqual({ documents: 4, entryRequests: 4 });
 });
 
@@ -303,18 +308,20 @@ test("a bar whose prefetch failed reloads for its chunk when the reader opens it
   scene: _recording,
 }) => {
   const counts = await missEntryChunk(page, () => false, baseURL ?? "");
-  const load = shellLoads(page);
+  const judged = await recordFailureHandling(page);
+  const load = await shellLoads(page);
   await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
   const failed = await failAssetWhen(page, /\/assets\/SearchPalette-[^/]+\.js$/u, async () => {
     const current = load();
-    await Promise.all([current.settled, current.peekAsked]);
+    await Promise.all([current.settled(), current.peekAsked]);
   });
 
   await page.goto("/agents");
   await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
   await expect.poll(failed).toBeGreaterThan(0);
-  // The prefetch's failure reloaded nothing; four frames of margin for a reload it started.
-  await sleep(250);
+  // Both judges have seen the prefetch's failure, and a reload either began would have begun
+  // inside that event.
+  expect((await judged(1)).map((one) => one.reloaded)).toEqual([false]);
   expect(counts.documents).toBe(1);
 
   await page.keyboard.press("ControlOrMeta+k");

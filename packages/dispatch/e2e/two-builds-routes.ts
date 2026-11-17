@@ -50,6 +50,11 @@ export const lazyPieces = {
     "text body for a decision block in it (features/doc/TextAskCardHost.tsx), and the card a " +
     "document's own decision block draws (features/doc/AskBlockCardHost.tsx), which is what a " +
     "walked document page that holds a decision block loads it as",
+  "change-view":
+    "a document's changes against a past version (features/doc/ChangeView.tsx), which a " +
+    "document page draws on an address that names a version (features/doc/ProofDocument.tsx), " +
+    "and which the Inbox's chunk (features/inbox/inbox-chunk.ts) imports for an earlier " +
+    "approval's card, so the Inbox's list is what shows it ran",
   "create-issue":
     "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
@@ -57,6 +62,9 @@ export const lazyPieces = {
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
     "and the document's Yjs stack: yjs, @hocuspocus/provider, pending-edits and pending-sync " +
     "(features/doc/connection.ts)",
+  "event-refresh":
+    "the map from a live event to the reads it refreshes (api/event-refresh.ts), which the live " +
+    "feed asks for once the page it landed on has drawn (api/event-refresh-load.ts)",
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
@@ -80,6 +88,11 @@ export const lazyPieces = {
     "the search and actions bar (features/search/SearchPaletteHost.tsx), which `$mod+k` opens",
   "shortcut-help":
     "the keyboard-shortcut sheet (features/shell/ShortcutHelpHost.tsx), which `?` opens",
+  "version-view":
+    "a past version of a document (features/doc/VersionView.tsx), which a document page draws " +
+    "on an address that names a version (features/doc/ProofDocument.tsx), and which the " +
+    "Inbox's chunk (features/inbox/inbox-chunk.ts) imports for its reading pane, so the Inbox's " +
+    "list is what shows it ran",
 } as const;
 
 export type LazyPiece = keyof typeof lazyPieces;

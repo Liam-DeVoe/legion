@@ -177,10 +177,15 @@ function shellWavesBeforeOwnData({ landing, reads, waves }: Measurement): number
 }
 
 /** Collects every read `page` sends from now on, stamped against `from` (a `performance.now()`
- *  reading taken just before the navigation). */
-function recordReads(page: Page, from: number): Read[] {
+ *  reading taken just before the navigation), and for each read a promise that settles once it
+ *  has ended: its response has arrived, or its request has failed. */
+function recordReads(
+  page: Page,
+  from: number
+): { readonly ended: ReadonlyMap<Read, Promise<void>>; readonly reads: Read[] } {
   const reads: Read[] = [];
-  const pending = new Map<Request, Read>();
+  const ended = new Map<Read, Promise<void>>();
+  const pending = new Map<Request, { readonly end: () => void; readonly read: Read }>();
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (request.method() !== "GET") return;
@@ -191,16 +196,27 @@ function recordReads(page: Page, from: number): Read[] {
       search: url.search,
       startedAt: performance.now() - from,
     };
+    const end = Promise.withResolvers<void>();
     reads.push(read);
-    pending.set(request, read);
+    ended.set(read, end.promise);
+    pending.set(request, { end: end.resolve, read });
   });
   page.on("response", (response) => {
-    const read = pending.get(response.request());
-    if (read === undefined) return;
-    read.respondedAt = performance.now() - from;
+    const out = pending.get(response.request());
+    if (out === undefined) return;
+    out.read.respondedAt = performance.now() - from;
     pending.delete(response.request());
+    out.end();
   });
-  return reads;
+  // A read whose request fails before any response is never answered: it keeps no response
+  // time, and nothing is left to wait for.
+  page.on("requestfailed", (request) => {
+    const out = pending.get(request);
+    if (out === undefined) return;
+    pending.delete(request);
+    out.end();
+  });
+  return { ended, reads };
 }
 
 /** A time as the waterfall prints it: tenths of a millisecond, right-aligned, so a reader reads
@@ -239,7 +255,7 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
   try {
     const tab = await context.newPage();
     const from = performance.now();
-    const reads = recordReads(tab, from);
+    const { ended, reads } = recordReads(tab, from);
     await tab.goto(landing.address);
     await expect(landing.content(tab), `${landing.name} never drew its own content`).toBeVisible();
     const until = performance.now() - from;
@@ -249,18 +265,18 @@ async function land(browser: Browser, landing: Landing): Promise<Measurement> {
     const measured = reads
       .filter((read) => read.startedAt <= until)
       .sort((left, right) => left.startedAt - right.startedAt);
-    const deadline = performance.now() + ANSWER_SETTLE_MS;
-    while (
-      performance.now() < deadline &&
-      measured.some((read) => !Number.isFinite(read.respondedAt))
-    ) {
-      // Polling a value no assertion can wait on: these reads are the ones this row measures,
-      // and nothing on the page changes when one of them answers, so there is no state to make
-      // a web-first assertion against. 50 ms is a fortieth of the settle window above, which
-      // leaves the waterfall's answer times read to the tenth of a millisecond they are printed
-      // at while costing the row at most that much past the last answer.
-      await tab.waitForTimeout(50);
-    }
+    // Each read still out is waited on through its own end - its response, or its failure - and
+    // for no longer than the settle window above: nothing on the page changes when one of them
+    // answers, so there is no state to make a web-first assertion against, and the request's own
+    // events are what says it is over.
+    const windowClosed = Promise.withResolvers<void>();
+    AbortSignal.timeout(ANSWER_SETTLE_MS).addEventListener("abort", () => windowClosed.resolve(), {
+      once: true,
+    });
+    await Promise.race([
+      Promise.all(measured.map((read) => ended.get(read))),
+      windowClosed.promise,
+    ]);
     return { landing, reads: measured, waves: wavesOf(measured) };
   } finally {
     await context.close();
@@ -367,8 +383,9 @@ function landingsOf(world: World): Landing[] {
 // cold parse of the dashboard bundle it cannot cache, and the landing's own reads, four times
 // over. The cost is the measurement: a warm context would answer reads from its query cache and
 // count waves that a person opening the page never pays.
-// @pr: The dashboard's landing waterfall, which every browser row of this suite pays.
-test("a cold landing draws each page from at most two waves of reads @pr", async ({ browser }) => {
+// No `@pr` tag: the pull-request lane's real-stack budget is full, and this change moves no row
+// of that lane to make room for one of its own. It runs on the full lane at the merge queue.
+test("a cold landing draws each page from at most two waves of reads", async ({ browser }) => {
   const world = await seedWorld();
 
   const measured: Measurement[] = [];
