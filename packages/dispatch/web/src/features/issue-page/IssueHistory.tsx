@@ -300,33 +300,32 @@ export function IssueHistory({
     );
   };
   // A control of the history that goes away under the reader's focus leaves the focus in the
-  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`): Load older, gone once
-  // the log has ended, hands it to the last control of the list, beside the entries that page
-  // added; the Retry of a failed read, gone once the read lands, to the heading. Each is held
-  // from its press, made with the focus on it, until the reads settle, and only a focus left on
-  // the page moves: a reader who has put it elsewhere by then keeps it there. A control still
-  // drawn once they settle - Load older with pages left, a Retry whose read failed again - takes
-  // it back.
-  const pressed = useRef<"older" | "retry" | undefined>(undefined);
+  // history, never on the page, as Details' Unpin does (`IssuePins.tsx`). Load older, which a
+  // press disables while its page is read and the log's end takes away, hands it to the first
+  // control the page it read added, where Load older stood, else to Load older again where
+  // pages are left, else to the heading; the Retry of a failed read, gone once the read lands,
+  // hands it to the heading. Each is held from its press, made with the focus on it, until the
+  // reads settle, and only a focus left on the page moves: a reader who has put it elsewhere by
+  // then keeps it there. No such move scrolls Details, whose reader keeps their place (R3).
+  const pressed = useRef<
+    { readonly kind: "older"; readonly before: ReadonlySet<Element> } | { readonly kind: "retry" }
+  >(undefined);
   const loadOlder = useRef<HTMLButtonElement>(null);
   const failure = useRef<HTMLDivElement>(null);
+  const controlsOfList = () => [
+    ...(anchorRoot.current?.querySelectorAll<HTMLElement>("a[href], button:not(:disabled)") ?? []),
+  ];
   useLayoutEffect(() => {
-    const control = pressed.current;
-    if (control === undefined || log.isFetching) return;
+    const press = pressed.current;
+    if (press === undefined || log.isFetching) return;
     pressed.current = undefined;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    const drawn =
-      control === "older" ? loadOlder.current : failure.current?.querySelector("button");
-    const besides =
-      control === "older"
-        ? [
-            ...(anchorRoot.current?.querySelectorAll<HTMLElement>(
-              "a[href], button:not(:disabled)"
-            ) ?? []),
-          ].at(-1)
-        : undefined;
-    (drawn ?? besides ?? heading.current)?.focus();
+    const target =
+      press.kind === "older"
+        ? (controlsOfList().find((control) => !press.before.has(control)) ?? loadOlder.current)
+        : failure.current?.querySelector("button");
+    (target ?? heading.current)?.focus({ preventScroll: true });
   });
   // The history draws the log it holds whatever the last read's outcome (decision 98): a read
   // that fails once it holds the log - a refetch after an event, a later open of Details, the
@@ -341,7 +340,7 @@ export function IssueHistory({
         message={ANSWER_LINES.history_unreadable}
         onRetry={() => {
           if (failure.current?.contains(document.activeElement) === true) {
-            pressed.current = "retry";
+            pressed.current = { kind: "retry" };
           }
           void (log.isFetchNextPageError ? log.fetchNextPage() : log.refetch());
         }}
@@ -431,7 +430,9 @@ export function IssueHistory({
           className={`dispatch-inline-link self-start text-xs font-medium underline ${pageMutedText}`}
           disabled={log.isFetchingNextPage}
           onClick={(event) => {
-            if (document.activeElement === event.currentTarget) pressed.current = "older";
+            if (document.activeElement === event.currentTarget) {
+              pressed.current = { before: new Set(controlsOfList()), kind: "older" };
+            }
             void log.fetchNextPage();
           }}
           ref={loadOlder}
