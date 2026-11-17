@@ -39,8 +39,9 @@ type liveDispatch struct {
 	lists bool
 	mu    sync.Mutex
 	// issues is each issue as this board holds it, the daemon's writes applied.
-	issues   map[string]liveDispatchIssue
-	posted   []liveDispatchWrite
+	issues map[string]liveDispatchIssue
+	posted []liveDispatchWrite
+	// handoffs is each seeded handoff record by its id, as GET /api/v1/handoffs/{id} answers it.
 	handoffs map[string]map[string]any
 	// steps is each step record the daemon wrote, by its id, its fields as the writes left them;
 	// stepOrder is the ids in the order of their first write.
