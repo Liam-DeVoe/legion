@@ -2,7 +2,6 @@ package kvwatch_test
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -22,11 +21,10 @@ import (
 // kvwatch.ScanIdleTimeout, is kept apart (idles), since every read arms one: waits, asked and
 // fireIt count and fire the others, and fireIdle fires the last idle wait.
 type armed struct {
-	mu     sync.Mutex
-	delay  time.Duration
-	fires  []func()
-	delays []time.Duration
-	idles  []func()
+	mu    sync.Mutex
+	delay time.Duration
+	fires []func()
+	idles []func()
 }
 
 // afterFunc is the AfterFunc WithAfterFunc takes.
@@ -40,24 +38,8 @@ func (a *armed) afterFunc() kvwatch.AfterFunc {
 		}
 		a.delay = d
 		a.fires = append(a.fires, f)
-		a.delays = append(a.delays, d)
 		return (*armedTimer)(a)
 	}
-}
-
-// repairWaits is the index, among the waits the watcher armed (scan idle waits aside), of each wait
-// of the repair's delay, a minute, in the order the watcher armed them: the other waits a watcher
-// arms, such as a read's re-read, are not among them.
-func (a *armed) repairWaits() []int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var repairs []int
-	for i, d := range a.delays {
-		if d == time.Minute {
-			repairs = append(repairs, i)
-		}
-	}
-	return repairs
 }
 
 // waits reports how many waits the watcher armed, scan idle waits aside.
@@ -296,16 +278,17 @@ func TestAWatcherNothingRepairsLogsWhenItsMinutePasses(t *testing.T) {
 // the second stop's report: an ERROR saying no repair came within a minute of a stop moments
 // old, and the second wait, finding the stop reported, then said nothing when its minute passed.
 //
-// The test counts and fires the repair waits alone. The Rewatch's read can still be waiting past
-// its barrier when the test deletes the bucket again, and then fails and arms its 5 s re-read
-// before the stop is seen: a wait of the read's, not of a repair.
+// The test counts and fires the repair waits alone, those of a minute (pending.armed). The
+// Rewatch's read can still be waiting past its barrier when the test deletes the bucket again, and
+// then fails and arms its 5 s re-read before the stop is seen: a wait of the read's, not of a
+// repair.
 func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
-	arm := &armed{}
+	timers := &pending{}
 	logger, records := jsonLogger(t)
 	w := kvwatch.New("test cache", kv, newSeen(),
-		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(arm.afterFunc()), kvwatch.WithStreamProbeInterval(0))
+		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0))
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
 
@@ -318,18 +301,18 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	}
 	deleteTestBucket(t, js)
 	waitForStopWarns(t, records, 2)
-	repairs := arm.repairWaits()
+	repairs := timers.armed(time.Minute)
 	if len(repairs) != 2 {
-		t.Fatalf("two stops armed %d repair waits, want two: the waits armed were %v", len(repairs), arm.armedDelays())
+		t.Fatalf("two stops armed %d repair waits, want two", len(repairs))
 	}
 
 	// The repair cleared the first wait; its callback runs now, as one already started would.
-	arm.fireAt(t, repairs[0])
+	repairs[0].fire()
 	if errs := matching(records(), "ERROR", unrepairedErr); len(errs) != 0 {
 		t.Fatalf("the repaired stop's wait logged %d %q errors, want none: %v", len(errs), unrepairedErr, errs)
 	}
 
-	arm.fireAt(t, repairs[1])
+	repairs[1].fire()
 	errs := matching(records(), "ERROR", unrepairedErr)
 	if len(errs) != 1 {
 		t.Fatalf("the second stop's passed wait logged %d %q errors, want one: %v", len(errs), unrepairedErr, errs)
@@ -338,13 +321,6 @@ func TestAWaitARepairClearedReportsNotTheNextStop(t *testing.T) {
 	if reason, _ := errs[0]["reason"].(string); reason != want {
 		t.Fatalf("reason = %q, want %q", reason, want)
 	}
-}
-
-// armedDelays is the delay of every wait the watcher armed, scan idle waits aside, in order.
-func (a *armed) armedDelays() []time.Duration {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return slices.Clone(a.delays)
 }
 
 // A shutdown's own stop is neither a stop to report nor a repair to wait for: End retires the
