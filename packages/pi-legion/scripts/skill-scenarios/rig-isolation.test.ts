@@ -102,16 +102,18 @@ stagings.push(() => {
   for (const program of RIG_PROGRAMS)
     copyFileSync(path.join(import.meta.dir, program), path.join(path.dirname(rig), program));
   symlinkSync(path.join(root, "node_modules"), path.join(co, "node_modules"));
-  for (const lib of [
-    "rig.sh",
-    "loopback-dsn.sh",
-    "loopback-dsn.py",
-    "port-file.sh",
-    "held-port.py",
-  ]) {
-    mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
-    copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
-  }
+  // Every file of scripts/e2e/lib, read off the directory as RIG_PROGRAMS is, since rig.sh sources
+  // what it needs from there by name (rig.sh, nats-image.sh, the loopback and port helpers), and a
+  // list kept here fell short the day it began to source nats-image.sh. That one reads the hub's
+  // nats-server image out of packages/envoy/internal/testnats/nats.go, so that file comes too.
+  const libs = path.join(root, "scripts/e2e/lib");
+  mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
+  for (const entry of readdirSync(libs, { withFileTypes: true }))
+    if (entry.isFile())
+      copyFileSync(path.join(libs, entry.name), path.join(co, "scripts/e2e/lib", entry.name));
+  const natsGo = "packages/envoy/internal/testnats/nats.go";
+  mkdirSync(path.dirname(path.join(co, natsGo)), { recursive: true });
+  copyFileSync(path.join(root, natsGo), path.join(co, natsGo));
   mkdirSync(stub);
 });
 put(
