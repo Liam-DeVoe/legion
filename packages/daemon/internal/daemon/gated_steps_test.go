@@ -2,15 +2,20 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // A boot publishes the design-gate steps it is configured with onto the project's Dispatch row,
@@ -94,6 +99,26 @@ func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
 	err := (&outbox{}).execute(context.Background(), row)
 	if err == nil || err.Error() != "gated steps executor has no Dispatch client" {
 		t.Fatalf("execute without a Dispatch client = %v, want the refusal naming the missing client", err)
+	}
+}
+
+// A row whose write meets a Dispatch that has no route for it waits (wait.ErrWaiting), whatever
+// its kind: the rule is the outbox's execute, which each row's run passes, and the gated steps'
+// executor, which says nothing of the router's 404, waits all the same. The wait wraps nothing of
+// Dispatch's refusal, so no permanentRefusal ends the row on it; a handler's 404 NOT_FOUND "not
+// found", which a Dispatch that serves the route answers, stays the failure it was.
+func TestARowWhoseWriteMeetsNoRouteWaits(t *testing.T) {
+	row := mustOutboxRow(t, "LEGION", record.GatedStepsPublish{Project: "LEGION", Steps: []record.DesignStep{record.DesignStepSpec}}, time.Now())
+	noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/projects/LEGION/gated-steps"}
+	err := (&outbox{dispatch: &outboxDispatch{gatedStepsErr: noRoute}}).execute(context.Background(), row)
+	var refusal *dispatch.Error
+	if !errors.Is(err, wait.ErrWaiting) || errors.As(err, &refusal) || !strings.Contains(err.Error(), noRoute.Message) {
+		t.Fatalf("execute against a Dispatch with no route = %v, want a wait naming the router's answer and wrapping none of it", err)
+	}
+	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+	err = (&outbox{dispatch: &outboxDispatch{gatedStepsErr: notFound}}).execute(context.Background(), row)
+	if errors.Is(err, wait.ErrWaiting) || !errors.As(err, &refusal) {
+		t.Fatalf("execute against a handler's 404 = %v, want the failure Dispatch answered", err)
 	}
 }
 

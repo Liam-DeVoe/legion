@@ -170,27 +170,31 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 }
 
 // A Dispatch older than the plan route or the rating route answers its router's 404 under the
-// code NOT_FOUND, which is no refusal of the write: the row retries on its backoff until the
-// upgraded Dispatch takes it, which is what lets the daemon and Dispatch deploy in either order.
-// 404 ISSUE_NOT_FOUND, Dispatch holding no such issue, ends the row instead
-// (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and TestAStepRecordThatDispatchRefusesEndsWithAWarning
-// for the step record a rating is), and so does a 400 INVALID_JSON naming the rating
-// (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
-func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
+// code NOT_FOUND, "no route for …", which is no refusal of the write: the row waits rather than
+// fails, as every row does whose write meets that answer (the outbox's execute), until the upgraded
+// Dispatch takes it, which is what lets the daemon and Dispatch deploy in either order. Each run
+// keeps the row and logs `outbox row waits`, at INFO on its first run and DEBUG on the next, and no
+// ERROR line, and nothing says the write was dropped. 404 ISSUE_NOT_FOUND, Dispatch holding no such
+// issue, ends the row instead (TestAPlanRecordThatDispatchRefusesEndsWithAWarning, and
+// TestAStepRecordThatDispatchRefusesEndsWithAWarning for the step record a rating is), and so does
+// a 400 INVALID_JSON naming the rating (TestARatingThatDispatchRefusesByNameEndsWithAWarning).
+func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 	notFound := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for PUT /api/v1/issues/LEGION-1/…"}
 	for _, route := range []struct {
 		name    string
 		payload record.OutboxPayload
+		dropped string
 	}{
-		{name: "the plan route", payload: planRecordOf()},
-		{name: "the rating route", payload: ratingRecordOf()},
+		{name: "the plan route", payload: planRecordOf(), dropped: planRefusedLine},
+		{name: "the rating route", payload: ratingRecordOf(), dropped: stepRefusedLine},
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			rig := newRecordRig(t, route.payload, answersInTurn(notFound, notFound))
+			rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			for attempt := 1; attempt <= 2; attempt++ {
 				rig.run()
 				if left := outboxRowsOf(t, rig.pool, stepIssue); left != 1 {
-					t.Fatalf("rows left after attempt %d = %d, want the write retried", attempt, left)
+					t.Fatalf("rows left after attempt %d = %d, want the write kept for its next run", attempt, left)
 				}
 			}
 			rig.run()
@@ -201,8 +205,20 @@ func TestAnOlderDispatchsRefusalOfTheRatingRetries(t *testing.T) {
 			if len(plans)+len(steps) != 3 {
 				t.Fatalf("PUTs = %d plans and %d step writes, want three of one: two the old router refused, one stored", len(plans), len(steps))
 			}
-			if warned := loggedLines(t, rig.logs.String(), `"level":"WARN"`); len(warned) != 0 {
-				t.Fatalf("logged %d warnings, want none for a write that landed: %s", len(warned), rig.logs.String())
+			logs := rig.logs.String()
+			if errored := loggedLines(t, logs, `"level":"ERROR"`); len(errored) != 0 {
+				t.Errorf("logged %d ERROR lines while Dispatch had no route, want none: %s", len(errored), logs)
+			}
+			if dropped := loggedLines(t, logs, route.dropped); len(dropped) != 0 {
+				t.Errorf("logged the write dropped %d times, want never: %s", len(dropped), logs)
+			}
+			var levels []string
+			for _, line := range loggedLines(t, logs, `"msg":"outbox row waits"`) {
+				level, _ := line["level"].(string)
+				levels = append(levels, level)
+			}
+			if want := []string{"INFO", "DEBUG"}; !slices.Equal(levels, want) {
+				t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs)
 			}
 		})
 	}

@@ -166,9 +166,9 @@ func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
 // /api/v1/projects/{key}/gated-steps, as the daemon's own session, the actor every write of this
 // client carries. The list is always sent, empty for a deployment that gates nothing: Dispatch
 // refuses a body that names no list rather than read it as the empty one, so a nil slice would
-// be refused where it means the same thing. A Dispatch older than the route answers 404, which
-// the caller retries: the route arrives with the next server release, and nothing is lost by
-// waiting for it.
+// be refused where it means the same thing. A Dispatch older than the route answers its router's
+// 404 (NoRoute), which the outbox's row waits on: the route arrives with the next server release,
+// and nothing is lost by waiting for it.
 func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []string) error {
 	if steps == nil {
 		steps = []string{}
@@ -186,8 +186,8 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
-// retries until the server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
+// server release that has it.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -204,8 +204,8 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
 // body that names no list, and the empty list is the publication that removes every holder.
 // Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 under the
-// code NOT_FOUND, which the caller retries until the server release that has it.
+// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
@@ -225,8 +225,8 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 // and notifies nobody. Dispatch answers 400 STEP_INPUT for a value it will not take, 403
 // STEP_WRITER for any other writer, 404 ISSUE_NOT_FOUND for an issue it does not know and 409
 // STEP_OTHER_ISSUE for an id that is a record of another issue; a Dispatch older than the route
-// answers its router's 404 under the code NOT_FOUND, which the caller retries until the server
-// release that has it.
+// answers its router's 404 (NoRoute), which the outbox's row waits on until the server release that
+// has it.
 func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
 	path := "/api/v1/issues/" + url.PathEscape(key) + "/steps/" + url.PathEscape(id)
 	if write.PlanRating != nil {
@@ -244,8 +244,8 @@ func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrit
 // Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
 // PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
 // ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
-// of another issue; a Dispatch older than the route answers its router's 404 under the code
-// NOT_FOUND, which the caller retries until the server release that has it.
+// of another issue; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
 		PlanWrite: plan,
