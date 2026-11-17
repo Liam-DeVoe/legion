@@ -868,11 +868,15 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last.
-// The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
-// its phase word and version with the command that reads that version, the record the daemon
-// accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
-// whenever the completion reported one: the head the planner's, the implementer's, the tester's or
-// the reviewer's record names, and the commit retro and the merger stand on.
+// The handoff a phase ended with is a Dispatch handoff record on the issue. The line names it by
+// its phase word and the version the daemon accepted, with the command that reads that version,
+// because `Handoff commit:` and the verdict are that version's. It also names the command that
+// reads the phase's newest version, because a writer may record a correction after the daemon
+// accepted its record, and a reader given only the pinned command would never read it
+// (dispatch://INFRA-2980); where a commit is named too, the line says that head stands whatever a
+// later version names. A commit is named, as `Handoff commit:`, whenever the completion reported
+// one: the head the planner's, the implementer's, the tester's or the reviewer's record names, and
+// the commit retro and the merger stand on.
 // A handoff's verdict is always the tester's, since the daemon accepts one from no other role on
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
@@ -881,10 +885,13 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
+		text += fmt.Sprintf(" Handoff: %[1]s version %[2]d (dispatch handoff-read --issue %[3]s --phase %[1]s --version %[2]d); the newest version of that record: dispatch handoff-read --issue %[3]s --phase %[1]s. A version above %[2]d is a correction its writer recorded after the daemon accepted version %[2]d, so read it too.", word, handoff.HandoffVersion, issue.Key)
 	}
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
+		if handoff.HandoffRecord != "" {
+			text += " Where a later version names another head, the head this task names is still " + handoff.HandoffCommit + "."
+		}
 	}
 	if handoff.Verdict != "" {
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."

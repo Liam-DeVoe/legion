@@ -412,8 +412,10 @@ function handoffBody(issue: string, version: number, citesPlanVersion: number): 
  *  the staged tasks, so one change cannot make the row print a version the session was never
  *  told. The `Handoff:` sentence is the shape the daemon renders (task,
  *  packages/daemon/internal/workflow/effects.go): the phase's word, the version the daemon
- *  accepted, and the command that reads that version. Nothing else in the task names a plan
- *  version, and nothing in it says the plan can have moved. */
+ *  accepted, the command that reads that version, and the command that reads the record's newest
+ *  version, with the sentence saying a newer one is its writer's correction. Nothing else in the
+ *  task names a plan version, and nothing in it says the plan document `plan.md` can have moved:
+ *  the line's second command reads the `plan` handoff record, not the document. */
 function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): string {
   const steps =
     tasks === 1
@@ -431,7 +433,10 @@ function taskText(runDir: string, issue: string, title: string, tasks: 1 | 2): s
   return (
     `Continue ${title}. Issue: ${issue}. Phase: implementing.` +
     ` Handoff: plan version ${taskHandoffVersion}` +
-    ` (dispatch handoff-read --issue ${issue} --phase plan --version ${taskHandoffVersion}).` +
+    ` (dispatch handoff-read --issue ${issue} --phase plan --version ${taskHandoffVersion});` +
+    ` the newest version of that record: dispatch handoff-read --issue ${issue} --phase plan.` +
+    ` A version above ${taskHandoffVersion} is a correction its writer recorded after the daemon` +
+    ` accepted version ${taskHandoffVersion}, so read it too.` +
     ` This box carries no workspace, no jj and no GitHub for this issue, so your round is the` +
     ` plan's ${round}: ${steps.join(", then ")}.` +
     ` Record nothing with dispatch and open no pull request: the round ends when the ${files}` +

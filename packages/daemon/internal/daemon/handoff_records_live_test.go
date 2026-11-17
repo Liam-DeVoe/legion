@@ -369,7 +369,7 @@ func (r *handoffRecordsLive) a3Accepted() {
 // handoffs moved to Dispatch, is refused at the tester's completion 403
 // HANDOFF_SESSION_MISMATCH; the tester reads it with `dispatch handoff-read`, writes it again
 // under its own session, and completes; and the reviewer the pass starts is told that record in
-// its task, the version its command reads.
+// its task, the version its command reads, with the command that reads the phase's newest version.
 func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	t := r.t
 	tester := r.claimant(claim.RoleTester, r.a7, "ses_a7_tester")
@@ -422,7 +422,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", rewritten.version, r.a7, rewritten.version)
+	want := fmt.Sprintf("Handoff: test version %[1]d (dispatch handoff-read --issue %[2]s --phase test --version %[1]d); the newest version of that record: dispatch handoff-read --issue %[2]s --phase test. A version above %[1]d is a correction its writer recorded after the daemon accepted version %[1]d, so read it too.", rewritten.version, r.a7)
 	if !strings.Contains(task.Message, want) {
 		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
 	}
