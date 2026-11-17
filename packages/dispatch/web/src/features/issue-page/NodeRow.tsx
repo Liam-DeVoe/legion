@@ -47,6 +47,7 @@ import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { chipWords } from "./node-row-chip";
 import { NodeMarks } from "./node-states/NodeMarks";
+import { SettleAct } from "./node-states/SettleAct";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
@@ -63,6 +64,7 @@ import {
   nodeStateWord,
 } from "./page-words";
 import { documentWord, RowText } from "./RowText";
+import { isProposed } from "./tree-fold";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (dispatch://INFRA-1196 R1,
@@ -904,6 +906,7 @@ export function NodeOptions({
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer
  * is, and it carries a mark of its own (`data-row-copy`) rather than `data-row-act`, which names
  * the writer's acts alone. Its answer, copied or failed, is said after it in the page's words.
+ * Settle (`SettleAct`) carries `data-row-act` but needs no writer: a cookie proves a person.
  *
  * A press leaves the focus where it is until the action moves it to the line, as the row's other
  * controls do, so the press never lands on a row that moved under it. Each is out of the tab
@@ -958,6 +961,7 @@ export function RowActs({
           {label}
         </button>
       ))}
+      {isProposed(node) ? <SettleAct node={node} tabStops={tabStops} /> : null}
       {reference === undefined ? null : (
         <button
           className={`dispatch-inline-link ${pageRowAct}`}
