@@ -292,8 +292,8 @@ func TestProjectReleaseExitsOneWhenTheWaitEndsFirst(t *testing.T) {
 	d := releaseDaemon(t, &scriptedRelease{views: []api.ProjectReleaseResponse{running}})
 	began := time.Now()
 	code, out, errb := d.projectRelease(append(d.reach(), "--wait", "300ms")...)
-	if code != 1 || !strings.Contains(errb, "the release goes on in the daemon") {
-		t.Fatalf("legion project release --wait 300ms = %d, stderr %q; want 1 saying the release goes on", code, errb)
+	if code != 1 || !strings.Contains(errb, "the release goes on in the daemon") || !strings.Contains(errb, "the command's wait of 300ms ended") {
+		t.Fatalf("legion project release --wait 300ms = %d, stderr %q; want 1 naming the wait of 300ms and saying the release goes on", code, errb)
 	}
 	if took := time.Since(began); took > 5*time.Second {
 		t.Fatalf("the command took %s, want it ended by its --wait", took)

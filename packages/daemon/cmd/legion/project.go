@@ -69,27 +69,25 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	began := time.Now()
 	// The call is bounded from its start. Until the daemon names the release's bound, the bound
 	// the command was given stands in for it, and a bound the daemon chooses moves the end once
-	// the daemon has named it (waitUntil). A request that bound ends is printed as what it is: the
+	// the daemon has named it (waitUntil). A start that bound ends is printed as what it is: the
 	// daemon goes on with the release, which this bound never cancels, and the same command
-	// answers that release when it is run again.
+	// answers that release when it is run again. A dry run's start says that a dry run records
+	// and starts nothing.
 	c.until = waitUntil(began, *wait, *bound)
-	// Which end the sentence takes follows the answer and not the flag: a dry run the daemon
-	// answers with a release it already ran is followed as that release, and from then on a
-	// request the wait cuts says that release goes on.
-	following := false
-	c.waitEnded = func(method, url string) string {
-		ended := releaseGoesOn
-		if *dryRun && !following {
-			ended = "a dry run records and starts nothing"
-		}
-		return fmt.Sprintf("%s %s was not answered before the command's wait of %s ended; %s",
-			method, url, time.Since(began).Round(time.Second), ended)
-	}
 	request := api.ProjectReleaseRequest{DryRun: *dryRun}
 	if *bound > 0 {
 		request.Bound = bound.String()
 	}
-	release, answer, ok := releaseRequest(ctx, c, op, http.MethodPost, request)
+	release, answer, cut, ok := releaseRequest(ctx, c, op, http.MethodPost, request)
+	if cut {
+		ended := releaseGoesOn
+		if *dryRun {
+			ended = "a dry run records and starts nothing"
+		}
+		fmt.Fprintf(stderr, "%s: %s %s%s was not answered before the command's wait of %s ended; %s\n",
+			c.name, http.MethodPost, op.base, api.ProjectReleaseRoute, c.until.Sub(began).Round(time.Millisecond), ended)
+		return 1
+	}
 	if !ok {
 		return 1
 	}
@@ -99,7 +97,6 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	if release.DryRun {
 		return printProjectRelease(c, release, answer, *asJSON)
 	}
-	following = true
 	if *dryRun {
 		fmt.Fprintf(stderr, "%s: the daemon already ran release %d in this process, so it answered the dry run with that release; it is read as the release it is\n",
 			c.name, release.ID)
@@ -107,13 +104,19 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	if *wait == 0 {
 		c.until = waitUntil(began, 0, release.BoundAt.Sub(release.StartedAt))
 	}
+	// Once the daemon has answered with a release, the end of the wait prints that release as the
+	// command last read it, and says it goes on, whether the wait ends between two reads or
+	// inside one: a read the wait cuts loses nothing the command already holds.
+	waitEndedFirst := func() int {
+		printProjectRelease(c, release, answer, *asJSON)
+		fmt.Fprintf(stderr, "%s: the command's wait of %s ended before release %d finished; %s\n",
+			c.name, c.until.Sub(began).Round(time.Millisecond), release.ID, releaseGoesOn)
+		return 1
+	}
 	for release.FinishedAt == nil && release.EndedAt == nil {
 		left := time.Until(c.until)
 		if left <= 0 {
-			printProjectRelease(c, release, answer, *asJSON)
-			fmt.Fprintf(stderr, "%s: the command's wait of %s ended before release %d finished; %s\n",
-				c.name, time.Since(began).Round(time.Second), release.ID, releaseGoesOn)
-			return 1
+			return waitEndedFirst()
 		}
 		select {
 		case <-ctx.Done():
@@ -123,28 +126,33 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 		if time.Now().After(c.until) {
 			continue
 		}
-		if release, answer, ok = releaseRequest(ctx, c, op, http.MethodGet, nil); !ok {
+		read, readAnswer, cut, ok := releaseRequest(ctx, c, op, http.MethodGet, nil)
+		if cut {
+			return waitEndedFirst()
+		}
+		if !ok {
 			return 1
 		}
+		release, answer = read, readAnswer
 	}
 	return printProjectRelease(c, release, answer, *asJSON)
 }
 
 // releaseRequest makes one request of the release's route under the command's bound
-// (operatorCall.request) and answers the release the daemon served, decoded, with its body as
-// served. A refusal, a request the bound ended and an answer that cannot be read are each printed
-// and answer false.
-func releaseRequest(ctx context.Context, c *operatorCall, op operator, method string, body any) (api.ProjectReleaseResponse, []byte, bool) {
-	_, answer, ok := c.request(ctx, op, method, api.ProjectReleaseRoute, body)
+// (operatorCall.requestCut) and answers the release the daemon served, decoded, with its body as
+// served. A refusal and an answer that cannot be read are each printed and answer false. A request
+// the bound ended answers false with cut true and is not printed: the command says what that end
+// means, which depends on what the daemon has already answered.
+func releaseRequest(ctx context.Context, c *operatorCall, op operator, method string, body any) (release api.ProjectReleaseResponse, answer []byte, cut, ok bool) {
+	_, answer, cut, ok = c.requestCut(ctx, op, method, api.ProjectReleaseRoute, body)
 	if !ok {
-		return api.ProjectReleaseResponse{}, nil, false
+		return api.ProjectReleaseResponse{}, nil, cut, false
 	}
-	var release api.ProjectReleaseResponse
 	if err := decodeAnswer(answer, &release); err != nil {
 		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name, op.base, api.ProjectReleaseRoute, err)
-		return api.ProjectReleaseResponse{}, nil, false
+		return api.ProjectReleaseResponse{}, nil, false, false
 	}
-	return release, answer, true
+	return release, answer, false, true
 }
 
 // waitUntil is when the command's call ends: --wait from its start when one was given, and

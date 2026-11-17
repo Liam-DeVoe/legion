@@ -5525,6 +5525,7 @@ A claim that failed or retired during the release names that state and ends `(th
 When the release could not read the claims at its end, each claim's line says that how the claim stands is not known, and names the error.
 The command exits 0 once the release finished and left no Sandbox of the project.
 It exits 1 when the release left a Sandbox, stopped short, or was ended by a boot before it finished, when the daemon refused, and when `--wait` (by default the bound plus 30 minutes) ended first, which it says, since the release goes on in the daemon.
+When the wait ends after the daemon answered with the release, between two reads or inside one, the command prints the release as it last read it.
 A release that stopped short names why (`result.failure`), such as a list of the project's Sandboxes that it could not read, and still has a line for each claim of the project it was to stop.
 A pod deleted with work lost does not change the exit code.
 `--dry-run` reads the workspaces as the release would and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
