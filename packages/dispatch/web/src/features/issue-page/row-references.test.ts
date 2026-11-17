@@ -112,3 +112,47 @@ test("the pass links what painted words cite, and names it again when the names 
   linkRowReferences(root, NAMES);
   expect(links()).toHaveLength(1);
 });
+
+// dispatch://INFRA-1196 decision 62: a short reference two or more targets carry the id of is
+// answered ambiguous, and drawn as written with no link, as the tree's chip draws it. A row read
+// only the names, which hold no name for it, so it linked the reference and drew it as its short
+// form, which names no one target.
+const AMBIGUOUS = "dispatch://CORE-1/comment/c0b271c7";
+
+test("a reference the read answered ambiguous is no reference a row links", () => {
+  const text = `see ${AMBIGUOUS} and dispatch://CORE-7`;
+  expect(rowReferences(text, []).map((one) => one.reference)).toEqual([
+    AMBIGUOUS,
+    "dispatch://CORE-7",
+  ]);
+  expect(rowReferences(text, [], new Set([AMBIGUOUS])).map((one) => one.reference)).toEqual([
+    "dispatch://CORE-7",
+  ]);
+});
+
+test("the pass draws an ambiguous reference as written, and a link it made for one as written", () => {
+  const painted = `<p>See ${AMBIGUOUS} and dispatch://CORE-7 today</p>`;
+  const drawn = `See ${AMBIGUOUS} and CORE-7 The header draws the approval of each step today`;
+  const linked = (root: HTMLElement) =>
+    [...root.querySelectorAll("a[data-row-reference]")].map((link) =>
+      link.getAttribute("data-row-reference")
+    );
+  const root = document.createElement("div");
+  root.innerHTML = painted;
+  linkRowReferences(root, NAMES, new Set([AMBIGUOUS]));
+  expect(linked(root)).toEqual(["dispatch://CORE-7"]);
+  expect(root.textContent).toBe(drawn);
+
+  // A pass before the read answered linked it, and the pass after puts the words back.
+  const earlier = document.createElement("div");
+  earlier.innerHTML = painted;
+  linkRowReferences(earlier, NAMES);
+  expect(linked(earlier)).toEqual([AMBIGUOUS, "dispatch://CORE-7"]);
+  linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
+  expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
+  expect(earlier.textContent).toBe(drawn);
+  // A second pass over the same words finds nothing to do.
+  linkRowReferences(earlier, NAMES, new Set([AMBIGUOUS]));
+  expect(linked(earlier)).toEqual(["dispatch://CORE-7"]);
+  expect(earlier.textContent).toBe(drawn);
+});
