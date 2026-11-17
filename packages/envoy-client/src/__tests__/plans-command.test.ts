@@ -198,6 +198,35 @@ describe("dispatch plans", () => {
     ]);
   });
 
+  // JSON escapes each character below U+0020, so a line feed in a reason stays on the line. It
+  // leaves U+0085, U+2028 and U+2029 as they are, and a reader that splits lines the Unicode way
+  // (Python's `str.splitlines`, for one) breaks the issue's line at each, so each prints escaped.
+  test("a reason holding U+0085, U+2028 or U+2029 prints it escaped, the same JSON string", async () => {
+    for (const [character, escaped] of [
+      ["\u0085", "\\u0085"],
+      ["\u2028", "\\u2028"],
+      ["\u2029", "\\u2029"],
+    ] as const) {
+      const reason = `The plan fit.${character}The review did not.`;
+      const rating = {
+        rating: 3,
+        reason,
+        step_id: "4d5e6f7a-8b9c-5d0e-8f1a-3b4c5d6e7f80",
+        ended_at: "2026-11-14T07:50:00Z",
+      };
+      const answer = { project: "INFRA", issues: [{ ...neverRan, ratings: [rating] }] };
+
+      const result = await readPlans({ project: "INFRA" }, answering([], answer));
+
+      const printed = `"The plan fit.${escaped}The review did not."`;
+      expect(result.text.split("\n"), escaped).toEqual([
+        "INFRA: 1 finished issues",
+        `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0`,
+      ]);
+      expect(JSON.parse(printed), escaped).toBe(reason);
+    }
+  });
+
   // Dispatch answers newest closed first. Here that order is no order of the keys, by text or by
   // number, either way up, so a command that sorted the issues by key would print another order.
   test("the issues print in the order Dispatch answers them, newest closed first, not by key", async () => {

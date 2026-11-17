@@ -11,11 +11,26 @@ function planText(plan: PlanRecord | null): string {
   return `plan ${plan.source} (${tasks.length} tasks: ${first.length === 0 ? "-" : first.join(" ")})`;
 }
 
-/** Each retro's rating with its reason, in the order the retros ran. The reason is a JSON string,
- *  so a quotation mark or a line break in it keeps the issue on one line. */
+/** The characters other than a line feed and a carriage return that a reader splitting lines the
+ *  Unicode way breaks a line at, and JSON leaves as they are: NEXT LINE, LINE SEPARATOR and
+ *  PARAGRAPH SEPARATOR. (JSON escapes every other one, each below U+0020.) */
+const unescapedLineBreaks = /[\u0085\u2028\u2029]/g;
+
+/** `text` as a JSON string that holds no line break: JSON's own escapes, and the `\u` escape of
+ *  each of `unescapedLineBreaks`, which reads back as the same string. */
+function oneLineJson(text: string): string {
+  return JSON.stringify(text).replace(
+    unescapedLineBreaks,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`
+  );
+}
+
+/** Each retro's rating with its reason, in the order the retros ran. The reason is a JSON string
+ *  with no line break in it, so a quotation mark or a line break of any kind in the reason keeps
+ *  the issue on one line. */
 function ratingsText(ratings: readonly PlanRating[]): string {
   if (ratings.length === 0) return "ratings none";
-  return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${JSON.stringify(rating.reason)}`).join(", ")}`;
+  return `ratings ${ratings.map((rating) => `${rating.rating}/5 ${oneLineJson(rating.reason)}`).join(", ")}`;
 }
 
 /** The issue's time in whole hours and the minutes left, rounded down, or `-` when Dispatch knows
