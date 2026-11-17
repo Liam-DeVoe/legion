@@ -16,13 +16,18 @@ import (
 // An issue's step records are the record of each run of each step of its workflow, which the
 // Legion daemon of the issue's project writes twice, at the run's start and at its end, under one
 // id it derives for the run (PUT /api/v1/issues/{key}/steps/{id}), and which every reader of the
-// project reads (GET /api/v1/issues/{key}/steps). Both live in internal/dispatch/workflowstore,
-// the one writer of the nodes and tuples that hold them.
+// project reads (GET /api/v1/issues/{key}/steps). A retro's record also takes the rating the agent
+// that did the retro gave the plan, and its reason, through a route of its own
+// (PUT /api/v1/issues/{key}/steps/{id}/rating): decodeJSON ignores a member a body's route does
+// not declare, so a rating sent as a member of the step write to a Dispatch older than it would be
+// dropped in silence, where a route that Dispatch does not serve answers its router's NOT_FOUND,
+// which the daemon sends again until Dispatch serves it. All three live in
+// internal/dispatch/workflowstore, the one writer of the nodes and tuples that hold them.
 //
-// The write is the daemon's and no one else's: a person, an agent's session and the daemon of
+// The writes are the daemon's and no one else's: a person, an agent's session and the daemon of
 // another project are refused 403 STEP_WRITER, so a record says what that deployment's daemon
-// saw. Like the design gates' publish it appends no issue event and notifies nobody, since an
-// event would feed the daemon's intake with facts it caused; and it reads the issue with no open
+// saw. Like the design gates' publish they append no issue event and notify nobody, since an
+// event would feed the daemon's intake with facts it caused; and they read the issue with no open
 // check, because the merge that closes an issue ends a step of it.
 
 // The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND.
@@ -58,6 +63,15 @@ type stepRecordInput struct {
 	Report     *string      `json:"report"`
 }
 
+// stepRatingInput is the body PUT /api/v1/issues/{key}/steps/{id}/rating takes: the step write's
+// body, which makes the retro's record where its start and end have not landed yet, and the
+// rating with its reason, both required.
+type stepRatingInput struct {
+	stepRecordInput
+	Rating       *int    `json:"rating" required:"true"`
+	RatingReason *string `json:"rating_reason" required:"true"`
+}
+
 // putIssueStep writes one run of one step of an issue and answers its record as it stands after
 // the write, with the attempt the read gives it. A write sets each field the record does not hold
 // yet and leaves every field it holds, so a start and an end land in either order and a write
@@ -68,18 +82,43 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	s.writeIssueStep(w, r, workflowstore.StepWrite{
+		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
+		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
+		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
+		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
+	}, input.Actor, false)
+}
+
+// putIssueStepRating writes the rating of a retro's run, with every field of the run the body
+// states, as putIssueStep writes them: the rating and its reason are set once, and the record is
+// made where the retro's start and end have not landed yet. The record must be a retro's.
+func (s *server) putIssueStepRating(w http.ResponseWriter, r *http.Request) {
+	var input stepRatingInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeIssueStep(w, r, workflowstore.StepWrite{
+		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
+		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
+		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
+		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
+		Rating: input.Rating, RatingReason: input.RatingReason,
+	}, input.Actor, true)
+}
+
+// writeIssueStep is the one write of a step record behind both routes: the writer and the issue
+// are checked, write (its ID, Issue and Project filled here from the path and the issue row) is
+// written, and the record is answered as the read lists it. rates is the rating route, which
+// refuses a write that names no rating.
+func (s *server) writeIssueStep(w http.ResponseWriter, r *http.Request, write workflowstore.StepWrite, supplied *model.Actor, rates bool) {
+	actor, ok := s.requireActor(w, r, supplied)
 	if !ok {
 		return
 	}
 	key := r.PathValue("key")
-	// The rule of the daemon's own DaemonSession (packages/daemon/internal/dispatch/client.go):
-	// the session is legion-daemon: and the part of the key before its first hyphen.
-	project, _, _ := strings.Cut(key, "-")
-	writer := legionDaemonSessionPrefix + project
-	if actor.Kind != "session" || actor.ID != writer {
-		writeError(w, codeStepWriter, http.StatusForbidden,
-			fmt.Sprintf("only the session %s writes a step record of %s", writer, key))
+	if !requireIssueDaemon(w, actor, key, "a step record") {
 		return
 	}
 
@@ -89,28 +128,17 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// The issue is read under the key-share lock and with no open check, as the design gates'
-	// publish reads it, and refused with a code of its own rather than loadIssue's NOT_FOUND: the
-	// daemon must tell a Dispatch that holds no such issue from one that does not serve this
-	// route, whose router answers NOT_FOUND.
-	var issue, issueProject string
-	if err := tx.QueryRow(r.Context(), `
-		select key, project_key from issues where key = $1 for key share
-	`, key).Scan(&issue, &issueProject); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
-			return
-		}
-		s.writeHandlerError(w, err)
+	issue, project, ok := s.lockRecordedIssue(w, r, tx, key)
+	if !ok {
 		return
 	}
-	written, err := workflowstore.PutStep(r.Context(), tx, workflowstore.StepWrite{
-		ID: r.PathValue("id"), Issue: issue, Project: &issueProject,
-		Task: input.Task, Kind: input.Kind, Role: input.Role, Type: input.Type, Agent: input.Agent,
-		Session: input.Session, Model: input.Model, Result: input.Result, Report: input.Report,
-		Generation: input.Generation, Place: input.Step, ReturnedTo: input.ReturnedTo,
-		StartedAt: input.StartedAt, EndedAt: input.EndedAt,
-	}, actor, time.Now())
+	if rates && write.Rating == nil {
+		writeError(w, codeStepInput, http.StatusBadRequest,
+			"rating is required: the rating route writes a retro's rating, 1 to 5, with its rating_reason")
+		return
+	}
+	write.ID, write.Issue, write.Project = r.PathValue("id"), issue, &project
+	written, err := workflowstore.PutStep(r.Context(), tx, write, actor, time.Now())
 	switch {
 	case errors.Is(err, workflowstore.ErrStepInput):
 		writeError(w, codeStepInput, http.StatusBadRequest, err.Error())
@@ -142,6 +170,41 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, record)
 }
 
+// requireIssueDaemon answers whether actor is the writer of the records of the issue key: the
+// session of its project's Legion daemon, by the rule of the daemon's own DaemonSession
+// (packages/daemon/internal/dispatch/client.go), legion-daemon: and the part of the key before
+// its first hyphen. It refuses any other writer 403 STEP_WRITER, naming what record and whose.
+func requireIssueDaemon(w http.ResponseWriter, actor model.Actor, key, record string) bool {
+	project, _, _ := strings.Cut(key, "-")
+	writer := legionDaemonSessionPrefix + project
+	if actor.Kind != "session" || actor.ID != writer {
+		writeError(w, codeStepWriter, http.StatusForbidden,
+			fmt.Sprintf("only the session %s writes %s of %s", writer, record, key))
+		return false
+	}
+	return true
+}
+
+// lockRecordedIssue reads the issue a record is written to, under the key-share lock and with no
+// open check, as the design gates' publish reads it, and answers its key and project. An issue
+// Dispatch does not hold is refused with a code of its own rather than loadIssue's NOT_FOUND: the
+// daemon must tell a Dispatch that holds no such issue from one that does not serve the route,
+// whose router answers NOT_FOUND.
+func (s *server) lockRecordedIssue(w http.ResponseWriter, r *http.Request, tx pgx.Tx, key string) (string, string, bool) {
+	var issue, project string
+	if err := tx.QueryRow(r.Context(), `
+		select key, project_key from issues where key = $1 for key share
+	`, key).Scan(&issue, &project); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
+			return "", "", false
+		}
+		s.writeHandlerError(w, err)
+		return "", "", false
+	}
+	return issue, project, true
+}
+
 // listIssueSteps is every run of every step of one issue, task by task in the order of each
 // task's first run: GET /api/v1/issues/{key}/steps. It reads as GET
 // /api/v1/issues/{key}/handoffs does: a closed issue's runs as an open one's, and a key no issue
@@ -170,8 +233,8 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, read)
 }
 
-// stepRecord is a run as the routes answer it: a ReturnedTo of 0 and an empty report are a run
-// that has none, which the answer carries as null.
+// stepRecord is a run as the routes answer it: a ReturnedTo of 0, an empty report and a Rating of
+// 0 are a run that has none, which the answer carries as null.
 func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	record := model.StepRecord{
 		ID: step.ID, Issue: step.Issue, Task: step.Task, Step: step.Place, Kind: step.Kind,
@@ -186,6 +249,10 @@ func stepRecord(step workflowstore.StepRead) model.StepRecord {
 	if step.Report != "" {
 		report := step.Report
 		record.Report = &report
+	}
+	if step.Rating != 0 {
+		rating, reason := step.Rating, step.RatingReason
+		record.Rating, record.RatingReason = &rating, &reason
 	}
 	return record
 }
