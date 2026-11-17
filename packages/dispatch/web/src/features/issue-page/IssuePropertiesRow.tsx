@@ -37,6 +37,7 @@ import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { wordsOf } from "../refs/tree-fragment";
+import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
@@ -163,9 +164,9 @@ export function IssuePropertiesRow({
       navigate(path, { replace: pathname === path, state: press });
       return;
     }
-    const control = [
-      ...(line.current?.querySelectorAll<HTMLElement>("[data-approval-artifact]") ?? []),
-    ].find((found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? ""));
+    const control = [...(line.current?.querySelectorAll<HTMLElement>(APPROVAL_CHIP) ?? [])].find(
+      (found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? "")
+    );
     control?.focus();
   };
 

@@ -2521,12 +2521,12 @@ test("a change request sent from the header leaves the focus in the header", asy
   });
 });
 
-// Approve pressed by Enter on the header's chip is disabled while its review is written, which
-// drops the focus to the page's body, and the approval then takes it away. The focus goes to the
-// chip of the document the reader approved, not to another control of the header, both while the
-// review is written and once the approval lands. The review's write is held open with a route so
-// the row can read the focus while Approve is disabled: once the write lands, Approve takes the
-// focus back and the chip's own restore puts it on the chip, wherever the header had put it.
+// Approve pressed by Enter on the header's chip keeps the focus while its review is written:
+// it is `aria-disabled` then and a press of it does nothing, so nothing moves the focus off it
+// (decision 223). Once the approval is read the header draws no Approve, and the focus goes to
+// the chip of the document the reader approved, not to another control of the header. The
+// review's write is held open with a route so the row can read the focus while Approve refuses
+// a press.
 test("Approve by Enter on the header's chip leaves the focus on the approved chip", async ({
   browser,
 }) => {
@@ -2546,12 +2546,15 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
     await expect(approve).toBeFocused();
     await page.keyboard.press("Enter");
     await expect.poll(() => review.posts(), { message: "Approve by Enter sent no review" }).toBe(1);
-    await expect(approve, "Approve is not disabled while its review is written").toBeDisabled();
+    await expect(
+      approve,
+      "Approve is not aria-disabled while its review is written"
+    ).toHaveAttribute("aria-disabled", "true");
     await framesDrawn(page, 2);
     const written = await focusNow(page);
     await expect(
-      chip,
-      `while the review was written the focus was on ${written.what}, not on the spec's chip`
+      approve,
+      `while the review was written the focus was on ${written.what}, not on Approve`
     ).toBeFocused();
 
     review.release();
@@ -2611,6 +2614,64 @@ test("a change request sent from the header's Request changes leaves the focus o
   });
 });
 
+// A change request sent from the header's Request changes after its request was answered while
+// the dialog was open: the header drew neither action by then, so the dialog has no Request
+// changes to give the focus back to as it shuts, and the focus falls from the dialog's own
+// Request changes, which reads "Submitting…" while the change request is written. The focus goes
+// to the chip of the document the reader reviewed. Bob answers the request through the API while
+// the dialog is open; Dispatch then takes the change request as a review with no request open.
+test("a change request sent after the header's actions went leaves the focus on its chip", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const requestChanges = header.getByRole("button", { exact: true, name: "Request changes" });
+    await expect(
+      requestChanges,
+      "the chip carries no Request changes while its request waits"
+    ).toBeVisible();
+    await requestChanges.focus();
+    await expect(requestChanges).toBeFocused();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    await expect(dialog, "Enter on Request changes opened no dialog").toBeVisible();
+    await page.keyboard.type("One change.");
+
+    await reviewArtifact(seeded.specArtifactId, { state: "approved" }, { login: "bob" });
+    // The dialog stands inside the header, so its own Request changes is one of the header's
+    // buttons: the chip's actions are the header's actions outside every dialog.
+    await expect(
+      reviewActions(header).and(
+        header.locator('xpath=.//button[not(ancestor::*[@role="dialog"])]')
+      ),
+      "the header still draws an action once bob answered the request"
+    ).toHaveCount(0);
+    await expect(dialog, "bob's answer shut the Request changes dialog").toBeVisible();
+
+    const submit = dialog.getByRole("button", { exact: true, name: "Request changes" });
+    await submit.focus();
+    await expect(submit).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(dialog, "the change request left its dialog open").toHaveCount(0);
+    await expect
+      .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+        message: "the change request was not recorded",
+      })
+      .toBe("changes_requested");
+    await expect(reviewActions(header), "the header draws an action again").toHaveCount(0);
+    await framesDrawn(page, 2);
+    const focus = await focusNow(page);
+    await expect(
+      approvalChip(page, seeded.specArtifactId),
+      `the change request left the focus on ${focus.what}, not on the spec's chip`
+    ).toBeFocused();
+  });
+});
+
 // Approve pressed by Enter, and then by Enter again after its review has landed but before the
 // page has drawn the approval it reads back, sends one review: a shared control's write is out,
 // and a press of it does nothing, until the new read is drawn (decision 223). The reads that
@@ -2624,10 +2685,6 @@ test("a change request sent from the header's Request changes leaves the focus o
 test("Approve pressed again by Enter before its approval is drawn sends no second review", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "Approve still sends a second review in the gap until the shared controls' sweep (decision 223) is under this branch"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
@@ -2696,10 +2753,6 @@ test("Approve pressed again by Enter before its approval is drawn sends no secon
 test("Request changes in its dialog pressed again by Enter before the change request is drawn sends no second review", async ({
   browser,
 }) => {
-  test.fail(
-    true,
-    "The dialog shuts when its review lands and the header's Request changes opens it again in the gap until the shared controls' sweep (decision 223) is under this branch"
-  );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await requestApproval(seeded.specArtifactId, { summary: "Read it." });
@@ -2789,7 +2842,7 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
 }) => {
   test.fail(
     true,
-    "Copy issue key writes to the clipboard again while its write is out until the shared controls' sweep (decision 223) is under this branch"
+    "Copy issue key writes to the clipboard again while its write is out: the shared copy button keeps no press guard yet (decision 223)"
   );
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {

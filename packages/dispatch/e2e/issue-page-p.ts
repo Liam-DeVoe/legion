@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueDecisions } from "../web/src/api/types";
+import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import {
   baseUrl,
@@ -521,28 +522,34 @@ export function undersizedTargets(page: Page): Promise<string[]> {
 }
 
 /** The controls the header holds to 24 px tall at every width: the status, the priority, the
- *  assignee, the count, Approve, Request changes, the labels' count and the control that copies
- *  the key, 24 by 24 px as row one's other controls are, each as `<name>: <height>` where it is
- *  drawn shorter. */
+ *  assignee, the count, Approve (`Approve v3` on a stale approval), Request changes, the labels'
+ *  count and the control that copies the key, 24 by 24 px as row one's other controls are, each
+ *  as `<name>: <height>` where it is drawn shorter. The two actions are the buttons whose words
+ *  are an action's (`ACTION_WORDS`), the patterns the header itself finds them by. */
 export function shortControls(page: Page, key: string): Promise<string[]> {
-  return issueHeader(page).evaluate((header, key) => {
-    const named: [string, Element | null][] = [
-      ["the status", header.querySelector('select[aria-label="Status"]')],
-      ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
-      ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
-      ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
-      ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
-      ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
-      ...[...header.querySelectorAll("button")]
-        .filter((button) => /^(Approve|Request changes)$/.test((button.textContent ?? "").trim()))
-        .map((button): [string, Element] => [(button.textContent ?? "").trim(), button]),
-    ];
-    return named
-      .filter(([, control]) => control !== null)
-      .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
-      .filter(([, height]) => height < 24 - 0.5)
-      .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
-  }, key);
+  const actionWords = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
+  return issueHeader(page).evaluate(
+    (header, { actionWords, key }) => {
+      const actions = actionWords.map((source) => new RegExp(source));
+      const named: [string, Element | null][] = [
+        ["the status", header.querySelector('select[aria-label="Status"]')],
+        ["the priority", header.querySelector(`select[aria-label="Priority of ${key}"]`)],
+        ["the assignee", header.querySelector(`select[aria-label="Assignee of ${key}"]`)],
+        ["the count", header.querySelector('button[data-testid="issue-whose-turn"]')],
+        ["the labels' count", header.querySelector('[data-testid="issue-labels-left"]')],
+        ["Copy issue key", header.querySelector('button[aria-label^="Copy issue key "]')],
+        ...[...header.querySelectorAll("button")]
+          .map((button): [string, Element] => [(button.textContent ?? "").trim(), button])
+          .filter(([words]) => actions.some((action) => action.test(words))),
+      ];
+      return named
+        .filter(([, control]) => control !== null)
+        .map(([name, control]) => [name, control?.getBoundingClientRect().height ?? 0] as const)
+        .filter(([, height]) => height < 24 - 0.5)
+        .map(([name, height]) => `${name}: ${height.toFixed(1)} px`);
+    },
+    { actionWords, key }
+  );
 }
 
 /** The header as its height limit measures it: from the top of the header to the top of the

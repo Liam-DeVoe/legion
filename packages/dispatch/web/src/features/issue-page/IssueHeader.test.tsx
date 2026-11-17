@@ -594,8 +594,8 @@ test("the header lets a human move a Todo issue to In progress", async () => {
 
 // `a` and Shift+R are the approval's only with the focus on the chip of a document whose request
 // waits on the reader, or on one of its two actions, and only while the action each presses takes
-// a press. A stale approval's Approve says its version; while the review is written Approve is
-// disabled and Request changes refuses a press, so neither key applies then.
+// a press. A stale approval's Approve says its version; while the review is written Approve and
+// Request changes are `aria-disabled` and refuse a press, so neither key applies then.
 test("the approval chip's keys press its own actions, and only while those take a press", async () => {
   const user = userEvent.setup();
   const restore = stubHeader({
@@ -652,7 +652,7 @@ test("the approval chip's keys press its own actions, and only while those take 
       { state: "approved" },
       keyedAttempt
     );
-    await waitFor(() => expect(approve).toBeDisabled());
+    await waitFor(() => expect(approve).toHaveAttribute("aria-disabled", "true"));
     expect(requestChanges).toHaveAttribute("aria-disabled", "true");
     expect(bothApply()).toEqual([false, false]);
     await user.keyboard("a");
