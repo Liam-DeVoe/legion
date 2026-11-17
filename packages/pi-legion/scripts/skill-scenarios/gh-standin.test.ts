@@ -2703,6 +2703,64 @@ test("a thread's comment carries its databaseId and its REST comment, and a REST
   expect(comments().out.split("\n")).toHaveLength(2);
 }, 60_000);
 
+// GitHub's "Update a review for a pull request" (`PUT /repos/{owner}/{repo}/pulls/{pull_number}/
+// reviews/{review_id}`, `body` required) changes the review's body and answers the review itself:
+// the same id, state and commit. A write to an endpoint GitHub does not serve is its 404. Measured
+// in INFRA-764 round 25 (runs/1e2a0aeced4b, threads-closed-text-fixes-head-4, calls.jsonl:23): the
+// reviewer's `gh api --method PUT repos/fernbrook/widgets/pulls/1001/reviews/5002 --input u.json`
+// with a new body was answered `{"id":6001,"state":null,"commit_id":null}` with exit 0 by the
+// catch-all write route, the review kept its old body, and the agent wrote "the PUT returned id
+// 6001 but doesn't appear in the list, which suggests it didn't actually change 5002's body in
+// this harness". Catches: a review update answered with an id of no review, a body that does not
+// change, a review GitHub has not got answered 200, and any write the world does not model
+// answered as a success rather than refused.
+test("a review update changes that review's body and answers it, and a write GitHub does not serve is its 404", () => {
+  const dir = worldDir("review_world");
+  const review = () =>
+    ghCall(
+      dir,
+      "api",
+      "repos/example/widgets/pulls/1001/reviews/4001",
+      "--jq",
+      "[.id, .state, .commit_id, .body]"
+    );
+  const before = review();
+  expect(before.code).toBe(0);
+  const [id, state, commit] = JSON.parse(before.out) as [number, string, string, string];
+  expect(id).toBe(4001);
+  const body = "Approving the fix head. Both threads are resolved.";
+  const updated = ghCall(
+    dir,
+    ...["api", "--method", "PUT", "repos/example/widgets/pulls/1001/reviews/4001"],
+    ...["-f", `body=${body}`, "--jq", "[.id, .state, .commit_id, .body]"]
+  );
+  expect([updated.code, JSON.parse(updated.out || "null")]).toEqual([
+    0,
+    [4001, state, commit, body],
+  ]);
+  expect(JSON.parse(review().out)).toEqual([4001, state, commit, body]);
+  // A review GitHub has not got takes no update.
+  const missing = ghCall(
+    dir,
+    ...["api", "--method", "PUT", "repos/example/widgets/pulls/1001/reviews/4999"],
+    ...["-f", "body=x"]
+  );
+  expect([missing.code, missing.err]).toEqual([1, "gh: Not Found (HTTP 404)\n"]);
+  // A write to an endpoint GitHub does not serve is refused, in each verb a write is made with.
+  for (const method of ["POST", "PATCH", "PUT"]) {
+    const unserved = ghCall(
+      dir,
+      ...["api", "--method", method, "repos/example/widgets/pulls/1001/no-such-endpoint"],
+      ...["-f", "body=x"]
+    );
+    expect([method, unserved.code, unserved.err]).toEqual([
+      method,
+      1,
+      "gh: Not Found (HTTP 404)\n",
+    ]);
+  }
+}, 60_000);
+
 // GitHub answers `gh api repos/<o>/<r>/contents/<path>?ref=<sha>` with the file at that commit:
 // its own bytes under the raw media type, and GitHub's JSON of it otherwise. The first call is
 // the tester's, word for word but the head (INFRA-764 round 24,
