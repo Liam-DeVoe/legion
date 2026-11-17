@@ -295,3 +295,41 @@ func TestAPlanOfAnEarlierOwnerIsNotTaken(t *testing.T) {
 		t.Fatalf("facts = %#v, want %#v: each plan naming the owner that gave it", got, want)
 	}
 }
+
+func stopTask(h *harness, grant, issue, task string) *httptest.ResponseRecorder {
+	return h.request(http.MethodPost, "/legion/v1/tasks/stop", map[string]any{"grantId": grant, "issue": issue, "task": task}, nil)
+}
+
+// stop_task is the owner's stop of one task of a recorded issue (R16): the architect of the
+// issue's tree asks for it, and the route records the one fact the workflow stops the task by
+// (intake.TaskStopped), each request its own, so a task stopped, started again by a later version
+// and stopped once more is stopped twice. Whether the plan holds the task and whether it is done
+// is the workflow's to answer, in the words the route writes as they came.
+func TestStopTaskRecordsTheOwnersStop(t *testing.T) {
+	h, facts, _ := planHarness(t)
+	seedIssueAt(t, h, "LEGION-500", phase.Implementing)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	worker := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+
+	assertFailure(t, stopTask(h, worker.grant(t), "LEGION-208", "a"), http.StatusForbidden, "ARCHITECT_REQUIRED")
+	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-208", " "), http.StatusBadRequest, "MISSING_FIELD", "task is required")
+	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-404", "a"), http.StatusNotFound, "ISSUE_NOT_FOUND", "issue is not recorded")
+	assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-500", "a"), http.StatusForbidden, "ISSUE_OUTSIDE_TREE", "issue is outside the architect tree")
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("refused stops recorded %#v, want nothing", got)
+	}
+	for range 2 {
+		if stopped := stopTask(h, architect.grant(t), "LEGION-208", "a"); stopped.Code != http.StatusOK || strings.TrimSpace(stopped.Body.String()) != `{}` {
+			t.Fatalf("stop task a = %d %s, want 200 {}", stopped.Code, stopped.Body)
+		}
+	}
+	stop := intake.TaskStopped{Issue: "LEGION-208", Task: "a", By: architect.token}
+	if got, want := facts.recorded(), []intake.Fact{stop, stop}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts = %#v, want %#v: each stop its own fact", got, want)
+	}
+
+	for _, refusal := range []*intake.Refusal{intake.TaskNotFound("LEGION-208", "b", []string{"a"}), intake.TaskDone("LEGION-208", "a")} {
+		facts.refusal = refusal
+		assertRefusalText(t, stopTask(h, architect.grant(t), "LEGION-208", "a"), refusal.Status, refusal.Code, refusal.Message)
+	}
+}

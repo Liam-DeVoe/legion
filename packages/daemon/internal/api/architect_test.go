@@ -34,6 +34,8 @@ func TestArchitectFactRoutesRejectMissingGrantID(t *testing.T) {
 	h := newHarness(t)
 	for _, route := range []string{
 		"/legion/v1/gates/register",
+		"/legion/v1/plans/register",
+		"/legion/v1/tasks/stop",
 		"/legion/v1/waves/release",
 		"/legion/v1/phase/backward",
 		"/legion/v1/phase/retry",

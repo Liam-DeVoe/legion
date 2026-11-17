@@ -180,6 +180,40 @@ func (s *server) planOwner(w http.ResponseWriter, r *http.Request, grantID, issu
 	return credential.Grant{}, 0, false
 }
 
+// TaskStopRequest is stop_task: the owner of a recorded issue stops one task of the plan Legion
+// runs for it (R16), so that a later version of the plan may change that task.
+type TaskStopRequest struct {
+	GrantID string `json:"grantId"`
+	Issue   string `json:"issue"`
+	Task    string `json:"task"`
+}
+
+// stopTask is stop_task: the architect whose grant serves the issue's tree, which the daemon has
+// recorded (architectForIssue), stops one task of it, answered 200 with no body. The stop is the
+// workflow's (intake.TaskStopped), which answers a task the plan does not hold (TaskNotFound) and
+// one that is done (TaskDone). Each request is its own fact (requestFactID): a task the owner
+// stops, starts again with a later version and stops once more is stopped twice, and a retry of a
+// stop already applied finds the task stopped, which changes nothing.
+func (s *server) stopTask(w http.ResponseWriter, r *http.Request) {
+	var req TaskStopRequest
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
+		field{"grantId", req.GrantID},
+		field{"issue", req.Issue},
+		field{"task", req.Task},
+	) {
+		return
+	}
+	if !claim.IsIssueKey(req.Issue) {
+		writeFailure(w, http.StatusBadRequest, "INVALID_ISSUE", "issue is not an issue key")
+		return
+	}
+	grant, _, ok := s.architectForIssue(w, r, req.GrantID, req.Issue)
+	if !ok {
+		return
+	}
+	s.applyFact(w, r, requestFactID("tasks/stop"), intake.TaskStopped{Issue: req.Issue, Task: req.Task, By: grant.Claim}, EmptyResponse{})
+}
+
 // planAt is the plan in version of the document artifactID, which documentOfIssue already held
 // to issue: its blocks as Dispatch gives them for that version (dispatch.Client.PlanDocument),
 // read as a plan (plan.FromBlocks). A block the plan's grammar cannot read is a refused plan
