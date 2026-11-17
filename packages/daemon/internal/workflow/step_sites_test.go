@@ -872,6 +872,52 @@ func TestAnIssueRunningAtTheUpgradeEndsWithOneRecord(t *testing.T) {
 	}
 }
 
+// A merge that ran under the release before ends with the agent and the moment its start would
+// have named, and its merger's entry names them only when this visit to merging raised it. A merge
+// GitHub had made when the retro's completion brought the issue to merging started no merger, so
+// the entry its merger still holds is an earlier visit's, raised before that completion: that
+// merge ends with no agent and no start. One whose merger this visit started ends under that
+// merger, at its entry. Each merge waits on a child, whose departure closes the root.
+func TestAnUpgradedMergeNamesOnlyAMergerOfItsOwnVisit(t *testing.T) {
+	retroCompleted := stepClock.Add(-2 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		entry  time.Time
+		merger bool
+	}{
+		{name: "the merger of an earlier visit", entry: stepClock.Add(-48 * time.Hour)},
+		{name: "the merger of this visit", entry: retroCompleted, merger: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			stepRoot(t, pool, phase.Merging)
+			seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", HeadSHA: "head", MergeSHA: "merge", Failing: []string{}})
+			stepChild(t, pool, "LEGION-209", phase.Testing, nil)
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Entry: 5, EntryRaisedAt: retroCompleted.Add(-time.Hour),
+				CompletedAt: retroCompleted})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Entry: 2, EntryRaisedAt: tc.entry})
+			applyFacts(t, pool, stepEngine(nil))("child-done", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion", Seq: 2,
+				Type: "issue.updated", Status: "done", Title: "LEGION-209", Parent: "LEGION-208", Rank: "V"})
+			if got := issueAt(t, pool, "LEGION-208"); got != phase.Done {
+				t.Fatalf("LEGION-208 stands at %s once its last child left, want done", got)
+			}
+			writes := stepWrites(t, pool, "LEGION-208")
+			if len(writes) != 1 || writes[0].ID != StepID("LEGION-208", 1, "default", "merge", 0, 0) {
+				t.Fatalf("step rows = %+v, want the merge's one end at the count 0", writes)
+			}
+			end := writes[0]
+			assertEnd(t, end, "merge", 0, 1, "passed", nil)
+			if tc.merger && (end.Agent != treeRoleToken(t, "LEGION-208", claim.RoleMerger) || end.StartedAt == nil || !end.StartedAt.Equal(tc.entry)) {
+				t.Fatalf("the merge's end = %+v, want the merger of this visit, started at its entry %s", end, tc.entry)
+			}
+			if !tc.merger && (end.Agent != "" || end.StartedAt != nil) {
+				t.Fatalf("the merge's end = %+v, want no agent and no start: the merger's entry %s is an earlier visit's", end, tc.entry)
+			}
+		})
+	}
+}
+
 // An issue at admitted runs no step: the architect works that phase (phase.RoleFor), and the
 // task's first step is planning. So an end and a start of the step an issue at admitted stands in
 // write nothing, and the move out of admitted writes the start of planning and no end, the

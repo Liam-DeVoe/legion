@@ -227,8 +227,10 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
 // (startAgent), and the moment its phase worker's entry was raised. Accepting's architect raises
-// no entry, and so the moment is unknown there. A merge whose merger's entry was never raised is
-// one GitHub had already made when the issue reached merging, which started no merger.
+// no entry, and so the moment is unknown there. A merge whose merger's entry this visit to merging
+// did not raise is one GitHub had already made when the issue reached merging, which started no
+// merger: an entry never raised, or one raised before the retro's completion that brought the
+// issue there, the one move into merging (the table's retro row), which is an earlier visit's.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
 	worker := phase.RoleFor(at)
 	if worker == claim.RoleArchitect {
@@ -239,8 +241,15 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if at == phase.Merging && row.EntryRaisedAt.IsZero() {
-		return "", time.Time{}, nil
+	if at == phase.Merging {
+		// The retro's completion is the implementer's (phase.RoleFor), recorded on its row.
+		retro, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleImplementer)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		if row.EntryRaisedAt.IsZero() || row.EntryRaisedAt.Before(retro.CompletedAt) {
+			return "", time.Time{}, nil
+		}
 	}
 	agent, err := stepClaim(issue, issue.Key, worker)
 	return agent, row.EntryRaisedAt.UTC(), err
