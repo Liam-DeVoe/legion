@@ -92,8 +92,9 @@ func TestAPlanIsANodePartOfItsIssue(t *testing.T) {
 	}
 }
 
-// Each field of a plan is written once: a later write of the same id with other tasks is taken,
-// changes nothing and appends nothing. An owner's plan names its document and version.
+// Each field of a plan is written once: a later write of the same id with another generation,
+// another source and other tasks is taken, changes nothing and appends nothing. An owner's plan
+// names its document and version.
 func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	id, document := uuid.NewString(), uuid.NewString()
@@ -105,15 +106,15 @@ func TestAPlanWriteKeepsTheFirst(t *testing.T) {
 	first := putPlan(t, pool, owner, minute(0))
 	before := wholeLog(t, pool)
 
-	again := putPlan(t, pool, defaultPlan(id, "LEG-1", 2), minute(1))
+	again := putPlan(t, pool, defaultPlan(id, "LEG-1", 10), minute(1))
 	if planText(again) != planText(first) {
 		t.Fatalf("a second write answers\n%s\nwant the first\n%s", planText(again), planText(first))
 	}
 	if after := wholeLog(t, pool); len(after) != len(before) {
 		t.Fatalf("a second write appended %d tuples, want none", len(after)-len(before))
 	}
-	if first.ArtifactID != document || first.Version != 3 || len(first.Tasks) != 2 {
-		t.Fatalf("the owner's plan answers %s, want its document %s at version 3 and two tasks", planText(first), document)
+	if first.Generation != 2 || first.ArtifactID != document || first.Version != 3 || len(first.Tasks) != 2 {
+		t.Fatalf("the owner's plan answers %s, want generation 2 and its document %s at version 3 and two tasks", planText(first), document)
 	}
 }
 
