@@ -45,3 +45,26 @@ summary() { # summary WHAT-WAS-TESTED
   fi
   echo "PASS: $1"
 }
+
+# stalled_proxy <directory>: starts, in the background, a proxy that accepts every connection and
+# answers none, as a module or toolchain download that stalls meets it, and sets proxy to its
+# process and port to the port it listens on. Its port file is <directory>/port. The caller stops
+# it (kill "$proxy"). check-ci-filters.test.sh and go-test-step-expansion.test.sh point a go at it.
+# shellcheck disable=SC2034 # proxy and port are set for the caller, which reads them
+stalled_proxy() {
+  python3 -c 'import socket, sys
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+with open(sys.argv[1], "w") as f:
+    f.write(str(s.getsockname()[1]))
+held = []
+while True:
+    held.append(s.accept()[0])' "$1/port" &
+  proxy=$!
+  for _ in $(seq 1 100); do
+    [ -s "$1/port" ] && break
+    sleep 0.1
+  done
+  port=$(<"$1/port")
+}

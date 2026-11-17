@@ -1664,25 +1664,6 @@ check "says there is no go on PATH" \
 # while it waits. The proxy here accepts every connection and answers none, as a stalled download
 # does; go1.999.0 is a version no module cache holds.
 echo "case: a toolchain download the check's go env GOROOT makes is on standard error while go waits"
-# stalled_proxy <directory>: starts, in the background, a proxy that accepts every connection and
-# answers none, and sets proxy to its process and port to the port it listens on.
-stalled_proxy() {
-  python3 -c 'import socket, sys
-s = socket.socket()
-s.bind(("127.0.0.1", 0))
-s.listen(16)
-with open(sys.argv[1], "w") as f:
-    f.write(str(s.getsockname()[1]))
-held = []
-while True:
-    held.append(s.accept()[0])' "$1/port" &
-  proxy=$!
-  for _ in $(seq 1 100); do
-    [ -s "$1/port" ] && break
-    sleep 0.1
-  done
-  port=$(<"$1/port")
-}
 for what in toolchain go; do
   root=$(fixture "asks-by-$what")
   if [ "$what" = toolchain ]; then asked=$'go 1.21\ntoolchain go1.999.0'; else asked='go 1.999.0'; fi
