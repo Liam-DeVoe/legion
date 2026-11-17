@@ -314,8 +314,9 @@ test("a test of a read's data while a fetch is out runs on the response that lan
 
 // An owner that reads on its own terms hears every refresh that reaches its query: one already
 // marked stale - a read that failed leaves it so - takes the mark again with no change of state
-// to see, and must still be heard. A refresh of another query, and one after the owner stops
-// holding it, is not heard.
+// to see, and must still be heard, and so must a refresh of the whole cache (the feed's, after a
+// gap), which names no target. A refresh of another query, and one after the owner stops holding
+// it, is not heard.
 test("ownQuery hears each refresh of its query, one already stale included, and no other", () => {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["issue", "CORE-1", "steps"], { tasks: [] });
@@ -330,8 +331,11 @@ test("ownQuery hears each refresh of its query, one already stale included, and 
   refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
   refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-9", "steps"] }]);
   expect(heard).toBe(2);
+  refreshQueries(queryClient);
+  expect(heard).toBe(3);
 
   owner.stop();
   refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
-  expect(heard).toBe(2);
+  refreshQueries(queryClient);
+  expect(heard).toBe(3);
 });

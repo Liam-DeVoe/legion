@@ -66,6 +66,8 @@ function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = tru
   });
   return {
     deliver: () => refreshQueries(client, eventRefreshTargets(released)),
+    /** The feed's refresh of the whole cache after a gap, which names no target. */
+    deliverAll: () => refreshQueries(client),
     fetchedAt,
     listSteps,
     restore: () => {
@@ -118,6 +120,27 @@ test("one event with nothing new makes seven reads in ten minutes and none after
       ]);
       await tick(300_000, 1_000);
       expect(tab.listSteps).toHaveBeenCalledTimes(before + 7);
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
+// After a gap in the feed the page refreshes its whole cache, since no event says what moved. The
+// Steps query never fetches on its own, so the tab hears that refresh as it hears an event's, and
+// catches up.
+test("a refresh of the whole cache, as after a gap in the feed, starts a catch-up", async () => {
+  await onFakeClock(async () => {
+    const tab = renderLiveTab(() => NO_STEPS);
+    try {
+      await tick(301_000, 1_000);
+      const before = tab.listSteps.mock.calls.length;
+      const start = Date.now();
+      tab.deliverAll();
+      await tick(300_000, 1_000);
+      expect(tab.fetchedAt.slice(before).map((at) => at - start)).toEqual([
+        0, 2_000, 5_000, 15_000, 45_000, 120_000, 300_000,
+      ]);
     } finally {
       tab.restore();
     }
