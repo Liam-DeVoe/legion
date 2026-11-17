@@ -391,9 +391,11 @@ const servingNoneLine = "workflow: the daemon serves no repository, so it admits
 // published is a transition into serving none (repositories.servingNoneToSay). So every path into
 // serving none logs it the same way (no repository mapped at boot or unmapped while it runs,
 // every repository left out for an App it lacks or a read GitHub did not answer), once per episode,
-// and the reads of its own the refresher then makes on its backoff say nothing more. refused is
-// the publication's refusals in the order they were read: the first one a read GitHub did not
-// answer made is the line's error.
+// and the reads of its own the refresher then makes on its backoff say nothing more. A read
+// again says it as soon as its publication commits, before GitHub intake's subscription is
+// narrowed, since the daemon serves none from the publication on whether or not that last step
+// succeeds. refused is the publication's refusals: the first of them, in the order the caller
+// passes them, that a read GitHub did not answer made is the line's error.
 func (w *workflowRuntime) sayServingNone(refused []refusedRepository) {
 	cause := w.repositories.servingNoneToSay()
 	if cause == "" {
@@ -417,13 +419,19 @@ func (r *repositories) unmapped() string {
 	return ""
 }
 
-// membership is which repositories the mapping as last read names, served or left out, as one
-// comparable key: the refresher starts its backoff again when a read changes it.
+// membership is which repositories the mapping as last read names, served or left out, and whether
+// it serves none, as one comparable key: the refresher starts its backoff again when a read
+// changes it, so a new mapping and each transition into serving none, a served repository left
+// out with the same names mapped among them, start again at 30 s, as the serving-none line's
+// retryIn says.
 func (r *repositories) membership() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := append(slices.Collect(maps.Keys(r.accepted)), slices.Collect(maps.Keys(r.refused))...)
 	slices.Sort(names)
+	if len(r.accepted) == 0 {
+		names = append(names, "\x00serving none")
+	}
 	return strings.Join(names, "\n")
 }
 
@@ -1130,6 +1138,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	w.sayServingNone(refused)
 	// Third, the superset is narrowed to the snapshot's own set, again outside any transaction.
 	// Every admission that commits after the snapshot resolves against the new mapping, whose
 	// repositories the set contains, and every one that committed before it is in the snapshot,
@@ -1149,7 +1158,6 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
 		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
 		"heard", repositoryNames(heard))
-	w.sayServingNone(refused)
 	return nil
 }
 

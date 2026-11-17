@@ -1249,11 +1249,17 @@ Closing the terminal leaves the project without one, and the daemon logs
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
+  repositories: serving acme/widgets (default)
   webhook App missing: none
   consumer legion-go-WIDGETS-dispatch: 0 waiting
   consumer legion-go-WIDGETS-github: 3 waiting, oldest 2s
   consumer legion-go-WIDGETS-wake: 0 waiting
   ```
+
+  The `repositories` line names each repository the daemon serves, its default marked, and how
+  many mapped ones it leaves out, with one `repository left out:` line under it for each and why;
+  while the project maps none it says so, and where in Dispatch a repository is mapped. A daemon
+  with no `dispatch_url` prints no such line.
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
   issue takes a slot when the daemon starts it and gives it back as the admission rule says

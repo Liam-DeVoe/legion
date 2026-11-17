@@ -85,11 +85,13 @@ cluster and the image:
   `stage=repositories` lists it under `refused`, `legion state --json | jq .repositories.refused`
   names it with the App it lacks, and its issues are not admitted, each saying so, until the App
   is installed there and the issue moves to `todo` again.
-  When it is every repository the project maps, so the daemon serves none, the log carries the
-  same ERROR line with `cause=project <PROJECT> serves no repository: every repository it maps is
-  left out (legion state names why)`, and the daemon reads the mapping again on its own, 30 s
-  doubling to 10 min, until one is served: install the App and the repository is served at the
-  next read, with no restart and no change to the mapping.
+  When it is every repository the project maps, so the daemon serves none, and that is how the
+  daemon came to serve none, the log carries the same ERROR line with `cause=project <PROJECT>
+  serves no repository: every repository it maps is left out (legion state names why)`. A daemon
+  that already served none for an empty mapping writes no second line when the repository it is
+  then given is left out; `legion state` names why. Either way the daemon reads the mapping again
+  on its own, 30 s doubling to 10 min, until one is served: install the App and the repository is
+  served at the next read, with no restart and no change to the mapping.
   A refusal that reads `the <role> App's installation on <owner>/<repo> could not be read: …;
   Legion reads it again` is GitHub not answering, not a missing App: the daemon reads the mapping
   again on its own, 30 s doubling to 10 min, and serves the repository once GitHub answers; an

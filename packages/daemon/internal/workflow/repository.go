@@ -144,13 +144,18 @@ func (e *Engine) noteOnce(ctx context.Context, tx pgx.Tx, key, resolved, note st
 }
 
 // refuseChild says on a child, and to its tree's architect, why the child was not recorded under
-// the tree: its repository resolves to none or to one Legion does not serve.
+// the tree: its repository resolves to none or to one Legion does not serve, or the project maps
+// no repository (Resolution.Unmapped), where mapping one is the remedy, not setting the child's.
 func (e *Engine) refuseChild(ctx context.Context, tx pgx.Tx, root record.Issue, key, resolved string, refused Resolution) error {
 	noted, err := e.RefuseRecording(ctx, tx, key, resolved, refused)
 	if err != nil || !noted {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: child not recorded; its repository is not one Legion serves", "issue", key, "tree", root.Key, "resolved", resolved, "reason", refused.Refusal)
+	remedy := "Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again."
+	if refused.Unmapped {
+		remedy = "Map the project's repositories there, one of them its default, then release it again."
+	}
 	return e.notice(ctx, tx, root.Key, record.Notice{Kind: "child-not-recorded", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. Set its repository to one of the project's (dispatch issue-update --repo owner/name), then release it again.", key, refused.Refusal)})
+		Reason: fmt.Sprintf("%s was not recorded under your tree: %s; the daemon said so on the issue. %s", key, refused.Refusal, remedy)})
 }
