@@ -186,6 +186,8 @@ export const realStackReasons: Record<string, string> = {
     "the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads",
   "issue-page-w.e2e.ts":
     "lenses, risks and constraints are written through the server's routes and drawn from its tree read",
+  "issue-page-x.e2e.ts":
+    "a write the server settles changes what the outline draws; another reader's page holds what the read answers it",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":
