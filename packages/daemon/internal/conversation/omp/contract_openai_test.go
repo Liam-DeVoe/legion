@@ -195,6 +195,45 @@ func TestThePinnedOhMyPiReplaysTheOpenAIItemsTheReaderCarries(t *testing.T) {
 	assertResponsesResumeMatches(t, before, model.last(t), "What colour is the fruit?")
 }
 
+// itemCarriedOnce is the index in input of the last item match accepts, -1 when none is, and
+// marks the test failed, naming the item as name, unless exactly one is: each part of an
+// appended answer reaches the model once.
+func itemCarriedOnce(t *testing.T, input []map[string]any, match func(map[string]any) bool, name string) int {
+	t.Helper()
+	index, count := -1, 0
+	for i, item := range input {
+		if match(item) {
+			index = i
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("the request carries %s %d times, want once", name, count)
+	}
+	return index
+}
+
+// userText is the text of a user message item of one part, and "" for any other item.
+func userText(item map[string]any) string {
+	parts, _ := item["content"].([]any)
+	if item["role"] != "user" || len(parts) != 1 {
+		return ""
+	}
+	text, _ := parts[0].(map[string]any)["text"].(string)
+	return text
+}
+
+// messageText is the text of a message item of one part, the model's reply, and "" for any
+// other item.
+func messageText(item map[string]any) string {
+	content, _ := item["content"].([]any)
+	if item["type"] != "message" || len(content) != 1 {
+		return ""
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	return text
+}
+
 // An answer appended on OpenAI Responses reaches the model when the pinned Oh My Pi resumes: its
 // next request carries the question, the reasoning items with their encrypted content as the
 // append wrote them, the call, its output and the answer, once each and in order.
@@ -241,45 +280,87 @@ func TestThePinnedOhMyPiResumesAnAppendedOpenAIAnswer(t *testing.T) {
 	rig.run(t, file, "Thanks.")
 	input := assertResponsesResumeMatches(t, appended, model.last(t), "Thanks.")
 
-	find := func(match func(map[string]any) bool, name string) int {
-		t.Helper()
-		index, count := -1, 0
-		for i, item := range input {
-			if match(item) {
-				index = i
-				count++
-			}
-		}
-		if count != 1 {
-			t.Errorf("the request carries %s %d times, want once", name, count)
-		}
-		return index
-	}
-	userText := func(item map[string]any) string {
-		parts, _ := item["content"].([]any)
-		if item["role"] != "user" || len(parts) != 1 {
-			return ""
-		}
-		text, _ := parts[0].(map[string]any)["text"].(string)
-		return text
-	}
-	question := find(func(item map[string]any) bool { return userText(item) == answer.Question }, "the question")
-	firstReasoning := find(func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAPPEND+/1==" }, "the first reasoning item")
-	toolCall := find(func(item map[string]any) bool {
+	question := itemCarriedOnce(t, input, func(item map[string]any) bool { return userText(item) == answer.Question }, "the question")
+	firstReasoning := itemCarriedOnce(t, input, func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAPPEND+/1==" }, "the first reasoning item")
+	toolCall := itemCarriedOnce(t, input, func(item map[string]any) bool {
 		return item["type"] == "function_call" && item["call_id"] == "call_append_1"
 	}, "the call")
-	output := find(func(item map[string]any) bool {
+	output := itemCarriedOnce(t, input, func(item map[string]any) bool {
 		return item["type"] == "function_call_output" && item["call_id"] == "call_append_1" && item["output"] == "plum"
 	}, "the call's output")
-	secondReasoning := find(func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAPPEND+/2==" }, "the second reasoning item")
-	finalAnswer := find(func(item map[string]any) bool {
-		content, _ := item["content"].([]any)
-		return item["type"] == "message" && len(content) == 1 && content[0].(map[string]any)["text"] == "The note names plum."
-	}, "the answer")
+	secondReasoning := itemCarriedOnce(t, input, func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAPPEND+/2==" }, "the second reasoning item")
+	finalAnswer := itemCarriedOnce(t, input, func(item map[string]any) bool { return messageText(item) == "The note names plum." }, "the answer")
 	order := []int{question, firstReasoning, toolCall, output, secondReasoning, finalAnswer, len(input) - 1}
 	for i := 1; i < len(order); i++ {
 		if order[i-1] >= order[i] {
 			t.Errorf("the question, reasoning, call, output, reasoning, answer and follow-up at %v of %d items; want them in that order", order, len(input))
+			break
+		}
+	}
+}
+
+// An answer on OpenAI Responses whose first reply the loop refused and asked for again reaches the
+// model as the run made it when the pinned Oh My Pi resumes: its next request carries the
+// question, the refused reply's reasoning and message items as the append wrote them, the message
+// the loop asked again with, the reply's reasoning and message items, then the follow-up, once
+// each and one after another.
+func TestThePinnedOhMyPiResumesAnOpenAIAnswerAskedForAgain(t *testing.T) {
+	model := newOpenAIStandIn(t, firstOpenAIRunReplies()...)
+	rig := newOMPRig(t, openaiResponses, model)
+	rig.run(t, "", "Read note.txt and tell me what it says.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := func(raw string) json.RawMessage { return json.RawMessage(raw) }
+	answer := conversation.Append{
+		QuestionID: "q-1", Question: "Which fruit does the note name?",
+		Provider: standInProvider, API: openaiResponses, Model: standInGPT,
+		Turns: []conversation.Turn{
+			{
+				Content: []conversation.Block{thinking("I cannot tell from here.", ""), text(refusedReply)},
+				Native: []json.RawMessage{
+					item(reasoningItem("rs_refused", "gAAAARFSD+/1==", "I cannot tell from here.").done),
+					item(messageItem("msg_refused", refusedReply).done),
+				},
+				AskedAgain: askedAgain,
+				Usage:      conversation.Usage{InputTokens: 12, OutputTokens: 8, ReasoningTokens: 3},
+			},
+			{
+				Content: []conversation.Block{thinking("Name what I need.", ""), text(replyAgain)},
+				Native: []json.RawMessage{
+					item(reasoningItem("rs_again", "gAAAAAGAIN+/2==", "Name what I need.").done),
+					item(messageItem("msg_again", replyAgain).done),
+				},
+				Usage: conversation.Usage{InputTokens: 20, OutputTokens: 5},
+			},
+		},
+	}
+	if err := AppendFile(file, before, answer, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.run(t, file, "Thanks.")
+	input := assertResponsesResumeMatches(t, appended, model.last(t), "Thanks.")
+
+	// The reader rebuilds from the same appended session Oh My Pi resumes, so a re-ask the
+	// appender dropped or wrote out of place would leave the two agreeing; these checks hold the
+	// request to the order the run made.
+	question := itemCarriedOnce(t, input, func(item map[string]any) bool { return userText(item) == answer.Question }, "the question")
+	refusedReasoning := itemCarriedOnce(t, input, func(item map[string]any) bool { return item["encrypted_content"] == "gAAAARFSD+/1==" }, "the refused reply's reasoning item")
+	refused := itemCarriedOnce(t, input, func(item map[string]any) bool { return messageText(item) == refusedReply }, "the refused reply")
+	reAsk := itemCarriedOnce(t, input, func(item map[string]any) bool { return userText(item) == askedAgain }, "the message the loop asked again with")
+	againReasoning := itemCarriedOnce(t, input, func(item map[string]any) bool { return item["encrypted_content"] == "gAAAAAGAIN+/2==" }, "the reply's reasoning item")
+	accepted := itemCarriedOnce(t, input, func(item map[string]any) bool { return messageText(item) == replyAgain }, "the reply after it")
+	order := []int{question, refusedReasoning, refused, reAsk, againReasoning, accepted, len(input) - 1}
+	for i := 1; i < len(order); i++ {
+		if order[i] != order[i-1]+1 {
+			t.Errorf("the question, the refused reply's reasoning and message, the message it was asked again with, the reply's reasoning and message and the follow-up at %v of %d items; want them one after another",
+				order, len(input))
 			break
 		}
 	}

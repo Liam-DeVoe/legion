@@ -510,6 +510,26 @@ func appendRaw(t *testing.T, path, records string) {
 	}
 }
 
+// carriedOnce is the index in turns of the last turn holding a block match accepts, -1 when no
+// block is accepted, and marks the test failed, naming the block as name, unless exactly one
+// block is: each part of an appended answer reaches the model once.
+func carriedOnce(t *testing.T, turns []wireTurn, match func(wireTurn, wireBlock) bool, name string) int {
+	t.Helper()
+	index, count := -1, 0
+	for i, turn := range turns {
+		for _, b := range turn.Blocks {
+			if match(turn, b) {
+				index = i
+				count++
+			}
+		}
+	}
+	if count != 1 {
+		t.Errorf("the request carries %s %d times, want once", name, count)
+	}
+	return index
+}
+
 // The answer an append writes reaches the model when the pinned Oh My Pi resumes the session,
 // under file storage and under SQL storage: its next request carries the question, the tool call,
 // its result and the answer once each, in that order, with the appended thinking signed as it was
@@ -539,35 +559,19 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 		request := model.lastAnthropic(t)
 		turns := request.turns(t)
 		assertResumeMatches(t, appended, request, "Thanks.")
-		find := func(match func(wireTurn, wireBlock) bool, name string) int {
-			t.Helper()
-			index, count := -1, 0
-			for i, turn := range turns {
-				for _, b := range turn.Blocks {
-					if match(turn, b) {
-						index = i
-						count++
-					}
-				}
-			}
-			if count != 1 {
-				t.Errorf("the request carries %s %d times, want once", name, count)
-			}
-			return index
-		}
-		question := find(func(turn wireTurn, b wireBlock) bool {
+		question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "user" && b.Type == "text" && b.Text == answer.Question
 		}, "the question")
-		toolCall := find(func(turn wireTurn, b wireBlock) bool {
+		toolCall := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "assistant" && b.Type == "tool_use" && b.ID == "toolu_append_01"
 		}, "the tool call")
-		toolResult := find(func(turn wireTurn, b wireBlock) bool {
+		toolResult := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "user" && b.Type == "tool_result" && b.ID == "toolu_append_01" && b.Result == "plum"
 		}, "the tool result")
-		finalAnswer := find(func(turn wireTurn, b wireBlock) bool {
+		finalAnswer := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return turn.Role == "assistant" && b.Type == "text" && b.Text == "The note names plum."
 		}, "the answer")
-		find(func(turn wireTurn, b wireBlock) bool {
+		carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
 			return b.Type == "thinking" && b.Signature == "YXBwZW5kLXR3bw==" && b.Text == "It names plum."
 		}, "the answer's signed thinking")
 		if !(question < toolCall && toolCall < toolResult && toolResult < finalAnswer && finalAnswer == len(turns)-2) {
@@ -635,4 +639,76 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 			t.Error("the resumed run's follow-up is not in the session table")
 		}
 	})
+}
+
+// An answer whose first reply the loop refused and asked for again reaches the model as the run
+// made it when the pinned Oh My Pi resumes the session: its next request carries the question, the
+// refused reply (a model turn with no tool call), the message the loop asked again with and the
+// reply after it, once each and one after another, then the follow-up, and is the conversation the
+// reader rebuilds from the appended session.
+func TestThePinnedOhMyPiResumesAnAnswerAskedForAgain(t *testing.T) {
+	answer := conversation.Append{
+		QuestionID: "q-1", Question: "Which fruit does the note name?",
+		Provider: standInProvider, API: anthropicMessages, Model: standInModel,
+		Turns: []conversation.Turn{
+			{
+				Content:    []conversation.Block{thinking("I cannot tell from here.", "cmVmdXNlZA=="), text(refusedReply)},
+				AskedAgain: askedAgain,
+				Usage:      conversation.Usage{InputTokens: 12, OutputTokens: 8},
+			},
+			{
+				Content: []conversation.Block{thinking("Name what I need.", "YXNrZWQtYWdhaW4="), text(replyAgain)},
+				Usage:   conversation.Usage{InputTokens: 20, OutputTokens: 5},
+			},
+		},
+	}
+	model := newAnthropicStandIn(t, firstRunReplies()...)
+	rig := newOMPRig(t, anthropicMessages, model)
+	rig.run(t, "", "Read note.txt and tell me what it says.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, standInEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendFile(file, before, answer, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	appended, err := ReadFile(file, standInEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.run(t, file, "Thanks.")
+	request := model.lastAnthropic(t)
+	turns := request.turns(t)
+	assertResumeMatches(t, appended, request, "Thanks.")
+
+	// The reader rebuilds from the same appended session Oh My Pi resumes, so a re-ask the
+	// appender dropped or wrote out of place would leave the two agreeing; these checks hold the
+	// request to the order the run made.
+	question := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == answer.Question
+	}, "the question")
+	refused := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "assistant" && b.Type == "text" && b.Text == refusedReply
+	}, "the refused reply")
+	reAsk := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "user" && b.Type == "text" && b.Text == askedAgain
+	}, "the message the loop asked again with")
+	accepted := carriedOnce(t, turns, func(turn wireTurn, b wireBlock) bool {
+		return turn.Role == "assistant" && b.Type == "text" && b.Text == replyAgain
+	}, "the reply after it")
+	if !(question+1 == refused && refused+1 == reAsk && reAsk+1 == accepted && accepted+2 == len(turns)) {
+		t.Errorf("the question at %d, the refused reply at %d, the message it was asked again with at %d, the reply after it at %d of %d turns; want them one after another, then the follow-up",
+			question, refused, reAsk, accepted, len(turns))
+	}
+	if refused >= 0 {
+		for _, b := range turns[refused].Blocks {
+			if b.Type == "tool_use" {
+				t.Errorf("the refused reply's turn carries a tool call %s; want a reply with none", b.ID)
+			}
+		}
+	}
+	if reAsk >= 0 && len(turns[reAsk].Blocks) != 1 {
+		t.Errorf("the message the loop asked again with is a user turn of %d blocks; want it alone", len(turns[reAsk].Blocks))
+	}
 }
