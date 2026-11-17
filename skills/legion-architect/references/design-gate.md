@@ -405,9 +405,11 @@ state goes into the ancestor's spec, by the route of "A requirement the ancestor
 below, never into the root's. The ancestor carries no code of its own, and a child delivers each of
 its requirements (`skill://legion-architect/references/decomposition.md`). Where the root's work
 cannot be built or tested until another child's pull request merges, for example work that reads a
-table, calls a route or runs code that pull request adds, link the root `blocked_by` that child and
-name the child in the root's spec: the child's merge closes it. The architect decides this and
-asks no person. This section is the whole rule, for the root's architect and for the ancestor's
+table, calls a route or runs code that pull request adds, name that child in the root's spec. Where
+the deployment's instructions say to stack on unmerged work, build the root's work on that child's
+branch, and accept the root only on a head that carries that child's merge; otherwise link the
+root `blocked_by` that child, whose merge closes it. The architect decides this and asks no
+person. This section is the whole rule, for the root's architect and for the ancestor's
 architect.
 
 ### When the root is a view
@@ -641,8 +643,9 @@ More rules for the ancestor's architect:
   file a child of the ancestor for the requirement, whose spec is a view that names it, rewrite the
   requirement with that child's name in place of the root's, and request the person's approval of
   that version. Where a requirement it delivered names no root, keep its words and file such a
-  child for it. That version is not a version of the route: its summary names no root, and a
-  sibling root that finds its request open asks for its own approval.
+  child for it. The request's summary says why the requirement lost its root, so the person weighs
+  that reason there: ask nothing first. That version is not a version of the route: its summary
+  names no root, and a sibling root that finds its request open asks for its own approval.
 - The daemon refuses the ancestor's `sign_off` and `close_root` while a root that rests on its
   approval is in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`). That root's own architect, or a
   person, moves it.

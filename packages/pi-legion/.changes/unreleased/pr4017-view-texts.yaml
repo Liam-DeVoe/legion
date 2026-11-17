@@ -6,8 +6,10 @@ body: |-
   how a requirement that the ancestor does not state goes into the ancestor's spec for one
   approval, and how an acceptance reads the checks across the issues under the ancestor. An issue
   with children carries no code of its own: every change of it goes into a child
-  (`references/decomposition.md`), and a root whose work cannot be built or tested until another
-  child's pull request merges is linked `blocked_by` that child. A root delivers the ancestor's
+  (`references/decomposition.md`). A root whose work cannot be built or tested until another
+  child's pull request merges names that child in its spec, and builds on that child's branch where
+  the deployment stacks on unmerged work, or is linked `blocked_by` it where the deployment does
+  not. A root delivers the ancestor's
   block as written, a part it did not send included, and a root that asks for its own approval
   says why in its spec itself. A view's Design decides how the root builds each of the ancestor's requirements, also where it
   changes a Design line a person approved before the root became a view, and such a line does not
