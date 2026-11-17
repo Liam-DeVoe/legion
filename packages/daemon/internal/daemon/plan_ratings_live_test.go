@@ -28,6 +28,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -67,7 +68,7 @@ func (l *planRatingsLive) readByProject() {
 	t := l.t
 	want := l.walkThreeRated()
 	l.note("%s, %s and %s walked to done, the first with one failed review; their retros rated the plan %d, %d and %d",
-		want[0].issue, want[1].issue, want[2].issue, want[0].rating, want[1].rating, want[2].rating)
+		want[0].key, want[1].key, want[2].key, want[0].rating.Score, want[1].rating.Score, want[2].rating.Score)
 	// The ratings and the closes ride the outbox, so the read by project holds them a moment after
 	// the walks end: GET /api/v1/projects/{key}/plans is waited on for the whole of what it must
 	// list before the CLI reads it once.
@@ -86,11 +87,11 @@ func (l *planRatingsLive) readByProject() {
 		l.note("  %s", line)
 	}
 
-	out, code = l.readScript(want[0].issue)
+	out, code = l.readScript(want[0].key)
 	if code != 0 || !readScriptPassed(out, lines[0]) {
-		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the plan and the ratings of %q", l.cfg.Project, want[0].issue, code, out, lines[0].text)
+		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the plan and the ratings of %q", l.cfg.Project, want[0].key, code, out, lines[0].text)
 	}
-	l.note("scripts/e2e/plan-ratings-read.sh %s %s, exit 0: %s", l.cfg.Project, want[0].issue, lastLine(out))
+	l.note("scripts/e2e/plan-ratings-read.sh %s %s, exit 0: %s", l.cfg.Project, want[0].key, lastLine(out))
 	unfinished := l.issues[3].key
 	out, code = l.readScript(unfinished)
 	if failed := fmt.Sprintf("FAIL: the read lists 3 finished issues of %s and no line of %s", l.cfg.Project, unfinished); code != 1 || !strings.Contains(out, failed) {
@@ -100,10 +101,10 @@ func (l *planRatingsLive) readByProject() {
 
 	failed := want[0].steps.find("step", 4, 1).ID
 	if failed == "" {
-		t.Fatalf("the records of %s hold no record of step 4 attempt 1", want[0].issue)
+		t.Fatalf("the records of %s hold no record of step 4 attempt 1", want[0].key)
 	}
 	l.deleteStepRecord(failed)
-	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", want[0].issue, failed)
+	l.note("control: deleted %s's failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", want[0].key, failed)
 	out, code = l.plans()
 	if code != 0 {
 		t.Fatalf("control: `dispatch plans --project %s` after the delete exited %d: %s", l.cfg.Project, code, out)
@@ -112,7 +113,7 @@ func (l *planRatingsLive) readByProject() {
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch plans --project %s` passed with the failed review's record deleted:\n%s", l.cfg.Project, out)
 	}
-	if wanted := failedStepsPrinted(want[0].issue, 0, 1); !strings.Contains(err.Error(), wanted) {
+	if wanted := failedStepsPrinted(want[0].key, 0, 1); !strings.Contains(err.Error(), wanted) {
 		t.Fatalf("control: the parse with the failed review's record deleted reports %q, want it to say %q", err, wanted)
 	}
 	l.note("control: the same parse now fails: %v", err)
@@ -138,7 +139,7 @@ func (l *planRatingsLive) ratingRequired() {
 	l.note("the retro's completion with no rating, from the implementer at plugin contract %d: %d %s; %s still in retro",
 		l.d.claim(c.token).PluginContract, status, strings.TrimSpace(body), l.key)
 
-	l.finish(c, "", l.retroCompletion(4, "The plan fit the work once its retro was asked for a rating."), phase.Merging)
+	l.finish(c, "", l.retroCompletion(&intake.PlanRating{Score: 4, Reason: "The plan fit the work once its retro was asked for a rating."}), phase.Merging)
 	l.note("control: the same completion with planRating 4 and a reason: 200; %s in merging", l.key)
 }
 

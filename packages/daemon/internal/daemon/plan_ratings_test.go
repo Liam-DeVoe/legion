@@ -21,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -46,7 +47,7 @@ func TestTheReadOfAProjectHoldsEachRetrosRating(t *testing.T) {
 			t.Fatalf("read the project's plans after the delete: %v", err)
 		}
 		err = plansHold(read, want)
-		if wanted := failedStepsSay(want[0].issue, 0, 1); err == nil || !strings.Contains(err.Error(), wanted) {
+		if wanted := failedStepsSay(want[0].key, 0, 1); err == nil || !strings.Contains(err.Error(), wanted) {
 			t.Fatalf("the assertion over a read without the failed review's record = %v, want an error saying %q", err, wanted)
 		}
 	})
@@ -87,23 +88,22 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 		t.Fatalf("the booted daemon reads %s at plugin contract %d, want %d: this case proves nothing", implementer.token, got, old)
 	}
 
-	r.finish(implementer, "", r.retroCompletion(0, ""), phase.Merging)
+	r.finish(implementer, "", r.retroCompletion(nil), phase.Merging)
 	// The stale claim's relaunch, which the boot held for the turn's end.
 	r.awaitLaunch(implementer.token)
 	r.merge()
 	var steps stepRecordsRead
 	r.waitSteps("the seven records of the walk whose retro gave no rating", func(got stepRecordsRead) error { steps = got; return stepsHold(got, stepRecordsSeven) })
-	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{issue: r.key, title: r.issues[0].title, steps: steps}})
+	r.waitPlans("the finished issue whose retro gave no rating", []ratedWant{{walkIssue: r.issues[0], steps: steps}})
 }
 
-// ratedWant is what the read by project must list of one issue: its title, its rating and reason
-// (none for a rating of 0), its count of failed steps, and its records as GET steps read them once
-// its walk was done, from which its time, its run's plan and the id of its retro come.
+// ratedWant is what the read by project must list of one issue: the issue, with the title Dispatch
+// was given for it, its rating with its reason (nil for none), its count of failed steps, and its
+// records as GET steps read them once its walk was done, from which its time, its run's plan and
+// the id of its retro come.
 type ratedWant struct {
-	issue  string
-	title  string
-	rating int
-	reason string
+	walkIssue
+	rating *intake.PlanRating
 	failed int
 	steps  stepRecordsRead
 }
@@ -121,31 +121,31 @@ func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 	want := []ratedWant{
 		// The first reason holds `<` and `&`, which Go's JSON encoder escapes and the CLI prints as
 		// they are, so the live driver's check of the read script's PASS line meets them.
-		{issue: r.issues[0].key, title: r.issues[0].title, rating: 3, reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task.", failed: 1},
-		{issue: r.issues[2].key, title: r.issues[2].title, rating: 5, reason: "The plan was the work, step for step.", failed: 0},
-		{issue: r.issues[1].key, title: r.issues[1].title, rating: 4, reason: "The plan fit the work as written.", failed: 0},
+		{walkIssue: r.issues[0], rating: &intake.PlanRating{Score: 3, Reason: "The plan fit the work; the review sent it back once, in <1 day & with no new task."}, failed: 1},
+		{walkIssue: r.issues[2], rating: &intake.PlanRating{Score: 5, Reason: "The plan was the work, step for step."}},
+		{walkIssue: r.issues[1], rating: &intake.PlanRating{Score: 4, Reason: "The plan fit the work as written."}},
 	}
 	each := func(step func()) {
 		for _, w := range want {
-			r.on(w.issue)
+			r.on(w.key)
 			step()
 		}
 	}
 	each(r.plan)
 	each(r.implement)
 	each(r.test)
-	r.on(want[0].issue)
+	r.on(want[0].key)
 	r.review("CHANGES_REQUESTED", phase.Implementing)
 	r.implement()
 	r.test()
 	each(func() { r.review("APPROVED", phase.Accepting) })
 	each(r.accept)
 	for _, w := range want {
-		r.on(w.issue)
-		r.rate(w.rating, w.reason)
+		r.on(w.key)
+		r.rate(w.rating)
 	}
 	for place := len(want) - 1; place >= 0; place-- {
-		r.on(want[place].issue)
+		r.on(want[place].key)
 		r.merge()
 		r.waitClosed()
 	}
@@ -154,8 +154,8 @@ func (r *stepRecordsRig) walkThreeRated() []ratedWant {
 		if w.failed != 0 {
 			records = stepRecordsTen
 		}
-		r.on(w.issue)
-		r.waitSteps(fmt.Sprintf("the %d records of the walk of %s", len(records), w.issue), func(got stepRecordsRead) error {
+		r.on(w.key)
+		r.waitSteps(fmt.Sprintf("the %d records of the walk of %s", len(records), w.key), func(got stepRecordsRead) error {
 			want[place].steps = got
 			return stepsHold(got, records)
 		})
@@ -221,45 +221,45 @@ func plansHold(read projectPlansRead, want []ratedWant) error {
 	}
 	for place, w := range want {
 		got := read.Issues[place]
-		if got.Issue != w.issue {
-			return fmt.Errorf("the read lists %s in place %d, want %s: want's order is newest close first", got.Issue, place+1, w.issue)
+		if got.Issue != w.key {
+			return fmt.Errorf("the read lists %s in place %d, want %s: want's order is newest close first", got.Issue, place+1, w.key)
 		}
 		retro := w.steps.find("retro", 0, 1)
 		switch plan := got.Plan; {
 		case got.ClosedAt.IsZero():
-			return fmt.Errorf("%s is listed with no close", w.issue)
+			return fmt.Errorf("%s is listed with no close", w.key)
 		case got.Title != w.title:
-			return fmt.Errorf("%s is listed with the title %q, want %q", w.issue, got.Title, w.title)
+			return fmt.Errorf("%s is listed with the title %q, want %q", w.key, got.Title, w.title)
 		case plan == nil:
-			return fmt.Errorf("%s lists no plan, want the default plan", w.issue)
-		case plan.Issue != w.issue || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.issue, retro.Generation):
+			return fmt.Errorf("%s lists no plan, want the default plan", w.key)
+		case plan.Issue != w.key || plan.Generation != retro.Generation || plan.ID != workflow.PlanID(w.key, retro.Generation):
 			return fmt.Errorf("%s lists the plan %s of %s at generation %d, want its own, %s of %s at the generation of its records, %d",
-				w.issue, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.issue, retro.Generation), w.issue, retro.Generation)
+				w.key, plan.ID, plan.Issue, plan.Generation, workflow.PlanID(w.key, retro.Generation), w.key, retro.Generation)
 		case plan.Source != "default" || plan.ArtifactID != nil || plan.Version != nil || len(plan.Tasks) != 1 ||
 			plan.Tasks[0].ID != "default" || !slices.Equal(plan.Tasks[0].Steps, workflow.DefaultSteps()):
-			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.issue, *plan, workflow.DefaultSteps())
+			return fmt.Errorf("%s lists the plan %+v, want source default with no document and the one task default of %v", w.key, *plan, workflow.DefaultSteps())
 		}
 		switch {
-		case w.rating == 0 && len(got.Ratings) != 0:
-			return fmt.Errorf("%s lists the ratings %+v, want none", w.issue, got.Ratings)
-		case w.rating != 0 && len(got.Ratings) != 1:
-			return fmt.Errorf("%s lists the ratings %+v, want the one rating %d", w.issue, got.Ratings, w.rating)
-		case w.rating != 0 && (got.Ratings[0].Rating != w.rating || got.Ratings[0].Reason != w.reason):
-			return fmt.Errorf("%s lists the rating %d %q, want %d %q", w.issue, got.Ratings[0].Rating, got.Ratings[0].Reason, w.rating, w.reason)
-		case w.rating != 0 && (got.Ratings[0].StepID != retro.ID || got.Ratings[0].EndedAt == nil || retro.EndedAt == nil ||
+		case w.rating == nil && len(got.Ratings) != 0:
+			return fmt.Errorf("%s lists the ratings %+v, want none", w.key, got.Ratings)
+		case w.rating != nil && len(got.Ratings) != 1:
+			return fmt.Errorf("%s lists the ratings %+v, want the one rating %d", w.key, got.Ratings, w.rating.Score)
+		case w.rating != nil && (got.Ratings[0].Rating != w.rating.Score || got.Ratings[0].Reason != w.rating.Reason):
+			return fmt.Errorf("%s lists the rating %d %q, want %d %q", w.key, got.Ratings[0].Rating, got.Ratings[0].Reason, w.rating.Score, w.rating.Reason)
+		case w.rating != nil && (got.Ratings[0].StepID != retro.ID || got.Ratings[0].EndedAt == nil || retro.EndedAt == nil ||
 			!got.Ratings[0].EndedAt.Equal(*retro.EndedAt)):
-			return fmt.Errorf("%s lists its rating on the record %s ended %v, want the retro's record %s ended %v", w.issue,
+			return fmt.Errorf("%s lists its rating on the record %s ended %v, want the retro's record %s ended %v", w.key,
 				got.Ratings[0].StepID, got.Ratings[0].EndedAt, retro.ID, retro.EndedAt)
 		case got.FailedSteps != w.failed:
-			return errors.New(failedStepsSay(w.issue, got.FailedSteps, w.failed))
+			return errors.New(failedStepsSay(w.key, got.FailedSteps, w.failed))
 		}
 		started, ended := w.steps.span()
 		seconds := int64(ended.Sub(started) / time.Second)
 		switch {
 		case got.StartedAt == nil || got.EndedAt == nil || got.DurationSeconds == nil:
-			return fmt.Errorf("%s lists started_at %v, ended_at %v and duration_seconds %v, want each", w.issue, got.StartedAt, got.EndedAt, got.DurationSeconds)
+			return fmt.Errorf("%s lists started_at %v, ended_at %v and duration_seconds %v, want each", w.key, got.StartedAt, got.EndedAt, got.DurationSeconds)
 		case !got.StartedAt.Equal(started) || !got.EndedAt.Equal(ended) || *got.DurationSeconds != seconds:
-			return fmt.Errorf("%s lists %s to %s, %d seconds, want %s to %s, %d seconds, from its records", w.issue, got.StartedAt, got.EndedAt,
+			return fmt.Errorf("%s lists %s to %s, %d seconds, want %s to %s, %d seconds, from its records", w.key, got.StartedAt, got.EndedAt,
 				*got.DurationSeconds, started, ended, seconds)
 		}
 	}

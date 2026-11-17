@@ -190,23 +190,23 @@ func plansPrintedHold(project, out string, want []ratedWant) ([]planLine, error)
 	plan := fmt.Sprintf("default (1 tasks: %s)", strings.Join(workflow.DefaultSteps(), " "))
 	for place, w := range want {
 		got := lines[place]
-		if got.issue != w.issue {
-			return nil, fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.issue)
+		if got.issue != w.key {
+			return nil, fmt.Errorf("`dispatch plans` prints %s in place %d, want %s: want's order is newest close first", got.issue, place+1, w.key)
 		}
 		started, ended := w.steps.span()
 		minutes := int64(ended.Sub(started) / time.Minute)
 		spent := fmt.Sprintf("%dh%dm", minutes/60, minutes%60)
 		switch {
 		case got.plan != plan:
-			return nil, fmt.Errorf("%s prints plan %s, want plan %s", w.issue, got.plan, plan)
-		case w.rating == 0 && len(got.ratings) != 0:
-			return nil, fmt.Errorf("%s prints the ratings %+v, want none", w.issue, got.ratings)
-		case w.rating != 0 && (len(got.ratings) != 1 || got.ratings[0] != printedRating{rating: w.rating, reason: w.reason}):
-			return nil, fmt.Errorf("%s prints the ratings %+v, want the one rating %d/5 %q", w.issue, got.ratings, w.rating, w.reason)
+			return nil, fmt.Errorf("%s prints plan %s, want plan %s", w.key, got.plan, plan)
+		case w.rating == nil && len(got.ratings) != 0:
+			return nil, fmt.Errorf("%s prints the ratings %+v, want none", w.key, got.ratings)
+		case w.rating != nil && (len(got.ratings) != 1 || got.ratings[0] != printedRating{rating: w.rating.Score, reason: w.rating.Reason}):
+			return nil, fmt.Errorf("%s prints the ratings %+v, want the one rating %d/5 %q", w.key, got.ratings, w.rating.Score, w.rating.Reason)
 		case got.time != spent:
-			return nil, fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.issue, got.time, spent, started, ended)
+			return nil, fmt.Errorf("%s prints time %s, want %s, from %s to %s", w.key, got.time, spent, started, ended)
 		case got.failed != w.failed:
-			return nil, errors.New(failedStepsPrinted(w.issue, got.failed, w.failed))
+			return nil, errors.New(failedStepsPrinted(w.key, got.failed, w.failed))
 		}
 	}
 	return lines, nil

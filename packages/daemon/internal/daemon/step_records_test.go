@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -623,24 +624,25 @@ func (r *stepRecordsRig) test() {
 // retro is the implementer's retro rating the plan 4 (rate).
 func (r *stepRecordsRig) retro() {
 	r.t.Helper()
-	r.rate(4, "The plan fit the work.")
+	r.rate(&intake.PlanRating{Score: 4, Reason: "The plan fit the work."})
 }
 
 // rate is the implementer's retro, whose completion names no record, the head it leaves, as each
 // completion of the implementer's does, and the rating of the plan with its reason, which a pane
-// at api.PlanRatingContract or later must give (PLAN_RATING_REQUIRED). A rating of 0 is a retro
+// at api.PlanRatingContract or later must give (PLAN_RATING_REQUIRED). A nil rating is a retro
 // with none, a pane's of the plugin before that contract.
-func (r *stepRecordsRig) rate(rating int, reason string) {
+func (r *stepRecordsRig) rate(rating *intake.PlanRating) {
 	r.t.Helper()
-	r.work(claim.RoleImplementer, "", r.retroCompletion(rating, reason), phase.Merging)
+	r.work(claim.RoleImplementer, "", r.retroCompletion(rating), phase.Merging)
 }
 
-// retroCompletion is the implementer's completion of its retro with rating and reason, and with
-// neither for a rating of 0.
-func (r *stepRecordsRig) retroCompletion(rating int, reason string) api.HandoffCompleteRequest {
+// retroCompletion is the implementer's completion of its retro with rating and its reason, and with
+// neither for a nil rating.
+func (r *stepRecordsRig) retroCompletion(rating *intake.PlanRating) api.HandoffCompleteRequest {
 	req := api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}
-	if rating != 0 {
-		req.PlanRating, req.PlanReason = &rating, &reason
+	if rating != nil {
+		score, reason := rating.Score, rating.Reason
+		req.PlanRating, req.PlanReason = &score, &reason
 	}
 	return req
 }
@@ -666,7 +668,7 @@ func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) (int, string) {
 	if contract := r.d.claim(c.token).PluginContract; contract < api.PlanRatingContract {
 		t.Fatalf("the %s of %s registered plugin contract %d, below PlanRatingContract %d: this check proves nothing", c.role, r.key, contract, api.PlanRatingContract)
 	}
-	status, body := r.complete(c, r.retroCompletion(0, ""))
+	status, body := r.complete(c, r.retroCompletion(nil))
 	if status != http.StatusBadRequest || !strings.Contains(body, "PLAN_RATING_REQUIRED") {
 		t.Fatalf("the retro's completion of %s with no rating from the %s at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
 			r.key, c.role, r.d.claim(c.token).PluginContract, status, body)
