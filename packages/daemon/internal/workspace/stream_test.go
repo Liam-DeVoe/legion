@@ -95,6 +95,33 @@ func TestTheCachesStreamRunsPastFetchTimeoutWhileItKeepsReceiving(t *testing.T) 
 	}
 }
 
+// The watch's first window counts from the stream's start. unpackCache starts the watch with go and
+// the Reads begin beside it, so a Read can land before the watch's goroutine first runs; that
+// Read's bytes are the first window's. Here the whole first window's bytes are read before the
+// watch starts, and the window then closes with nothing more: a watch that took its baseline when
+// its goroutine ran counted those bytes in no window and ended a stream that had delivered them.
+// The second window, in which nothing arrives, is a stall, so the watch is still judging.
+func TestTheCachesStreamCountsTheBytesReadBeforeItsWatchStarted(t *testing.T) {
+	const chunk = CacheStreamLowSpeedBytes + 1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	windowsOf := newFakeWindows()
+	stream := &countingReader{reader: &stoppedSender{ctx: ctx, left: chunk}, window: windowsOf.window}
+	if _, err := io.ReadFull(stream, make([]byte, chunk)); err != nil {
+		t.Fatalf("the stream's first %d bytes: %v", chunk, err)
+	}
+	go stream.watchStall(ctx, cancel)
+
+	windowsOf.pass(t, ctx)
+	if ctx.Err() != nil || stream.stalled.Load() {
+		t.Fatalf("a stream that delivered %d bytes in its first %s, read before its watch started, was ended", chunk, CacheStreamLowSpeedTime)
+	}
+	windowsOf.pass(t, ctx)
+	if _, err := stream.Read(make([]byte, 1)); !errors.Is(err, errStreamStalled) {
+		t.Fatalf("a second %s with nothing delivered ended the stream with %v, want the low-speed bound's refusal", CacheStreamLowSpeedTime, err)
+	}
+}
+
 // A stream that falls below the bound is ended, and names it: half of CacheStreamLowSpeedBytes in
 // a whole CacheStreamLowSpeedTime is under git's own http.lowSpeedLimit over http.lowSpeedTime
 // rule, 1 MiB in 5 minutes, so the watch cancels the context the cache's body is read under — the
