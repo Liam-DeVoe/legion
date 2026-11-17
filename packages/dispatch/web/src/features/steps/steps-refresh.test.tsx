@@ -149,6 +149,70 @@ test("a second event during a catch-up stops the first list and runs its own who
   });
 });
 
+// The tab's reads keep the event refresh's bound of one read of a query a second
+// (`MIN_REFETCH_INTERVAL_MS`) however its starts fall: a start inside the second after a read
+// reads when that second ends, and its own list counts from the start. The feed sends a batch
+// every 100 ms at most (`BATCH_WINDOW_MS` in `api/event-feed.ts`).
+test("two events 100 ms apart read once, and again when the second ends with what the second brought", async () => {
+  await onFakeClock(async () => {
+    let answer = NO_STEPS;
+    const tab = renderLiveTab(() => answer);
+    try {
+      await tick(301_000, 1_000);
+      const before = tab.fetchedAt.length;
+      const firstAt = Date.now();
+      tab.deliver();
+      await tick(100, 100);
+      answer = {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "second-run" })], task: "default" }],
+      };
+      const secondAt = Date.now();
+      tab.deliver();
+      await tick(800, 100);
+      expect(tab.fetchedAt.slice(before).map((at) => at - firstAt)).toEqual([0]);
+      expect(screen.queryByRole("table")).toBeNull();
+
+      // The read when the second ends draws what the second event brought, before the second
+      // list's first read at 2 s.
+      await tick(200, 100);
+      expect(tab.fetchedAt.slice(before).map((at) => at - firstAt)).toEqual([0, 1_000]);
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+
+      await tick(300_000, 100);
+      const reads = tab.fetchedAt.slice(before);
+      expect(reads.slice(2).map((at) => at - secondAt)).toEqual([
+        2_000, 5_000, 15_000, 45_000, 120_000, 300_000,
+      ]);
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
+test("an event 100 ms after a read of the catch-up reads when that read's second ends", async () => {
+  await onFakeClock(async () => {
+    const tab = renderLiveTab(() => NO_STEPS);
+    try {
+      await tick(301_000, 1_000);
+      const before = tab.fetchedAt.length;
+      const firstAt = Date.now();
+      tab.deliver();
+      await tick(2_100, 100);
+      const secondAt = Date.now();
+      tab.deliver();
+      await tick(302_000, 100);
+      const reads = tab.fetchedAt.slice(before);
+      expect(reads.slice(0, 3).map((at) => at - firstAt)).toEqual([0, 2_000, 3_000]);
+      expect(reads.slice(3).map((at) => at - secondAt)).toEqual([
+        2_000, 5_000, 15_000, 45_000, 120_000, 300_000,
+      ]);
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
 // A timer of the list only ever reads, so ten minutes with no read - twice the list's length -
 // is ten minutes with none of its timers held. (`jest.getTimerCount()` cannot say it: one timer
 // that is not the tab's comes and goes with the renders, the tab never shown included.)

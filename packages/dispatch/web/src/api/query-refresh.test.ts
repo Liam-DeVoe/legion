@@ -3,7 +3,7 @@ import { QueryClient, type QueryKey, QueryObserver } from "@tanstack/react-query
 
 import {
   MIN_REFETCH_INTERVAL_MS,
-  onRefresh,
+  ownQuery,
   refreshQueries,
   trackQueryFetches,
 } from "./query-refresh";
@@ -315,13 +315,13 @@ test("a test of a read's data while a fetch is out runs on the response that lan
 // An owner that reads on its own terms hears every refresh that reaches its query: one already
 // marked stale - a read that failed leaves it so - takes the mark again with no change of state
 // to see, and must still be heard. A refresh of another query, and one after the owner stops
-// listening, is not heard.
-test("onRefresh hears each refresh of its query, one already stale included, and no other", () => {
+// holding it, is not heard.
+test("ownQuery hears each refresh of its query, one already stale included, and no other", () => {
   const queryClient = new QueryClient();
   queryClient.setQueryData(["issue", "CORE-1", "steps"], { tasks: [] });
   queryClient.setQueryData(["issue", "CORE-9", "steps"], { tasks: [] });
   let heard = 0;
-  const stop = onRefresh(queryClient, ["issue", "CORE-1", "steps"], () => {
+  const owner = ownQuery(queryClient, ["issue", "CORE-1", "steps"], () => {
     heard += 1;
   });
 
@@ -331,7 +331,7 @@ test("onRefresh hears each refresh of its query, one already stale included, and
   refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-9", "steps"] }]);
   expect(heard).toBe(2);
 
-  stop();
+  owner.stop();
   refreshQueries(queryClient, [{ exact: true, queryKey: ["issue", "CORE-1", "steps"] }]);
   expect(heard).toBe(2);
 });

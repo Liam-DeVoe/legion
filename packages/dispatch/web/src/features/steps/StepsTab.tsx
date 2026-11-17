@@ -2,7 +2,7 @@ import { focusManager, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, type ReactNode, useEffect, useState } from "react";
 
 import { issueStepsQuery } from "../../api/queries";
-import { onRefresh } from "../../api/query-refresh";
+import { ownQuery } from "../../api/query-refresh";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
@@ -224,18 +224,16 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
 const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as const;
 
 /**
- * Reads the issue's records through `refetch` at once and at each of `CATCH_UP_READS_MS` after
- * every start: the tab shown, the page shown again, and each refresh the event feed asks of this
- * read - an event of the issue that comes with a phase moving (`changesSteps` in
- * `api/event-refresh.ts`), or a refresh of the whole cache. A start replaces the catch-up running,
- * so a tab holds one list of timers at most; a tab not shown, or a hidden page, reads nothing and
- * holds no timer. A read never cancels one already out, as the event feed's never does.
+ * Reads the issue's records at once and at each of `CATCH_UP_READS_MS` after every start: the tab
+ * shown, the page shown again, and each refresh the event feed asks of this read - an event of
+ * the issue that comes with a phase moving (`changesSteps` in `api/event-refresh.ts`), or a
+ * refresh of the whole cache. A start replaces the catch-up running, so a tab holds one list of
+ * timers at most; a tab not shown, or a hidden page, reads nothing and holds no timer. Each read
+ * is asked of the event refresh's scheduler, which holds the read while the tab is shown
+ * (`ownQuery` in `api/query-refresh.ts`): a read never cancels one already out, and the tab reads
+ * at most once a second, however its starts and the feed's batches fall.
  */
-function useCatchUp(
-  issueKey: string,
-  shown: boolean,
-  refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>
-): void {
+function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
   const [visible, setVisible] = useState(() => focusManager.isFocused());
   useEffect(() => focusManager.subscribe(setVisible), []);
@@ -244,23 +242,22 @@ function useCatchUp(
       return;
     }
     let timers: number[] = [];
-    const read = () => void refetch({ cancelRefetch: false });
     const start = () => {
       for (const timer of timers) {
         window.clearTimeout(timer);
       }
-      read();
-      timers = CATCH_UP_READS_MS.map((ms) => window.setTimeout(read, ms));
+      owner.read();
+      timers = CATCH_UP_READS_MS.map((ms) => window.setTimeout(owner.read, ms));
     };
+    const owner = ownQuery(queryClient, issueStepsQuery(issueKey).queryKey, start);
     start();
-    const stopHearing = onRefresh(queryClient, issueStepsQuery(issueKey).queryKey, start);
     return () => {
-      stopHearing();
+      owner.stop();
       for (const timer of timers) {
         window.clearTimeout(timer);
       }
     };
-  }, [issueKey, queryClient, refetch, shown, visible]);
+  }, [issueKey, queryClient, shown, visible]);
 }
 
 /**
@@ -273,7 +270,7 @@ function useCatchUp(
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });
-  useCatchUp(issueKey, active, query.refetch);
+  useCatchUp(issueKey, active);
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading steps…</p>;
   }
