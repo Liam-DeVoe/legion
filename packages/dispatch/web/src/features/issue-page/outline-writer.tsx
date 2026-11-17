@@ -8,7 +8,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
 import { redirectedReplyTarget, useHeldReplyTo, useHeldSends } from "../conversation/held-sends";
-import type { StatementAnchor } from "../conversation/send-request";
+import type { SentRequest, StatementAnchor } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
@@ -79,6 +79,9 @@ export interface OutlineWriter {
   readonly statement: StatementTarget | StatementAnchor | undefined;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
+  // A send of the line's own that Dispatch refused holds the line on its target through the
+  // issue's own Reply too, as through every other aim (`statement`): only `clear`, which the
+  // target line's control and Escape reach, lets it go.
   /** Sets the line back to a new comment on the issue and puts the caret in it: the issue's own
    *  Reply, whose reply is a comment on the issue. */
   readonly writeOnIssue: () => void;
@@ -233,9 +236,8 @@ export function OutlineWriterProvider({
           ...item,
           quote: item.tree === undefined ? item.text : wordsOf(item.tree),
         };
-        if (keptOnStatement(store.get(sendKey)?.request.statement, line, target)) return;
         // A reply Dispatch refused is never sent as a comment on the statement instead.
-        if (keptOnReply(store.get(sendKey)?.request.replyTo, line)) return;
+        if (keptOnTarget(store.get(sendKey)?.request, line, target)) return;
         setReply(null);
         setAnswer(undefined);
         setEditing(undefined);
@@ -266,8 +268,7 @@ export function OutlineWriterProvider({
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       const line = { focus, setAnswer, setEditing, setReply, setStatement };
-      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
-      if (keptOnReply(store.get(sendKey)?.request.replyTo, line)) return;
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -283,8 +284,7 @@ export function OutlineWriterProvider({
       const recorded = (asks.data ?? []).find((ask) => ask.id === target?.askId)?.answer;
       if (target === undefined || recorded === null || recorded === undefined) return;
       const line = { focus, setAnswer, setEditing, setReply, setStatement };
-      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
-      if (keptOnReply(store.get(sendKey)?.request.replyTo, line)) return;
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       const offered = new Set((node.options ?? []).map((option) => option.label));
       setReply(null);
       setEditing(undefined);
@@ -304,8 +304,7 @@ export function OutlineWriterProvider({
       const target = takesAnswer(node) ? answering(node) : undefined;
       if (target === undefined) return;
       const line = { focus, setAnswer, setEditing, setReply, setStatement };
-      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
-      if (keptOnReply(store.get(sendKey)?.request.replyTo, line)) return;
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       setReply(null);
       setEditing(undefined);
       setStatement(undefined);
@@ -336,8 +335,11 @@ export function OutlineWriterProvider({
     setEditing(undefined);
     setStatement(undefined);
   }, [sendKey, setReply, store]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `setReply` is the setter `useHeldReplyTo` hands back from `useState`, one function for the provider's life, which the rule cannot see through the hook
   const writeOnIssue = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
+    const line = { focus, setAnswer, setEditing, setReply, setStatement };
+    if (keptOnTarget(store.get(sendKey)?.request, line)) return;
     clear();
     focus();
   }, [clear, focus, sendKey, store]);
@@ -345,8 +347,7 @@ export function OutlineWriterProvider({
     (id: string, body: string) => {
       if (store.sendingNow(sendKey)) return;
       const line = { focus, setAnswer, setEditing, setReply, setStatement };
-      if (keptOnStatement(store.get(sendKey)?.request.statement, line)) return;
-      if (keptOnReply(store.get(sendKey)?.request.replyTo, line)) return;
+      if (keptOnTarget(store.get(sendKey)?.request, line)) return;
       setReply(null);
       setAnswer(undefined);
       setStatement(undefined);
@@ -467,10 +468,11 @@ function keptOnStatement(
 /**
  * Keeps the line on `held`, the reply of a send Dispatch refused that is held under the line's
  * name, and says whether it did, by the rule `keptOnStatement` states: an Answer, an option, a
- * change of answer, an Edit or a Reply on a statement puts the caret back in the line on that
- * reply, until the reader ends it in the line (`clear`), which takes it off the held send. A
- * Reply on another entry is put back on it by `redirectedReplyTarget`. With none held it does
- * nothing. Each caller's `sendingNow` guard runs first, so a send held then was refused.
+ * change of answer, an Edit, a Reply on a statement or the issue's own Reply puts the caret back
+ * in the line on that reply, until the reader ends it in the line (`clear`), which takes it off
+ * the held send. A Reply on another entry is put back on it by `redirectedReplyTarget`. With
+ * none held it does nothing. Each caller's `sendingNow` guard runs first, so a send held then
+ * was refused.
  */
 function keptOnReply(held: ReplyTarget | null | undefined, line: HeldLine): boolean {
   if (held === undefined || held === null) return false;
@@ -480,6 +482,19 @@ function keptOnReply(held: ReplyTarget | null | undefined, line: HeldLine): bool
   line.setReply(held);
   line.focus();
   return true;
+}
+
+/** Keeps the line on the target of `held`, the send held under the line's name - its statement
+ *  (`keptOnStatement`, which a Reply on that same statement, `aimed`, takes whole) or its reply
+ *  (`keptOnReply`) - and says whether it did. Every aim but a Reply on an entry, which
+ *  `redirectedReplyTarget` puts back on a refused reply, runs it first, the issue's own Reply
+ *  among them, so only the line's own end of the target (`clear`) lets that target go. */
+function keptOnTarget(
+  held: Pick<SentRequest, "replyTo" | "statement"> | undefined,
+  line: HeldLine,
+  aimed?: StatementTarget
+): boolean {
+  return keptOnStatement(held?.statement, line, aimed) || keptOnReply(held?.replyTo, line);
 }
 
 /** One item of the conversation the line can reply to: a row of the outline that takes a reply,

@@ -284,9 +284,11 @@ export interface OutlineLook {
    *  statement's whole words (`StatementAnchor`), which the send carries as the comment's anchor
    *  (`SentRequest.statement`). The line's control and Escape end it, as they end a reply. */
   readonly anchor?: StatementAnchor;
-  /** The word of the control at the right of the target line, which ends the target: a reply,
-   *  a statement (`onCancelReply`) or an edit (`onClose`). */
+  /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;
+  /** What the target line's control and Escape do: the host ends the line's target - a reply, a
+   *  statement, an edit - or, with none, leaves the line. */
+  readonly end: () => void;
   /** The kinds the line writes; none while it has a target, which takes a comment, or while the
    *  issue is closed. */
   readonly kinds: readonly OutlineKind[];
@@ -692,9 +694,6 @@ export function MentionComposer({
   // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
   // composer is on screen.
   const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
-  /** The issue page's line aims at a reply or a statement, which its target line's control and
-   *  Escape end (`onCancelReply`); with an edit or no target they leave the line (`onClose`). */
-  const aimed = replyTo !== null || outline?.anchor !== undefined;
   /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
@@ -746,12 +745,11 @@ export function MentionComposer({
       // An open picker takes Escape on the field's own listener and stops it there, so this
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
-      // asks nothing: it ends a reply or a statement, and otherwise leaves the line.
-      if (outlined) {
+      // asks nothing: it does what its host's `end` does.
+      if (outline !== undefined) {
         event.preventDefault();
         event.stopPropagation();
-        if (aimed) cancelReplyNow.current();
-        else onClose();
+        outline.end();
         return;
       }
       if (replyTo !== null) {
@@ -772,14 +770,13 @@ export function MentionComposer({
     form.addEventListener("keydown", handleEscape);
     return () => form.removeEventListener("keydown", handleEscape);
   }, [
-    aimed,
     askOptions,
     body,
     confirmingDiscard,
     // A dormant composer renders no form; the one it renders when it wakes takes the listener.
     dormant,
     onClose,
-    outlined,
+    outline,
     replacement,
     replyTo,
   ]);
@@ -1223,7 +1220,7 @@ export function MentionComposer({
       {outline.target === undefined ? null : (
         // The target is part of the message's address, fixed once the send is out, so the held
         // fieldset holds its control with every other draft control.
-        <OutlineTargetLine clearLabel={outline.cancelReply} onClear={aimed ? cancelReply : onClose}>
+        <OutlineTargetLine clearLabel={outline.cancelReply} onClear={outline.end}>
           {outline.target}
         </OutlineTargetLine>
       )}

@@ -1446,6 +1446,54 @@ test("an Edit keeps the box on a refused reply", async () => {
   await onRefusedReply(page);
 });
 
+// The reviewer's finding 5942007779: the issue's own Reply keeps the box on a refused reply as
+// every other aim does. It would set the box back to writing on the issue, and the held send
+// with it, so the next Send or Retry would post the refused words as a comment on the issue
+// rather than as the reply. Only the target line's own control lets the reply go. The outline
+// draws the issue as its header rather than as a row, so the case calls what the issue's row's
+// Reply calls (`RowActs`), from another row that holds the focus as a press on a row's control
+// leaves it.
+test("the issue's own Reply keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  const page = renderPage();
+  await refuseReply(user, page);
+  await act(async () => rowOf("comment-2").focus());
+  await act(async () => page.writer().writeOnIssue());
+  await onRefusedReply(page);
+  // The held send still answers bob's comment, so its Retry is sent as that reply.
+  const held = heldSends(page.client).get(["issue-composer", KEY]);
+  expect(held?.status).toBe("refused");
+  expect(held?.request.replyTo?.id).toBe("comment-1");
+});
+
+// The same for a comment on a statement Dispatch refused: the issue's own Reply keeps the box on
+// the statement, its refused words kept, and the held send keeps the statement.
+test("the issue's own Reply keeps the box on a refused comment on a statement", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The comment was refused.")
+  );
+  await act(async () => rowOf("comment-2").focus());
+  await act(async () => page.writer().writeOnIssue());
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
+  expect(writeField().value).toBe("Agreed");
+  expect(page.writer().statement?.quote).toBe(STATEMENT_QUOTE);
+  expect(heldSends(page.client).get(["issue-composer", KEY])?.request.statement).toEqual({
+    artifact: "spec",
+    quote: STATEMENT_QUOTE,
+  });
+});
+
 // Ending a refused reply in the box lets it go, as ending a statement does: the target line's
 // control takes the reply off the held send, its refusal and its words kept, so `r` on another
 // row then aims the box at that row.

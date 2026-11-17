@@ -344,23 +344,30 @@ function WriteLine({
   // question, so the line writes a comment there whatever chip was pressed while it was open,
   // rather than holding a question the issue refuses.
   const writesKinds = !aimed && !isClosed;
+  // The target line's control and Escape. With no target they leave the line. With the box drawn
+  // at rest the line goes back to writing on the issue with the caret kept in it, ending the
+  // target itself: the issue's own Reply keeps a refused send's target (`writeOnIssue`), and
+  // this is the line's own end of it. Elsewhere ending the target hides the box (R1), so the
+  // reader is put back: on the row they were replying to where the outline is drawn, and where
+  // they came from under a view.
+  const end = () => {
+    if (!aimed) {
+      place.giveBack();
+      return;
+    }
+    if (place.atRest) {
+      writer.clear();
+      writer.focus();
+      return;
+    }
+    finish(writer, place, lands ? { to: "self", under } : undefined);
+  };
   return (
     <MentionComposer
       box="issue-page-composer"
       closed={isClosed}
       kind={writesKinds ? writer.kind : "comment"}
       mutationKey={writer.sendKey}
-      // The target line's control and Escape. With the box drawn at rest the line goes back to
-      // writing on the issue with the caret kept in it. Elsewhere ending the target hides the
-      // box (R1), so the reader is put back: on the row they were replying to where the outline
-      // is drawn, and where they came from under a view.
-      onCancelReply={() => {
-        if (place.atRest) {
-          writer.writeOnIssue();
-          return;
-        }
-        finish(writer, place, lands ? { to: "self", under } : undefined);
-      }}
       onClose={place.giveBack}
       onKindChange={(next) => {
         if (next === "ask" || next === "comment") writer.setKind(next);
@@ -373,6 +380,7 @@ function WriteLine({
       outline={{
         anchor,
         cancelReply: CONTROL_LABELS.write_on_issue,
+        end,
         kinds: writesKinds ? KINDS : [],
         placeholder: aimed
           ? place.phone
@@ -494,6 +502,7 @@ function EditLine({
       onSent={back}
       outline={{
         cancelReply: CONTROL_LABELS.write_on_issue,
+        end: back,
         kinds: [],
         placeholder: place.phone
           ? CONTROL_LABELS.edit_placeholder_phone
