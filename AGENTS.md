@@ -1267,7 +1267,7 @@ A red check sends nothing back from anywhere: the daemon names every check GitHu
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 
-**Review signaling:** Native GitHub review API, tester status checks, and the handoff records on each Dispatch issue are the phase-verdict artifacts.
+**Review signaling:** Native GitHub review API, the results the steps record against the issue's checks (`dispatch result`), and the handoff records on each Dispatch issue are the phase-verdict artifacts.
 No lifecycle labels carry worker state.
 
 **Testing gate:** where the issue's task has a tester step, as the default steps do, behavioral testing is mandatory after every implementation round
