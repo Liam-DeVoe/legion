@@ -19,7 +19,7 @@ type Point struct {
 }
 
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
-// approved spec, every stored result, the runs of CI jobs, the tie of each check by its id, the
+// approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
 // history of the repository, the time of the derivation, and the checks that CI refused at
 // Subject.Commit (R48), each with the rule that refused it.
 type Input struct {
@@ -27,7 +27,7 @@ type Input struct {
 	Approved Approved
 	Results  []Result
 	JobRuns  []JobRun
-	Ties     map[string]Tie
+	Ties     CommitTies
 	History  History
 	Subject  Point
 	Now      time.Time
@@ -102,19 +102,21 @@ const (
 //     above it (R7: "A change to the text of a statement makes every result under it suspect").
 //     Results that pass the other tests and are all older than that approval: unknown,
 //     statement_changed.
-//  4. The runs that count at S. For a code check, a run at S.Commit, or at a commit whose tree
-//     differs from S.Commit's in no file of C's tie (R8), every such commit, and with a tie that is
-//     not known only runs at S.Commit. For a production check, the runs under S.Deploy; for a graph
-//     check, the runs at S.GraphTx, and none when S names no transaction (R7: "A result counts only
-//     for the procedure that ran it and for the subject that it read"). For a program check of
-//     production or the graph, only a run whose TestCommit differs from S.Commit in no file of C's
-//     tie, as for its failing example (R7: "The procedure is the text of the check and the code
-//     that runs it, so a change to either ends the standing of earlier results"); a run that names
-//     no TestCommit counts nowhere. No run counts: unknown, ci_fault when a run of C's job ended at
-//     S.Commit (R9), else subject_moved when C has a run, else no_result. A code check, or a program
-//     check of production or the graph, whose job ended at S.Commit in a leg with no run that
-//     counts: unknown, ci_fault (R7: "silence is not a pass"; R12: "Each leg of a matrix reports its
-//     own result, and no leg replaces the result of another").
+//  4. The runs that count at S. For a code check, a run at S.Commit, or at another commit A when
+//     C's tie is known at A and at S.Commit and no path that changed between them is covered by the
+//     tie at either commit (R8; R18: "At each commit, Dispatch derives four ties"), every such
+//     commit, and with a tie that is not known at one of the two only runs at S.Commit. For a
+//     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none
+//     when S names no transaction (R7: "A result counts only for the procedure that ran it and for
+//     the subject that it read"). For a program check of production or the graph, only a run whose
+//     TestCommit counts at S.Commit by the same rule, as for its failing example (R7: "The
+//     procedure is the text of the check and the code that runs it, so a change to either ends the
+//     standing of earlier results"); a run that names no TestCommit counts nowhere. No run counts:
+//     unknown, ci_fault when a run of C's job ended at S.Commit (R9), else subject_moved when C has
+//     a run, else no_result. A code check, or a program check of production or the graph, whose job
+//     ended at S.Commit in a leg with no run that counts: unknown, ci_fault (R7: "silence is not a
+//     pass"; R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
+//     another").
 //  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
 //     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
@@ -126,8 +128,8 @@ const (
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
 //  7. The newest failing example that counts: for a code check, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of
-//     production or the graph, one whose TestCommit differs from S.Commit in no file of the tie
-//     (R9: "its test, as it is now"); for a query or an agent, the newest. None: unknown,
+//     production or the graph, one whose TestCommit counts at S.Commit by the rule of step 4 (R9:
+//     "its test, as it is now"); for a query or an agent, the newest. None: unknown,
 //     no_failing_example; it did not fail: unknown, failing_example_missed; for a program check,
 //     its record does not show that an agent that did not write the test wrote the fault (R9): it
 //     names no author of the fault, no author of the test, or the author of the fault among the
@@ -439,7 +441,10 @@ func (j *checkJudge) countingFaults(c Check, faults []Result) []Result {
 }
 
 // carries is whether a result at commit counts at the subject's commit for the check id (R8): the
-// two are one commit, or the check's tie is known and no file of it differs between their trees.
+// two are one commit, or the check's tie is known at both commits and no path that differs between
+// their trees is covered by the tie at either commit, since a tie is a fact of a commit (R18: "At
+// each commit, Dispatch derives four ties"), and a file that the test read at one commit and that
+// the other deleted or added changed the code that the check runs.
 func (j *checkJudge) carries(check, commit string) bool {
 	switch {
 	case commit == "":
@@ -447,8 +452,8 @@ func (j *checkJudge) carries(check, commit string) bool {
 	case commit == j.in.Subject.Commit:
 		return true
 	}
-	tie := j.in.Ties[check]
-	if !tie.Known || j.in.History == nil {
+	from, to := j.in.Ties[commit][check], j.in.Ties[j.in.Subject.Commit][check]
+	if !from.Known || !to.Known || j.in.History == nil {
 		return false
 	}
 	changed, read := j.changed[commit]
@@ -456,7 +461,7 @@ func (j *checkJudge) carries(check, commit string) bool {
 		changed.paths, changed.ok = j.in.History.Changed(commit, j.in.Subject.Commit)
 		j.changed[commit] = changed
 	}
-	return changed.ok && !slices.ContainsFunc(changed.paths, tie.Covers)
+	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
 }
 
 // jobEnded is whether a run of job, in any leg, ended at the subject's commit.

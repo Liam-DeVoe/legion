@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"path"
 	"slices"
 	"strings"
@@ -15,14 +14,14 @@ import (
 
 // Scenario is a scenario of The Spec, in the format of testdata/scenarios that `spec-check state`
 // reads: the approved spec, the spec files at the commit of each subject, the history of the
-// repository, the tie of each check by its id, every result, the runs of CI jobs, the subjects, the
-// checks that CI refused at each commit (R48) by commit, and the work units. Units is nil exactly
-// when the scenario has no units.json.
+// repository, the tie of each check at each commit, every result, the runs of CI jobs, the
+// subjects, the checks that CI refused at each commit (R48) by commit, and the work units. Units is
+// nil exactly when the scenario has no units.json.
 type Scenario struct {
 	Approved Approved
 	Files    map[string]Tree // by commit
 	History  FixtureHistory
-	Ties     map[string]Tie
+	Ties     CommitTies
 	Results  []Result
 	JobRuns  []JobRun
 	Subjects []ScenarioSubject
@@ -100,8 +99,11 @@ type scenarioResult struct {
 //     it, which Parse reads and Validate judges with no problem, as `spec-check tree` does, and no
 //     directory that no subject reads;
 //   - history.json, as ReadFixtureHistory reads it;
-//   - ties.json, {"<check id>":["<path or glob>", …]}, each tie as NewTie takes it; a check that
-//     it does not name has a tie that is not known;
+//   - ties.json, {"<commit>":{"<check id>":["<path or pattern>", …]}}, as ReadCommitTies reads it:
+//     a check that the object of a commit does not name has a tie that is not known at that commit,
+//     and so has each check at a commit that the file does not name. A result at one commit counts
+//     at another only when the check's tie is known at both commits and no path that changed
+//     between them is covered by the tie at either commit;
 //   - results.json, [{"check","check_version","kind","outcome","commit","deploy","graph_tx","job",
 //     "leg","attempt","at","seq","fault_author","test_authors","test_commit"}]: check_version
 //     names an approved version of the check, whose Digest the result carries; kind is run or
@@ -146,7 +148,7 @@ func ReadScenario(fsys fs.FS) (Scenario, error) {
 	if s.History, err = readWith(fsys, "history.json", ReadFixtureHistory); err != nil {
 		return s, err
 	}
-	if s.Ties, err = readTies(fsys); err != nil {
+	if s.Ties, err = readWith(fsys, "ties.json", ReadCommitTies); err != nil {
 		return s, err
 	}
 	if s.Results, err = readResults(fsys, s.Approved); err != nil {
@@ -292,23 +294,6 @@ func readWith[T any](fsys fs.FS, name string, read func(io.Reader) (T, error)) (
 		return v, &ScenarioError{File: name, Err: err}
 	}
 	return v, nil
-}
-
-// readTies reads ties.json.
-func readTies(fsys fs.FS) (map[string]Tie, error) {
-	var paths map[string][]string
-	if err := readJSON(fsys, "ties.json", &paths); err != nil {
-		return nil, err
-	}
-	ties := make(map[string]Tie, len(paths))
-	for _, check := range slices.Sorted(maps.Keys(paths)) {
-		tie, err := NewTie(paths[check])
-		if err != nil {
-			return nil, scenarioFault("ties.json", "check %q: %w", check, err)
-		}
-		ties[check] = tie
-	}
-	return ties, nil
 }
 
 // readResults reads results.json, each result carrying the Digest of the approved version of its
