@@ -683,6 +683,32 @@ func TestAStartAfterTheLastEndCountsNoTime(t *testing.T) {
 	}
 }
 
+// An issue whose last end is the moment of its first start holds a time of 0 seconds, which the
+// read answers as 0 and not as no duration: a run whose start Dispatch never got ended at the
+// moment a later run started, whose end has not reached Dispatch. The start and the end are the
+// moment the records hold.
+func TestAStartAtTheLastEndCountsZeroTime(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "A run of steps")
+	recordRuns(t, handler, "LEG", issue,
+		run{"step", "planner", 1, nil, new(at(10)), "passed"},
+		run{"step", "implementer", 2, new(at(10)), nil, ""},
+	)
+	closeIssue(t, handler, issue)
+
+	finished := readPlans(t, handler, "LEG", "").Issues
+	if len(finished) != 1 {
+		t.Fatalf("the read lists %d issues, want %s", len(finished), issue)
+	}
+	read := finished[0]
+	if read.DurationSeconds == nil || *read.DurationSeconds != 0 {
+		t.Fatalf("the issue's time is %v seconds, want 0: its last end and its first start are both %s", read.DurationSeconds, at(10))
+	}
+	if read.StartedAt == nil || !read.StartedAt.Equal(at(10)) || read.EndedAt == nil || !read.EndedAt.Equal(at(10)) {
+		t.Fatalf("the time is %v to %v, want %s to %s, as the records hold them", read.StartedAt, read.EndedAt, at(10), at(10))
+	}
+}
+
 // A finished issue Legion never ran is listed with no plan, no rating, no time and no failed step,
 // each as null or empty on the wire, which is what Dispatch holds of it.
 func TestTheReadOfAnIssueLegionNeverRanHoldsNoTime(t *testing.T) {
