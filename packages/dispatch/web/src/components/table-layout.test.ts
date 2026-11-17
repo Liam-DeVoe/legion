@@ -130,7 +130,9 @@ test("while the table is sorted by a column, its minimum holds the sort mark too
 
   const unsorted = layoutIn(NARROWS, 800);
   expect(unsorted.responsive.sizing.title).toBe(240);
-  expect(unsorted.minimums).toBe(NARROWS.minimums);
+  const own = NARROWS.minimums;
+  if (own === undefined) throw new Error("NARROWS names its minimums");
+  expect(unsorted.minimums).toBe(own);
 
   const holds = { ...NARROWS, sortedMinimums: { title: 240 } };
   const named = layoutIn(holds, 800, {}, [{ id: "title", desc: true }]);
