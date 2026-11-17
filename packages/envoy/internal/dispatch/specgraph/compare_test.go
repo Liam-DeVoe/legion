@@ -351,6 +351,53 @@ func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) 
 	}
 }
 
+// The lines of ReadApproved and WriteApproved cut a node id as decodeJSON cuts a place: whole up
+// to 100 bytes, else its first and its last 50 bytes with … between them, so a line that names an
+// id of 256 KiB, the writer's longName or a long id that a block can hold, stays one short line.
+func TestTheLinesOfTheApprovedSpecCutALongNodeID(t *testing.T) {
+	t.Parallel()
+	y := func(n int) string { return strings.Repeat("y", n) }
+	longSlug := "key-" + y(1<<18-8) + "-end"
+	cutName, cutSlug := `"KEY\n`+y(46)+`…`+y(46)+`\tEND"`, `"key-`+y(46)+`…`+y(46)+`-end"`
+	block := func(id string) string {
+		return `":::requirement{#` + id + ` kind=\"behavior\"}\nThe page shows it.\n:::\n"`
+	}
+	node := func(id, n, block string) string {
+		return `{"id":` + id + `,"versions":[{"version":` + n + `,"at":"2026-11-10T00:00:00Z","block":` + block + `}]}`
+	}
+	for _, row := range []struct{ name, json, want string }{
+		{"a node with no version", `{"nodes":[{"id":` + jsonLongName + `,"removed":true,"versions":[]}]}`,
+			`specgraph: approved node ` + cutName + `: it has no version`},
+		{"version 0", `{"nodes":[` + node(jsonLongName, "0", block("a-page-shows-it")) + `]}`,
+			`specgraph: approved node ` + cutName + ` version 0: the versions are 1 and more, oldest first`},
+		{"a block of another node", `{"nodes":[` + node(jsonLongName, "1", block("a-page-shows-it")) + `]}`,
+			`specgraph: approved node ` + cutName + ` version 1: bad-approved-block: the block holds node "a-page-shows-it", not ` + cutName + ` (line 1 of its block)`},
+		{"a block of a node with a long id", `{"nodes":[` + node(`"a-page-shows-it"`, "1", block(longSlug)) + `]}`,
+			`specgraph: approved node "a-page-shows-it" version 1: bad-approved-block: the block holds node ` + cutSlug + `, not "a-page-shows-it" (line 1 of its block)`},
+		{"one long id on two nodes", `{"nodes":[` + node(`"`+longSlug+`"`, "1", block(longSlug)) + `,` + node(`"`+longSlug+`"`, "1", block(longSlug)) + `]}`,
+			`specgraph: approved spec: node ` + cutSlug + ` is in the approved spec two times`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ReadApproved(strings.NewReader(row.json))
+			if err == nil {
+				t.Fatal("ReadApproved accepted the file")
+			}
+			expectOneShortLine(t, err.Error(), row.want)
+		})
+	}
+	t.Run("a node under another long id", func(t *testing.T) {
+		t.Parallel()
+		at := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+		a := Approved{Nodes: map[string]ApprovedNode{longName: {ID: longSlug, Versions: []ApprovedVersion{{Version: 1, At: at, Block: "x"}}}}}
+		err := WriteApproved(&bytes.Buffer{}, a)
+		if err == nil {
+			t.Fatal("WriteApproved wrote the approved spec")
+		}
+		expectOneShortLine(t, err.Error(), `specgraph: approved spec: node `+cutSlug+` is under the id `+cutName)
+	})
+}
+
 // ReadApproved reads each field of the fixture, and the current text of a node is its newest
 // version unless the approved spec removed the node.
 func TestCurrentIsTheNewestTextOfEachNodeThatIsNotRemoved(t *testing.T) {
