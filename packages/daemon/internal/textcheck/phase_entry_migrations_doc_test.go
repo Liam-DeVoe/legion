@@ -41,9 +41,10 @@ const (
 )
 
 var (
-	// phaseEntryListOpening is the sentence that opens the list. It names the contract of the
-	// release it speaks of and no count.
-	phaseEntryListOpening = regexp.MustCompile(`^The migrations recorded above this one at contract \d+ are these\.$`)
+	// phaseEntryListOpening is the sentence that opens the list. It names no contract and no
+	// count: the list holds the migrations of every release after the phase entry's, so a contract
+	// it named would be false of the later ones, and a count would be false after the next.
+	phaseEntryListOpening = regexp.MustCompile(`^The migrations recorded above this one are these\.$`)
 	// migrationNameInGuide is a migration's name as the guide writes it: the file's name without
 	// `.up.sql`.
 	migrationNameInGuide = regexp.MustCompile(`\b\d{14}_\w+`)
