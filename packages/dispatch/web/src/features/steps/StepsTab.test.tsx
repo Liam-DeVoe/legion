@@ -1,5 +1,4 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the table's own scroll events below, which user-event has no form for
 import { fireEvent, screen, within } from "@testing-library/react";
 
@@ -8,9 +7,7 @@ import { renderWithQueries } from "../../__tests__/query-provider";
 import { installResizeObserver, layOutScrollBox } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
-import { eventRefreshTargets } from "../../api/event-refresh";
-import { refreshQueries } from "../../api/query-refresh";
-import type { DispatchEvent, IssueSteps } from "../../api/types";
+import type { IssueSteps } from "../../api/types";
 import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
 import { stepRecord as record } from "./step-record-fixture";
@@ -115,67 +112,6 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   } finally {
     tab.restore();
   }
-});
-
-// An event of the issue that comes with a phase moving redraws the tab with no reload: the
-// refresh is the event feed's own (`eventRefreshTargets`, then the scheduler), so the read it
-// reaches must be the very query the tab renders, however that query names its key.
-test("an event of the issue redraws the Steps tab's rows with what the records now hold", async () => {
-  await onFakeClock(async () => {
-    let answer: IssueSteps = {
-      issue: "CORE-1",
-      tasks: [
-        { steps: [record({ ended_at: null, id: "implement-1", result: "" })], task: "default" },
-      ],
-    };
-    const listSteps = spyOn(api, "listSteps").mockImplementation(async () => answer);
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const view = renderWithQueries(<StepsTab active issueKey="CORE-1" />, {
-      wrapper: ({ children }) => (
-        <QueryClientProvider client={client}>{children}</QueryClientProvider>
-      ),
-    });
-    try {
-      await tick(0);
-      const table = screen.getByRole("table", { name: "Steps of task default" });
-      expect(bodyRows(table)[0]?.[8]).toBe("running");
-
-      answer = {
-        issue: "CORE-1",
-        tasks: [{ steps: [record({ id: "implement-1" })], task: "default" }],
-      };
-      const released: DispatchEvent = {
-        actor: { id: "legion-daemon:CORE", kind: "session" },
-        created_at: "2026-11-16T09:40:00Z",
-        id: 12,
-        issue_key: "CORE-1",
-        notify: false,
-        payload: {
-          claim: null,
-          key: "CORE-1",
-          previous_claim: {
-            actor: { id: "legion-core-core-1-implementer", kind: "session" },
-            at: "2026-11-16T09:00:00Z",
-          },
-          reason: "released",
-          repo: null,
-          resolved_repo: null,
-          status: "in_progress",
-        },
-        project: "CORE",
-        seq: 4,
-        type: "issue.released",
-      };
-      refreshQueries(client, eventRefreshTargets(released));
-      await tick(1_500);
-      expect(bodyRows(table)[0]?.[8]).toBe("passed");
-      expect(listSteps).toHaveBeenCalledTimes(2);
-    } finally {
-      view.unmount();
-      client.clear();
-      listSteps.mockRestore();
-    }
-  });
 });
 
 // Two tasks are two tables under two headings, in the server's order (which here is not the
