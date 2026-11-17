@@ -138,7 +138,9 @@ func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue rec
 // first step of its line. Where the owner gave none, the run takes the project's default steps
 // (defaultRows). Nothing is passed over in silence, and the plan the run takes is the one the
 // telling names (tellPassedOver). A pull request the record already holds, which an earlier run of
-// another plan can have opened, names the task the run walks (nameTaskOnPullRequest).
+// another plan can have opened, names the task the run walks (nameTaskOnPullRequest). The task the
+// run walks takes its branch here, in the transaction that moves it into its first step
+// (startTaskCopy).
 func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
 	if err != nil {
@@ -170,6 +172,9 @@ func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issu
 		return err
 	}
 	if err := e.nameTaskOnPullRequest(ctx, tx, issue.Key, w); err != nil {
+		return err
+	}
+	if err := e.startTaskCopy(ctx, tx, issue, w.Task); err != nil {
 		return err
 	}
 	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
