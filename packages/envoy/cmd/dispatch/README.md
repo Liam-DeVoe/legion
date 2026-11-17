@@ -4698,6 +4698,7 @@ Each item below names a path with its method and identity, then its purpose.
   an upload under an existing artifact's name, one stored longer included, is never refused for its length.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
+  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
@@ -4712,6 +4713,7 @@ Each item below names a path with its method and identity, then its purpose.
   List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
+  A new version that is not a person's own and leaves out the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
@@ -4769,6 +4771,7 @@ Each item below names a path with its method and identity, then its purpose.
   `{id}` must be a UUID.
   An edit is `400 INVALID_ASK_BLOCK` when an ask it writes or changes breaks its content rule (`paragraph+ bullet_list?`) or holds what settlement cannot read;
   an ask it carries through unchanged is not its to refuse.
+  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A check block it adds or changes that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
@@ -4855,6 +4858,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply issue-document edit operations.
+  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
@@ -4883,6 +4887,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/projects/{key}/artifacts/{slug}/edits` (POST; cookie, trusted header, or bearer)
 
   Apply project-document edit operations.
+  A batch that is not a person's own whose result drops the block of an answered ask, or retypes it, is `409 ANSWERED_ASK_KEPT` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
 
@@ -5126,6 +5131,15 @@ Each item below names a status and code, then its meaning.
   an edit elsewhere in a document never meets another writer's block.
   A blank `ci_check` names no run.
   A browser's edit is never refused: settlement removes such a block's `ci_check` and posts one `block.invalid` naming the block, the rule as `reason` and `block_type: "check"`.
+
+- `409 ANSWERED_ASK_KEPT`
+
+  A document write that is not a person's own would take the block of an answered ask out of its document, or retype that block (`docs.ErrAnsweredAskKept`, dispatch://INFRA-1150 R6).
+  A person's own write is one at a browser, or one through a credential of theirs that holds the `person` scope;
+  any other - an agent's session, a pod's service account, the deployment's shared token - is refused, and nothing of it is written.
+  The message names each such ask's node (`dispatch://KEY/ask/<id>`), quotes its question, and names its block's address and, for a retype, the type the write gave it.
+  An edit (`POST /edits` and its slug variants) is held to it for the blocks its batch drops or retypes itself, and an upload of a new version for every answered ask whose block the version leaves out or retypes.
+  A write that also drops the block of an open ask is `400 INVALID_ASK_BLOCK` first.
 
 - `409 DOC_SCHEMA`
 

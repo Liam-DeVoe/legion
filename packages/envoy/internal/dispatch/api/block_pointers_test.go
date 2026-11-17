@@ -347,10 +347,13 @@ func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 					t.Fatalf("error = %v, want a block pointer refusal", err)
 				}
 			} else {
-				// The value is refused where the write reads it, so the room never records it
-				// and then answers for its own document as one outside the schema.
-				if !errors.Is(err, pmdoc.ErrSchema) || errors.Is(err, docs.ErrDocSchema) {
-					t.Fatalf("error = %v, want the value refused (%v), not the document (%v)", err, pmdoc.ErrSchema, docs.ErrDocSchema)
+				// The value is refused where the write reads it: the caller's markdown
+				// (docs.ErrInvalidMarkdown), which the edit reports as an invalid operation on its
+				// markdown, so the room never records it and then answers for its own document as
+				// one outside the schema.
+				var invalid *docs.ErrInvalidOp
+				if !errors.As(err, &invalid) || invalid.Field != "markdown" || !errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, docs.ErrDocSchema) {
+					t.Fatalf("error = %v, want the markdown refused (%v), not the document (%v)", err, docs.ErrInvalidMarkdown, docs.ErrDocSchema)
 				}
 				const sentence = "is a block of an ask: a block[] attribute points only at a block of a document"
 				if !strings.HasSuffix(err.Error(), sentence) {
