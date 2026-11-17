@@ -33,10 +33,13 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * members. So every decision stands in its part with its state, never in the folded foot for want
  * of a row, and the focus stays with it.
  *
- * Until the view or the tree read has answered, and the asks read too, the view does not know
- * what the issue holds, so it says nothing of its decisions (`known`). Where neither the view
- * nor the tree read holds an answer and one of them failed, it says the decisions could not be
- * read, with a Retry that reads again each of the two that failed (`failed`, `retry`). The asks
+ * The view's rows are the tree read's: the parts walk the page's tree (`decisionsParts`), which
+ * holds the issue alone until the tree read answers (`issue-tree.ts`'s `buildIssueTree`), so
+ * before then no decision has a row to stand on, whatever the decisions view holds. So until the
+ * tree read has answered, and the asks read too, the view does not know what the issue holds, and
+ * does not say it holds no decisions (`known`). Where the tree read failed with no answer held, or
+ * is still out and the decisions view failed with no answer held, it says the decisions could not
+ * be read, with a Retry that reads again each of the two that failed (`failed`, `retry`). The asks
  * read is the third read the decisions come from: a person's decision is a question they
  * answered, and the open questions are the issue's open asks, which only the asks read says.
  * Where it failed with no answer held, the view says the open questions could not be read, on a
@@ -55,11 +58,12 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
 
 /** The Decisions view's parts, and how the reads they come from stand. */
 export interface DecisionsEntries extends DecisionsParts {
-  /** Whether the view knows what the issue holds: the decisions (the decisions view's, or the
-   *  tree read's) and the asks have both answered. Until then it cannot say there are none. */
+  /** Whether the view knows what the issue holds: the tree read, which its rows come from, and
+   *  the asks have both answered. Until then it cannot say there are none. */
   readonly known: boolean;
-  /** Whether no decisions are held because the tree read or the decisions view read failed
-   *  with no answer held. */
+  /** Whether the view has no rows to draw because the tree read, which they come from, failed
+   *  with no answer held, or is still out and the decisions view read failed with no answer
+   *  held. */
   readonly failed: boolean;
   /** Reads again each of those two reads that failed with no answer held. */
   readonly retry: () => void;
@@ -133,12 +137,14 @@ export function useDecisionsEntries({
           : newestFirst([...model.yours, ...model.others], root),
     };
   }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
-  const known = held !== undefined && asks !== undefined;
+  // The rows are the tree read's (see above): the view knows what the issue holds once that read
+  // has answered, and a failed decisions view read counts only while neither read holds an answer.
+  const known = tree !== undefined && asks !== undefined;
   // Failed with no answer held (see above), as the Spec view judges the same reads
   // (`SpecFilterBody.tsx`'s `failedWithNothing`).
   const treeFailed = treeRead.isError && tree === undefined;
   const viewFailed = viewRead.isError && viewRead.data === undefined;
-  const failed = held === undefined && (treeFailed || viewFailed);
+  const failed = treeFailed || (held === undefined && viewFailed);
   const { refetch: readTree } = treeRead;
   const { refetch: readView } = viewRead;
   const retry = useCallback(() => {

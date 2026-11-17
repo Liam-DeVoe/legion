@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
@@ -63,6 +63,20 @@ function keepFocusOnRow(control: HTMLElement): void {
 }
 
 /**
+ * Reads the tree of issue `issueKey` again and drops every view of it the page holds: what a Keep
+ * does however it ends, and a Change once Dispatch took it. The rule: a write whose answer
+ * changes what the tree draws reads the tree by its own key, as the page refreshes it on an event
+ * (`subscribeTreeFreshness`'s `refreshQueries`), so a walk of its pages already in flight is
+ * waited for rather than cut off, and drops every held view (`dropViews`), since each draws how a
+ * decision stands. It reaches the tree through no other read's invalidation, which reaches
+ * nothing where that read is already invalidated.
+ */
+function readDecisionsAgain(queryClient: QueryClient, issueKey: string): void {
+  refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
+  dropViews(queryClient, issueKey);
+}
+
+/**
  * Each decision's Change the reader has open, by the decision's own address (`Decision.ref`),
  * with the words typed in it so far: `""` for a form opened with nothing typed yet, and no entry
  * for a Change that is closed, or whose words are out or landed. A row's body closes once the focus
@@ -116,23 +130,16 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  // The tree read and the asks read under the keys the page reads them by, each watched by an
-  // observer that is never enabled: the node sends no request of its own and sees every answer
-  // the page's own observers fetch. The asks read says which ask an answered question is, which
-  // is what makes a person's decision (`decisionNodes`).
+  // The tree read under the key the page reads it by, watched by an observer that is never
+  // enabled: the node sends no request of its own and sees every answer the page's own observer
+  // fetches. No asks are passed: they only make an answered question a person's decision
+  // (`decisionNodes`), and these controls are drawn only on a decision waiting for review, which
+  // is an agent's, so the decision its address finds is the same without them.
   const tree = useQuery({ ...issueTreeQuery(issueKey), enabled: false });
-  const asks = useQuery({
-    enabled: false,
-    queryFn: () => api.listIssueAsks(issueKey, "all"),
-    queryKey: ["asks", issueKey],
-  });
-  // Read once per answer of either, which is when a decision is a new object.
+  // Read once per answer, which is when a decision is a new object.
   const decisions = useMemo(
-    () =>
-      tree.data === undefined
-        ? []
-        : decisionNodes(tree.data, { asks: asks.data, issue: { key: issueKey } }),
-    [asks.data, issueKey, tree.data]
+    () => (tree.data === undefined ? [] : decisionNodes(tree.data, { issue: { key: issueKey } })),
+    [issueKey, tree.data]
   );
   const decision = decisions.find((row) => row.ref === nodeReference);
   const documentId = decision === undefined ? undefined : decisionDocument(decision);
@@ -183,16 +190,11 @@ function DecisionControls({
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
     // However the Keep ends - taken, or refused because the decision changed since - the tree is
-    // read again and every view the page holds is dropped, the Decisions view's and the Spec
-    // view's among them, since each draws how the decision stands: so every one draws the
-    // decision as it now stands, kept, or in its new words with Keep to press again. The tree is
-    // refreshed by its own key as the page refreshes it on an event (`subscribeTreeFreshness`'s
-    // `refreshQueries`), so a walk of its pages already in flight is waited for rather than cut
-    // off. A refusal is said below, on the decision, until the next press.
-    onSettled: () => {
-      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
-      dropViews(queryClient, issueKey);
-    },
+    // read again and every view the page holds is dropped (`readDecisionsAgain`), the Decisions
+    // view's and the Spec view's among them, since each draws how the decision stands: so every
+    // one draws the decision as it now stands, kept, or in its new words with Keep to press
+    // again. A refusal is said below, on the decision, until the next press.
+    onSettled: () => readDecisionsAgain(queryClient, issueKey),
   });
   return (
     <>
@@ -292,13 +294,11 @@ function ChangeComposer({
     },
     // The change is a comment the tree read hangs under its decision (`decision-review.ts`), so
     // the decision says so, leaves the review list and draws the change under it once the tree
-    // is read again: the tree is read by its own key and every held view is dropped, as a Keep
-    // does, and the comments read is then invalidated too. The tree is not left to the comments
-    // read's invalidation, which reaches nothing where that read is already invalidated.
+    // is read again: the tree is read again and every held view dropped, as a Keep does
+    // (`readDecisionsAgain`), and the comments read is then invalidated too.
     onSuccess: () => {
       setBody("");
-      refreshQueries(queryClient, [{ exact: true, queryKey: issueTreeKey(issueKey) }]);
-      dropViews(queryClient, issueKey);
+      readDecisionsAgain(queryClient, issueKey);
       void queryClient.invalidateQueries({ exact: true, queryKey: ["comments", issueKey] });
       onDone();
     },

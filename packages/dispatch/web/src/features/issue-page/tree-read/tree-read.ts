@@ -58,7 +58,8 @@ export function viewKey(key: string, view: TreeView): readonly ["issue-tree", st
 
 /** Drops every view of issue `key` the cache holds (`resetQueries`), so a held one is gone and
  *  the one an observer has enabled is read again: what a new load of the issue does, so it draws
- *  no view older than its own tree. A write never drops them (`subscribeTreeFreshness`). */
+ *  no view older than its own tree, and what a Keep and a Change do (`DecisionActions.tsx`). An
+ *  event of the issue drops none: it only marks them stale (`subscribeTreeFreshness`). */
 export function dropViews(queryClient: QueryClient, key: string): void {
   for (const view of TREE_VIEWS) {
     void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, view) });

@@ -680,6 +680,79 @@ test("the column says no decision shaped a statement only once the decisions are
   }
 });
 
+// The Spec view read and the asks read can each be out, answered or failed when the body is
+// drawn, with the statements' reads answered, and the column draws only what the reads that
+// answered say: the line that its decisions could not be read where the Spec view read failed
+// with nothing held; the line that its open questions could not be read where the asks read
+// failed; and a statement's words that no decision shaped it, and a person's decision beside the
+// statement it shaped, only where both have answered.
+test("every state of the Spec view read and the asks read draws what the column knows", async () => {
+  const words = "Put the decisions beside the statements. Please.";
+  const states: readonly ReadState[] = ["out", "answered", "failed"];
+  for (const specView of states) {
+    for (const asks of states) {
+      const combination = `the Spec view read ${specView} and the asks read ${asks}`;
+      const { client, read, view } = drawBody(
+        issueTree([statement("r1"), statement("r2"), answeredAsk("ask-1", { text: words })]),
+        [
+          ...["r1", "r2"].map((block, position) =>
+            answerNode(block, "requirement", {
+              document: { artifact_id: "artifact-spec", position, slug: SPEC_SLUG },
+              mark: "query",
+            })
+          ),
+          answerNode("ask-1", "ask", { mark: "context" }),
+        ],
+        {
+          asks: [askRead("ask-1", words)],
+          asksRead: asks === "answered" ? "answered" : "out",
+          specView,
+          tuples: [{ from: "ask-1", kind: "shaped", to: "r1" }],
+        }
+      );
+      try {
+        if (asks === "failed") {
+          // The asks read failed, as the page's own observer of it left it (`useIssueTree.ts`).
+          await act(async () => {
+            await client.prefetchQuery({
+              queryFn: () => Promise.reject(new Error("offline")),
+              queryKey: ["asks", KEY],
+            });
+          });
+        }
+        const both = specView === "answered" && asks === "answered";
+        await waitFor(
+          () => {
+            const text = view.container.textContent ?? "";
+            expect(
+              text.includes(ANSWER_LINES.decisions_unreadable),
+              `${combination}: whether the column says its decisions could not be read`
+            ).toBe(specView === "failed");
+            expect(
+              text.includes(ANSWER_LINES.asks_unreadable),
+              `${combination}: whether the column says its open questions could not be read`
+            ).toBe(asks === "failed");
+            expect(
+              view.container.querySelector("[data-spec-nothing]") !== null,
+              `${combination}: whether a statement says no decision shaped it`
+            ).toBe(both);
+            expect(
+              [...view.container.querySelectorAll("[data-spec-cell]")]
+                .filter((cell) => cell.getAttribute("data-decision-id") === "ask-1")
+                .map((cell) => cell.getAttribute("data-spec-statements")),
+              `${combination}: the statements the person's decision stands beside`
+            ).toEqual(both ? ["spec#b-r1"] : []);
+          },
+          { timeout: 3000 }
+        );
+      } finally {
+        view.unmount();
+        read.mockRestore();
+      }
+    }
+  }
+});
+
 // R5: an agent's decision draws its own words whole in its cell, as a row draws a node's words
 // (`RowText`, in a block: departure 2 of dispatch://INFRA-3939's plan), while the line under the
 // statement quotes their first line, and the one word the model holds for how sure it was; R2:

@@ -112,7 +112,9 @@ export function DecisionsRow({
   /** Whether this row draws what its focus adds: it has the focus, the reader pinned it open,
    *  or the cycle key opens every body. */
   body: boolean;
-  /** The decisions document a decision is a block of, which its Keep writes against. */
+  /** The document the row's decision stands in, which names the issue whose tree read holds the
+   *  decision: its Keep and Change write on the decision node's own document
+   *  (`DecisionActions.tsx`'s `decisionDocument`), never this one. */
   document?: Artifact;
   entry: DecisionsEntry | NamedEntry;
   focused: boolean;

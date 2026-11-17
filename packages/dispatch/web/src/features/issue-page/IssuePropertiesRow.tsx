@@ -2,7 +2,6 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
@@ -81,22 +80,16 @@ export function IssuePropertiesRow({
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
   // coverage's statements, and the decisions the tree read answers as nodes, with each Change it
-  // hangs under one - so it costs no request of its own (`waiting.ts`). The asks read, which says
-  // which answered question is a person's decision (`decisionNodes`), is watched by an observer
-  // that is never enabled, as Keep and Change watch it (`DecisionActions.tsx`): the outline holds
-  // it, and a person's decision never waits for review, so the count is the same without it.
+  // hangs under one - so it costs no request of its own (`waiting.ts`). No asks are passed: they
+  // only make an answered question a person's decision (`decisionNodes`), which never waits for
+  // review, and the count counts only the decisions of the review list, so it is the same
+  // without them.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const coverage = useQuery(issueCoverageQuery(issue.key));
-  const asks = useQuery({
-    enabled: false,
-    queryFn: () => api.listIssueAsks(issue.key, "all"),
-    queryKey: ["asks", issue.key],
-  });
   const tree = useTreeRead(issue).answer;
   const decisions = useMemo(
-    () =>
-      tree === undefined ? [] : decisionNodes(tree, { asks: asks.data, issue: { key: issue.key } }),
-    [asks.data, issue.key, tree]
+    () => (tree === undefined ? [] : decisionNodes(tree, { issue: { key: issue.key } })),
+    [issue.key, tree]
   );
   const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
   const statements = useMemo(

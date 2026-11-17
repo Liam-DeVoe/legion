@@ -175,9 +175,10 @@ export function SpecFilterBody({
   // `shaped` ties, which the asks read says is answered (`decisionNodes`). The view read and the
   // asks read are watched by observers that are never enabled, under the keys the page reads
   // them by (`ViewReadProvider`, `useIssueTree.ts`). A change of the issue marks the view stale
-  // and reads it again with its answer kept (`subscribeTreeFreshness`), and only a new load drops
-  // it (`dropViews`), so the column draws the answer it last held until the next one lands, and
-  // after a read again that fails, which leaves the body an answer to draw. Until the view and
+  // and reads it again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep and a
+  // Change drop it (`dropViews`), and the column then draws the answer it last held (`last`)
+  // until the next one lands. A read again that fails keeps its answer, which leaves the body an
+  // answer to draw too. Until the view and
   // the asks read have both answered the column says nothing of a statement no decision shaped,
   // since it does not know yet: a person's decision is a question they answered, which only the
   // asks read says. Where the asks read failed with no answer held, the column says the open
@@ -1007,8 +1008,7 @@ function DecisionCell({
       } ${rule} ${pageMutedText}`}
       data-decision-id={decision?.id}
       // The node the cell is drawn as, which Details draws while the cell has the focus: for a
-      // person's decision, drawn by their answer, the section of `decisions.md` that names it, or
-      // the question itself where its `shaped` ties shaped the run.
+      // person's decision, drawn by their answer, the question itself.
       data-node-id={decision?.node ?? decision?.id}
       data-said={decision?.said}
       data-spec-cell=""
