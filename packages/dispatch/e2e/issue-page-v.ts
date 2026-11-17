@@ -642,6 +642,14 @@ export interface RefusedBlocksRead {
   refused(count: number): Promise<void>;
 }
 
+/** One wait `refused` hands a row: the promise it returns and the call that settles it. The
+ *  package compiles against ES2022, whose library names no type for what
+ *  `Promise.withResolvers` returns, so the two parts the helper uses are named here. */
+interface RefusalWait {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+}
+
 /**
  * Refuses the blocks read of the document `artifactId` names, with a 500 in the server's error
  * shape, from the next request the page sends until `lift`, as many times as the page asks it.
@@ -655,7 +663,7 @@ export async function refuseBlocksRead(page: Page, artifactId: string): Promise<
   let refusals = 0;
   // Each wait a row asked for, by the count it waits on: the count rises by one at each
   // refusal, so the refusal that reaches a wait's count is the one that settles it.
-  const waiting = new Map<number, PromiseWithResolvers<void>>();
+  const waiting = new Map<number, RefusalWait>();
   const refuse = async (route: Route) => {
     await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
     refusals += 1;
