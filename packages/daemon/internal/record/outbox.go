@@ -1119,7 +1119,7 @@ type StepRecord struct {
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
 	// members are members of the payload itself, written together and left out together when it is
-	// nil; a stored row naming one of them alone reads as a rating whose other member is zero.
+	// nil (validateOutboxPayload holds a stored row to that).
 	*PlanRating
 }
 
