@@ -702,12 +702,14 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // (kvwatch.Watcher.Servable), and past it answers nothing: Opened is false, so a publish leaves its
 // counts out, and Get answers no record, so a send to a session with no entry answers 404, exactly
 // as on a listener with no bucket. Once the retry has moved the watcher and the moved watcher's
-// read has completed, the store answers again. The watcher's clock is the test's, so the bound is
-// passed without waiting it out.
+// read has completed, the store answers again. The watcher's clock is the test's, and it moves only
+// when the test moves it, so the bound is passed without waiting it out, and a failed move that
+// takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	// Held, not a still clock: the watcher's own waits stay real timers here (only WithNow is
-	// set), and it reads this clock for how long they ran, so a still one would re-arm them for ever.
-	watcherClock := clocktest.Held()
+	// A clock that moves only when the test moves it: the stale bound is passed by the test's
+	// advance, never by how long the steps before it took, so a failed move that takes minutes on
+	// a busy machine does not pass it before the test asks the store inside it.
+	watcherClock := clocktest.New(time.Now())
 	known, conn, grant, logged, timers := knownOverGrant(t, WithKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
@@ -748,6 +750,15 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
+	// Opened is the moved watcher's read completed, on the watcher's own goroutine, and the line
+	// saying the store is back is written by the retry once its move has returned (attemptRepair),
+	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
+	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
+	// retirement is what the count waits for, and no attempt after it writes a second line.
+	// The retry's next attempt is armed on the store's timers, which the test moves.
+	repairUntil(t, timers, "the repair to retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
