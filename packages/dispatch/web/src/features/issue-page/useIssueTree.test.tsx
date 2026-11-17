@@ -1097,3 +1097,56 @@ test("an event while the reader is away is drawn when the reader comes back", as
     client.clear();
   }
 });
+
+// A write, and a turn later the event it raises, land while the open filter's view is being
+// read. Dropping the held views must not cancel that read: every event of a burst would start a
+// view walk of many pages over, and on a busy issue the filter would never draw. Once the read
+// out settles, the view is read again, at most once for the write and once for its event, so
+// it ends on an answer composed after the write.
+test("a write while the open view is being read cancels nothing and reads the view again", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const specReads: { readonly after: boolean; readonly signal: AbortSignal | undefined }[] = [];
+  const out = Promise.withResolvers<void>();
+  let written = false;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(
+    async (_key, query, init) => {
+      if (query?.view !== "spec") return treeAnswer([]);
+      specReads.push({ after: written, signal: init?.signal ?? undefined });
+      await out.promise;
+      return { ...treeAnswer([]), nodes: [{ ...task, mark: "query" }] };
+    }
+  );
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    const view = renderHook(() => useIssueTree(issue), { wrapper: stageWrapper(client, "spec") });
+    await waitFor(() => expect(view.result.current.blocksRead).toBe(true));
+    await waitFor(() => expect(specReads.length).toBe(1));
+
+    written = true;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: ["comments", KEY] });
+    });
+    await act(async () => {
+      refreshQueries(client, [{ queryKey: ["comments", KEY] }]);
+      await Bun.sleep(0);
+    });
+    expect(
+      specReads.filter((read) => read.signal?.aborted === true).length,
+      "no view read is cancelled"
+    ).toBe(0);
+
+    await act(async () => {
+      out.resolve();
+      await Bun.sleep(1_500);
+    });
+    const again = specReads.filter((read) => read.after).length;
+    expect(again, "the view is read again after the write").toBeGreaterThanOrEqual(1);
+    expect(again, "the write and its event read the view at most twice").toBeLessThanOrEqual(2);
+    expect(specReads.filter((read) => read.signal?.aborted === true).length).toBe(0);
+    view.unmount();
+  } finally {
+    out.resolve();
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
