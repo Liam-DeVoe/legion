@@ -1770,8 +1770,8 @@ export const LegionChildRequest = z.strictObject({
   issue: nonEmptyString,
 });
 
-/** `api.PlanRegisterRequest`, register_plan (contract 156): the owner of an issue, the architect
- * whose grant serves the issue's tree, gives Legion the plan in version `version` of the document
+/** `api.PlanRegisterRequest`, register_plan (contract 156): the owner of an issue, an architect of
+ * the issue's tree, gives Legion the plan in version `version` of the document
  * `artifactId` of the issue, which the daemon reads from Dispatch at that version. The issue may be
  * one the daemon has not recorded yet while Dispatch shows it triage, backlog, icebox or todo
  * (`ISSUE_ALREADY_RELEASED` otherwise). */

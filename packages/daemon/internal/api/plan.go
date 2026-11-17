@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
-// PlanRegisterRequest is register_plan: the owner of an issue, an architect whose grant serves the
-// issue's tree, gives Legion the plan in one version of a document of the issue.
+// PlanRegisterRequest is register_plan: the owner of an issue, an architect of the issue's tree,
+// gives Legion the plan in one version of a document of the issue.
 type PlanRegisterRequest struct {
 	GrantID    string `json:"grantId"`
 	Issue      string `json:"issue"`
@@ -145,9 +145,9 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 // planOwner authorizes register_plan for an architect of the issue's tree, and answers the
-// generation the plan is given at. A recorded issue is its tree's architects' (record.ArchitectOfTree,
-// the rule every architect operation holds it to, architectForIssue), the root's or a
-// sub-architect's, and its plan is given at its generation. One the daemon has not recorded — a
+// generation the plan is given at. A recorded issue is its tree's architects', the root's or a
+// sub-architect's (record.ArchitectOfTree, the rule every architect operation holds it to,
+// architectForIssue), and its plan is given at its generation. One the daemon has not recorded — a
 // child before release_children records it (C2-2) — is the tree's when Dispatch's parent chain
 // reaches the tree (dispatchTreeMember) and it has not entered the workflow, triage, backlog,
 // icebox or todo, and its plan is given at generation 0, where it waits for the issue's first step.
@@ -194,8 +194,8 @@ type TaskStopRequest struct {
 	Task    string `json:"task"`
 }
 
-// stopTask is stop_task: the architect whose grant serves the issue's tree, which the daemon has
-// recorded (architectForIssue), stops one task of it, answered 200 with no body. The stop is the
+// stopTask is stop_task: an architect of the tree of an issue the daemon has recorded
+// (architectForIssue) stops one task of it, answered 200 with no body. The stop is the
 // workflow's (intake.TaskStopped), which answers a task the plan does not hold (TaskNotFound) and
 // one that is done (TaskDone). Each request is its own fact (requestFactID): a task the owner
 // stops, starts again with a later version and stops once more is stopped twice, and a retry of a
