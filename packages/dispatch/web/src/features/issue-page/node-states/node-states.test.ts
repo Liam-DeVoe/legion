@@ -2650,6 +2650,58 @@ test("the Decisions view marks a proposed decision and its parent line", () => {
   }
 });
 
+// A person's decision that restates an answer ties the answered question to the statements it
+// shaped: the question's row draws them, each with the marks of the statement itself, since the
+// question's own chips are none of the decision's ties.
+test("under Decisions a statement an answered question informs carries its own marks", () => {
+  const root = stamped(
+    node(KEY, "issue", [
+      specStatement("s1"),
+      specStatement("s7"),
+      answeredAsk("a-put", { at: "2026-11-14T09:00:00Z", text: "Keep the rail." }),
+    ]),
+    { [specStatement("s7").id]: { life: "proposed" } }
+  );
+  const view = drawDecisions(root, [
+    decision("restate", { asks: ["a-put"], kind: "person", links: [shaped(specRef("s7"))] }),
+  ]);
+  try {
+    const informs = rowOf(view.container, "a-put")?.querySelector(
+      `[data-decision-statement="${specStatement("s7").id}"]`
+    );
+    expect(informs).not.toBeNull();
+    expect(marksIn(informs)).toEqual(["proposed"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// An overtaken decision is drawn nowhere under Decisions, and that holds for one that restates
+// an answer too: the answered question draws none of the statements it shaped.
+test("under Decisions an answered question draws no tie of an overtaken decision that restates it", () => {
+  const restate = decisionNode("restate");
+  const root = stamped(
+    node(KEY, "issue", [
+      specStatement("s1"),
+      answeredAsk("a-put", { at: "2026-11-14T09:00:00Z", text: "Keep the rail." }),
+      restate,
+    ]),
+    { [restate.id]: { life: "overtaken" } }
+  );
+  const view = drawDecisions(root, [
+    decision("restate", { asks: ["a-put"], kind: "person", links: [shaped(specRef("s1"))] }),
+  ]);
+  try {
+    const asked = rowOf(view.container, "a-put");
+    expect(asked).not.toBeNull();
+    expect(
+      asked?.querySelector(`[data-decision-statement="${specStatement("s1").id}"]`)
+    ).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // The Decisions view draws no overtaken question or decision, nor any node under one, and the
 // tree its keys walk holds none either: `q` goes past an overtaken open question to the live one
 // after it, and `w` on a statement goes past an overtaken decision that names it to a live one

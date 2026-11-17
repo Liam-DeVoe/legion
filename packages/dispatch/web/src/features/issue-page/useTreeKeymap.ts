@@ -128,8 +128,8 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
   // whichever row the tree would otherwise offer.
   const caretFrom = useRef<HTMLElement | null>(null);
 
-  /** The rows as the browser holds them, beside the rows as the fold drew them: the nth element
-   *  is the nth node row, so one index answers for both. */
+  /** The rows as the browser holds them, beside the fold's rows less its deeper lines: the nth
+   *  element is the nth node row or line of overtaken nodes, so one index answers for both. */
   const drawn = (): { elements: HTMLElement[]; rows: KeyedRow[] } => ({
     elements: [...(tree.container.current?.querySelectorAll<HTMLElement>(NODE_ROW) ?? [])],
     // A line of overtaken nodes is a row of its own here, as it is in the browser's.

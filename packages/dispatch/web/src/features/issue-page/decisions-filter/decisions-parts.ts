@@ -8,6 +8,7 @@ import {
   drawnLine,
   firstLineOf,
   lineWords,
+  type NodeLife,
   type ParentLine,
   type TreeAsk,
   type TreeNode,
@@ -57,7 +58,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
  * statements they name: the person's decision reaches every statement it shaped.
  *
- * No part holds an overtaken node or a node under one (`TreeNode.closed`): a later node took its
+ * No part holds an overtaken node or a node under one (`TreeNode.closed`), and no ask's entry
+ * carries the ties of an overtaken section that restates its answer: a later node took its
  * place, so the view draws it nowhere, and none of them waits on the reader (`waitingOrder`).
  *
  * This module is pure. It holds no React and makes no request, so the body
@@ -97,6 +99,11 @@ export interface ShapedStatement {
   readonly id: string;
   /** Its first line, as R1 cuts a row's: the page draws one line for it here. */
   readonly line: string;
+  /** The statement's own life and whether it is reserved for its author (`NodeMarks`), drawn
+   *  after its name: a question's entry holds no chip for a tie of the decision that restates
+   *  its answer, so the shape carries them. Absent for a statement that is live or settled. */
+  readonly life?: NodeLife;
+  readonly onlyYou?: true;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
   /** Whether the decision changed after it first named the statement and the statement has not
@@ -261,6 +268,8 @@ export function decisionsParts({
   const shapedByAsk = new Map<string, Map<string, ShapedStatement>>();
   for (const row of rows.values()) {
     if (!isReading(row, answered)) continue;
+    // An overtaken decision is drawn nowhere, so the question it restates draws none of its ties.
+    if (placed.get(nodeIdOf(row.ref) ?? "")?.node.closed === true) continue;
     for (const ask of (row.asks ?? []).filter((one) => answered.has(one))) {
       const held = shapedByAsk.get(ask) ?? new Map<string, ShapedStatement>();
       for (const shape of shapesOf(row, nodeIdOf, placed)) {
@@ -496,6 +505,7 @@ function shapesOf(
       id: node.id,
       line: lineOf(node),
       ...pathOf(node),
+      ...marksOf(node),
       stale: link.stale || held?.stale === true,
     });
   }

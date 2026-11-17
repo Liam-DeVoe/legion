@@ -46,7 +46,6 @@ import {
 } from "../page-words";
 import { RowText } from "../RowText";
 import type { DecisionChange, DecisionsEntry, NamedEntry } from "./decisions-parts";
-import { conversationPath } from "./decisions-parts";
 import { type EntryStanding, entryStanding } from "./entry-standing";
 
 /** Who the page names: by a name and never an id, with the kind that picks their shape and
@@ -301,21 +300,10 @@ export function DecisionsRow({
                       {name}
                     </Link>
                   )}
-                  {/* The statement's marks, after its name in the chip's own size: those of the
-                      chip the entry's own node holds for the same tie, found by the statement's
-                      address in the conversation, which is how its shape names it. A decision's
-                      ties are its node's chips (`tree-drafts.ts`), and each carries the marks of
-                      the node it names. */}
-                  <NodeMarks
-                    compact
-                    marks={
-                      node.chips.find(
-                        (chip) =>
-                          shape.path !== undefined &&
-                          conversationPath({ reference: chip.ref }) === shape.path
-                      ) ?? {}
-                    }
-                  />
+                  {/* The statement's marks, after its name in the chip's own size: the
+                      statement node's own, which its shape carries, since an answered
+                      question's chips are none of the ties of the decision that restates it. */}
+                  <NodeMarks compact marks={shape} />
                 </span>
               ))}
             </p>
