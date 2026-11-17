@@ -1280,7 +1280,7 @@ export class DispatchApiClient {
    *  read does; INFRA-4062's task t11 moves both onto the generated contract. */
   async getIssueTree(
     key: string,
-    query: { cursor?: string; view?: "spec" | "verification" | "plan" } = {}
+    query: { cursor?: string; view?: "spec" | "verification" | "plan" | "decisions" } = {}
   ): Promise<IssueTreeAnswer> {
     return this.json<IssueTreeAnswer>(routeUrl("/api/v1/issues/{key}/tree", { key }, query));
   }

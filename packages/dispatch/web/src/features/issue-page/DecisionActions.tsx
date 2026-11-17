@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type { Artifact } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -10,11 +10,16 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  type DecisionNode,
+  decisionDocument,
+  decisionNodes,
+} from "./decision-nodes/decision-nodes";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { issueTreeKey, issueTreeQuery, viewKey } from "./tree-read/tree-read";
 
 /** One control a row of the tree draws of its own: Keep and Change on a decision. */
 export type RowAction = "change" | "keep";
@@ -84,12 +89,13 @@ export function ChangeDraftsProvider({ children }: { children: ReactNode }): Rea
  * the focused row's and a row the reader pinned open, so the page offers one Keep and one
  * Change at a time, on the decision in front of the reader.
  *
- * Both writes are the ones that tab made, unchanged: Keep is
- * `POST /artifacts/{id}/blocks/{block}/keep` carrying the sum of the text this node drew, so a
- * decision the agent changed since is refused rather than agreed with, and Change is a comment
- * anchored to the words of the decision's first block (`anchorQuote`). They are read from the
- * decisions read the tree is already built from (`["decisions", <key>]`), so the node makes no
- * read of its own.
+ * Both writes are the ones that tab made: Keep is `POST /artifacts/{id}/blocks/{block}/keep`
+ * against the decision node's own document and block, carrying the sum of the text this node
+ * drew, so a decision the agent changed since is refused rather than agreed with, and Change is a
+ * comment anchored to the words of the decision's first block (`anchorQuote`). The decision is
+ * the node of the tree read the page already holds (`issueTreeKey`), found by its address among
+ * that answer's decisions (`decisionNodes`), so the node makes no read of its own
+ * (dispatch://INFRA-4097's plan, choice 7).
  */
 export function DecisionActions({
   document,
@@ -97,8 +103,9 @@ export function DecisionActions({
   nodeReference,
   tabStops = false,
 }: {
-  /** The decisions document this node is a block of, which the Keep writes against;
-   *  `undefined` for a decision whose document the issue read does not carry. */
+  /** The document the row stands in, which names the issue (`issue_key`) whose tree read holds
+   *  the decision; `undefined` for a decision whose document the issue read does not carry. The
+   *  writes name the decision node's own document (`decisionDocument`), never this one. */
   document: Artifact | undefined;
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
@@ -108,13 +115,32 @@ export function DecisionActions({
   tabStops?: boolean;
 }): ReactNode {
   const issueKey = document?.issue_key ?? "";
-  const decisions = useQuery(issueDecisionsQuery(issueKey, issueKey !== ""));
-  const decision = (decisions.data?.decisions ?? []).find((row) => row.ref === nodeReference);
-  if (decision === undefined || document === undefined || isClosed) return null;
+  // The tree read and the asks read under the keys the page reads them by, each watched by an
+  // observer that is never enabled: the node sends no request of its own and sees every answer
+  // the page's own observers fetch. The asks read says which ask an answered question is, which
+  // is what makes a person's decision (`decisionNodes`).
+  const tree = useQuery({ ...issueTreeQuery(issueKey), enabled: false });
+  const asks = useQuery({
+    enabled: false,
+    queryFn: () => api.listIssueAsks(issueKey, "all"),
+    queryKey: ["asks", issueKey],
+  });
+  // Read once per answer of either, which is when a decision is a new object.
+  const decisions = useMemo(
+    () =>
+      tree.data === undefined
+        ? []
+        : decisionNodes(tree.data, { asks: asks.data, issue: { key: issueKey } }),
+    [asks.data, issueKey, tree.data]
+  );
+  const decision = decisions.find((row) => row.ref === nodeReference);
+  const documentId = decision === undefined ? undefined : decisionDocument(decision);
+  if (decision === undefined || documentId === undefined || isClosed) return null;
   return (
     <DecisionControls
       decision={decision}
-      documentId={document.id}
+      decisions={decisions}
+      documentId={documentId}
       issueKey={issueKey}
       tabStops={tabStops}
     />
@@ -123,11 +149,15 @@ export function DecisionActions({
 
 function DecisionControls({
   decision,
+  decisions,
   documentId,
   issueKey,
   tabStops,
 }: {
-  decision: Decision;
+  decision: DecisionNode;
+  /** Every decision of the answer `decision` was found in, which a Change counts among. */
+  decisions: readonly DecisionNode[];
+  /** The document `decision` is a block of (`decisionDocument`), which both writes name. */
   documentId: string;
   issueKey: string;
   tabStops: boolean;
@@ -145,34 +175,23 @@ function DecisionControls({
     if (open) drafts?.set(decision.ref, "");
     else drafts?.delete(decision.ref);
   };
-  // Read once per answer of the decisions read, which is when the decision is a new object.
+  // Read once per answer of the tree read, which is when the decision is a new object.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
-    // The sum of the text this node showed: a decision the agent changed since is refused
-    // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
+    // The node's own block, and the sum of the text this node showed: a decision the agent
+    // changed since is refused (`409 DECISION_CHANGED`), so a Keep never stands over words the
+    // reader did not see.
     write: (id: string, bounds) =>
       api.keepDecision(id, decision.block_id, decision.text_sha256, bounds),
-    onSuccess: (kept) => {
-      if (kept === null) {
-        void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
-        return;
-      }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
-        view === undefined
-          ? view
-          : {
-              ...view,
-              // The Keep is of the text this node showed, which the server took, so it applies
-              // to the row that still holds that text.
-              decisions: (view.decisions ?? []).map((row) =>
-                row.block_id === kept.block_id && row.text_sha256 === decision.text_sha256
-                  ? { ...row, kept, waiting_review: false }
-                  : row
-              ),
-            }
-      );
+    // However the Keep ends - taken, or refused because the decision changed since - the tree is
+    // read again, and the Decisions view with it where it is open, so both draw the decision as
+    // it now stands: kept, or in its new words with Keep to press again. A refusal is said below,
+    // on the decision, until the next press (dispatch://INFRA-4097's plan, choices 4 and 5).
+    onSettled: () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: issueTreeKey(issueKey) });
+      void queryClient.resetQueries({ exact: true, queryKey: viewKey(issueKey, "decisions") });
     },
   });
   return (
@@ -219,6 +238,7 @@ function DecisionControls({
       {changing && quote !== undefined ? (
         <ChangeComposer
           decision={decision}
+          decisions={decisions}
           documentId={documentId}
           issueKey={issueKey}
           focusField={!restored}
@@ -234,13 +254,15 @@ function DecisionControls({
  *  the write the Decisions tab made. */
 function ChangeComposer({
   decision,
+  decisions,
   documentId,
   focusField,
   issueKey,
   onDone,
   quote,
 }: {
-  decision: Decision;
+  decision: DecisionNode;
+  decisions: readonly DecisionNode[];
   documentId: string;
   /** Whether the field takes the caret as it mounts: it does when a press on Change opened the
    *  form, and not when the form comes back with its row's body. */
@@ -290,7 +312,7 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
+  // Whether the send is reading the decision's document's text, which it does before the comment
   // goes out: Send is off while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
@@ -315,12 +337,13 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // Which of the quote's places in the decision's document is this decision's own, counted
+        // here, at the send, among the decisions of that document and over the document's own
+        // reading, which the send reads once now: `changeAnchor` walks every decision above this
+        // one, which no render of a row pays for (decision 92). With no reading - the read
+        // failed - the anchor names no place: Dispatch takes it where the quote stands once, and
+        // refuses it where the quote stands more than once, which the form says in the page's
+        // words with the draft kept.
         setReading(true);
         void queryClient
           .fetchQuery({
@@ -336,8 +359,7 @@ function ChangeComposer({
             setReading(false);
             const anchor = changeAnchor(
               decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
+              decisions.filter((row) => decisionDocument(row) === documentId),
               tree
             );
             send.mutate({ anchor: anchor ?? { quote }, body });
