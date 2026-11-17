@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -691,6 +692,121 @@ func TestTheFooterIsAddedToEveryWriteForm(t *testing.T) {
 		}
 		if head := posted.LegionHead(); head != wantHead {
 			t.Errorf("the review intake reads the head %q from %q, want %q", head, posted.Body, wantHead)
+		}
+	}
+}
+
+// A call is routed by its arguments as the model gave them, and gh is handed them with the footer
+// added: the footer adds a body and names no repository, so the two route alike. For each form
+// the tool adds a footer to — a comment's --body, a bare review's --body of the footer alone, and
+// a gh api review's body field, given or added — routing the model's arguments and routing the
+// call with its footer name the same target, owner and gh directory, those of the repository the
+// call names; and the call runs once with its footer, which is what the leak guard read, under
+// that owner's directory.
+func TestACallIsRoutedByTheModelsArgumentsAndRunsWithItsFooter(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", Responses: headAt(roundHead)})
+	ctx := context.Background()
+	for i, tc := range []struct {
+		argv   []string
+		review bool
+	}{
+		{[]string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}, false},
+		{[]string{"pr", "review", "5", "-R", "acme/widgets", "--approve"}, true},
+		{[]string{"api", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE", "-f", "body=LGTM"}, true},
+		{[]string{"api", "-X", "POST", "repos/acme/widgets/pulls/5/reviews", "-f", "event=APPROVE"}, true},
+	} {
+		seq := i + 1
+		head := ""
+		if tc.review {
+			head = roundHead
+		}
+		run, why := withFooter(tc.argv, commandWords(tc.argv), footer(implementer, question, seq, head))
+		if why != "" || slices.Equal(run, tc.argv) {
+			t.Fatalf("gh %q with its footer = %q (%s); want the call with the footer added", tc.argv, run, why)
+		}
+		target, owner, dir, err := f.answer.route(ctx, tc.argv)
+		if err != nil {
+			t.Fatalf("route gh %q: %v", tc.argv, err)
+		}
+		runTarget, runOwner, runDir, err := f.answer.route(ctx, run)
+		if err != nil {
+			t.Fatalf("route gh %q: %v", run, err)
+		}
+		if !reflect.DeepEqual(runTarget, target) || runOwner != owner || runDir != dir {
+			t.Errorf("gh %q routes to %+v, owner %s, directory %s; with its footer, to %+v, owner %s, directory %s",
+				tc.argv, target, owner, dir, runTarget, runOwner, runDir)
+		}
+		if target.Owner != "acme" || target.Repo != "widgets" || owner != "acme" {
+			t.Errorf("gh %q routes to %+v as %s; want acme/widgets, the repository it names, as acme", tc.argv, target, owner)
+		}
+		f.clearInvocations()
+		got := f.run(seq, tc.argv...)
+		_, ran := f.headReads()
+		if !got.Ran || len(ran) != 1 || !slices.Equal(ran[0].Argv, run) {
+			t.Errorf("gh %q = %+v, ran %+v; want gh run once with its footer, %q", tc.argv, got, ran, run)
+			continue
+		}
+		if env := f.wantEnv(owner); !slices.Equal(ran[0].Env, env) {
+			t.Errorf("gh %q ran with %q, want %q", tc.argv, ran[0].Env, env)
+		}
+		if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(run, " ")) {
+			t.Errorf("the check was handed %q, want the whole call with its footer, %q", checked, run)
+		}
+	}
+}
+
+// A call may end its options with `--`, after which gh reads every argument as a positional
+// (pflag stops at it): `gh pr review -R acme/widgets --approve -- 5`. An option the tool adds for
+// the footer — a bare review's --body, a gh api review's -f body= — goes before that `--`, where gh
+// reads it as the option it is, so the call with its footer routes as the model's arguments do
+// and gh posts the body with the footer. The control is the same option added after the `--`, as
+// the tool once added it: gh reads it as arguments its usage has no place for, and so does the
+// routing, which refuses it.
+func TestAFooterAddedToACallGoesBeforeTheDashDashEndingItsOptions(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n", Responses: headAt(roundHead)})
+	ctx := context.Background()
+	for i, tc := range []struct {
+		argv  []string
+		added func(foot string) []string // the options the footer adds
+	}{
+		{[]string{"pr", "review", "-R", "acme/widgets", "--approve", "--", "5"}, func(s string) []string { return []string{"--body", s} }},
+		{[]string{"api", "-X", "POST", "--", "repos/acme/widgets/pulls/5/reviews"}, func(s string) []string { return []string{"-f", "body=" + s} }},
+		{[]string{"api", "-f", "event=APPROVE", "--", "repos/acme/widgets/pulls/5/reviews"}, func(s string) []string { return []string{"-f", "body=" + s} }},
+	} {
+		seq := i + 1
+		foot := footer(implementer, question, seq, roundHead)
+		dash := slices.Index(tc.argv, "--")
+		want := slices.Concat(tc.argv[:dash], tc.added(foot), tc.argv[dash:])
+		run, why := withFooter(tc.argv, commandWords(tc.argv), foot)
+		if why != "" || !slices.Equal(run, want) {
+			t.Errorf("gh %q with its footer = %q (%s); want %q, the footer before the --", tc.argv, run, why, want)
+			continue
+		}
+		target, owner, dir, err := f.answer.route(ctx, tc.argv)
+		if err != nil {
+			t.Fatalf("route gh %q: %v", tc.argv, err)
+		}
+		runTarget, runOwner, runDir, err := f.answer.route(ctx, run)
+		if err != nil {
+			t.Fatalf("route gh %q: %v", run, err)
+		}
+		if !reflect.DeepEqual(runTarget, target) || runOwner != owner || runDir != dir || owner != "acme" || target.Repo != "widgets" {
+			t.Errorf("gh %q routes to %+v, owner %s, directory %s; with its footer, to %+v, owner %s, directory %s; want both acme/widgets as acme",
+				tc.argv, target, owner, dir, runTarget, runOwner, runDir)
+		}
+		after := slices.Concat(tc.argv, tc.added(foot))
+		if _, _, _, err := f.answer.route(ctx, after); err == nil || !strings.Contains(err.Error(), "usage has no place for") {
+			t.Errorf("gh %q, the footer after its --, routes with error %v; want it refused as arguments the usage has no place for", after, err)
+		}
+		f.clearInvocations()
+		got := f.run(seq, tc.argv...)
+		_, ran := f.headReads()
+		if !got.Ran || len(ran) != 1 || !slices.Equal(ran[0].Argv, want) {
+			t.Errorf("gh %q = %+v, ran %+v; want gh run once with %q", tc.argv, got, ran, want)
+			continue
+		}
+		if env := f.wantEnv(owner); !slices.Equal(ran[0].Env, env) {
+			t.Errorf("gh %q ran with %q, want %q", tc.argv, ran[0].Env, env)
 		}
 	}
 }

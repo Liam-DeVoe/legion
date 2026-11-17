@@ -219,10 +219,12 @@ type Result struct {
 // would send are known and before anything is recorded or started. Every other call runs with
 // the footer added to what it posts (a review's naming the head its round read), the routed
 // owner's gh directory, the scrubbed environment, the working directory the answer's empty one,
-// the gh_seconds bound and the gh_output_chars bound. Every call is recorded: an allowed one
-// before gh starts and finished after it ends, a refused one with its refusal; one whose start
-// cannot be recorded does not run. Each logs one `answers: gh` line, and a call the guard refused
-// one line of its own before it.
+// the gh_seconds bound and the gh_output_chars bound. It is routed by its arguments as the model
+// gave them (Answer.route), since the footer adds a body and names no repository; the call with
+// the footer is what the leak guard reads and what gh runs. Every call is recorded: an allowed
+// one before gh starts and finished after it ends, a refused one with its refusal; one whose
+// start cannot be recorded does not run. Each logs one `answers: gh` line, and a call the guard
+// refused one line of its own before it.
 func Run(ctx context.Context, call Call) Result {
 	a := call.Answer
 	started := a.host.Now()
@@ -261,7 +263,7 @@ func Run(ctx context.Context, call Call) Result {
 			return a.refuse(ctx, call.Seq, run, started, why)
 		}
 	}
-	target, owner, dir, err := a.route(ctx, run)
+	target, owner, dir, err := a.route(ctx, argv)
 	if err != nil {
 		return a.refuse(ctx, call.Seq, run, started, err.Error())
 	}

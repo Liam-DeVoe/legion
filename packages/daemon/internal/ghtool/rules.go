@@ -502,10 +502,13 @@ type occurrence struct {
 	index int
 }
 
-// parsedArgs is a command's arguments as pflag reads them against its spec.
+// parsedArgs is a command's arguments as pflag reads them against its spec. end is the index of
+// the `--` that ends its options, len(argv) where none does: where an option added to the call
+// goes, since pflag reads every argument after that `--` as a positional.
 type parsedArgs struct {
 	options     []occurrence
 	positionals []string
+	end         int
 }
 
 // given are the values of the options named name, in order.
@@ -543,12 +546,13 @@ func parseArgs(argv []string, spec commandSpec, command string) (parsedArgs, err
 	unknown := func(arg string) error {
 		return fmt.Errorf("%q is no option of `gh %s` the gh tool reads; it reads the command's options to add the agent's footer to what it posts", arg, command)
 	}
-	var parsed parsedArgs
+	parsed := parsedArgs{end: len(argv)}
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch {
 		case arg == "--":
 			parsed.positionals = append(parsed.positionals, argv[i+1:]...)
+			parsed.end = i
 			return parsed, nil
 		case strings.HasPrefix(arg, "--"):
 			name, value, hasValue := strings.Cut(arg[2:], "=")
@@ -606,11 +610,13 @@ func parseArgs(argv []string, spec commandSpec, command string) (parsedArgs, err
 // --approve, --request-changes or --comment gets --body with the footer alone; a gh api write (any
 // method but GET and HEAD) gets it after every literal body field (-f body=…, -F body=…), and a
 // POST creating or submitting a review, whose body is optional, gets `-f body=<footer>` when it
-// has none. A form whose text the tool cannot read is refused: --editor, gh api's --input and a
-// typed field's @<path>, and a GraphQL mutation, which has a REST endpoint to use instead; so is
-// gh api's --hostname (--body-file and a pr or issue command's -F are refused before, by
-// refusal). Every other command, and a write that posts no comment or review (pr merge, run
-// rerun, workflow run), runs as it is.
+// has none. An option it adds goes before a `--` ending the call's options (parsedArgs.end),
+// where gh reads it as the option it is and not as a positional, so the call with its footer
+// routes as argv does. A form whose text the tool cannot read is refused: --editor, gh api's
+// --input and a typed field's @<path>, and a GraphQL mutation, which has a REST endpoint to use
+// instead; so is gh api's --hostname (--body-file and a pr or issue command's -F are refused
+// before, by refusal). Every other command, and a write that posts no comment or review (pr
+// merge, run rerun, workflow run), runs as it is.
 func withFooter(argv, words []string, foot string) ([]string, string) {
 	key := writeOf(words)
 	spec, ok := writes[key]
@@ -635,7 +641,7 @@ func withFooter(argv, words []string, foot string) ([]string, string) {
 			return nil, "--editor opens an editor, which the gh tool has none of; pass the text itself with --body"
 		}
 		if !appendTo("body") && key == "pr review" && (parsed.set("approve") || parsed.set("request-changes") || parsed.set("comment")) {
-			run = append(run, "--body", foot)
+			run = slices.Insert(run, parsed.end, "--body", foot)
 		}
 	case "pr close", "pr reopen":
 		appendTo("comment")
@@ -788,7 +794,7 @@ func apiWithFooter(run []string, parsed parsedArgs, foot string) ([]string, stri
 		}
 	}
 	if bodies == 0 && method == "POST" && apiReviewCreate.MatchString(endpoint) {
-		run = append(run, "-f", "body="+foot)
+		run = slices.Insert(run, parsed.end, "-f", "body="+foot)
 	}
 	return run, ""
 }
