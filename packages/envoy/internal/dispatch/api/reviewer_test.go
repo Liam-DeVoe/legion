@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -643,6 +644,77 @@ func TestAWriteNamingAHeldIssueRunsAfterItPosts(t *testing.T) {
 	}
 	if count := countRows(t, rig.database, `select count(*) from artifacts where issue_key = $1 and slug = 'notes'`, parent.ID); count != 1 {
 		t.Fatalf("the held issue's document: %d rows", count)
+	}
+}
+
+// A held issue's create leaves its near-copy check's row to its post, which writes it under the
+// issue's key: a row written at the hold would name an issue that may never be filed. The row keeps
+// the title the gate read, though the writer's edit changed the issue's.
+func TestAHeldIssuesPostRecordsItsNearCopyCheck(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
+	const title = "Held astrolabe drifts after a reseat"
+	held := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
+		"project": "RVW", "title": title, "spec": vacuousPhrase,
+	}), "the held issue")
+	rig.waitHeld(held.ID, heldAwaitingWriter)
+	if count := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1 or issue_key = $2`, title, held.ID); count != 0 {
+		t.Fatalf("%d near_copy_checks rows of the held issue before it posts, want none", count)
+	}
+	edited := rig.asWriter(http.MethodPatch, "/api/v1/held/"+held.ID, map[string]any{
+		"title": "Held sextant drifts after a reseat", "spec": "The sextant reads two degrees high.",
+	})
+	if edited.Code != http.StatusOK {
+		t.Fatalf("the writer's edit: %d %s", edited.Code, edited.Body.String())
+	}
+	rig.waitHeld(held.ID, heldPosted)
+	// The row is written after the post's commit, which marked the text posted.
+	deadline := time.Now().Add(10 * time.Second)
+	for countRows(t, rig.database, `select count(*) from near_copy_checks where issue_key = $1`, held.ID) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no near_copy_checks row names %s within 10s of its post", held.ID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if count := countRows(t, rig.database, `select count(*) from near_copy_checks where issue_key = $1`, held.ID); count != 1 {
+		t.Fatalf("%d near_copy_checks rows name %s, want one", count, held.ID)
+	}
+	var outcome, recorded string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select outcome, title from near_copy_checks where issue_key = $1`, held.ID).Scan(&outcome, &recorded); err != nil {
+		t.Fatalf("read the held issue's row: %v", err)
+	}
+	if outcome == nearCopyRefused || recorded != title {
+		t.Fatalf("the held issue's row: outcome %s, title %q; want a create's outcome and the title the gate read, %q", outcome, recorded, title)
+	}
+}
+
+// The near-copy answer a held issue stores comes back as the gate gave it: the row, the answer with
+// its candidates, and whether the filing writes it in its transaction.
+func TestAHeldIssueKeepsItsNearCopyAnswerWhole(t *testing.T) {
+	want := issueCreate{Project: "RVW", Title: "Edited since", Labels: []string{}, NearCopy: &issueNearCopy{
+		row: nearCopyCheckRow{
+			id: "6f1e2d3c-4b5a-4978-8a1b-2c3d4e5f6a7b", project: "RVW", actor: model.Actor{Kind: "session", ID: heldWriter},
+			title: "Read by the gate", spec: "Its spec.", parent: "RVW-1",
+		},
+		check: &nearCopyCheck{
+			outcome: nearCopyNotMade, reason: nearCopyNotMadeUnrecorded, force: true,
+			candidates: []scoredDuplicate{{DuplicateCandidate: model.DuplicateCandidate{Key: "RVW-2", Title: "Close"}, Score: 0.91}},
+		},
+		inTx: true,
+	}}
+	stored, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("store the held issue: %v", err)
+	}
+	var got issueCreate
+	if err := json.Unmarshal(stored, &got); err != nil {
+		t.Fatalf("read the held issue back: %v", err)
+	}
+	if got.NearCopy == nil {
+		t.Fatalf("the held issue read back with no near-copy answer: %s", stored)
+	}
+	if !reflect.DeepEqual(got.NearCopy, want.NearCopy) {
+		t.Fatalf("near-copy answer read back = %+v (check %+v), want %+v (check %+v)", got.NearCopy, got.NearCopy.check, want.NearCopy, want.NearCopy.check)
 	}
 }
 

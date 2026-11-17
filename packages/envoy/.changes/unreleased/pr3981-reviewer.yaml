@@ -11,6 +11,8 @@ body: |-
   usual shape, under an id kept for the text, with an added `held` object. A review that finds
   nothing posts the text. Otherwise the findings and the reviewer's rewrite go to the writer
   session as a turn of their own, and the writer edits the text or posts it as written.
+  A held issue writes its `near_copy_checks` row when it posts, under its key, with the title and
+  the spec the near-copy gate read.
   With `after`, the text posts at once, and the findings of the review after it go to the writer.
   Nothing more happens if the writer does not act.
   A writer has `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`) to act, and a writer session that
