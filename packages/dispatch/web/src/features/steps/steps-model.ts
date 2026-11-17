@@ -27,19 +27,23 @@ export interface StepRow {
   returnedTo: number | null;
 }
 
-/** Where a step of the plan stands: `not started` until a run of it is read, then where its newest
- *  run stands. */
+/** Where a step of the plan stands, as the server answers it from the runs of the plan's own run of
+ *  the issue: `not started`, `running`, or the result its newest run ended with. `other` is a word
+ *  this build does not know, which only a newer Dispatch can send. */
 export type PlannedStepState = "not started" | StepState;
 
 /** One step the plan gives a task: `step` is its place in the task, from 1, and `name` the plan's
- *  word for it, a role or `role:key`. `state` is where its newest run stands, and `result` that
- *  run's result in the server's own word, empty for a step not started or running. */
+ *  word for it, a role or `role:key`. `state` is where the server says it stands, and `result` the
+ *  server's own word for it, which the tab shows for a state of `other`. */
 export interface PlannedStep {
   step: number;
   name: string;
   state: PlannedStepState;
   result: string;
 }
+
+/** One planned step as the server answers it. */
+type AnsweredStep = NonNullable<NonNullable<IssueSteps["tasks"]>[number]["planned"]>[number];
 
 /** One task: the tasks of the plan it needs, null where its plan node recorded none or the plan
  *  does not hold it, and [] where it needs none; the steps the plan gives it, empty for a task the
@@ -86,17 +90,28 @@ function stepRow(record: StepRecord): StepRow {
   };
 }
 
-/** Each step the plan gives a task, standing where its newest run stands: the last run of kind
- *  `step` at its place in the read's order, which is the order the runs happened. A retro and a
- *  merge run at step 0, which is no step of the plan. */
-function plannedSteps(planned: readonly string[], rows: readonly StepRow[]): PlannedStep[] {
-  // A run of kind `step` is labelled by its place; a later run of a place replaces an earlier one.
-  const newest = new Map(rows.map((row) => [row.label, row]));
-  return planned.map((name, index) => {
-    const run = newest.get(String(index + 1));
-    if (run === undefined) return { name, result: "", state: "not started", step: index + 1 };
-    return { name, result: run.result, state: run.state, step: index + 1 };
-  });
+function plannedState(state: string): PlannedStepState {
+  switch (state) {
+    case "not started":
+    case "running":
+    case "passed":
+    case "failed":
+    case "stopped":
+      return state;
+    default:
+      return "other";
+  }
+}
+
+/** A planned step as the server answers it, its state kept as answered: the client works out no
+ *  state from the runs it lists, which hold every run of the issue. */
+function plannedStep(answered: AnsweredStep): PlannedStep {
+  return {
+    name: answered.name,
+    result: answered.state,
+    state: plannedState(answered.state),
+    step: answered.step,
+  };
 }
 
 /** The issue's tasks in the server's order - the tasks of its newest plan first, in the plan's
@@ -105,13 +120,10 @@ function plannedSteps(planned: readonly string[], rows: readonly StepRow[]): Pla
  *  first. The generated shape lets either list be null, which reads as empty; a server older than
  *  the plan's tasks sends no `needs` or `planned`, which read as needs not recorded and no step. */
 export function stepTasks(steps: IssueSteps): StepTaskRows[] {
-  return (steps.tasks ?? []).map((task) => {
-    const rows = (task.steps ?? []).map(stepRow);
-    return {
-      needs: task.needs ?? null,
-      planned: plannedSteps(task.planned ?? [], rows),
-      rows,
-      task: task.task,
-    };
-  });
+  return (steps.tasks ?? []).map((task) => ({
+    needs: task.needs ?? null,
+    planned: (task.planned ?? []).map(plannedStep),
+    rows: (task.steps ?? []).map(stepRow),
+    task: task.task,
+  }));
 }

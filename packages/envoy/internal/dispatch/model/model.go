@@ -3151,13 +3151,24 @@ type StepRecord struct {
 // steps, in the order they ran. Needs are the tasks of that plan this task needs, each by its id,
 // as the plan node records them, [] for a task that needs none; null where the node did not record
 // them (a daemon of the release before wrote it) and for a task the plan does not hold. Planned are
-// the steps that plan gives the task, each a role or `role:key`, in order, absent for a task the
+// the steps that plan gives the task, in order, each with where it stands; absent for a task the
 // plan does not hold, which only its runs show.
 type StepTask struct {
-	Task    string       `json:"task"`
-	Needs   []string     `json:"needs"`
-	Planned []string     `json:"planned,omitempty"`
-	Steps   []StepRecord `json:"steps"`
+	Task    string        `json:"task"`
+	Needs   []string      `json:"needs"`
+	Planned []PlannedStep `json:"planned,omitempty"`
+	Steps   []StepRecord  `json:"steps"`
+}
+
+// PlannedStep is one step a plan gives a task, as the steps read answers it: its place in the task,
+// from 1, the plan's word for it (a role or `role:key`), and where it stands in the run of the
+// issue the plan is of, read from that run's records alone: `not started` where none of them is a
+// run of the step, `running` while the newest such run has no end, and that run's result
+// (`passed`, `failed` or `stopped`) once it has one.
+type PlannedStep struct {
+	Step  int    `json:"step"`
+	Name  string `json:"name"`
+	State string `json:"state"`
 }
 
 // IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the

@@ -1763,7 +1763,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none, which a daemon of the release before wrote; planned is the steps the plan gives it, each a role or role:key. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, and a key no issue carries reads as an issue with no task. */
+    /** @description The tasks of the issue's workflow and every run of their steps: {issue, tasks: [{task, needs, planned?, steps}]}. The tasks of the issue's newest plan come first, in the plan's order, whether a step of them ran or not: needs is the ids of the tasks of that plan the task needs, as the plan's node records them ([] for a task that needs none), and null where the node recorded none, which a daemon of the release before wrote; planned is each step the plan gives it, {step, name, state}: its place from 1, its role or role:key, and where it stands among the records of the plan's own run of the issue (its generation) - not started where none of them is a run of it, running while its newest run there has no end, and that run's result once it has one. Then each other task with a run, in the order of its first run, with null needs and no planned. The read takes the plan node and the runs alone, and reads no document. Each task's runs come in the order they ran, each step {id, issue, task, step, kind, role, type, agent, session, model, generation, attempt, started_at, ended_at, result, returned_to, report, rating, rating_reason}, its attempt its place among the issue's runs of the same task, step and kind from 1, and rating and rating_reason a retro's alone. A closed issue's read too, and a key no issue carries reads as an issue with no task. */
     get: operations["getApiV1IssuesByKeySteps"];
     put?: never;
     post?: never;
@@ -5771,6 +5771,11 @@ export interface components {
       needs?: null | string[];
       steps: string[] | null;
     };
+    PlannedStep: {
+      name: string;
+      state: string;
+      step: number;
+    };
     Priorities: {
       empty?: string;
       priorities: components["schemas"]["PriorityRow"][] | null;
@@ -6279,7 +6284,7 @@ export interface components {
     };
     StepTask: {
       needs: string[] | null;
-      planned?: string[];
+      planned?: components["schemas"]["PlannedStep"][];
       steps: components["schemas"]["StepRecord"][] | null;
       task: string;
     };
@@ -14469,6 +14474,7 @@ export type PlanRecord = components["schemas"]["PlanRecord"];
 export type PlanRecordInput = components["schemas"]["PlanRecordInput"];
 export type PlanTask = components["schemas"]["PlanTask"];
 export type PlanTaskInput = components["schemas"]["PlanTaskInput"];
+export type PlannedStep = components["schemas"]["PlannedStep"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];

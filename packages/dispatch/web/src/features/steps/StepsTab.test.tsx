@@ -208,12 +208,25 @@ test("the Steps tab draws each step of the plan with its state, and each task's 
     tasks: [
       {
         needs: [],
-        planned: ["implementer", "reviewer"],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+        ],
         steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
         task: "a",
       },
-      { needs: ["a"], planned: ["tester"], steps: null, task: "b" },
-      { needs: null, planned: ["tester"], steps: null, task: "c" },
+      {
+        needs: ["a"],
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: null,
+        task: "b",
+      },
+      {
+        needs: null,
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: null,
+        task: "c",
+      },
     ],
   }));
   try {

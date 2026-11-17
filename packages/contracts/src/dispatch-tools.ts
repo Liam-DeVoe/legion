@@ -2275,9 +2275,11 @@ export const dispatchToolSpecs = [
       "daemon recorded it at the step's start and at its end. The first line is `<KEY>: <n> " +
       "steps in <m> tasks`. The tasks of the issue's newest plan come first, in the plan's " +
       "order, then each other task with a run, in the order each first ran. A task of the plan " +
-      "prints `task <task> needs <tasks>: <place> <step> <state>, ...`: the tasks it needs, or " +
-      "nothing, then each step the plan gives it, where state is not started, running, or the " +
-      "result of its newest run. Then each run of a step of the task prints one line: `<task> " +
+      "prints `task <task> needs <tasks>: <place> <step> <state>, ...`: the tasks it needs, " +
+      "nothing, or are not recorded where its plan node recorded none, then each step the plan " +
+      "gives it, where state is where Dispatch says it stands among the records of the plan's own " +
+      "run: not started, running, or the result of its newest run there. Then each run of a step " +
+      "of the task prints one line: `<task> " +
       "<step> <kind> <role> <type> attempt <attempt> <agent> <model> <started_at> <ended_at> " +
       "<result>`. kind is step, retro or merge. step is the step's place in its task, from 1, " +
       "and 0 for a retro or a merge. attempt counts the runs of the same task, step and kind, " +

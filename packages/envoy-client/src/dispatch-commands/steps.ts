@@ -1,4 +1,4 @@
-import type { StepRecord } from "@legion/contracts";
+import type { PlannedStep, StepRecord } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 
 /** A field the record does not hold prints `-`, so every line keeps its columns. */
@@ -27,23 +27,14 @@ function stepLine(record: StepRecord): string {
 }
 
 /** A task of the plan: the tasks it needs - `nothing` for none, and `are not recorded` where its
- *  plan node recorded none - then each step the plan gives it, with where its newest run stands -
- *  the last run of kind `step` at its place, `running` until it ends and then its result - or
- *  `not started` before any run of it. */
+ *  plan node recorded none - then each step the plan gives it, at the state Dispatch answers for it
+ *  from the runs of the plan's own run of the issue. */
 function taskLine(
   task: string,
   needs: readonly string[] | null,
-  planned: readonly string[],
-  steps: readonly StepRecord[]
+  planned: readonly PlannedStep[]
 ): string {
-  const newest = new Map(
-    steps.filter((record) => record.kind === "step").map((record) => [record.step, record])
-  );
-  const states = planned.map((name, index) => {
-    const run = newest.get(index + 1);
-    if (run === undefined) return `${index + 1} ${name} not started`;
-    return `${index + 1} ${name} ${run.ended_at === null ? "running" : orDash(run.result)}`;
-  });
+  const states = planned.map((step) => `${step.step} ${step.name} ${step.state}`);
   const needed =
     needs === null ? "are not recorded" : needs.length === 0 ? "nothing" : needs.join(", ");
   return `task ${task} needs ${needed}: ${states.join(", ")}`;
@@ -63,7 +54,7 @@ export async function stepsCommand(context: CommandContext): Promise<DispatchToo
     const runs = task.steps.map(stepLine);
     const planned = task.planned ?? [];
     if (planned.length === 0) return runs;
-    return [taskLine(task.task, task.needs ?? null, planned, task.steps), ...runs];
+    return [taskLine(task.task, task.needs ?? null, planned), ...runs];
   });
   return {
     text: [`${read.issue}: ${records.length} steps in ${tasks.length} tasks`, ...lines].join("\n"),

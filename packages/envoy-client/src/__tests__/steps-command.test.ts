@@ -193,16 +193,36 @@ describe("dispatch steps", () => {
   });
 
   // The tasks of the plan come first, each on a line naming the tasks it needs and each step the
-  // plan gives it with where its newest run stands, before its runs; a task with no planned step
-  // prints its runs alone, as before. The fault is a task or a step of the plan the reader cannot
-  // see; the control is the command that prints the runs alone, under which no `task` line shows.
+  // plan gives it at the state Dispatch answers for it, before its runs; a task with no planned
+  // step prints its runs alone. The fault is a task or a step of the plan the reader cannot see;
+  // the control is the command that prints the runs alone, under which no `task` line shows.
   test("each task of the plan prints its needs and the state of each planned step", async () => {
-    const implementing: StepRecord = { ...tester, role: "implementer", step: 1, task: "a" };
+    const implementing: StepRecord = {
+      ...implementer,
+      step: 1,
+      task: "a",
+      ended_at: null,
+      result: "",
+      model: "",
+    };
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [
-        { task: "a", needs: [], planned: ["implementer", "reviewer"], steps: [implementing] },
-        { task: "b", needs: ["a"], planned: ["tester"], steps: null },
+        {
+          task: "a",
+          needs: [],
+          planned: [
+            { step: 1, name: "implementer", state: "running" },
+            { step: 2, name: "reviewer", state: "not started" },
+          ],
+          steps: [implementing],
+        },
+        {
+          task: "b",
+          needs: ["a"],
+          planned: [{ step: 1, name: "tester", state: "not started" }],
+          steps: null,
+        },
       ],
     };
 
@@ -212,16 +232,13 @@ describe("dispatch steps", () => {
       [
         "LEG-1: 1 steps in 2 tasks",
         "task a needs nothing: 1 implementer running, 2 reviewer not started",
-        "a 1 step implementer testing attempt 1 legion-leg-leg-1-tester - 2026-11-16T10:00:00Z running running",
+        "a 1 step implementer implementation attempt 1 legion-leg-leg-1-implementer - 2026-11-16T09:00:00Z running running",
         "task b needs a: 1 tester not started",
       ].join("\n")
     );
     expect(result.details).toEqual({
       issue: "LEG-1",
-      tasks: [
-        { task: "a", needs: [], planned: ["implementer", "reviewer"], steps: [implementing] },
-        { task: "b", needs: ["a"], planned: ["tester"], steps: [] },
-      ],
+      tasks: [{ ...answer.tasks?.[0] }, { ...answer.tasks?.[1], steps: [] }],
     });
   });
 
@@ -230,29 +247,12 @@ describe("dispatch steps", () => {
   test("a task whose needs are not recorded says so", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
-      tasks: [{ task: "default", needs: null, planned: ["implementer"], steps: [implementer] }],
-    };
-
-    const result = await readSteps("LEG-1", answering([], answer));
-
-    expect(result.text.split("\n")[1]).toBe(
-      "task default needs are not recorded: 1 implementer not started"
-    );
-  });
-
-  // A planned step stands where its newest run stands: a run that failed and then passed reads
-  // passed, and a retro or a merge, at step 0, is no step of the plan.
-  test("a planned step reads the result of its newest run", async () => {
-    const failed: StepRecord = { ...docsReview, task: "default", step: 1, role: "implementer" };
-    const passed: StepRecord = { ...implementer, step: 1, attempt: 2 };
-    const answer: IssueSteps = {
-      issue: "LEG-1",
       tasks: [
         {
           task: "default",
-          needs: ["setup", "docs"],
-          planned: ["implementer", "acceptance:owner"],
-          steps: [failed, passed, mergedByGitHub],
+          needs: null,
+          planned: [{ step: 1, name: "implementer", state: "passed" }],
+          steps: [{ ...implementer, step: 1 }],
         },
       ],
     };
@@ -260,7 +260,42 @@ describe("dispatch steps", () => {
     const result = await readSteps("LEG-1", answering([], answer));
 
     expect(result.text.split("\n")[1]).toBe(
-      "task default needs setup, docs: 1 implementer passed, 2 acceptance:owner not started"
+      "task default needs are not recorded: 1 implementer passed"
+    );
+  });
+
+  // Dispatch reads where a planned step stands from the runs of the plan's own run of the issue;
+  // the line prints that state and works out none from the runs it lists, which hold every run of
+  // the issue. The fault is a step of a new run that prints the result of an older one; the control
+  // is the command that takes the newest run at the step's place, under which the reviewer reads
+  // passed.
+  test("a planned step prints the state Dispatch answers", async () => {
+    const reviewed: StepRecord = {
+      ...docsReview,
+      task: "default",
+      attempt: 1,
+      result: "passed",
+      returned_to: null,
+    };
+    const answer: IssueSteps = {
+      issue: "LEG-1",
+      tasks: [
+        {
+          task: "default",
+          needs: [],
+          planned: [
+            { step: 1, name: "implementer", state: "passed" },
+            { step: 2, name: "reviewer", state: "not started" },
+          ],
+          steps: [reviewed, { ...implementer, step: 1, generation: 2 }],
+        },
+      ],
+    };
+
+    const result = await readSteps("LEG-1", answering([], answer));
+
+    expect(result.text.split("\n")[1]).toBe(
+      "task default needs nothing: 1 implementer passed, 2 reviewer not started"
     );
   });
 

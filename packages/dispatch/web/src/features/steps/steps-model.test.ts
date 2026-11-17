@@ -125,21 +125,28 @@ test("stepTasks reads a null list as empty, and null needs as not recorded", () 
 });
 
 // The tasks of the plan come with what the plan says of them: the tasks each needs, and each step
-// the plan gives it, in its place, standing where its newest run stands - not started before any
-// run of it. A retro or a merge is no step of the plan, and a run that failed and then passed
-// reads passed. The fault is a planned step that a person cannot see; the control is the model
-// that keeps the runs alone, under which b has no step and a no second one.
-test("stepTasks gives each step of the plan the state of its newest run", () => {
+// the plan gives it, in its place, at the state the server answers for it. The fault is a planned
+// step that a person cannot see; the control is the model that keeps the runs alone, under which b
+// has no step and a no second one.
+test("stepTasks gives each task of the plan its needs and its planned steps", () => {
   const tasks = stepTasks({
     issue: "LEG-1",
     tasks: [
       {
         needs: [],
-        planned: ["implementer", "reviewer"],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+        ],
         steps: [record({ ended_at: null, id: "a-1", result: "", step: 1, task: "a" })],
         task: "a",
       },
-      { needs: ["a"], planned: ["tester"], steps: null, task: "b" },
+      {
+        needs: ["a"],
+        planned: [{ name: "tester", state: "not started", step: 1 }],
+        steps: null,
+        task: "b",
+      },
     ],
   });
   expect(
@@ -159,44 +166,43 @@ test("stepTasks gives each step of the plan the state of its newest run", () => 
     },
     { needs: ["a"], planned: [[1, "tester", "not started"]], task: "b" },
   ]);
+});
 
-  const [retried] = stepTasks({
+// The server reads where a planned step stands from the runs of the plan's own run of the issue;
+// the model takes that state as answered and works out none from the runs it lists, which hold the
+// runs of every run of the issue. A state this build has no word for keeps the server's word. The
+// fault is a step of a new run that shows the result of an older one; the control is the model that
+// takes the newest run at the step's place, under which the reviewer reads passed.
+test("stepTasks draws each planned step at the state the server answers", () => {
+  const [task] = stepTasks({
     issue: "LEG-1",
     tasks: [
       {
-        needs: null,
-        planned: ["implementer", "acceptance:owner"],
+        needs: [],
+        planned: [
+          { name: "implementer", state: "running", step: 1 },
+          { name: "reviewer", state: "not started", step: 2 },
+          { name: "acceptance:owner", state: "skipped", step: 3 },
+        ],
         steps: [
-          record({ id: "implement-1", result: "failed", returned_to: 1, step: 1 }),
-          record({ attempt: 2, id: "implement-2", result: "passed", step: 1 }),
-          record({ id: "accept-1", result: "stopped", role: "acceptance", step: 2 }),
-          record({ id: "retro-1", kind: "retro", result: "failed", step: 0 }),
-          record({ id: "newer", result: "skipped", step: 1 }),
+          record({
+            agent: "legion-leg-leg-1-reviewer",
+            id: "review-1",
+            role: "reviewer",
+            step: 2,
+            type: "review",
+          }),
+          record({ ended_at: null, generation: 2, id: "implement-2", result: "", step: 1 }),
         ],
         task: "default",
       },
     ],
   });
-  expect(retried?.planned).toEqual([
-    { name: "implementer", result: "skipped", state: "other", step: 1 },
-    { name: "acceptance:owner", result: "stopped", state: "stopped", step: 2 },
+  expect(task?.planned).toEqual([
+    { name: "implementer", result: "running", state: "running", step: 1 },
+    { name: "reviewer", result: "not started", state: "not started", step: 2 },
+    { name: "acceptance:owner", result: "skipped", state: "other", step: 3 },
   ]);
-  expect(
-    stepTasks({
-      issue: "LEG-1",
-      tasks: [
-        {
-          needs: null,
-          planned: ["implementer"],
-          steps: [
-            record({ id: "implement-1", result: "failed", step: 1 }),
-            record({ attempt: 2, id: "implement-2", result: "passed", step: 1 }),
-          ],
-          task: "default",
-        },
-      ],
-    })[0]?.planned.map((step) => step.state)
-  ).toEqual(["passed"]);
 });
 
 // A result or a kind this build has no word for comes from a newer Dispatch: the run is kept, in

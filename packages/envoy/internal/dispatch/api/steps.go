@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"net/http"
@@ -229,9 +230,28 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}
 	if plan != nil {
+		// A planned step stands where the newest run of it stands among the records of the plan's
+		// own run of the issue (its generation): the runs come in the order they happened.
+		type place struct {
+			task string
+			step int
+		}
+		newest := map[place]workflowstore.StepRead{}
+		for _, step := range steps {
+			if step.Generation == plan.Generation && step.Kind == workflowstore.StepKindStep {
+				newest[place{step.Task, step.Place}] = step
+			}
+		}
 		for _, task := range plan.Tasks {
 			tasks[task.ID] = len(read.Tasks)
-			planned := model.StepTask{Task: task.ID, Planned: task.Steps}
+			planned := model.StepTask{Task: task.ID, Planned: make([]model.PlannedStep, len(task.Steps))}
+			for index, name := range task.Steps {
+				state := "not started"
+				if run, ran := newest[place{task.ID, index + 1}]; ran {
+					state = cmp.Or(run.Result, "running")
+				}
+				planned.Planned[index] = model.PlannedStep{Step: index + 1, Name: name, State: state}
+			}
 			if task.Needs != nil {
 				planned.Needs = append([]string{}, (*task.Needs)...)
 			}
