@@ -578,6 +578,14 @@ cmd_profile() {
 # of the install mise made for the label's pin: a pod carries the pinned binary and no mise.
 given_omp() { [ -n "${SKILL_SCENARIOS_OMP:-}" ]; }
 
+# warm_daemon_panes MODULE... compiles daemon-pane.go in each daemon module once, before a batch's
+# first run: each run's daemon stand-in compiles it at its start under a 30 s bound (boot_worker),
+# and each run's worker pane compiles it again in its label's checkout, so a cold Go build cache
+# would cost the first runs their start (daemon-pane.ts, warmDaemonPane).
+warm_daemon_panes() {
+  bun "$here/daemon-pane.ts" warm "$@" || fail "daemon-pane.go did not compile in $*"
+}
+
 # pinned_command PIN sets the caller's array omp_command to the command that runs the label's omp
 # by its path: the binary SKILL_SCENARIOS_OMP names when it is set (given_omp), run as it is, and
 # otherwise the omp binary mise installed for PIN, reached through `mise x <pin> --`. A run names
@@ -2365,7 +2373,11 @@ cmd_batch() {
     ;;
   esac
   shift 2
-  for label in "$@"; do load_label "$label"; done
+  local -a daemon_modules=("$root/packages/daemon")
+  for label in "$@"; do
+    load_label "$label"
+    daemon_modules+=("$co/packages/daemon")
+  done
   # A spec run reads its source and the label's superpowers skills: refused here, before any
   # service starts. Its number is one above the label's highest, so no batch removes an earlier run.
   local first=1
@@ -2378,6 +2390,7 @@ cmd_batch() {
   lock_services
   on_exit stop_batch
   services_up
+  warm_daemon_panes "${daemon_modules[@]}"
   start=$(date +%s)
   for label in "$@"; do
     for n in $(seq "$first" $((first + runs - 1))); do

@@ -2851,7 +2851,8 @@ run_red_at_the_head() {
 load_label() { printf 'load_label %s\\n' "$1" >>"$work/calls"; }
 on_exit() { :; }
 lock_services() { printf 'lock_services\\n' >>"$work/calls"; }
-services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
+services_up() { printf 'services_up\\n' >>"$work/calls"; }
+warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
   function batch(
     world: string | undefined,
     worlds = `${fn("red_world_table")}\n${fn("red_world")}\n${fn("red_worlds")}`
@@ -2906,6 +2907,7 @@ services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
       "load_label s1",
       "lock_services",
       "services_up",
+      "warm_daemon_panes",
       "run run red-at-the-head s1 1",
       "run run red-at-the-head s1 2",
     ]);
@@ -2935,6 +2937,7 @@ services_up() { printf 'services_up\\n' >>"$work/calls"; }`;
         "load_label s1",
         "lock_services",
         "services_up",
+        "warm_daemon_panes",
         "run run red-at-the-head s1 1",
         "run run red-at-the-head s1 2",
       ],
