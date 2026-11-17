@@ -557,8 +557,10 @@ message back for the same wait, and at the stream's 20th and last delivery the l
 `listener agent wake not stored` and acknowledges the message. A read of the record that does not
 answer is neither a record nor the lack of one: the message is sent back for the wait, the
 listener logs WARN `listener agent record unread` once for that message, and at the last delivery
-it reports the wake as for no record. A wait at or below zero, a core delivery and a durable
-message whose metadata does not parse report at once.
+it reports the wake as for no record. A message to a session with no record reports at once under
+a wait at or below zero, on a core delivery, and on a durable delivery whose metadata does not
+parse. A read that did not answer reports at once only on the last two; under a wait at or below
+zero its message comes back with no delay until the last delivery.
 
 At most 64 first deliveries wait at once — a quarter of the durable's 256 ack-pending slots, one
 of which a waiting message holds for its whole wait — and a first delivery that finds that cap

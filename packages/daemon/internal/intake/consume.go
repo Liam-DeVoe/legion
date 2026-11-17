@@ -246,9 +246,11 @@ type Consumers struct {
 	// wake is the durable on the Envoy listener's wake reports (legionWakeSubject): a message
 	// published to a role topic of a released pod, a message sent to the agent subject of a
 	// released session, and the listener's own `listener_ready`. It is a durable of its own
-	// because every daemon consumes the subject: the listener does
-	// not know which daemon owns a session, so each reads every report and acts only on a
-	// released claim of its own.
+	// because every daemon consumes the subject: the listener does not know which daemon owns a
+	// session, so each reads every report and acts only on a claim of its own. A role report of
+	// another project decodes to no fact (decodeListenerWake). A report that finds its own claim
+	// live in a release that has not ended is sent back and applied again after its delay
+	// (RetryLater, Waiting), and one that finds its claim released wakes it.
 	wake jetstream.Consumer
 
 	progress struct{ dispatch, github, wake *consumerProgress }

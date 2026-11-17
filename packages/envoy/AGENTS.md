@@ -5164,10 +5164,10 @@ The listener has acknowledged a stored message without delivering it to a self-s
 
 A session that registers with `delivery.consumer` set gets a durable JetStream pull consumer of its own on `ENVOY_NOTIFICATIONS`, `s-<session id>` (`bus.SessionConsumerName`).
 claude-envoy and pi-envoy 17.8.0 or later ask at every registration.
-pi-envoy from 14.1.0 to 17.7.0 asks only while its relay subject is open, and from 16.3.1 on only while no cursor of its replay engine is marked `from_start`.
+pi-envoy from 14.1.0 to 17.7.0 asks only while its relay subject is open, and from 16.2.1 on only while no cursor of its replay engine is marked `from_start`.
 A registration of `@sjawhar/pi-envoy` 14.1.0 or later that asks for none gets the same consumer, as if it had asked with no `epoch` and no `resume` (`readsUnaskedRelay`):
 every such build opens its relay subject whenever it opens its agent subject, and hands each frame there to its consumer delivery whether it asked or not.
-A first pass of such a build that cannot reach NATS marks its own agent subject `from_start`, and only an answer of `POST /v1/replay` clears that mark, a route this listener no longer serves, so a refusal would keep that session unregistered at every heartbeat (dispatch://INFRA-3589, R21).
+A first pass of a build from 16.2.1 on that cannot reach NATS marks its own agent subject `from_start`, and only an answer of `POST /v1/replay` clears that mark, a route this listener no longer serves, so a refusal would keep that session unregistered at every heartbeat (dispatch://INFRA-3589, R21).
 Its entry records the empty epoch, so its heartbeats restart no relay.
 While its relay subject is closed the relay pauses, and the registration after that subject opens resumes the relay at the ack floor ("Relay over NATS" below).
 The plugin can take a message on its agent subject twice, from the relay and from its core subscription, and its delivery dedupe shows it once.
@@ -5928,10 +5928,10 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A failed event's destinations end with that error at the primary-document or author step, after the owner topic, the route and the claimant, which are sent and recorded as usual (`resolveErr`), and `settleEvent` backs the event off, or releases it when the error is the process stopping (`resolveLost`) or a send of it met a lost connection.
   Such an event is a failure, never `blocked` on a mention: the failure decides its outcome.
   The sessions it is still bound for are unknown, so its list is incomplete (`unansweredRecipients`, `batchEvent.incomplete`):
-  every later event of its owner is held back from each session key (`notifications.agent.*`, or a role route's key) the incomplete event neither names in its list nor already reached (`published_destinations`), behind a blocker carrying the failed event's back-off (`planChains`), so the later event is tried again no later than the failed one and reaches such a session after it;
-  a key the list names chains as usual, a key the event already reached holds nothing back, and the owner's topic family is never held this way.
+  every later event of its owner is held back from each session key (`notifications.agent.*`, or a role route's key) the incomplete event neither names in its list nor already reached (`published_destinations`) or had refused (`refused_destinations`), behind a blocker carrying the failed event's back-off (`planChains`), so the later event is tried again no later than the failed one and reaches such a session after it;
+  a key the list names chains as usual, a key the event already reached or had refused holds nothing back, and the owner's topic family is never held this way.
   An event that is not due reads its recipients as a due one does, since they are what it holds its owner's later events back from:
-  one whose reads answer holds back only the destinations it has not reached, and one whose read fails holds back the same keys as a due one until its `next_attempt_at`.
+  one whose reads answer holds back only the destinations it has neither reached nor had refused, and one whose read fails holds back the same keys as a due one until its `next_attempt_at`.
   A row no recipient read can take so backs off the events that read it and holds back their owners' later session copies on the keys those events could still owe, and the rest of the outbox publishes.
   Every lookup kind but the issues' is a uuid, read and answered in its canonical form (`validIDs`, `canonicalID`);
   an id that is no uuid is never sent to Postgres and fails the event that asked it - except a reply's `reply_to`, which then replies under no comment:

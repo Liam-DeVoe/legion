@@ -5306,7 +5306,7 @@ The first boot of this release also queues, once, a start for each merger that t
 That merger starts when its tree's design gate allows it, as at any start of the `merging` phase, which holds no admission slot.
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
-A wake report of the Envoy listener, for a role message or a session message, that names a claim the release is stopping does not cancel the release: that claim is not `released` yet, so the report has nothing to wake.
+A wake report of the Envoy listener, for a role message or a session message, that names a live claim of a pod whose release has not ended does not cancel the release, whether or not its role processes are stopped yet: that claim is not `released` yet, so the report has nothing to wake.
 The daemon applies such a report again every 30 seconds until the release ends, for at most 15 minutes after the report's own time.
 Once the release records the claim `released`, the report wakes the role.
 A report still waiting 15 minutes after its time is dropped with one warning, `wake: a wake that came during a release was dropped: the release did not end within 15 minutes of the report`.

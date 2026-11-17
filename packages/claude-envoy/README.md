@@ -104,8 +104,9 @@ message from Dispatch's Agents page as that person's own turn.
   can deliver it twice, never lose it. A message that fails three times is replaced by one notice
   naming it. A registration the listener can give no consumer is refused by name, and the server
   says once, on stderr and as a notice to the session, that Envoy inbound is unavailable, and asks
-  again at every heartbeat. When a registration is accepted after that, it says once, the same two
-  ways, that Envoy inbound is restored and that what the stream stored meanwhile arrives now.
+  again at every heartbeat. When a registration is accepted after that, it says once on stderr that
+  the session receives again, and tells the session once, as a notice, that Envoy inbound is
+  restored and that what the stream stored meanwhile arrives now.
 - No receipt is published. A role message reaches this session as a forward the listener stored on
   the session's own subject, which its consumer relays and whose `done` answers for it; the
   listener waits only for the stream's acknowledgement that it stored the forward. A frame's reply

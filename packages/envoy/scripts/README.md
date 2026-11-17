@@ -145,7 +145,7 @@ session row's title (`refill <set> <index> v<n>`) and an interest row's director
 (`/refill/<set>/v<n>`) name the variant. The listener drops a registration's topic that no stream
 subject captures, so no seeded record carries its variant in a topic. `refillrig register` asks for
 each session's own consumer, as a plugin does: the listener refuses a registration that asks for
-none.
+none unless it comes from `@sjawhar/pi-envoy` 14.1.0 or later, and the rig names no plugin.
 
 A full run takes about ten minutes. CI runs it as the `envoy-refill` job of
 `.github/workflows/ci.yaml` on every change its `envoy_refill` filter matches.

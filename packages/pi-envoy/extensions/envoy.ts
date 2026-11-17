@@ -3089,9 +3089,10 @@ export default function envoyExtension(pi: PiApi): void {
   /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
    *  first: a quarter of a second, as the wait on a registration still on the wire. A listener
    *  that answers at all answers a release in tens of milliseconds. A release that has not
-   *  answered by then is left as it is: the DELETE goes, and nothing sends the release again. The
-   *  claim then stands until its last renewal is older than the listener's live window. The
-   *  DELETE goes all the same, because it is what lets a message to the stopped session wake it. */
+   *  answered by then is no longer waited for: the DELETE goes, and nothing sends the release
+   *  again. That release can still land while the process lives; when it does not, the claim
+   *  stands until its last renewal is older than the listener's live window. The DELETE goes all
+   *  the same, because it is what lets a message to the stopped session wake it. */
   const SHUTDOWN_RELEASE_MS = 250;
 
   /** Deregisters a session this process has stopped heartbeating — its own at shutdown, the one

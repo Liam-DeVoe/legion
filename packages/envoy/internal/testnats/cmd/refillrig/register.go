@@ -16,8 +16,9 @@ import (
 // plugin does: one POST /v1/interests/subscribe each, which writes the interest and, for a
 // self-subscribed session, the session record. Each asks for the session's own consumer, as a
 // plugin does, since the listener refuses a registration that asks for none (409 not_requested)
-// and writes nothing for it. The epoch is the string a plugin mints for one NATS connection, and
-// one run of this command is one such connection, so every registration of it sends the same one.
+// unless it comes from @sjawhar/pi-envoy 14.1.0 or later, which the rig does not name, and writes
+// nothing for it. The epoch is the string a plugin mints for one NATS connection, and one run of
+// this command is one such connection, so every registration of it sends the same one.
 func runRegister(args []string) error {
 	flags := flag.NewFlagSet("register", flag.ContinueOnError)
 	url := flags.String("url", "", "listener URL")
