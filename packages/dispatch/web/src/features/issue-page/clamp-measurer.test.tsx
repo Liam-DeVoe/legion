@@ -216,8 +216,8 @@ test("with no intersection observer, a row far from the screen is cut", () => {
   expect(frames, "no batch was asked for as the rows mounted").toHaveLength(1);
   runFrame();
   expect(
-    words.filter((element) => !cut(element)),
-    "a far row was left whole"
+    words.flatMap((element, at) => (cut(element) ? [] : [at])),
+    "the rows left whole, by their place from the top, with no intersection observer"
   ).toEqual([]);
 });
 

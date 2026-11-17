@@ -18,6 +18,7 @@ import {
   APPROVAL_STATE_WORDS,
   AUTHOR_KIND_WORDS,
   BLOCK_ATTRIBUTE_LABELS,
+  BLOCK_TYPE_NAMES,
   BLOCKED_BY_REFUSALS,
   blockAttributeLabel,
   CHECK_WHEN_WORDS,
@@ -93,6 +94,7 @@ function phrasesOf(value: unknown): readonly string[] {
 
 const UNASKED: readonly unknown[] = [
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,
@@ -323,12 +325,19 @@ test("the five controls are named in the order the row draws them, and none is c
     expect(EMPTY_STATE_LINES[preset]).toMatch(/^[A-Z].*\.$/);
   }
   // The page draws Statement, never Requirement (R22): the kind's own name is the word, and no
-  // word the page declares anywhere says requirement.
+  // word the page declares says requirement but the name a `requirement` block of a document
+  // other than the spec draws, which is no statement (decision 246).
   expect(NODE_TYPE_NAMES.requirement).toBe("statement");
+  expect(BLOCK_TYPE_NAMES.requirement).toBe("Requirement");
   for (const word of [...Object.values(PRESET_NAMES), ...Object.values(FILTER_SIGNAL_WORDS)]) {
     expect(word).not.toMatch(/tree|requirement|proven/iu);
   }
-  expect(DECLARED_WORDS.filter((word) => /requirement/iu.test(word))).toEqual([]);
+  expect(
+    WORD_SOURCES.filter((table) => table !== BLOCK_TYPE_NAMES)
+      .flatMap(phrasesOf)
+      .filter((phrase) => /requirement/iu.test(phrase)),
+    "a phrase but a non-statement block's name says requirement"
+  ).toEqual([]);
 });
 
 test("every empty-state line is one sentence a person reads", () => {
