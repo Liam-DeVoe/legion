@@ -120,7 +120,7 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 
 	t.Run("control", func(t *testing.T) {
 		if unfinished := r.unfinishedStepRows(); unfinished == 0 {
-			t.Fatal("the outbox holds no unfinished step record of the issue while Dispatch is stopped, so the walk rode through no outage")
+			t.Fatal("the outbox holds no unfinished step record of the issue while Dispatch is stopped: either Dispatch took each record (no outage) or the daemon wrote none")
 		}
 		if _, err := r.readSteps(); err == nil {
 			t.Fatal("GET steps answered while Dispatch is stopped, so the walk rode through no outage")
@@ -206,13 +206,21 @@ type stepRecordsRig struct {
 	reviews int
 }
 
-// newStepRecordsRig starts Dispatch with the run's project, its repository mapping and the issue,
-// seeds the daemon's store with the issue at admitted, its gate approved, on an open pull request
-// GitHub reports clean, boots the daemon at Dispatch and registers the tree's architect. The
-// admission pass then starts planning, the first step of the walk.
+// newStepRecordsRig is newStepRecordsRigOn over the package's broker and a Dispatch of this
+// checkout, which the package's own tests run.
 func newStepRecordsRig(t *testing.T) *stepRecordsRig {
 	t.Helper()
-	proof := newLiveProofOn(t, workflowNATS(t))
+	return newStepRecordsRigOn(t, newLiveProofOn(t, workflowNATS(t)), startScratchDispatchOn(t, scratchDispatchOptions{}))
+}
+
+// newStepRecordsRigOn sets up dispatch, a running Dispatch, with the run's project, its repository
+// mapping and the issue, seeds the daemon's store of proof with the issue at admitted, its gate
+// approved, on an open pull request GitHub reports clean, boots the daemon at Dispatch and
+// registers the tree's architect. The admission pass then starts planning, the first step of the
+// walk. The package's tests give it the package's broker; the live driver
+// (step_records_live_test.go) gives it the broker and the Dispatch its script names.
+func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatch) *stepRecordsRig {
+	t.Helper()
 	// A Dispatch project key is at most ten characters, and the daemon's project is its Dispatch
 	// project, so the run's project is a short one of its own.
 	proof.cfg.Project = "SR" + randomSuffix(t)[:6]
@@ -226,8 +234,7 @@ func newStepRecordsRig(t *testing.T) *stepRecordsRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &stepRecordsRig{liveProof: proof, number: int(number) + 1, claims: map[claim.Token]*stepClaimant{}}
-	r.dispatch = startScratchDispatchOn(t, scratchDispatchOptions{})
+	r := &stepRecordsRig{liveProof: proof, dispatch: dispatch, number: int(number) + 1, claims: map[claim.Token]*stepClaimant{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
