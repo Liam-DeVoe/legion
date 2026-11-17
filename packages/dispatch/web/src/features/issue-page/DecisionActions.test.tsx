@@ -61,10 +61,24 @@ const read: IssueDecisions = {
   open_questions: [],
 };
 
+/** The decisions document's text read for `answer`: its decisions' texts in order, with the
+ *  page's own reading of them, which a Change reads at its send to count its occurrence
+ *  (`changeAnchor`). */
+function stubDocumentText(answer: IssueDecisions) {
+  const markdown = (answer.decisions ?? []).map((row) => row.text).join("\n\n");
+  return spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown,
+    markdown_tree: displayTree(markdown),
+    token: "sha256:decisions",
+    version: null,
+  });
+}
+
 function renderActions(answer: IssueDecisions = read): { unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], answer);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
+  const text = stubDocumentText(answer);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -76,6 +90,7 @@ function renderActions(answer: IssueDecisions = read): { unmount: () => void } {
     unmount: () => {
       view.unmount();
       decisions.mockRestore();
+      text.mockRestore();
     },
   };
 }
@@ -106,6 +121,7 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["decisions", KEY], read);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
+  const text = stubDocumentText(read);
   const body = (drawn: boolean) => (
     <QueryClientProvider client={client}>
       <ChangeDraftsProvider>
@@ -122,6 +138,7 @@ function renderBody(): { close: () => void; open: () => void; unmount: () => voi
     unmount: () => {
       view.unmount();
       decisions.mockRestore();
+      text.mockRestore();
     },
   };
 }

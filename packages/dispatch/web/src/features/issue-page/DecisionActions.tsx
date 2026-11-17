@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -259,19 +259,31 @@ function ChangeComposer({
     label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
-    write: (input: { anchor: ChangeAnchor; body: string }, bounds) =>
-      api.createComment(
+    // Which of the quote's places in the decisions document is this decision's own is counted
+    // over that document's own reading, read here, at the send, and again on a retry under the
+    // same key (`changeAnchor`, decision 92 as amended); `changeAnchor` also reads every
+    // decision above this one, which no render of a row pays for.
+    write: async (input: { body: string }, bounds) => {
+      const text = await api.getArtifactText(documentId);
+      const anchor: ChangeAnchor = changeAnchor(
+        decision,
+        queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+          ?.decisions,
+        "markdown_tree" in text ? (text.markdown_tree as DisplayTree | undefined) : undefined
+      ) ?? { occurrence: 0, quote };
+      return api.createComment(
         issueKey,
         {
           anchor: {
             artifact: documentId,
-            occurrence: input.anchor.occurrence,
-            quote: input.anchor.quote,
+            occurrence: anchor.occurrence,
+            quote: anchor.quote,
           },
           body: input.body,
         },
         bounds
-      ),
+      );
+    },
     // The change is a comment of the issue's, and the comments read is what tells the page a
     // decision was changed (`decision-review.ts`): read again, so the decision says so, leaves
     // the review list and draws the change under it as soon as the comment lands.
@@ -312,15 +324,7 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, read
-        // here, at the send, from the decisions read: `changeAnchor` reads every decision above
-        // this one, which no render of a row pays for (decision 92).
-        const anchor = changeAnchor(
-          decision,
-          queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-            ?.decisions
-        );
-        send.mutate({ anchor: anchor ?? { occurrence: 0, quote }, body });
+        send.mutate({ body });
       }}
     >
       <blockquote

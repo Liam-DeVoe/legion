@@ -25,6 +25,7 @@ import type {
 import { askResolutionBadge } from "../refs/actor";
 import { agentsOnlyItem } from "./issue-address";
 import {
+  ambiguousTargets,
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
@@ -571,6 +572,36 @@ test("a chip of an ambiguous short reference says so, and a gone target's chip d
     { ambiguous: true, answered: true, gone: true, label: "needs", name: "", ref: ambiguous },
     { answered: true, gone: true, label: "needs", name: "", ref: gone },
   ]);
+});
+
+// Decisions 62 and 89: an ambiguous short reference has no name, as a gone target has none, so
+// the page publishes neither among its names (`targetNames`); it publishes the ambiguous one
+// among the references it read as ambiguous (`ambiguousTargets`), by the chip's own rule, so a
+// link draws it as written and links nothing, where it reads a gone one's own.
+test("the page publishes an ambiguous short reference as ambiguous, and a gone target nowhere", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const ambiguous = `dispatch://${KEY}/artifact/plan-md#b-abcd1234`;
+  const gone = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const named = "dispatch://CORE-7";
+  const title = "Read the names once";
+  const reads = {
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t1", "plan_task", { needs: `${ambiguous} ${gone}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      { ambiguous: true, gone: true, kind: "block", name: "", ref: ambiguous },
+      { gone: true, kind: "block", name: "", ref: gone },
+      { gone: false, kind: "issue", name: title, ref: named },
+    ] satisfies ReferenceTarget[],
+  };
+
+  expect([...ambiguousTargets(reads)]).toEqual([ambiguous]);
+  expect([...targetNames(reads)]).toEqual([[named, title]]);
 });
 
 // R21: a typed block is a directive, and the reference read names a block by its stored excerpt,

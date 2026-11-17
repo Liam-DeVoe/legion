@@ -1329,6 +1329,201 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
   });
 });
 
+// The tester's finding at #4205's e3136741: R8 read as a reader reaches an issue, by a link of
+// the dashboard itself and with no document load - from the Inbox, and from the parent's
+// outline. The dashboard moves the keyboard focus to its `<main>` at every page change but the
+// first (`app.tsx`), and the outline read that focus as one the reader had placed: with a
+// question waiting the page still went to it, and with none it opened with the focus on `<main>`
+// and on no row, at 1440 by 900. The row above loads the page by its address, where the
+// dashboard moves no focus, so it never met this.
+test("an issue opened by a link opens with the focus on its question, or on its first row where none waits", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const question = blockNodeId(await primarySlug(seeded.key), OPEN_QUESTION_BLOCK_ID);
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await page.goto("/");
+      const link = page
+        .locator(`[data-inbox-row] [data-dispatch-ref="dispatch://${seeded.key}"]`)
+        .first();
+      await expect(link, `the Inbox draws no link to ${seeded.key} at ${at}`).toBeVisible();
+      await link.click();
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the issue opened from the Inbox does not open with the focus on its open question at ${at}`,
+        })
+        .toBe(question);
+    }
+
+    // With the question answered none waits on the reader, so the focus is the first row's.
+    // The Inbox lists the issue no more, and the parent's outline links it as its child.
+    await answerAsk(seeded.openQuestion.askId, {
+      expected_edited_at: null,
+      selected: [],
+      text: "1280 px.",
+    });
+    for (const size of [DESKTOP, PHONE]) {
+      const at = `${size.width}x${size.height}`;
+      await page.setViewportSize({ height: size.height, width: size.width });
+      await gotoIssue(page, `/issues/${seeded.parentKey}`);
+      await expectIssuePageDrawn(page);
+      const link = childRow(page, seeded.key).locator(`a[href$="/issues/${seeded.key}"]`).first();
+      await expect(
+        link,
+        `the parent's outline draws no link to ${seeded.key} at ${at}`
+      ).toBeVisible();
+      await link.click();
+      await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+      await expectIssuePageDrawn(page);
+      await expect
+        .poll(async () => (await focusedNodeId(page)) !== null, {
+          message: `the issue opened from its parent's outline opens with the focus on no row at ${at}`,
+        })
+        .toBe(true);
+      expect(
+        await focusedNodeId(page),
+        `the issue opened from its parent's outline does not open with the focus on the outline's first row at ${at}`
+      ).toBe((await drawnRows(page))[0]?.id ?? "");
+    }
+  });
+});
+
+// The tester's finding at #4205's e3136741, R10 and R9's "after each move the focused row is on
+// screen": Enter draws the statement's document - its one editor, and the whole of it - in the
+// row, and the document scrolls the caret's block to the middle of the screen. The row holding
+// the editor is still the focused row, and G's `useRowOnScreen` places a focused row again on
+// every change of its size: a row taller than the screen goes back to its top. So each new line
+// the reader writes, a picture that loads above the caret, and another reader's edit take the
+// page to the top of the document, and the caret off screen. On the real INFRA-1196 at 1440 by
+// 900 a picture that loaded during that scroll left the caret in its last statement 17,037 px
+// below the top of the window. The seeds' statements sit near their document's top and c-keys
+// (7) writes no new line, so no row met it.
+test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    const deep = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A spec whose one statement is under eighty paragraphs",
+        "",
+        ...Array.from({ length: 80 }, (_, n) => [
+          `Paragraph ${n + 1} of the words above the statement.`,
+          "",
+        ]).flat(),
+        ":::requirement{#r-deep}",
+        "The statement under eighty paragraphs.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose one statement is deep in its spec",
+    });
+    const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
+    await gotoIssue(page, `/issues/${deep.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
+      .toBe(statement);
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    // On screen is under nothing at the foot too: the height the box at the foot publishes
+    // (`FOOT_HEIGHT_PROPERTY`) is taken off the window, as `onScreen` and row (4)'s `inView` do.
+    const caretOnScreen = (): Promise<boolean> =>
+      page.evaluate((property) => {
+        const selection = window.getSelection();
+        if (selection === null || selection.rangeCount === 0) return false;
+        const foot =
+          Number.parseFloat(
+            getComputedStyle(document.documentElement).getPropertyValue(property)
+          ) || 0;
+        // A caret on an empty line has no rectangle of its own, so its line's box is read.
+        const anchor = selection.anchorNode;
+        const line = anchor instanceof Element ? anchor : anchor?.parentElement;
+        const box = selection.getRangeAt(0).getClientRects()[0] ?? line?.getBoundingClientRect();
+        return box !== undefined && box.top >= 0 && box.bottom <= window.innerHeight - foot;
+      }, FOOT_HEIGHT_PROPERTY);
+    await expect
+      .poll(caretOnScreen, {
+        message: "the caret Enter put in the statement is off screen at 1440x900",
+      })
+      .toBe(true);
+    // A new line makes the row taller, and nothing else is pressed while it is drawn.
+    await page.keyboard.press("End");
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    await nextFrames(page);
+    expect(
+      await caretOnScreen(),
+      "a new line written in the statement took the caret off screen at 1440x900"
+    ).toBe(true);
+  });
+});
+
+// The tester's finding at #4205's e3136741, and decision 124 of the parts (INFRA-1196's
+// architect, 2026-11-16): while a row edits a block of a document the model holds whole, its
+// editor opens at that block with the caret there, and the row is no taller than the window,
+// with a scroll of its own, so the page around it stays where it was. At e3136741 Enter on R1 of
+// the real INFRA-1196 drew the whole spec in that row, 35,635 px high, and the rows under it
+// went down by as much.
+test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page) => {
+    const deep = await createIssue({
+      force: true,
+      project: PROJECT,
+      spec: [
+        "# A spec whose one statement is under eighty paragraphs",
+        "",
+        ...Array.from({ length: 80 }, (_, n) => [
+          `Paragraph ${n + 1} of the words above the statement.`,
+          "",
+        ]).flat(),
+        ":::requirement{#r-deep}",
+        "The statement under eighty paragraphs.",
+        ":::",
+        "",
+      ].join("\n"),
+      title: "An issue whose one statement is deep in its spec",
+    });
+    const statement = blockNodeId(await primarySlug(deep.key), "r-deep");
+    await gotoIssue(page, `/issues/${deep.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the page does not open on the statement" })
+      .toBe(statement);
+    const row = nodeRow(page, statement).first();
+    const before = await row.evaluate((element) => ({
+      scroll: window.scrollY,
+      top: element.getBoundingClientRect().top,
+    }));
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => caretInNode(page), { message: "Enter did not put the caret in the statement" })
+      .toBe(true);
+    await nextFrames(page);
+    const after = await row.evaluate((element) => ({
+      height: element.getBoundingClientRect().height,
+      scroll: window.scrollY,
+      top: element.getBoundingClientRect().top,
+    }));
+    expect(
+      after.height,
+      "the row that edits the statement is taller than the window at 1440x900"
+    ).toBeLessThanOrEqual(DESKTOP.height);
+    expect(
+      Math.abs(after.scroll - before.scroll) + Math.abs(after.top - before.top),
+      "the page around the row that edits the statement moved at 1440x900"
+    ).toBeLessThanOrEqual(1);
+  });
+});
+
 // c-children, as the architect's ruling 5 reads R12 (build-rulings-md): no view draws a
 // children's section above the outline; the children are one group of rows of the outline, where
 // the model places them, which for every child today is under the issue; each child's row holds

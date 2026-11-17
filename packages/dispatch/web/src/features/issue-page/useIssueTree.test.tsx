@@ -14,7 +14,11 @@ import type {
 } from "../../api/types";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
-import { ReferenceNamesProvider, useKnownReferenceName } from "./reference-names";
+import {
+  ReferenceNamesProvider,
+  useKnownAmbiguousReferences,
+  useKnownReferenceName,
+} from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
 
@@ -385,6 +389,54 @@ test("a short address a comment cites is read as written and named from that ans
     );
     await waitFor(() => expect(view.result.current).toBe("The comment its short id names"));
     expect(asked[0]).toContain(cited);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// dispatch://INFRA-1196 decisions 62 and 89: the batched read answers a short reference whose id
+// two or more targets carry gone and ambiguous, and one whose target is gone gone alone. Neither
+// has a name, so the page publishes none for either; it publishes the ambiguous one among the
+// references it read as ambiguous, which a link draws as written and links nothing, and leaves
+// the gone one out of them, which a link reads its own.
+test("the page publishes an ambiguous reference a comment cites as ambiguous, a gone one not", async () => {
+  const ambiguous = `dispatch://${KEY}/comment/c0b271c7`;
+  const gone = `dispatch://${KEY}/comment/c0ffee00`;
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map((target): ReferenceTarget => {
+        if (target.ref === ambiguous) {
+          return { ...target, ambiguous: true, gone: true, kind: "comment", name: "" };
+        }
+        return target.ref === gone ? { ...target, gone: true, kind: "comment", name: "" } : target;
+      }),
+    }),
+    { comments: [{ ...comment, body: `Read ${ambiguous} and ${gone} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return {
+          ambiguous: useKnownAmbiguousReferences(),
+          names: [useKnownReferenceName(ambiguous), useKnownReferenceName(gone)],
+          task: useKnownReferenceName(TASK_REF),
+        };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect([...view.result.current.ambiguous]).toEqual([ambiguous]));
+    // The read has answered and its names are published with the set: the task's among them,
+    // and none for the ambiguous reference or the gone one.
+    expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
+    expect(view.result.current.names).toEqual([undefined, undefined]);
     view.unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
