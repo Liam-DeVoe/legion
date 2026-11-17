@@ -1,17 +1,22 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -382,41 +387,75 @@ func TestAPluginAboveTheRatingContractMustRateToo(t *testing.T) {
 	}
 }
 
-// The rating is left out of the completion's key, as the summary is: the first completion is what
-// the workflow took. So the retro's completion sent again after it was taken, with the same rating
-// and reason, another rating, or another reason, is answered HANDOFF_ALREADY_RECORDED and applies
-// nothing, and the one fact applied carries the first rating and reason.
+// stepRecordPayloads is the text of every step record row key's outbox holds, in the order they
+// were written: what the workflow sends Dispatch of each run of a step, a retro's rating among it.
+func stepRecordPayloads(t *testing.T, h *harness, key string) []string {
+	t.Helper()
+	rows, err := h.store.Pool().Query(context.Background(), `select payload::text from outbox where issue = $1 and kind = $2 order by id`,
+		key, string(record.OutboxKindStepRecord))
+	if err != nil {
+		t.Fatalf("read the step records of %s: %v", key, err)
+	}
+	payloads, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the step records of %s: %v", key, err)
+	}
+	return payloads
+}
+
+// The retro's completion the workflow takes moves the issue on to merging (TriggerRetroCompleted)
+// and writes its rating on the retro's record. The same completion sent again from there is still
+// the retro's, the late retro's (phase.Of), so the workflow decides it: the implementer's retro
+// already stands, so the first retry, rated otherwise, is refused HANDOFF_NOT_CURRENT_PHASE, and
+// that refusal is recorded under the completion's key. The rating is left out of the key, as the
+// summary is, so each later retry at the same commit, with the first rating and reason, another
+// rating or another reason, is that same completion and is answered HANDOFF_ALREADY_RECORDED. The
+// retro's record keeps the first rating alone: the step records stand as the first completion
+// wrote them, its reason in one of them and no retry's reason in any.
 func TestARatedRetroSentAgainKeepsItsFirstRating(t *testing.T) {
-	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
 	seedIssueAt(t, h, "LEGION-208", phase.Retro)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
-	const reason = "The plan left out a step the tester needed."
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-		PlanRating: new(2), PlanReason: new(reason)}))
+	retro := func(rating int, reason string) *httptest.ResponseRecorder {
+		return h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
+			PlanRating: new(rating), PlanReason: new(reason)})
+	}
+	const first = "The plan left out a step the tester needed."
+	completion(t, retro(2, first))
+	assertIssuePhase(t, h, phase.Merging)
+	written := stepRecordPayloads(t, h, "LEGION-208")
+	if rated := slices.IndexFunc(written, func(p string) bool { return strings.Contains(p, first) }); rated < 0 ||
+		slices.ContainsFunc(written[rated+1:], func(p string) bool { return strings.Contains(p, first) }) {
+		t.Fatalf("the retro's completion wrote the step records %v, want its reason in exactly one", written)
+	}
 
-	for _, again := range []struct {
+	const refusedFirst = "The plan fit the work."
+	refused(t, retro(5, refusedFirst), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	again := []struct {
 		name   string
 		rating int
 		reason string
 	}{
-		{name: "the same rating and reason", rating: 2, reason: reason},
-		{name: "another rating", rating: 5, reason: reason},
-		{name: "another reason", rating: 2, reason: "The plan fit the work."},
-	} {
-		t.Run(again.name, func(t *testing.T) {
-			message := refused(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "retro done", Commit: "c0ffee",
-				PlanRating: new(again.rating), PlanReason: new(again.reason)}), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
+		{name: "the first rating and reason", rating: 2, reason: first},
+		{name: "another rating", rating: 4, reason: first},
+		{name: "another reason", rating: 2, reason: "The reviewer's two rounds were the step the plan left out."},
+	}
+	for _, retry := range again {
+		t.Run(retry.name, func(t *testing.T) {
+			message := refused(t, retro(retry.rating, retry.reason), http.StatusConflict, "HANDOFF_ALREADY_RECORDED")
 			if !strings.Contains(message, "was already received; this call changed nothing") {
 				t.Fatalf("the refusal = %q, want it to say the call changed nothing", message)
 			}
 		})
 	}
-	got := facts.recorded()
-	if len(got) != 1 {
-		t.Fatalf("facts after the retries = %#v, want the first completion's alone", got)
+	assertIssuePhase(t, h, phase.Merging)
+	if got := stepRecordPayloads(t, h, "LEGION-208"); !slices.Equal(got, written) {
+		t.Fatalf("after the retries the step records are %v, want them as the first completion wrote them: %v", got, written)
 	}
-	if fact := lastCompletion(t, facts); !ratedAs(fact, 2, reason) {
-		t.Fatalf("the retro's fact carries the rating %+v, want the first rating, 2, with its reason", fact.PlanRating)
+	for _, reason := range []string{refusedFirst, again[2].reason} {
+		if slices.ContainsFunc(written, func(p string) bool { return strings.Contains(p, reason) }) {
+			t.Fatalf("the step records %v carry a retry's reason %q", written, reason)
+		}
 	}
 }
 
