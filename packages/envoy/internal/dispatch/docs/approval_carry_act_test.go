@@ -39,9 +39,10 @@ const actAnswerSpec = "Context\n\n" +
 // (approval_carry_approved_test.go), and not the 20 ms a test that only seeds can afford: a
 // settlement firing while one of these tests holds its joined transaction takes the document's
 // rows in the other order and the two deadlock, which `-race` is slow enough to hit. The seeding
-// below schedules one settlement itself and waits for it until the test binary's deadline
-// (testwait.Eventually): a loaded machine takes more than a few seconds for a settlement that
-// fires at one, and a seed that never settles still fails, naming what it waited for.
+// below schedules one settlement itself and waits for it up to a minute, or to a second before the
+// test binary's deadline when that comes first (testwait.Eventually): a loaded machine takes more
+// than a few seconds for a settlement that fires at one, and a seed that never settles still
+// fails, naming what it waited for.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)

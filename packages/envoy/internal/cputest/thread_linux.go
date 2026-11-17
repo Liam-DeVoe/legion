@@ -9,12 +9,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Thread is the CPU time, user and system, that the operating system thread which runs the caller
-// has spent since it started (clock_gettime(CLOCK_THREAD_CPUTIME_ID)). It counts no other
-// goroutine, so a call that OfCall times on it is timed alone while a test's server runs beside
-// it. The clock moves in steps of a few hundred nanoseconds, where getrusage(RUSAGE_THREAD) splits
-// the same time into user and system time by whole ticks of the scheduler (ThreadUser).
-func Thread() time.Duration {
+// threadCPU is the CPU time, user and system, that the operating system thread which runs the
+// caller has spent since it started (clock_gettime(CLOCK_THREAD_CPUTIME_ID)). The clock moves in
+// steps of a few hundred nanoseconds, where getrusage(RUSAGE_THREAD) splits the same time into user
+// and system time by whole ticks of the scheduler (ThreadUser).
+func threadCPU() time.Duration {
 	var now unix.Timespec
 	if err := unix.ClockGettime(unix.CLOCK_THREAD_CPUTIME_ID, &now); err != nil {
 		panic(fmt.Sprintf("clock_gettime(CLOCK_THREAD_CPUTIME_ID): %v", err))
@@ -36,4 +35,9 @@ func ThreadUser() time.Duration {
 		panic(fmt.Sprintf("getrusage(RUSAGE_THREAD): %v", err))
 	}
 	return time.Duration(usage.Utime.Nano())
+}
+
+// threadID is the id of the operating system thread that runs the caller (gettid).
+func threadID() int {
+	return unix.Gettid()
 }

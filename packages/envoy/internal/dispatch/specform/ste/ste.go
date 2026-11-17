@@ -73,7 +73,15 @@ type compiled struct {
 	nominalization *regexp.Regexp
 	// synonyms holds, for each group, one pattern per member: the member and its inflections.
 	synonyms [][]*regexp.Regexp
+	// members is the word of each member of each group, as rules.json writes it, and first the bit
+	// of the first member of each group in Verbs.
+	members [][]string
+	first   []int
 }
+
+// Verbs is the members of ste-lint's synonym groups that a text uses, one bit for each member of
+// each group in the order of rules.json, so that the verbs of two texts join in one step.
+type Verbs uint64
 
 func compileRules(raw []byte) compiled {
 	var data ruleData
@@ -101,9 +109,23 @@ func compileRules(raw []byte) compiled {
 			patterns[index] = regexp.MustCompile("(?i)" + pythonFold(regexp.QuoteMeta(base)) +
 				alternation([]string{"s", "es", "ed", "d", "ing"}) + "?")
 		}
+		rule.first = append(rule.first, verbCount(rule.members))
 		rule.synonyms = append(rule.synonyms, patterns)
+		rule.members = append(rule.members, group)
+	}
+	if count := verbCount(rule.members); count > 64 {
+		panic(fmt.Sprintf("ste: rules.json has %d members of synonym groups, and Verbs holds 64", count))
 	}
 	return rule
+}
+
+// verbCount is how many members the groups hold.
+func verbCount(groups [][]string) int {
+	count := 0
+	for _, group := range groups {
+		count += len(group)
+	}
+	return count
 }
 
 // pythonFold writes each "i" of a pattern outside a character class as a class that also holds
@@ -416,6 +438,14 @@ func (c *columns) at(offset int) int {
 // Lint is ste-lint's hard findings for text, in ste-lint's order: by line and column, and in
 // the order ste-lint found them where those are equal.
 func Lint(text string) []Finding {
+	findings, _ := LintVerbs(text)
+	return findings
+}
+
+// LintVerbs is Lint, and the members of the synonym groups that text uses (Verbs), each as Lint
+// reads it for the rule synonym-rotation: so the verbs of one text can stand beside the words of
+// another (Rotations).
+func LintVerbs(text string) ([]Finding, Verbs) {
 	lines := splitLines(text)
 	var found []located
 	add := func(line, column int, rule, match string) {
@@ -465,12 +495,15 @@ func Lint(text string) []Finding {
 		}
 	})
 	// A synonym rotation is each member of a group after the first one to stand in the text, at
-	// its first place, ordered as Python orders its (line, column, match) tuples.
+	// its first place, ordered as Python orders its (line, column, match) tuples. Each member that
+	// stands in the text is one of its verbs.
+	var verbs Verbs
 	for group, members := range rules.synonyms {
 		var present []synonymHit
 		for member := range members {
 			if hit, ok := seen[[2]int{group, member}]; ok {
 				present = append(present, hit)
+				verbs |= 1 << (rules.first[group] + member)
 			}
 		}
 		sort.Slice(present, func(a, b int) bool {
@@ -498,7 +531,31 @@ func Lint(text string) []Finding {
 	for index, finding := range found {
 		findings[index] = finding.Finding
 	}
-	return findings
+	return findings, verbs
+}
+
+// Rotations is each synonym group that a text whose own words use the verbs own breaks the rule
+// synonym-rotation in, once the verbs carried stand beside them, as the verbs of the footnotes of a
+// text do: a group of which carried uses a verb that own does not, where own and carried use two
+// verbs of it together. Each is the words of the verbs of the group that either uses, in the order
+// of rules.json. A group that own alone uses two verbs of is Lint's finding of the text itself.
+func Rotations(own, carried Verbs) [][]string {
+	var rotations [][]string
+	for group, members := range rules.members {
+		var used []string
+		adds := false
+		for member, word := range members {
+			bit := Verbs(1) << (rules.first[group] + member)
+			if (own|carried)&bit != 0 {
+				used = append(used, word)
+			}
+			adds = adds || carried&^own&bit != 0
+		}
+		if adds && len(used) > 1 {
+			rotations = append(rotations, used)
+		}
+	}
+	return rotations
 }
 
 // conjunctionEnd is ste-lint's CONJUNCTION_END, `\b(?:and|or)\s*$` with IGNORECASE, searched in

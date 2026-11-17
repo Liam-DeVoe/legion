@@ -675,7 +675,7 @@ func seededRegionDocumentGated(t *testing.T, settle time.Duration, gate FormGate
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
 	// Settlement indexes the block as an ask of this document, the row the carry reads. The wait
-	// lasts until the test binary's deadline, as seededActDocument's does.
+	// lasts up to a minute, as seededActDocument's does (testwait.Eventually).
 	service.ScheduleSettlement(artifactID)
 	testwait.Eventually(t, "settlement to index the block", func() bool {
 		var rows int

@@ -9,12 +9,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cputest"
 )
 
-// workGrowth is how many times the work of a judgment may grow when its text grows four times, the
-// bound of a comparison of a text of n units and one of 4n (TestTheWorkOfAJudgmentOfTextsThatShare
-// AFootnoteGrowsInProportionToItsDocument): work in proportion to the text grows about four times,
-// and work for each pair of forms, links, texts or characters about sixteen.
-const workGrowth = 6
-
 // workSamples is how many times each text is judged, the sizes in turn, so that a change of the
 // machine's load reaches each. A busy machine can only add to the CPU time of a judgment, so the
 // least of the samples is its work.
@@ -37,28 +31,31 @@ const (
 // addresses and titles, many terms and many texts, and each part of a document that many texts
 // share. The one part of a document that the reader lets many texts share is a footnote: many
 // statements, term lines, component rows and purpose lines that refer to one long footnote, to one
-// footnote of many links, or to one chain of footnotes, and one statement that refers to many
-// footnotes. The reader refuses a link definition, which many links could share, and a link and an
-// image hold their own address and title. Each row judges a text of n units and one of workScale
-// times n, and the work of the larger grows less than workBound times (cputest.Growth): the
-// smaller text is judged workScale times in one window and the larger once, so that both windows
-// last about as long. The work is the user CPU time of the thread that judges: the work of the
-// judgment's own code. A wait for a core is not in it, and nor is the kernel's work for the
+// footnote of many links, or to one chain of footnotes, one statement that refers to a chain of
+// footnotes, and one statement that refers to many footnotes. The footnotes of the chains hold a
+// verb of a synonym group, which Dispatch carries into each text that holds them, as it carries
+// their sentences. The reader refuses a link definition, which many links could share, and a link
+// and an image hold their own address and title. Each row judges a text of n units and one of
+// workScale times n, and the work of the larger grows less than workBound times (cputest.Growth):
+// the smaller text is judged workScale times in one window and the larger once, so that both
+// windows last about as long. The work is the user CPU time of the thread that judges: the work of
+// the judgment's own code. A wait for a core is not in it, and nor is the kernel's work for the
 // thread, such as the reclaim of memory when the machine is short of it; work that allocates
-// nothing is in it. The smaller window of each row lasts 50 ms or more, so that the kernel's split
-// of the thread's time into user and system time, the collector's work and a cold cache are a
-// small part of it. A row whose judgment finds no finding of its rule at either size reads
-// nothing, so it fails; a row of a rule "" is a shape that breaks no rule. A text of n units is
-// 16 KB or more: Go's regexp reads a shorter text by a faster way, and the port's work for each
-// byte grew 1.3 times from a text of 8 KB to one of 32 KB for that reason alone. Each row's n is
-// large enough that the walk it is for, made a walk for each pair (ste-lint's count of a column
-// from the start of the line, a scan of the addresses, the texts of a node or the footnote
-// definitions read so far), is most of the work of the larger text, so the row fails it. A walk
-// for each pair whose step is a comparison of a few nanoseconds needs units that cost little else:
-// so the footnotes of the rows "many footnotes" and "one statement that refers to many footnotes",
-// and the statements of the first, hold a word or two each, and the row of purpose lines of one id
-// times the reader alone (read), since the walk that it is for is the reader's, and the judgment
-// of each line costs several times the reading of it.
+// nothing is in it. The smaller window of each row lasts cputest.MinWindow or more, which Growth
+// holds, so that the kernel's split of the thread's time into user and system time, the
+// collector's work and a cold cache are a small part of it. A row whose judgment finds no finding
+// of its rule at either size reads nothing, so it fails; a row of a rule "" is a shape that breaks
+// no rule. A text of n units is 16 KB or more: Go's regexp reads a shorter text by a faster way,
+// and the port's work for each byte grew 1.3 times from a text of 8 KB to one of 32 KB for that
+// reason alone. Each row's n is large enough that the walk it is for, made a walk for each pair
+// (ste-lint's count of a column from the start of the line, a scan of the addresses, the texts of a
+// node, the footnote definitions read so far, or the footnotes that hold a footnote's sentences
+// and verbs), is most of the work of the larger text, so the row fails it. A walk for each pair
+// whose step is a comparison of a few nanoseconds needs units that cost little else: so the
+// footnotes of the rows "many footnotes" and "one statement that refers to many footnotes", and the
+// statements of the first, hold a word or two each, and the row of purpose lines of one id times
+// the reader alone (read), since the walk that it is for is the reader's, and the judgment of each
+// line costs several times the reading of it.
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -130,6 +127,15 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			return units("[^shared]: ", note, "\n\n")(n) + units(head, unit, "")(n)
 		}
 	}
+	// chain is n footnotes, each of which refers to the next, and each of which holds a verb of a
+	// synonym group.
+	chain := func(n int) string {
+		var markdown strings.Builder
+		for index := 1; index <= n; index++ {
+			fmt.Fprintf(&markdown, "[^%d]: Dispatch checks record %[1]d[^%d].\n\n", index, index+1)
+		}
+		return markdown.String()
+	}
 	const requirement, end = ":::requirement{#r}\nDispatch keeps", "\n:::\n"
 	const statementUnit = ":::requirement{#s-%d}\nDispatch keeps record %[1]d[^shared].\n:::\n\n"
 	for _, row := range []struct {
@@ -180,12 +186,10 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			extracted(shared("[it](dispatch://ACME-%d) ", "", statementUnit))},
 		{"many statements that refer to one chain of footnotes", ruleSentences, 500,
 			extracted(func(n int) string {
-				var chain strings.Builder
-				for index := 1; index <= n; index++ {
-					fmt.Fprintf(&chain, "[^%d]: Dispatch keeps record %[1]d[^%d].\n\n", index, index+1)
-				}
-				return chain.String() + units("", ":::requirement{#s-%d}\nDispatch keeps it[^1].\n:::\n\n", "")(n)
+				return chain(n) + units("", ":::requirement{#s-%d}\nDispatch keeps it[^1].\n:::\n\n", "")(n)
 			})},
+		{"one statement that refers to a chain of footnotes", ruleSentences, 500,
+			extracted(func(n int) string { return ":::requirement{#s}\nDispatch keeps it[^1].\n:::\n\n" + chain(n) })},
 		{"one statement that refers to many footnotes", ruleSentences, 1_000,
 			extracted(func(n int) string {
 				return units(":::requirement{#s}\nDispatch keeps it", "[^%d]", ".\n:::\n\n")(n) + units("", "[^%d]: It.\n\n", "")(n)
@@ -195,8 +199,11 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 			sizes := []int{row.n, workScale * row.n}
 			judges := []func() []Finding{row.judge(t, sizes[0]), row.judge(t, sizes[1])}
 			findings := make([][]Finding, len(sizes))
-			growth, small, large := cputest.Growth(workSamples, workScale,
+			growth, small, large, err := cputest.Growth(workSamples, workScale,
 				func() { findings[0] = judges[0]() }, func() { findings[1] = judges[1]() })
+			if err != nil {
+				t.Fatal(err)
+			}
 			for index, found := range findings {
 				if has := slices.ContainsFunc(found, func(finding Finding) bool { return finding.Rule == row.rule }); row.rule != "" && !has {
 					t.Fatalf("the judgment of %d units finds no finding of %s, so this row reads nothing: %.300v", sizes[index], row.rule, found)

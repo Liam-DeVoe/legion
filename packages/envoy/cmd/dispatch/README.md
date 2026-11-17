@@ -4621,33 +4621,40 @@ Each item below names a path with its method and identity, then its purpose.
 
     - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
       A block in a code block or in a table cell is no block.
+      A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
       Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
       A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule.
       The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
       The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
       So code font hides no name or link, also when it holds the whole name or a part of it.
-      These rules also read each address and title of a link or an image.
+
+    - How the rules of links, of records and of people read a link: they also read each address and title of a link or an image.
       An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
       Dispatch reads the address of each link as an address, whatever stands beside the link.
       A `mailto:` link whose words are one whole email address and whose address is `mailto:` and those words is the one other form.
       Dispatch stores an email address in the words as such a link, such as the host in `git@github.com:owner/repo.git`.
       So it reads that address in the words of the page, beside the words before and after it.
       A `mailto:` link with other words, such as `[dispatch://ACME-1](mailto:dispatch://ACME-1)`, is read in its address too.
-      An address that starts with `/` opens a page of the server that shows the document.
-      So a path of the page of a record, such as `/projects/ACME/documents/terms-md` or `/issues/ACME-12/spec`, is a link to that record.
-      The server's own reading of the address of its pages decides which paths are pages of a record: an issue, a document of an issue or of a project, an ask, a comment and a block.
-      A path of another page, such as `/docs/guide`, and an address of another host link to no record.
+      An address with no scheme opens a page of the server that shows the document.
+      Dispatch reads it as the dashboard reads the address of a link: against the origin of the server, with each `\` read as `/`.
+      So `/projects/ACME/documents/terms-md`, `projects/ACME/documents/terms-md` and `../../projects/ACME/documents/terms-md` link to that document.
+      The server's own reading of the address of its pages decides which paths are pages of a record: an issue, a document of an issue, of a project or of an agent, an ask, a comment, a message and a block.
+      A path of another page, such as `/docs/guide` or `../documents/terms-md`, and an address of another host link to no record.
       Where the address of a link and the words of the page name one record, the text has one finding for it, the address's.
+      The words name the record also by the key of its issue or by its id, as in `[ACME-1](dispatch://ACME-1/spec)`, and the finding names the words too.
       So one link gives one finding, and two links to two records give two.
       A digit right after an autolink, as in `<dispatch://ACME-1>5`, makes the words name another record, so that text gives two findings.
-      A footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
+
+    - How Dispatch reads a footnote: a footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
       Dispatch judges each footnote one time for each document.
       Each finding of a footnote is in the refusal one time, under the first text that refers to the footnote and whose kind the rule reads.
+      That is the first in the order that Dispatch judges the texts: each text but a term line in the order of the document, then each term line.
       Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.
-      The sentences of a footnote count in each statement that refers to it.
-      When the footnotes of a statement hold more than two sentences, the finding says `at least`, because Dispatch stops the count there.
+      The sentences of a footnote count in each statement that refers to it, and the finding names each footnote with its sentences, as in `[^1] adds 2`.
+      When Dispatch stops the count of a statement's footnotes, the finding says `at least`.
+      The verbs of a footnote stand beside the words of each text that refers to it in the rule `ste100-synonym-rotation`.
+      So `Check the file.[^1]` with the footnote `Then verify it.` breaks that rule, in each text that refers to the footnote.
       A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
-      A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
 
     - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
       A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
@@ -4716,6 +4723,7 @@ Each item below names a path with its method and identity, then its purpose.
       A closing mark is a closing bracket, a closing curly quote, or a straight quote that no character of a path follows.
       Such an address names no person, so `git@github.com:owner/repo.git` and `deploy@build.example.com:'/srv/my reports/'` name none.
       But `(ada@example.com:)`, `ada@example.com: she` and `the field reads "ada@example.com:" each day` name a person.
+      A straight quote that a full stop follows is read as part of a path, so `the field reads "ada@example.com:".` names no person.
       An address `user@host` with no path after it reads as the address of a person, also in a command that names a machine.
       So `scp report.txt deploy@build.example.com:`, `rsync -a dist/ deploy@build.example.com:`, `ssh deploy@build.example.com` and the remote glob `deploy@build.example.com:?.log` break the form.
       The finding gives the ways out: write the path after the colon, as in `deploy@build.example.com:~/` or `deploy@build.example.com:./?.log`.

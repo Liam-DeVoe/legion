@@ -481,44 +481,59 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 
 // The repair pass, which restores the asks of an issue an older release reopened, leaves a broken
 // approval request resolved with the findings, as a reopen does, and a second pass finds nothing
-// left. The control: a clean request is restored open.
+// left. Each of the seven fixture texts of v-form is sent through it one at a time, with the
+// assertions of the six other paths: the reason names the node and the rule, the request is not
+// opened again, no review is written, and the person's Approve of it is refused. The control of
+// v-form, a statement of two sentences of 25 words each, is restored open, and the person's
+// Approve of it is taken.
 func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		body   string
-		broken bool
-	}{
-		{name: "a broken request", body: formFaults[0].broken, broken: true},
-		{name: "control: a clean request", body: formFaults[0].clean},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
-			tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
-			issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release", formFaults[0].document(test.body))
-			request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
-			reparentFormIssue(t, f.handler, issue.Key, tree.root)
-			closeIssue(t, f.handler, issue.Key)
-			reopener := repairActor("session-reopener")
-			reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
-			seq := lastIssueSeq(t, f.database, issue.Key)
-
-			repair := repairNow(t, f)
-			if !test.broken {
-				if repair.Restored != 1 || repair.LeftResolved != 0 {
-					t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
-				}
-				requireRestoredOpen(t, specFormTree{handler: f.handler, database: f.database}, issue.Key, seq, request)
-				return
-			}
+	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
+	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
+	reopener := repairActor("session-reopener")
+	// repaired opens a request of document under the root, closes the issue, reopens it as a
+	// release older than the restore does, and runs the repair pass once.
+	repaired := func(t *testing.T, name, document string) (formIssue, string, int, IssueAskRepair) {
+		t.Helper()
+		issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release: "+name, document)
+		request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
+		reparentFormIssue(t, f.handler, issue.Key, tree.root)
+		closeIssue(t, f.handler, issue.Key)
+		reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
+		seq := lastIssueSeq(t, f.database, issue.Key)
+		return issue, request, seq, repairNow(t, f)
+	}
+	for _, fault := range formFaults {
+		t.Run(fault.name, func(t *testing.T) {
+			issue, request, seq, repair := repaired(t, fault.name, fault.document(fault.broken))
 			if repair.Restored != 0 || repair.LeftResolved != 1 {
 				t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
 			}
-			requireLeftResolved(t, f.handler, f.database, issue.Key, seq, request, strings.Join(formFaults[0].lines(1), "\n"), reopener)
+			requireLeftResolved(t, f.handler, f.database, issue.Key, seq, request, strings.Join(fault.lines(1), "\n"), reopener)
 			if again := repairNow(t, f); again != (IssueAskRepair{}) {
 				t.Fatalf("second repair = %+v, want nothing found", again)
 			}
+			reviews := readFormState(t, f.database, issue.Key).reviews
+			answered := answerFormApproval(t, f.handler, request, docs.ApprovalOptionApprove, "")
+			if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
+				t.Fatalf("approve the request the repair left resolved: status=%d body=%s, want 409 for a request that is not open",
+					answered.Code, answered.Body.String())
+			}
+			if after := readFormState(t, f.database, issue.Key).reviews; after != reviews {
+				t.Fatalf("the refused answer wrote %d reviews", after-reviews)
+			}
 		})
 	}
+	t.Run("control: a statement of two sentences of 25 words each", func(t *testing.T) {
+		statement := formFault{node: "show-person", kind: specform.KindStatement}
+		issue, request, seq, repair := repaired(t, "the control", statement.document(twentyFiveWords))
+		if repair.Restored != 1 || repair.LeftResolved != 0 {
+			t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
+		}
+		requireRestoredOpen(t, specFormTree{handler: f.handler, database: f.database}, issue.Key, seq, request)
+		if response := answerFormApproval(t, f.handler, request, docs.ApprovalOptionApprove, ""); response.Code != http.StatusOK {
+			t.Fatalf("approve the restored request: status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+	})
 }
 
 // A request for changes is never gated: the person sends the refusal's changes_reason to the

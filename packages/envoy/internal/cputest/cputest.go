@@ -1,13 +1,13 @@
 // Package cputest reads this process's own CPU time, the measure every growth test in this module
-// times a call by, the CPU time of the one thread that runs a call (OfCall), and the work of a
-// call's own code on that thread (Growth). A call's wall time counts every moment the scheduler
-// leaves the process off a core, so a loaded machine stretches it on either side of a comparison
-// without the call doing more work; CPU time leaves that out. It is not immune to load: a busy
-// machine still slows the process's own CPU time through shared caches and clock frequency, so a
-// comparison still samples each side more than once. pmdoc's linear-time tests and the api's save
-// ladders both time calls this way, and the form of The Spec times its judgment on the thread, so
-// it lives here once; it is an ordinary package rather than a _test.go file because Go cannot share
-// test-only code across packages (see internal/stacktest's identical reasoning).
+// times a call by, and the work of a call's own code on the thread that runs it (Growth). A call's
+// wall time counts every moment the scheduler leaves the process off a core, so a loaded machine
+// stretches it on either side of a comparison without the call doing more work; CPU time leaves
+// that out. It is not immune to load: a busy machine still slows the process's own CPU time
+// through shared caches and clock frequency, so a comparison still samples each side more than
+// once. pmdoc's linear-time tests and the api's save ladders both time calls this way, and the form
+// of The Spec times its judgment on the thread, so it lives here once; it is an ordinary package
+// rather than a _test.go file because Go cannot share test-only code across packages (see
+// internal/stacktest's identical reasoning).
 package cputest
 
 import (
@@ -29,25 +29,24 @@ func Process() time.Duration {
 	return time.Duration(usage.Utime.Nano() + usage.Stime.Nano())
 }
 
-// OfCall is the CPU time that one run of call spends on the thread that runs it (Thread), in user
-// mode and in the kernel; onThread holds the calling goroutine on that thread. Work that call hands
-// to another goroutine is not in it, and nor is the collector's work on another thread, or the work
-// of another process that call waits for, such as a database server; work that allocates nothing
-// is.
-func OfCall(call func()) time.Duration {
-	return onThread(Thread, call)
-}
-
-// onThread is how far clock, a clock of the thread that runs the caller, moves while call runs: it
-// holds the calling goroutine on its thread (runtime.LockOSThread) from the reading before call to
-// the reading after it, so both readings are of that thread.
-func onThread(clock func() time.Duration, call func()) time.Duration {
+// onThread is how far clock, a clock of the thread that runs the caller, moves while call runs,
+// and the thread at the reading before call and at the reading after it (threadID): it holds the
+// calling goroutine on its thread (runtime.LockOSThread) from the one reading to the other, so both
+// readings are of that thread.
+func onThread(clock func() time.Duration, call func()) (took time.Duration, from, to int) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	from = threadID()
 	before := clock()
 	call()
-	return clock() - before
+	took = clock() - before
+	return took, from, threadID()
 }
+
+// MinWindow is the least time that each window of Growth lasts. The kernel splits a thread's time
+// into user and system time by the ticks of the scheduler, so a window's time is off by up to about
+// a tick, 1 ms to 4 ms, and a window of MinWindow or more holds that as a small part of it.
+const MinWindow = 50 * time.Millisecond
 
 // Growth is how many times the work of large grows over the work of small, where the input of
 // large is scale times the input of small. Small runs scale times in one timed window and large
@@ -69,26 +68,42 @@ func onThread(clock func() time.Duration, call func()) time.Duration {
 // another process that the call waits for, such as a database server: a test of such a call bounds
 // that work in another way, such as by the count of the statements that it sends to the server.
 // The work that the call does in user mode on its own thread is in it, the share of the
-// collector's work that an allocation does there among it. The kernel splits a thread's time into
-// user and system time by the ticks of the scheduler, so a window's time is off by up to about a
-// tick, 1 ms to 4 ms: each window of a caller lasts 50 ms or more, so that this is a small part of
-// it.
-func Growth(samples, scale int, small, large func()) (growth float64, smallWindow, largeWindow time.Duration) {
+// collector's work that an allocation does there among it.
+//
+// Growth refuses a reading that measures nothing, with an error that says why: a sample whose two
+// readings are of two threads, and a window whose least is no time or shorter than MinWindow, of
+// which the split of the thread's time by the ticks of the scheduler is no small part.
+func Growth(samples, scale int, small, large func()) (growth float64, smallWindow, largeWindow time.Duration, err error) {
 	windows := []func(){func() {
 		for range scale {
 			small()
 		}
 	}, large}
+	names := []string{"smaller", "larger"}
 	least := make([]time.Duration, len(windows))
 	for sample := range samples {
 		for index, window := range windows {
 			runtime.GC()
-			if took := onThread(ThreadUser, window); sample == 0 || took < least[index] {
+			took, from, to := onThread(ThreadUser, window)
+			if from != to {
+				return 0, 0, 0, fmt.Errorf("cputest: the %s window started on thread %d and ended on thread %d, so its two readings are of two threads",
+					names[index], from, to)
+			}
+			if sample == 0 || took < least[index] {
 				least[index] = took
 			}
 		}
 	}
-	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1]
+	for index, took := range least {
+		switch {
+		case took <= 0:
+			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window reads %v, no time, so it measures no work", names[index], took)
+		case took < MinWindow:
+			return 0, least[0], least[1], fmt.Errorf("cputest: the %s window lasts %v, under the %v that a window lasts so that the split of a thread's time by the ticks of the scheduler is a small part of it: give each window more work",
+				names[index], took, MinWindow)
+		}
+	}
+	return float64(scale) * float64(least[1]) / float64(least[0]), least[0], least[1], nil
 }
 
 // resolution is the smallest step Process moves in on this machine, measured once: the fewest

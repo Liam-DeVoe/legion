@@ -3,6 +3,8 @@ package specform
 import (
 	"fmt"
 	"slices"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // maxSentences is how many sentences a statement has at most (R49).
@@ -42,7 +44,8 @@ func holdsWords(notes []*Footnote) {
 // grow with the texts and their footnotes, not with their product. A text holds a footnote that it
 // refers to, and each footnote that such a footnote refers to in turn. The words of each finding
 // name the footnote and how many other texts refer to it (place). The sentences of each footnote
-// that a statement holds count among the statement's (sentences).
+// that a statement holds count among the statement's, and the verbs of each footnote that a text of
+// prose holds stand beside its own in the rule synonym-rotation (held).
 type footnoteJudge struct {
 	c      Context
 	people [][]string
@@ -54,15 +57,18 @@ type footnoteJudge struct {
 	// referrers is how many of the texts refer to each footnote directly.
 	referrers map[*Footnote]int
 	// counted is, for each footnote that a text holds, the footnotes with sentences that it holds,
-	// until their sentences pass maxSentences (countSentences).
+	// until their sentences pass maxSentences, and verbs the verbs of the synonym groups that it
+	// and the footnotes that it holds use (carry).
 	counted map[*Footnote]*sentenceCount
+	verbs   map[*Footnote]ste.Verbs
 }
 
 // footnoteJudgment is one footnote judged: the findings of the form rules, the findings of the
-// reference rules and the count of its sentences.
+// reference rules, the count of its sentences and the verbs of the synonym groups that it uses.
 type footnoteJudgment struct {
 	form, references []broken
 	sentences        int
+	verbs            ste.Verbs
 }
 
 // sentenceCount is the footnotes with sentences that one footnote holds, itself among them, and the
@@ -77,11 +83,21 @@ func (count *sentenceCount) full() bool {
 	return count.sum > maxSentences
 }
 
-// footnoteSentences is the sentences of the footnotes that a statement holds: their count, and
-// whether the count is a least one (atLeast), because one footnote holds more than it counted.
-type footnoteSentences struct {
+// footnotesHeld is what the footnotes that a text holds add to it: for a statement, each footnote
+// whose sentences count among its own, with how many it adds, their sum (count) and whether that
+// sum is only the least that they hold (atLeast), because one footnote holds more than Dispatch
+// counted; for a text of prose, the verbs of the synonym groups that they use.
+type footnotesHeld struct {
+	adds    []sentencesAdded
 	count   int
 	atLeast bool
+	verbs   ste.Verbs
+}
+
+// sentencesAdded is a footnote, by its label, and how many sentences it adds to a statement.
+type sentencesAdded struct {
+	label     string
+	sentences int
 }
 
 func newFootnoteJudge(c Context, people [][]string, texts []Text) *footnoteJudge {
@@ -105,8 +121,8 @@ func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 	if judged, ok := j.judged[note]; ok {
 		return judged
 	}
-	form, sentences := formBreaks(kindFootnote, oneLine(note.Body), footnoteSentences{})
-	judged := &footnoteJudgment{form: form, references: heldBreaks(j.c, j.people, note.Body, note.Held), sentences: sentences}
+	form, sentences, verbs := formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{})
+	judged := &footnoteJudgment{form: form, references: heldBreaks(j.c, j.people, note.Body, note.Held), sentences: sentences, verbs: verbs}
 	j.judged[note] = judged
 	return judged
 }
@@ -192,17 +208,24 @@ func textCount(count int) string {
 	return fmt.Sprintf("%d texts refer", count)
 }
 
-// sentences is the sentences of the footnotes that text holds, which count among its own: the
-// footnotes with sentences of each footnote that it refers to (countSentences), each once.
-func (j *footnoteJudge) sentences(text Text) footnoteSentences {
-	if text.Kind != KindStatement || len(text.Notes) == 0 {
-		return footnoteSentences{}
+// held is what the footnotes that text holds add to it (footnotesHeld): for a statement, the
+// footnotes with sentences of each footnote that it refers to (carry), each once; for a text of
+// prose, the verbs that the footnotes that it refers to hold (carry).
+func (j *footnoteJudge) held(text Text) footnotesHeld {
+	var noted footnotesHeld
+	if !prose(text.Kind) || len(text.Notes) == 0 {
+		return noted
 	}
 	if j.counted == nil {
-		j.countSentences()
+		j.carry()
+	}
+	for _, note := range text.Notes {
+		noted.verbs |= j.verbs[note]
+	}
+	if text.Kind != KindStatement {
+		return noted
 	}
 	var held []*Footnote
-	var noted footnoteSentences
 	for _, note := range text.Notes {
 		count := j.counted[note]
 		noted.atLeast = noted.atLeast || count.full()
@@ -213,21 +236,26 @@ func (j *footnoteJudge) sentences(text Text) footnoteSentences {
 			}
 			if !slices.Contains(held, each) {
 				held = append(held, each)
-				noted.count += j.judgment(each).sentences
+				sentences := j.judgment(each).sentences
+				noted.count += sentences
+				noted.adds = append(noted.adds, sentencesAdded{label: each.Label, sentences: sentences})
 			}
 		}
 	}
 	return noted
 }
 
-// countSentences counts, for each footnote that a text holds, the footnotes with sentences that it
-// holds (sentenceCount). Each footnote with sentences is added to itself and to each footnote that
-// holds it, walking back along the references, and the walk stops at a footnote that has it
-// already or whose count is full. A footnote whose count is full holds more than maxSentences
-// sentences, and so does each footnote that refers to it. So each footnote takes at most
-// maxSentences+1 footnotes, and the work is in proportion to the footnotes and their references.
-func (j *footnoteJudge) countSentences() {
-	j.counted = map[*Footnote]*sentenceCount{}
+// carry counts, for each footnote that a text holds, the footnotes with sentences that it holds
+// (sentenceCount), and the verbs that it holds. Each footnote with sentences is added to itself and
+// to each footnote that holds it, walking back along the references, and the walk stops at a
+// footnote that has it already or whose count is full. A footnote whose count is full holds more
+// than maxSentences sentences, and so does each footnote that refers to it. So each footnote takes
+// at most maxSentences+1 footnotes. The verbs of each footnote are added to itself and to each
+// footnote that holds it in the same way, and the walk stops at a footnote that holds them all
+// already, so each footnote takes each verb once. So the work is in proportion to the footnotes
+// and their references.
+func (j *footnoteJudge) carry() {
+	j.counted, j.verbs = map[*Footnote]*sentenceCount{}, map[*Footnote]ste.Verbs{}
 	var held, order []*Footnote
 	for _, text := range j.texts {
 		held = append(held, text.Notes...)
@@ -248,7 +276,20 @@ func (j *footnoteJudge) countSentences() {
 		}
 	}
 	for _, source := range order {
-		sentences := j.judgment(source).sentences
+		judged := j.judgment(source)
+		if verbs := judged.verbs; verbs != 0 {
+			walk := []*Footnote{source}
+			for len(walk) > 0 {
+				note := walk[len(walk)-1]
+				walk = walk[:len(walk)-1]
+				if j.verbs[note]&verbs == verbs {
+					continue
+				}
+				j.verbs[note] |= verbs
+				walk = append(walk, referrers[note]...)
+			}
+		}
+		sentences := judged.sentences
 		if sentences == 0 {
 			continue
 		}

@@ -154,6 +154,7 @@ func TestEachReferenceFormIsAWholeWord(t *testing.T) {
 		{"an email address in straight double quotes, then a colon", `The field reads "ada@example.com:" each day.`, []string{"person ada@example.com"}},
 		{"an email address in straight single quotes, then a colon", "The field reads 'ada@example.com:' each day.", []string{"person ada@example.com"}},
 		{"an email address in straight quotes, then a colon and a comma", `"ada@example.com:", she says`, []string{"person ada@example.com"}},
+		{"the stated limit: an email address in straight quotes, then a colon, a quote and a full stop", `The field reads "ada@example.com:".`, nil},
 		{"an scp address before a path in quotes, in words", `Legion copies it to deploy@build.example.com:"/srv/my reports/" each day.`, nil},
 		{"the control: an email address after mailto:", "mailto:ada@example.com", []string{"person ada@example.com"}},
 		{"a handle", "@josé", []string{"person @josé"}},

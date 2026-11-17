@@ -92,9 +92,12 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 				}
 			}
 			small, large := sizes[0], sizes[1]
-			grows, smallWork, largeWork := cputest.Growth(3, scale, judge(small), judge(large))
+			grows, smallWork, largeWork, err := cputest.Growth(3, scale, judge(small), judge(large))
 			t.Logf("%d statements %d times: %d sent each, %v; %d statements once: %d sent, %v; %.1f times",
 				small, scale, statements[small], smallWork, large, statements[large], largeWork, grows)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if statements[small] == 0 {
 				t.Fatal("the judgment sent no statement to the database, so this test counts nothing")
 			}
