@@ -13,7 +13,7 @@
 #         token. Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
 #         that the fake Envoy lists, and a repository mapped to it; PRIV also holds ses-priv-worker,
-#         a session main's fake Envoy alone lists, which has history in PRIV (a comment on PRIV-1).
+#         a session main's fake Envoy alone lists, recorded as having acted in PRIV.
 #   twin  the same seed with PRIV never written: the same PUB, the same people, carol's token
 #         that lists no project, and alice's token, whose list names PRIV, a project the twin
 #         never holds.
@@ -261,12 +261,12 @@ for server in main twin; do
     fail "the $server NATS logged no client port; see $evidence/logs/nats_$server.log"
   await_reported "envoy_$server" envoy_port 'fake envoy listener on 127\.0\.0\.1:' "the $server fake Envoy"
   # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
-  # PRIV wrote, so the twin holds PRIV's session too. Main's alone also holds ses-priv-worker, the
-  # session the seed has act in PRIV: a restricted reader or a listing token is shown a session
-  # only for its history in a project it sees (agents.go's visibleRosterSessions), not for the
-  # projects the listener names, so ses-priv-session, which has none, is never in their agents
-  # list. A session with history in PRIV alone is PRIV's, as hidden as its objects, and the twin,
-  # which never holds PRIV, holds no such session.
+  # PRIV wrote, so the twin holds PRIV's session too. Main's alone also holds ses-priv-worker,
+  # which the seed records as having acted in PRIV: a restricted reader or a listing token is shown
+  # a session only for its history in a project it sees (agents.go's visibleRosterSessions), not
+  # for the projects the listener names, so ses-priv-session, which has none, is never in their
+  # agents list. A session with history in PRIV alone is PRIV's, as hidden as its objects, and the
+  # twin, which never holds PRIV, holds no such session.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
   sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   [ "$server" = twin ] ||
@@ -377,9 +377,13 @@ map_repository main acme/priv-repo PRIV
 map_repository main acme/priv.lane.walk PRIV
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
-# ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined).
-send main shared POST /api/v1/issues/PRIV-1/comments "$(jq -cn '{body: "Written by the PRIV worker.", actor: {kind: "session", id: "ses-priv-worker"}}')"
-expect_status 201 "main: ses-priv-worker comments on PRIV-1"
+# ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined). Only
+# a session its own credential proves records history (events.queueSessionProjects: a
+# broker-issued token's session; the shared token only names one), and this stack has no broker,
+# so the row is written as that write writes it. No event names the session, so it is no node.
+psql "$main_database_url" -X -q -v ON_ERROR_STOP=1 \
+  -c "insert into session_projects (session_id, project_key) values ('ses-priv-worker', 'PRIV')" >/dev/null ||
+  fail "main: could not record ses-priv-worker's history in PRIV"
 # The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
 # going run. A file of an agent's conversation is no project's, so it is seeded on both servers
 # in the loop above.
