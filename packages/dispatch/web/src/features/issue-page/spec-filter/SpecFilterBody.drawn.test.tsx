@@ -9,7 +9,13 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
-import type { Actor, CheckBlock, IssueCheckResults, IssueDetails } from "../../../api/types";
+import type {
+  Actor,
+  AskWithTrees,
+  CheckBlock,
+  IssueCheckResults,
+  IssueDetails,
+} from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
@@ -297,10 +303,11 @@ function drawBody(
   if (treeStanding.specView === "answered") {
     client.setQueryData(viewKey(KEY, "spec"), treeAnswers.specView);
   }
-  // The issue's asks, which say which question a person answered (`decisionNodes`).
+  // The issue's asks, which say which question a person answered (`decisionNodes`). The fixtures
+  // carry the members of an ask the page reads (`TreeAsk`), not every member the route answers.
   settle(asksRead, spies.asks, () => {
     client.setQueryData(["asks", KEY], [...asks]);
-    spies.asks.mockResolvedValue([...asks]);
+    spies.asks.mockResolvedValue([...asks] as AskWithTrees[]);
   });
   settle(results, spies.results, () => {
     client.setQueryData(issueResultsQuery(KEY).queryKey, resultsOf(checks));
