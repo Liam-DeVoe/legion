@@ -14,8 +14,11 @@
 -- The rows recorded under the earlier rule cannot be told apart once written, so every row goes,
 -- and the marker with them: the operator runs `envoy-dispatch backfill-session-projects` again after
 -- the deploy, which records the proven pairs of every event and writes the marker again. Until it
--- does, no project can be made private (409 PRIVATE_PROJECTS_INCOMPLETE): every pair left out is the
--- closed direction, a session shown to its own viewers and to no project's.
+-- does, no project can be made private (409 PRIVATE_PROJECTS_INCOMPLETE), and every pair left out
+-- fails closed: a viewer that is not open sees a session only as its own or through a project it
+-- sees, and an open viewer, which reads every session no pair places in a project it does not see,
+-- reads no session but its own while the marker is absent and any project is private
+-- (access.SessionClause). With no private project an open viewer reads every session, as before.
 --
 -- Under Recreate, the build before this one has stopped before the migration runs, so nothing
 -- records a pair under the earlier rule after the delete. A deployment that rolls runs

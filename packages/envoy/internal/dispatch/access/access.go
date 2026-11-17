@@ -149,12 +149,21 @@ func PersonClause(loginExpr, viewerParam string) string {
 // session of a private project it is not on, whatever else the session did; and to any other
 // viewer, when it acted in a project the viewer sees. A deployment that holds no private project
 // skips the open viewer's read: every project is public and the open viewer sees each one (R9).
+//
+// session_projects places every session in the projects it acted in only once
+// `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
+// 20261116081157_session_projects_proven empties both tables, and the command's --reset does again
+// in a deployment that may already hold a private project. Until the row is written a session of
+// a private project may have no row placing it there, so the open arm passes no session but the
+// viewer's own while any project is private. The marker's read names no column of the row it
+// tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
+// that holds a private project.
 func SessionClause(sessionExpr, viewerParam string) string {
 	return clause("SessionClause", fmt.Sprintf(`(%[2]s or (%[1]s) = %[4]s::jsonb->>'session'
-		or (%[3]s and (not %[5]s or not exists (
+		or (%[3]s and (not %[5]s or (exists (select 1 from session_projects_filled offset 0) and not exists (
 			select 1 from session_projects unseen
 			where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
-			offset 0)))
+			offset 0))))
 		or (not %[3]s and exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key

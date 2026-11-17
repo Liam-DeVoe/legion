@@ -13,7 +13,8 @@
 --   select count(*) from session_projects;
 --
 -- Until the fill runs, a viewer that is not open (a restricted member, a credential that lists
--- projects) sees a session only as its own or through its listener record, the closed direction,
+-- projects) sees a session only as its own or through its listener record, the closed direction;
+-- an open viewer reads no session but its own while any project is private (access.SessionClause);
 -- and no project can be made private (409 PRIVATE_PROJECTS_INCOMPLETE) (cmd/dispatch/README.md,
 -- "Filling the sessions' projects").
 select 0;
