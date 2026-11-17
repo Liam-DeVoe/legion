@@ -71,12 +71,12 @@ async function mountEntries(
   return { client, hook };
 }
 
-/** The seam's answer over the reads `mountEntries` is handed, read once. */
+/** The seam's parts over the reads `mountEntries` is handed, read once. */
 async function entriesOf(
   ...reads: Parameters<typeof mountEntries>
-): Promise<ReturnType<typeof useDecisionsEntries>> {
+): Promise<ReturnType<typeof useDecisionsEntries>["parts"]> {
   const { hook } = await mountEntries(...reads);
-  const parts = hook.result.current;
+  const { parts } = hook.result.current;
   hook.unmount();
   return parts;
 }
@@ -316,9 +316,9 @@ test("an empty decisions member gives the questions alone and no error", async (
     try {
       const { client, hook } = await mount();
       const reading = () => ({
-        open_questions: idsOf(hook.result.current).open_questions,
+        open_questions: idsOf(hook.result.current.parts).open_questions,
         read,
-        readsHeld: hook.result.current.readsHeld,
+        readsHeld: hook.result.current.parts.readsHeld,
       });
       expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: heldWhileOut });
       expect(started).toHaveBeenCalledTimes(1);
@@ -355,13 +355,13 @@ test("an empty decisions member gives the questions alone and no error", async (
       const { hook } = await mount();
       const reading = () => ({
         read,
-        readsHeld: hook.result.current.readsHeld,
-        unreadable: hook.result.current.unreadable,
+        readsHeld: hook.result.current.parts.readsHeld,
+        unreadable: hook.result.current.parts.unreadable,
       });
       const unreadable = { read, readsHeld: false, unreadable: [read] };
       await waitFor(() => expect(reading()).toEqual(unreadable));
       expect(asked).toHaveBeenCalledTimes(1);
-      await act(async () => hook.result.current.retry(read));
+      await act(async () => hook.result.current.parts.retry(read));
       await waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(reading()).toEqual(unreadable));
       expect(notAsked).not.toHaveBeenCalled();
@@ -373,9 +373,10 @@ test("an empty decisions member gives the questions alone and no error", async (
   }
 
   // Each of the two reads has answered, and a refetch of it then fails. While the refetch runs
-  // the seam says that read is being read again; once it has failed, the read still holds the
-  // answer it gave, which the view draws from, so it is not unreadable, draws no line, and the
-  // reads still hold.
+  // the seam says that read is being read again, and the parts are the very object they were
+  // before it started, so nothing the body works out from them is worked out again; once it has
+  // failed, the read still holds the answer it gave, which the view draws from, so it is not
+  // unreadable, draws no line, and the reads still hold.
   const refetched = [
     { key: ["decisions", KEY], read: "decisions", request: "getIssueDecisions" },
     { key: ["asks", KEY], read: "asks", request: "listIssueAsks" },
@@ -387,14 +388,16 @@ test("an empty decisions member gives the questions alone and no error", async (
       const { client, hook } = await mountEntries(children, noDecision);
       const reading = () => ({
         read,
-        readsHeld: hook.result.current.readsHeld,
+        readsHeld: hook.result.current.parts.readsHeld,
         retrying: hook.result.current.retrying,
-        unreadable: hook.result.current.unreadable,
+        unreadable: hook.result.current.parts.unreadable,
       });
       const held = { read, readsHeld: true, retrying: [], unreadable: [] };
       expect(reading()).toEqual(held);
-      await act(async () => hook.result.current.retry(read));
+      const before = hook.result.current.parts;
+      await act(async () => hook.result.current.parts.retry(read));
       await waitFor(() => expect(reading()).toEqual({ ...held, retrying: [read] }));
+      expect(hook.result.current.parts).toBe(before);
       await act(async () => {
         answer.reject(new Error("refused"));
         await answer.promise.catch(() => undefined);

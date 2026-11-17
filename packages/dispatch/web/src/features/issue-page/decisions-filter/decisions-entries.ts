@@ -63,7 +63,7 @@ type DecisionsRead = "decisions" | "asks";
 
 /** The Decisions view's parts, whether the reads that say which entries there are hold their
  *  answers, and which of them was refused and how to ask it again. */
-interface DecisionsEntries extends DecisionsParts {
+interface ViewParts extends DecisionsParts {
   /** Whether the decisions read and the asks each hold an answer: the reads that say which
    *  questions and decisions there are. The comments and the decisions document's blocks only
    *  move a decision between the review list and the reader's own, so they are not waited for.
@@ -71,12 +71,20 @@ interface DecisionsEntries extends DecisionsParts {
   readonly readsHeld: boolean;
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
-  /** Each of the decisions read and the asks, in that order, that is being read now, a first
-   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
-  readonly retrying: readonly DecisionsRead[];
   /** Each of the decisions read and the asks, in that order, that was refused before it first
    *  answered: it holds no answer and is in error. */
   readonly unreadable: readonly DecisionsRead[];
+}
+
+/** The seam's answer: the view's parts, and beside them which read runs now. A read starts and
+ *  ends on every fetch, a refetch the page makes in the background too, so `retrying` stands
+ *  outside `parts`: the parts keep their identity while only a fetch starts or ends, and nothing
+ *  the body works out from them is worked out again. */
+interface DecisionsEntries {
+  readonly parts: ViewParts;
+  /** Each of the decisions read and the asks, in that order, that is being read now, a first
+   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
+  readonly retrying: readonly DecisionsRead[];
 }
 
 /** The Decisions view's parts, from the issue, the reader's login, the whole tree and the tree
@@ -163,8 +171,8 @@ export function useDecisionsEntries({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
   // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
   const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  return useMemo(() => {
-    const parts = decisionsParts({
+  const parts = useMemo<ViewParts>(() => {
+    const model = decisionsParts({
       asks,
       changes,
       decisions,
@@ -175,16 +183,15 @@ export function useDecisionsEntries({
       view,
     });
     return {
-      ...parts,
+      ...model,
       others: [],
       readsHeld,
       retry,
-      retrying,
       unreadable,
       yours:
-        parts.others.length === 0
-          ? parts.yours
-          : newestFirst([...parts.yours, ...parts.others], root),
+        model.others.length === 0
+          ? model.yours
+          : newestFirst([...model.yours, ...model.others], root),
     };
   }, [
     asks,
@@ -195,11 +202,11 @@ export function useDecisionsEntries({
     reader,
     readsHeld,
     retry,
-    retrying,
     root,
     unreadable,
     view,
   ]);
+  return { parts, retrying };
 }
 
 /**

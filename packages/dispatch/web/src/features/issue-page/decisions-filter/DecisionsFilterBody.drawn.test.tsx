@@ -37,6 +37,7 @@ import {
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
+import { decisionBehind } from "../tree-keys";
 import { DecisionsFilterBody } from "./DecisionsFilterBody";
 import {
   answeredAsk,
@@ -327,18 +328,35 @@ function words(element: Element | null | undefined): string | null {
   return element == null ? null : (element.textContent ?? "").replace(/\s+/g, " ").trim();
 }
 
+/** What the body says of each read refused before it first answered, in the page's words, by
+ *  which a reader tells the two reads' lines apart. */
+const REFUSED_READ_WORDS = {
+  asks: ANSWER_LINES.questions_unreadable,
+  decisions: ANSWER_LINES.decisions_unreadable,
+} as const;
+
+/** The page's line for a failed read that the body draws for `read`, found by what it says, as
+ *  a reader finds it; null where the body draws none for `read`. */
+function lineOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): Element | null {
+  return (
+    [...drawn.container.querySelectorAll("[data-failed-read]")].find(
+      (line) => words(line.querySelector("p")) === REFUSED_READ_WORDS[read]
+    ) ?? null
+  );
+}
+
 /** The line a refused read draws over the list, read as a reader reads it: what it says, and
  *  its Retry; null where the body draws none for `read`. */
-function failedLine(drawn: RenderResult, read: string) {
-  const line = drawn.container.querySelector(`[data-decisions-unreadable="${read}"]`);
+function failedLine(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS) {
+  const line = lineOf(drawn, read);
   return line === null
     ? null
     : { retry: words(line.querySelector("button")), says: words(line.querySelector("p")) };
 }
 
 /** The Retry of the line a refused read draws, or null where the body draws none for `read`. */
-function retryOf(drawn: RenderResult, read: string): HTMLElement | null {
-  return drawn.container.querySelector<HTMLElement>(`[data-decisions-unreadable="${read}"] button`);
+function retryOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): HTMLElement | null {
+  return lineOf(drawn, read)?.querySelector<HTMLElement>("button") ?? null;
 }
 
 function rowOf(view: RenderResult, id: string): HTMLElement {
@@ -654,8 +672,11 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // read has answered: the tree's focus, given before the refusal comes back, goes to the
   // Retry once its line is drawn, and a page opened on the list puts it there too. Enter on
   // the Retry with the read refused again leaves the focus on the tree while the read runs,
-  // then on the Retry that comes back; Enter with the read answering, and the tree built from
-  // it holding a question, puts it on the question's row.
+  // then on the Retry that comes back. Enter with the read answering no question leaves a list
+  // that holds only the foot with both reads held, so the focus goes on from the tree to the
+  // foot's control; a later read that adds a question takes it from there to the question's
+  // row, as the foot hands it on. Where the read's answer brings the question with it, drawn
+  // in the one render, the stage puts the focus on the question's row itself.
   const footOnly = { asks: null, children: [decisionNode("minor")], made: [decision("minor")] };
   const footControl = (drawn: RenderResult) =>
     drawn.container.querySelector('[data-decisions-part="agents"] button');
@@ -691,10 +712,35 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
 
     asksRead.mockResolvedValue([]);
     await user.keyboard("{Enter}");
-    await waitFor(() => expect(opened.client.getQueryData(["asks", KEY])).toEqual([]));
+    await waitFor(() =>
+      expect(opened.client.getQueryData<readonly unknown[]>(["asks", KEY])).toEqual([])
+    );
+    await waitFor(() => expect(document.activeElement).toBe(footControl(opened)));
     opened.again({ children: [openAsk("q-open"), decisionNode("minor")] });
     await waitFor(() => expect(focusedRow(opened)).toBe("q-open"));
     opened.unmount();
+
+    asksRead.mockRejectedValue(new Error("refused"));
+    const answered = renderBody(footOnly, {}, { stage: true });
+    await waitFor(() => expect(document.activeElement).toBe(retryOf(answered, "asks")));
+    const answer = Promise.withResolvers<never[]>();
+    asksRead.mockReturnValue(answer.promise);
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(answered.getByRole("tree", { name: CONTROL_LABELS.tree }))
+    );
+    await act(async () => {
+      // The tree grows first and its render waits for the act, so the read's answer, taken
+      // before the act ends, is drawn in the one render with the question, as the page's tree
+      // built from that answer draws them.
+      answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
+      answer.resolve([]);
+      const settled = Promise.withResolvers<void>();
+      setTimeout(settled.resolve, 0);
+      await settled.promise;
+    });
+    await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
+    answered.unmount();
   } finally {
     asksRead.mockRestore();
   }
@@ -1862,6 +1908,38 @@ test("the body draws the entries the filter's view left", async () => {
     expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-first`)
   );
   decisionOut.unmount();
+
+  // A check no decision names, on an address that names it: `w` on its row goes to the
+  // decision that shaped the statement it is drawn under, which is the decision the outline's
+  // own walk finds behind it over the whole tree. Named instead, the statement goes to that
+  // decision too.
+  const check = node({
+    id: "verification#b-c1",
+    reference: `dispatch://${KEY}/verification#b-c1`,
+    text: "The page checks s1.",
+    type: "check",
+  });
+  const checked = [
+    statement("s1", { children: [check] }),
+    decisionNode("first", {
+      chips: [{ answered: true, gone: false, name: "The page draws s1.", ref: specRef("s1") }],
+    }),
+  ];
+  expect(decisionBehind(issueTree(checked), check.id)?.id).toBe(D("first"));
+  const shapesS1 = [decision("first", { links: [shaped(specRef("s1"))] })];
+  for (const named of [check.id, statement("s1").id]) {
+    const at = renderBody(
+      { children: checked, made: shapesS1 },
+      {
+        reveal: named,
+        view: presetView(issueTree(checked), "decisions", "", new Set([named])).root,
+      }
+    );
+    await waitFor(() => expect(focusedRow(at)).toBe(named));
+    await user.keyboard("w");
+    await waitFor(() => expect({ named, row: focusedRow(at) }).toEqual({ named, row: D("first") }));
+    at.unmount();
+  }
 
   // An issue that holds no open question, kept or not.
   const noQuestion = renderBody(
