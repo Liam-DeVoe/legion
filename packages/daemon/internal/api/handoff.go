@@ -79,17 +79,6 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		"status", answer.answered(), "code", answer.code)
 }
 
-// awaitStreamOf waits for token's claim's machine to have handled what the worker stream read
-// before this request (Options.AwaitStream), nothing where the daemon gave no such wait. A route
-// whose fact ends the requesting agent's own step calls it just before it applies the fact: the
-// agent's answer and its request reach the daemon apart, and the record of the step names the
-// model of the answer its machine has handled.
-func (s *server) awaitStreamOf(ctx context.Context, token claim.Token) {
-	if s.awaitStream != nil {
-		s.awaitStream(ctx, token)
-	}
-}
-
 // completionAnswer is the writer answerCompletion answers through: it keeps the first status
 // written and the code writeFailure tells it of the refusal it writes (noteRefusal), which the
 // route's line names. It has no Write of its own, so the body goes to the wrapped writer as
@@ -362,10 +351,9 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 			return
 		}
 	}
-	s.awaitStreamOf(r.Context(), grant.Claim)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
+	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
 		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion}, s.handlers...)
+		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -806,7 +794,7 @@ func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Reques
 		return true
 	}
 	fact, read := intake.OpenedRead(issue.Project, issue.GitHubRepo, branch, pull, issue.Generation, recorded)
-	if _, err := intake.ApplyFact(ctx, s.pool, "github", read, fact, s.handlers...); err != nil {
+	if _, err := s.apply(ctx, "github", read, fact); err != nil {
 		s.logRequestFailure(r, err, "api: apply the open pull request a completing implementer's branch shows", "issue", issue.Key, "pullRequest", pull.Number)
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the open pull request read from GitHub; this completion changed nothing")
 		return false
@@ -891,8 +879,8 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 		return
 	}
 	eventID := fmt.Sprintf("check:%s:%s:%d:%s", grant.Issue, check.ID(), look.Look, req.Verdict)
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
-		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt}, s.handlers...)
+	result, err := s.apply(r.Context(), "api", eventID, intake.CheckReport{Issue: grant.Issue, Claim: grant.Claim, Look: look.Look,
+		Verdict: req.Verdict, Summary: req.Summary, WakeAt: req.WakeAt})
 	if err != nil {
 		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return

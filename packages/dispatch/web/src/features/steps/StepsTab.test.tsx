@@ -66,6 +66,8 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
             result: "",
             started_at: "2026-11-16T10:31:00Z",
           }),
+          // A merge GitHub had already made, which started under the release before this one: that
+          // release counted no start, so the end names no agent, no model and no start.
           record({
             agent: "",
             id: "merge-1",
@@ -100,7 +102,7 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
     // The running run: no model yet, and no end.
     expect(rows[2]?.[4]).toBe("—");
     expect(rows[2]?.[7]).toBe("—");
-    // The merge GitHub made: no type, no agent, no model and no start.
+    // That merge: no type, no agent, no model and no start.
     expect([rows[3]?.[2], rows[3]?.[3], rows[3]?.[4], rows[3]?.[6]]).toEqual(["—", "—", "—", "—"]);
     // Each time the record holds is the record's own instant, whatever the relative words say.
     expect(

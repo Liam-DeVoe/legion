@@ -43,7 +43,9 @@ test("the Steps tab lists each run of an issue's steps, a running run as running
     returned_to: 2,
     started_at: at("10:00"),
   });
-  // The start of the same run again, as the daemon writes it: the record keeps what it holds.
+  // A second start of the same run at another moment, which no daemon write carries (its start
+  // and its end write one moment, and its only second start is a retry of the same body): the
+  // record keeps the start it holds.
   await putStep(issue.key, review, { ...reviewer, started_at: at("10:01") });
   await putStep(issue.key, crypto.randomUUID(), { ...implementer, started_at: at("10:31") });
 

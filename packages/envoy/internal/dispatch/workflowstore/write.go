@@ -109,12 +109,11 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	var tuples []tuple
 	var report string
 	_, ended := held[AttributeResult]
-	setsResult := !ended && write.Result != nil && *write.Result != ""
 	for _, attribute := range stated {
 		if _, holds := held[attribute.name]; holds {
 			continue
 		}
-		if attribute.name == AttributeReturnedTo && !setsResult {
+		if attribute.name == AttributeReturnedTo && ended {
 			continue
 		}
 		setting[attribute.name] = attribute.value
@@ -317,9 +316,6 @@ type tuple struct {
 // them, which is the order their seq is drawn in. Every tuple of the write has one writer, one
 // moment and no event, and asserts its fact.
 func appendTuples(ctx context.Context, tx pgx.Tx, tuples []tuple, writer []byte, at time.Time) error {
-	if len(tuples) == 0 {
-		return nil
-	}
 	fromIDs := make([]string, len(tuples))
 	kinds := make([]string, len(tuples))
 	toKinds := make([]string, len(tuples))

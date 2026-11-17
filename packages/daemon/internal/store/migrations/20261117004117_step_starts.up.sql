@@ -25,7 +25,7 @@
 -- writes that record's end where an earlier release ended its run; null on a row only an end of an
 -- uncounted run wrote, which is ended.
 --
--- The count is keyed by task (slice 1 writes the one task, default, of today's fixed phases), and a
+-- The count is keyed by task (the daemon writes the one task, default, of today's fixed phases), and a
 -- re-admission does not clear it (record.Store.ClearGeneration keeps it): the generation is part of
 -- the id already, and the count only rises. A step running when this release deploys has no row:
 -- its end writes one at the count 0, marked ended, with the agent its start would have named and
