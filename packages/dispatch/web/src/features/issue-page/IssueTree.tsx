@@ -171,6 +171,9 @@ export function IssueTree({
   const [cycle, setCycle] = useState(0);
   // The node a key is taking the reader to, once the row it asked for is on the page.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
+  // Whether the reader has just zoomed in or out, which places the crumb line the zoom draws
+  // once its rows and the focus are on the page (`zoomTo`).
+  const [placeCrumbs, setPlaceCrumbs] = useState(false);
   // What a key reported when it had nowhere to go, and the row it was pressed on: the row draws
   // it, so the reader reads it where they are, and the next key, move or leaving the tree lets
   // it go. `row` is undefined where the key was pressed with no row focused.
@@ -185,6 +188,7 @@ export function IssueTree({
   // The reader, whose own new words a write from the line takes them to.
   const reader = useQuery(whoAmIQuery()).data?.login;
   const body = useRef<HTMLDivElement | null>(null);
+  const crumbLine = useRef<HTMLParagraphElement | null>(null);
   const reportHere = useCallback((line: string) => {
     if (line === "") {
       setReport(undefined);
@@ -358,6 +362,13 @@ export function IssueTree({
       return next;
     });
   }, []);
+  // A zoom the reader makes - `.` and `,`, the arrows where the tree is read one node at a time,
+  // a crumb - roots the tree at a node and draws the crumb line above its rows, which is placed
+  // once they are drawn (`placeCrumbs`).
+  const zoomTo = useCallback((id: string) => {
+    setZoom(id);
+    setPlaceCrumbs(true);
+  }, []);
 
   // Takes the reader to one node, wherever it is: the path down to it is unfolded, a zoom it
   // sits outside of is left, and the row takes the focus once this render has drawn it.
@@ -414,6 +425,41 @@ export function IssueTree({
       ?.focus();
   }, [wanted]);
 
+  // A zoom draws the crumb line above the rows it roots the tree at, and the line is the way
+  // back out, so it is brought below the band that stays at the top by the page's one rule
+  // (`bringOnScreen`), with the focused row still on screen after it. Nothing else places it:
+  // the row the zoom leaves the reader on keeps the focus it held, or takes it where the key put
+  // it, and is placed by its own rule alone, so a row the page had put just under the band kept
+  // its place and the line drawn above it stood under the band - at 390 by 664 px on a long
+  // issue, the crumb line at -5 to 39 px under a band 51 px tall. This runs after the effect
+  // above, which focuses the row a zoom key asked for, so the row it reads is that one.
+  useEffect(() => {
+    if (!placeCrumbs) return;
+    setPlaceCrumbs(false);
+    const line = crumbLine.current;
+    if (line === null) return;
+    bringOnScreen(line);
+    const row = focusedRowIn(body.current);
+    if (row !== null) bringOnScreen(row);
+  }, [placeCrumbs]);
+
+  // The cycle key draws bodies, or whole branches, above the focused row and moves no focus, so
+  // nothing placed the row as the rows above it grew and pushed it off the screen: at 1440 by
+  // 900 px on a long issue its top stood at 3,276, 3,991 and 694 px after the three presses. A
+  // key that moves no focus still keeps the focused row on screen, as every move does, so once
+  // the cycle's tree is drawn the row is brought on screen by the page's one rule and held there
+  // while the rows above it still grow (`holdOnScreen`), as a row the page takes the reader to
+  // is, until the reader's next act.
+  const cycleDrawn = useRef(cycle);
+  useEffect(() => {
+    if (cycleDrawn.current === cycle) return;
+    cycleDrawn.current = cycle;
+    const row = focusedRowIn(body.current);
+    if (row === null) return;
+    bringOnScreen(row);
+    holdInPlaceOf(row, onScreenHold);
+  }, [cycle]);
+
   // The Contents list's asks, each acted on once. With Focus branch on, the outline is zoomed to
   // the node, which is then the tree's first row and takes the focus; turned off, the zoom is
   // left and the reader is taken to the node in the whole outline, as any other move takes them.
@@ -461,7 +507,7 @@ export function IssueTree({
     onPin: pin,
     onReport: reportHere,
     onReveal: goToNode,
-    onZoom: setZoom,
+    onZoom: zoomTo,
     oneNodeAtATime: zoomed,
     readsHeld,
     rows,
@@ -669,7 +715,10 @@ export function IssueTree({
   return (
     <div className="mb-3 flex min-w-0 flex-col">
       {breadcrumb.length === 0 ? null : (
-        <p className={`flex min-w-0 flex-wrap items-baseline gap-1 text-xs ${textMutedOnCanvas}`}>
+        <p
+          className={`flex min-w-0 flex-wrap items-baseline gap-1 text-xs ${textMutedOnCanvas}`}
+          ref={crumbLine}
+        >
           {breadcrumb.map((above) => (
             <button
               // A crumb is a word in a line of text, not a control box: below 1280 px a plain
@@ -683,7 +732,7 @@ export function IssueTree({
               className="dispatch-inline-link max-w-full text-left underline [overflow-wrap:anywhere]"
               data-crumb={above.id}
               key={above.id}
-              onClick={() => setZoom(above.id)}
+              onClick={() => zoomTo(above.id)}
               tabIndex={-1}
               type="button"
               {...authorText}
@@ -803,6 +852,13 @@ export function landOnRow(row: HTMLElement, held: RefObject<AbortController | un
 function holdInPlaceOf(row: HTMLElement, held: RefObject<AbortController | undefined>): void {
   held.current?.abort();
   held.current = holdOnScreen(row);
+}
+
+/** The row of `tree` that holds the focus, on the row itself or on a control inside it; null
+ *  where the focus is on no row of it. */
+function focusedRowIn(tree: HTMLElement | null): HTMLElement | null {
+  const row = document.activeElement?.closest<HTMLElement>("[data-node-row]") ?? null;
+  return row !== null && tree?.contains(row) === true ? row : null;
 }
 
 /** Whether nothing holds the focus that the tree is to keep from it: it is on nothing, on the

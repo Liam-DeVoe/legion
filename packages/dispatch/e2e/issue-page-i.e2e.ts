@@ -913,6 +913,22 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
           `a deeper branch's line at depth ${line.depth} is indented ${line.padding} px at ${width} px`
         ).toBe(line.depth * step + inset);
       }
+      // The count and its words are one line of words, the space between them drawn: below
+      // 1280 px the line's button is a flex box (`styles.css`), and on a long issue the line
+      // read "21more rows below".
+      for (const line of await branchMoreRows(page).evaluateAll((lines) =>
+        lines.map((one) => ({
+          drawn: (one as HTMLElement).innerText.trim(),
+          held: Number.parseInt(one.textContent ?? "", 10),
+        }))
+      )) {
+        expect(
+          line.drawn,
+          `a deeper branch's line at ${width} px runs its count into its words`
+        ).toBe(
+          `${line.held} ${line.held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}`
+        );
+      }
     }
 
     // What the line left out is drawn the moment the row has the focus (R6), so the reader
@@ -2437,6 +2453,18 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
     }
     await pressToOutlineEnd(page, "End");
     await expectFocusedRowClear(page, "End");
+    // The cycle key moves no focus, and draws bodies and then whole branches above the focused
+    // row: a key that moves no focus still keeps the focused row on screen, held there while the
+    // rows above it grow. On a long issue at 1440 by 900, before the page placed it, the row's
+    // top stood at 3,276, 3,991 and 694 px after the three presses.
+    for (const press of [1, 2, 3]) {
+      await page.keyboard.press("z");
+      await expectFocusedRowOnScreen(
+        page,
+        `press ${press} of z on the last row`,
+        "left the focused row off the screen"
+      );
+    }
     await pressToOutlineEnd(page, "Home");
     await expectFocusedRowClear(page, "Home");
     // Home on the first row while it already holds the focus, after the reader scrolled it off
@@ -2490,6 +2518,22 @@ test("Tab enters and leaves the tree at one stop and every move keeps the row on
         "left the focused row off the screen or under the band that stays at the top"
       );
     }
+    // A zoom draws the crumb line above the rows it zooms to, and places that line below the
+    // band, with the focused row still on screen. The moves up with k leave the row just under
+    // the band, where on a long issue the line drawn above it stood at -5 to 39 px under a band
+    // 51 px tall, and the reader read it only once they had scrolled.
+    await page.keyboard.press(".");
+    const crumbLine = tree(page)
+      .locator("xpath=..")
+      .locator("[data-crumb]")
+      .first()
+      .locator("xpath=..");
+    await expect
+      .poll(() => onScreen(crumbLine), {
+        message: ". at 390x664 left the crumb line it draws under the band that stays at the top",
+      })
+      .toBe(true);
+    await expectFocusedRowOnScreen(page, ". at 390x664", "left the focused row off the screen");
   } finally {
     await context.close();
   }

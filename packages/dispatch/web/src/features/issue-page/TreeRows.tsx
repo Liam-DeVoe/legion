@@ -198,8 +198,14 @@ function BranchMore({
         type="button"
         {...pageChrome}
       >
-        <span {...authorText}>{held}</span>{" "}
-        {held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}
+        {/* One run of text: below 1280 px a button is a flex box (`styles.css`), which lays the
+            count's own span and the words after it out as two boxes side by side, the space
+            that opens the words dropped at the start of theirs, and the line read
+            "21more rows below". */}
+        <span>
+          <span {...authorText}>{held}</span>{" "}
+          {held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}
+        </span>
       </button>
     </div>
   );
