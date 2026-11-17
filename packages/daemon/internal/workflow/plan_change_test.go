@@ -467,11 +467,13 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 	})
 
 	t.Run("a task that is done and a task that left are refused", func(t *testing.T) {
+		// The issue's leave writes its task done at a close and left at any other status
+		// (leaveState), and the issue done with it.
 		for _, tc := range []struct {
-			state, message string
+			state, status, message string
 		}{
-			{record.TaskDone, "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."},
-			{record.TaskLeft, "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."},
+			{record.TaskDone, "done", "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."},
+			{record.TaskLeft, "backlog", "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."},
 		} {
 			t.Run(tc.state, func(t *testing.T) {
 				pool := migratedPool(t)
@@ -479,9 +481,7 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 				apply := applyFacts(t, pool, engine)
 				root := stepRoot(t, pool, phase.Admitted)
 				mustTake(t, "version 1", apply(planID(root.Key, root.Generation, 1), ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-					return engine.store.MoveTask(ctx, tx, root.Key, root.Generation, "a", record.TaskPlace{}, tc.state)
-				})
+				leaveAs(t, pool, engine, root.Key, tc.status)
 				before := planStandingOf(t, pool, engine, root.Key, root.Generation)
 				id := planID(root.Key, root.Generation, 2)
 

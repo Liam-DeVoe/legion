@@ -59,8 +59,8 @@ func stoppedAtTesting(t *testing.T, pool *pgxpool.Pool, engine *Engine) record.I
 // pair, round or hook is counted. The step the stop ended is not ended again, and the start of
 // step 1 is written. The Dispatch status of step 1's phase is written over the todo Dispatch
 // shows. A todo on a root held for the issues beneath it leaves the hold, and one log line says
-// why. A task that is done, or left the workflow with its issue, under such a hold has nothing
-// left to start: each todo is refused with its own text and starts nothing. The twin (R20): a
+// why. A task that is done, or left the workflow with its issue, under such a hold is a state no
+// production writer makes, and a todo on it starts nothing. The twin (R20): a
 // todo on a root with no plan rows that a failed claim holds puts back the phase the hold is from
 // and starts its role, as today.
 func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
@@ -163,17 +163,18 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 		}
 	})
 
-	// A task done, or left the workflow with its issue, under a hold for the stopped task: the
-	// store's move refuses neither state, so the restart refuses each before it.
+	// A task done, or left the workflow with its issue, under a hold for the stopped task is a state
+	// no production writer makes: each writer of done or left also writes its issue done (leave),
+	// and no task held stopped is done or left (planGiven says so where it calls restartTask). The
+	// fixture writes it with the store's move, which refuses neither state, and the todo on it
+	// starts nothing.
 	for _, tc := range []struct {
-		name, state, want string
+		name, state string
 	}{
-		{"a task that is done", record.TaskDone,
-			"task a of LEGION-208 is done, so nothing of it is left to start again. This restart changed nothing."},
-		{"a task that left the workflow with its issue", record.TaskLeft,
-			"task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to start again. This restart changed nothing."},
+		{"a task that is done", record.TaskDone},
+		{"a task that left the workflow with its issue", record.TaskLeft},
 	} {
-		t.Run(tc.name+" is refused and starts nothing", func(t *testing.T) {
+		t.Run(tc.name+" starts nothing", func(t *testing.T) {
 			pool := migratedPool(t)
 			engine, _ := loggedEngine()
 			root := stoppedAtTesting(t, pool, engine)
@@ -182,26 +183,21 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 			})
 			task, entry := taskOf(t, pool, engine, root.Key), roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry
 			writes, statuses := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key))
+			starts := len(startsOf(t, pool, root.Key, claim.RoleImplementer))
 
-			result := applyFacts(t, pool, engine)("todo", personsTodo(root.Key))
+			applyFacts(t, pool, engine)("todo", personsTodo(root.Key))
 
-			if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "TASK_DONE" || result.Refusal.Message != tc.want {
-				t.Fatalf("the todo on %s = %+v, want 409 TASK_DONE %q", tc.name, result.Refusal, tc.want)
-			}
-			issue := issueOf(t, pool, engine, root.Key)
-			if issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Testing, Reason: record.HoldTaskStopped}) ||
-				issue.Status != root.Status || issue.DispatchStatus != "todo" || issue.LastDispatchSeq != 2 {
-				t.Fatalf("%s after the refused todo stands in %s with hold %+v, status %q, Dispatch at %q and sequence %d, want held from testing for the stopped task, %q kept, todo and 2 recorded",
-					root.Key, issue.Phase, issue.Hold, issue.Status, issue.DispatchStatus, issue.LastDispatchSeq, root.Status)
-			}
 			if after := taskOf(t, pool, engine, root.Key); !reflect.DeepEqual(after, task) {
-				t.Fatalf("task a after the refused todo = %+v, want %+v as it stood", after, task)
+				t.Fatalf("task a after the todo = %+v, want %+v as it stood", after, task)
 			}
 			if got := roleRowOf(t, pool, engine, root.Key, claim.RoleImplementer).Entry; got != entry {
-				t.Fatalf("the implementer's entry is %d after the refused todo, want %d", got, entry)
+				t.Fatalf("the implementer's entry is %d after the todo, want %d", got, entry)
+			}
+			if got := len(startsOf(t, pool, root.Key, claim.RoleImplementer)); got != starts {
+				t.Fatalf("the todo queued %d starts of the implementer, want none", got-starts)
 			}
 			if w, s := len(stepWrites(t, pool, root.Key)), len(statusWrites(t, pool, root.Key)); w != writes || s != statuses {
-				t.Fatalf("the refused todo wrote %d step records and %d status writes, want none", w-writes, s-statuses)
+				t.Fatalf("the todo wrote %d step records and %d status writes, want none", w-writes, s-statuses)
 			}
 		})
 	}
