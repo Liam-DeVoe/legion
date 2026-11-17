@@ -560,6 +560,15 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 	r.cache.CompleteRead()
 }
 
+// Unmarked names the sessions the read would remove now, for the watcher to read from the
+// stream's leader first (kvwatch.Copy.Unmarked).
+func (c sessionCache) Unmarked(kvwatch.Read) []string {
+	r := c.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cache.Unmarked()
+}
+
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
 // its local expiry measured from the record's Created (expiryFor).
 //

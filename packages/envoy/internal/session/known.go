@@ -921,6 +921,14 @@ func (c knownCache) CompleteRead(kvwatch.Read) {
 	c.s.records.CompleteRead()
 }
 
+// Unmarked names the records the read would remove now, for the watcher to read from the
+// stream's leader first (kvwatch.Copy.Unmarked).
+func (c knownCache) Unmarked(kvwatch.Read) []string {
+	c.s.mu.Lock()
+	defer c.s.mu.Unlock()
+	return c.s.records.Unmarked()
+}
+
 // sweepUntilStopped runs the one periodic pass until the store is stopped.
 func (s *KnownSessions) sweepUntilStopped() {
 	ticker := time.NewTicker(knownSessionSweepInterval)

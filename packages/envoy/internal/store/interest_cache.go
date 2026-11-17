@@ -79,6 +79,15 @@ func (c interestCache) CompleteRead(kvwatch.Read) {
 	r.cache.CompleteRead()
 }
 
+// Unmarked names the interests the read would remove now, for the watcher to read from the
+// stream's leader first (kvwatch.Copy.Unmarked).
+func (c interestCache) Unmarked(kvwatch.Read) []string {
+	r := c.r
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cache.Unmarked()
+}
+
 // WaitForCacheReady blocks until both views answer, or until ctx is done. The interest watcher is
 // waited for as ready (kvwatch.Watcher.WaitReady), having ended its first scan or failed to
 // start, and the role claim watcher as servable (kvwatch.Watcher.WaitComplete): the interest view
