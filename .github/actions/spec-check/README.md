@@ -44,6 +44,8 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
 
   `spec-check print` writes the documents in the form that the command reads back.
   The printer double-quotes each text that a YAML 1.1 or YAML 1.2 library reads, as a plain value, as another type than a string, such as `=`, `<<`, `yes`, `0x_` or `2026-11-16 10:00:00 Z`, so each standard library reads the same strings.
+  On a system that gives no `flock`, `spec-check print` refuses to write, because it locks the directory with `flock` for each run.
+  A run of `spec-check print` that is killed can leave an empty directory that it made, and temporary files named `.spec-check-print-*`, and a run that is killed while it renames its files can leave some of them changed; `git status` shows each file of these, but no empty directory.
 
 - **Every rule of `specgraph.Validate`.**
   These rules include ids (one id on two nodes, or an id that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a text with no letter or digit, a claim or a component purpose of more than one sentence, and a name of code in a text, a term's name included.
