@@ -1,5 +1,4 @@
 import { type LegionRole, zodSchemaApi } from "@legion/contracts";
-import { goBlankPattern } from "@legion/contracts/go-blank";
 import {
   LEGION_PHASE_BACKWARD_TARGETS,
   LEGION_PLAN_RATING_LEAST,
@@ -9,6 +8,8 @@ import {
   type LegionIssue,
   type LegionPhase,
   type LegionState,
+  legionPlanRatingScale,
+  legionPlanReasonRules,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import {
@@ -101,13 +102,12 @@ const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number fr
 /** `handoff_complete`'s `plan_rating`: the rating of the plan the issue ran, which the agent that
  * does the retro gives in the completion that ends the retro, from 1 (the plan cost the work) to 5
  * (the plan fit the work) (`LegionHandoffCompleteRequest`'s `planRating`, which goes on the wire).
- * The scale is the contract's own (`LEGION_PLAN_RATING_LEAST`, `LEGION_PLAN_RATING_MOST`), which
- * the contract test holds to the daemon's. */
-const planRating = z
-  .number({ error: PLAN_RATING_REFUSAL })
-  .int({ error: PLAN_RATING_REFUSAL })
-  .min(LEGION_PLAN_RATING_LEAST, { error: PLAN_RATING_REFUSAL })
-  .max(LEGION_PLAN_RATING_MOST, { error: PLAN_RATING_REFUSAL });
+ * The scale is the contract's own (`legionPlanRatingScale`), which the contract test holds to the
+ * daemon's. */
+const planRating = legionPlanRatingScale(
+  z.number({ error: PLAN_RATING_REFUSAL }),
+  PLAN_RATING_REFUSAL
+);
 
 /** The most characters of a `plan_reason` as this tool's sentences write it: 2,000, the contract's
  * `LEGION_PLAN_REASON_MAX`. */
@@ -117,19 +117,17 @@ const PLAN_REASON_MOST = LEGION_PLAN_REASON_MAX.toLocaleString("en-US");
 const PLAN_REASON_REQUIRED = "handoff_complete requires plan_reason";
 
 /** `handoff_complete`'s `plan_reason`: why the plan earned its rating (`planReason` on the wire). A
- * blank one is refused as missing, blank as the daemon's strings.TrimSpace reads it
- * (`goBlankPattern`) rather than by JavaScript's trim, which the tool's other fields read
- * (requiredString), and that refusal is its only one (`abort`); a reason that is not blank holds
- * at most `LEGION_PLAN_REASON_MAX` characters, counted in code points as the daemon and the
- * contract's `planReason` count them, never in a string's UTF-16 `length`. Both are read here so
- * that this tool refuses exactly the reasons the daemon refuses, by the field's name rather than
- * as the request schema's parse failure; the daemon's case golden holds the two to each other. */
-const planReason = z
-  .string({ error: PLAN_REASON_REQUIRED })
-  .refine((value) => !goBlankPattern.test(value), { error: PLAN_REASON_REQUIRED, abort: true })
-  .refine((value) => [...value].length <= LEGION_PLAN_REASON_MAX, {
-    error: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
-  });
+ * blank one is refused as missing, blank as the daemon's strings.TrimSpace reads it rather than by
+ * JavaScript's trim, which the tool's other fields read (requiredString), and that refusal is its
+ * only one; a reason that is not blank holds at most `LEGION_PLAN_REASON_MAX` characters, counted
+ * in code points as the daemon counts them. Both are the contract's rules
+ * (`legionPlanReasonRules`), read here so that this tool refuses exactly the reasons the daemon
+ * refuses, by the field's name rather than as the request schema's parse failure; the daemon's
+ * case golden holds the two to each other. */
+const planReason = legionPlanReasonRules(z.string({ error: PLAN_REASON_REQUIRED }), {
+  blank: PLAN_REASON_REQUIRED,
+  long: `handoff_complete's plan_reason holds at most ${PLAN_REASON_MOST} characters`,
+});
 
 /** The refusal of the fields `refused` that `op` does not take: each named, then once the fields
  * `op` takes (`takes`), so the agent's next call can be right. The one wording every `legion`
