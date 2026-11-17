@@ -2704,7 +2704,7 @@ jobs:
               # processes.LiveWindow, pgmigrate.LockTimeout), so an edit of it alone must start
               # this job.
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
-              # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
+              # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:76,
               # internal/dispatch/docs/approval_carry_test.go:26,
               # internal/cistore/settlement_fixture_test.go:56.
               - 'packages/contracts/fixtures/dedupe-keys.json'

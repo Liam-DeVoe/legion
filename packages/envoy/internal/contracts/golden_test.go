@@ -104,4 +104,26 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 			}
 		})
 	}
+
+	// The directory holds the goldens this list writes and nothing else. biome.json's formatter
+	// excludes the whole directory, and two other tests read every .json in it as a golden
+	// (packages/daemon/internal/intake/intake_test.go and normalize_test.go here), so a file this
+	// test does not write would be read as one while no formatter and no bytes check holds it.
+	written := map[string]bool{}
+	for _, fixture := range fixtures {
+		written[fixture.name+".json"] = true
+	}
+	goldenDir := filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes")
+	entries, err := os.ReadDir(goldenDir)
+	if err != nil {
+		t.Fatalf("list %s: %v", goldenDir, err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("%s holds no file, so this check read nothing", goldenDir)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".json" && !written[entry.Name()] {
+			t.Errorf("%s holds %s, which this test's list does not write: add it to the list, or remove the file", goldenDir, entry.Name())
+		}
+	}
 }
