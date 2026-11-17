@@ -523,15 +523,14 @@ test("a Contents entry goes to its node, and Focus branch draws that branch alon
   });
 });
 
-// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (4)'s
-// choice in the Outline sheet, by pointer and by Enter from the foot of the page, leaves the
-// focused row below the sticky view row, not behind it (decision 113). Where the row stands is
-// part D's `scroll-padding-top` - the larger of the band's and the view row's heights - and part
-// G's `useRowOnScreen` correction, so until both are under J the row is skipped. Its `@owed` tag
-// is what c-rows' run leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
+// Row (4)'s choice in the Outline sheet, by pointer and by Enter from the foot of the page,
+// leaves the focused row below the sticky view row, not behind it (decision 113). Where the row
+// stands is part D's `scroll-padding-top` - the larger of the band's and the view row's heights -
+// and part G's `useRowOnScreen` correction, both under J since the merge of part I's f955d338, so
+// this row, which skipped until then (decision 127), is one of c-rows' own.
 // SLOW(>=2s): the whole seeded issue, a load of the page at 390 px, and two choices in the
 // Outline sheet, each waited on until the focus lands and the page redraws.
-test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only @owed", async ({
+test("a choice in the Outline sheet leaves the focused row below the sticky view row @phone @phone-only", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -547,9 +546,9 @@ test("a choice in the Outline sheet leaves the focused row below the sticky view
         viewRow: style.getPropertyValue("--issue-view-row-height").trim(),
       };
     });
-    test.skip(
-      root.viewRow === "" || root.padding === "auto",
-      "owed: the Outline sheet's focused row below the sticky view row needs part D's scroll-padding-top and part G's useRowOnScreen correction (decision 113, skipped by decision 127)"
+    expect(root.viewRow, "part D publishes no --issue-view-row-height").not.toBe("");
+    expect(root.padding, "the page keeps no scroll-padding-top for its sticky rows").not.toBe(
+      "auto"
     );
     // The focused row's top less the sticky view row's bottom, once the move has been drawn:
     // -1 or more where the row stands below the view row.
@@ -1212,14 +1211,13 @@ test("the Spec view stands as the approved picture draws it @phone", async ({ br
   });
 });
 
-// A reading c-rows owes, in a row of its own outside c-rows' eight (decision 127): row (7)'s
-// column heads stay at the top after a scroll, under the header's band, whose height part P
-// publishes on the document's root as `--issue-identity-height` (reading (l) of the part's plan,
-// decision 80). Until P does, the row is skipped. Its `@owed` tag is what c-rows' run leaves out
-// (`--grep-invert @owed`), since a pass counts no skipped case.
+// Row (7)'s column heads stay at the top after a scroll, under the header's band, whose height
+// part P publishes on the document's root as `--issue-identity-height` (reading (l) of the
+// part's plan, decision 80). P is under J since the merge of part I's f955d338, so this row,
+// which skipped until then (decision 127), is one of c-rows' own.
 // SLOW(>=2s): the whole seeded issue, a load of the Spec view and a scroll, waited on until the
 // page redraws.
-test("the Spec view's column heads stay under the header's band after a scroll @owed", async ({
+test("the Spec view's column heads stay under the header's band after a scroll", async ({
   browser,
 }) => {
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -1235,10 +1233,7 @@ test("the Spec view's column heads stay under the header's band after a scroll @
     const band = await page.evaluate(() =>
       getComputedStyle(document.documentElement).getPropertyValue("--issue-identity-height").trim()
     );
-    test.skip(
-      band === "",
-      "owed: the Spec view's sticky heads against --issue-identity-height need part P (reading (l) of J's plan, decision 80, skipped by decision 127)"
-    );
+    expect(band, "part P publishes no --issue-identity-height").not.toBe("");
     // The page is scrolled once its statements are drawn, so it is tall enough to scroll.
     await expect
       .poll(() => body.locator("[data-spec-statement]").count(), {
