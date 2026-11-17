@@ -657,6 +657,8 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/spec-check/guard_test.go": reads(
+        (f"{ENVOY}/AGENTS.md", "cmd/spec-check/guard_test.go:299 reads it under ../..")),
     f"{ENVOY}/cmd/spec-check/main_test.go": reads(
         (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
          "cmd/spec-check/main_test.go:446 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "

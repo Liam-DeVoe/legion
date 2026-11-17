@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,10 @@ const (
 
 // ciRefusal is what compare writes, and all it writes, when GITHUB_ACTIONS is true.
 const ciRefusal = "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch\n"
+
+// approvedForm is the form of approved.json, as compare and print name it before the place of a
+// value of another type.
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
 
 // testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
 // each the approved spec and the files of one change: a node in a text that the approved spec
@@ -114,6 +119,21 @@ func testCompare(t *testing.T, binary string) {
 			"spec-check: interface orders-to-billing: the files hold it, and the approved spec removed it\n" +
 			"spec-check: component shipping: the files hold it, and the approved spec removed it\n" +
 			"spec-check: term order: the files hold it, and the approved spec removed it\n"})
+	})
+	// The files hold a removed statement in two files, which tree refuses as a doubled id: the line
+	// that names it comes once.
+	t.Run("compare names a removed node that the files hold two times once", func(t *testing.T) {
+		t.Parallel()
+		dir := copyOf(t, fixture(t, "compare", "removed-kept", "spec"))
+		approved := fixture(t, "compare", "removed-kept", "approved.json")
+		removed := approvedOf(t, "removed-kept").Nodes["an-order-is-paid-once"]
+		if !removed.Removed {
+			t.Fatal("the fixture did not remove an-order-is-paid-once")
+		}
+		writeFile(t, filepath.Join(dir, "again.md"), []byte(removed.Versions[len(removed.Versions)-1].Block))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3") +
+			"spec-check: statement an-order-is-paid-once: the files hold it, and the approved spec removed it\n" +
+			"spec-check: check a-second-payment-is-refused: the files hold it, and the approved spec removed it\n"})
 	})
 	// R2: "The change that lands the code of a statement writes that statement and its checks into
 	// the files". A change that leaves out a check, a component, an interface or a term gets a line
@@ -226,6 +246,70 @@ func testCompare(t *testing.T, binary string) {
 				"spec-check: " + dir + ": the files do not parse, so no comparison was made\n",
 		})
 	})
+	// A heading that names code breaks a rule of form, which tree judges, and leaves every node in
+	// the tree (specgraph.KeepsEachNode), so compare compares the files and gives its own answer.
+	// Beside a line that no block holds, the heading is no reason of the refusal, and only that line
+	// is named.
+	t.Run("compare compares files whose heading names code", func(t *testing.T) {
+		t.Parallel()
+		dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
+		orders := filepath.Join(dir, "orders.md")
+		content, err := os.ReadFile(orders)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, orders, append([]byte("# Orders and I/O\n\n"), content...))
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3")})
+
+		lost := t.TempDir()
+		writeFile(t, filepath.Join(lost, "a.md"), []byte("# Orders and I/O\n\nA line outside a block.\n"))
+		expect(t, runBinary(t, binary, "", "compare", "--dir", lost, "--approved", approved), result{
+			code: 2,
+			stderr: "spec-check: " + filepath.Join(lost, "a.md") + ":3: -: text-outside-block: a spec file holds only blocks, headings and blank lines\n" +
+				"spec-check: " + lost + ": the files do not parse, so no comparison was made\n",
+		})
+	})
+	// compare compares files whose only problems of Parse keep each node (specgraph.KeepsEachNode):
+	// a byte that Dispatch cannot store, a heading that names code, a claim on more than one line and
+	// a claim of more than one sentence. Beside each, a text that the approved spec never held still
+	// fails the comparison (R2), so a compare that passed whenever such a problem stands fails here.
+	t.Run("compare fails on a text never approved beside a problem of Parse that keeps each node", func(t *testing.T) {
+		t.Parallel()
+		approved := fixture(t, "compare", "approved-text", "approved.json")
+		const statement = "ACME keeps each order that a customer sends."
+		const claim = "Claim: The order service reads each stored order after it starts again."
+		for _, row := range []struct {
+			name, old, new, named string
+		}{
+			{"bad-encoding in a heading, one word changed in a statement", "# Orders\n", "# Orders \xff\n", "acme-keeps-each-order: unapproved-text"},
+			{"a heading that names code, one word changed in a statement", "# Orders\n", "# Orders and I/O\n", "acme-keeps-each-order: unapproved-text"},
+			{"a claim on two lines", claim + "\n", claim + "\nIt also deletes each order that it reads.\n", "a-restart-keeps-each-order: unapproved-text"},
+			{"a claim of two sentences", claim, claim + " It then deletes it.", "a-restart-keeps-each-order: unapproved-text"},
+		} {
+			t.Run(row.name, func(t *testing.T) {
+				t.Parallel()
+				dir := copyOf(t, fixture(t, "compare", "approved-text", "spec"))
+				orders := filepath.Join(dir, "orders.md")
+				content, err := os.ReadFile(orders)
+				if err != nil {
+					t.Fatal(err)
+				}
+				planted := bytes.Replace(content, []byte(row.old), []byte(row.new), 1)
+				if strings.HasSuffix(row.name, "in a statement") {
+					planted = bytes.Replace(planted, []byte(statement), []byte("ACME keeps each order that a client sends."), 1)
+				}
+				if bytes.Equal(planted, content) {
+					t.Fatal("the plant changed nothing")
+				}
+				writeFile(t, orders, planted)
+				got := runBinary(t, binary, "", "compare", "--dir", dir, "--approved", approved)
+				if got.code != 1 || !strings.Contains(got.stderr, row.named) {
+					t.Errorf("exit %d, stdout %q, stderr %q; want exit 1 and a line naming %q", got.code, got.stdout, got.stderr, row.named)
+				}
+			})
+		}
+	})
 	t.Run("compare refuses a directory that holds no spec file, and names --allow-empty", func(t *testing.T) {
 		t.Parallel()
 		empty, missing := t.TempDir(), filepath.Join(t.TempDir(), "missing")
@@ -282,6 +366,13 @@ func testCompare(t *testing.T, binary string) {
 			code:   2,
 			stderr: "spec-check: " + bad + `: specgraph: approved node "order": it has no version` + "\n",
 		})
+		// A value of another type than the form needs is named by its place and the form, in the
+		// words of the package, for compare and print alike.
+		wrong := filepath.Join(t.TempDir(), "approved.json")
+		writeFile(t, wrong, []byte(`{"nodes":[{"id":"order","versions":[{"version":"1","at":"2026-11-10T00:00:00Z","block":""}]}]}`))
+		wrongType := "spec-check: " + wrong + ": specgraph: approved spec: it is not in the form " + approvedForm + `: the value at "/nodes/0/versions/0/version" is of another type` + "\n"
+		expect(t, runBinary(t, binary, "", "compare", "--dir", dir, "--approved", wrong), result{code: 2, stderr: wrongType})
+		expect(t, runBinary(t, binary, "", "print", "--approved", wrong, "--id", "order"), result{code: 2, stderr: wrongType})
 	})
 	// Each CI job of this repository is a GitHub Actions job, and GitHub sets GITHUB_ACTIONS=true in
 	// each step. An agent's shell sets CI=true, and an agent's step is no CI job (R12), so CI alone
@@ -296,6 +387,22 @@ func testCompare(t *testing.T, binary string) {
 		// GITHUB_ACTIONS holds another value.
 		for _, env := range [][]string{{"CI=true"}, {"GITHUB_ACTIONS=false", "CI=true"}} {
 			expect(t, runBinaryIn(t, binary, "", env, "compare", "--dir", dir, "--approved", approved), result{stdout: passLine(dir, "3 of 3")})
+		}
+	})
+	// The refusal is the first thing compare does, so a CI job gets it, and nothing more, whatever
+	// the arguments: none, -h, a flag it does not take, files that do not exist, or an argument
+	// besides the flags.
+	t.Run("compare refuses in a CI job before it reads an argument", func(t *testing.T) {
+		t.Parallel()
+		missing := filepath.Join(t.TempDir(), "missing")
+		for _, args := range [][]string{
+			{"compare"},
+			{"compare", "-h"},
+			{"compare", "--bogus"},
+			{"compare", "--dir", missing, "--approved", missing},
+			{"compare", "--dir", fixture(t, "compare", "approved-text", "spec"), "--approved", missing, "extra"},
+		} {
+			expect(t, runBinaryIn(t, binary, "", []string{"GITHUB_ACTIONS=true"}, args...), result{code: 2, stderr: ciRefusal})
 		}
 	})
 	// The refusal reads the command's own environment, so a step that starts the command behind a
@@ -345,22 +452,32 @@ func passLine(dir, held string) string {
 	return "spec-check: " + dir + ": the approved spec held every text that the files hold; " + held + " approved statements are in the files at their current text\n"
 }
 
+// approvedOf is the approved spec of the compare fixture name, as compare's readApproved reads it.
+func approvedOf(t *testing.T, name string) specgraph.Approved {
+	t.Helper()
+	var stderr strings.Builder
+	_, a, ok := readApproved(&stderr, fixture(t, "compare", name, "approved.json"))
+	if !ok {
+		t.Fatal(stderr.String())
+	}
+	return a
+}
+
 // approvedCopy is the path of a copy of the approved.json of the compare fixture name, with edit
-// applied to each node before the copy is written.
+// applied to each node before specgraph.WriteApproved writes the copy.
 func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode)) string {
 	t.Helper()
-	content, err := os.ReadFile(fixture(t, "compare", name, "approved.json"))
-	if err != nil {
+	a := approvedOf(t, name)
+	for id, n := range a.Nodes {
+		edit(&n)
+		a.Nodes[id] = n
+	}
+	var changed bytes.Buffer
+	if err := specgraph.WriteApproved(&changed, a); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "approved.json")
-	writeFile(t, path, content)
-	editApproved(t, path, func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		for i := range nodes {
-			edit(&nodes[i])
-		}
-		return nodes
-	})
+	writeFile(t, path, changed.Bytes())
 	return path
 }
 
@@ -369,9 +486,7 @@ func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode
 // is not valid edits its bytes instead (replaceIn).
 func editApproved(t *testing.T, path string, edit func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode) {
 	t.Helper()
-	var file struct {
-		Nodes []specgraph.ApprovedNode `json:"nodes"`
-	}
+	var file specgraph.ApprovedFile
 	readJSONFile(t, path, &file)
 	file.Nodes = edit(file.Nodes)
 	writeJSONFile(t, path, file)

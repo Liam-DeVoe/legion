@@ -41,15 +41,19 @@ func NewTie(paths []string) (Tie, error) {
 // commit that it does not hold.
 type CommitTies map[string]map[string]Tie
 
-// ReadCommitTies reads ties in the form of a scenario's ties.json,
-// {"<commit>":{"<check id>":["<path or pattern>", …]}}, each tie as NewTie takes it. It reads the
-// JSON with decodeJSON, the package's one reader of a JSON file of a format, so it refuses what
-// that reader refuses. It refuses a commit of no letter and no digit (hasWord), as the scenario
-// reader refuses such a commit of a subject, since it names no commit, and it names the commit and
-// the check of a tie that NewTie refuses.
+// commitTiesForm is the form of a scenario's ties.json, which ReadCommitTies reads.
+const commitTiesForm = `{"<commit>":{"<check id>":["<path or pattern>", …]}}`
+
+// ReadCommitTies reads ties in the form of a scenario's ties.json (commitTiesForm), each tie as
+// NewTie takes it. It reads the JSON with decodeJSON, the package's one reader of a JSON file of a
+// format, so it refuses what that reader refuses, and names commitTiesForm and the place of a value
+// of another type, such as an array in the place of a commit's object, which is ties by check
+// alone. It refuses a commit of no letter and no digit (hasWord), as the scenario reader refuses
+// such a commit of a subject, since it names no commit, and it names the commit and the check of a
+// tie that NewTie refuses.
 func ReadCommitTies(r io.Reader) (CommitTies, error) {
 	var paths map[string]map[string][]string
-	if err := decodeJSONFrom(r, &paths); err != nil {
+	if err := decodeJSONFrom(r, &paths, commitTiesForm); err != nil {
 		return nil, err
 	}
 	ties := make(CommitTies, len(paths))

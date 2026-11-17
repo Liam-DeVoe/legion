@@ -495,9 +495,17 @@ func TestCitationsCommand(t *testing.T) {
 		}, func(f citationFiles) string {
 			return f.ties + `: commit "` + f.head + `": check "` + citedCheck + `": specgraph: tie entry "p/*.go" is not a repository path, <dir>/* or <dir>/**`
 		}, false},
+		// A value of another type is refused in this package's words, with the form and the place.
 		{"a ties file in the form by check, with no commit", func(t *testing.T, f citationFiles) {
 			writeFile(t, f.ties, []byte(`{"`+citedCheck+`":["a/*"]}`))
-		}, func(f citationFiles) string { return f.ties + ": " }, true},
+		}, func(f citationFiles) string {
+			return f.ties + `: it is not in the form {"<commit>":{"<check id>":["<path or pattern>", …]}}: the value at "/` + citedCheck + `" is of another type`
+		}, false},
+		{"a ties file whose tie is a string, not a list", func(t *testing.T, f citationFiles) {
+			writeFile(t, f.ties, []byte(`{"`+f.head+`":{"`+citedCheck+`":"a/*"}}`))
+		}, func(f citationFiles) string {
+			return f.ties + `: it is not in the form {"<commit>":{"<check id>":["<path or pattern>", …]}}: the value at "/` + f.head + `/` + citedCheck + `" is of another type`
+		}, false},
 		{"a ties file that names a commit by a short name", func(t *testing.T, f citationFiles) {
 			writeFile(t, f.ties, []byte(`{"`+f.head[:12]+`":{"`+citedCheck+`":["a/*"]}}`))
 		}, func(f citationFiles) string {

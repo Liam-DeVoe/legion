@@ -22,7 +22,10 @@ var ciDirs = []string{workflowsDir, ".github/actions", ".github/scripts", "scrip
 // runGuard is "spec-check guard --root <dir>": it reads every regular file under the CI
 // directories of the repository at dir, and answers 0 when no line of them names the command that
 // compares the files with the approved spec (ciFilesThatCompare), 1 when one does or when it read
-// no workflow, and 2 for a directory or a file it cannot read or arguments it does not take.
+// no workflow, and 2 for a directory or a file it cannot read or arguments it does not take. It
+// follows no symbolic link at or under the four directories (the path to them, --root and .github
+// included, resolves as the system resolves it), and it reads each file whole, with no bound on
+// its size.
 func runGuard(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("guard", flag.ContinueOnError)
 	rootFlag := flags.String("root", "", "the root directory of the repository")

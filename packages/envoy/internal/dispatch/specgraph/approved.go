@@ -2,9 +2,11 @@ package specgraph
 
 import (
 	"cmp"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -12,7 +14,8 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// and Block, the node's block as Print writes it, which a change copies into the files.
+// in approved.json an RFC 3339 time as time.RFC3339Nano writes it, with an upper-case T and Z, and
+// Block, the node's block as Print writes it, which a change copies into the files.
 type ApprovedVersion struct {
 	Version int       `json:"version"`
 	At      time.Time `json:"at"`
@@ -36,24 +39,67 @@ type Approved struct {
 	Nodes map[string]ApprovedNode
 }
 
-// ReadApproved reads an approved spec in the form of approved.json:
-//
-//	{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}
-//
-// It refuses what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is
-// written in other letters, a field that one object gives two times, text after the object), a
-// node with no id, an id on two nodes, a node with no version, version numbers that do not go up
-// from 1, a version with no time or older than the one before it, and a block that is not its
-// node's one block as Print writes it. The error names the node and the version.
+// ApprovedFile is approved.json, the approved spec as a file holds it, and the one definition of
+// that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
+// time as time.RFC3339Nano writes it, with an upper-case T and Z, such as "2026-11-10T00:00:00Z":
+// the reader refuses a lower-case t or z, which RFC 3339 allows, and the writer writes upper case.
+// An approved spec that holds no node is {"nodes":[]}.
+type ApprovedFile struct {
+	Nodes []ApprovedNode `json:"nodes"`
+}
+
+// approvedForm is the form of approved.json, with the type of each value, as ReadApproved names it
+// for a value of another type.
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+
+// ReadApproved reads an approved spec in the form of approved.json (ApprovedFile). It refuses
+// what decodeJSON refuses (a byte that is not UTF-8, a field it does not know or that is written
+// in other letters, a field that one object gives two times, a value of another type than
+// approvedForm needs, such as a time that is not RFC 3339, named by its place, no object or text
+// after it), a file with no list of nodes (null, {} or "nodes": null), a node with no id, an id on
+// two nodes, a node with no version, version numbers that do not go up from 1, a version with no
+// time or with one older than the one before it, and a block that is not its node's one block as
+// Print writes it. The error names the node and the version. It reads the whole file, with no
+// bound on its size.
 func ReadApproved(r io.Reader) (Approved, error) {
-	var file struct {
-		Nodes []ApprovedNode `json:"nodes"`
-	}
-	if err := decodeJSONFrom(r, &file); err != nil {
+	var file ApprovedFile
+	if err := decodeJSONFrom(r, &file, approvedForm); err != nil {
 		return Approved{}, fmt.Errorf("specgraph: approved spec: %w", err)
 	}
-	a := Approved{Nodes: make(map[string]ApprovedNode, len(file.Nodes))}
-	for _, n := range file.Nodes {
+	return file.approved()
+}
+
+// WriteApproved writes a to w as approved.json (ApprovedFile), the nodes in the order of their ids,
+// and a line break after it, so ReadApproved reads back a and two writes of a give the same bytes.
+// For an approved spec that ReadApproved would refuse, such as a node under another id than its
+// own, it writes nothing and answers the fault.
+func WriteApproved(w io.Writer, a Approved) error {
+	file := ApprovedFile{Nodes: make([]ApprovedNode, 0, len(a.Nodes))}
+	for _, id := range slices.Sorted(maps.Keys(a.Nodes)) {
+		n := a.Nodes[id]
+		if n.ID != id {
+			return fmt.Errorf("specgraph: approved spec: node %q is under the id %q", n.ID, id)
+		}
+		file.Nodes = append(file.Nodes, n)
+	}
+	if _, err := file.approved(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(file)
+	if err != nil {
+		return fmt.Errorf("specgraph: approved spec: %w", err)
+	}
+	_, err = w.Write(append(data, '\n'))
+	return err
+}
+
+// approved is the approved spec that f holds, or the first fault of f that ReadApproved refuses.
+func (f ApprovedFile) approved() (Approved, error) {
+	if f.Nodes == nil {
+		return Approved{}, errors.New(`specgraph: approved spec: it holds no "nodes" list`)
+	}
+	a := Approved{Nodes: make(map[string]ApprovedNode, len(f.Nodes))}
+	for _, n := range f.Nodes {
 		if n.ID == "" {
 			return Approved{}, errors.New("specgraph: approved spec: a node has no id")
 		}
