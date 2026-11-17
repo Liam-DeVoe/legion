@@ -957,7 +957,7 @@ test("register_gate takes the document reference the Dispatch tools take, and re
   ]);
 });
 
-// The owner's plan (contract 156): register_plan names its document as register_gate does, for any
+// The owner's plan (contract 162): register_plan names its document as register_gate does, for any
 // issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
 // comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
 // code. stop_task names the task to stop by its block's id.

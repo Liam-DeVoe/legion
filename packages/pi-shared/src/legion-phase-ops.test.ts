@@ -519,7 +519,7 @@ test("the description tells the agent that does the retro to rate the plan in it
   }
 });
 
-// Contract 156: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// Contract 162: a tester's fail names the step its task returns to, `return_to`, which goes on the
 // wire as the daemon's `returnTo`; a completion that names none sends none.
 test("a tester's fail sends return_to as returnTo", async () => {
   const tester = { ...implementer, role: "tester" as const };

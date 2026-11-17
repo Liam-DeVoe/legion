@@ -279,9 +279,11 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 			seedIssueAt(t, h, "LEGION-208", phase.Retro)
 			implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
 			// A stale claim is served in its turn (staleClaim), and its grants are minted first, as
-			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one.
+			// TestAnOldPluginRetroStillCompletesWhereItIsServed mints its one. A live claim declares
+			// the daemon's own contract, so a band below it, PlanRatingContract once a later contract
+			// came, declares its own.
 			grants := []string{implementer.grant(t), implementer.grant(t), implementer.grant(t)}
-			if band.contract != PlanRatingContract {
+			if band.contract != DaemonAPIVersion {
 				h.makeStale(t, implementer.token, implementer.session, implementer.secret, band.contract)
 			}
 			if c := h.stored(implementer.token); c.State != supervise.StateWorking || c.PluginContract != band.contract {
