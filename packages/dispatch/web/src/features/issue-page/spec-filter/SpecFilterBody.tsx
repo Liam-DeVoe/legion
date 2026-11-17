@@ -181,28 +181,36 @@ export function SpecFilterBody({
   const decisionsRead = useQuery(treeRead(issueDecisionsQuery(issue.key, true)));
   // This observer reads the key the tree fills and fetches nothing of its own.
   const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
-  const decisions = decisionsRead.data;
-  // The spec's blocks are its statements and its summary; an issue with no spec has none to
-  // wait for.
-  const specHeld = spec === undefined || specBlocksRead.data !== undefined;
+  // One predicate per read: whether it holds an answer. Every part of the body that says what
+  // decided a statement or how it stands - the decision cell and its line saying none did, the
+  // line under a statement, the runs, the mark, and what `w` and `q` report - reads the
+  // predicates of the reads it draws from, and draws or reports nothing while one of them is not
+  // held, rather than an absence that may be false. A document the issue does not name has no
+  // blocks to wait for.
+  const coverageHeld = coverageRead.data !== undefined;
+  // The spec's blocks are its statements and its summary.
+  const specBlocksHeld = spec === undefined || specBlocksRead.data !== undefined;
+  const resultsHeld = resultsRead.data !== undefined;
+  // The Verification document's blocks put each check under the statement it serves.
+  const verificationBlocksHeld = verification === undefined || checksRead.data !== undefined;
+  const decisionsHeld = decisionsRead.data !== undefined;
+  // The asks read brings a person's answer, which their decision is drawn by, and the answered
+  // question a statement hangs under, which heads its run (`spec-decided-by.ts`).
+  const asksHeld = asksRead.data !== undefined;
   // The statements come from the spec's blocks and their coverage: until both are held the body
   // cannot say the issue holds no statement.
-  const statementsHeld = coverageRead.data !== undefined && specHeld;
+  const statementsHeld = specBlocksHeld && coverageHeld;
   // Each statement's mark is how its checks stand, each at the commit the server names for it,
   // as the Verification filter reads it (`statement-state.ts`): from the results, the coverage,
-  // and the Verification document's blocks, which put each check under the statement it
-  // serves. Before all three are held a mark would say Unknown or no check of a statement that
-  // is Met, so none is drawn until they are.
-  const marked =
-    resultsRead.data !== undefined &&
-    coverageRead.data !== undefined &&
-    (verification === undefined || checksRead.data !== undefined);
-  // A person's decision is drawn by their answer, which the asks read brings
-  // (`spec-decided-by.ts`): until it is held the column draws nothing for one.
-  const asksHeld = asksRead.data !== undefined;
+  // and the Verification document's blocks. Before all three are held a mark would say Unknown
+  // or no check of a statement that is Met, so none is drawn until they are.
+  const marked = resultsHeld && coverageHeld && verificationBlocksHeld;
+  // What decided each statement comes from the decisions read and the asks read: until both are
+  // held a run whose cell draws no decision may yet have one, so nothing says that none did.
+  const decidedHeld = decisionsHeld && asksHeld;
   // Whether everything the body draws from is held, which is when `q` and `w` may say there is
   // nowhere to go (`useTreeKeymap.ts`).
-  const readsHeld = statementsHeld && marked && decisions !== undefined && asksHeld;
+  const readsHeld = statementsHeld && marked && decidedHeld;
   // Each line of the reads that failed with nothing held, in the page's words: the coverage's and
   // the spec's blocks' as the statements', the results' and the Verification document's blocks'
   // as the results', which leave every statement unmarked alike, then the decisions' and the
@@ -227,14 +235,14 @@ export function SpecFilterBody({
       specDecidedBy({
         asksHeld,
         checks: resultsRead.data?.checks ?? [],
-        decisions,
+        decisions: decisionsRead.data,
         nameOf,
         nodeIdOf,
         reader,
         root,
         view,
       }),
-    [asksHeld, decisions, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
+    [asksHeld, decisionsRead.data, nameOf, nodeIdOf, reader, resultsRead.data, root, view]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -339,8 +347,9 @@ export function SpecFilterBody({
   // `w` on a statement, or on a control inside one: the focus goes to the cell beside it, which
   // draws the decision its run is headed by, whichever decision the tree's order names first
   // (`decisionBehind` can name one that only informed it, or one that was replaced); a run no
-  // decision shaped says so at the statement (R5, R35). False where the focus is on no
-  // statement, which leaves the key to the keymap.
+  // decision shaped says so at the statement (R5, R35) once what decided each statement is held,
+  // and says nothing before that, since its cell may yet draw one. False where the focus is on
+  // no statement, which leaves the key to the keymap.
   const toOwnCell = useCallback((): boolean => {
     const container = tree.current;
     const statement = document.activeElement?.closest<HTMLElement>("[data-spec-statement]");
@@ -351,9 +360,9 @@ export function SpecFilterBody({
       `[data-spec-cell][data-spec-statements~="${CSS.escape(id)}"]`
     );
     if (cell?.hasAttribute("data-decision-id") === true) cell.focus();
-    else reportHere(KEY_REPORTS.no_decision);
+    else reportHere(decidedHeld ? KEY_REPORTS.no_decision : "");
     return true;
-  }, [reportHere]);
+  }, [decidedHeld, reportHere]);
   // `j`, `k` and the arrows from a cell, which is no row of the keymap's (it finds none there
   // and would start again from the top): the statement after the cell's run, or before it,
   // and at either end of the tree the run's own last or first statement, as the keymap stops
@@ -434,13 +443,17 @@ export function SpecFilterBody({
     onReport: reportHere,
     // `w` and `q` can name a node this filter draws no row or cell for - a decision that shaped
     // no statement of the view, an open question - and the row says the key went nowhere, in
-    // the words the outline says it in. A decision named from a statement is that statement's
-    // own cell's to answer, as the tree's key handler answers a `w` it takes first.
+    // the words the outline says it in; for a decision, only once what decided each statement is
+    // held, since its cell may yet be drawn. Whether the node is a decision is read off the tree,
+    // which holds it whether or not the decisions read is in. A decision named from a statement
+    // is that statement's own cell's to answer, as the tree's key handler answers a `w` it takes
+    // first.
     onReveal: (id) => {
-      const decided = (decisions?.decisions ?? []).some((one) => nodeIdOf(one.ref) === id);
+      const decided = nodesInOrder(root).some((one) => one.id === id && one.type === "decision");
       if (decided && toOwnCell()) return;
       if (goTo(id)) return;
-      reportHere(decided ? KEY_REPORTS.no_decision : KEY_REPORTS.no_next_question);
+      if (!decided) reportHere(KEY_REPORTS.no_next_question);
+      else reportHere(decidedHeld ? KEY_REPORTS.no_decision : "");
     },
     onZoom: NOTHING,
     oneNodeAtATime: false,
@@ -491,7 +504,7 @@ export function SpecFilterBody({
           look="spec"
           nameOf={nameOf}
           // The sentences are the spec's summary, so they wait on the spec's blocks alone.
-          reading={!specHeld}
+          reading={!specBlocksHeld}
           summary={summary}
         />
       </div>
@@ -553,7 +566,7 @@ export function SpecFilterBody({
             focused={focused}
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
-            known={decisions !== undefined}
+            known={decidedHeld}
             marked={marked}
             onCellFocus={focusCell}
             onFocus={focusStatement}
@@ -840,8 +853,8 @@ function Group({
   context: ReadonlySet<string>;
   focused: string | undefined;
   group: SpecGroup;
-  /** Whether the decisions read holds an answer, which is when a run with no decision can say
-   *  that none shaped it. */
+  /** Whether the decisions read and the asks read hold an answer, which is when a run with no
+   *  decision can say that none shaped it. */
   known: boolean;
   /** Whether the reads a mark comes from hold an answer, which is when a statement can carry
    *  how it stands. */
@@ -879,9 +892,7 @@ function Group({
           <DecisionCell
             decision={run.decision}
             focused={openCell !== undefined && openCell === run.statements[0]?.node.id}
-            // A run a person's decision heads that the asks read has not brought yet waits as a
-            // run does before the decisions read answers: its cell says nothing.
-            known={known && run.waiting === undefined}
+            known={known}
             onFocus={(cell, itself) =>
               onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
             }
@@ -940,9 +951,9 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * The decision that shaped a run of statements, in the left column: the words it came from,
  * where they came from and when, and a link to the whole of it (R5). The bracket at its
  * trailing edge spans the statements it shaped, in the decisions' violet, dashed where an agent
- * decided; a run no decision shaped says so in words (R35), once the decisions read holds an
- * answer, and says nothing before that or where the read failed with none, since it does not
- * know.
+ * decided; a run no decision shaped says so in words (R35), once the decisions read and the
+ * asks read hold an answer, and says nothing before that or where either failed with none,
+ * since it does not know.
  *
  * A person's words are quoted, their first sentence in plain words; an agent's are drawn whole
  * as a row draws a node's words (`RowText`), each reference by its name, and cut as an agent's

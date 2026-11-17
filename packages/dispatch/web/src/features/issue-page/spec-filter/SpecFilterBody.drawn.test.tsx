@@ -508,6 +508,28 @@ test("the column says no decision shaped a statement only once the decisions are
   }
 });
 
+// R35's sentence waits on the asks read as well: a person's answer, which their decision is
+// drawn by, and the answered question a statement hangs under, which heads its run, both come
+// with it. While that read is out or refused the column says nothing of a statement no decision
+// it holds shaped.
+test("the column says no decision shaped a statement only once the asks are read", async () => {
+  for (const asks of ["out", "failed"] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1")]), [], { asks });
+    try {
+      if (asks === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      expect(
+        textsOf(view, "[data-spec-nothing]"),
+        `the column says no decision shaped r1 while the asks read is ${asks}`
+      ).toEqual([]);
+      expect(view.container.querySelectorAll("[data-spec-statement]")).toHaveLength(1);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
 // R5: an agent's decision draws its own words whole in its cell, as a row draws a node's words
 // (`RowText`, in a block, since a text drawn with its own links stands in no link), while the
 // line under the statement quotes their first line, and the one word the model holds for how
@@ -1707,6 +1729,52 @@ test("w on a statement whose person's decision waits on the asks read reports no
           `w on statement ${id} says no decision is recorded while the asks read is ${asks}`
         ).not.toBe(KEY_REPORTS.no_decision);
       }
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R5 and R35: `w` on a statement whose cell draws no decision says that none is recorded only
+// once the decisions read is in. While that read is out or refused every cell is empty, and `w`
+// says nothing, since a decision may yet stand there.
+test("w on a statement says nothing of a missing decision while the decisions read is out", async () => {
+  const user = userEvent.setup();
+  for (const decisions of ["out", "failed"] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1")]), [], { decisions });
+    try {
+      if (decisions === "failed")
+        await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+      const row = rowOf(view, "spec#b-r1");
+      act(() => row.focus());
+      await user.keyboard("w");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `w on r1 says no decision is recorded while the decisions read is ${decisions}`
+      ).not.toBe(KEY_REPORTS.no_decision);
+    } finally {
+      view.unmount();
+      read.mockRestore();
+    }
+  }
+});
+
+// R11: `q` with no open question to go to says so only once every read the body draws from is
+// in. While the asks read or the decisions read is out a question may yet arrive, and `q` says
+// nothing.
+test("q says nothing of a next question while the asks or the decisions read is out", async () => {
+  const user = userEvent.setup();
+  for (const out of [{ asks: "out" }, { decisions: "out" }] as const) {
+    const { read, view } = drawBody(issueTree([statement("r1"), statement("r2")]), [], out);
+    try {
+      const row = rowOf(view, "spec#b-r1");
+      act(() => row.focus());
+      await user.keyboard("q");
+      expect(
+        row.querySelector("[data-row-report]")?.textContent ?? "",
+        `q on r1 says there is no next question while the ${Object.keys(out)[0]} read is out`
+      ).not.toBe(KEY_REPORTS.no_next_question);
     } finally {
       view.unmount();
       read.mockRestore();
