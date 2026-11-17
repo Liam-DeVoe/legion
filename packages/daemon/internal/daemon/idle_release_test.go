@@ -636,28 +636,34 @@ func TestAnIdleIssuesPodIsReleasedWithItsClaimsKeepingTheirPhaseAndTask(t *testi
 func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// before is what happens between the release's decision and the run of its rows.
-		before   func(t *testing.T, rig *idleRig)
+		// before is what happens between the release's decision and the run of its rows. below is
+		// an id the outbox's own sequence handed out before the release queued its rows
+		// (idleRig.outboxID), which no row holds.
+		before   func(t *testing.T, rig *idleRig, below int64)
 		suspends bool
 	}{
 		{name: "the stop suspends its claim", suspends: true},
-		{name: "the release is over", before: func(t *testing.T, rig *idleRig) {
+		{name: "the release is over", before: func(t *testing.T, rig *idleRig, _ int64) {
 			// No mark holds the release's rows any more, as a release cancelled or finished
 			// leaves them.
 			if _, err := rig.pool.Exec(context.Background(), `delete from issue_releases where issue = $1`, rig.issue.Key); err != nil {
 				t.Fatalf("end the release: %v", err)
 			}
 		}},
-		{name: "the boundary cancels the release", before: func(t *testing.T, rig *idleRig) {
-			// A start for another role of the pod, queued below the release's rows and not yet
-			// due, which the boundary finds (TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease).
+		{name: "the boundary cancels the release", before: func(t *testing.T, rig *idleRig, below int64) {
+			// A start for another role of the pod whose transaction took its id before the release
+			// queued its rows, not yet due, which the boundary finds
+			// (TestADeliveryThePodIsGivenAroundTheMarkCancelsTheRelease).
+			if boundary := rig.boundary(t); below >= boundary {
+				t.Fatalf("control: the start's id %d is not below the release's boundary %d", below, boundary)
+			}
 			if _, err := rig.pool.Exec(context.Background(), `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error)
 				values ($1, 'supervise', $2, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now() + interval '1 hour', '')`,
-				rig.boundary(t)-2, rig.issue.Key); err != nil {
+				below, rig.issue.Key); err != nil {
 				t.Fatalf("queue a start around the mark: %v", err)
 			}
 		}},
-		{name: "the claim runs nothing", before: func(t *testing.T, rig *idleRig) {
+		{name: "the claim runs nothing", before: func(t *testing.T, rig *idleRig, _ int64) {
 			if err := rig.machine.Handle(context.Background(), supervise.RequestStop{Claim: rig.token}); err != nil {
 				t.Fatalf("retire the claim the stop is for: %v", err)
 			}
@@ -675,12 +681,13 @@ func TestARoleStopTellsTheRegistryMirrorOfTheClaimItSuspendedAndOfNoOther(t *tes
 				}
 				told = append(told, released)
 			}
-			rig.w.releaseIdlePods(ctx)
-			if got := rig.rows(t); len(got) != 3 || got[1] != "supervise:release" {
-				t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown", got)
+			below := rig.outboxID(t)
+			queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(ctx) })
+			if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+				t.Fatalf("queued rows = %v, want the save, the implementer's stop and the teardown", queued)
 			}
 			if tc.before != nil {
-				tc.before(t, rig)
+				tc.before(t, rig, below)
 			}
 
 			rig.drain(t)
