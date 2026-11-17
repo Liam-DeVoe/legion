@@ -1,11 +1,15 @@
 package doctext
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+	"golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // exactRows are documents and what VisibleMarkdown makes of each, CommonMark's reading of it.
@@ -74,8 +78,9 @@ var exactRows = []struct{ name, doc, want string }{
 	{"an inline comment whose text ends in a dash across lines stays",
 		"p <!--- a\nb ---> c\n", "p <!--- a\nb ---> c\n"},
 	{"the empty comment of four dashes goes", "p <!----> q\n", "p  q\n"},
-	// cmark-gfm opens an HTML block at `<source>`, which CommonMark 0.31.2 does not.
-	{"a source block's comment goes", "<source>\n<!-- gone -->\n\nb\n", "<source>\n\n\nb\n"},
+	// cmark-gfm opens an HTML block at `<source>`, which CommonMark 0.31.2 does not, so a comment
+	// the block leaves open runs on over what follows.
+	{"a source block's open comment hides what follows", "<source><!--\n\nb\n", "<source>\n\n\n"},
 	{"no comment at all", "# Title\n\n- `x` — y\n", "# Title\n\n- `x` — y\n"},
 }
 
@@ -94,6 +99,85 @@ func TestVisibleMarkdownTakesOutWhatNoReaderSees(t *testing.T) {
 				t.Fatalf("VisibleMarkdown(%q) has %d lines, the document %d", row.doc, strings.Count(got, "\n"), strings.Count(row.doc, "\n"))
 			}
 		})
+	}
+}
+
+// githubRender is testdata/github_render.json: documents, the marker words in each, and the HTML
+// GitHub's renderer gave for each when it was read (Read, How), kept so that this test runs
+// offline.
+type githubRender struct {
+	Read, How string
+	Rows      []struct {
+		Name, Doc, HTML string
+		Markers         []string
+	}
+}
+
+// pageText is the text a reader sees of html, an HTML fragment: its text nodes, outside comments,
+// scripts and styles.
+func pageText(t *testing.T, fragment string) string {
+	t.Helper()
+	nodes, err := html.ParseFragment(strings.NewReader(fragment), &html.Node{Type: html.ElementNode, Data: "body", DataAtom: atom.Body})
+	if err != nil {
+		t.Fatalf("parse GitHub's HTML: %v", err)
+	}
+	var text strings.Builder
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		switch {
+		case n.Type == html.TextNode:
+			text.WriteString(n.Data)
+		case n.Type == html.ElementNode && (n.DataAtom == atom.Script || n.DataAtom == atom.Style):
+			return
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	for _, n := range nodes {
+		walk(n)
+	}
+	return text.String()
+}
+
+// Every marker word of each document is in VisibleMarkdown's result exactly when it is on the page
+// GitHub renders. The pages are GitHub's own, read once through its markdown API and kept in
+// testdata/github_render.json with the time they were read, so the test needs no network: each
+// row is an edge of how cmark-gfm reads an inline `<!`, a comment an HTML block leaves open, or
+// where cmark-gfm opens an HTML block (cmarkGFMRawHTML, cmarkGFMBlock). The test also fails when
+// the file names no marker the page hides or none it shows, since then it could not fail.
+func TestVisibleMarkdownKeepsWhatGitHubsPageShows(t *testing.T) {
+	body, err := os.ReadFile("testdata/github_render.json")
+	if err != nil {
+		t.Fatalf("read testdata/github_render.json: %v", err)
+	}
+	var render githubRender
+	if err := json.Unmarshal(body, &render); err != nil {
+		t.Fatalf("parse testdata/github_render.json: %v", err)
+	}
+	shown, hidden := 0, 0
+	for _, row := range render.Rows {
+		t.Run(row.Name, func(t *testing.T) {
+			page := pageText(t, row.HTML)
+			got := VisibleMarkdown(row.Doc)
+			for _, marker := range row.Markers {
+				onPage := strings.Contains(page, marker)
+				if onPage {
+					shown++
+				} else {
+					hidden++
+				}
+				if kept := strings.Contains(got, marker); kept != onPage {
+					t.Errorf("%s: on GitHub's page %v (read %s), in VisibleMarkdown's result %v: %q", marker, onPage, render.Read, kept, got)
+				}
+			}
+			if strings.Count(got, "\n") != strings.Count(row.Doc, "\n") {
+				t.Errorf("VisibleMarkdown(%q) has %d lines, the document %d", row.Doc, strings.Count(got, "\n"), strings.Count(row.Doc, "\n"))
+			}
+		})
+	}
+	if shown == 0 || hidden == 0 {
+		t.Fatalf("testdata/github_render.json names %d markers GitHub shows and %d it hides: with none of either, this test cannot fail", shown, hidden)
 	}
 }
 

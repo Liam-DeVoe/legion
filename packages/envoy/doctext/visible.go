@@ -26,30 +26,37 @@ import (
 
 // markdown parses a document close to how GitHub renders one. goldmark implements CommonMark
 // 0.31.2, with GitHub Flavored Markdown's extensions and footnotes here; GitHub renders with
-// cmark-gfm, whose reading differs in a few places. VisibleMarkdown models two of them: the
-// `<source>` HTML block (sourceBlock) and the inline comment whose text ends in `-`
-// (cmarkGFMComment). The rest are named under VisibleMarkdown's "Not modelled". A parser is safe
-// for concurrent use.
+// cmark-gfm 0.29.0.gfm.13 (github/cmark-gfm at 587a12bb54, the version the cmarkgfm binding
+// bundles, which agreed with GitHub's renderer on every case read), whose reading differs in a few
+// places. Two of them are cmark-gfm's here, read from its source: where an HTML block of the sixth
+// kind opens (cmarkGFMBlock), and how an inline `<!` reads (cmarkGFMRawHTML). The rest are named
+// under VisibleMarkdown's "Not modelled". A parser is safe for concurrent use.
 var markdown = goldmark.New(
 	goldmark.WithExtensions(extension.GFM, extension.Footnote),
-	goldmark.WithParserOptions(parser.WithBlockParsers(util.Prioritized(sourceBlock{}, 899))),
+	goldmark.WithParserOptions(parser.WithBlockParsers(util.Prioritized(cmarkGFMBlock{}, 899))),
 )
 
-// sourceBlock opens the HTML block cmark-gfm opens at a line that starts, after at most three
-// spaces, with a `<source` or `</source` tag: `source` is on cmark-gfm's list of block tags and
-// not on CommonMark 0.31.2's, which goldmark keeps (parser/html_block.go:13 at v1.8.6). A block of
-// this kind ends at a blank line and may interrupt a paragraph, as goldmark's own blocks of the
-// same kind do, so everything after the opening line is goldmark's HTML block parser's. It runs
-// at priority 899, before goldmark's (900), which opens nothing at `<source>`.
-type sourceBlock struct{}
+// cmarkGFMBlock opens an HTML block of the sixth kind where cmark-gfm opens one: at a line that
+// starts, after at most three spaces, with `<` or `</`, one of cmark-gfm's block tag names in any
+// case, then a space character (space, tab, vertical tab, form feed, carriage return or line feed)
+// or `>` or `/>` (src/scanners.re:187, with `blocktagname` at :40 and `spacechar` at :32).
+// goldmark's own start (parser/html_block.go:94 at v1.8.6) takes only a space, `>` or `/>` after
+// the name, and its list (:13) lacks `source`. Such a block ends at a blank line and may interrupt
+// a paragraph, as goldmark's own blocks of the kind do, so everything after the opening line is
+// goldmark's HTML block parser's. It runs at priority 899, before goldmark's (900).
+type cmarkGFMBlock struct{}
 
-var sourceBlockStart = regexp.MustCompile(`(?i)^ {0,3}</?source(?:[ \t>]|/>|\r?\n|$)`)
+var cmarkGFMBlockStart = regexp.MustCompile(`(?i)^ {0,3}</?(?:address|article|aside|base|basefont|` +
+	`blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|` +
+	`figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|legend|li|link|` +
+	`main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|section|source|title|summary|table|` +
+	`tbody|td|tfoot|th|thead|tr|track|ul)(?:[ \t\v\f\r\n]|/?>)`)
 
-func (sourceBlock) Trigger() []byte { return []byte{'<'} }
+func (cmarkGFMBlock) Trigger() []byte { return []byte{'<'} }
 
-func (sourceBlock) Open(_ ast.Node, reader text.Reader, _ parser.Context) (ast.Node, parser.State) {
+func (cmarkGFMBlock) Open(_ ast.Node, reader text.Reader, _ parser.Context) (ast.Node, parser.State) {
 	line, segment := reader.PeekLine()
-	if !sourceBlockStart.Match(line) {
+	if !cmarkGFMBlockStart.Match(line) {
 		return nil, parser.NoChildren
 	}
 	node := ast.NewHTMLBlock(ast.HTMLBlockType6)
@@ -58,26 +65,111 @@ func (sourceBlock) Open(_ ast.Node, reader text.Reader, _ parser.Context) (ast.N
 	return node, parser.NoChildren
 }
 
-func (sourceBlock) Continue(node ast.Node, reader text.Reader, pc parser.Context) parser.State {
+func (cmarkGFMBlock) Continue(node ast.Node, reader text.Reader, pc parser.Context) parser.State {
 	return parser.NewHTMLBlockParser().Continue(node, reader, pc)
 }
 
-func (sourceBlock) Close(node ast.Node, reader text.Reader, pc parser.Context) {
+func (cmarkGFMBlock) Close(node ast.Node, reader text.Reader, pc parser.Context) {
 	parser.NewHTMLBlockParser().Close(node, reader, pc)
 }
 
-func (sourceBlock) CanInterruptParagraph() bool { return true }
+func (cmarkGFMBlock) CanInterruptParagraph() bool { return true }
 
-func (sourceBlock) CanAcceptIndentedLine() bool { return false }
+func (cmarkGFMBlock) CanAcceptIndentedLine() bool { return false }
 
-// cmarkGFMComment is whether raw, the text of an inline raw HTML node that opens with `<!--`, is a
-// comment to cmark-gfm. goldmark reads one as CommonMark 0.31.2 does, from `<!--` to the first
-// `-->`; cmark-gfm reads no comment whose text, between them, ends in `-` (its scanners.re
-// `htmlcomment`), and writes such a one as text: `<!-- note --->`, `<!--- note --->` and
-// `<!-- q ---->`. The empty `<!-->`, `<!--->` and `<!---->` are comments to both.
-func cmarkGFMComment(raw []byte) bool {
+// cmarkGFMCommentEnd is where cmark-gfm's comment scanner can end a comment
+// (src/scanners.re:57, `htmlcomment`), read on the text after its `<!--`: at a `-->` that no `-`
+// stands before, or one at that text's first byte.
+var cmarkGFMCommentEnd = regexp.MustCompile(`(?:^|[^-])-->`)
+
+// cmarkGFMRawHTML is whether GitHub writes n, an inline raw HTML node goldmark reads with text raw,
+// as raw HTML: when it does not, GitHub writes it as text, which hides nothing and ends no open
+// comment. cmark-gfm reads inline raw HTML as goldmark does but at a `<!` (src/inlines.c:940-980):
+//   - `<!-->` and `<!--->` are comments to both (inlines.c:943-947);
+//   - another `<!--` opens a comment that cmark-gfm's scanner (inlines.c:949) ends at the first
+//     cmarkGFMCommentEnd after it, which may lie past goldmark's end, the first `-->`, anywhere
+//     later in the inline text of n's block. With such an end GitHub writes the whole span as raw
+//     HTML, and the page's comment ends where goldmark's does, since an HTML parser ends a comment
+//     at its first `-->`; with none, the `<` is text;
+//   - once a `<!--` in a block's inline text finds no end, raw HTML or a text `<!--`
+//     (markTextOpener), cmark-gfm reads no later `<!` in that text as raw HTML: no comment, CDATA
+//     section or declaration (FLAG_SKIP_HTML_COMMENT, inlines.c:940 and :952-955). noBang holds
+//     those blocks.
+func cmarkGFMRawHTML(n *ast.RawHTML, raw, source []byte, noBang map[ast.Node]bool) bool {
+	if !bytes.HasPrefix(raw, []byte("<!")) {
+		return true
+	}
+	block := inlineBlock(n)
+	if noBang[block] {
+		return false
+	}
 	inner, ok := bytes.CutPrefix(raw, []byte("<!--"))
-	return !ok || len(inner) <= len("-->") || !bytes.HasSuffix(inner, []byte("--->"))
+	if !ok || bytes.HasPrefix(inner, []byte(">")) || bytes.HasPrefix(inner, []byte("->")) {
+		return true
+	}
+	after := inlineTextAfter(block, n.Segments.At(n.Segments.Len()-1).Stop, source)
+	if cmarkGFMCommentEnd.Match(append(bytes.Clone(inner), after...)) {
+		return true
+	}
+	noBang[block] = true
+	return false
+}
+
+// markTextOpener records in noBang the block of n, inline text, when n holds a `<!--` that
+// cmark-gfm's scan finds no end for: one that no backslash escapes, outside a code span, which
+// cmark-gfm reads as a `<` to scan (inlines.c:913), and whose text has no cmarkGFMCommentEnd.
+func markTextOpener(n *ast.Text, source []byte, noBang map[ast.Node]bool) {
+	if parent := n.Parent(); parent == nil || parent.Kind() == ast.KindCodeSpan {
+		return
+	}
+	block := inlineBlock(n)
+	segment := n.Segment
+	for at := segment.Start; at < segment.Stop; {
+		i := bytes.Index(source[at:segment.Stop], []byte("<!--"))
+		if i < 0 {
+			return
+		}
+		opener := at + i
+		slashes := 0
+		for p := opener - 1; p >= 0 && source[p] == '\\'; p-- {
+			slashes++
+		}
+		inner := inlineTextAfter(block, opener+len("<!--"), source)
+		if slashes%2 == 0 && !bytes.HasPrefix(inner, []byte(">")) && !bytes.HasPrefix(inner, []byte("->")) &&
+			!cmarkGFMCommentEnd.Match(inner) {
+			noBang[block] = true
+			return
+		}
+		at = opener + 1
+	}
+}
+
+// inlineBlock is the block whose inline text holds n, an inline node.
+func inlineBlock(n ast.Node) ast.Node {
+	block := n.Parent()
+	for block != nil && block.Type() != ast.TypeBlock {
+		block = block.Parent()
+	}
+	return block
+}
+
+// inlineTextAfter is the inline text of block from source offset from on: the bytes of its lines,
+// without the prefix a block quote or a list item puts before each, that cmark-gfm's inline
+// scanner reads as one subject.
+func inlineTextAfter(block ast.Node, from int, source []byte) []byte {
+	if block == nil {
+		return nil
+	}
+	var after []byte
+	lines := block.Lines()
+	for i := range lines.Len() {
+		line := lines.At(i)
+		if line.Stop <= from {
+			continue
+		}
+		after = append(after, source[max(line.Start, from):line.Stop]...)
+	}
+	return after
 }
 
 // VisibleMarkdown is doc as a reader of the page GitHub renders sees it, for a check that holds a
@@ -91,12 +183,11 @@ func cmarkGFMComment(raw []byte) bool {
 // which follows the HTML specification's tokenizer, reads each of those, and every comment or
 // DOCTYPE token it gives is taken out: a comment, the empty `<!-->`, one that `--!>` ends, a bogus
 // comment such as `<?php … ?>`, `<![CDATA[ … ]]>` or `<!X …>`, and a `<!DOCTYPE …>` (in upper
-// case: see below), none of which a page shows. An inline `<!--` whose text ends in `-`, which
-// GitHub writes as text (cmarkGFMComment), is not read: it hides nothing and ends no open
-// comment. Before the tokenizer reads a piece, the `<` of each tag GitHub's tag filter disallows
-// (`<script>`, `<style>`, `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`,
-// `<noframes>`, `<plaintext>`) is read as text, as GitHub writes it `&lt;`, so a comment inside
-// one of those is a comment, as on GitHub.
+// case: see below), none of which a page shows. Inline raw HTML that GitHub writes as text
+// (cmarkGFMRawHTML) is not read: it hides nothing and ends no open comment. Before the tokenizer
+// reads a piece, the `<` of each tag GitHub's tag filter disallows (`<script>`, `<style>`,
+// `<textarea>`, `<title>`, `<xmp>`, `<iframe>`, `<noembed>`, `<noframes>`, `<plaintext>`) is read
+// as text, as GitHub writes it `&lt;`, so a comment inside one of those is a comment, as on GitHub.
 //
 // A `<!--` comment still open at the end of an HTML block stays open on the page: the Markdown
 // after it renders `-->` as `--&gt;`, which closes nothing. So it is taken out through the first
@@ -112,9 +203,10 @@ func cmarkGFMComment(raw []byte) bool {
 // Not modelled:
 //   - a tab between a block quote's `>` and a `<!--`: goldmark opens no HTML block there, where
 //     GitHub and CommonMark do, so the comment is read as inline text and stays;
-//   - an HTML block at `<search>` or `<meta>`: goldmark opens one there and GitHub does not, so a
-//     comment such a line leaves open is carried on here where GitHub shows the text after it.
-//     This takes out text the page shows, so a check fails rather than passes;
+//   - an HTML block at `<search>` or `<meta>`, or at a closing tag with a space after its `/` such
+//     as `</ div>`: goldmark opens one there and GitHub does not, so a comment such a line leaves
+//     open is carried on here where GitHub shows the text after it. This takes out text the page
+//     shows, so a check fails rather than passes;
 //   - a declaration whose first letter is lower case, such as `<!doctype html>`: goldmark opens
 //     an HTML block or inline raw HTML at `<!` only before an upper-case letter
 //     (parser/html_block.go:88 and parser/raw_html.go:41 at v1.8.6), where CommonMark and every
@@ -216,6 +308,7 @@ func rawHTML(source []byte) []piece {
 		pieces = append(pieces, p)
 	}
 	root := markdown.Parser().Parse(text.NewReader(source))
+	noBang := map[ast.Node]bool{}
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		if !entering {
 			return ast.WalkContinue, nil
@@ -232,6 +325,8 @@ func rawHTML(source []byte) []piece {
 			}
 			read(segments, true)
 			return ast.WalkSkipChildren, nil
+		case *ast.Text:
+			markTextOpener(n, source, noBang)
 		case *ast.RawHTML:
 			segments := make([]text.Segment, 0, n.Segments.Len())
 			var raw []byte
@@ -240,7 +335,7 @@ func rawHTML(source []byte) []piece {
 				segments = append(segments, segment)
 				raw = append(raw, segment.Value(source)...)
 			}
-			if !cmarkGFMComment(raw) {
+			if !cmarkGFMRawHTML(n, raw, source, noBang) {
 				return ast.WalkContinue, nil
 			}
 			read(segments, false)
