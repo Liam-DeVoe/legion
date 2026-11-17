@@ -2073,6 +2073,13 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			writeJSONError(w, http.StatusBadRequest, "role must match "+roles.PatternString, "role")
 			return
 		}
+		// The claimant's session key is checked before the copy is asked, which answers a key
+		// no session can be registered under (bus.ErrRefused: the read barrier's key among them)
+		// as an unknown session: such a key is the caller's input to fix, a 400 or 413.
+		if err := d.sessions.RefusesKey(body.SessionID); err != nil {
+			writeNATSError(w, err, http.StatusBadRequest, err.Error())
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
 		entry, err := d.sessions.Get(body.SessionID)

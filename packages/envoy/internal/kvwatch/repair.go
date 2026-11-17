@@ -17,9 +17,9 @@ const (
 	timedOutCause    = "a timed-out scan"
 	recreatedCause   = "a recreated bucket"
 	unconfirmedCause = "a read whose stream could not be confirmed"
-	// unverifiedCause is a read that could not read from its bucket a key it would otherwise
-	// remove (readUnseen).
-	unverifiedCause = "a read whose unseen keys could not be read"
+	// unverifiedCause is a read that could not read its own consumer past a barrier (settling):
+	// the barrier was not written, or the consumer did not reach it in time.
+	unverifiedCause = "a read that could not read its bucket past a barrier"
 	// scheduledCause is the read a completed read arms (WithScheduledRead, armScheduledRead).
 	scheduledCause = "a scheduled read"
 )
@@ -48,25 +48,26 @@ func (w *Watcher) readAgainLater(generation uint64, cause string) {
 }
 
 // unverifiedRetryMax is the longest wait between two reads of a run that could not read their
-// unseen keys (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20 and 40 s -
-// and then stay at this, so a bucket whose leader does not answer key reads is asked at most once
-// a minute, while the first reads after a blip still come within seconds.
+// bucket past a barrier (readAgainUnverified). A run's waits double from rereadDelay - 5, 10, 20
+// and 40 s - and then stay at this, so a bucket that takes no write, or a consumer that never
+// catches up, is read at most once a minute, while the first reads after a blip still come within
+// seconds.
 const unverifiedRetryMax = time.Minute
 
-// readAgainUnverified ends generation's read without completing it because its unseen keys could
-// not be read (readUnseen failed with err), so the cache removes nothing, and reads the bucket
-// again after the run's next wait: rereadDelay doubled once for each read of the run before this
-// one, at most unverifiedRetryMax. The run, and the first moment of it, are kept on the watcher
-// across the re-reads' generations until a read completes (completeRead), so ReadErr can report
-// one that outlasts the stale bound.
-func (w *Watcher) readAgainUnverified(generation uint64, err error) {
+// readAgainUnverified ends generation's read, which began waiting past its barrier at since,
+// without completing it because that wait failed with err (settleFailed), so the cache removes
+// nothing, and reads the bucket again after the run's next wait: rereadDelay doubled once for each
+// read of the run before this one, at most unverifiedRetryMax. The run, and the moment its first
+// read began waiting, are kept on the watcher across the re-reads' generations until a read
+// completes (completeRead), so ReadErr can report one that outlasts the stale bound.
+func (w *Watcher) readAgainUnverified(generation uint64, since time.Time, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if generation != w.generation || w.stopped {
 		return
 	}
 	if w.unverifiedRuns == 0 {
-		w.unverifiedSince = w.now()
+		w.unverifiedSince = since
 	}
 	w.unverifiedRuns++
 	w.unverifiedErr = err

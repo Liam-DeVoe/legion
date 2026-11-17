@@ -1665,7 +1665,7 @@ var ErrInvalidSubject error = refusal("not a subject NATS accepts")
 // name one as its holder. Its error names the key, and still matches nats.ErrInvalidKey.
 var ErrInvalidKey error = refusal("not a key nats.go accepts")
 
-// ErrReservedKey is the ErrRefused of BarrierKey, the key ReadLatest writes its read barrier to:
+// ErrReservedKey is the ErrRefused of BarrierKey, the key WriteBarrier writes a read's barrier to:
 // every call through a KeyValue refuses it before sending anything (KeyValue.check), so no store
 // writes, deletes or reads a record under it. A registration naming it is refused as any other
 // refused key is.

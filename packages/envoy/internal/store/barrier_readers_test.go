@@ -10,7 +10,7 @@ import (
 )
 
 // Every reader of the interest and role claim buckets drops a read barrier (bus.BarrierKey), the
-// delete marker a read of unseen keys writes (bus.KeyValue.ReadLatest): the interest copy and the
+// delete marker every read writes (bus.KeyValue.WriteBarrier): the interest copy and the
 // role claim copy keep no row and no fence for it, the interest marker collector's scan counts it
 // as no marker, the role claim listing (roleClaimsUntil) names no claim under it, and a registry
 // opened over buckets that hold one counts it in neither warm-up nor the role claim restore.
@@ -100,13 +100,13 @@ func TestInterestAndRoleReadersDropTheReadBarrier(t *testing.T) {
 	}
 }
 
-// writeBarrier writes a read barrier into the bucket kv is a handle on, as a read of unseen keys
-// does (bus.KeyValue.ReadLatest).
+// writeBarrier writes a read barrier into the bucket kv is a handle on, as every read does
+// (bus.KeyValue.WriteBarrier).
 func writeBarrier(t *testing.T, kv bus.KeyValue) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := kv.ReadLatest(ctx, []string{"any-key"}); err != nil {
+	if _, err := kv.WriteBarrier(ctx); err != nil {
 		t.Fatalf("write a read barrier into %s: %v", kv.Bucket(), err)
 	}
 }

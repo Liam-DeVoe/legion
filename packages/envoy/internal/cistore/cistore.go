@@ -532,15 +532,6 @@ func (c ciCache) CompleteRead(kvwatch.Read) {
 	s.cache.CompleteRead()
 }
 
-// Unseen names the records the read must read from the bucket before it completes
-// (kvwatch.Copy.Unseen).
-func (c ciCache) Unseen(kvwatch.Read) []string {
-	s := c.s
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cache.Unseen()
-}
-
 // newCICopy is the copy of the CI bucket s keeps: the one place its records are decoded, and the
 // one place a record the bucket no longer holds is reported to the summary loop. Every removal
 // the copy makes for the bucket's sake comes through Removed -- a delete or purge marker, a
@@ -676,8 +667,8 @@ func (s *Store) WatchErr() error {
 	return s.watcher.Err()
 }
 
-// ReadErr is the cache watcher's run of reads that could not read their unseen keys from the
-// bucket past its stale bound, or nil (kvwatch.Watcher.ReadErr).
+// ReadErr is the cache watcher's reads that have not read the bucket past a barrier for its stale
+// bound, or nil (kvwatch.Watcher.ReadErr).
 func (s *Store) ReadErr() error {
 	return s.watcher.ReadErr()
 }

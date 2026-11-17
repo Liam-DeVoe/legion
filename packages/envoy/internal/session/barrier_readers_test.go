@@ -11,8 +11,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// Every reader of the session bucket drops a read barrier (bus.BarrierKey), the delete marker a
-// read of unseen keys writes (bus.KeyValue.ReadLatest): the copy keeps no row and no fence for it,
+// Every reader of the session bucket drops a read barrier (bus.BarrierKey), the delete marker every
+// read writes (bus.KeyValue.WriteBarrier): the copy keeps no row and no fence for it,
 // so the sessions route (List) never lists it and the reaper (goneCandidates, ReapSessions' input)
 // never takes it for a session gone silent, however late its clock reads.
 func TestSessionReadersDropTheReadBarrier(t *testing.T) {
@@ -92,13 +92,13 @@ func TestKnownSessionsDropTheReadBarrier(t *testing.T) {
 	}
 }
 
-// writeBarrier writes a read barrier into the bucket kv is a handle on, as a read of unseen keys
-// does (bus.KeyValue.ReadLatest).
+// writeBarrier writes a read barrier into the bucket kv is a handle on, as every read does
+// (bus.KeyValue.WriteBarrier).
 func writeBarrier(t *testing.T, kv bus.KeyValue) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := kv.ReadLatest(ctx, []string{"any-key"}); err != nil {
+	if _, err := kv.WriteBarrier(ctx); err != nil {
 		t.Fatalf("write a read barrier into %s: %v", kv.Bucket(), err)
 	}
 }

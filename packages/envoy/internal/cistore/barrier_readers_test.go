@@ -10,8 +10,8 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// The CI store drops a read barrier (bus.BarrierKey), the delete marker a read of unseen keys
-// writes (bus.KeyValue.ReadLatest): its copy keeps no row and no fence for it. A CI record's key is
+// The CI store drops a read barrier (bus.BarrierKey), the delete marker every read writes
+// (bus.KeyValue.WriteBarrier): its copy keeps no row and no fence for it. A CI record's key is
 // `<owner>.<repo>.pr<number>.<sha>` (Key), so it is never the barrier's.
 func TestTheCIStoreDropsTheReadBarrier(t *testing.T) {
 	conn, cleanup := connectNATS(t)
@@ -20,7 +20,7 @@ func TestTheCIStoreDropsTheReadBarrier(t *testing.T) {
 	kv := s.watcher.KV()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := kv.ReadLatest(ctx, []string{"any-key"}); err != nil {
+	if _, err := kv.WriteBarrier(ctx); err != nil {
 		t.Fatalf("write a read barrier: %v", err)
 	}
 	// Written to the bucket directly, so only the watcher's delivery, which follows the barrier's,

@@ -600,7 +600,7 @@ func watchOverhead(bucket string) int {
 }
 
 // check refuses key when the subject a call puts overhead bytes around it would be refused, and
-// refuses BarrierKey, which only ReadLatest writes (ErrReservedKey): every get, write, delete,
+// refuses BarrierKey, which only WriteBarrier writes (ErrReservedKey): every get, write, delete,
 // purge and watch through a KeyValue runs it, so no store reads or writes a record under that key.
 func (kv KeyValue) check(key string, overhead int) error {
 	if key == BarrierKey {

@@ -310,17 +310,6 @@ func (c roleCache) CompleteRead(read kvwatch.Read) {
 	}
 }
 
-// Unseen names the claims the read must read from the bucket before it completes
-// (kvwatch.Copy.Unseen). Each one the bucket holds is applied as a delivered record (Apply), so a
-// read that repairs counts what it put back as a delivery's; one it does not hold is taken out by
-// the sweep and counted there.
-func (c roleCache) Unseen(kvwatch.Read) []string {
-	r := c.r
-	r.holdersMu.Lock()
-	defer r.holdersMu.Unlock()
-	return r.roleHolders.Unseen()
-}
-
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch
 // (kvwatch.Copy.Put): a write through a handle on a bucket since recreated is dropped rather than
 // fencing out the new bucket's lower revisions, and so is one the fence finds older than the

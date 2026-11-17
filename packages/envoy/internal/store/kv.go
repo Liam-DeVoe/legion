@@ -197,8 +197,8 @@ func (r *Registry) WatchErr() error {
 	return r.roleWatcher.Err()
 }
 
-// ReadErr is the interest watcher's run of reads that could not read their unseen keys from the
-// bucket past its stale bound, else the role claim watcher's, or nil (kvwatch.Watcher.ReadErr).
+// ReadErr is the interest watcher's reads that have not read the bucket past a barrier for its
+// stale bound, else the role claim watcher's, or nil (kvwatch.Watcher.ReadErr).
 func (r *Registry) ReadErr() error {
 	if err := r.watcher.ReadErr(); err != nil {
 		return err

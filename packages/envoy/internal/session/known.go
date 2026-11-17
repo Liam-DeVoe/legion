@@ -921,14 +921,6 @@ func (c knownCache) CompleteRead(kvwatch.Read) {
 	c.s.records.CompleteRead()
 }
 
-// Unseen names the records the read must read from the bucket before it completes
-// (kvwatch.Copy.Unseen).
-func (c knownCache) Unseen(kvwatch.Read) []string {
-	c.s.mu.Lock()
-	defer c.s.mu.Unlock()
-	return c.s.records.Unseen()
-}
-
 // sweepUntilStopped runs the one periodic pass until the store is stopped.
 func (s *KnownSessions) sweepUntilStopped() {
 	ticker := time.NewTicker(knownSessionSweepInterval)

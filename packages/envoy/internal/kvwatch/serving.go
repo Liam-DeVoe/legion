@@ -46,29 +46,39 @@ func (w *Watcher) servable() error {
 	return ErrRefilling
 }
 
-// ErrUnverified is what ReadErr wraps: every read of the bucket for longer than the copy's stale
-// bound ended without completing, because its unseen keys could not be read from the bucket.
-var ErrUnverified = errors.New("kvwatch: no read could read the keys its scan did not deliver")
+// ErrUnverified is what ReadErr wraps: for longer than the copy's stale bound, no read of the
+// bucket has read its own consumer past a barrier (settling), so none completed.
+var ErrUnverified = errors.New("kvwatch: no read could read its bucket past a barrier")
 
-// ReadErr reports an unbroken run of reads that could not read their unseen keys from the bucket
-// (readUnseen) once it has lasted the stale bound (2 minutes, or half the stream's MaxAge when
-// that is shorter) with no read completed: from then on the copy is refused (Servable) because
-// those reads fail, and only a bucket that answers them repairs it. It names how long the run has
-// lasted and its last error, and is nil before the bound and once a read completes. A watcher
-// whose reads fail so keeps running, so Err stays nil; the listener's /healthz reports this
-// instead.
+// ReadErr reports reads that have not read the bucket past a barrier for the stale bound (2
+// minutes, or half the stream's MaxAge when that is shorter), measured from when the first of them
+// began waiting: an unbroken run of reads whose wait failed (readAgainUnverified), or, before any
+// has failed, the one still waiting. From then on the copy is refused (Servable) because those
+// reads do not complete, and only a bucket that takes the barrier and a consumer that reaches it
+// repair it. It names how long the reads have waited and the run's last error, and is nil before
+// the bound and once a read completes. A watcher whose reads fail so keeps running, so Err stays
+// nil; the listener's /healthz reports this instead. A wait is bounded by the barrier write's
+// request timeout and then the idle timeout, both well inside the stale bound, so a run reaches it
+// only across reads.
 func (w *Watcher) ReadErr() error {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	since := w.unverifiedSince
 	if w.unverifiedRuns == 0 {
+		since = w.settleSince
+	}
+	if since.IsZero() {
 		return nil
 	}
-	failing := w.now().Sub(w.unverifiedSince)
-	if failing < w.bound {
+	waiting := w.now().Sub(since)
+	if waiting < w.bound {
 		return nil
+	}
+	if w.unverifiedRuns == 0 {
+		return fmt.Errorf("%w for %s, past the %s stale bound: the read is still waiting", ErrUnverified, waiting.Round(time.Second), w.bound)
 	}
 	return fmt.Errorf("%w for %s over %d reads, past the %s stale bound: %w",
-		ErrUnverified, failing.Round(time.Second), w.unverifiedRuns, w.bound, w.unverifiedErr)
+		ErrUnverified, waiting.Round(time.Second), w.unverifiedRuns, w.bound, w.unverifiedErr)
 }
 
 // WaitComplete blocks until the copy can be served, the state Servable reports, and then returns

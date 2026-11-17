@@ -104,9 +104,8 @@ type kvCache interface {
 	// (kvwatch.Watcher.Disconnected).
 	Disconnected()
 	Ping() error
-	// ReadErr reports a copy whose every read for longer than its stale bound could not read
-	// from the bucket the keys its scan did not deliver (kvwatch.Watcher.ReadErr): /healthz
-	// answers it unhealthy.
+	// ReadErr reports a copy whose reads have not read its bucket past a barrier for longer than
+	// its stale bound (kvwatch.Watcher.ReadErr): /healthz answers it unhealthy.
 	ReadErr() error
 	StopWatch()
 	EndWatch(context.Context)
@@ -499,8 +498,8 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // once the durable consumer binds, which during a rolling deploy waits out the task being replaced
 // while /v1 already serves; 200 "healthy" with the durable consumer's lag once every dependency
 // answers; 503 "unhealthy" when NATS is unavailable, the durable subscription is inactive, a
-// cache's watcher has stopped, a cache's reads have failed to read the keys their scans did not
-// deliver for longer than its stale bound (kvwatch.Watcher.ReadErr), the durable consumer is
+// cache's watcher has stopped, a cache's reads have not read its bucket past a barrier for longer
+// than its stale bound (kvwatch.Watcher.ReadErr), the durable consumer is
 // gone, a bus check did not answer within healthzBudget, or the durable consumer is
 // "not bound to this listener's subscription" because it was recreated server-side and now
 // delivers elsewhere; and 200 "degraded" for a transient KV failure the self-health monitor and
@@ -607,9 +606,10 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 				return
 			}
 		}
-		// A copy whose reads have failed to read their unseen keys past its stale bound is one the
-		// routes already refuse (kvwatch.Watcher.Servable), and nothing but a bucket that answers
-		// those reads repairs it, so it is unhealthy, not degraded: the watcher behind it still
+		// A copy whose reads have not read its bucket past a barrier for its stale bound is one
+		// the routes already refuse (kvwatch.Watcher.Servable), and nothing but a bucket that takes
+		// the barrier and a consumer that reaches it repairs it, so it is unhealthy, not degraded:
+		// the watcher behind it still
 		// runs, and its Ping answers.
 		for _, c := range d.caches {
 			if err := c.cache.ReadErr(); err != nil {

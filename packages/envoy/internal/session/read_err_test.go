@@ -16,10 +16,10 @@ import (
 )
 
 // The registry's ReadErr is its watcher's: once every read of the session bucket for longer than
-// the copy's stale bound could not read from the bucket the rows its scan did not deliver, ReadErr
-// says so, which /healthz answers unhealthy. Ping reads only the bucket's stream and the watcher's
-// terminal error, and both stay healthy throughout.
-func TestReadErrReportsSessionReadsThatCannotReadTheirUnseenKeys(t *testing.T) {
+// the copy's stale bound could not read the bucket past a barrier, ReadErr says so, which /healthz
+// answers unhealthy. Ping reads only the bucket's stream and the watcher's terminal error, and both
+// stay healthy throughout.
+func TestReadErrReportsSessionReadsThatCannotReadPastABarrier(t *testing.T) {
 	client := setupNATS(t)
 	reg, err := OpenSessionRegistry(client.Conn, WithSessionReplicas(1), WithSessionTTL(10*time.Second))
 	if err != nil {
@@ -84,8 +84,8 @@ func TestReadErrReportsSessionReadsThatCannotReadTheirUnseenKeys(t *testing.T) {
 }
 
 // failedBarriers is a bucket's jetstream context whose publishes fail as a closed connection's do:
-// the read barrier of a read of unseen keys (bus.KeyValue.ReadLatest) is the one publish through
-// it, so that read fails, while every stream read and watch goes on as usual.
+// a read's barrier (bus.KeyValue.WriteBarrier) is the one publish through it, so every read fails,
+// while every stream read and watch goes on as usual.
 type failedBarriers struct {
 	jetstream.JetStream
 }

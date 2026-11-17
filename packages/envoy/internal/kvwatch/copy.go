@@ -23,25 +23,6 @@ type Copy[V any] struct {
 	revisions map[string]uint64
 	marks     marks
 	readEpoch uint64
-	// unsure holds each key a write site took a result for while a watch was in flight
-	// (Watcher.epochInFlight), and each key whose result it refused for an earlier epoch while a
-	// read was under way, with the number of its latest such touch (touches). A result taken then
-	// can be of a record that landed past the consumer that watch makes, which the read it begins
-	// does not deliver, and of a bucket deleted and created again it can be of either bucket; so
-	// whatever it did to the copy - a stored row, a removed one, or nothing, for a result refused -
-	// that read reads the key from the bucket before it completes (Unseen). verified is the touch
-	// number the last Unseen answered through: a completed read forgets the touches up to it, and
-	// keeps any made since for the next read (CompleteRead).
-	unsure   map[string]uint64
-	touches  uint64
-	verified uint64
-	// probes holds the fence revision each key Unseen named had when the read of it began, and
-	// absent the keys among them the bucket then answered it holds no record of (OpAbsent). The
-	// read's completion removes each absent key whose fence still holds that revision, a row its
-	// scan delivered included, so a write the copy took after the read of the key began stands,
-	// and a read that does not complete removes nothing.
-	probes map[string]uint64
-	absent map[string]struct{}
 }
 
 // Rows is how one copy turns a record into its entry, and what the cache that keeps it records
@@ -119,20 +100,7 @@ func (c *Copy[V]) BeginRead(read Read) {
 // Delivered takes one record the current read delivered (Cache.Apply). Its key is marked before
 // the fence is compared, so a delivered value older than a local write still keeps the key
 // through the sweep. The error is a value Rows.Decode could not decode, for the caller to log.
-//
-// An OpAbsent entry is the bucket's answer, read after the scan, that it holds no record of a key
-// Unseen named (Watcher.readUnseen). It changes nothing now and marks nothing: the read's
-// completion removes the key (CompleteRead).
 func (c *Copy[V]) Delivered(entry Entry) error {
-	if entry.Op == OpAbsent {
-		if _, probed := c.probes[entry.Key]; probed {
-			if c.absent == nil {
-				c.absent = map[string]struct{}{}
-			}
-			c.absent[entry.Key] = struct{}{}
-		}
-		return nil
-	}
 	c.marks.mark(entry.Key)
 	_, err := c.apply(entry)
 	return err
@@ -140,54 +108,11 @@ func (c *Copy[V]) Delivered(entry Entry) error {
 
 // CompleteRead removes every entry and fence entry the read found no evidence of, handing each
 // removed entry to Rows.Removed, and ends the read's marks (Cache.CompleteRead): the bucket no
-// longer holds those keys. The watcher has read from the bucket each key Unseen named before it
-// calls this, and applied each one the bucket holds as a delivered record (Delivered), so a key it
-// removes is one the bucket held no record of when it was read. First it removes each key the
-// bucket answered it holds no record of whose fence has not moved since the read of it began, even
-// one the scan delivered (absent): the record the scan delivered is gone from the bucket. It
-// forgets the unsure touches that read read.
+// longer holds those keys.
 func (c *Copy[V]) CompleteRead() {
-	for key := range c.absent {
-		if revision := c.probes[key]; c.revisions[key] == revision {
-			c.evict(key, revision)
-		}
-	}
 	sweep(&c.marks, c.entries, c.rows.Removed)
 	sweep(&c.marks, c.revisions, nil)
 	c.marks.end()
-	for key, touch := range c.unsure {
-		if touch <= c.verified {
-			delete(c.unsure, key)
-		}
-	}
-	c.probes, c.absent = nil, nil
-}
-
-// Unseen is the keys the read under way must read from the bucket before it completes
-// (Cache.Unseen), asked once its scan has ended: each key the copy holds an entry for that the read
-// has no evidence of, and each unsure key. An entry with no evidence is a key the bucket held no
-// record of when the read's consumer was made, unless a write landed after that - a write-through
-// taken before the read began, or a record the watcher this read replaces delivered - which the
-// scan does not deliver and the bucket holds. A completed read used to sweep such an entry on the
-// scan's word alone (INFRA-4048); the bucket's answer for the key now decides. It records the
-// unsure touches it answers for (verified).
-func (c *Copy[V]) Unseen() []string {
-	keys := make([]string, 0, len(c.unsure))
-	for key := range c.unsure {
-		keys = append(keys, key)
-	}
-	for key := range c.entries {
-		if _, unsure := c.unsure[key]; !unsure && !c.marks.marked(key) {
-			keys = append(keys, key)
-		}
-	}
-	c.probes = make(map[string]uint64, len(keys))
-	for _, key := range keys {
-		c.probes[key] = c.revisions[key]
-	}
-	c.absent = nil
-	c.verified = c.touches
-	return keys
 }
 
 // Put takes value, written for key at revision through a handle of epoch (Watcher.Handle): a
@@ -238,23 +163,9 @@ func (c *Copy[V]) FenceFor(epoch uint64, key string) uint64 {
 }
 
 // current reports whether a result through a handle of epoch may reach the copy, and marks key
-// for the read under way when it may. A result taken while a watch is in flight makes key unsure,
-// for the read that watch begins to read from the bucket (Unseen), and so does a result refused
-// for an earlier epoch while a watch is in flight or a read is under way: the epoch moves at the
-// install, before the read begins, so a result of a write that landed in the new bucket after its
-// consumer was made can arrive through the handle its store captured before, and only the
-// bucket's answer can say which bucket took it.
+// for the read under way when it may.
 func (c *Copy[V]) current(w *Watcher, epoch uint64, key string) bool {
-	current, inFlight := w.epochInFlight()
-	taken := current == epoch
-	if inFlight || (!taken && c.marks.active) {
-		if c.unsure == nil {
-			c.unsure = map[string]uint64{}
-		}
-		c.touches++
-		c.unsure[key] = c.touches
-	}
-	if !taken {
+	if w.Epoch() != epoch {
 		return false
 	}
 	c.marks.mark(key)

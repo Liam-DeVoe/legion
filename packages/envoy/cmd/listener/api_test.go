@@ -1132,7 +1132,6 @@ type discardingCache struct{}
 func (discardingCache) Apply(kvwatch.Entry, kvwatch.Read) {}
 func (discardingCache) BeginRead(kvwatch.Read)            {}
 func (discardingCache) CompleteRead(kvwatch.Read)         {}
-func (discardingCache) Unseen(kvwatch.Read) []string      { return nil }
 
 // When the session bucket cannot be read, every path that could take a role from its holder takes
 // nothing, and answers inside its bound (roleHolderReadTimeout, well under the 10 s HTTP write
@@ -2999,6 +2998,7 @@ func TestV1RoutesAnswerAKeyNATSWouldRefuseWith4xx(t *testing.T) {
 		{"read the interests of the read barrier's key as a session id", http.MethodGet, "/v1/interests/" + bus.BarrierKey, "", http.StatusBadRequest},
 		{"remove the read barrier's key as a session id", http.MethodDelete, "/v1/sessions/" + bus.BarrierKey, "", http.StatusBadRequest},
 		{"claim the read barrier's key as a role", http.MethodPost, "/v1/roles/set", `{"session_id":"ses_live","role":"` + bus.BarrierKey + `"}`, http.StatusBadRequest},
+		{"claim a role as the read barrier's key", http.MethodPost, "/v1/roles/set", `{"session_id":"` + bus.BarrierKey + `","role":"valid-role"}`, http.StatusBadRequest},
 		{"read the read barrier's key as a role", http.MethodGet, "/v1/roles/" + bus.BarrierKey, "", http.StatusBadRequest},
 		// The Legion agent registry bounds and checks every name it keys before NATS sees it, so
 		// each is its 400 naming the field.

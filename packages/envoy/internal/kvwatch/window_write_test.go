@@ -166,7 +166,6 @@ func TestAReadKeepsAWriteThatLandedAfterItsConsumerWasMade(t *testing.T) {
 			if reads := cache.reads(); len(reads) != path.read || reads[path.read-1].Recreated != path.recreated {
 				t.Fatalf("reads begun %+v, want %d, the last one Recreated %v", reads, path.read, path.recreated)
 			}
-			cache.requireNotScanned(t, writtenInTheWindow, deletedFromTheBucket)
 			if got, want := bucketKeys(t, kv), []string{writtenInTheWindow}; !slices.Equal(got, want) {
 				t.Fatalf("the bucket holds %v, want %v", got, want)
 			}
@@ -221,7 +220,6 @@ func TestARecreatedReadKeepsAWriteThroughAHandleCapturedBeforeIt(t *testing.T) {
 	if reads := cache.reads(); len(reads) != 2 || !reads[1].Recreated {
 		t.Fatalf("reads begun %+v, want the first and a recreated one", reads)
 	}
-	cache.requireNotScanned(t, writtenInTheWindow)
 	if got, want := bucketKeys(t, kv), []string{writtenInTheWindow}; !slices.Equal(got, want) {
 		t.Fatalf("the new bucket holds %v, want %v", got, want)
 	}
@@ -275,7 +273,6 @@ func TestARecreatedReadRestoresARowADelayedDeleteOfTheOldBucketRemoved(t *testin
 	returned()
 	eventually(t, "the recreated bucket's read to complete", cache.targetDone)
 
-	cache.requireNotScanned(t, key)
 	if got, want := bucketKeys(t, kv), []string{key}; !slices.Equal(got, want) {
 		t.Fatalf("the new bucket holds %v, want %v", got, want)
 	}
@@ -345,7 +342,6 @@ func TestAReadAfterAStaleWatchWasDiscardedKeepsItsWindowWrite(t *testing.T) {
 		t.Fatalf("the Rewatch whose window holds the write: %v", err)
 	}
 	eventually(t, "the Rewatch's read to complete", cache.targetDone)
-	cache.requireNotScanned(t, writtenInTheWindow)
 	if !cache.has(writtenInTheWindow) {
 		t.Fatalf("the Rewatch's read swept %s, which the bucket holds: the copy holds %v", writtenInTheWindow, cache.keyList())
 	}
@@ -504,7 +500,6 @@ func TestTwoRecreationsInARowKeepTheLaterBucketsWindowWrite(t *testing.T) {
 	if reads := cache.reads(); len(reads) != 3 || !reads[1].Recreated || !reads[2].Recreated {
 		t.Fatalf("reads begun %+v, want the first and two recreated ones", reads)
 	}
-	cache.requireNotScanned(t, writtenInTheWindow)
 	if got, want := bucketKeys(t, kv), []string{writtenInTheWindow}; !slices.Equal(got, want) {
 		t.Fatalf("the second new bucket holds %v, want %v", got, want)
 	}
@@ -513,10 +508,9 @@ func TestTwoRecreationsInARowKeepTheLaterBucketsWindowWrite(t *testing.T) {
 	}
 }
 
-// A read whose look at the bucket for a key it did not see fails removes nothing and does not
-// complete: it is read again, and only a read whose look is answered removes the row the bucket
-// does not hold.
-func TestAReadWhoseUnseenKeysCannotBeReadRemovesNothing(t *testing.T) {
+// A read whose barrier cannot be written removes nothing and does not complete: it is read again,
+// and only a read that reads its consumer past a barrier removes the row the bucket does not hold.
+func TestAReadWhoseBarrierCannotBeWrittenRemovesNothing(t *testing.T) {
 	const (
 		inTheBucket    = "in-the-bucket"
 		heldByTheCopy  = "held-by-the-copy"
@@ -552,28 +546,21 @@ func TestAReadWhoseUnseenKeysCannotBeReadRemovesNothing(t *testing.T) {
 	}
 }
 
-// windowCache is a seen that watches one read, the target'th the watcher begins: it records the
-// keys that read's scan delivers (every Apply until the read asks for its unseen keys), runs before
-// the target read's BeginRead what beforeTarget set, and once the target read has completed holds
-// every record delivered after it until letGo, so the copy that read's completion left can be read
-// before any later delivery changes it.
+// windowCache is a seen that watches one read, the target'th the watcher begins: it runs before
+// that read's BeginRead what beforeTarget set, and once the read has completed holds every record
+// delivered after it until letGo, so the copy that read's completion left can be read before any
+// later delivery changes it. Each test makes its window writes while the read's consumer is held
+// after it was made (heldCreate), so none of them is in the read's scan.
 type windowCache struct {
 	*seen
 	target  int
 	let     chan struct{}
 	letOnce sync.Once
 
-	mu        sync.Mutex
-	begun     int
-	scanEnded bool
-	done      bool
-	scanned   []string
-	// scannedOps is the operation of each record scanned names, in order.
-	scannedOps []kvwatch.Op
-	before     func(kvwatch.Read)
-	// absent runs on each key the bucket's answer says it holds no record of (kvwatch.OpAbsent),
-	// before the copy takes that answer.
-	absent func(key string)
+	mu     sync.Mutex
+	begun  int
+	done   bool
+	before func(kvwatch.Read)
 }
 
 func newWindowCache(target int) *windowCache {
@@ -605,38 +592,11 @@ func (c *windowCache) BeginRead(read kvwatch.Read) {
 func (c *windowCache) Apply(entry kvwatch.Entry, read kvwatch.Read) {
 	c.mu.Lock()
 	done := c.done
-	// The scan ends where the read asks for its unseen keys or, in a build that asks for none,
-	// where it completes: what comes after either is no record of the scan.
-	if c.begun == c.target && !c.scanEnded && !done {
-		c.scanned = append(c.scanned, entry.Key)
-		c.scannedOps = append(c.scannedOps, entry.Op)
-	}
-	absent := c.absent
 	c.mu.Unlock()
 	if done {
 		<-c.let
 	}
-	if entry.Op == kvwatch.OpAbsent && absent != nil {
-		absent(entry.Key)
-	}
 	c.seen.Apply(entry, read)
-}
-
-// onAbsent sets what runs on each key the bucket answers it holds no record of, before the copy
-// takes the answer.
-func (c *windowCache) onAbsent(absent func(key string)) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.absent = absent
-}
-
-func (c *windowCache) Unseen(read kvwatch.Read) []string {
-	c.mu.Lock()
-	if c.begun == c.target {
-		c.scanEnded = true
-	}
-	c.mu.Unlock()
-	return c.seen.Unseen(read)
 }
 
 func (c *windowCache) CompleteRead(read kvwatch.Read) {
@@ -656,40 +616,6 @@ func (c *windowCache) targetDone() bool {
 }
 
 func (c *windowCache) letGo() { c.letOnce.Do(func() { close(c.let) }) }
-
-// requireNotScanned fails the test when the target read's scan delivered any of keys: their writes
-// did not land after its consumer was made.
-func (c *windowCache) requireNotScanned(t *testing.T, keys ...string) {
-	t.Helper()
-	c.mu.Lock()
-	scanned := slices.Clone(c.scanned)
-	c.mu.Unlock()
-	for _, key := range keys {
-		if slices.Contains(scanned, key) {
-			t.Fatalf("the read's scan delivered %v: %s did not land after its consumer was made", scanned, key)
-		}
-	}
-}
-
-// requireScanned fails the test unless the target read's scan delivered each of keys, as a put and
-// never as a delete or purge marker: they were in the bucket when its consumer was made, and what
-// came to them after that is past the scan.
-func (c *windowCache) requireScanned(t *testing.T, keys ...string) {
-	t.Helper()
-	c.mu.Lock()
-	scanned, ops := slices.Clone(c.scanned), slices.Clone(c.scannedOps)
-	c.mu.Unlock()
-	for _, key := range keys {
-		if !slices.Contains(scanned, key) {
-			t.Fatalf("the read's scan delivered %v, not %s: it was not in the bucket when the consumer was made", scanned, key)
-		}
-		for i, scannedKey := range scanned {
-			if scannedKey == key && ops[i] != kvwatch.OpPut {
-				t.Fatalf("the read's scan delivered %s as operation %d: its delete landed before the consumer was made, not in the window", key, ops[i])
-			}
-		}
-	}
-}
 
 // putThrough writes key into the bucket through kv and hands the copy that write as a store's
 // write-through does once it answered, through epoch, the epoch the store captured with kv
@@ -800,9 +726,8 @@ func (s createdStream) CachedInfo() *jetstream.StreamInfo {
 }
 
 // failingBarriers is a bucket's jetstream context whose publishes, while failing is set, fail as a
-// closed connection's do: the read barrier of a read of unseen keys (bus.KeyValue.ReadLatest) is
-// the one publish through it, so that read fails, while every stream read and watch goes on as
-// usual.
+// closed connection's do: a read's barrier (bus.KeyValue.WriteBarrier) is the one publish through
+// it, so that read fails, while every stream read and watch goes on as usual.
 type failingBarriers struct {
 	jetstream.JetStream
 	failing *atomic.Bool

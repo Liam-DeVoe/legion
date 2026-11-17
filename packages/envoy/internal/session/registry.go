@@ -560,16 +560,6 @@ func (c sessionCache) CompleteRead(kvwatch.Read) {
 	r.cache.CompleteRead()
 }
 
-// Unseen names the sessions the read must read from the bucket before it completes
-// (kvwatch.Copy.Unseen): a row the copy retained past its deadline while it did not follow is one,
-// since the bucket may have dropped its record without a marker.
-func (c sessionCache) Unseen(kvwatch.Read) []string {
-	r := c.r
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.cache.Unseen()
-}
-
 // decodeLocked is the row a put record of the bucket, delivered or read, leaves in the cache, with
 // its local expiry measured from the record's Created (expiryFor).
 //
@@ -781,9 +771,9 @@ func (r *SessionRegistry) WatchErr() error {
 	return r.watcher.Err()
 }
 
-// ReadErr is the cache watcher's run of reads that could not read their unseen keys from the
-// bucket past its stale bound, or nil (kvwatch.Watcher.ReadErr): Ping reads the bucket's stream
-// and the terminal error only, so without this a copy whose every read fails so would ping healthy.
+// ReadErr is the cache watcher's reads that have not read the bucket past a barrier for its stale
+// bound, or nil (kvwatch.Watcher.ReadErr): Ping reads the bucket's stream and the terminal error
+// only, so without this a copy whose every read fails so would ping healthy.
 func (r *SessionRegistry) ReadErr() error {
 	return r.watcher.ReadErr()
 }
@@ -849,6 +839,16 @@ func (r *SessionRegistry) Get(sessionID string) (SessionEntry, error) {
 		return SessionEntry{}, nats.ErrKeyNotFound
 	}
 	return cs.entry, nil
+}
+
+// RefusesKey answers the refusal a read of sessionID's record through the bucket would answer
+// before anything is sent (bus.KeyValue.RefusesRead: too long, outside nats.go's key alphabet, or
+// the read barrier's reserved key), and nil for a key a read would reach the bucket with. It sends
+// nothing. A route that looks the session up in the copy alone (Get) asks this first, so a key no
+// session can be registered under is refused as the caller's input rather than reported unknown.
+func (r *SessionRegistry) RefusesKey(sessionID string) error {
+	kv, _ := r.watcher.Handle()
+	return kv.RefusesRead(sessionID)
 }
 
 // Lookup answers sessionID's record and the state that record puts its session in (StateOf):
