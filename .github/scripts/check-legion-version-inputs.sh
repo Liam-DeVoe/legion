@@ -54,8 +54,9 @@
 #      unknown and a listing of nothing would pass everything.
 #
 # The go commands run through .github/scripts/go_offline.py, as check-ci-filters.sh's do, and that
-# module says why: with GOPROXY=off over an empty module cache, so nothing is downloaded and a
-# cold runner gives the answer a warm machine does. A third-party package then fails to load,
+# module says why: with GOPROXY=off over an empty module cache, and GONOPROXY=none and GOENV=off so
+# no setting of the machine reaches past that, nothing is downloaded and a cold runner gives the
+# answer a warm machine does. A third-party package then fails to load,
 # which loses no package of this repository, since no module outside it imports one. The
 # toolchain each module pins is resolved first, under this machine's own cache and proxy, and its
 # own binary runs every go command under GOTOOLCHAIN=local.

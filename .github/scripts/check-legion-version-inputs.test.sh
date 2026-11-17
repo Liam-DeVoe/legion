@@ -18,7 +18,7 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'proxy_recorders_stop; rm -rf "$work"' EXIT
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -356,9 +356,38 @@ out=$(PATH="$work/spy-offline/shim:$PATH" "$root/.github/scripts/check-legion-ve
 status=$?
 set -e
 check "exits 0" "$(is "$status" 0)"
-check "every go command ran with GOPROXY=off over an empty cache of its own" \
+check "every go command ran with GOPROXY=off, GONOPROXY=none and GOENV=off over an empty cache of its own" \
   "$(is "$(go_spy_verdict "$work/spy-offline")" offline)"
 check "the stand-in saw both lines' listings" \
   "$(is "$(($(wc -l < "$work/spy-offline/log") >= 10))" 1)"
+
+# GOPROXY=off is not offline while a GONOPROXY or GOPRIVATE the machine sets matches a module:
+# go fetches it directly first. Here the daemon requires a third-party module, with its go.sum
+# lines, that the empty cache lacks, and the machine's settings match it; a proxy recorder stands
+# in for the network. The case's first check is the recorder's own control: a go list outside the
+# check, under the same settings and GOPROXY=off, does try example.org.
+echo "case: an inherited GONOPROXY sends no go command of either line to the network"
+root=$(written network)
+printf 'module example.com/daemon\n\ngo 1.22\n\nrequire (\n\texample.com/envoy v0.0.0\n\texample.org/vendorlib v1.0.0\n)\n\nreplace example.com/envoy => ../envoy\n' \
+  > "$root/packages/daemon/go.mod"
+printf 'example.org/vendorlib v1.0.0 h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\nexample.org/vendorlib v1.0.0/go.mod h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n' \
+  > "$root/packages/daemon/go.sum"
+printf 'package main\n\nimport _ "example.org/vendorlib"\n' > "$root/packages/daemon/cmd/legion/vendor.go"
+proxy_recorder "$work/network"
+url=$(<"$work/network/url")
+inherited=(env -u NO_PROXY -u no_proxy HTTPS_PROXY="$url" https_proxy="$url" HTTP_PROXY="$url" http_proxy="$url"
+  GONOPROXY=example.org GOPRIVATE=example.org)
+mkdir "$work/network/cache"
+(cd "$root/packages/daemon" &&
+  "${inherited[@]}" GOPROXY=off GOFLAGS= GOMODCACHE="$work/network/cache" go list -e -deps ./cmd/legion > /dev/null 2>&1) || true
+check "the recorder sees a go list under GOPROXY=off alone try example.org" \
+  "$(contains "$(<"$work/network/requests")" '^CONNECT example.org:443$')"
+: > "$work/network/requests"
+set +e
+out=$("${inherited[@]}" "$root/.github/scripts/check-legion-version-inputs.sh" 2>&1)
+status=$?
+set -e
+check "the check passes, the third-party module aside" "$(is "$status" 0)"
+check "no go command of the check tried the network" "$(is "$(wc -l < "$work/network/requests")" 0)"
 
 summary "check-legion-version-inputs.sh"

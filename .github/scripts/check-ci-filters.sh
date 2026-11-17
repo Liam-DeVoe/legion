@@ -362,7 +362,9 @@
 # who deliberately hides a command or a flag where this check does not read is the review's to
 # catch.
 #
-# The go commands run with GOPROXY=off over an empty module cache: nothing is downloaded, no
+# The go commands run with GOPROXY=off over an empty module cache, and with GONOPROXY=none and
+# GOENV=off, without which an inherited GOPRIVATE or a `go env -w` still reaches past it
+# (go_offline.py says how): nothing is downloaded, no
 # go.work.sum is rewritten, and a cold runner gives the answer a warm machine does. Third-party
 # packages then fail to load, which loses no first-party package, since none of them imports
 # one: no module outside this repository requires one of its modules (`go mod graph`), and all

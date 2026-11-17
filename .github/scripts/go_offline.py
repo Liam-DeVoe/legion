@@ -7,8 +7,18 @@ A go command runs (run) with GOPROXY=off over a module cache of the caller's tha
 nothing is downloaded, no go.work.sum is rewritten, and a cold runner gives the answer a warm
 machine does. A third-party package then fails to load, which loses no package of this
 repository, since no module outside it imports one (check-ci-filters.sh's header says why).
-GOFLAGS is emptied, so no flag of the machine changes what go lists, and GOWORK is emptied, so go
-finds the go.work above the directory as a plain build there does.
+
+GOPROXY=off alone is not offline. A GONOPROXY that matches a module, or a GOPRIVATE when
+GONOPROXY is unset (cmd/go/internal/cfg/cfg.go:481-483 in go1.27.3), puts a direct fetch of it,
+"noproxy", before every proxy of the list (cmd/go/internal/modfetch/proxy.go:63-65), so an
+inherited GOPRIVATE=example.org sends go to https://example.org for a module the empty cache
+lacks. GONOPROXY=none matches no module, so the list is "off" alone; with no download, no
+checksum database lookup follows either, so GOPRIVATE and GONOSUMDB need no value of their own.
+And a variable set to the empty string is no override in go: cfg.Getenv reads the user's go/env
+file for it instead (cfg.go:437-442), so GOFLAGS= and GOWORK= alone would still take a
+`go env -w` value. GOENV=off leaves that file unread, so GOFLAGS is empty and no flag of the
+machine changes what go lists, and GOWORK is empty, so go finds the go.work above the directory
+as a plain build there does.
 
 The toolchain is the one thing that empty cache cannot hold. GOTOOLCHAIN=auto satisfies a `go`
 directive above the installed go by fetching that toolchain into GOMODCACHE, so every command
@@ -28,8 +38,9 @@ import os
 import subprocess
 from pathlib import Path
 
-# What every go command runs under, over the caller's empty module cache.
-OFFLINE = {"GOPROXY": "off", "GOFLAGS": "", "GOWORK": "", "GOTOOLCHAIN": "local"}
+# What every go command runs under, over the caller's empty module cache (the header says why each).
+OFFLINE = {"GOPROXY": "off", "GONOPROXY": "none", "GOENV": "off", "GOFLAGS": "", "GOWORK": "",
+           "GOTOOLCHAIN": "local"}
 
 
 def toolchain(workdir) -> tuple[str | None, str]:
