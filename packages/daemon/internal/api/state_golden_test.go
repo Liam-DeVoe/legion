@@ -34,7 +34,8 @@ func goldenPath(name string) string {
 }
 
 // settingsFixtureFile is the maximal kubernetes legion.yaml the state golden and the settings tests
-// share: every key the loader models is set, and every value a credential, its source or its file
+// share: every key the loader models is set but `roles` and `role_types`, which
+// `internal/api/settings_test.go` pins, and every value a credential, its source or its file
 // could be is a planted fixture a test can look for in the wire bytes (a PEM that is no key, a DSN
 // password that opens nothing, `*_file` paths, the kubeconfig, the session DSN secret's key, each
 // provider key's store key, the pod's env values, volume, Secret and ServiceAccount names, userinfo
@@ -184,7 +185,20 @@ state_dir: /var/lib/legion
 // reading no environment, so the resolved values are the file's and the defaults alone.
 func loadSettingsFile(t *testing.T, body string) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "legion.yaml")
+	return loadSettingsFileWith(t, body, nil)
+}
+
+// loadSettingsFileWith is loadSettingsFile with each of files, by name, written first in the
+// directory of the legion.yaml, where a relative path the file names resolves.
+func loadSettingsFileWith(t *testing.T, body string, files map[string]string) config.Config {
+	t.Helper()
+	dir := t.TempDir()
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write legion.yaml: %v", err)
 	}
@@ -906,7 +920,9 @@ func populatedState(t *testing.T) State {
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
 		},
-		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry.
+		// The resolved maximal kubernetes file, so the fixture pins every key `settings` can carry
+		// but `roles` and `role_types`, which the resolved maximal file sets none of and
+		// TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret (settings_test.go) pins.
 		Settings: SettingsOf(settingsFixtureConfig(t)),
 		// The three durable consumers the daemon opens, in the order Lag answers them
 		// (intake.Consumers.Lag): the Dispatch consumer is caught up; the GitHub consumer has 412

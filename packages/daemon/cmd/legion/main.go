@@ -294,7 +294,10 @@ func pluginsLine(cfg config.Config) string {
 // Then two lines per project, in key order: one naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
 // check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. After them, one line per configured
+// back the steps an issue runs when its owner gives no plan. Then one line per role the
+// deployment defines in `roles`, in the file's order (roleLine): its type, its model, the GitHub
+// App it works as and its prompt file, which the check reads as the start does
+// (config.CheckRolePrompts). After them, one line per configured
 // repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
@@ -321,6 +324,9 @@ func pluginsLine(cfg config.Config) string {
 func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadForValidation(configPath, nil)
 	if err == nil {
+		err = config.CheckRolePrompts(cfg.Roles)
+	}
+	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
 	paneNatsUser, daemonNatsUser := "", ""
@@ -345,6 +351,9 @@ func checkStartConfig(configPath string, stdout, stderr io.Writer) int {
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
+	}
+	for _, role := range cfg.Roles {
+		fmt.Fprintln(stdout, roleLine(role))
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -394,6 +403,17 @@ func productionCheckLine(key string, project config.Project) string {
 	}
 	return fmt.Sprintf("projects.%s.production_check: %s — a merge that closes one of its issues opens %s",
 		key, project.ProductionCheckWord(), effect)
+}
+
+// roleLine is `--check-config`'s line for one role of `roles`: its type, its model (the overlay's
+// default where the file names none), the GitHub App it works as and its prompt file as the loader
+// resolved it.
+func roleLine(role config.Role) string {
+	model := role.Model
+	if model == "" {
+		model = "the overlay's default"
+	}
+	return fmt.Sprintf("roles.%s: type %s, model %s, App %s, prompt %s", role.Name, role.Type, model, role.GitHubApp, role.PromptFile)
 }
 
 // defaultStepsLine is `--check-config`'s line for one project's `default_steps`: the steps the
