@@ -29,7 +29,8 @@ func StartFront(t testing.TB, target func() (string, error)) *Front {
 	if err != nil {
 		t.Fatalf("hold a front's port: %v", err)
 	}
-	f := &Front{addr: listener.Addr().String(), relay: newRelay(listener, target)}
+	// A front is no server's own client port, so a hold (Server.Reload) never stops it.
+	f := &Front{addr: listener.Addr().String(), relay: newRelay(listener, target, false)}
 	t.Cleanup(f.relay.Close)
 	return f
 }

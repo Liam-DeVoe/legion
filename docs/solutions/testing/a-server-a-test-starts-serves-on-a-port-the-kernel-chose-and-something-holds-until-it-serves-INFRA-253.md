@@ -13,6 +13,7 @@ module: scripts/e2e
 related_issues:
   - "INFRA-253"
   - "sjawhar/legion#2229"
+  - "INFRA-3904"
 ---
 
 # A server a test starts serves on a port the kernel chose and something holds until it serves
@@ -35,6 +36,20 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
   - The port must survive restarts, or a config file names it before the process starts: a keeper
     holds one socket for the whole run and hands each start a copy (`held-port.py keep` plus
     `exec --from`, `rig.sh`'s `keep_port` and `start_kept`).
+  - The process binds the number itself and cannot take a socket, and the number must be known
+    before it starts or survive its restarts (nats-server, whose peers' routes name its route
+    port; prometheus-nats-exporter, which logs the port it was told, not the one it bound). Let
+    the process bind a port the kernel chooses (nats-server's `-1`, the exporter's `-port=0`), read
+    the port it bound from its log or from the kernel's list of the sockets it holds, and hand out
+    the address of a front the test holds for the whole run (`testnats.StartFront`), which relays
+    to the port the running process bound (`packages/envoy/infra/gcp/clusteredhub_live_test.go`).
+    A restart keeps every address handed out. A reservation, a socket bound with `SO_REUSEADDR`
+    that never listens, does not hold such a port: a program that binds the same number itself
+    with `SO_REUSEADDR`, as every Go listener and Docker's bind of a container's published host
+    port do, binds beside it, and the server's bind then fails. For an address that must refuse
+    dials for a while and then serve again (testnats's `Gate`), hold the port with a socket bound
+    with `SO_REUSEPORT` and no `SO_REUSEADDR` that never listens, and listen beside it with
+    `SO_REUSEPORT` while the address serves (`holdPort`, `listenBesideHold`).
 - A server's listening log line prints the bound address (`ln.Addr()`), never the configured one,
   or a port-0 server reports port 0.
 - A port someone sets explicitly is used as given and fails with `address already in use` when it
@@ -71,3 +86,13 @@ Extends docs/solutions/testing/race-regression-tests-that-fail-before-the-fix.md
 - Main's #2264 added `freeLoopbackPort` (listen, close, reuse the number) in
   `packages/envoy/cmd/dispatch/pprof_test.go` while #2229 was open; the merge replaced it with
   `startPprof(ctx, "127.0.0.1:0")`.
+- `loopbackPorts.draw` in `packages/envoy/infra/gcp/clusteredhub_live_test.go` (INFRA-3904) held
+  each drawn socket only until the draw returned, and `startBound` retried a start up to 10 times
+  on `address already in use`. In a container whose `ip_local_port_range` holds 8 ports, the
+  kernel gave a drawn port to the next `bind` to port 0 (on `127.0.0.1`, every address or `::1`)
+  and to the next `connect`, and the server's bind of it then failed, at a first start and between
+  an exit and a restart alike. A reserved port (a socket bound to it with `SO_REUSEADDR` that
+  never listens) went to none of them in the same container, and the server bound it both times.
+  A program binding a reserved number itself without `SO_REUSEADDR` got `EADDRINUSE`; with it, it
+  bound the port and then the server could not. So the clustered-hub tests hold no reservation:
+  each server binds ports the kernel chooses and the test hands out held fronts that relay to them.
