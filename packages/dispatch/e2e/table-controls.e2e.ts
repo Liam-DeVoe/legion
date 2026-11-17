@@ -5,7 +5,6 @@
  *  are in `table-controls.stub.e2e.ts`.
  */
 
-import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts";
 import type { Locator, Route } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
 import {
@@ -1207,13 +1206,7 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
   await seedAgents();
   await setLiveSessions([plannerSession, reviewerSession]);
   await seedDeliveryFixture();
-  const first = await createIssue({ project: "CORE", title: "Preserve the caller identity" });
-  const second = await createIssue({ project: "CORE", title: "Document release verification" });
-  const adopted = await createIssue({ project: "CORE", title: "Adopt the interrupted member" });
-  const epic = await createIssue({ project: "CORE", title: "The interrupted action's epic" });
-  // An issue whose title the new epic below repeats, so the server answers it as a possible
-  // duplicate and the List draws its Create anyway and Cancel new epic notice.
-  await createIssue({ project: "CORE", title: "Recover one created epic" });
+  const interrupted = await createIssue({ project: "CORE", title: "Start the interrupted issue" });
   const main = page.getByTestId("main-content");
   const lost: string[] = [];
   /** Reads where the focus went once a press settles, and keeps the ones it lost. */
@@ -1267,8 +1260,8 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
     await after(`Delivery page at ${at}`, "Enter on clear brush window");
 
     // The project List's interrupted-action notice: Dismiss and Finish each take the notice
-    // with them. The action is the record a stopped New epic leaves, here naming an open epic,
-    // so Finish adopts its member and ends.
+    // with them. The action is the record a stopped Start next leaves, so Finish moves its one
+    // issue where it can and ends.
     const interruptedNotice = async (id: string) => {
       await page.goto("/projects/CORE/issues");
       await page.evaluate(
@@ -1281,10 +1274,9 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
         {
           action: {
             id,
-            keys: [adopted.key],
-            kind: "newEpic",
+            keys: [interrupted.key],
+            kind: "startNext",
             project: "CORE",
-            target: epic.key,
             writes: {},
           },
         }
@@ -1301,47 +1293,26 @@ test("the Agents page, the Delivery page and the project List keep the keyboard 
       await expect(notice).toHaveCount(0);
       await after(`project List at ${at}`, `Enter on the interrupted action's ${press}`);
     }
-
-    // The project List's possible-duplicate notice: Cancel new epic and Create anyway each take
-    // the notice with them.
-    for (const press of ["Cancel new epic", "Create anyway"]) {
-      await page.goto("/projects/CORE/issues");
-      await main.getByRole("checkbox", { exact: true, name: `Select ${first.key}` }).check();
-      await main.getByRole("checkbox", { exact: true, name: `Select ${second.key}` }).check();
-      await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
-      await page
-        .getByRole("dialog", { name: "Name the new epic" })
-        .getByRole("textbox", { name: "Name" })
-        .fill("Recover one created epic");
-      await page.getByRole("button", { exact: true, name: "Create epic" }).click();
-      const button = main.getByRole("button", { exact: true, name: press });
-      await expect(button, `project List at ${at}: no possible-duplicate notice`).toHaveCount(1);
-      await button.focus();
-      await page.keyboard.press("Enter");
-      await expect(button).toHaveCount(0);
-      await after(`project List at ${at}`, `Enter on ${press}`);
-    }
   }
   // The architect's ruling ff1a60f5, on every control of the pages this change draws: a press
   // that takes its own focused control away hands the focus on, and never to the body.
   expect(lost, lost.join("; ")).toEqual([]);
 });
 
-/** The project List's narrowable columns and what shape each one's panel takes. No column of
- *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
- *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
- *  values like the rest. */
+/** The project List's narrowable columns and what shape each one's panel takes, in a project
+ *  with no Legion daemon, where Queue is hidden until the reader shows it. No column of either
+ *  table is a date or a number that narrows by two ends: Created and Updated narrow by the age
+ *  bands they are grouped into, and Open asks by its own counts, so both are columns of values
+ *  like the rest. */
 const LIST_COLUMN_FILTERS: Record<string, "picks" | "text"> = {
   Assignee: "picks",
   "Claimed by": "picks",
   Created: "picks",
   "Created by": "picks",
-  Epic: "picks",
   Key: "text",
   Labels: "picks",
   "Open asks": "picks",
   Priority: "picks",
-  Queue: "picks",
   Status: "picks",
   Title: "text",
 };
@@ -1638,6 +1609,8 @@ test("each page's own parameters open the rows they name", async ({ page }) => {
   await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
 });
 
+// SLOW(>=2s): the project's Issues tab loaded at each of its parameters, in the table and on the
+// Board, and the Agents page at three, each a page load.
 test("the project List, the Board and the Agents page open the rows their parameters name", async ({
   page,
 }) => {
@@ -1729,6 +1702,7 @@ test("the project List, the Board and the Agents page open the rows their parame
   await expect(page.locator("[data-agent-row]")).toHaveCount(0);
 });
 
+// SLOW(>=2s): eleven loads of the Delivery page's list, one for each facet parameter.
 test("the Delivery page's facet parameters open the pull requests they name", async ({ page }) => {
   await page.setViewportSize({ height: 900, width: 1600 });
   await seedDeliveryFixture();
@@ -1830,8 +1804,8 @@ test("the four parameters this change adds ride in the address and survive a rel
 
   // The drawer's own state is its own: narrowing it over the project List writes no parameter.
   await page.goto(`/projects/${scene.project}/issues`);
-  const list = page.getByRole("button", { exact: true, name: "List" });
-  if ((await list.getAttribute("aria-pressed")) !== "true") await list.click();
+  const table = page.getByRole("button", { exact: true, name: "Table" });
+  if ((await table.getAttribute("aria-pressed")) !== "true") await table.click();
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   const before = page.url();
   await peekTrigger(page).click();
@@ -1988,13 +1962,13 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
     await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
   }
   await page.goto("/projects/CORE/issues");
-  const list = page.getByRole("button", { exact: true, name: "List" });
-  if ((await list.getAttribute("aria-pressed")) !== "true") await list.click();
+  const tableLayout = page.getByRole("button", { exact: true, name: "Table" });
+  if ((await tableLayout.getAttribute("aria-pressed")) !== "true") await tableLayout.click();
   const table = page.getByRole("table", { name: "Project issues table" });
   await expect(table).toBeVisible();
   const main = page.getByTestId("main-content");
 
-  // The bar of status counts, which this change leaves alone.
+  // Open's bar of status counts, with its legend.
   await expect(page.getByRole("button", { name: /^Todo/ }).first()).toBeVisible();
 
   // The virtual rows: the table draws a window of its page, never all sixty.
@@ -2003,16 +1977,20 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   expect(drawn, "the table drew every row of the page at once").toBeLessThan(50);
   expect(drawn, "the table drew no rows").toBeGreaterThan(0);
 
-  // The pager: its own words, and a second page.
+  // The pager: its own words, and a second page. It counts no total: the view's count is on its
+  // tab.
   const pager = control(main, CONTROL.pager);
-  await expect(pager).toContainText("60 of 60 issues");
+  await expect(page.getByRole("tab", { name: "Open, 60 issues" })).toBeVisible();
+  await expect(pager).toContainText("Rows 1–50");
+  await expect(pager).toContainText("Page 1 of 2");
+  await expect(pager).not.toContainText("of 60");
   await pager.getByRole("button", { name: "Next" }).click();
   await expect(page).toHaveURL(/[?&]page=2/);
   await pager.getByRole("combobox").selectOption("100");
   await expect(page).toHaveURL(/[?&]size=100/);
 
   // The grouping, from the display menu.
-  const menu = await openDisplay(page, main);
+  const menu = await openDisplay(page, main, "Group by");
   await menu.getByRole("group", { name: "Group by" }).locator('input[value="status"]').click();
   await expect(page).toHaveURL(/[?&]group=status/);
   await page.keyboard.press("Escape");
@@ -2032,15 +2010,17 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   // The column resize, dragged on the header's own edge.
   const header = page
     .getByRole("columnheader")
-    .filter({ has: page.getByRole("button", { exact: true, name: /^Epic/ }) });
+    .filter({ has: page.getByRole("button", { exact: true, name: /^Created by/ }) });
   const before = await header.boundingBox();
-  if (before === null) throw new Error("the Epic column has no box");
+  if (before === null) throw new Error("the Created by column has no box");
   await page.mouse.move(before.x + before.width - 2, before.y + before.height / 2);
   await page.mouse.down();
   await page.mouse.move(before.x + before.width + 60, before.y + before.height / 2, { steps: 8 });
   await page.mouse.up();
   const after = await header.boundingBox();
-  expect(after?.width ?? 0, "the Epic column did not resize").toBeGreaterThan(before.width + 20);
+  expect(after?.width ?? 0, "the Created by column did not resize").toBeGreaterThan(
+    before.width + 20
+  );
 
   // The column reorder. The header moves a column on HTML5 drag events - `dragstart` on its
   // sort button, `dragover` and `drop` on the header it lands in (`components/DataTable.tsx`) -
@@ -2061,10 +2041,10 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
       [...document.querySelectorAll<HTMLElement>("th")].find((cell) =>
         (cell.querySelector("button")?.textContent ?? "").startsWith(label)
       );
-    const handle = headerOf("Epic")?.querySelector("button");
+    const handle = headerOf("Created by")?.querySelector("button");
     const to = headerOf("Labels");
     if (handle === null || handle === undefined || to === undefined) {
-      throw new Error("the Epic and Labels headers are not both drawn");
+      throw new Error("the Created by and Labels headers are not both drawn");
     }
     const dataTransfer = new DataTransfer();
     handle.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer }));
@@ -2096,7 +2076,7 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
     "the stored column widths are not as they were left"
   ).toEqual(widths);
 
-  // The Board: the filters open, the last chip cleared, and the disclosure as it was left.
+  // The Board: the filters open, the last chip cleared, and Show Icebox as it was left.
   const board = page.getByRole("button", { exact: true, name: "Board" });
   await board.click();
   await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
@@ -2105,16 +2085,18 @@ test("the project List keeps its grouping, columns, pager and layout, and the Bo
   await expect(boardChips).toHaveCount(2);
   await boardChips.last().click();
   await expect(boardChips).toHaveCount(1);
-  const edges = page.getByRole("button", { name: /Icebox & Done$/ });
-  const edgesLabel = await edges.textContent();
-  await edges.click();
+  const icebox = page.getByRole("button", { exact: true, name: "Show Icebox" });
+  const iceboxPressed = await icebox.getAttribute("aria-pressed");
+  await icebox.click();
   await page.reload();
-  await expect(
-    page.getByRole("button", { name: /Icebox & Done$/ }),
-    "the Board's disclosure is not as it was left"
-  ).not.toHaveText(edgesLabel ?? "");
+  await expect(icebox, "the Board's Show Icebox is not as it was left").not.toHaveAttribute(
+    "aria-pressed",
+    iceboxPressed ?? ""
+  );
 });
 
+// SLOW(>=2s): the Delivery list walked by its keys, then two more seeds and three pages reached by
+// their own bindings.
 test("the Delivery list still answers the keyboard and stays windowed, and each page's own bindings still run", async ({
   page,
 }) => {
@@ -2160,7 +2142,7 @@ test("the Delivery list still answers the keyboard and stays windowed, and each 
   await page.keyboard.press("j");
   await page.keyboard.press("x");
   await expect(control(page.getByTestId("main-content"), CONTROL.selectionBar)).toBeVisible();
-  // The project page's own `v`, which flips List and Board.
+  // The project page's own `v`, which flips Table and Board.
   await page.goto("/projects/CORE/issues");
   await page.locator("body").focus();
   const boardBefore = await page
@@ -2968,7 +2950,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   const alices = idsOf((row) => row.assignee === "alice");
 
   // `i`, over the project List, and the dialog's own Escape.
-  await openIssuesTab(page, "CORE", "List");
+  await openIssuesTab(page, "CORE", "Table");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   await page.locator("body").focus();
   await page.keyboard.press("i");
@@ -3557,13 +3539,20 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * same; that reading was printed and copied here as it came. The Delivery list's rows are
  * found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
  * write `aria-rowindex` on each pull request's row in the list's body.
+ *
+ * dispatch://INFRA-3221 changes two of the lists on purpose, so their parts and widths below are
+ * this row's own reading of that change (builds Job infra-3221-t15-r3-7zphw), each box's height
+ * still the base's: a Board card's open asks name what they count ("1 open ask"), and the
+ * project List draws Open's columns in a project with no Legion daemon, with no Epic column and
+ * Open asks before Assignee, so its rows are narrower.
  */
 const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnItem[]>>> = {
   chromium: {
     "project Board": [
       {
         box: [114, 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+        parts:
+          'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
@@ -3572,74 +3561,74 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [114, 288, 288],
         parts:
-          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1" | "open" | "ask"',
       },
     ],
     "project List": [
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-1" | "Priority" | combobox "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | "Priority" | combobox "Priority of CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Triage" | "alice" | "1" | "alice" | time',
       },
       {
-        box: [49, 2319.19, 2319.19],
+        box: [49, 1738, 1738],
         parts:
-          'checkbox "Select CORE-2" | "Priority" | combobox "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | "Priority" | combobox "Priority of CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Triage" | "alice" | "alice" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-3" | "Priority" | combobox "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | "Priority" | combobox "Priority of CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-4" | "Priority" | combobox "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | "Priority" | combobox "Priority of CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-5" | "Priority" | combobox "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | "Priority" | combobox "Priority of CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-6" | "Priority" | combobox "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | "Priority" | combobox "Priority of CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-7" | "Priority" | combobox "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | "Priority" | combobox "Priority of CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [61, 2319.19, 2319.19],
+        box: [61, 1738, 1738],
         parts:
-          'checkbox "Select CORE-8" | "Priority" | combobox "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | "Priority" | combobox "Priority of CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
     ],
     "Agents page": [
@@ -3671,7 +3660,8 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
     "project Board": [
       {
         box: [129, 288, 288],
-        parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
+        parts:
+          'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
@@ -3680,74 +3670,74 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
+          'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
+          'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
+          'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
+          'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
+          'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1" | "open" | "ask"',
       },
       {
         box: [129, 288, 288],
         parts:
-          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
+          'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1" | "open" | "ask"',
       },
     ],
     "project List": [
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Priority" | combobox "Priority of CORE-1" | "Triage" | "No epic" | "alice" | "alice" | "1" | time',
+          'checkbox "Select CORE-1" | link "CORE-1" | link "CORE-1 Keyboard issue" | "1" | "Priority" | combobox "Priority of CORE-1" | "Triage" | "alice" | "1" | "alice" | time',
       },
       {
-        box: [65, 2106.69, 2106.69],
+        box: [65, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2" | "Triage" | "No epic" | "alice" | "alice" | time',
+          'checkbox "Select CORE-2" | link "CORE-2" | link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2" | "Triage" | "alice" | "alice" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Priority" | combobox "Priority of CORE-3" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-3" | link "CORE-3" | link "CORE-3 Rollout order" | "1" | "Priority" | combobox "Priority of CORE-3" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Priority" | combobox "Priority of CORE-4" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-4" | link "CORE-4" | link "CORE-4 Rollout budget" | "1" | "Priority" | combobox "Priority of CORE-4" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Priority" | combobox "Priority of CORE-5" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-5" | link "CORE-5" | link "CORE-5 Ledger mirror" | "1" | "Priority" | combobox "Priority of CORE-5" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Priority" | combobox "Priority of CORE-6" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-6" | link "CORE-6" | link "CORE-6 Clock drift" | "1" | "Priority" | combobox "Priority of CORE-6" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Priority" | combobox "Priority of CORE-7" | "Todo" | "No epic" | "alice" | "alice" | "frontend" | "1" | time',
+          'checkbox "Select CORE-7" | link "CORE-7" | link "CORE-7 Replay window" | "1" | "Priority" | combobox "Priority of CORE-7" | "Todo" | "alice" | "1" | "alice" | "frontend" | time',
       },
       {
-        box: [85, 2106.69, 2106.69],
+        box: [85, 1842.58, 1842.58],
         parts:
-          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Priority" | combobox "Priority of CORE-8" | "Todo" | "No epic" | "alice" | "alice" | "backend" | "1" | time',
+          'checkbox "Select CORE-8" | link "CORE-8" | link "CORE-8 Lease handover" | "1" | "Priority" | combobox "Priority of CORE-8" | "Todo" | "alice" | "1" | "alice" | "backend" | time',
       },
     ],
     "Agents page": [
@@ -3816,7 +3806,7 @@ test.describe("R8's rows and cards", () => {
       {
         name: "project List",
         noun: "row",
-        open: () => openIssuesTab(page, "CORE", "List"),
+        open: () => openIssuesTab(page, "CORE", "Table"),
         items: main.locator("[data-issue-row]"),
         list: "table",
       },
@@ -3903,8 +3893,9 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       createIssue({ project: "CORE", title: `Paged row ${index}` })
     )
   );
-  // Two issues in Legion's queue: the second's row offers a Start next of its own, which moves it
-  // to the head at the first width, so at the second the other row offers it.
+  // Two issues in Start next's queue: the row second in it offers a Start next of its own. The
+  // bar's Start next and then the row's own each move the second to the head, so at each width
+  // one row offers it.
   for (const title of ["Queued first", "Queued second"]) {
     const issue = await createIssue({ project: "CORE", title });
     await patchIssue(issue.key, { labels: ["legion"], status: "todo" });
@@ -4052,37 +4043,11 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       await expect(button, `${where}: ${step} on page ${last} is still pressable`).toBeDisabled();
     }
 
-    // A bar action: Take out of epic, held busy while its write is out and pressable by nobody
+    // A bar action: Start next, held busy while its write is out and pressable by nobody
     // meanwhile. The focus stays on it while it is busy, and once the write lands and the bar
-    // goes with the selection it hands the focus to the row marked.
-    const first = await page.locator("[data-issue-row]").first().getAttribute("data-issue-row");
-    const box = page.getByRole("checkbox", { exact: true, name: `Select ${first}` });
-    await box.focus();
-    await page.keyboard.press("Space");
-    await expect(box, `${where}: Space did not mark ${first}`).toBeChecked();
-    const bar = page.getByRole("toolbar", { name: "Selected issues" });
-    const takeOut = bar.getByRole("button", { exact: true, name: "Take out of epic" });
-    const writes = await holdIssueWrites();
-    await takeOut.focus();
-    await page.keyboard.press("Enter");
-    await expect(
-      takeOut,
-      `${where}: Take out of epic is pressable while its write is out`
-    ).toBeDisabled();
-    await focusOn(
-      where,
-      "Enter on Take out of epic, while its write is out",
-      takeOut,
-      `"Take out of epic"`
-    );
-    writes.release();
-    await expect(bar, `${where}: the write landed and left the bar up`).toHaveCount(0);
-    await focusOn(where, "Take out of epic's write landed", box, `"Select ${first}"`);
-    await writes.stop();
-
-    // A row's own Start next: held while its write is out, then gone once its issue starts next,
-    // while the row stays. The focus stays on it while it is busy, then goes to the control now
-    // at its place in the row, else the one before it, else the row itself.
+    // goes with the selection it hands the focus to the row marked. The row marked is the one
+    // second in Start next's queue, the one row that offers a Start next of its own, so the
+    // action has a write to send.
     const offering = page
       .locator("[data-issue-row]")
       .filter({ has: page.getByRole("button", { exact: true, name: "Start next" }) });
@@ -4090,6 +4055,39 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       offering.first(),
       `${where}: no row offers a Start next of its own`
     ).toBeAttached();
+    const second = await offering.first().getAttribute("data-issue-row");
+    const box = page.getByRole("checkbox", { exact: true, name: `Select ${second}` });
+    await box.focus();
+    await page.keyboard.press("Space");
+    await expect(box, `${where}: Space did not mark ${second}`).toBeChecked();
+    const bar = page.getByRole("toolbar", { name: "Selected issues" });
+    const barStart = bar.getByRole("button", { exact: true, name: "Start next" });
+    const writes = await holdIssueWrites();
+    await barStart.focus();
+    await page.keyboard.press("Enter");
+    await expect(
+      barStart,
+      `${where}: the bar's Start next is pressable while its write is out`
+    ).toBeDisabled();
+    await focusOn(
+      where,
+      "Enter on the bar's Start next, while its write is out",
+      barStart,
+      `the bar's "Start next"`
+    );
+    writes.release();
+    await expect(bar, `${where}: the write landed and left the bar up`).toHaveCount(0);
+    await focusOn(where, "the bar's Start next's write landed", box, `"Select ${second}"`);
+    await writes.stop();
+
+    // A row's own Start next: held while its write is out, then gone once its issue starts next,
+    // while the row stays. The focus stays on it while it is busy, then goes to the control now
+    // at its place in the row, else the one before it, else the row itself. The bar's Start next
+    // put the row it moved at the queue's head, so the other queued row offers it now.
+    await expect(
+      offering.first(),
+      `${where}: no other row offers a Start next of its own`
+    ).not.toHaveAttribute("data-issue-row", second ?? "");
     const queued = await offering.first().getAttribute("data-issue-row");
     const queuedRow = page.locator(`[data-issue-row="${queued}"]`);
     const startNext = queuedRow.getByRole("button", { exact: true, name: "Start next" });
@@ -4185,8 +4183,6 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     content: "# plan.md\n\nThe rollout plan.\n",
     name: "plan.md",
   });
-  const listFirst = await createIssue({ project: "CORE", title: "Epic member one" });
-  const listSecond = await createIssue({ project: "CORE", title: "Epic member two" });
   const boardCard = await createIssue({ project: "CORE", title: "Card that changes lane" });
   await patchIssue(boardCard.key, { priority: 0, status: "todo" });
   const main = page.getByTestId("main-content");
@@ -4292,7 +4288,7 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     // questions as cards below the reading column's width; above it, the drawer does.
     if (hasReadingPane(page)) {
       where = `Inbox drawer at ${at}`;
-      await openIssuesTab(page, "CORE", "List");
+      await openIssuesTab(page, "CORE", "Table");
       await expect(page.locator("[data-issue-row]").first()).toBeVisible();
       await peekTrigger(page).click();
     } else {
@@ -4305,42 +4301,13 @@ test("no page-own press drops the keyboard focus onto the page, on any page of R
     await expect(card, `${where}: Answer kept its card`).toHaveCount(0);
     await after(where, "Enter on a card row's Answer");
 
-    // The project List's unanswered-epic notice: its Dismiss goes with it. The epic's create is
-    // answered as one Dispatch made and kept no answer for (`409 KEY_COMMITTED`), which is what
-    // draws the notice.
-    where = `project List at ${at}`;
-    const keyCommitted = async (route: Route) => {
-      if (route.request().method() !== "POST") return route.fallback();
-      return route.fulfill({
-        json: { code: IDEMPOTENCY_KEY_COMMITTED, error: "the key's write was made" },
-        status: 409,
-      });
-    };
-    await page.route("**/api/v1/issues", keyCommitted);
-    await openIssuesTab(page, "CORE", "List");
-    await main.getByRole("checkbox", { exact: true, name: `Select ${listFirst.key}` }).check();
-    await main.getByRole("checkbox", { exact: true, name: `Select ${listSecond.key}` }).check();
-    await page.getByRole("button", { exact: true, name: "New epic from these" }).click();
-    await page
-      .getByRole("dialog", { name: "Name the new epic" })
-      .getByRole("textbox", { name: "Name" })
-      .fill(`The unanswered epic at ${at}`);
-    await page.getByRole("button", { exact: true, name: "Create epic" }).click();
-    const epicNotice = main.getByText(/The selected issues have not been moved/);
-    await expect(epicNotice, `${where}: no unanswered-epic notice`).toBeVisible();
-    await epicNotice.getByRole("button", { exact: true, name: "Dismiss" }).focus();
-    await page.keyboard.press("Enter");
-    await expect(epicNotice).toHaveCount(0);
-    await after(where, "Enter on the unanswered epic's Dismiss");
-    await page.unroute("**/api/v1/issues", keyCommitted);
-
     // The project Board in swimlanes: a priority pick moves the card into another lane, where it
     // is drawn again under a new parent.
     where = `project Board at ${at}`;
     await openIssuesTab(page, "CORE", "Board");
-    const showLanes = page.getByRole("button", { name: "Show lanes" });
-    if ((await showLanes.count()) > 0) await showLanes.click();
-    await expect(page.getByRole("button", { name: "Hide lanes" })).toBeVisible();
+    const lanes = page.getByRole("button", { exact: true, name: "Lanes" });
+    if ((await lanes.getAttribute("aria-pressed")) !== "true") await lanes.click();
+    await expect(lanes).toHaveAttribute("aria-pressed", "true");
     const lane = `P${step + 1}`;
     const priority = page.getByLabel(`Priority of ${boardCard.key}`);
     await priority.focus();
@@ -4529,9 +4496,12 @@ test("a table that holds the keyboard focus scrolls freely, and the focus moves 
       )
     );
   }
-  await openIssuesTab(page, "CORE", "List");
+  await openIssuesTab(page, "CORE", "Table");
   const pager = control(main, CONTROL.pager);
-  await expect(pager).toContainText("120 of 120 issues");
+  // Every issue is read: the view's tab counts them, and the pager, which counts no total, pages
+  // them at its 50 a page.
+  await expect(page.getByRole("tab", { name: "Open, 120 issues" })).toBeVisible();
+  await expect(pager).toContainText("Page 1 of 3");
   await pager.getByRole("combobox").selectOption("250");
   await expect(page).toHaveURL(/[?&]size=250/);
   const listBox = control(main, CONTROL.dataTable);
@@ -4626,7 +4596,7 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
   await expect(inboxTrigger, "Inbox: Tab from the panel's last control").toBeFocused();
 
   // In a dialog: the Inbox drawer's View menu, whose last control is its last section's choice.
-  await openIssuesTab(page, "CORE", "List");
+  await openIssuesTab(page, "CORE", "Table");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   await peekTrigger(page).click();
   const viewTrigger = control(controlRow(drawer(page)), CONTROL.displayMenu);
@@ -4907,7 +4877,7 @@ test("a column filter is visible and removable from the row even while its colum
   const chip = row.getByRole("button", { exact: true, name: "Remove Label: frontend filter" });
 
   // A link narrowing by a label: one row, one chip, and the trigger counts it.
-  await openIssuesTab(page, "CORE", "List");
+  await openIssuesTab(page, "CORE", "Table");
   await page.goto("/projects/CORE/issues?label=frontend");
   await expect(rows).toHaveCount(1);
   await expect(chip).toBeVisible();
@@ -4952,10 +4922,10 @@ test("a row a live update removes while it holds the focus hands the focus to no
       )
     );
   }
-  // The List opens on the open statuses and not done (`openIssueStatuses`), so closing an issue as
-  // another person takes its row off this view; the List view is opened first, since a project
-  // opens on whichever view the reader last left.
-  await openIssuesTab(page, "CORE", "List");
+  // Open lists the open statuses and not done (`openIssueStatuses`), so closing an issue as
+  // another person takes its row off this view; the table is opened first, since Open opens in
+  // whichever layout the reader last left it in.
+  await openIssuesTab(page, "CORE", "Table");
   const main = page.getByTestId("main-content");
   const listBox = control(main, CONTROL.dataTable);
   await expect(listBox.locator("[data-issue-row]").first()).toBeVisible();
@@ -5013,38 +4983,42 @@ test("a page's single-key shortcuts do not act from inside an open panel @firefo
   for (const title of ["Ship the daemon", "Cut the review queue", "Retire the old ledger"]) {
     await createPriority({ owner: "alice", title });
   }
-  const menu = page.getByRole("dialog", { name: "View" });
-  /** Opens the View menu from its trigger with the keyboard, and checks the focus went to one of
-   *  its radios. */
-  const openFromKeyboard = async (trigger: Locator) => {
+  /** The display menu named `label`: Group by on the Priorities page, View on the Inbox. */
+  const menuOf = (label: "Group by" | "View") => page.getByRole("dialog", { name: label });
+  /** Opens the display menu named `label` from its trigger with the keyboard, and checks the
+   *  focus went to one of its radios. */
+  const openFromKeyboard = async (trigger: Locator, label: "Group by" | "View") => {
     await trigger.focus();
     await page.keyboard.press("Enter");
-    await expect(menu).toHaveCount(1);
-    await expect(menu.getByRole("radio").first()).toBeFocused();
+    await expect(menuOf(label)).toHaveCount(1);
+    await expect(menuOf(label).getByRole("radio").first()).toBeFocused();
   };
-  /** Presses `j` and reads, two frames later, whether the focus is still in the View menu and
-   *  whether it is in a row `rows` names. */
-  const pressJ = async (rows: string) => {
+  /** Presses `j` and reads, two frames later, whether the focus is still in the display menu
+   *  named `label` and whether it is in a row `rows` names. */
+  const pressJ = async (rows: string, label: "Group by" | "View") => {
     await page.keyboard.press("j");
     await nextFrames(page);
     return page.evaluate(
-      (selector) => ({
-        inPanel: document.activeElement?.closest('[role="dialog"][aria-label="View"]') != null,
+      ([selector, name]) => ({
+        inPanel: document.activeElement?.closest(`[role="dialog"][aria-label="${name}"]`) != null,
         inRow: document.activeElement?.closest(selector) != null,
       }),
-      rows
+      [rows, label] as const
     );
   };
 
   await page.goto("/priorities");
   const priorities = page.locator('section[aria-label="Priorities"]');
   await expect(priorities.locator("[data-priority-row]")).toHaveCount(3);
-  await openFromKeyboard(control(controlRow(priorities), CONTROL.displayMenu));
-  expect(await pressJ("[data-priority-row]"), "Priorities: j on the View menu's radio").toEqual({
+  await openFromKeyboard(control(controlRow(priorities), CONTROL.displayMenu), "Group by");
+  expect(
+    await pressJ("[data-priority-row]", "Group by"),
+    "Priorities: j on the Group by menu's radio"
+  ).toEqual({
     inPanel: true,
     inRow: false,
   });
-  await expect(menu, "Priorities: j closed the View menu").toHaveCount(1);
+  await expect(menuOf("Group by"), "Priorities: j closed the Group by menu").toHaveCount(1);
 
   const { issueKey } = await seedAsk("Which lease holds?");
   await createAsk(issueKey, { question: "Which mirror replays first?" }, asSession());
@@ -5055,8 +5029,8 @@ test("a page's single-key shortcuts do not act from inside an open panel @firefo
   if (top === null) throw new Error("the Inbox's first row carries no id");
   await selectRow(page, top);
   const main = page.getByTestId("main-content");
-  await openFromKeyboard(control(controlRow(main), CONTROL.displayMenu));
-  expect(await pressJ("[data-inbox-row]"), "Inbox: j on the View menu's radio").toEqual({
+  await openFromKeyboard(control(controlRow(main), CONTROL.displayMenu), "View");
+  expect(await pressJ("[data-inbox-row]", "View"), "Inbox: j on the View menu's radio").toEqual({
     inPanel: true,
     inRow: false,
   });
@@ -5064,7 +5038,7 @@ test("a page's single-key shortcuts do not act from inside an open panel @firefo
     "data-inbox-row",
     top
   );
-  await expect(menu, "Inbox: j closed the View menu").toHaveCount(1);
+  await expect(menuOf("View"), "Inbox: j closed the View menu").toHaveCount(1);
 });
 
 /** What a text box is, in the count R3 reads inside a list's own panel: each kind of field a
@@ -5123,27 +5097,18 @@ interface PickList {
 interface PickListSeed {
   /** One question waiting on alice for each width, since a width's pick hands its own on. */
   readonly asks: readonly string[];
-  /** The one member of the first epic, which the List's selection marks. */
-  readonly member: string;
   /** The issue whose spec, and whose `notes.md`, are each in two versions. */
   readonly documented: string;
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
  *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's Project list
- *  holds two projects and the people a question can be handed to are alice, bob and carol;
- *  three epics, the first with a member; a spec and a second document of one issue, each in two
- *  versions; and a question for each width. */
+ *  holds two projects and the people a question can be handed to are alice, bob and carol; a
+ *  spec and a second document of one issue, each in two versions; and a question for each
+ *  width. */
 async function seedPickLists(): Promise<PickListSeed> {
   await seedAgents();
   await createProject({ key: "OPS", name: "Ops" }, { login: "carol" });
-  const epics: string[] = [];
-  for (const title of ["Lease epic", "Mirror epic", "Ledger epic"]) {
-    const epic = await createIssue({ project: "CORE", title });
-    await patchIssue(epic.key, { labels: ["epic"] });
-    epics.push(epic.key);
-  }
-  const member = await createIssue({ project: "CORE", parent: epics[0], title: "Handover step" });
   const documented = await createIssue({
     project: "CORE",
     spec: "The lease passes at noon.\n",
@@ -5172,13 +5137,12 @@ async function seedPickLists(): Promise<PickListSeed> {
     );
     asks.push(ask.id);
   }
-  return { asks, documented: documented.key, member: member.key };
+  return { asks, documented: documented.key };
 }
 
-/** The ten lists, in the order the row reads them at one width; `step` is the width's place,
+/** The eight lists, in the order the row reads them at one width; `step` is the width's place,
  *  which picks the question it hands on and the issue it addresses. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
-  const main = page.getByTestId("main-content");
   const palette = page.getByRole("dialog", { name: "Search" });
   const filters = page.getByRole("dialog", { name: "Filter" });
   /** The words a trigger shows. */
@@ -5195,8 +5159,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       .join("; ");
   const project = listTrigger(filters, "Project");
   const status = listTrigger(filters, "Status");
-  const moveTo = listTrigger(page, "Move to epic");
-  const mergeInto = listTrigger(page, "Merge into another epic");
   const question = seed.asks[step];
   const handOn = listTrigger(page.getByTestId(`ask-${question}`), "Hand this question to");
   const agent = agentRow(page, plannerSession.session_id);
@@ -5244,34 +5206,6 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["In progress"],
       picked: /^Remove Status In progress filter$/,
       focusAfterPick: filters.getByRole("searchbox", { name: "Author" }),
-    },
-    {
-      name: "the List's Move to epic",
-      reach: async () => {
-        await openIssuesTab(page, "CORE", "List");
-        await main.getByRole("checkbox", { exact: true, name: `Select ${seed.member}` }).check();
-      },
-      trigger: moveTo,
-      value: shown(moveTo),
-      word: "mirr",
-      left: ["Mirror epic"],
-      picked: /^Mirror epic$/,
-    },
-    {
-      name: "an epic's Merge into another epic",
-      reach: async () => {
-        await page.goto("/projects/CORE/issues?group=epic");
-        await page
-          .getByRole("row")
-          .filter({ has: page.getByRole("button", { name: /Lease epic/ }) })
-          .getByRole("button", { name: "Epic actions ▾" })
-          .click();
-      },
-      trigger: mergeInto,
-      value: shown(mergeInto),
-      word: "ledg",
-      left: ["Ledger epic"],
-      picked: /^Ledger epic$/,
     },
     {
       // Every person's questions, so the question stays listed once it waits on bob. Its list is
@@ -5356,13 +5290,13 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): ten lists on six pages, each list opened twice at each of two widths.
+// SLOW(>=2s): eight lists on four pages, each list opened twice at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
 // Each list a reader picks one value from is the single-pick mode of the shared list
-// (`components/MultiSelect.tsx`): the search bar's Project and Status, the List's Move to epic, an
-// epic's Merge into another epic, the Inbox's Hand this question to (`AskHandOn`), the Agents
-// composer's Issue, the Spec tab's Version (`SpecToolbar`), and a document page's Version
-// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`). At each width each list is
+// (`components/MultiSelect.tsx`): the search bar's Project and Status, the Inbox's Hand this
+// question to (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`),
+// and a document page's Version (`ArtifactHeader`) and its compare From and To
+// (`ArtifactDetails`). At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
 // only the options it matches, Escape picks nothing and changes no value, and Enter picks the
 // option the word left - the trigger shows it with the focus back on it, or where the pick
@@ -5374,9 +5308,10 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Seven page loads at each width, with the lists read between them. Measured in an issue pod
-  // (two cores): the row took 1.2 to 1.5 min in Chromium and 1.9 to 2.6 min in Firefox, and four
-  // minutes keeps that under two thirds of the budget for WebKit, which no pod runs.
+  // Five page loads at each width, with the lists read between them. Measured in an issue pod
+  // (two cores) while the row read seven: it took 1.2 to 1.5 min in Chromium and 1.9 to 2.6 min
+  // in Firefox, and four minutes keeps that under two thirds of the budget for WebKit, which no
+  // pod runs.
   test.setTimeout(240_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or

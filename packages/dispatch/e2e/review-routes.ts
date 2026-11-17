@@ -310,8 +310,8 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // page's own heading is on the screen while the priorities read is still out, over `Loading
     // priorities`, and both fault headings stand over their tables while each fault list's own
     // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
-    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
-    // that advances none, and the parked issue that advances one - and together they say the
+    // locator is a row the seed wrote - the first priority of the order, the active issue that
+    // advances none, and the parked issue that advances one - and together they say the
     // priorities table and both fault lists have their rows rather than their empty words. Each
     // fault list is the Issues table, named by the label the page passes it with " table"
     // after it (`features/project/IssuesTable.tsx`). The three issues are
@@ -319,10 +319,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     ready: (page) => [
       page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
       page
-        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
+        .getByRole("table", { exact: true, name: "Issues active under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
       page
-        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
+        .getByRole("table", { exact: true, name: "Parked priority issues table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },

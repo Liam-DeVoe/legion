@@ -25,10 +25,10 @@ import {
   openSurface,
   resetScroll,
   STUBBABLE_SURFACES,
-  SURFACE_CONTROLS,
   SURFACE_SEARCH_TERM,
   seedSurfaces,
   straysBetween,
+  surfaceControls,
   topOf,
   widthsOf,
 } from "./table-controls";
@@ -175,7 +175,7 @@ test("each page draws every shared control its design gives it, and no other @pr
     const surface = await openSurface(page, name, scene, {
       searchTerm: SURFACE_SEARCH_TERM,
     });
-    const expected = [...SURFACE_CONTROLS[name]].sort();
+    const expected = [...surfaceControls(name)].sort();
     // Every control the page draws as it opens, read before anything is pressed, so a page
     // pointed at a copy of a control is named here rather than found missing by the act that
     // would have driven it. The chip and the selection bar are not among them: a chip is drawn

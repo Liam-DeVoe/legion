@@ -95,9 +95,9 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
 }
 
 // SLOW(>=2s): four whole-card drags, each paying dnd-kit's own 200 ms landing, plus the board's
-// two fresh renders.
-// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order List and Board alike.
-test("the board is the kanban: whole-card drag orders List and Board alike, Icebox and Done collapse behind a toggle @pr", async ({
+// fresh renders after two reloads and two loads of another view.
+// @pr: Create through answer to close: the board is where a person moves an issue's status, and the drag has to order Table and Board alike.
+test("the board is the kanban: whole-card drag orders Table and Board alike, Icebox collapses behind a toggle, and Done opens where the view lists done issues @pr", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -116,7 +116,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     const board = page.getByRole("region", { name: "Project board" });
     const triage = page.getByRole("region", { name: "Triage" });
     await expect(triage.getByRole("article")).toHaveText([/Second card/, /Third card/]);
@@ -143,7 +143,7 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
 
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
-    await page.getByRole("button", { name: "List" }).click();
+    await page.getByRole("button", { name: "Table", exact: true }).click();
     await page.getByRole("button", { name: "Triage 2", exact: true }).click();
     await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
@@ -152,8 +152,12 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
       first.key,
     ]);
 
-    // K2: a whole-card drag into another column changes the status.
-    await page.getByRole("button", { name: "Board" }).click();
+    // K2: a whole-card drag into another column changes the status. The Board draws the view as
+    // it stands, so a second press of the bar's Triage entry first gives Open its own statuses
+    // back.
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveCount(3);
+    await page.getByRole("button", { name: "Board", exact: true }).click();
     const todoColumn = page.getByRole("region", { name: "Todo" });
     const inProgressColumn = page.getByRole("region", { name: "In progress" });
     const movePatch = patchOf(page, first.key);
@@ -167,7 +171,9 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await expect(inProgressColumn).toContainText("First card");
     await expect.poll(() => getIssue(first.key)).toMatchObject({ status: "in_progress" });
 
-    // K3: a Retro card dropped on the collapsed Done rail closes it.
+    // K3: a Retro card dropped on the collapsed Done rail closes it. Open lists no done issue, so
+    // the card leaves the Board, and the rail, which stands for done issues the view does not
+    // list, carries no count.
     await patchIssue(third.key, { status: "retro" });
     const retroColumn = page.getByRole("region", { name: "Retro" });
     const retroCard = retroColumn.getByRole("article", { name: `${third.key} Third card` });
@@ -176,27 +182,31 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await mouseDrag(page, retroCard, doneRail);
     const closeResponse = await closePatch;
     expect(closeResponse.status()).toBe(200);
-    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done", rank: {} });
+    expect(closeResponse.request().postDataJSON()).toEqual({ status: "done" });
     await expect(retroColumn).not.toContainText("Third card");
-    await expect(doneRail).toContainText("1");
+    await expect(board.getByRole("article", { name: `${third.key} Third card` })).toHaveCount(0);
+    await expect(doneRail.getByTestId("board-column-rail")).toHaveText("Done");
     await expect.poll(() => getIssue(third.key)).toMatchObject({ status: "done" });
     expect((await getIssue(third.key)).closed_at).not.toBeNull();
 
-    // The toggle expands both edges, persists per login across a reload...
-    const showEdges = page.getByRole("button", { name: "Show Icebox & Done" });
-    await expect(showEdges).toHaveAttribute("aria-pressed", "false");
-    await showEdges.click();
-    const hideEdges = page.getByRole("button", { name: "Hide Icebox & Done" });
-    await expect(hideEdges).toHaveAttribute("aria-pressed", "true");
-    await expect(board.getByTestId("board-column-header")).toHaveCount(9);
-    await expect(board.getByTestId("board-column-rail")).toHaveCount(0);
-    const doneColumn = page.getByRole("region", { name: "Done" });
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
+    // Show Icebox opens the Icebox rail into a column, and persists per login across a reload...
+    const showIcebox = page.getByRole("button", { name: "Show Icebox", exact: true });
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "false");
+    await showIcebox.click();
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "true");
+    await expect(board.getByTestId("board-column-header")).toHaveCount(8);
+    await expect(board.getByTestId("board-column-rail")).toHaveCount(1);
+    const iceboxColumn = page.getByRole("region", { name: "Icebox", exact: true });
+    await expect(iceboxColumn).toBeVisible();
     await page.reload();
-    await expect(hideEdges).toHaveAttribute("aria-pressed", "true");
-    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "true");
+    await expect(iceboxColumn).toBeVisible();
 
-    // ...and dragging a Done card out reopens it.
+    // ...a view that lists done issues opens the Done rail into the Done column with their
+    // cards, and dragging a Done card out reopens it.
+    await page.goto("/projects/CORE/issues?status=backlog&status=done");
+    const doneColumn = page.getByRole("region", { name: "Done", exact: true });
+    await expect(doneColumn.getByRole("article")).toHaveText(/Third card/);
     const backlogColumn = page.getByRole("region", { name: "Backlog" });
     const reopenPatch = patchOf(page, third.key);
     await mouseDrag(
@@ -204,19 +214,27 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
       doneColumn.getByRole("article", { name: `${third.key} Third card` }),
       backlogColumn
     );
-    expect((await reopenPatch).status()).toBe(200);
+    const reopenResponse = await reopenPatch;
+    expect(reopenResponse.status()).toBe(200);
+    expect(reopenResponse.request().postDataJSON()).toEqual({ status: "backlog" });
     await expect(backlogColumn.getByRole("article")).toHaveText(/Third card/);
     await expect.poll(() => getIssue(third.key)).toMatchObject({ closed_at: null });
 
-    await hideEdges.click();
+    await page.goto("/projects/CORE/issues");
+    await showIcebox.click();
+    await expect(showIcebox).toHaveAttribute("aria-pressed", "false");
     await expect(board.getByTestId("board-column-rail")).toHaveCount(2);
-    await expect(page.getByRole("region", { name: "Done (collapsed)" })).toContainText("0");
+    await expect(
+      page.getByRole("region", { name: "Done (collapsed)" }).getByTestId("board-column-rail")
+    ).toHaveText("Done");
   } finally {
     await context.close();
   }
 });
 
-test("v toggles List and Board; Shift+J/K rank a focused card through the one move path; o, Enter, p and Escape work the card; Space lifts nothing", async ({
+// SLOW(>=2s): v pressed on two tabs, four key moves each waiting on its write, and an issue
+// opened and left twice.
+test("v toggles Table and Board; Shift+J/K rank a focused card through the one move path; o, Enter, p and Escape work the card; Space lifts nothing", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -241,28 +259,36 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
         patches.push(request.url());
       }
     });
+    // Open keeps its layout in the browser beside the project table's own layout.
     const viewPreference = () =>
-      page.evaluate(() => window.localStorage.getItem("dispatch.project.issue-view:alice"));
+      page.evaluate(() => {
+        const stored: unknown = JSON.parse(
+          window.localStorage.getItem("dispatch.project-table.CORE") ?? "{}"
+        );
+        return stored !== null && typeof stored === "object" && "layout" in stored
+          ? stored.layout
+          : null;
+      });
 
-    // B5: `v` flips List and Board from the keyboard and persists the choice; on the Documents
+    // B5: `v` flips Table and Board from the keyboard and persists the choice; on the Documents
     // tab there is no view to flip and it is inert.
     await page.goto("/projects/CORE");
-    const listButton = page.getByRole("button", { name: "List" });
-    const boardButton = page.getByRole("button", { name: "Board" });
-    await expect(listButton).toHaveAttribute("aria-pressed", "true");
+    const tableButton = page.getByRole("button", { name: "Table", exact: true });
+    const boardButton = page.getByRole("button", { name: "Board", exact: true });
+    await expect(tableButton).toHaveAttribute("aria-pressed", "true");
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await expect(boardButton).toHaveAttribute("aria-pressed", "true");
     expect(await viewPreference()).toBe("board");
     await page.keyboard.press("v");
-    await expect(listButton).toHaveAttribute("aria-pressed", "true");
-    expect(await viewPreference()).toBe("list");
+    await expect(tableButton).toHaveAttribute("aria-pressed", "true");
+    expect(await viewPreference()).toBe("table");
     await page.getByRole("tab", { name: "Documents" }).click();
     await expect(page).toHaveURL(/\/projects\/CORE\/documents$/);
     await page.locator("body").focus();
     await page.keyboard.press("v");
     await nextFrames(page);
-    expect(await viewPreference()).toBe("list");
+    expect(await viewPreference()).toBe("table");
     await expect(page.getByRole("button", { name: "Board" })).toHaveCount(0);
     await page.getByRole("tab", { name: "Issues" }).click();
     await page.locator("body").focus();
@@ -376,6 +402,7 @@ test("v toggles List and Board; Shift+J/K rank a focused card through the one mo
   }
 });
 
+// SLOW(>=2s): two whole-card drags, the first refused by the server and the board read again.
 test("a stale board refreshes and says so when the server rejects the rank", async ({
   browser,
 }) => {
@@ -873,10 +900,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     await finger.lift();
     const moveResponse = await movePatch;
     expect(moveResponse.status()).toBe(200);
-    expect(moveResponse.request().postDataJSON()).toEqual({
-      status: "in_progress",
-      rank: {},
-    });
+    expect(moveResponse.request().postDataJSON()).toEqual({ status: "in_progress" });
     await expect(inProgress).toContainText("Bravo");
     await expect(todo).not.toContainText("Bravo");
   } finally {
@@ -978,6 +1002,7 @@ test("a filtered drag names the visible neighbours and the hidden card interleav
   }
 });
 
+// SLOW(>=2s): lanes turned on, a reload, a drag across lanes, and lanes turned off.
 test("the board groups into priority swimlanes on a toggle that persists per signed-in user, and dragging across lanes reassigns priority", async ({
   browser,
 }) => {
@@ -997,19 +1022,16 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
   await page.setViewportSize({ width: 1920, height: 900 });
   try {
     await page.goto("/projects/CORE");
-    await page.getByRole("button", { name: "Board" }).click();
+    await page.getByRole("button", { name: "Board", exact: true }).click();
 
     // Off by default: one flat Todo column holding every card.
-    const lanesToggle = page.getByRole("button", { name: "Show lanes" });
+    const lanesToggle = page.getByRole("button", { name: "Lanes", exact: true });
     await expect(lanesToggle).toHaveAttribute("aria-pressed", "false");
     const flatTodo = page.getByRole("region", { name: "Todo" });
     await expect(flatTodo.getByRole("article")).toHaveCount(3);
 
     await lanesToggle.click();
-    await expect(page.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
 
     const p0Lane = page.getByRole("region", { name: "P0 lane" });
     const p3Lane = page.getByRole("region", { name: "P3 lane" });
@@ -1026,10 +1048,7 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
     // The choice persists per signed-in user, not the URL: a reload keeps it.
     await page.reload();
-    await expect(page.getByRole("button", { name: "Hide lanes" })).toHaveAttribute(
-      "aria-pressed",
-      "true"
-    );
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "true");
     await expect(page.getByRole("region", { name: "P0 lane" })).toBeVisible();
 
     // Dragging the no-priority card into the P0 lane's Todo column reassigns its priority -
@@ -1056,7 +1075,8 @@ test("the board groups into priority swimlanes on a toggle that persists per sig
 
     // Turning lanes off restores the flat board - the toggle state, not the data, decides the
     // layout.
-    await page.getByRole("button", { name: "Hide lanes" }).click();
+    await lanesToggle.click();
+    await expect(lanesToggle).toHaveAttribute("aria-pressed", "false");
     await expect(page.getByRole("region", { name: "P0 lane" })).toHaveCount(0);
   } finally {
     await context.close();
@@ -1075,11 +1095,11 @@ test("the board's view, lanes and edge toggles keep touch-sized targets @phone @
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const boardToggle = page.getByRole("button", { name: "Board" });
+    const boardToggle = page.getByRole("button", { name: "Board", exact: true });
     await expect(boardToggle).toHaveCSS("min-height", "44px");
     await boardToggle.click();
-    for (const name of ["Show lanes", "Show Icebox & Done"]) {
-      await expect(page.getByRole("button", { name })).toHaveCSS("min-height", "44px");
+    for (const name of ["Lanes", "Show Icebox"]) {
+      await expect(page.getByRole("button", { name, exact: true })).toHaveCSS("min-height", "44px");
     }
   } finally {
     await context.close();

@@ -171,7 +171,7 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-switch.e2e.ts":
     "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
-    "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
+    "every row writes and then reads its own write: ranks and priorities patched through the API and read back through `getIssue`, plus a refused write kept in the store and an interrupted action finished after a reload",
   "issue.e2e.ts":
     "asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read",
   "judged-grant.e2e.ts":

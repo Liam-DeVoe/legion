@@ -43,7 +43,10 @@ export const REAL_STACK_SURFACES: readonly SurfaceName[] = ["Agents page", "Deli
 
 /**
  * The `data-control` value of every control the Design gives each page, and nothing else: a row
- * reads that each of these is drawn and that no other value of the vocabulary is.
+ * reads that each of these is drawn and that no other value of the vocabulary is. The project
+ * pages are read in a project with no Legion daemon, as the seed's is: both draw Save view, the
+ * one `view-panel`, and neither draws the (i) hint or, on the Board, the Group by menu
+ * (`surfaceControls` names those).
  *
  * The Delivery page's measures table, which R8 keeps and which draws the shared table markup,
  * is not here and is no exception to it: that table is inside a fold the page opens shut
@@ -75,12 +78,19 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
     CONTROL.chip,
     CONTROL.displayMenu,
     CONTROL.columnsMenu,
+    CONTROL.viewPanel,
     CONTROL.columnFilter,
     CONTROL.pager,
     CONTROL.selectionBar,
     CONTROL.dataTable,
   ],
-  "project Board": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
+  "project Board": [
+    CONTROL.controlRow,
+    CONTROL.searchBox,
+    CONTROL.panelTrigger,
+    CONTROL.chip,
+    CONTROL.viewPanel,
+  ],
   "Agents page": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
   "Delivery page": [
     CONTROL.controlRow,
@@ -93,6 +103,15 @@ export const SURFACE_CONTROLS: Record<SurfaceName, readonly ControlName[]> = {
   "search bar": [CONTROL.controlRow, CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.chip],
   "Artifacts tab": [CONTROL.controlRow, CONTROL.searchBox],
 };
+
+/** The `data-control` values `name` draws: `SURFACE_CONTROLS`' list, and in a project with a
+ *  Legion daemon also the Board's Group by menu, which picks its columns. The (i) hint the daemon
+ *  adds is a second `view-panel`, a value the list already holds. */
+export function surfaceControls(name: SurfaceName, daemon = false): readonly ControlName[] {
+  return daemon && name === "project Board"
+    ? [...SURFACE_CONTROLS[name], CONTROL.displayMenu]
+    : SURFACE_CONTROLS[name];
+}
 
 /** The three controls R1 refuses between a page's title and its first row, outside the one row. */
 export const STRIP_CONTROLS: readonly ControlName[] = [
@@ -285,11 +304,16 @@ export async function gapBoxes(root: Locator, top: number, bottom: number): Prom
 
 /** The surface's own display menu, opened unless it is open already: the trigger is found by
  *  its `data-control` inside this surface's row, so a drawer over a page that draws one of its
- *  own opens the drawer's. */
-export async function openDisplay(page: Page, within: Locator | Page): Promise<Locator> {
+ *  own opens the drawer's. `label` is the trigger's text, which names the panel: `View` on the
+ *  Inbox and its drawer, `Group by` on the project List. */
+export async function openDisplay(
+  page: Page,
+  within: Locator | Page,
+  label: "View" | "Group by" = "View"
+): Promise<Locator> {
   const trigger = control(controlRow(within), CONTROL.displayMenu);
   if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
-  const menu = page.getByRole("dialog", { name: "View" });
+  const menu = page.getByRole("dialog", { name: label });
   await expect(menu).toHaveCount(1);
   return menu;
 }
@@ -372,15 +396,15 @@ async function openInbox(page: Page): Promise<Surface> {
   };
 }
 
-/** Opens the project's Issues tab on the view named, whichever of the two the reader's stored
- *  preference (`project.issue-view`) was left on by an earlier surface. */
+/** Opens the project's Issues tab, Open, in the layout named, whichever of the two Open's stored
+ *  layout was left on by an earlier surface: the control row's Table and Board switch. */
 export async function openIssuesTab(
   page: Page,
   project: string,
-  view: "List" | "Board"
+  layout: "Table" | "Board"
 ): Promise<void> {
   await page.goto(`/projects/${project}/issues`);
-  const button = page.getByRole("button", { exact: true, name: view });
+  const button = page.getByRole("button", { exact: true, name: layout });
   await expect(button).toBeVisible();
   if ((await button.getAttribute("aria-pressed")) !== "true") await button.click();
   await expect(button).toHaveAttribute("aria-pressed", "true");
@@ -388,7 +412,7 @@ export async function openIssuesTab(
 
 /** The Inbox drawer, peeked over the project List, which is the page R5 reads it over. */
 async function openInboxDrawer(page: Page, scene: SurfaceScene): Promise<Surface> {
-  await openIssuesTab(page, scene.project, "List");
+  await openIssuesTab(page, scene.project, "Table");
   await expect(page.locator("[data-issue-row]").first()).toBeVisible();
   await peekTrigger(page).click();
   const root = drawer(page);
@@ -418,7 +442,7 @@ async function openInboxDrawer(page: Page, scene: SurfaceScene): Promise<Surface
 /** The project's issue List. */
 async function openProjectList(page: Page, scene: SurfaceScene): Promise<Surface> {
   const root = page.getByTestId("main-content");
-  await openIssuesTab(page, scene.project, "List");
+  await openIssuesTab(page, scene.project, "Table");
   const firstRow = page.locator("[data-issue-row]").first();
   await expect(firstRow).toBeVisible();
   return {
@@ -434,7 +458,7 @@ async function openProjectList(page: Page, scene: SurfaceScene): Promise<Surface
       await openFilterPanel(page, root);
     },
     display: async () => {
-      await openDisplay(page, root);
+      await openDisplay(page, root, "Group by");
     },
     select: async () => {
       await firstRow.getByRole("checkbox").first().click();
@@ -443,7 +467,7 @@ async function openProjectList(page: Page, scene: SurfaceScene): Promise<Surface
   };
 }
 
-/** The project's Board, reached by the header's own List/Board switch. */
+/** The project's Board, reached by the control row's Table and Board switch. */
 async function openProjectBoard(page: Page, scene: SurfaceScene): Promise<Surface> {
   const root = page.getByTestId("main-content");
   await openIssuesTab(page, scene.project, "Board");
