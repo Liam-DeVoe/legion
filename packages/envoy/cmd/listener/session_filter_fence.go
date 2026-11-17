@@ -155,7 +155,9 @@ const filterFenceAttempts = 5
 // what keeps such an answer from starting a pass planned from the lagging row it carries.
 //
 // write plans its write from a bucket read, makes it, and answers what that left on the consumer
-// (filterWriteOutcome) with the revision of the interest row it was built from. The loop goes on
+// (filterWriteOutcome) with the revision of the interest row it was built from, and the error of a
+// read or call of it whose connection was lost (bus.ErrConnectionLost), nil for every other end
+// (lostConnection). The loop goes on
 // from filterWriteLanded alone, reading the bucket again to judge the filter that write may have
 // left; filterWriteSettled ends it where nothing of any row stands in the session's delivery,
 // filterWriteSessionGone where the session a filter of this loop's would stand for is gone, and
@@ -172,21 +174,32 @@ const filterFenceAttempts = 5
 // those end on a filter the session's next heartbeat sets, which is the same act whatever the
 // write followed.
 //
-// It returns the error of its own read of the bucket after a write when that read lost its
-// connection (bus.ErrConnectionLost), and nil otherwise, so a caller that retries on the new
-// connection (storedFilterWrite) makes the whole fence again once the connection is back.
-func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome)) error {
+// It returns the first error of a request of the fence that lost its connection
+// (bus.ErrConnectionLost), a write's or its own read of the bucket after a write, and nil when none
+// did; every pass is judged as before, whatever such an error said. A caller that retries on the
+// new connection (storedFilterWrite, confirmRegistered, deleteConsumer, sessionRelays.restart)
+// makes the whole fence again once the connection is back, and each of its passes plans from the
+// bucket's newest row, so the fence made again writes what the lost one would have.
+func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *store.Registry, sessionID, after string, write func() (uint64, filterWriteOutcome, error)) error {
 	// stands is the revision of the row whose filter is on the consumer, and landed says a pass
 	// put one there, which stands alone cannot: a write built for a session the bucket holds no
 	// row for is fenced on revision 0. newest is what the bucket answered after that write.
 	var stands, newest uint64
 	landed := false
+	// lost is the first request of this fence whose connection was lost.
+	var lost error
+	keep := func(err error) {
+		if lost == nil {
+			lost = lostConnection(err)
+		}
+	}
 	for range filterFenceAttempts {
-		wrote, outcome := write()
+		wrote, outcome, err := write()
+		keep(err)
 		if outcome == filterWriteSettled {
 			// The consumer is as its row asks, there is none, or the record names none: no
 			// filter of any row is a window in what this session is delivered through.
-			return nil
+			return lost
 		}
 		if outcome == filterWriteSessionGone {
 			// The session is gone, so the line leaving the filter to its next heartbeat is
@@ -196,33 +209,30 @@ func fenceFilterWrite(ctx context.Context, logger *logging.Logger, registry *sto
 				logger.Warn("listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold",
 					slog.String("session_id", sessionID), slog.String("after", after), slog.Uint64("wrote_revision", stands))
 			}
-			return nil
+			return lost
 		}
 		if outcome == filterWriteNotMade {
 			if !landed {
-				return nil // nothing of this loop's landed, so no older row's filter stands
+				return lost // nothing of this loop's landed, so no older row's filter stands
 			}
 			// A corrective pass that wrote nothing leaves the pass before it standing, and the
 			// bucket answered a newer row than that one: that is the line below's case too.
 			break
 		}
 		stands, landed = wrote, true
-		var err error
 		if _, newest, err = storedTopics(ctx, registry, sessionID); err != nil {
 			logger.Warn("session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it",
 				slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.String("error", err.Error()))
-			if errors.Is(err, bus.ErrConnectionLost) {
-				return err
-			}
-			return nil
+			keep(err)
+			return lost
 		}
 		if !rowMovedUnder(newest, stands) {
-			return nil
+			return lost
 		}
 	}
 	logger.Warn("session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it",
 		slog.String("session_id", sessionID), slog.Uint64("wrote_revision", stands), slog.Uint64("newest_revision", newest))
-	return nil
+	return lost
 }
 
 // rowMovedUnder reports whether the interest row the bucket answered at revision newest was
@@ -316,17 +326,9 @@ func (m *sessionDelivery) storedFilterWrite(ctx context.Context, registry *store
 	unlock := m.locks.lock(sessionID)
 	defer func() { unlock() }()
 	for {
-		var lost error
-		judged := fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome) {
-			wrote, outcome, err := m.storedFilterStep(ctx, registry, sessionID, after)
-			if lost == nil {
-				lost = err
-			}
-			return wrote, outcome
+		lost := fenceFilterWrite(ctx, m.logger, registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
+			return m.storedFilterStep(ctx, registry, sessionID, after)
 		})
-		if lost == nil {
-			lost = judged
-		}
 		if !m.relockAfterReconnect(ctx, sessionID, &unlock, lost) {
 			return
 		}

@@ -417,15 +417,11 @@ const (
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) error {
-	var lost error
-	judged := fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome) {
+	return fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome, error) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
 		want, found, err := m.registeredTarget(ctx, d, sessionID, ackFloor)
-		if lost == nil {
-			lost = lostConnection(err)
-		}
 		// Only registeredTargetBuilt goes on to the write below; each of the three findings
 		// that build no target leaves the fence something different (registeredFinding).
 		switch found {
@@ -433,17 +429,17 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// The session is gone: the bucket holds no record of it, so no heartbeat of it
 			// registers again and nothing sets a filter this repair leaves. Whether a pass of
 			// it left one is the fence's own to know and to report (filterWriteSessionGone).
-			return 0, filterWriteSessionGone
+			return 0, filterWriteSessionGone, nil
 		case registeredNoConsumerDelivery:
 			// The record asks for no consumer of this session - a record an earlier build
 			// left, which nothing delivers to (session.DeliveryConsumer) - so this repair has
 			// nothing to write and the fence nothing to judge: it leaves no delivery a filter
 			// is a window in.
-			return 0, filterWriteSettled
+			return 0, filterWriteSettled, nil
 		case registeredReadFailed:
 			// What the bucket holds went unread, so this pass plans nothing and puts no filter
 			// anywhere; what stands is what the pass before it left (registeredTarget).
-			return 0, filterWriteNotMade
+			return 0, filterWriteNotMade, err
 		}
 		if m.afterRepairPlan != nil {
 			m.afterRepairPlan()
@@ -454,15 +450,13 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			m.logger.Warn("listener could not repair the consumer of a session the bucket holds a record for",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
 				slog.Uint64("consumer_start", want.start), slog.String("error", err.Error()))
-			if lost == nil {
-				lost = lostConnection(err)
-			}
 			// A call the server answered changed nothing, so there is nothing for the fence to
 			// hold; a call whose answer did not come back may have set this row's filter, and
 			// the loop judges it as it judges a write that answered (consumerCallAnswered).
 			if consumerCallAnswered(err) {
-				return 0, filterWriteNotMade
+				return 0, filterWriteNotMade, nil
 			}
+			return want.revision, filterWriteLanded, lostConnection(err)
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -475,14 +469,10 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// no filter of an older row stands and the fence ends here, on whatever pass. This
 			// is every repair of a session nothing raced, and it costs one bucket read fewer
 			// than one that wrote.
-			return 0, filterWriteSettled
+			return 0, filterWriteSettled, nil
 		}
-		return want.revision, filterWriteLanded
+		return want.revision, filterWriteLanded, nil
 	})
-	if lost == nil {
-		lost = judged
-	}
-	return lost
 }
 
 // registeredConsumer is what the bucket's newest record and interest row of a session ask of its
