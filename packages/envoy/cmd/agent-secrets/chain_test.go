@@ -165,12 +165,15 @@ func newChainBroker(t *testing.T, settings map[string]any) *chainBroker {
 	mux.HandleFunc("POST /v1/grants/grant-chain/values", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]any{"values": map[string]string{"TEST_KEY": chainValue}, "expires_at": time.Now().Add(time.Hour)})
 	})
-	b.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The server starts only once b.server holds it: the POST /v1/requests handler reads
+	// b.server.URL (b.URL()), and httptest.NewServer would serve before the assignment landed.
+	b.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
 		b.calls++
 		b.mu.Unlock()
 		mux.ServeHTTP(w, r)
 	}))
+	b.server.Start()
 	t.Cleanup(b.server.Close)
 	return b
 }
