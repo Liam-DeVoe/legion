@@ -11,8 +11,8 @@ import (
 )
 
 // decodeJSON decodes data, one JSON value, into v. It is the one reader of every JSON file of a
-// format of this package (approved.json and each JSON file of a scenario), and it refuses each
-// text that the format does not hold:
+// format of this package (approved.json, ApprovedFile, and each JSON file of a scenario), and it
+// refuses each text that the format does not hold:
 //
 //   - a byte that is not UTF-8 (RFC 8259 §8.1: JSON text "MUST be encoded using UTF-8"): "it is not
 //     UTF-8";
@@ -26,7 +26,8 @@ import (
 //     encoding/json/v2.
 //
 // A map of the format, such as the paths of a commit's tree, takes any name, in its own letters,
-// one time.
+// one time. The report of go test -json is no format of this package: ReadGoTestJSON reads it as
+// go test writes it, and passes over the members that it does not name.
 func decodeJSON(data []byte, v any) error {
 	if !utf8.Valid(data) {
 		return errors.New("it is not UTF-8")
