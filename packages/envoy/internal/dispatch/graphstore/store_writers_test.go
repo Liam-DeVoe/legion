@@ -89,7 +89,7 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
 	// The node of every issue, document, ask and message a request creates, in the project or
-	// between the parties it belongs to (dispatch://INFRA-3862): written before its row, and
+	// between the parties it belongs to: written before its row, and
 	// caused by the event the create appends after it. createIssue, storeArtifact and
 	// createAskFor are listed above for their block index and follow; these are the others. Their
 	// order - the owner row their path already takes, the node before the row, the event before
@@ -135,7 +135,7 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeCommentBatch",
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
-	// The backfill's passes over the project of every node (dispatch://INFRA-3862): the nodes of
+	// The backfill's passes over the project of every node: the nodes of
 	// the issues, documents, asks and messages written before their writers wrote one, in one
 	// graphstore.Write per batch that takes no other row, and the project of the comment and
 	// block nodes written before a node named one (graphstore.FillScopes), the block batch under
