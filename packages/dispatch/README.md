@@ -13,6 +13,14 @@ the Inbox at `/`, an issue workspace at `/issues/:key/*`, and the
 repository-to-project settings page at `/settings`; TanStack Query and the live socket's events
 feed keep the issue, Inbox, documents, and sidebar current.
 
+From the first `legion-envoy` release that carries pull request #4274 every API request goes to
+`/api/v2`, through the paths and types `@legion/contracts/dispatch-api-v2` generates from
+`packages/contracts/schemas/dispatch-openapi-v2.json`. Every write sends an `Idempotency-Key` and
+retries under it, `PUT` and `DELETE` included, and a list the page shows whole is read page by page
+until it holds the list's `total`. The one `/api/v1` request left replays a write a build before
+it saved, to the path it was first sent to and under its own key; once the deployment has ended
+`/api/v1`, that replay is answered `410`, dropped, and the page says the write was not saved.
+
 The desktop shell has a sidebar, issue content, and review margin. Issue content has Spec,
 Conversation, Children, Artifacts, and Activity tabs; the Conversation lists one card per
 conversation and the Activity tab holds the issue's whole event history. The Spec document
@@ -60,6 +68,9 @@ package's other e2e scripts run `build:contracts` first, every CI job that runs
 the suite carries a `Build contracts for dispatch e2e` step
 (`.github/workflows/dispatch-browser.yaml`), and a Playwright command you type
 yourself needs `bun run build:contracts` once.
+The driver (`e2e/api.ts`, `e2e/seed.ts`), the specs and the acceptance drivers below call
+`/api/v2` for every request they make themselves, the test hooks at `/api/v2/_test/…`, and the
+stubbed recordings hold `/api/v2` answers checked against `dispatch-openapi-v2.json`.
 The hook refuses the run before it starts a
 harness or a Postgres when Playwright has not downloaded a browser the run
 needs, naming `bun run e2e:install` and how large that download is.
@@ -358,23 +369,24 @@ the container, its anonymous data volume and every database in it.
 ## Acceptance drivers
 
 `e2e/acceptance/block-graph.sh` drives the block graph end to end against a running server, as an
-agent sees it, through the HTTP API and the real `dispatch` CLI
+agent sees it, through the HTTP API's `/api/v2` and the real `dispatch` CLI, which still calls
+`/api/v1`
 (`packages/envoy-client/bin/dispatch.ts`, run in an environment the script builds, so a calling
 shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a comment
 citing a block and the block's backlinks, a deleted and restored block, a pinned block reference
-that changes and is removed, `GET /api/v1/block-links` between the blocks of two documents, each
+that changes and is removed, `GET /api/v2/block-links` between the blocks of two documents, each
 block's changed version, every block `part_of` its document, a link in a list item, the six facts
 every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
 for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
 message, a session and a component, read by its own reference, as an edge's other end and on the
-`Node:` line of `dispatch read`, and the older `GET /api/v1/artifacts/{id}/references` route. It
+`Node:` line of `dispatch read`, and the older `GET /api/v2/artifacts/{id}/references` route. It
 also covers the blocks of comments and messages: a mention in a comment starts at the comment's
 block holding it, a node of kind `block`, id `comment/<uuid>#b<n>`, whose `parent` is the comment
 (A10);
 a comment or message reply that names a block (`--reply-to <comment>#b-b2`,
 `--in-reply-to <message>#b-b2`) is a `replies_to` edge to that block, and `dispatch read` quotes it
 (A7); the facts of a comment's and a message's block (A11); a block's id kept through a person's
-move, reword, split, deletion and restore over `PATCH /api/v1/comments/{id}` with carried ids, and
+move, reword, split, deletion and restore over `PATCH /api/v2/comments/{id}` with carried ids, and
 a body holding block HTML read back byte for byte (A13); and a link pinned to a comment's block that
 reads `changed`, then `removed` (A15). It also reads the bounds the server owns and no client
 carries: a comment and a message of 48,000 characters taken and read back whole, a paragraph of
@@ -399,7 +411,8 @@ failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
     fails;
   - `existing` reads the first project whose architecture holds a component with a parent, and
     writes nothing to it; a server with none is a `FAIL`;
-  - `none` proves `GET /api/v1/settings/architecture-sources` is `[]` and prints
+  - `none` proves that no project of the server has an architecture source
+    (`GET /api/v2/projects/{key}/architecture-sources` lists none for any project) and prints
     `PASS: R12 component: this server has no architecture source, so it holds no component node`;
     a source present is a `FAIL` naming `COMPONENT_SOURCE=existing`.
 - `DEV_SIGNIN_LOGIN`, optional, a login the server's dev sign-in route (`/auth/_dev/signin`) signs
@@ -407,7 +420,7 @@ failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
   the `person` scope, and is its author's alone, so the A13 and A15 comment sections sign that person in with a
   cookie jar, write the comments that person edits, and send each edit with the dashboard's origin.
   Unset, each of those two sections prints one
-  `SKIP: … PATCH /api/v1/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; …`
+  `SKIP: … PATCH /api/v2/comments/{id} needs the person scope, which this bearer does not hold, and this server has no dev sign-in: DEV_SIGNIN_LOGIN is unset; …`
   line, and every other section runs.
 
 It writes two issues in `PROJECT`: the first holds the spec, comments, messages and the documents
@@ -432,7 +445,7 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
 
 `e2e/acceptance/verification.sh` drives the verification rules the same way, through the HTTP API
 and the same real CLI. It covers a `plan_task` and a `check` that serve a spec's `requirement`, and
-the `serves` and `needs` edges `GET /api/v1/references` lists for them; every attribute a `check`
+the `serves` and `needs` edges `GET /api/v2/references` lists for them; every attribute a `check`
 carries, read back on the head of `dispatch read --ref`; the refusals a pointer earns — a block no
 document holds, a block of an issue in another tree, a `needs` naming a block outside its own plan
 — and a `when` the schema does not know, each `400 INVALID_MARKDOWN` naming the pointer or the
@@ -464,7 +477,7 @@ optional ones:
 - `DEV_SIGNIN_LOGIN`, as `block-graph.sh` takes it. Recording a review is a person's write alone,
   so the two review sections sign that person in with a cookie jar and answer the approval requests
   the script opened; unset, each prints one
-  `SKIP: review …: DEV_SIGNIN_LOGIN is unset; POST /api/v1/artifacts/{id}/reviews needs a person's …`
+  `SKIP: review …: DEV_SIGNIN_LOGIN is unset; POST /api/v2/artifacts/{id}/reviews needs a person's …`
   line and every other section runs.
 
 One rule governs every result the script records, beside the refusals above.
@@ -540,8 +553,9 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
 
 `e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
 every project), and only reads. For every document it can list (each project's documents and each
-issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
-lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists none, and prints
+issue's documents), it counts the document as not indexed when
+`GET /api/v2/artifacts/{id}?include=blocks` lists blocks while
+`GET /api/v2/references?to=<document>&kind=part_of` lists none, and prints
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
@@ -658,7 +672,7 @@ OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt
   bash outside-path-reach.sh
 ```
 
-It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
+It asks the origin for `/healthz` (200) and for `/api/v2/projects` with no credential (401, with
 Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
 in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round at once. The
 rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
@@ -716,7 +730,7 @@ disabled NATS, and a private loopback fake Envoy with no token. `FAKE_ENVOY_PORT
 `ENVOY_IMAGE_TAG` are its only required inputs: the acceptance service derives its `ENVOY_URL`
 from `FAKE_ENVOY_PORT`, so it is the one harness port this recipe sets, and `e2e:deployed` starts
 the fake listener on it. Before any row runs,
-`e2e:deployed` puts a session in that fake and requires the server's `GET /api/v1/agents` to list
+`e2e:deployed` puts a session in that fake and requires the server's `GET /api/v2/agents` to list
 it, so a server reading another Envoy listener refuses the run instead of answering it from the
 wrong sessions (`e2e/global-setup.ts`). With `PLAYWRIGHT_BASE_URL` set that hook starts only the
 fake Envoy and the plain-HTTP proxy, the latter on a

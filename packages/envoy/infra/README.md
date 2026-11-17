@@ -993,9 +993,15 @@ resource the component refuses, by name, a value that is not an RFC 3339 time, a
 time with no offset among them, since Dispatch refuses such a value at boot. Unset, nothing is
 rendered and `/api/v1` has no end. Arming the end needs an `envoy-infra` release that carries the
 input and no Dispatch release, but it takes effect only on an `envoyImage` whose `envoy-dispatch`
-reads the setting: an older one ignores it, as it ignores every variable its settings table
-(`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting, changing or unsetting it
-replaces the app's pods as any change to its pod template does.
+reads the setting, the first `legion-envoy` release that carries pull request #4274 or a later
+one, the release that first serves `/api/v2`: an older one ignores it, as it ignores every
+variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Whatever
+this input says, every `/api/v1` answer of such a release carries a `Deprecation` header and a
+`Link` header naming the `/api/v2` route that answers for it. Arm the end only once no client the
+deployment runs still calls `/api/v1`: at that release the `dispatch` command, the Oh My Pi and
+Claude Code plugins, the Legion daemon and the secrets broker still do, each naming itself in its
+`User-Agent`, which Dispatch's access log records. Setting, changing or unsetting it replaces the
+app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
