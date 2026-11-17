@@ -4610,8 +4610,14 @@ Each item below names a path with its method and identity, then its purpose.
       It is the parts of that person's email, in order, each with a capital letter.
       A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
       So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
+      Each part of a name is a whole word, as the next item says, so `Ada Lovelace2` names no person.
       Parts of the emails of two people are no name.
       A part that is a word of an approved component name or term is no part of a name.
+      Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
+      The way out is to write the name of the system as the person approved it.
+      A letter such as `é` can be one character, or a letter and a combining mark.
+      Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
+      The reviewer of R25 reads such a text.
       An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
       A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
       So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
