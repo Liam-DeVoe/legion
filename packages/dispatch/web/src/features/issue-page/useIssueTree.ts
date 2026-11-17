@@ -115,16 +115,17 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
  * version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
  * document's upload or new version; `["issue", key, "results"]` on those too, on a result
- * recorded or retracted and on a pull request moved to another issue; and `["artifact", id]`, a
+ * recorded or retracted and on a pull request moved to another issue; `["artifact", id]`, a
  * prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
- * rename, removal or review, and an ask or comment in it. No rule there names the names reads
- * (`["reference-targets", …]`) or `["whoami"]`. A names read's key is the set of addresses it
- * names, so a tree that comes to hold another set reads again under a key of its own, and the
- * reader's login does not change while the page is open; but a target whose words change under
- * an address the tree already names - a cited comment edited, a block of a document's new
- * version - keeps its old name until the feed's next gap or the page's next load. A gap in the
- * feed refreshes every read the app holds (`refreshQueries`), these among them, and window focus
- * fetches again only a read in error (`refetchFailedOnFocus`).
+ * rename, removal or review, and an ask or comment in it; and the names reads
+ * (`["reference-targets", …]`, by that prefix) on a comment's edit, an ask's edit and a
+ * document's new version (`referenceNameTargets`, decision 184). A names read's key is the set
+ * of addresses it names, so a tree that comes to hold another set reads again under a key of its
+ * own, and those three events are what change a target's words under an address the tree
+ * already names: a cited comment edited, a cited ask's question edited, a block of a document's
+ * new version. No rule there names `["whoami"]`: the reader's login does not change while the
+ * page is open. A gap in the feed refreshes every read the app holds (`refreshQueries`), these
+ * among them, and window focus fetches again only a read in error (`refetchFailedOnFocus`).
  */
 const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,

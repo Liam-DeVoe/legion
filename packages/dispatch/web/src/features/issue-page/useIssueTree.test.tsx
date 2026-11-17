@@ -5,13 +5,14 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import { eventRefreshTargets } from "../../api/event-refresh";
-import { refreshQueries } from "../../api/query-refresh";
+import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   ArtifactBlock,
   Comment,
   DispatchEvent,
   DisplayTree,
+  EventType,
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
@@ -769,8 +770,8 @@ test("blocks a failed refetch leaves in hand stay held while they stop counting 
 // dispatch://INFRA-1196 decision 180: the page's stage mounts the tree's slot again on every
 // press of a view, and under the app's `staleTime` a read is stale 30 s after it answered
 // (`main.tsx`). The tree's reads are kept fresh by events instead: the slot mounted again more
-// than 30 s on draws from what the client holds and sends no read, and a comment event reads the
-// comments again and nothing else.
+// than 30 s on draws from what the client holds and sends no read, and a comment's edit reads the
+// comments again and the names (decision 184), and nothing else.
 test("a tree mounted again past 30 s reads nothing, and a comment event reads the comments", async () => {
   const stored: Comment[] = [comment];
   const stubs = stubTreeReads(async (refs) => namedTargets(refs), { comments: stored });
@@ -826,15 +827,128 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     await act(async () => {
       refreshQueries(client, eventRefreshTargets(event, "alice"));
     });
-    // The tree draws the comment's new words, from the one read the event sent.
+    // The tree draws the comment's new words, from the comments read the event sent.
     await waitFor(() => {
       const turn = nodesInOrder(again.result.current).find((node) => node.id === comment.id);
       expect(turn?.text).toBe(edited.body);
     });
     await waitFor(() => expect(client.isFetching()).toBe(0));
     expect(api.listComments).toHaveBeenCalledTimes(2);
-    expect(requests(), "the event sends one read, the comments'").toBe(loaded + 1);
+    expect(api.getReferenceTargets).toHaveBeenCalledTimes(2);
+    expect(requests(), "the event sends two reads, the comments' and the names'").toBe(loaded + 2);
     again.unmount();
+  } finally {
+    setSystemTime();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** An event of the feed on the issue, with the payload its rules read. The page's rows are not
+ *  the contract's payloads, so it is cast as the feed's own tests cast theirs
+ *  (`event-feed.test.ts`). */
+function feedEvent(type: EventType, payload: Record<string, unknown>): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-05T02:00:00Z",
+    id: 2,
+    issue_key: KEY,
+    notify: true,
+    payload,
+    project: "CORE",
+    seq: 2,
+    type,
+  } as unknown as DispatchEvent;
+}
+
+// dispatch://INFRA-1196 decision 184: a names read is keyed by the addresses it names, so only
+// words that change under an address already named need a rule - a comment's edit, an ask's edit
+// and a document's new version - and each refreshes every names read the app holds, by the key's
+// prefix; so does an issue's write that changes its title, which names every address to it. A new
+// comment is a new address, which the tree reads under a key of its own, a person's edit of a
+// document is the notice after the versions that already refreshed them, and an issue's write that
+// leaves its title alone renames nothing.
+test("an edited comment or ask and a document's new version refresh every names read, a new comment none", () => {
+  const editsWords = [
+    feedEvent("comment.edited", { anchor: null, ask_id: null, id: "comment-1" }),
+    feedEvent("ask.edited", { anchor: null, id: "ask-1" }),
+    feedEvent("artifact.version", { artifact_id: plan.id, name: "Plan" }),
+    feedEvent("issue.updated", { changed: ["title"] }),
+  ];
+  for (const event of editsWords) {
+    expect(eventRefreshTargets(event, "alice"), event.type).toContainEqual({
+      queryKey: ["reference-targets"],
+    });
+  }
+  const editsNoWords = [
+    feedEvent("comment.created", { anchor: null, ask_id: null, id: "comment-2" }),
+    feedEvent("artifact.human_edited", { artifact_id: plan.id, from_version: 1, to_version: 2 }),
+    feedEvent("issue.updated", { changed: ["status"] }),
+  ];
+  for (const event of editsNoWords) {
+    const keys = eventRefreshTargets(event, "alice").map((target) => target.queryKey[0]);
+    expect(keys, event.type).not.toContain("reference-targets");
+  }
+});
+
+// Decision 184 again, on the page: every read of the tree is kept fresh by events (decision
+// 180), so a comment a node's words cite, edited under the same address, is named anew only by
+// the feed's rule for the edit. The edit reads the names once more, and the page publishes the
+// comment's new words under its address, which every link beside the tree draws.
+test("a cited comment's edit reads the names once more, and the page publishes its new words", async () => {
+  const cited: Comment = { ...comment, body: "Hold the deploy.", id: "comment-2" };
+  const address = `dispatch://${KEY}/comment/${cited.id}`;
+  const stored: Comment[] = [{ ...comment, body: `Read ${address} first.` }, cited];
+  const asked: string[][] = [];
+  const stubs = stubTreeReads(
+    async (refs) => {
+      asked.push([...refs]);
+      return {
+        targets: namedTargets(refs).targets.map((target) =>
+          target.ref === address
+            ? { ...target, kind: "comment", name: stored[1]?.body ?? "" }
+            : target
+        ),
+      };
+    },
+    { comments: stored }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return useKnownReferenceName(address);
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy."));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const named = asked.length;
+
+    // The comment is edited: the stubbed reads answer its new words from now on.
+    const edited: Comment = {
+      ...cited,
+      body: "Hold the deploy until Friday.",
+      edited_at: "2026-11-05T02:00:00Z",
+    };
+    stored[1] = edited;
+    // A second on, so the scheduler's interval between two fetches of one read
+    // (`MIN_REFETCH_INTERVAL_MS`) holds back none of the reads the event sends.
+    setSystemTime(Date.now() + MIN_REFETCH_INTERVAL_MS);
+    const event = feedEvent("comment.edited", { ...edited, artifact_name: "" });
+    await act(async () => {
+      refreshQueries(client, eventRefreshTargets(event, "alice"));
+    });
+    await waitFor(() => expect(view.result.current).toBe("Hold the deploy until Friday."));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(asked.length, "the edit sends one names read").toBe(named + 1);
+    expect(asked.at(-1)).toContain(address);
+    view.unmount();
   } finally {
     setSystemTime();
     for (const stub of stubs) stub.mockRestore();
