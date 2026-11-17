@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -97,7 +97,6 @@ export function DecisionsRow({
   level,
   onFocus,
   onPin,
-  onRefused,
   onReviewed,
   pinned,
   reader,
@@ -120,12 +119,10 @@ export function DecisionsRow({
   level: number;
   onFocus: () => void;
   onPin: () => void;
-  /** Says the server refused a Keep or a Change the reader made on this row, which is then no
-   *  review of theirs. */
-  onRefused: () => void;
-  /** Says the reader reviewed this decision on its row: they pressed Keep, or sent a Change
-   *  with words in it. Either takes it off the review list, and only the reader's own review
-   *  moves the focus on to the next decision there. */
+  /** Says the reader pressed Keep on this decision's row, or sent its Change form. The press
+   *  alone is no review: the list reads the decision the server writes back to tell whether
+   *  the reader kept it or asked to change it, and only that review takes it off the review
+   *  list and moves the focus on to the next decision there. */
   onReviewed: () => void;
   pinned: boolean;
   /** Who is reading, whose own name is drawn in the ink and whose own words carry the ink rule
@@ -181,29 +178,6 @@ export function DecisionsRow({
     const name = statementNames.get(shape.id) ?? "";
     return name === "" ? [] : [{ name, shape }];
   });
-  // `DecisionActions.tsx` says that the server refused a Keep or a Change by drawing an alert
-  // among the row's actions, and tells its row nothing else, so the row watches its actions for
-  // one while it draws the two controls, and says so to the list. The latest `onRefused` is the
-  // one called, so a render does not start the watch again.
-  const actions = useRef<HTMLDivElement | null>(null);
-  const refused = useRef(onRefused);
-  refused.current = onRefused;
-  useEffect(() => {
-    const element = actions.current;
-    if (!review || element === null) return;
-    const watch = new MutationObserver((records) => {
-      const alerted = records.some((record) =>
-        [...record.addedNodes].some(
-          (added) =>
-            added instanceof Element &&
-            (added.matches(REFUSAL) || added.querySelector(REFUSAL) !== null)
-        )
-      );
-      if (alerted) refused.current();
-    });
-    watch.observe(element, { childList: true, subtree: true });
-    return () => watch.disconnect();
-  }, [review]);
   return (
     <div
       aria-level={level}
@@ -294,8 +268,7 @@ export function DecisionsRow({
               <span className="shrink-0" {...pageChrome}>
                 {NODE_TYPE_NAMES[entry.parent.type]}
               </span>
-              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ||
-              entry.parent.line === entry.parent.id ? null : (
+              {entry.parent.line === NODE_TYPE_NAMES[entry.parent.type] ? null : (
                 <span className="min-w-0 break-words" {...authorText}>
                   {entry.parent.line}
                 </span>
@@ -342,9 +315,10 @@ export function DecisionsRow({
               press of either, as a press anywhere on a row, gives the row the focus once the
               press is over (`DecisionsFilterBody.tsx`'s `focusRow`), so nothing moves under
               the pointer before the click lands. A Keep, by a press or by `Shift+K`, which
-              presses it, and a Change sent with words are the reader's own review of the
-              decision, which the row says to the list: a Change sent empty writes nothing
-              (`DecisionActions.tsx`). */}
+              presses it, and a send of the Change form are a press of the reader's on this
+              row, which the row says to the list. Whether it wrote anything is the server's to
+              say, on the decision itself: a refused write and a Change sent empty write
+              nothing (`DecisionActions.tsx`), so the list reads the decision, not this row. */}
           <div
             className="mt-1 mb-0.5 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 [&>[role=alert]]:order-last [&>[role=alert]]:basis-full [&>form]:order-last [&>form]:basis-full"
             data-entry-actions=""
@@ -352,12 +326,7 @@ export function DecisionsRow({
               if (event.target instanceof Element && event.target.closest(KEEP) !== null)
                 onReviewed();
             }}
-            onSubmitCapture={(event) => {
-              const field =
-                event.target instanceof Element ? event.target.querySelector("textarea") : null;
-              if (field !== null && field.value.trim() !== "") onReviewed();
-            }}
-            ref={actions}
+            onSubmitCapture={onReviewed}
           >
             {review ? (
               <DecisionActions
@@ -412,9 +381,11 @@ export function DecisionsRow({
                 </p>
               ) : null}
               <p>
+                {/* A press moves no focus: the body this closes would take it to the page. */}
                 <button
                   className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
                   onClick={onPin}
+                  onMouseDown={(event) => event.preventDefault()}
                   tabIndex={-1}
                   type="button"
                   {...pageChrome}
@@ -448,9 +419,6 @@ export function DecisionsRow({
 /** Keep, by the mark `DecisionActions.tsx` writes and reads through its own
  *  `rowActionSelector`, so this file does not spell it. */
 const KEEP = rowActionSelector("keep");
-
-/** What `DecisionActions.tsx` draws where the server refused a Keep or a Change. */
-const REFUSAL = '[role="alert"]';
 
 /** A row's colour, as `pageKindBullet` and `pageKindTag` name them. */
 type Tone = "context" | "decision" | "question";

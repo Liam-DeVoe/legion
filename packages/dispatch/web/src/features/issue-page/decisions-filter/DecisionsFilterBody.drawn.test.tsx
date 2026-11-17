@@ -772,7 +772,7 @@ test("a closed issue draws the review list with no Keep and no Change", () => {
 // Decision 110 (2), R6: an entry the reader is on that another person deletes takes its row,
 // and the focus with it, off the page. The focus goes to the entry that stood after it in its
 // part, else to the one before it where it was the last, else, where its part is left empty,
-// to the view's first row: never to the page.
+// to the view's first row, else, where no row is left, to the tree: never to the page.
 test("a focused entry that another person deletes gives the focus to its neighbour", async () => {
   /** Reads the issue again with `block`'s decision deleted: gone from the tree and from the
    *  decisions read. */
@@ -822,6 +822,27 @@ test("a focused entry that another person deletes gives the focus to its neighbo
   await deleted(only, own, "kept");
   expect(only.container.querySelector('[data-decisions-part="yours"]')).toBeNull();
   await waitFor(() => expect(focusedRow(only)).toBe("q-open"));
+  only.unmount();
+
+  // The view's one entry: no row is left to take the focus, and the tree keeps it, which leaves
+  // it in the list.
+  const lone = {
+    children: [statement("s1"), decisionNode("first")],
+    made: [decision("first", { links: [shaped(specRef("s1"))] })],
+  };
+  const alone = renderBody(lone);
+  await act(async () => rowOf(alone, D("first")).focus());
+  await deleted(alone, lone, "first");
+  expect(alone.container.querySelector("[data-node-row]")).toBeNull();
+  await waitFor(() => expect(document.activeElement).toBe(alone.getByRole("tree")));
+  // The focus is off every row, so what the deleted row's focus opened is let go: the same
+  // decision read back draws as a row the reader is not on.
+  await act(async () => {
+    alone.client.setQueryData(["decisions", KEY], decisionsRead(lone.made));
+    alone.again({ children: lone.children });
+  });
+  await waitFor(() => expect(rowOf(alone, D("first"))).toBeTruthy());
+  expect(rowOf(alone, D("first")).querySelector("[data-node-body]")).toBeNull();
 });
 
 // R2, R9, c-decisions: an answered ask draws its question and its options, and the person's
@@ -949,7 +970,6 @@ test("a decision reaches each statement it shaped, and every entry links to its 
   const parent = rowOf(wordless, D("wordless")).querySelector("[data-node-parent-line]");
   expect(parent?.getAttribute("data-parent-id")).toBe("q2");
   expect(words(parent)).toBe(NODE_TYPE_NAMES.ask);
-  expect(parent?.querySelectorAll("span").length).toBe(1);
 });
 
 // R5 (c), ruling 5: a decision's row draws no author in its margin, so its focused body says
@@ -1084,6 +1104,17 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     expect(document.activeElement).toBe(
       view.container.querySelector('[data-decisions-part="agents"] button')
     );
+
+    // Let close on a row pinned open, pressed while another row has the focus, leaves the focus
+    // where it is: the press moves none, so the body it closes takes none to the page.
+    await act(async () => rowOf(view, D("kept")).focus());
+    await user.keyboard("o");
+    await act(async () => rowOf(view, "q-open").focus());
+    expect(rowOf(view, D("kept")).querySelector("[data-node-body][data-pinned]")).not.toBeNull();
+    await user.click(view.getByRole("button", { name: CONTROL_LABELS.let_close }));
+    expect(document.activeElement).toBe(rowOf(view, "q-open"));
+    expect(rowOf(view, "q-open").querySelector("[data-node-body]")).not.toBeNull();
+    expect(rowOf(view, D("kept")).querySelector("[data-node-body]")).toBeNull();
   } finally {
     kept.mockRestore();
   }
