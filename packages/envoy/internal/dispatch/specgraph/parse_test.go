@@ -265,57 +265,65 @@ func TestParseReadsATimeLimit(t *testing.T) {
 	}
 }
 
-// parseRule is one kind of problem of Parse, by its Detail for a file that gives it.
-type parseRule struct{ detail, file string }
+// parseRow is the Effect that one kind of problem of Parse has in the table, the Detail it gives
+// for file, and file.
+type parseRow struct {
+	effect       Effect
+	detail, file string
+}
 
 // Each kind of problem of Parse is in one of two columns: it can lose a node of the files or change
 // one, so a comparison of the tree misses that text (LosesNode), or it leaves each node as the files
-// write it (KeepsEachNode). Parse gives each kind the Effect of its column, for a file that gives
-// it. Every problem that Parse gives for those files has one of the two Effects: a problem made with
-// no Effect fails, so no kind reads as one that keeps each node by default.
+// write it (KeepsEachNode). For each kind that Parse declares (problemKinds), the table has a row,
+// and Parse gives that kind's problem for the row's file with the row's Effect, so a new kind fails
+// the test until it has a row. Every problem that Parse gives for those files has one of the two
+// Effects: a problem with no Effect fails, so no kind reads as one that keeps each node by default.
 func TestEachProblemOfParseSaysWhetherItLosesANode(t *testing.T) {
 	t.Parallel()
 	check := func(attributes, body string) string {
 		return ":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\"" + attributes + "}\n" + body + ":::\n"
 	}
-	columns := map[Effect][]parseRule{
-		LosesNode: {
-			{detailTextOutsideBlock, "A line outside a block.\n"},
-			{detailUnclosedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n"},
-			{detailNestedBlock, ":::term{#order name=\"order\"}\nAn order is a request.\n:::term{#bill name=\"bill\"}\nA bill is a request for money.\n:::\n:::\n"},
-			{detailBadBlockLine, ":::\n"},
-			{`unknown-block: "note" is not requirement, check, component or term`, ":::note{#a-note}\nA note.\n:::\n"},
-			{`unknown-attribute: term takes no attribute "colour"`, ":::term{#order name=\"order\" colour=\"red\"}\nAn order is a request.\n:::\n"},
-			{`bad-component: kind is "interface" or absent, not "service"`, ":::component{#orders name=\"Orders\" kind=\"service\"}\nIt keeps the orders.\n:::\n"},
-			{`bad-time-limit: "soon" is not a positive Go duration`, check(` time_limit="soon"`, "Claim: The daemon reads the claim after it starts again.\n")},
-			{detailBadField, check("", "Procedure: The program starts the daemon again.\nClaim: The daemon reads the claim after it starts again.\n")},
-		},
-		KeepsEachNode: {
-			{detailBadEncoding, ":::term{#cafe name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n"},
-			{"code-in-text: heading names code: I/O", "# Orders and I/O\n"},
-			{detailClaimOneLine, check("", "Claim: The daemon reads the claim\nafter it starts again.\n")},
-			{detailClaimOneSentence, check("", "Claim: The daemon starts again. It reads the claim.\n")},
-		},
+	rows := map[problemKind]parseRow{
+		textOutsideBlock: {LosesNode, "text-outside-block: a spec file holds only blocks, headings and blank lines", "A line outside a block.\n"},
+		unclosedBlock:    {LosesNode, "unclosed-block: the block has no closing ::: line", ":::term{#order name=\"order\"}\nAn order is a request.\n"},
+		nestedBlock: {LosesNode, "nested-block: a block cannot hold a block",
+			":::term{#order name=\"order\"}\nAn order is a request.\n:::term{#bill name=\"bill\"}\nA bill is a request for money.\n:::\n:::\n"},
+		badBlockLine:     {LosesNode, "bad-block-line: the line opens no block", ":::\n"},
+		unknownBlock:     {LosesNode, `unknown-block: "note" is not requirement, check, component or term`, ":::note{#a-note}\nA note.\n:::\n"},
+		unknownAttribute: {LosesNode, `unknown-attribute: term takes no attribute "colour"`, ":::term{#order name=\"order\" colour=\"red\"}\nAn order is a request.\n:::\n"},
+		badComponentKind: {LosesNode, `bad-component: kind is "interface" or absent, not "service"`, ":::component{#orders name=\"Orders\" kind=\"service\"}\nIt keeps the orders.\n:::\n"},
+		badTimeLimit: {LosesNode, `bad-time-limit: "soon" is not a positive Go duration`,
+			check(` time_limit="soon"`, "Claim: The daemon reads the claim after it starts again.\n")},
+		badFieldOrder: {LosesNode, "bad-field: a check holds one Claim, one Procedure and one Failing example line, in that order",
+			check("", "Procedure: The program starts the daemon again.\nClaim: The daemon reads the claim after it starts again.\n")},
+		claimOfLines:     {KeepsEachNode, "bad-field: a claim is one line", check("", "Claim: The daemon reads the claim\nafter it starts again.\n")},
+		claimOfSentences: {KeepsEachNode, "bad-field: a claim is one sentence", check("", "Claim: The daemon starts again. It reads the claim.\n")},
+		badEncoding:      {KeepsEachNode, "bad-encoding: a spec file is UTF-8 text with no NUL byte", ":::term{#cafe name=\"cafe\"}\nA caf\xe9 is a place where a session waits.\n:::\n"},
+		headingNamesCode: {KeepsEachNode, "code-in-text: heading names code: I/O", "# Orders and I/O\n"},
 	}
 	name := map[Effect]string{LosesNode: "LosesNode", KeepsEachNode: "KeepsEachNode"}
-	for effect, rules := range columns {
-		for _, rule := range rules {
-			_, problems := Parse(map[string][]byte{"spec.md": []byte(rule.file)})
-			given := 0
-			for _, p := range problems {
-				if _, ok := name[p.Effect]; !ok {
-					t.Errorf("Parse(%q) gives %+v, which has no Effect", rule.file, p)
-				}
-				if p.Detail == rule.detail {
-					given++
-					if p.Effect != effect {
-						t.Errorf("Parse(%q) gives %q the Effect %s, want %s", rule.file, p.Detail, name[p.Effect], name[effect])
-					}
+	for kind := range numProblemKinds {
+		format := problemKinds[kind].format
+		row, ok := rows[kind]
+		if start, _, _ := strings.Cut(format, "%"); !ok || start == "" || !strings.HasPrefix(row.detail, start) {
+			t.Errorf("kind %d of problem of Parse, %q, has no row in the table: give it the Effect of its column and a file that gives it", kind, format)
+			continue
+		}
+		_, problems := Parse(map[string][]byte{"spec.md": []byte(row.file)})
+		given := 0
+		for _, p := range problems {
+			if _, ok := name[p.Effect]; !ok {
+				t.Errorf("Parse(%q) gives %+v, which has no Effect", row.file, p)
+			}
+			if p.Detail == row.detail {
+				given++
+				if p.Effect != row.effect {
+					t.Errorf("Parse(%q) gives %q the Effect %s, want %s", row.file, p.Detail, name[p.Effect], name[row.effect])
 				}
 			}
-			if given == 0 {
-				t.Errorf("Parse(%q) gives no problem %q, only %+v", rule.file, rule.detail, problems)
-			}
+		}
+		if given == 0 {
+			t.Errorf("Parse(%q) gives no problem %q, only %+v", row.file, row.detail, problems)
 		}
 	}
 }

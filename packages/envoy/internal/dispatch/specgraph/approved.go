@@ -14,8 +14,8 @@ import (
 
 // ApprovedVersion is one text that the approved spec held for a node (R2: "Dispatch keeps each
 // text that the approved spec held"): its version number, the time of the approval that wrote it,
-// an RFC 3339 time in approved.json, and Block, the node's block as Print writes it, which a change
-// copies into the files.
+// in approved.json an RFC 3339 time as time.RFC3339Nano writes it, with an upper-case T and Z, and
+// Block, the node's block as Print writes it, which a change copies into the files.
 type ApprovedVersion struct {
 	Version int       `json:"version"`
 	At      time.Time `json:"at"`
@@ -41,9 +41,9 @@ type Approved struct {
 
 // ApprovedFile is approved.json, the approved spec as a file holds it, and the one definition of
 // that form (approvedForm): WriteApproved writes it, and ReadApproved reads it. "at" is an RFC 3339
-// time, such as "2026-11-10T00:00:00Z", with an upper-case T and Z: the reader refuses a lower-case
-// t or z, which RFC 3339 allows, and the writer writes upper case. An approved spec that holds no
-// node is {"nodes":[]}.
+// time as time.RFC3339Nano writes it, with an upper-case T and Z, such as "2026-11-10T00:00:00Z":
+// the reader refuses a lower-case t or z, which RFC 3339 allows, and the writer writes upper case.
+// An approved spec that holds no node is {"nodes":[]}.
 type ApprovedFile struct {
 	Nodes []ApprovedNode `json:"nodes"`
 }

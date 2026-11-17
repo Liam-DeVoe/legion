@@ -3202,7 +3202,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `ci.yaml`'s `envoy-go-checks` runs the tests of `specgraph` and of `cmd/spec-check` with the architecture-note ones, and runs the action over this repository's `.dispatch/spec` right after the architecture-note action, before the job's own setup-go, with `allow-empty: 'true'` while main holds no spec file;
   a pull request whose spec files break a rule fails that job with one line for each fault, naming its file, its line and its node, and the next step fails unless `count` is a whole number.
 
-- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time.
+- `specgraph.ApprovedFile` is the one definition of `approved.json`, the approved spec as a file holds it: `{"nodes":[{"id","removed","partly_checked","versions":[{"version","at","block"}]}]}`, with `at` an RFC 3339 time as `time.RFC3339Nano` writes it, with an upper-case `T` and `Z`.
   The reader refuses an `at` with a lower-case `t` or `z`, which RFC 3339 allows, since the writer writes upper case.
   `specgraph.WriteApproved` writes it as `specgraph.ReadApproved` reads it, so the writer and the commands that read the file share that one definition; no route of the Dispatch server writes the file yet.
   `ReadApproved` reads it through the package's one strict JSON reader (`decodeJSON`), which refuses a field that it does not know or that is written in other letters, a field that one object gives two times, and a byte that is not UTF-8;
@@ -3239,7 +3239,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The refusal reads the environment of its own process, so it covers each route that passes the runner's environment on to the command: a step, a package script, a make target, a script in any directory, or a link to one.
   It does not cover a route that drops that environment, such as `sudo` with its default `env_reset` or a container that `docker run` starts without `-e GITHUB_ACTIONS`: there the command compares (the built-binary row "compare compares behind a boundary that drops the environment" holds that with `env -i`).
   The guard names such a line in the files it reads only when the command's name and `compare` stand next to each other, as in `sudo -n spec-check compare`.
-  `docker run --entrypoint spec-check <image> compare` and a block list of a command (`- spec-check`, then `- compare`) put another word between the two, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
+  `docker run --entrypoint spec-check <image> compare` puts another word between the two, and a block list of a command (`- spec-check`, then `- compare`) a line break and a `-`, so such a line passes both parts, and so does a `sudo` or `docker run` call in a file that the guard does not read, such as a make target.
   The refusal is the command's, not `specgraph`'s, since the library's tests run in CI.
   The built-binary tests start each child without `GITHUB_ACTIONS` and with `CI` as the test process has it (`childEnv` in `cmd/spec-check/main_test.go`), and the row "compare does not run in a CI job" sets each variable.
 
@@ -3248,6 +3248,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The guard names each place of a CI file where the command's name and then the word `compare` follow each other with only white space, commas, `(` or `[` between them, and with quote characters (also a `$` before one), backslashes, and line breaks with the indentation after them ignored.
   The name is `spec-check`, under any path, as a word of its own: a word that only holds it, such as `envoy-spec-check`, `myspec-check`, `spec-checker` or `spec-check-linux`, is another name, and a suffix such as `.exe` or `@v1` keeps it.
   `compare` is a word of its own too: a letter, a digit, `_`, `-`, `.` or `/` right after it makes another word or a path, so `needs: [spec-check, compare-baselines]`, `spec-check compare-all`, `spec-check compare.sh` and `paths: ['cmd/spec-check', 'compare/**']` are not named.
+  A letter right after a backslash ends an escape, which a double-quoted YAML value or a string of a script turns into a character of its own, so `run: "set -e\nspec-check compare …"` and `execSync("set -e\nspec-check compare …")` are named, and after `compare` a `\n` or a `\t` ends the word.
+  A name right after an escape that ends in a digit or that another character starts, such as `\x20`, PowerShell's `` `n `` or a batch file's `%~dp0`, is not named, nor `compare` before a `\x20`.
   A list of arguments in a script, such as `spawnSync('spec-check', ['compare'])` or `subprocess.run(["spec-check","compare"])`, is named too.
   The guard also names a comment or a quoted text that no shell runs, and the author rewords that line.
   It does not find a command that an expansion, an escape or an alias builds, or one with another word between the two, and it is no defence against an author who hides the command: `compare` itself refuses to run in a CI job.
