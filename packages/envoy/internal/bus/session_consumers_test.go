@@ -306,6 +306,7 @@ func TestRestartAtFloorNeverDeliversWhatTheStreamHeldBeforeTheConsumer(t *testin
 	if floor := ackFloor(info); floor != held-1 {
 		t.Fatalf("the floor read with the first delivery unacked is %d, want the sequence before its start, %d (the server reports %d)", floor, held-1, info.AckFloor.Stream)
 	}
+	waitForStoredState(t, owner, session)
 	if start, err = consumers.RestartAtFloor(ctx, session, filters); err != nil {
 		t.Fatalf("restart at floor: %v", err)
 	}
@@ -370,6 +371,8 @@ func TestRestartAtFloorRedeliversTheUnackedInStreamOrder(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, seqs[0])
+	waitForAckPending(t, consumers, session, 2)
+	waitForStoredState(t, owner, session)
 
 	start, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
@@ -452,7 +455,8 @@ func TestRestartAtFloorWithNothingAwaitingAnAckKeepsTheConsumer(t *testing.T) {
 
 // A restart of a consumer with a message awaiting an ack still deletes and creates it at the floor:
 // the consumer is a new one, and it delivers the unacked message again, then the next, in stream
-// order.
+// order. The restart waits until the delivery is in the consumer's state file
+// (waitForStoredState), and until then the delete could race the server's own write of it.
 func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testing.T) {
 	owner, consumers := sessionConsumersOnStream(t)
 	ctx := context.Background()
@@ -475,6 +479,7 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 		t.Fatalf("the consumer has %d awaiting an ack, want the held message", before.NumAckPending)
 	}
 
+	waitForStoredState(t, owner, session)
 	start, err := consumers.RestartAtFloor(ctx, session, []string{agent})
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
@@ -594,6 +599,7 @@ func TestAMessageWhoseAckWaitPassedStillAwaitsAnAck(t *testing.T) {
 		t.Fatalf("ackFloor reads %d after the later ack, want %d, the sequence before the message nobody answered", floor, unanswered-1)
 	}
 
+	waitForStoredState(t, owner, session)
 	start, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)
@@ -640,6 +646,20 @@ func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string
 		}
 		return info.AckFloor.Stream == floor, fmt.Sprintf("it stayed %d", info.AckFloor.Stream)
 	})
+}
+
+// waitForStoredState waits for the state file of sessionID's consumer to hold the position the
+// server reports for it (testnats.AwaitConsumerStored, which says why a delete of a one-copy
+// consumer followed by a create of its name waits for that). A test calls it right before a step
+// that deletes the consumer after it delivered or was acked, once the server has taken every ack
+// the test sent: the wait sees only the state the server already holds.
+func waitForStoredState(t *testing.T, owner *Client, sessionID string) {
+	t.Helper()
+	name, ok := SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%s names no session consumer", sessionID)
+	}
+	testnats.AwaitConsumerStored(t, owner.Connection(), Stream, name)
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone
@@ -936,6 +956,7 @@ func TestAConsumerCreatedAgainAtTheRecordedFloorHandsBackNothingTheSessionAcked(
 	t.Logf("with every message acked the server reports the ack floor as %d, the last delivery as %d and %d awaiting an ack; the floor this package reads from that is %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.NumAckPending, ackFloor(info))
 
+	waitForStoredState(t, owner, session)
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -1273,6 +1294,7 @@ func TestDeleteAfterAFaultedRestartLeavesNoPendingStart(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckPending(t, consumers, session, 1)
+	waitForStoredState(t, owner, session)
 
 	consumers.SetCreateFault(func(string) error { return errors.New("the create faulted") })
 	if _, err := consumers.RestartAtFloor(ctx, session, []string{agent}); err == nil {
@@ -1352,6 +1374,7 @@ func TestAConsumerCreatedAgainStartsAtTheRecordedResumeFloor(t *testing.T) {
 	}
 	pull.Stop()
 	waitForAckFloor(t, consumers, session, acked)
+	waitForStoredState(t, owner, session)
 
 	floor, err := consumers.Delete(ctx, session, nil)
 	if err != nil || floor != acked {
@@ -1529,6 +1552,7 @@ func TestADeleteThatFindsNoConsumerRecordsThePendingStartItDrops(t *testing.T) {
 	pull.Stop()
 	waitForAckPending(t, consumers, session, 1)
 	waitForAckFloor(t, consumers, session, acked)
+	waitForStoredState(t, owner, session)
 
 	// A restart whose create faults leaves the consumer deleted and its start pending, which is
 	// the state a listener killed between the two is in when the sweep reaches that session.
