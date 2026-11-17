@@ -71,8 +71,10 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 					return err
 				}
 			}
-			if write.Rating != nil && kind != "" && kind != StepKindRetro {
-				return inputError("rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
+			if write.Rating != nil {
+				if err := ratingOfKind(id, kind); err != nil {
+					return err
+				}
 			}
 			return nil
 		},
@@ -342,7 +344,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		canonical := report.String()
 		stated = append(stated, attribute{AttributeReport, canonical, canonical})
 	}
-	rated, err := write.rating(kind)
+	rated, err := write.rating(id, kind)
 	if err != nil {
 		return "", nil, err
 	}
@@ -352,8 +354,8 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 // rating checks the rating a write states with its reason, the rating the agent that did a retro
 // gave the plan, and answers their two attributes, or none where the write states no rating. The
 // reason is stated (a reason "" is none), not blank and holds at most RatingReasonMost code points;
-// the rating is 1 to 5, and kind, where the write names one, is a retro.
-func (write StepWrite) rating(kind string) ([]attribute, error) {
+// the rating is 1 to 5, and kind, where the write names one, is a retro (ratingOfKind).
+func (write StepWrite) rating(id, kind string) ([]attribute, error) {
 	if write.Rating == nil {
 		return nil, nil
 	}
@@ -370,8 +372,8 @@ func (write StepWrite) rating(kind string) ([]attribute, error) {
 	if length := utf8.RuneCountInString(reason); length > RatingReasonMost {
 		return nil, inputError("rating_reason holds %d characters, more than the %d a reason holds", length, RatingReasonMost)
 	}
-	if kind != "" && kind != StepKindRetro {
-		return nil, inputError("rating is the rating a retro gives its plan, and this write is of a run of kind %s", kind)
+	if err := ratingOfKind(id, kind); err != nil {
+		return nil, err
 	}
 	return []attribute{
 		{AttributeRating, int64(rating), strconv.Itoa(rating)},
@@ -406,6 +408,15 @@ func (write StepWrite) missingIdentity() []string {
 func typeOfKind(kind, typ string) error {
 	if typ != "" && kind != "" && kind != StepKindStep {
 		return inputError("type %q is no type of a %s: no plan names it, so it has none", typ, kind)
+	}
+	return nil
+}
+
+// ratingOfKind refuses a rating for run id of kind step or merge: a rating is the rating a retro
+// gives its plan.
+func ratingOfKind(id, kind string) error {
+	if kind != "" && kind != StepKindRetro {
+		return inputError("rating is the rating a retro gives its plan, and step %s is a run of kind %s", id, kind)
 	}
 	return nil
 }
