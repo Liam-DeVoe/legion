@@ -77,6 +77,7 @@ test("ProofDocument repairs a document outside the schema by an upload under its
       markdown: "repaired\n",
       token: "sha256:repaired",
       version: 2,
+      unsettled: false,
     });
     await user.click(await screen.findByRole("button", { name: "Upload" }));
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
@@ -155,7 +156,12 @@ test("ProofDocument waits for a fresh text read before reconnecting from cached 
     expect(connections).toHaveLength(0);
 
     await act(async () => {
-      resolveText({ markdown: "fresh document", token: "sha256:fresh-document", version: null });
+      resolveText({
+        markdown: "fresh document",
+        token: "sha256:fresh-document",
+        version: null,
+        unsettled: true,
+      });
       await textRead;
     });
     await waitFor(() => expect(connections).toHaveLength(1));
@@ -364,6 +370,7 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
       markdown: "The live document",
       token: "sha256:live-document",
       version: 1,
+      unsettled: false,
     });
     await user.click(screen.getByRole("button", { name: "Rebuild from the latest version" }));
     await waitFor(() => expect(rebuildArtifact).toHaveBeenCalledTimes(1));
@@ -436,6 +443,7 @@ test("ProofDocument shows content this build cannot show yet without a replace d
       markdown: "The live document",
       token: "sha256:live-document",
       version: 1,
+      unsettled: false,
     });
     await waitFor(() => expect(connections).toHaveLength(1), { timeout: 3_000 });
     expect(

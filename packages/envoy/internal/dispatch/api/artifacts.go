@@ -833,10 +833,17 @@ type artifactText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
-	MarkdownTree model.DisplayTree      `json:"markdown_tree,omitempty"`
-	Token        string                 `json:"token"`
-	Version      *int                   `json:"version"`
-	Blocks       *[]model.ArtifactBlock `json:"blocks,omitempty"`
+	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
+	Token        string            `json:"token"`
+	// Version is the newest version whose stored markdown is Markdown, read after the markdown by
+	// that markdown (versionOfText), so a review naming it approves the text this read answered.
+	// Where no version stores Markdown it is the newest version and Unsettled is true: Markdown
+	// holds edits made after that version, which no version holds yet (a room's unsettled typing).
+	// Version is nil for a document with no version. Unsettled stands before Version, where the
+	// sorted keys of the map this body was once written from put it (TestResponseShapes).
+	Unsettled bool                   `json:"unsettled"`
+	Version   *int                   `json:"version"`
+	Blocks    *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -852,21 +859,11 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, apicode.NotDocument, "artifact is not a document")
 		return
 	}
-	markdown, token, blocks, err := s.artifactTextBody(r, artifact.ID)
+	answer, err := s.artifactTextBody(r, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	// The markdown and the version are two unsynchronised reads, in both directions: the live
-	// markdown can be ahead of the version while browser text is unsettled, and a version minted
-	// between the two reads can be ahead of the markdown. `token` is the route's concurrency
-	// primitive; `version` says which version the document has, not which one this markdown is.
-	version, err := latestVersionNumber(r.Context(), s.deps.Store.Pool, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
-	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
 	// The tree is built only for a caller that asked for one: the command line and the agent
 	// clients read this route for its markdown, and a tree they discard would cost them the
 	// read and evict from the cache what a browser is reading.
@@ -876,42 +873,56 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 	// this process has not served since it started copies those bytes.
 	if wantsDisplayTrees(r) {
 		reader := s.readDisplayTrees(r.Context(), true)
-		reader.text(&answer.MarkdownTree, markdown)
+		reader.text(&answer.MarkdownTree, answer.Markdown)
 		reader.resolve()
 	}
 	WriteJSON(w, http.StatusOK, answer)
 }
 
-// artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true (documentText).
-func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
+// artifactTextBody is what the three text routes answer, with the blocks for a request that asked
+// for them with ?blocks=true (documentText).
+func (s *server) artifactTextBody(r *http.Request, artifactID string) (artifactText, error) {
 	return s.documentText(r.Context(), artifactID, r.URL.Query().Get("blocks") == "true")
 }
 
 // documentText is a document's markdown and token, with its blocks beside them where withBlocks
-// asks for them: what the /api/v1 text routes answer and what include=text and include=blocks add
-// to a /api/v2 artifact row. The three come from one rendering of one tree
-// (docs.TextWithTokenAndBlocks), so a write by another session cannot leave a listing's byte
-// ranges indexing markdown they were not computed over; nil blocks for a read that asked for none,
-// which pays for none of that rendering.
-func (s *server) documentText(ctx context.Context, artifactID string, withBlocks bool) (string, string, *[]model.ArtifactBlock, error) {
-	if !withBlocks {
+// asks for them, and the version that markdown is: what the /api/v1 text routes answer and what
+// include=text and include=blocks add to a /api/v2 artifact row. The markdown, the token and the
+// blocks come from one rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another
+// session cannot leave a listing's byte ranges indexing markdown they were not computed over; nil
+// blocks for a read that asked for none, which pays for none of that rendering. The version is
+// read once the markdown is rendered, by that markdown (versionOfText): no database read holds a
+// room's tree, so the version cannot come from the tree's read, and a version another session
+// writes between the two stores other text, so it is not named over this one.
+func (s *server) documentText(ctx context.Context, artifactID string, withBlocks bool) (artifactText, error) {
+	var text artifactText
+	if withBlocks {
+		markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
+		if err != nil {
+			return artifactText{}, err
+		}
+		if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
+			return artifactText{}, err
+		}
+		// A document with no blocks answers the empty list, never a missing key: the key is absent
+		// only where the request asked for no blocks.
+		if blocks == nil {
+			blocks = []model.ArtifactBlock{}
+		}
+		text = artifactText{Markdown: markdown, Token: token, Blocks: &blocks}
+	} else {
 		markdown, token, err := s.deps.Docs.TextWithToken(ctx, artifactID)
-		return markdown, token, nil, err
+		if err != nil {
+			return artifactText{}, err
+		}
+		text = artifactText{Markdown: markdown, Token: token}
 	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(ctx, artifactID)
+	version, unsettled, err := versionOfText(ctx, s.deps.Store.Pool, artifactID, text.Markdown)
 	if err != nil {
-		return "", "", nil, err
+		return artifactText{}, err
 	}
-	if err := s.describeBlocks(ctx, artifactID, blocks); err != nil {
-		return "", "", nil, err
-	}
-	// A document with no blocks answers the empty list, never a missing key: the key is absent
-	// only where the request asked for no blocks.
-	if blocks == nil {
-		blocks = []model.ArtifactBlock{}
-	}
-	return markdown, token, &blocks, nil
+	text.Version, text.Unsettled = version, unsettled
+	return text, nil
 }
 
 func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {

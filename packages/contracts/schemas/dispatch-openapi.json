@@ -13591,6 +13591,9 @@
           "token": {
             "type": "string"
           },
+          "unsettled": {
+            "type": "boolean"
+          },
           "version": {
             "type": [
               "null",
@@ -13601,6 +13604,7 @@
         "required": [
           "markdown",
           "token",
+          "unsettled",
           "version"
         ],
         "type": "object"

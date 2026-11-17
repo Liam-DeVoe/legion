@@ -58,6 +58,33 @@ func settledVersionNumber(ctx context.Context, q queryer, artifactID string) (in
 	return *latest, nil
 }
 
+// versionOfText is the version a read of a document's text names beside markdown, the text it
+// answers: the newest version whose stored markdown is markdown, with unsettled false, so a review
+// naming it approves the text the reader got. The read renders its text first and asks this after,
+// and a version another session writes in between stores other text, so it is not named over the
+// text read before it, however late this runs. Where no version stores markdown - a room holding
+// edits no version holds yet - it is the newest version, with unsettled true: the text holds edits
+// after it; nil, unsettled true, for a document with no version. The match is the markdown alone:
+// the document token is no part of it, since the token covers inline marks the markdown leaves
+// out, and a comment anchored after a version changes the document's token and writes no version,
+// which would leave that version's own text matching no version. Postgres compares two texts'
+// lengths before it reads them, so a version of another length costs the match no read of its
+// markdown. One statement, so the newest version and the match are of one snapshot.
+func versionOfText(ctx context.Context, q queryer, artifactID, markdown string) (version *int, unsettled bool, err error) {
+	var matched, latest *int
+	if err := q.QueryRow(ctx, `
+		select
+			(select number from artifact_versions where artifact_id = $1 and markdown = $2 order by number desc limit 1),
+			(select max(number) from artifact_versions where artifact_id = $1)
+	`, artifactID, markdown).Scan(&matched, &latest); err != nil {
+		return nil, false, fmt.Errorf("read the version of the document's text: %w", err)
+	}
+	if matched != nil {
+		return matched, false, nil
+	}
+	return latest, true, nil
+}
+
 // loadReviews is every review of the document, newest first in the order its events committed
 // (docs.ReviewOrder).
 func (s *server) loadReviews(ctx context.Context, q queryer, artifactID string) ([]model.ArtifactReview, error) {

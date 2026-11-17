@@ -49,10 +49,13 @@ const artifactRowText = "Each artifact is one row: its own fields (id, issue_key
 	"GET /api/v2/artifacts/{id}/versions."
 
 // artifactIncludeText is what every description of a read of documents says include= adds.
-const artifactIncludeText = "include=text adds to each document its canonical markdown, its whole-document token and " +
-	"its version number, and include=blocks its blocks, each with its markdown range, token, reference counts, " +
-	"attributes, table and embedding state; include=text,blocks reads all of them from one tree, so another " +
-	"session's write cannot split the blocks' ranges from the markdown they index. A file or an image carries neither."
+const artifactIncludeText = "include=text adds to each document its canonical markdown, its whole-document token, " +
+	"its version, the newest version whose stored markdown is that markdown, and unsettled false, or, where no " +
+	"version stores it, the newest version and unsettled true, the markdown holding edits no version holds yet " +
+	"(unsettled is null on a row read without include=text); include=blocks adds its blocks, each with its markdown " +
+	"range, token, reference counts, attributes, table and embedding state; include=text,blocks reads all of them " +
+	"from one tree, so another session's write cannot split the blocks' ranges from the markdown they index. A file " +
+	"or an image carries neither."
 
 // artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
 // slug=, which answers for the /api/v1 read by slug (J7).
@@ -518,14 +521,19 @@ type artifactV2 struct {
 	// Approval is a document's approval as of its latest version; absent for a file or an image.
 	Approval *artifactApprovalRead `json:"approval,omitempty"`
 	// Markdown, Token and Version are a document's canonical markdown, its whole-document token
-	// and its newest version's number, with include=text; Version is read after the markdown, a
-	// read of its own, so it says which version the document has rather than which one this
-	// markdown is, and the token is the write's concurrency key.
+	// and the version that markdown is, with include=text (documentText): the newest version whose
+	// stored markdown is Markdown, else the newest version. The token is the write's concurrency key.
 	Markdown *string `json:"markdown,omitempty"`
 	// MarkdownTree is the tree Markdown is shown as, for a caller that sent `Dispatch-Trees: 1`.
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	Token        *string           `json:"token,omitempty"`
 	Version      *int              `json:"version,omitempty"`
+	// Unsettled is true where Markdown holds edits made after Version that no version holds yet
+	// (a room's unsettled typing) and false where Version's stored markdown is Markdown, on every
+	// row that carries Markdown (include=text on a document); null on a row that carries none, one
+	// read without include=text or a file or an image, so it never says false of text the read did
+	// not answer. A pointer with no omitempty: the member is on every row, required and nullable.
+	Unsettled *bool `json:"unsettled"`
 	// Blocks are a document's blocks, with include=blocks: from the tree Markdown was rendered
 	// from where include names text too.
 	Blocks *[]model.ArtifactBlock `json:"blocks,omitempty"`
@@ -573,15 +581,11 @@ func (s *server) artifactRowsV2(ctx context.Context, r *http.Request, artifacts 
 		}
 		switch {
 		case include.text:
-			markdown, token, blocks, err := s.documentText(ctx, row.ID, include.blocks)
+			text, err := s.documentText(ctx, row.ID, include.blocks)
 			if err != nil {
 				return nil, err
 			}
-			version, err := latestVersionNumber(ctx, s.deps.Store.Pool, row.ID)
-			if err != nil {
-				return nil, err
-			}
-			row.Markdown, row.Token, row.Version, row.Blocks = &markdown, &token, version, blocks
+			row.Markdown, row.Token, row.Version, row.Unsettled, row.Blocks = &text.Markdown, &text.Token, text.Version, &text.Unsettled, text.Blocks
 		case include.blocks:
 			blocks, err := s.documentBlocks(ctx, row.ID)
 			if err != nil {

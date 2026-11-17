@@ -47,6 +47,7 @@ beforeEach(() => {
     markdown: "",
     token: "",
     version: null,
+    unsettled: true,
   });
   // The pane reads one field of the issue: whether it is closed, which it hands the document.
   getIssue = spyOn(api, "getIssue").mockResolvedValue({

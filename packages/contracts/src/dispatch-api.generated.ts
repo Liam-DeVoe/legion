@@ -3362,6 +3362,7 @@ export interface components {
         [key: string]: unknown;
       };
       token: string;
+      unsettled: boolean;
       version: null | number;
     };
     ArtifactUploadResponse: {
