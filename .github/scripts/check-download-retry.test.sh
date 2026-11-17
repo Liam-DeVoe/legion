@@ -12259,6 +12259,115 @@ check "refuses the script by name" \
   "$(contains "$out" "::error file=.github/scripts/r37_fetch_tools.sh,line=1::.github/scripts/r37_fetch_tools.sh is a script under .github/scripts/ that fetches, and its name is one this check finds no call of")"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
 
+# F1 holds a .sh name the call pattern misses. The four cases below are files under .github/scripts
+# that the gate's own file list leaves out: a name with no .sh suffix, a .bash suffix, and a .sh
+# script in a subdirectory. A step runs each one in a command word, as F1's step does. Each passed
+# the gate at 0b924e3b928 under a key below what it waits for, and a bare curl in such a file
+# passed with no floor refusal (dispatch://INFRA-1545, the tester's round-37 battery, W1, W2, W6
+# and W9). Each case asks for a refusal that names the file, in whatever words the gate chooses.
+echo "case: r37 W1 a fetching script with no .sh suffix is not passed under its retries"
+root=$(fixture r37-w1-no-suffix)
+cat > "$root/.github/scripts/r37-fetch-tools" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+chmod +x "$root/.github/scripts/r37-fetch-tools"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a script whose name has no suffix
+        timeout-minutes: 17
+        run: .github/scripts/r37-fetch-tools
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the script" "$(contains "$out" 'r37-fetch-tools')"
+
+echo "case: r37 W2 a fetching script with a .bash suffix is not passed under its retries"
+root=$(fixture r37-w2-bash-suffix)
+cp "$work/r37-w1-no-suffix/.github/scripts/r37-fetch-tools" "$root/.github/scripts/r37-fetch-tools.bash"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a script whose name ends in .bash
+        timeout-minutes: 17
+        run: .github/scripts/r37-fetch-tools.bash
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the script" "$(contains "$out" 'r37-fetch-tools.bash')"
+
+echo "case: r37 W6 a bare curl in a script in a subdirectory of .github/scripts is refused"
+root=$(fixture r37-w6-subdirectory)
+mkdir -p "$root/.github/scripts/lib"
+cat > "$root/.github/scripts/lib/r37-bare.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL -o b https://example.com/releases/download/v1/b
+SH
+chmod +x "$root/.github/scripts/lib/r37-bare.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a script in a subdirectory
+        timeout-minutes: 5
+        run: .github/scripts/lib/r37-bare.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the script" "$(contains "$out" 'lib/r37-bare.sh')"
+
+# The subdirectory script below waits for two ladders, 2100 s, and a top-level script of the same
+# name waits for one; the key, 34 minutes, 2040 s, is under the two.
+echo "case: r37 W9 a script in a subdirectory is not charged as its top-level namesake"
+root=$(fixture r37-w9-namesake)
+mkdir -p "$root/.github/scripts/lib"
+cat > "$root/.github/scripts/r37-namesake.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/lib/r37-namesake.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+retry_fetch "a second asset" 180 -- curl -fsSL --max-time 180 -o c https://example.com/c
+SH
+chmod +x "$root/.github/scripts/r37-namesake.sh" "$root/.github/scripts/lib/r37-namesake.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the subdirectory script
+        timeout-minutes: 34
+        run: .github/scripts/lib/r37-namesake.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "names the subdirectory script" "$(contains "$out" 'lib/r37-namesake.sh')"
+
 # F2. A heredoc line reading `timeout-minutes: 20` is text, no key: it took the block's one key,
 # so the job's own key went unpaired and the job passed under the 1200 s its block states. The
 # line is refused by name, and the block is paired with the key below it.
