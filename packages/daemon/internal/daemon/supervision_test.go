@@ -108,6 +108,9 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			c.ProviderKeys = []config.ProviderKey{{Env: "ABSENT_ENV", Secret: "ABSENT_KEY"}}
 			o.environ = []string{"PATH=" + t.TempDir()}
 		}, "provider_keys.ABSENT_ENV: the secrets command is not on PATH, so ABSENT_KEY cannot be read"},
+		{"a plan guidance file that does not exist", func(c *config.Config, _ *overrides) {
+			c.PlanGuidancePath = filepath.Join(c.StateDir, "absent-guidance.md")
+		}, "plan guidance file {state}/absent-guidance.md could not be read"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
@@ -115,7 +118,12 @@ func TestRunRefusesAConfigurationItCannotSuperviseUnder(t *testing.T) {
 			testCase.change(&cfg, &o)
 			want := strings.NewReplacer("{state}", cfg.StateDir, "{seed}", cfg.NatsNkeySeedFile).Replace(testCase.want)
 
-			err := run(context.Background(), cfg, quietLogger(), o)
+			// A refusal returns before boot. A row whose refusal is missing would otherwise run
+			// the daemon until the package's own timeout, so the deadline ends it and the row
+			// fails here, naming the refusal it did not get.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			err := run(ctx, cfg, quietLogger(), o)
 
 			if err == nil || !strings.Contains(err.Error(), want) {
 				t.Fatalf("run = %v, want a refusal naming %q", err, want)
@@ -202,6 +210,29 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 	}
 	if spec.Project != project || spec.Tree != "LEGION-1" || spec.Issue != "LEGION-1" || spec.Role != claim.RoleArchitect {
 		t.Errorf("the launch is for %s/%s/%s/%s, want the spawned claim", spec.Project, spec.Tree, spec.Issue, spec.Role)
+	}
+}
+
+// Boot copies the operator's plan guidance under the state directory before the first pane opens,
+// headed as the copy is (config.WritePlanGuidance), so an owner's launch reads what boot read and
+// never the operator's own path.
+func TestRunWritesThePlanGuidanceCopy(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
+	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
+		t.Fatalf("write the plan guidance: %v", err)
+	}
+	startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
+
+	written, err := os.ReadFile(filepath.Join(cfg.StateDir, "plan-guidance.md"))
+	if err != nil {
+		t.Fatalf("boot wrote no plan guidance copy: %v", err)
+	}
+	want := "# Plan guidance of this deployment (" + cfg.Project + ")\n\n" +
+		"Legion requires none of this guidance and refuses no plan for a step it lacks.\n\n" +
+		"Review on another model family.\n"
+	if string(written) != want {
+		t.Fatalf("plan guidance copy = %q, want %q", written, want)
 	}
 }
 

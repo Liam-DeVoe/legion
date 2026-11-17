@@ -104,7 +104,7 @@ type Config struct {
 	// `<state_dir>/deployment-instructions.md` (MaterializeDeploymentInstructions).
 	InstructionsPath string
 	// PlanGuidancePath is the operator's guidance for the plans of the deployment's owners, "" when
-	// none.
+	// none; boot copies it to `<state_dir>/plan-guidance.md` (WritePlanGuidance).
 	PlanGuidancePath string
 	// WorkerStreamPort is the worker stream listener's TCP port under a runtime that dials it by
 	// TCP; Port + 1 unless the file names another.

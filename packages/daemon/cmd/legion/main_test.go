@@ -879,6 +879,44 @@ func TestStartCheckConfigPrintsEachProjectsDefaultSteps(t *testing.T) {
 	}
 }
 
+// --check-config names the owners' plan guidance after the project lines, as the path boot reads,
+// and refuses a guidance file boot would refuse; a file that sets no `plan_guidance` prints no
+// such line, which every other expectation here holds.
+func TestStartCheckConfigPrintsThePlanGuidance(t *testing.T) {
+	t.Run("a guidance file beside the configuration", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+		if err := os.WriteFile(guidance, []byte("Review on another model family.\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+
+		want := "Config OK: project=DEMO design-gate-steps=spec\n" + demoProjectLines +
+			"plan_guidance: " + guidance + " — each owner's system prompt carries this guidance after its addressing; Legion requires none of it\n" +
+			tmuxCapabilityGaps
+		if code != 0 || out.String() != want || errb.Len() != 0 {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+		}
+	})
+
+	t.Run("a guidance file that does not exist", func(t *testing.T) {
+		legionState(t)
+		config := projectsConfig(t, "projects:\n  DEMO: {}\nplan_guidance: guidance.md\n")
+		guidance := filepath.Join(filepath.Dir(config), "guidance.md")
+
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "start", "--config", config, "--check-config"}, &out, &errb)
+
+		want := "legion start: plan guidance file " + guidance + " could not be read"
+		if code != 1 || !strings.HasPrefix(errb.String(), want) {
+			t.Fatalf("exit code = %d, stdout %q, stderr %q; want 1 and stderr starting %q", code, out.String(), errb.String(), want)
+		}
+	})
+}
+
 // `legion start --check-config` validates the file the way boot does, says so, and exits: no App
 // key command runs, no store is opened (the configured Postgres is unreachable), and no team is
 // taken.

@@ -21,6 +21,7 @@ type bootReads struct {
 	paneNatsUser                          string         // the pane seed's user's public key, "" with no pane seed
 	nats                                  natsConnection // the user the daemon's own NATS connection authenticates as
 	instructions                          []byte         // nil when the configuration names none
+	planGuidance                          []byte         // nil when the configuration names none
 	variantInstructions                   []variantInstructions
 	hookPrompts                           map[string]string // the words of each hook whose prompt_file names a file, by hook name; nil while no hook names one
 	tmux                                  tmuxReads         // runtime: tmux
@@ -42,14 +43,15 @@ type variantInstructions struct {
 // and getenv for the OMP invocation) and the files they name, writing nothing: the project token,
 // the operator bearer's file, operator configuration colliding with Legion's own
 // (checkOperatorConfig), the launch secrets (readLaunchSecrets), the daemon's own NATS nkey seed
-// (natsauth.DaemonSeed), the instructions file, every declared variant's instructions file, the
-// file of every hook that reads its words from one (`hooks[].prompt_file`), the Dispatch bearer's
-// file, and the runtime's own reads (readTmux, readSandbox).
+// (natsauth.DaemonSeed), the instructions file, the owners' plan guidance file, every declared
+// variant's instructions file, the file of every hook that reads its words from one
+// (`hooks[].prompt_file`), the Dispatch bearer's file, and the runtime's own reads (readTmux,
+// readSandbox).
 // hostOMP is whether boot runs the host's Oh My Pi, false only for a test that replaced the
 // runtime. prepare runs it first; CheckStart is it for `legion start --check-config`, so the check
 // refuses whatever boot refuses before its first write. What boot does after it is not a check's to
-// do: create the state directory, write the instructions copies and the Dispatch token file, read
-// provider keys from secretsd, and run the plugin gate or the image probe.
+// do: create the state directory, write the instructions and plan guidance copies and the Dispatch
+// token file, read provider keys from secretsd, and run the plugin gate or the image probe.
 func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func(string) string, hostOMP bool, log *slog.Logger) (bootReads, error) {
 	var r bootReads
 	var err error
@@ -83,6 +85,11 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	}
 	if cfg.InstructionsPath != "" {
 		if r.instructions, err = config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
+			return bootReads{}, err
+		}
+	}
+	if cfg.PlanGuidancePath != "" {
+		if r.planGuidance, err = config.ReadPlanGuidance(cfg.PlanGuidancePath); err != nil {
 			return bootReads{}, err
 		}
 	}

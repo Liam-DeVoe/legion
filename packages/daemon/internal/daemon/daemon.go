@@ -734,6 +734,9 @@ type plan struct {
 	// carries its seed unless it is the pane seed.
 	nats         natsConnection
 	instructions string
+	// planGuidance is the path of boot's copy of the owners' plan guidance
+	// (config.WritePlanGuidance); "" when the configuration names none.
+	planGuidance string
 	// dispatchToken is the Dispatch bearer dispatch_token_file names; "" without Dispatch.
 	dispatchToken string
 	// hookPrompts are the words boot read for each hook whose `prompt_file` names a file, by
@@ -842,6 +845,12 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 			return plan{}, err
 		}
 	}
+	planGuidance := ""
+	if reads.planGuidance != nil {
+		if planGuidance, err = config.WritePlanGuidance(reads.planGuidance, cfg.StateDir, cfg.Project); err != nil {
+			return plan{}, err
+		}
+	}
 
 	// One copy per declared variant that names an instructions file, each under its experiment's
 	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
@@ -878,7 +887,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 	p := plan{
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames),
-		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions,
+		project:      reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, nats: reads.nats, instructions: instructions, planGuidance: planGuidance,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
