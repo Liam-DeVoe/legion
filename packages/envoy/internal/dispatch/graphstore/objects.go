@@ -97,6 +97,28 @@ func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
 	}
 }
 
+// StatementTime is the one time a writer of a document dates what it writes in its transaction:
+// the row it creates (its created_at) and every statement it makes about the document's node at
+// address id. It is the database's clock as the call runs (clock_timestamp(), never the
+// transaction's start), and one microsecond past the newest statement the store holds about the
+// node where the clock reads no later. A writer reads it once, after it holds the row that orders
+// every writer of the address - the document's owner row (api's storeArtifact and removeArtifact)
+// - so two writers of one address read it one after the other, the second once the first has
+// committed, and the second's time is strictly later than every statement the first made, by the
+// clock and, should the clock step back, by the greatest(). A row's created_at is therefore later
+// than every statement about the rows its address held before it, which is what lets a live
+// statement dated at a row's created_at name that row (graphcensus's gone class).
+func StatementTime(ctx context.Context, q Queryer, kind, id string) (time.Time, error) {
+	var at time.Time
+	if err := q.QueryRow(ctx, `
+		select greatest(clock_timestamp(), (
+			select max(at) + interval '1 microsecond' from graph_tuples where from_kind = $1 and from_id = $2))
+	`, kind, id).Scan(&at); err != nil {
+		return time.Time{}, fmt.Errorf("read the time of a write of %s/%s: %w", kind, id, err)
+	}
+	return at.UTC(), nil
+}
+
 // PartiesValue is the value the `parties` attribute of a node between parties carries: its parties
 // sorted, each once, and joined by one space, which is what graph_nodes.parties is split back from.
 // It is the one place the parties are joined, so it refuses a party that is empty or holds white

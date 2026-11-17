@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -54,8 +53,10 @@ import (
 // build before this one created, which has no node until the backfill writes one, first gets the
 // node its create would have written - live, made by its creator at its created_at, at the
 // sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
-// stated gone, by the person who removed it and when. A document that has its node is written
-// again with nothing moved, which states nothing.
+// stated gone, by the person who removed it, at the time this transaction reads from the
+// database's clock under the owner row it holds (graphstore.StatementTime): later than every
+// statement about the address, so a document made there next is dated later still. A document
+// that has its node is written again with nothing moved, which states nothing.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -118,9 +119,13 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
 			return
 		}
-		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, time.Now().UTC())
+		removedAt, err := graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
 		gone.State = graphstore.StateGone
-		var err error
 		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
 			return

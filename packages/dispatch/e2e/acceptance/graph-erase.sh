@@ -511,11 +511,12 @@ readonly other_key other_document other_ref other_comment
 pass E2 "planted the secret in $other_ref and comment:$other_comment of $other_key, which no erase here derives from"
 
 # A row of every kind the store census covers, which E8 reads: the census refuses a kind it checked
-# no row of (R19), and a database this driver runs over need hold no block reference and no role.
-# A document of the other issue that cites that issue gives the block references a row, and the
-# other issue routed to a role gives the role and its page theirs. Neither holds the secret, and no
-# erase here derives from them. The publisher writes the role's node and its page from the route's
-# event, so the driver waits for both.
+# no row of (R19), and a database this driver runs over need hold no block reference, no role and
+# no person. A document of the other issue that cites that issue gives the block references a row,
+# the other issue routed to a role gives the role and its page theirs, and a comment the signed-in
+# person writes on it gives the person its node. None holds the secret, and no erase here derives
+# from them. The publisher writes the role's node and its page from the route's event, so the
+# driver waits for both.
 readonly census_role="graph-erase-reader"
 send POST "/api/v1/issues/$other_key/artifacts" "$(jq -cn --arg s "$session" --arg key "$other_key" \
   '{name: "census-cites.md", content: ("# Cites\n\nA block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
@@ -523,6 +524,8 @@ want_status 201 E2 "write a document of $other_key that cites it"
 send PATCH "/api/v1/issues/$other_key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
   '{route: $r, actor: {kind: "session", id: $s}}')"
 want_status 200 E2 "route $other_key to role $census_role"
+person_send POST "/api/v1/issues/$other_key/comments" '{"body":"A remark the person wrote, for the census of persons."}'
+want_status 201 E2 "$login comments on $other_key"
 populated_polls=0
 while :; do
   query E2 "read the block reference and the role's node and page" \

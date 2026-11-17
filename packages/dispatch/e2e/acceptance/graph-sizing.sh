@@ -59,8 +59,8 @@
 # within a year, which would refuse the census of the next run and fail this driver on a corpus
 # of its own rather than on the growth it watches. The removal takes the documents this run
 # wrote under its own issue, their blocks, the nodes and tuples those blocks made and every row
-# that references those documents, and nothing else; it leaves the issue, closed, and the one
-# comment C2 wrote. What it cannot remove it prints, with what that leaves behind. Two runs of
+# that references those documents, and nothing else; it leaves the issue, closed, and the two
+# comments C2 wrote. What it cannot remove it prints, with what that leaves behind. Two runs of
 # this driver over one database therefore both pass, which is how it is proved.
 #
 # The database every figure above comes from is this pod's own test database and never the
@@ -79,8 +79,10 @@
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
 # server serves, which `envoy-dispatch census` reads from its own environment: no bearer reaches
-# the command and no route serves it), and `envoy-dispatch` on PATH. A missing DATABASE_URL and a
-# missing command are each exit 2, as every unmet input of this driver is. The production reading
+# the command and no route serves it), `envoy-dispatch` on PATH, and optionally DEV_SIGNIN_LOGIN
+# (default alice), a person the server's dev sign-in route signs in, who writes the comment that
+# gives the census's person kind a row. A missing DATABASE_URL and a missing command are each
+# exit 2, as every unmet input of this driver is. The production reading
 # takes two more required inputs: PRODUCTION_PROJECT, the Google Cloud project whose Cloud
 # Monitoring holds the series, and PRODUCTION_DATABASE_ID, the Cloud SQL instance the series is
 # read for, which the negative control points at an instance no project carries. This repository
@@ -131,7 +133,13 @@ if [[ ! "$production_days" =~ ^[0-9]+$ ]] || [[ "$production_days" -lt 14 ]]; th
   exit 2
 fi
 
+# shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own subshell's; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
+# authenticates must name it (enforceCookieOrigin).
+base_host="${base#*://}"
+readonly origin="${base%%://*}://${base_host%%/*}"
+readonly login="${DEV_SIGNIN_LOGIN:-alice}"
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 # shellcheck disable=SC2153 # DATABASE_URL is the caller's input, checked by name above
@@ -533,11 +541,13 @@ query C2 "read that comment through DATABASE_URL" \
 pass C2 "DATABASE_URL is the database the server serves"
 
 # C2: a row of every kind the store census covers. The census refuses a kind it checked no row of
-# (R19), and a database this driver runs over need hold no block reference and no role: a
-# document of this issue that cites the issue gives the block references a row, and the issue
-# routed to a role gives the role and its page theirs. The publisher writes the role's node and its
-# page from the route's event, so the driver waits for both before the census. The document goes
-# with the corpus at the end; the route stays on the closed issue, with the role's node and page.
+# (R19), and a database this driver runs over need hold no block reference, no role and no
+# person: a document of this issue that cites the issue gives the block references a row, the
+# issue routed to a role gives the role and its page theirs, and a comment the signed-in person
+# writes on it gives the person its node. The publisher writes the role's node and its page from
+# the route's event, so the driver waits for both before the census. The document goes with the
+# corpus at the end; the route and the person's comment stay on the closed issue, with the role's
+# node and page.
 readonly census_role="graph-sizing-reader"
 send POST "/api/v1/issues/$key/artifacts" "$(jq -cn --arg s "$session" --arg key "$key" \
   '{name: "sizing-cites.md", content: ("# Cites\n\nThe block reference of this run, to " + $key + ".\n"), actor: {kind: "session", id: $s}}')"
@@ -545,6 +555,14 @@ want_status 201 C2 "write a document of $key that cites it"
 send PATCH "/api/v1/issues/$key" "$(jq -cn --arg r "role:$census_role" --arg s "$session" \
   '{route: $r, actor: {kind: "session", id: $s}}')"
 want_status 200 C2 "route $key to role $census_role"
+curl -sS -o /dev/null -c "$work/jar" -G --data-urlencode "login=$login" "$base/auth/_dev/signin" 2>"$work/curl" ||
+  fail C2 "sign $login in" "curl: $(<"$work/curl")"
+[[ -s "$work/jar" ]] ||
+  fail C2 "sign $login in" "the dev sign-in route left no cookie; this driver needs a person to write a comment"
+status="$(curl -sS -X POST -o "$work/body" -w '%{http_code}' -b "$work/jar" -H "Origin: $origin" \
+  -H 'Content-Type: application/json' --data-binary '{"body":"A remark the person wrote, for the census of persons."}' \
+  "$base/api/v1/issues/$key/comments" 2>"$work/curl")" || status="curl failed: $(<"$work/curl")"
+want_status 201 C2 "$login comments on $key"
 populated_polls=0
 while :; do
   query C2 "read the block reference and the role's node and page" \

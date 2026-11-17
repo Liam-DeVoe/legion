@@ -21,7 +21,7 @@ import (
 )
 
 // A document's node is addressed by its ref_key, and the build before this one writes none, so
-// the two orders a roll can mix leave a node the census has to name, each with its cure:
+// the orders a roll can mix leave a node the census has to name, each with its cure:
 //
 //   - This build removes a document, stating its node gone, and the previous build makes a
 //     document of the same issue and name, which takes the same address: the row stands behind a
@@ -30,10 +30,17 @@ import (
 //   - This build makes a document, writing its node, and the previous build removes it: the node
 //     stands live behind no row. The census names it orphaned, with the command that removes it,
 //     the backfill leaves it as it is, and that command, run as the census printed it, removes it.
+//   - The previous build removes this build's document and this build makes it again: the create
+//     finds the orphaned node at the free address and states it gone, then live, under its own
+//     event, and the census names nothing.
+//   - The previous build removes this build's document and makes it again itself: the live node is
+//     the first row's, by its create event, so the census names the second row gone, and the
+//     backfill states the node gone, then live, under the second row's own event.
 //
-// After each cure the census names no project row or node at all. Its control is the same test
-// with this tree at the commit before these classes and their cures (the branch's head before
-// them): the census then names neither shape, and the backfill leaves the gone node gone.
+// After each cure the census names no project row or node at all. Its control is this file run in
+// the tree at the branch's head before these classes and their cures: there this build's removal
+// states nothing gone and the census prints no gone or orphaned field, so the first order fails at
+// the node's state, and the second's census names no orphaned node.
 func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T) {
 	builds := newTwoBuilds(t)
 	builds.startPrevious(t, nil)
@@ -56,7 +63,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		census := runStoreCensus(t, builds)
 		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
 		requireIncompleteLines(t, census, "artifact "+again.ref+": gone")
-		runCurrentCommand(t, builds, 0, "backfill-graph-store")
+		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, again.ref, "live")
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
@@ -71,7 +78,7 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
 			t.FailNow()
 		}
-		runCurrentCommand(t, builds, 0, "backfill-graph-store")
+		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
 		requireDocumentNodeState(t, builds, document.ref, "live")
 		census = runStoreCensus(t, builds)
 		if !requireIncompleteLines(t, census, "artifact "+document.ref+": orphaned; remove it with: "+erase) {
@@ -85,6 +92,33 @@ func TestTwoBuildsLeaveADocumentsNodeTheCensusNamesAndItsCureClears(t *testing.T
 		}
 		runPrinted(t, builds, 0, printed+" --confirm "+digest[1])
 		requireDocumentNodeState(t, builds, document.ref, "(no node)")
+		requireIncompleteLines(t, runStoreCensus(t, builds))
+	})
+
+	t.Run("the previous build removes this build's document and this build makes it again", func(t *testing.T) {
+		document := makeUntouchedDocument(t, current, issue, "Made again here.md")
+		removeUntouchedDocument(t, previous, document)
+		again := makeUntouchedDocument(t, current, issue, "Made again here.md")
+		if again.ref != document.ref {
+			t.Fatalf("this build made the document at %s, want the removed one's address %s, so this row proves nothing", again.ref, document.ref)
+		}
+		requireDocumentNodeState(t, builds, again.ref, "live")
+		requireIncompleteLines(t, runStoreCensus(t, builds))
+	})
+
+	t.Run("the previous build removes this build's document and makes it again", func(t *testing.T) {
+		document := makeUntouchedDocument(t, current, issue, "Made again there.md")
+		removeUntouchedDocument(t, previous, document)
+		again := makeUntouchedDocument(t, previous, issue, "Made again there.md")
+		if again.ref != document.ref {
+			t.Fatalf("the %s made the document at %s, want the removed one's address %s, so this row proves nothing",
+				builds.previousName(), again.ref, document.ref)
+		}
+		census := runStoreCensus(t, builds)
+		requireProjectLine(t, census, "artifact", "gone=1", "orphaned=0")
+		requireIncompleteLines(t, census, "artifact "+again.ref+": gone")
+		runCurrentCommand(t, builds, []int{0}, "backfill-graph-store")
+		requireDocumentNodeState(t, builds, again.ref, "live")
 		requireIncompleteLines(t, runStoreCensus(t, builds))
 	})
 }
@@ -130,19 +164,26 @@ func requireDocumentNodeState(t *testing.T, builds *twoBuilds, ref, state string
 	}
 }
 
-// runStoreCensus runs this tree's `envoy-dispatch census --store` and answers what it printed. Its
-// exit is not read: on a database holding no role, page or person, the store census refuses those
-// kinds for having no row to check, which says nothing of a document's node.
+// runStoreCensus runs this tree's `envoy-dispatch census --store` and answers what it printed. It
+// takes exit 0, a census that passed, and exit 1, one that refused: on a database holding no role,
+// page or person the store census refuses those kinds for having no row to check, which says
+// nothing of a document's node. Exit 2 is a census that could not be taken and printed no report,
+// and fails the test, as does a report holding no line for the document kind: a cure is read from
+// the report alone.
 func runStoreCensus(t *testing.T, builds *twoBuilds) string {
 	t.Helper()
-	return runCurrentCommand(t, builds, -1, "census", "--store")
+	census := runCurrentCommand(t, builds, []int{0, 1}, "census", "--store")
+	if !strings.Contains(census, "\ncensus: project kind=artifact ") && !strings.HasPrefix(census, "census: project kind=artifact ") {
+		t.Fatalf("the census printed no project line for documents, so it read no document node:\n%s", census)
+	}
+	return census
 }
 
 // runCurrentCommand runs this tree's envoy-dispatch with args against the pair's database and
-// answers its output, failing the test unless it exits with want (-1 takes any exit).
-func runCurrentCommand(t *testing.T, builds *twoBuilds, want int, args ...string) string {
+// answers its output, failing the test unless it exits with one of wants.
+func runCurrentCommand(t *testing.T, builds *twoBuilds, wants []int, args ...string) string {
 	t.Helper()
-	return runCommand(t, builds, want, strings.Join(args, " "), exec.Command(builds.binary, args...))
+	return runCommand(t, builds, wants, strings.Join(args, " "), exec.Command(builds.binary, args...))
 }
 
 // runPrinted runs a command line as the census printed it, in a POSIX shell whose PATH finds this
@@ -155,10 +196,10 @@ func runPrinted(t *testing.T, builds *twoBuilds, want int, line string) string {
 	if filepath.Base(builds.binary) != "envoy-dispatch" {
 		t.Fatalf("this tree's server is built as %s, so no shell finds it as envoy-dispatch", builds.binary)
 	}
-	return runCommand(t, builds, want, line, command)
+	return runCommand(t, builds, []int{want}, line, command)
 }
 
-func runCommand(t *testing.T, builds *twoBuilds, want int, shown string, command *exec.Cmd) string {
+func runCommand(t *testing.T, builds *twoBuilds, wants []int, shown string, command *exec.Cmd) string {
 	t.Helper()
 	command.Env = append(command.Environ(), "DATABASE_URL="+builds.databaseURL(t))
 	output, err := command.CombinedOutput()
@@ -170,8 +211,8 @@ func runCommand(t *testing.T, builds *twoBuilds, want int, shown string, command
 	case err != nil:
 		t.Fatalf("run %s: %v", shown, err)
 	}
-	if want >= 0 && code != want {
-		t.Fatalf("%s exited %d, want %d:\n%s", shown, code, want, output)
+	if !slices.Contains(wants, code) {
+		t.Fatalf("%s exited %d, want one of %v:\n%s", shown, code, wants, output)
 	}
 	return string(output)
 }

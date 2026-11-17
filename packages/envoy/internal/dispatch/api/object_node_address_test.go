@@ -1,0 +1,216 @@
+package api
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+)
+
+// A build before this one writes no node, so a document it removes leaves the node this build
+// wrote for it live behind no row (graphcensus's orphaned class). A document this build then
+// makes of the same issue and name takes that address. Its create holds the issue's row and has
+// found no row at the address, so the live node there is the removed document's: the create
+// states it gone and then live, both under its own artifact.created event and dated at the new
+// row's created_at, and the new document's node carries no statement of the removed one's as its
+// own. The project census reads the new row as complete.
+//
+// Its control is the create's gone step taken out: the node then states nothing for the new
+// document, and keeps the removed one's event and its one live statement.
+func TestADocumentMadeWhereAnOrphanedNodeStandsStatesItGoneThenLive(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "ORP", "A document an earlier build removed", "The spec.\n")
+	first := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	created := artifactEvent(t, database, "artifact.created", first.ID)
+	removeAsAnEarlierBuild(t, database, first.ID)
+
+	second := emptyDocument(t, handler, issue.Key, "Scratch.md")
+	if second.RefKey != first.RefKey {
+		t.Fatalf("the second document took the address %q, want the removed one's %q, so this test proves nothing", second.RefKey, first.RefKey)
+	}
+	remade := artifactEvent(t, database, "artifact.created", second.ID)
+	requireDocumentNode(t, database, second.RefKey, graphstore.StateLive, remade)
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, second.RefKey, graphstore.AttributeState)
+	if err != nil {
+		t.Fatalf("read the state history of %s: %v", second.RefKey, err)
+	}
+	var stated []string
+	for _, tuple := range history {
+		stated = append(stated, tuple.ToID)
+	}
+	if want := []string{graphstore.StateLive, graphstore.StateGone, graphstore.StateLive}; !equalStrings(stated, want) {
+		t.Fatalf("the node of %s states %v over its life, want %v", second.RefKey, stated, want)
+	}
+	if history[0].SourceEvent != created || history[1].SourceEvent != remade || history[2].SourceEvent != remade {
+		t.Errorf("the state statements of %s name events %d, %d and %d, want %d, then %d twice", second.RefKey,
+			history[0].SourceEvent, history[1].SourceEvent, history[2].SourceEvent, created, remade)
+	}
+	if newest := history[2]; !newest.At.Equal(second.CreatedAt) {
+		t.Errorf("the newest state statement of %s is dated %s, want the new row's created_at %s", second.RefKey, newest.At, second.CreatedAt)
+	}
+	requireProjectsComplete(t, database)
+}
+
+// A create's transaction can start while the removal of the document at its address is still
+// under way: the removal holds the issue's row, the create queues behind it, and the removal
+// states the node gone and deletes the row before it commits. The create dates its row and its
+// node's live statement with one time it reads from the database's clock after it holds the
+// issue's row (graphstore.StatementTime), so that time is later than the removal's gone
+// statement: the node's newest state statement, read by the order the store appends it in and by
+// the order of its time alike, is the new document's live one, dated at its row's created_at.
+//
+// Its control is the create dated at its transaction's start (now()): its live statement is then
+// dated before the removal's gone one, and a read of the node's state as of now answers gone.
+func TestACreateThatWaitedOnARemovalDatesItsDocumentAfterIt(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "CLK", "A document made while its namesake is removed", "The spec.\n")
+	first := emptyDocument(t, handler, issue.Key, "Scratch.md")
+
+	removal, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the removal: %v", err)
+	}
+	defer removal.Rollback(ctx)
+	if _, err := removal.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
+		t.Fatalf("take the issue's row as the removal does: %v", err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts",
+			map[string]any{"name": "Scratch.md"}, "alice")
+	}()
+	// The create's own statement, the owner check every upload takes (issueStatus with
+	// ownerRowLock): a document settlement queues on the issue's row too, with another statement,
+	// and is never taken for the create.
+	waitForLockWait(t, database, `%select status, closed_at is null from issues where key = $1 for no key update%`)
+	// The create's transaction has begun. The removal states the node gone at its own time and
+	// deletes the row, as removeArtifact does, then commits.
+	goneAt, err := graphstore.StatementTime(ctx, removal, graphstore.KindArtifact, first.RefKey)
+	if err != nil {
+		t.Fatalf("read the removal's time: %v", err)
+	}
+	gone := graphstore.ArtifactNode(first.RefKey, "CLK", "", model.Actor{Kind: "user", ID: "alice"}, goneAt)
+	gone.State = graphstore.StateGone
+	if err := graphstore.Write(ctx, removal, []graphstore.Node{gone}, nil); err != nil {
+		t.Fatalf("state the node gone: %v", err)
+	}
+	clearAndDeleteArtifact(t, ctx, removal, first.ID)
+	if err := removal.Commit(ctx); err != nil {
+		t.Fatalf("commit the removal: %v", err)
+	}
+
+	var response *httptest.ResponseRecorder
+	select {
+	case response = <-answered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the create did not answer within 30s of the removal's commit")
+	}
+	if response.Code != http.StatusCreated {
+		t.Fatalf("the create answered %d: %s", response.Code, response.Body.String())
+	}
+	second := decodeBody[uploadedArtifact](t, response).Artifact
+	if second.RefKey != first.RefKey {
+		t.Fatalf("the create took the address %q, want the removed one's %q, so this test proves nothing", second.RefKey, first.RefKey)
+	}
+	if !second.CreatedAt.After(goneAt) {
+		t.Errorf("the new document's created_at %s is not after the removal's gone statement %s", second.CreatedAt, goneAt)
+	}
+	history, err := graphstore.History(ctx, database.Pool, graphstore.KindArtifact, second.RefKey, graphstore.AttributeState)
+	if err != nil || len(history) == 0 {
+		t.Fatalf("read the state history of %s: %d tuple(s), %v", second.RefKey, len(history), err)
+	}
+	if newest := history[len(history)-1]; newest.ToID != graphstore.StateLive || !newest.At.Equal(second.CreatedAt) {
+		t.Errorf("the newest state statement of %s, by the order the store appended it in, is %s at %s, want live at the new row's created_at %s",
+			second.RefKey, newest.ToID, newest.At, second.CreatedAt)
+	}
+	var asOfNow string
+	if err := database.Pool.QueryRow(ctx, `
+		select to_id from graph_tuples
+		where from_kind = 'artifact' and from_id = $1 and kind = 'state' and to_kind = 'value' and at <= clock_timestamp()
+		order by at desc, seq desc limit 1
+	`, second.RefKey).Scan(&asOfNow); err != nil {
+		t.Fatalf("read the state of %s as of now: %v", second.RefKey, err)
+	}
+	if asOfNow != graphstore.StateLive {
+		t.Errorf("the state of %s as of now, by the order of its statements' time, is %s, want live", second.RefKey, asOfNow)
+	}
+	requireProjectsComplete(t, database)
+}
+
+// removeAsAnEarlierBuild removes the untouched document as a build before this one does: the rows
+// removeArtifact clears and the artifact row, in one transaction, and no node written.
+func removeAsAnEarlierBuild(t *testing.T, database *store.Store, artifactID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		clearAndDeleteArtifact(t, ctx, tx, artifactID)
+		return nil
+	}); err != nil {
+		t.Fatalf("remove document %s as an earlier build does: %v", artifactID, err)
+	}
+}
+
+// clearAndDeleteArtifact runs, in tx, the statements removeArtifact runs to take an untouched
+// document's rows away: its clears, its reference rows and the artifact row.
+func clearAndDeleteArtifact(t *testing.T, ctx context.Context, tx pgx.Tx, artifactID string) {
+	t.Helper()
+	artifact, err := loadArtifactRowByID(ctx, tx, artifactID)
+	if err != nil {
+		t.Fatalf("read document %s: %v", artifactID, err)
+	}
+	for _, clear := range artifactRemovalClears(artifact) {
+		if _, err := tx.Exec(ctx, clear.statement, clear.args...); err != nil {
+			t.Fatalf("clear the %s of document %s: %v", clear.what, artifactID, err)
+		}
+	}
+	if err := refs.ForgetDocument(ctx, tx, artifactID); err != nil {
+		t.Fatalf("forget the references of document %s: %v", artifactID, err)
+	}
+	if _, err := tx.Exec(ctx, `delete from artifacts where id = $1`, artifactID); err != nil {
+		t.Fatalf("delete document %s: %v", artifactID, err)
+	}
+}
+
+// requireProjectsComplete fails unless the project census names no row or node incomplete.
+func requireProjectsComplete(t *testing.T, database *store.Store) {
+	t.Helper()
+	incomplete, err := graphcensus.ProjectComplete(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the incomplete rows: %v", err)
+	}
+	if len(incomplete) != 0 {
+		t.Errorf("the project census names %q, want nothing", incomplete)
+	}
+}
+
+// waitForLockWait waits until a session of database waits on a lock at a statement matching the
+// LIKE pattern like, and fails the test after 10 seconds.
+func waitForLockWait(t *testing.T, database *store.Store, like string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		waiting, err := storetest.CountLockWaits(context.Background(), database, like)
+		if err != nil {
+			t.Fatalf("read the lock waits: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no session waited on a lock at %q within 10s, so this test proves nothing", like)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

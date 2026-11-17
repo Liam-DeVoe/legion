@@ -193,7 +193,15 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, tuples, err := writeBlockBatch(ctx, database, rows)
+		writable := make([]blockRow, 0, len(rows))
+		for _, row := range rows {
+			if row.project == "" && row.session != "" && partiesRefused([]string{graphstore.PartySession(row.session)}) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
+		}
+		written, tuples, err := writeBlockBatch(ctx, database, writable)
 		if err != nil {
 			return done, err
 		}
@@ -842,13 +850,23 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 			break
 		}
 		after = batch[len(batch)-1].id
-		nodes, tuples, err := writeCommentBatch(ctx, database, batch)
-		if err != nil {
-			return done, err
+		writable := make([]commentRow, 0, len(batch))
+		for _, row := range batch {
+			if partiesRefused(row.parties) {
+				done.Skipped++
+				continue
+			}
+			writable = append(writable, row)
 		}
-		done.Rows += int64(len(batch))
-		done.Nodes += nodes
-		done.Tuples += tuples
+		if len(writable) > 0 {
+			nodes, tuples, err := writeCommentBatch(ctx, database, writable)
+			if err != nil {
+				return done, err
+			}
+			done.Rows += int64(len(writable))
+			done.Nodes += nodes
+			done.Tuples += tuples
+		}
 		if len(batch) < backfillBatch {
 			break
 		}
