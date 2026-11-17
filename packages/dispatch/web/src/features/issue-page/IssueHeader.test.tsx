@@ -167,6 +167,18 @@ function answerHeaderReads(): void {
         spec_artifact_id: "",
       } satisfies IssueCoverage)
     ),
+    // The tree read, whose decision nodes the count reads a Change under (`waiting.ts`): an
+    // issue with no node, as the coverage above holds no statement.
+    http.get("/api/v1/issues/:key/tree", () =>
+      Response.json({
+        converted: false,
+        cursor: null,
+        nodes: [],
+        tree: null,
+        tuples: [],
+        view_of: null,
+      })
+    ),
     artifactRecordHandler((id) => (stubbedIssue.artifacts ?? []).find((each) => each.id === id)),
     ...decisionsAndReadMarkHandlers()
   );

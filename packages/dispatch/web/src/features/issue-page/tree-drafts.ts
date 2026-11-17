@@ -1,5 +1,3 @@
-import { parseBlockPointerValue } from "@legion/contracts";
-
 import { primarySpec } from "../../api/issue-cache";
 import type {
   Actor,
@@ -24,12 +22,10 @@ import {
 } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
-import { agentsOnlyIds } from "./agents-only";
-import { checkFacts, resultFacts } from "./check-facts";
 import {
-  type ChangeComment,
   decisionChangeComments,
   decisionChanges,
+  decisionNodes,
   decisionsDocumentId,
   inReviewList,
 } from "./decision-review";
@@ -41,13 +37,10 @@ import type {
   NodeCounts,
   NodeFact,
   NodeOption,
-  TreeAsk,
 } from "./issue-tree";
 import {
   type AskState,
-  blockAttributeLabel,
   type CheckState,
-  coverageGapKind,
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
@@ -59,28 +52,22 @@ import {
 } from "./page-words";
 
 /**
- * One draft node per read of the issue page, for `buildIssueTree` to place
- * (dispatch://INFRA-1196 R4, `dispatch://INFRA-1196/artifact/plan-md#b-t13`).
+ * F's rules for the drafts `buildIssueTree` places (dispatch://INFRA-1196 R4,
+ * `dispatch://INFRA-1196/artifact/plan-md#b-t13`), which the tree read keeps
+ * (dispatch://INFRA-4062 R1): how this issue addresses a node and names what a reference points
+ * at (`treeContext`), a node's words read to plain words, how a check stands (`checkStanding`),
+ * and the drafts of today's decisions read (`addDecisions`), which no node of the tree read holds
+ * until part U.
  *
- * Every function here is pure and takes the reads as its input. A builder may enrich a draft an
- * earlier one made - the decisions read names a block of `decisions.md` the document's own blocks
- * already drew, the coverage read names a block of the spec - so the order they run in is the
- * order `treeDrafts` calls them in, and each says what it adds.
- *
- * A node's own words come from the read that carries them: the coverage read for a requirement,
- * the results read for a check and its results, the decisions read for a decision, the
- * conversation for an ask, a comment and a message, and the one batched reference read for every
- * other block, whose `name` for a block is that block's stored excerpt. No document's text is
- * read, and no request is made per node. Where the read sends the server's reading of those
- * words beside them - every one of these reads does, but for a result - the draft keeps it with
- * the record the words are, which is what the row draws (`TreeNode.tree`).
+ * Every other node is drafted from the tree read (`tree-read/tree-nodes.ts`'s
+ * `treeDraftsFrom`), which places and orders each one. Every function here is pure and takes the
+ * reads as its input, and no request is made per node. Where a read sends the server's reading
+ * of a node's words beside them, the draft keeps it with the record the words are, which is what
+ * the row draws (`TreeNode.tree`).
  *
  * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
- * document, an artifact and a handoff are nodes of the issue and not of its conversation, so no
- * builder here drafts one. A document's typed blocks are drafted without it, under the issue
- * unless the model gives a block a parent of its own (R4). The issue's children are rows of the
- * tree, one group of them where the model places them, which today is under the issue: the page
- * draws no section of them above the outline (the architect's ruling 5 on R12).
+ * document, an artifact and a handoff are nodes of the issue and not of its conversation, so
+ * nothing here drafts one.
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -97,9 +84,9 @@ export interface Draft {
   /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
   answer?: NodeAnswer;
   chips: NodeChip[];
-  /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
-   *  every other draft, a `requirement` block no coverage row holds among them, which is how the
-   *  review list tells a statement from a block (`treeDrafts`). */
+  /** What the coverage read counts for a requirement it holds (`tree-read/tree-nodes.ts`);
+   *  absent on every other draft, a `requirement` no coverage row holds among them, which is how
+   *  the review list tells a statement from a block (`addDecisions`). */
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
   facts: NodeFact[];
@@ -117,9 +104,6 @@ export interface Draft {
   /** The nodes this one sits under, in the order the model placed them: the first is where it is
    *  edited, every other a transclusion. `[]` is "under the issue". */
   parents: string[];
-  /** What each `block[]` attribute of the block this node is points at, by the attribute's own
-   *  name; empty for a node that is no block. */
-  pointers: Readonly<Record<string, readonly string[]>>;
   question: boolean;
   /** The id the tree read (`tree-read/tree-nodes.ts`'s `treeDraftsFrom`) gives the node this
    *  draft was made from (`TreeNode.readId`); absent on a draft made from another read. */
@@ -139,29 +123,6 @@ export interface Draft {
    *  or an open question whose turn is the reader's own (`waiting_on_person`). */
   waiting: boolean;
 }
-
-/**
- * Where a child of the issue sits among the issue's own children: the typed blocks of its
- * documents first, the spec's before the rest, each in its own document's order, so the
- * questions inside the spec open at the top of the tree; then the decisions no question holds,
- * then the requirements, then the group of its child issues, and the conversation last: the
- * questions asked of the issue itself and the turns, together, in the order they were made
- * (`orderConversation`), so a question and a comment the reader writes from the line at the
- * foot both land at the outline's end, where the reader is taken once it is sent. A node's order
- * under any other parent is its own place in what it came from.
- */
-export const ROOT_ORDER = {
-  /** The first block of the issue's spec; every other document's blocks follow, one whole
-   *  number per document (`documentRanks`), which keeps them under the decisions' `1000`. */
-  block: 0,
-  /** The group of child issues, each a fraction of one past it in the issue read's order, so
-   *  however many children an issue has none reaches the conversation's orders. */
-  child: 3000,
-  /** A question of the issue's own and a turn: `orderConversation` counts up from here. */
-  conversation: 4000,
-  decision: 1000,
-  requirement: 2000,
-} as const;
 
 /** What every builder needs of the reads: how this issue addresses a node, and what a reference
  *  points at. Held as one value so the placement and the names are read the same way everywhere. */
@@ -232,17 +193,13 @@ export function treeContext(
   const spec = specOf(reads.issue);
   const specSlug = spec?.slug ?? "";
   const names = new Map((reads.targets ?? []).map((target) => [target.ref, target]));
-  // The kind of each typed block of the documents the tree read, by its node id, which is all a
-  // chip can say of a block of this issue the read sent no words for.
+  // The kind of each typed block of this issue the tree read answers, by its node id, which is
+  // all a chip can say of a block the reference read sent no words for.
   const types: readonly string[] = NODE_TYPES;
   const kinds = new Map<string, NodeType>();
-  for (const document of reads.documents ?? []) {
-    const slug = slugs.get(document.artifactId);
-    if (slug === undefined) continue;
-    for (const block of document.blocks) {
-      if (types.includes(block.type)) {
-        kinds.set(blockNodeId(slug, block.id), block.type as NodeType);
-      }
+  for (const node of reads.tree?.nodes ?? []) {
+    if (node.document !== undefined && node.issue === undefined && types.includes(node.supertag)) {
+      kinds.set(blockNodeId(node.document.slug, node.id), node.supertag as NodeType);
     }
   }
   const nodeIdOf = (reference: string): string | undefined => {
@@ -634,76 +591,6 @@ export function addressesAsShortForms(words: string): string {
   return shortened + words.slice(cursor);
 }
 
-/** Every draft the reads hold, by its node id. */
-export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<string, Draft> {
-  const drafts = new Map<string, Draft>();
-  addDocumentBlocks(drafts, reads, context);
-  addChildren(drafts, reads);
-  const asks = addAsks(drafts, reads, context);
-  const placed = decisionChangeComments(
-    reads.decisions,
-    reads.comments,
-    reads.issue.artifacts,
-    reads.documents
-  );
-  const changes = decisionChanges(
-    reads.decisions,
-    reads.comments,
-    reads.issue.artifacts,
-    reads.documents,
-    placed
-  );
-  addTurns(drafts, reads, context, asks, placed);
-  orderConversation(drafts);
-  addDecisions(drafts, reads, context, asks, changes);
-  addRequirements(drafts, reads, context);
-  addChecks(drafts, reads, context);
-  // What waits for the reader's review is the review list's one rule (R35): the tie to a
-  // statement decides it, and a decision the reader asked to change waits on its agent, not on
-  // the reader (`decision-review.ts`). A statement is a requirement the coverage read holds - a
-  // draft `addRequirements` gave that read's counts - as the header's count is handed the
-  // coverage read's statements (`waitingOnReader`'s `isStatement`): a spec's `requirement` block
-  // drawn before that read answers, and one of another document, which no coverage row holds, is
-  // a block and nothing more, and a tie to it puts no decision on the list. It is read once every
-  // statement has its draft. Nothing waits on a reader whose login has not resolved, as
-  // `waiting.ts` counts it.
-  for (const decision of reads.decisions?.decisions ?? []) {
-    const draft = drafts.get(context.nodeIdOf(decision.ref) ?? "");
-    if (draft === undefined) continue;
-    draft.waiting =
-      context.viewer !== undefined &&
-      inReviewList(
-        decision,
-        (reference) => drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined,
-        changes.has(decision.ref)
-      );
-  }
-  servePlacements(drafts, context);
-  addDocumentChips(drafts, reads, context);
-  return drafts;
-}
-
-/**
- * The conversation's own nodes under the issue - a question asked of the issue itself and each
- * turn - in the one order they were made, a question among the comments it was asked between
- * (`ROOT_ORDER.conversation`): the questions and the reader's threads are the Contents list's
- * entries in that order, as the approved pictures draw them, and a write from the line at the
- * foot is the newest, so it lands at the end, where the page takes the reader once it is sent.
- * Two made in the same instant are drawn by id, so the same reads always draw the same tree.
- */
-function orderConversation(drafts: Map<string, Draft>): void {
-  const conversation = [...drafts.values()].filter(
-    (draft) => draft.order >= ROOT_ORDER.conversation
-  );
-  conversation.sort(
-    (one, other) =>
-      compareTimestamps(one.at ?? "", other.at ?? "") || one.id.localeCompare(other.id)
-  );
-  conversation.forEach((draft, index) => {
-    draft.order = ROOT_ORDER.conversation + index;
-  });
-}
-
 /**
  * A chip that opens each document of the issue a node's own words cite (R3): a document is no
  * node of the outline, so a block that names one carries a chip of its own for it, which opens
@@ -748,24 +635,6 @@ export function addDocumentChips(
   }
 }
 
-/** Where each document of the issue stands among its own, by its artifact id: the spec
- *  (`specOf`) first and the rest in the order the issue carries them, which is the order their
- *  blocks are drawn in under the issue (`ROOT_ORDER.block`). */
-function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
-  const specId = specOf(reads.issue)?.id;
-  const ranks = new Map<string, number>();
-  (reads.issue.artifacts ?? []).forEach((artifact, index) => {
-    ranks.set(artifact.id, artifact.id === specId ? 0 : index + 1);
-  });
-  return ranks;
-}
-
-/** Puts `draft` in, over whatever draft held its id. */
-function add(drafts: Map<string, Draft>, draft: Draft): Draft {
-  drafts.set(draft.id, draft);
-  return draft;
-}
-
 /** A draft with nothing on it but its id and its type, for a builder to fill in. */
 export function blank(id: string, type: NodeType, order: number): Draft {
   return {
@@ -775,152 +644,12 @@ export function blank(id: string, type: NodeType, order: number): Draft {
     id,
     order,
     parents: [],
-    pointers: {},
     question: false,
     replaced: false,
     text: "",
     type,
     waiting: false,
   };
-}
-
-/**
- * Each document's typed blocks, in document order. A block of no declared node type - a
- * paragraph, a heading, a table - is the document's own text and no node of the tree. A block's
- * `block[]` attributes are kept as its pointers, which is where `serves` and `needs` are read
- * from; its words come from the batched reference read, since nothing reads the document's text.
- *
- * Every block sits under the issue, and never under its document, which is no node of the tree
- * (R3, R4): a builder after this one places a block the model gives a parent of its own - a
- * requirement by its `from`, a check and a plan task by their `serves`. Among the issue's own
- * children a document's blocks keep the order they have in it, one document after another.
- */
-function addDocumentBlocks(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext
-): void {
-  const types: readonly string[] = NODE_TYPES;
-  const ranks = documentRanks(reads);
-  for (const document of reads.documents ?? []) {
-    const slug = context.slugOf(document.artifactId);
-    if (slug === undefined) continue;
-    const rank = ranks.get(document.artifactId) ?? 0;
-    document.blocks.forEach((block, index) => {
-      if (!types.includes(block.type)) return;
-      const reference = buildDispatchReference({
-        block: { id: block.id },
-        key: context.key,
-        kind: "artifact",
-        slug,
-      });
-      const pointers: Record<string, readonly string[]> = {};
-      for (const attribute of block.attributes ?? []) {
-        if (attribute.kind === "block[]") {
-          pointers[attribute.name] = parseBlockPointerValue(attribute.value) ?? [];
-        }
-      }
-      // The document's rank, and the block's place inside it as a fraction of one, so no two
-      // documents' blocks interleave.
-      const order = ROOT_ORDER.block + rank + index / document.blocks.length;
-      const draft = add(drafts, blank(blockNodeId(slug, block.id), block.type as NodeType, order));
-      draft.pointers = pointers;
-      draft.reference = reference;
-      draft.text = context.excerptOf(reference);
-      // The block's own words whole, as the server reads them, where the reference read sent
-      // them: the excerpt above is the block's stored source, cut at 480 runes and unread.
-      const tree = context.treeOf(reference);
-      if (tree !== undefined) {
-        draft.tree = tree;
-        draft.source = textSourceOf("artifact", document.artifactId);
-      }
-      // A check with no result recorded against it is in no state the results read would name,
-      // and `no-result` is that state (`NODE_STATE_WORDS.check`), so a check drawn before the
-      // results read answers says so rather than drawing a state nothing recorded.
-      if (block.type === "check") draft.state = "no-result";
-      if (block.type === "ask") draft.state = "open";
-    });
-  }
-}
-
-/**
- * The issue's children, each a node of the tree and a row of the outline, one group of them in
- * the issue read's order: its title as its words, and how it stands, what blocks it, who holds it
- * and its key as the tag drawn from the child itself (the architect's ruling 5 on R12,
- * `IssueChildren.tsx`). The model places a child under the words that filed it once it holds
- * that edge (dispatch://INFRA-1253); today it holds none, so the group sits under the issue. A
- * child's own tree is its own page, so a child holds no node below it.
- */
-function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
-  const children = reads.issue.children ?? [];
-  children.forEach((child, index) => {
-    const order = ROOT_ORDER.child + index / children.length;
-    const draft = add(drafts, blank(child.key, "child_issue", order));
-    draft.child = child;
-    draft.text = child.title;
-  });
-}
-
-/**
- * Every question asked of the issue: the block the server indexed it from, where it has one,
- * else a node of its own under the issue. An approval request belongs to the document it reviews
- * rather than to the reasoning, so the tree draws none.
- *
- * A person's answer is part of the ask and no node of its own (dispatch://INFRA-1150 R3): it is
- * kept on the ask's draft as the store holds it, which the ask's own row and body draw.
- *
- * Answers the node id each ask is drawn under, by the ask's own id, which is how a decision
- * names the question it answers (`Decision.asks`).
- */
-function addAsks(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext
-): ReadonlyMap<string, string> {
-  const asks = new Map<string, TreeAsk>();
-  for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
-    if (ask.kind === "question") asks.set(ask.id, ask);
-  }
-  const placed = new Map<string, string>();
-  for (const ask of asks.values()) {
-    // The document holding the typed `ask` block is `block_artifact`; `artifact_id` is the
-    // document an anchored ask is anchored in, which a block ask does not carry.
-    const slug = ask.block_artifact?.slug ?? context.slugOf(ask.artifact_id ?? "");
-    const block = ask.block_id ?? undefined;
-    const id = slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
-    const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.conversation));
-    placed.set(ask.id, id);
-    draft.at = ask.created_at;
-    draft.author = ask.author;
-    if (ask.answer !== null) draft.answer = answerOf(ask.answer);
-    if ((ask.options ?? []).length > 0) {
-      draft.options = (ask.options ?? []).map((option) => ({
-        ...(option.description === undefined || option.description === ""
-          ? {}
-          : { description: option.description }),
-        label: option.label,
-      }));
-    }
-    if (ask.multiple) draft.multiple = true;
-    draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
-    draft.source = textSourceOf("ask", ask.id);
-    draft.state = askState(ask);
-    draft.text = ask.question;
-    draft.tree = ask.question_tree;
-    // An open question is what the fold unfolds the path to, whatever its depth (R6).
-    draft.question = ask.state === "open";
-    // An open question whose turn is the reader's own waits on the reader, and is what the
-    // header's count of what waits puts the focus on (R13, `waiting.ts`): the person the server
-    // resolved it waits on (`waiting_on_person`), as every other count of what waits on the
-    // reader reads it (`inbox/BlockedOnYou.tsx`'s `waitingOnYou`). A question waiting on
-    // somebody else is open all the same, and the fold still unfolds the path to it.
-    draft.waiting =
-      ask.state === "open" &&
-      ask.waiting_on === "human" &&
-      context.viewer !== undefined &&
-      ask.waiting_on_person === context.viewer;
-  }
-  return placed;
 }
 
 /** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
@@ -949,134 +678,74 @@ export function askState(ask: Ask): AskState | undefined {
   return words[token] === undefined ? undefined : (token as AskState);
 }
 
-/** One turn of the conversation as the tree holds it: a comment and a message are the same row
- *  here, told apart by the kind they are drawn as and by the address they carry. */
-interface Turn {
-  /** When it was made, which is the order the conversation is read in. */
-  readonly at: string;
-  readonly author: Actor;
-  readonly body: string;
-  /** The server's reading of `body`. */
-  readonly bodyTree?: DisplayTree;
-  readonly id: string;
-  readonly kind: "comment" | "message";
-  /** The node it answers, `null` for a root turn under the issue. */
-  readonly replyTo: string | null;
-}
-
 /**
- * The conversation's own turns: each comment and each message a person wrote, or that sits in a
- * thread a person wrote in, a node of this tree, a root turn under the issue and a reply under
- * the entry it answers (R1, R16). A thread head a page never read is no node, so a reply whose
- * parent is missing falls back to the issue, as every node whose parent is absent does
- * (`assemble`). A thread no person wrote in is no node at all: it is the history's, in the panel
- * (`agents-only.ts`, R15), until a person replies in it.
+ * Each decision of today's decisions read that no node of the tree read holds
+ * (`decisionNodes`) - a section of the issue's `decisions.md`, until part U moves those onto
+ * decision nodes - drafted as F drafts it, beside the drafts of the tree read, with its Changes
+ * under it.
  *
- * One conversation is one order, so the turns are drawn by the time they were made and not by
- * their place in the read that carried them: the comments and the messages are two lists, each
- * counting from zero, and a message sent today drawn among yesterday's comments is the reader
- * reading the conversation out of order (`orderConversation`).
+ * It stands under the question it answers (R4): the asks its blocks mention (`Decision.asks`),
+ * the first of them where it is edited and every other one a transclusion, as a check stands
+ * under each requirement it serves. An ask the tree draws no node for - another issue's, or an
+ * approval request - places nothing and stays the decision's chip, so a decision that names no
+ * question of this issue stands under the issue, as any node whose parent is absent does, and
+ * never inside `decisions.md`, which is no node at all. Wherever it stands it comes before its
+ * siblings, but for the issue's memo, the first callout of its spec, which comes first: F drew
+ * these decisions above the statements and the conversation. It names every node it links as a
+ * chip, since a link places nothing, and each whole document its words cite (`addDocumentChips`).
  *
- * A comment is drawn under the entry it answers: `answers`, the comment its write named, and
- * never `reply_to`, which that same write climbed to the head of the thread before it stored
- * (`packages/envoy/internal/dispatch/api/comment_create.go`'s `threadHeadOf`), so a reply to a
- * reply parented by `reply_to` would be drawn under the thread's head. A comment stored before
- * `comments.answers` existed (migration 20261105014808) carries none, and its thread's head is
- * then the one entry it names. A reply to an ask names the ask alone (`ask_id`) and is drawn
- * under the ask's node, whatever state the ask is in, a resolved one included
- * (dispatch://INFRA-3677). An approval request is no node (`addAsks`), so the replies under one
- * are no node either where only agents wrote them, and sit under the issue once a person has
- * written among them. A message carries no such column, so its thread stays as
- * `in_reply_to` holds it. A comment that is a change a person asked of a decision, and answers
- * nothing else, is drawn under that decision: every change newer than the decision's words, and
- * not only the newest, which `changeOf` holds by the comment's id (`decision-review.ts`'s
- * `decisionChangeComments`), so each change stands tied to the decision it changes.
+ * Its Change is a comment of the issue whose quote its words hold, by decision 65's rule, with no
+ * block of the decisions document read (`decisionChangeComments`). The read hangs that comment
+ * under the issue, since no node holds the decision, so it is drawn under the decision it
+ * changes, which then waits on its agent. Whether a decision waits on the reader is the review
+ * list's rule (`inReviewList`), read once every statement has its draft, as the header's count
+ * reads it (`waiting.ts`).
  *
- * An address naming a comment or a message of the outline (`/comments/<id>`, `/messages/<id>`,
- * `?comment=`) is therefore an address of a row of this tree.
+ * `asks` names the node each ask of the issue is drawn by, by the ask's id (`askNodeIds`).
  */
-function addTurns(
+export function addDecisions(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext,
-  asks: ReadonlyMap<string, string>,
-  changeOf: ReadonlyMap<string, string>
+  asks: ReadonlyMap<string, string>
 ): void {
-  // The asks `addAsks` drew its nodes from, which is what tells a reply under a question the
-  // tree draws from one under an approval request, which it does not.
-  const history = agentsOnlyIds(reads.comments, reads.messages, [
-    ...(reads.issue.open_asks ?? []),
-    ...(reads.asks ?? []),
-  ]);
-  const turns: Turn[] = [
-    ...(reads.comments ?? []).map((comment) => ({
-      at: comment.created_at,
-      author: comment.author,
-      body: comment.body,
-      bodyTree: comment.body_tree,
-      id: comment.id,
-      kind: "comment" as const,
-      replyTo:
-        comment.answers ??
-        comment.reply_to ??
-        (comment.ask_id === null
-          ? (context.nodeIdOf(changeOf.get(comment.id) ?? "") ?? null)
-          : (asks.get(comment.ask_id) ?? comment.ask_id)),
-    })),
-    ...(reads.messages ?? [])
-      .flatMap((thread) => [thread.message, ...(thread.replies ?? [])])
-      .map((message) => ({
-        at: message.created_at,
-        author: message.author,
-        body: message.body,
-        bodyTree: message.body_tree,
-        id: message.id,
-        kind: "message" as const,
-        replyTo: message.in_reply_to,
-      })),
-  ].filter((turn) => !history.has(turn.id));
-  for (const turn of turns) {
-    const draft = add(drafts, blank(turn.id, turn.kind, ROOT_ORDER.conversation));
-    draft.at = turn.at;
-    draft.author = turn.author;
-    draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
-    draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
-    draft.source = textSourceOf(turn.kind, turn.id);
-    draft.text = turn.body;
-    draft.tree = turn.bodyTree;
-  }
-}
-
-/**
- * Each decision of the issue's `decisions.md`, under the question it answers (R4): the asks its
- * blocks mention (`Decision.asks`), the first of them where it is edited and every other one a
- * transclusion, as a check sits under each requirement it serves. An ask the tree draws no node
- * for - another issue's, or an approval request - places nothing and stays the decision's chip,
- * so a decision that names no question of this issue sits under the issue, as any node whose
- * spine parent is absent does, and never inside `decisions.md`, which is no node at all. It
- * carries no gap for that: a lack every such decision shares tells none of them apart (R10). It
- * names every spec block it links as a chip, since a link places nothing (`shaped` is
- * dispatch://INFRA-1150's, `packages/contracts/src/dispatch-api.ts:2519-2534`).
- */
-function addDecisions(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext,
-  asks: ReadonlyMap<string, string>,
-  changes: ReadonlyMap<string, ChangeComment>
-): void {
+  const all = reads.decisions?.decisions ?? [];
+  const held = decisionNodes(all, reads.tree);
+  const rows = all.filter((decision) => !held.has(decision.ref));
+  const artifacts = reads.issue.artifacts;
+  const placed = decisionChangeComments(
+    reads.decisions,
+    reads.comments,
+    artifacts,
+    undefined,
+    reads.tree
+  );
+  const changes = decisionChanges(reads.decisions, reads.comments, artifacts, undefined, placed);
   // The words are a block of the decisions document, which is what their references resolve
   // against (`TreeNode.source`). The read names that document by its address, and a source
   // names a document by its id.
-  const source = textSourceOf(
-    "artifact",
-    decisionsDocumentId(reads.issue.artifacts, reads.decisions)
-  );
-  (reads.decisions?.decisions ?? []).forEach((decision, index) => {
+  const source = textSourceOf("artifact", decisionsDocumentId(artifacts, reads.decisions));
+  const memo = [...drafts.values()]
+    .filter(
+      (draft) =>
+        draft.type === "callout" &&
+        draft.parents.length === 0 &&
+        draft.id.startsWith(blockNodeId(context.specSlug, ""))
+    )
+    .sort((one, other) => one.order - other.order)[0];
+  const first = memo?.order ?? -1;
+  // A statement is a requirement the coverage read holds, as the header's count is handed the
+  // coverage read's statements (`waitingOnReader`'s `isStatement`): a `requirement` no coverage
+  // row holds is a block and nothing more, and a tie to it puts no decision on the list.
+  const isStatement = (reference: string): boolean =>
+    drafts.get(context.nodeIdOf(reference) ?? "")?.counts !== undefined;
+  const made = new Map<string, Draft>();
+  rows.forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
     if (id === undefined) return;
-    const held = drafts.get(id);
-    const draft = add(drafts, blank(id, "decision", ROOT_ORDER.decision + index));
+    // Each a fraction of one past the memo's order, so they stand together before every
+    // sibling the read orders after it.
+    const draft = blank(id, "decision", first + (index + 1) / (rows.length + 1));
     const answers = decision.asks ?? [];
     // A target with no address of its own is named by nothing, so there is no chip to draw for
     // it (`GraphNode.ref` is optional). The section links a block once for each of its
@@ -1102,21 +771,39 @@ function addDecisions(
       return parent === undefined ? [] : [parent];
     });
     if (decision.changed_at !== null) draft.at = decision.changed_at;
-    draft.pointers = held?.pointers ?? {};
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
     draft.source = source;
     draft.text = decision.text;
     draft.tree = decision.text_tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
-    // the way every other state is (R21). Whether it waits for the reader's review is the
-    // review list's rule, read once every statement has its draft (`treeDrafts`).
-    draft.state = decisionState(decision, changes.has(decision.ref));
+    // the way every other state is (R21).
+    const changed = changes.has(decision.ref);
+    draft.state = decisionState(decision, changed);
     if (decision.kept !== null && !decision.waiting_review) {
       draft.keptBy = { id: decision.kept.kept_by, kind: "user" };
     }
     if (decision.unsure) draft.unsure = true;
+    // Nothing waits on a reader whose login has not resolved, as `waiting.ts` counts it.
+    draft.waiting = context.viewer !== undefined && inReviewList(decision, isStatement, changed);
+    made.set(id, draft);
   });
+  addDocumentChips(made, reads, context);
+  for (const [id, draft] of made) drafts.set(id, draft);
+  // Each Change of these decisions stands under the decision it changes, where the read hangs it
+  // under the issue: a comment the read places under another node is a reply, in its thread.
+  for (const [comment, ref] of placed) {
+    const draft = drafts.get(comment);
+    const decision = context.nodeIdOf(ref);
+    if (
+      draft?.type === "comment" &&
+      draft.parents.length === 0 &&
+      decision !== undefined &&
+      made.has(decision)
+    ) {
+      draft.parents = [decision];
+    }
+  }
 }
 
 /**
@@ -1132,112 +819,6 @@ function decisionState(decision: Decision, changed: boolean): DecisionState | un
   if (changed) return "change_requested";
   if (decision.waiting_review) return "waiting_review";
   return decision.kept === null ? undefined : "kept";
-}
-
-/**
- * Every requirement of the issue's spec sits under the node its `from` names. No requirement
- * carries one - the `requirement` block declares no attributes at all
- * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05) - so each
- * sits under the issue, beside the two counts the coverage read holds for it and the gaps that
- * read already carries. An absent `from` is no gap of its own: every requirement lacks one, so it
- * tells none of them apart (R10). Where a decision claims to have shaped a requirement whose own
- * origin names another node, the requirement is placed by its `from` and the disagreement is
- * drawn as a gap, and a decision is never a requirement's parent (R4): a `from` that names one
- * places nothing, and the requirement sits under the issue.
- */
-function addRequirements(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext
-): void {
-  const shapedBy = new Set<string>();
-  for (const decision of reads.decisions?.decisions ?? []) {
-    for (const link of decision.links ?? []) {
-      const shaped = link.to.ref === undefined ? undefined : context.nodeIdOf(link.to.ref);
-      if (shaped === undefined) continue;
-      shapedBy.add(shaped);
-    }
-  }
-  // The spec, which a statement's words are a block of and its references resolve against.
-  const specId = specOf(reads.issue)?.id;
-  (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
-    const id = blockNodeId(context.specSlug, requirement.block_id);
-    const held = drafts.get(id);
-    // The `from` edge is the single placement authority (R4): the requirement's own pointer,
-    // never the decision that claims to have shaped it.
-    const origin = context.nodeIdOf(held?.pointers.from?.[0] ?? "");
-    const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
-    draft.chips = held?.chips ?? [];
-    draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
-    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.has(id));
-    draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
-    draft.pointers = held?.pointers ?? {};
-    draft.reference = requirement.ref;
-    draft.text = requirement.text;
-    // The server's reading of the statement's own words, with the references the coverage
-    // read's plain words leave out: the read's own, else the one its block carried.
-    const tree = requirement.text_tree ?? held?.tree;
-    if (tree !== undefined) {
-      draft.tree = tree;
-      draft.source = held?.source ?? textSourceOf("artifact", specId);
-    }
-  });
-}
-
-/** The gaps on one requirement: the one the coverage read carries that the page draws, and a
- *  decision claiming to have shaped a requirement that came from elsewhere. */
-export function requirementGaps(
-  coverage: readonly string[],
-  origin: string | undefined,
-  shaped: boolean
-): GapKind[] {
-  const gaps = coverage.flatMap((line): GapKind[] => {
-    const kind = coverageGapKind(line);
-    return kind === undefined ? [] : [kind];
-  });
-  if (origin !== undefined && shaped) gaps.push("shaped_disagreement");
-  return gaps;
-}
-
-/**
- * Each check of the issue's Verification document with the results recorded against it: the
- * check's own words, how it stands and the four attributes its body draws, and one node per
- * result under the check it was recorded against (R4, "a result under its check"), each with
- * what that result recorded (`check-facts.ts`). How it stands is the page's one reading of it,
- * at the one commit the page names for the issue's results (`checkStanding`), so the row, the
- * fold's frontier, the Verification filter's failing count and its body read one state. The
- * check's `serves` is no part of this read (`CheckBlock` carries none), so its placement is the
- * block's own pointer, below.
- */
-function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  const checks = reads.results?.checks ?? [];
-  const commit = namedCommit(checks);
-  for (const check of checks) {
-    const slug = context.slugOf(check.artifact_id);
-    if (slug === undefined) continue;
-    const id = blockNodeId(slug, check.block_id);
-    const held = drafts.get(id);
-    const draft = add(drafts, blank(id, "check", held?.order ?? ROOT_ORDER.block));
-    draft.facts = checkFacts(check);
-    draft.parents = held?.parents ?? [];
-    draft.pointers = held?.pointers ?? {};
-    draft.reference = check.ref;
-    draft.state = checkStanding(check, commit).state;
-    draft.text = check.text;
-    const tree = check.text_tree ?? held?.tree;
-    if (tree !== undefined) {
-      draft.tree = tree;
-      draft.source = held?.source ?? textSourceOf("artifact", check.artifact_id);
-    }
-    (check.results ?? []).forEach((result, index) => {
-      const row = add(drafts, blank(result.id, "result", index));
-      row.at = result.created_at;
-      row.author = result.actor;
-      row.facts = resultFacts(result);
-      row.parents = [id];
-      row.text = result.observed;
-    });
-  }
 }
 
 /**
@@ -1395,91 +976,4 @@ function newerFirst(first: CheckResult, second: CheckResult): number {
   const secondRead = isTimestamp(second.created_at);
   if (firstRead && secondRead) return compareTimestamps(second.created_at, first.created_at);
   return Number(secondRead) - Number(firstRead);
-}
-
-/**
- * A check and a plan task sit under each requirement their `serves` names, edited under the
- * first and transcluded under the rest (R4); what their `needs` names is a chip, one per target
- * (`needsChips`), as every edge that is not the spine is. A `serves` naming no requirement of
- * this issue places nothing, so the block keeps its place under the issue.
- *
- * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
- *
- * - **A citation whose target is no longer a requirement.** `serves` points only at a
- *   requirement (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the
- *   write that introduces one is refused where it does not (`pmdoc.CheckBlockPointers`); a
- *   target retyped after that write leaves the citation naming a node of another kind, which
- *   the drafts hold the type of. A reference this issue does not address, or one no draft
- *   answers, is no such citation: the page cannot say what it is not holding, and a target
- *   nothing answers to at all is already drawn as a chip that says so.
- * - **A plan task nobody asked for.** A task naming no requirement it serves and no
- *   declaration it attempts is work no reason stands behind. `attempts` is the declarations
- *   route of dispatch://INFRA-1278, read from the same `block[]` attributes as every other
- *   pointer, so the day it lands this pass reads it and nothing else changes. A check is held
- *   to neither: a check is there to prove a requirement, and it attempts no declaration at
- *   all.
- */
-function servePlacements(drafts: Map<string, Draft>, context: TreeContext): void {
-  for (const draft of drafts.values()) {
-    if (draft.type !== "check" && draft.type !== "plan_task") continue;
-    const named = (draft.pointers.serves ?? []).map(context.nodeIdOf);
-    const serves = named.filter(
-      (id): id is string => id !== undefined && drafts.get(id)?.type === "requirement"
-    );
-    if (serves.length > 0) draft.parents = serves;
-    const elsewhere = named.some((id) => {
-      const target = id === undefined ? undefined : drafts.get(id);
-      return target !== undefined && target.type !== "requirement";
-    });
-    if (elsewhere) draft.gaps = [...draft.gaps, "serves_not_requirement"];
-    if (
-      draft.type === "plan_task" &&
-      (draft.pointers.serves ?? []).length === 0 &&
-      (draft.pointers.attempts ?? []).length === 0
-    ) {
-      draft.gaps = [...draft.gaps, "nobody_asked"];
-    }
-    draft.chips = [...draft.chips, ...needsChips(draft.pointers.needs ?? [], context)];
-  }
-}
-
-/**
- * The chips of what a block `needs`, one per target (dispatch://INFRA-1196 decision 143), in the
- * order its pointers first name each. The server accepts one task needed by a pinned and an
- * unpinned pointer at once (`#b-a1@v1 #b-a1`), and both need the one task, so the pointers are
- * told apart by what they name with any version pin dropped (`pinDropped`). A target named both
- * ways is drawn by its unpinned pointer's chip, which names the block's current words; one only
- * pinned pointers name, by the first one's.
- */
-function needsChips(needs: readonly string[], context: TreeContext): NodeChip[] {
-  const needed = new Map<string, { readonly pinned: boolean; readonly reference: string }>();
-  for (const reference of needs) {
-    const { pinned, target } = pinDropped(reference);
-    const held = needed.get(target);
-    if (held === undefined || (held.pinned && !pinned)) needed.set(target, { pinned, reference });
-  }
-  return [...needed.values()].map(({ reference }) => ({
-    ...context.chipOf(reference),
-    label: blockAttributeLabel("needs"),
-  }));
-}
-
-/**
- * What `reference` names with any version pin dropped, a block's (`#b-a1@v1`) and a document's
- * (`artifact/plan-md@v1`), as the reference its route writes with none (`target`), and whether
- * it pinned one (`pinned`). A reference that does not parse is its own target, pinning nothing.
- */
-function pinDropped(reference: string): { readonly pinned: boolean; readonly target: string } {
-  const route = parseNodeReference(reference);
-  if (route === undefined) return { pinned: false, target: reference };
-  const block = "block" in route ? route.block : undefined;
-  const version = "version" in route ? route.version : undefined;
-  return {
-    pinned: block?.pin !== undefined || version !== undefined,
-    target: buildDispatchReference({
-      ...route,
-      ...(block === undefined ? {} : { block: { id: block.id } }),
-      ...(version === undefined ? {} : { version: undefined }),
-    }),
-  };
 }
