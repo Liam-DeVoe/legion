@@ -19,7 +19,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// The census of references (dispatch://INFRA-3862, R2-R4: references_seen.go has the rule). A
+// The census of references (the rule that a reader sees only the objects of the projects it sees:
+// references_seen.go has it). A
 // column names another row's object when a foreign key holds it to issues(key), artifacts(id),
 // asks(id), comments(id), messages(id) or projects(key), or when it is named for a session, a
 // person or a route (referenceColumnNames). schemaReferenceColumns reads every such column from

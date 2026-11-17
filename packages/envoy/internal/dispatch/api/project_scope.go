@@ -209,11 +209,12 @@ func (s *server) refuseOutsideCallerProjects(w http.ResponseWriter, r *http.Requ
 // declares any, the caller holds them. A row that declares none is open to every authenticated
 // caller, and this check refuses a session other than the one it proved as it always did.
 //
-// The session itself is read as the caller sees it (access.SessionClause): a caller that is not
-// open - a restricted member, or a credential that lists projects - is answered 404
-// SESSION_NOT_FOUND for a session that is neither its own nor has acted in a project it sees,
-// exactly as for a session nobody holds, which passes that clause for it no more. An open viewer
-// sees every session, so it is answered as before and costs no read.
+// The session itself is read as the caller sees it (access.SessionClause, sessionHiddenFrom): a
+// caller that is not open - a restricted member, or a credential that lists projects - is answered
+// 404 SESSION_NOT_FOUND for a session that is neither its own nor has acted in a project it sees,
+// and an open viewer for a session that has acted in a project it does not see, exactly as for a
+// session nobody holds. An open viewer of a deployment that holds no private project is answered
+// as before and costs no read.
 //
 // Every other row returns the handler unchanged, so no route it does not cover pays for it.
 func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {

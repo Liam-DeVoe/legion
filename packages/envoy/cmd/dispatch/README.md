@@ -270,8 +270,9 @@ The session check holds the rows classed *the calling session's* whose path name
 addressing another session's conversation is `403 SESSION_SCOPE`, naming the session the credential acts for, the route and the session addressed.
 Only a broker-issued token proves a session;
 a cookie, a personal token, a Kubernetes service-account token and the shared token prove none and are untouched, so a person still uploads into the conversation they name.
-The session addressed is also read as the caller sees it: to a restricted member, or to a credential that lists projects, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
-an open viewer sees every session and is answered as before.
+The session addressed is also read as the caller sees it (`access.SessionClause`): to a restricted member, or to a credential that lists projects, a session that is neither its own nor has acted in a project it sees is `404 SESSION_NOT_FOUND`, exactly as a session nobody holds;
+to an open viewer, so is a session that has acted in a project the viewer does not see, whether or not anything else it did is public.
+A deployment that holds no private project answers every open viewer as before, at the cost of no read.
 
 The sign-in check refuses every write by a credential that names a service and no person
 — an access token the broker issued to a machine nobody has signed in on

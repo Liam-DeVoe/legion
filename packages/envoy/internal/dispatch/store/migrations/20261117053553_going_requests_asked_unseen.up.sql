@@ -1,7 +1,7 @@
 -- 20261117053553_going_requests_asked_unseen.up.sql — whether a run's asker could not see the
 -- project it asked of when it asked.
 --
--- INFRA-3862 R2: a run is read by its author only while the author sees the project it was asked
+-- A private project's rule: a run is read by its author only while the author sees the project it was asked
 -- of, because its frames hold that project's hits (api/going.go, readGoingRequest). A run asked of
 -- a project the asker could not see holds none of that project's hits, since its search reads as
 -- the asker; read under that rule all the same, it answered its author 404 where a run asked of a

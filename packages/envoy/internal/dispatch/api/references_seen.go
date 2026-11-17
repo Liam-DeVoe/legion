@@ -16,9 +16,10 @@ import (
 
 // A read's answer names objects that are not its own rows: the issue an issue waits on, the
 // document a design gate names, the session that follows an ask, the person an ask waits on, the
-// issue a stored event's references_changed moved. The rule (dispatch://INFRA-3862, R2-R4): such a
-// reference reaches a reader only when the reader sees the object it names. One the reader does
-// not see is left out of the answer as if it were absent, and a count counts only what remains.
+// issue a stored event's references_changed moved. The rule, that a reader sees only the objects
+// of the projects it sees: such a reference reaches a reader only when the reader sees the object
+// it names. One the reader does not see is left out of the answer as if it were absent, and a
+// count counts only what remains.
 // A link stored across projects stays stored, and a reader who sees both ends reads it.
 //
 // The rule has one form per kind of object, which every read binds: in a statement, the access
