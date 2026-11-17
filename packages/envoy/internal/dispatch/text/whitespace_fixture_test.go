@@ -84,9 +84,11 @@ func TestUnicodeIsSpaceReportsTheCommittedScalars(t *testing.T) {
 		"Go stands now and the list is what Go reported when the list was written: raising Go or its "+
 		"Unicode version moves the first line, editing the file by hand moves the second.\n"+
 		"goBlankPattern in packages/contracts/src/go-blank.ts writes the same set out as a "+
-		"regular expression, and `dispatch artifact` and the `legion` tool read it to tell whether "+
-		"the Dispatch server or the daemon will call a text blank; both read strings.TrimSpace, which "+
-		"trims what this test measured. Measure the two together: write what this test reports into "+
+		"regular expression: `dispatch artifact` and the `legion` tool read it to tell whether "+
+		"the Dispatch server or the daemon will call a text blank, and the Envoy plugin's "+
+		"listenerRoleName reads it to trim a role's name as the Envoy listener trims a claim's; "+
+		"those three servers read strings.TrimSpace, which trims what this test measured. Measure "+
+		"the two together: write what this test reports into "+
 		"the list, correct the pattern to the same characters, and run this test and `goBlankPattern` "+
 		"> `calls blank exactly the scalars the committed list holds` (packages/contracts) again. "+
 		"Correcting one alone reddens the other.",

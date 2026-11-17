@@ -12,8 +12,10 @@
  * server reads blank. This is the one place that pair is written out, and the lines that turn
  * on it cite this comment rather than repeating it. Its readers: `dispatch artifact`
  * (`packages/envoy-client/src/dispatch-commands/documents.ts`), against the Dispatch server's
- * blank content, and a rating's `planReason` (`./legion-api.ts`, and the `legion` tool's
- * `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's.
+ * blank content; a rating's `planReason` (`./legion-api.ts`, and the `legion` tool's
+ * `plan_reason` in `packages/pi-shared/src/legion-phase-ops.ts`), against the daemon's; and the
+ * Envoy plugin's `listenerRoleName` (`packages/pi-envoy/extensions/envoy.ts`), which trims a
+ * role's name as the Envoy listener trims a claim's.
  *
  * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
  * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another

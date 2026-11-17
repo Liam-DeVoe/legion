@@ -11,11 +11,13 @@ const goUnicodeIsSpace = JSON.parse(
 describe("goBlankPattern", () => {
   // The pattern writes Go's `unicode.IsSpace` set out, and the rows of its readers pin the two
   // characters a person meets: `dispatch artifact`'s create rows
-  // (packages/envoy-client/src/__tests__/dispatch-execute.test.ts) and a rating's reason
-  // (./legion-api.test.ts, packages/pi-shared/src/legion-phase-ops.test.ts). Nothing but this
-  // test holds the whole set, so a hand edit that drops one scalar, or a raise of Go that moves
-  // the set, would otherwise be silent on this side. The committed list is what both languages
-  // read: Go's own predicate is held to it by TestUnicodeIsSpaceReportsTheCommittedScalars
+  // (packages/envoy-client/src/__tests__/dispatch-execute.test.ts), a rating's reason
+  // (./legion-api.test.ts, packages/pi-shared/src/legion-phase-ops.test.ts) and, for U+0085, a
+  // role's name as the Envoy listener trims it (packages/pi-envoy/extensions/envoy.test.ts).
+  // Nothing but this test holds the whole set, so a hand edit that drops one scalar, or a raise
+  // of Go that moves the set, would otherwise be silent on this side. The committed list is what
+  // both languages read: Go's own predicate is held to it by
+  // TestUnicodeIsSpaceReportsTheCommittedScalars
   // (packages/envoy/internal/dispatch/text/whitespace_fixture_test.go).
   test("calls blank exactly the scalars the committed list holds", () => {
     const listed = new Set(goUnicodeIsSpace.scalars.map((written) => Number.parseInt(written, 16)));
