@@ -502,9 +502,8 @@ These steps take the place of steps 4 and 5 of "The armed gate":
    })
    ```
 
-   The reason names the ancestor's requirements that the root's checks serve, and the result of the
-   two reviews. It has 1 to 1,000 characters and holds no decision block. The `legion` tool refuses
-   the call while the root's own document holds an open decision block.
+   The reason has 1 to 1,000 characters and holds no decision block. The `legion` tool refuses the
+   call while the root's own document holds an open decision block.
 3. If you have an open approval request of the root's own document for that step, resolve it in
    the same turn, after the registration:
    `dispatch resolve-ask --ask <id> --kind retracted --reason "<the step is registered on the ancestor's approval>"`.
@@ -569,24 +568,25 @@ architect and whether its tree runs:
    record has no `treeRuns`, and its tree does not run. A root that a re-admission left at `todo`
    runs nothing, whatever its architect claim reads.
 
-While the ancestor's tree runs, send the requirement on the role topic of the ancestor's
-architect: `envoy_publish` to `notifications.role.<token>`, the token that `roleToken` computes for
-that issue and `architect`. Three messages follow:
+While the ancestor's tree runs, send the requirement with `envoy_publish` to the ancestor's
+architect's role topic, `notifications.role.<token>`, the token `roleToken` computes for that issue
+and `architect`. Three messages follow:
 
 1. The ancestor's architect adds the requirement and tells you the block's reference and version.
-2. You write the `Delivers:` line and the check of that block, pinned to that version, and tell the
-   ancestor's architect. Name in that message any part the root needs that the block leaves out,
-   for the next version.
+2. You write the `Delivers:` line and the check of that block as written, a part the root did not
+   send included, pinned to that version, and tell the ancestor's architect. Name in that message
+   any part the root needs that the block leaves out, for the next version, and any concern about a
+   part the root did not send. Neither holds back the line or the registration: the person decides
+   on that version.
 3. The ancestor's architect requests the person's approval and tells you that the request is open.
    Then run the two fresh reviews, register on that version as a pending basis, and end your turn.
 
 Where the ancestor's tree does not run, make each change to the ancestor's document yourself, as
-"For the ancestor's architect" says, and request each approval yourself. Add the requirement block,
-then write the `Delivers:` line and the check. Run the two fresh reviews of the ancestor's new
-version, and request the person's approval of it with the summary that section names. Register no
-gate of the ancestor: its own architect registers it at its start, where it reads your changes.
-Then run the two fresh reviews of the root's spec, register on that version as a pending basis,
-and end your turn.
+"For the ancestor's architect" says. Add the requirement block, then write the `Delivers:` line and
+the check. Run the two fresh reviews of the ancestor's new version, and request the person's
+approval of it with the summary that section names. Register no gate of the ancestor: its own
+architect registers it at its start, where it reads your changes. Then run the two fresh reviews of
+the root's spec, register on that version as a pending basis, and end your turn.
 
 Where the ancestor is on the backlog, tell the project's controller that the root rests on it, on
 the controller topic your addressing line names. Do this whether or not you send a requirement up.
