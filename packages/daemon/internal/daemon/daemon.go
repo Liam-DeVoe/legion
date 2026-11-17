@@ -1674,14 +1674,7 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		for ev := range s.stream.Events() {
-			mapped, err := superviseEvent(ev)
-			if err != nil {
-				s.log.Error("worker stream: an event no machine can take", "error", err)
-				continue
-			}
-			s.supervisor.post(claimOf(mapped), mapped)
-		}
+		s.pump()
 	}()
 	go func() {
 		defer s.wg.Done()
@@ -2331,6 +2324,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
 		Supervisor:         s.supervisor,
+		AwaitStream:        s.awaitStream,
 		PodUpdateRounds:    s.podUpdateRoundsView,
 		BootTokens:         s.tokens,
 		Project:            p.project,

@@ -181,6 +181,22 @@ func (l *Listener) Addr() string { return l.addr }
 // it until it closes.
 func (l *Listener) Events() <-chan Event { return l.events.out }
 
+// Drain queues a Drained for token behind every event already queued, and returns what its
+// consumer closes once it has handled the events of token before the mark. An event a connection
+// queues after the call — a frame still in the socket, or read and not yet queued — comes after the
+// mark. A listener that has ended queues nothing more, so its answer is closed at once.
+func (l *Listener) Drain(token claim.Token) <-chan struct{} {
+	done := make(chan struct{})
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.closed {
+		close(done)
+		return done
+	}
+	l.events.push(Drained{Claim: token, Done: done})
+	return done
+}
+
 // SetLauncherResolver registers the issue-pod runtime's launcher acceptor after that runtime has
 // been constructed and its informer caches have synced. A launcher that dials before that waits
 // for this call rather than being refused, so the window costs it no reconnects.

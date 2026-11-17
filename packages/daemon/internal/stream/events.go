@@ -9,9 +9,11 @@ import (
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
 // (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), one tool call of a turn
 // starting or ending (ToolStep), OMP saying how one prompt's work ended (PromptResult), OMP
-// taking back a prompt it had acknowledged (LateRefusal), and the connection going away
-// (Closed). The acknowledgement of a prompt is not one of them — it is Conn.Prompt's return, so
-// the one goroutine that sent the prompt is the one that learns it was taken (B4).
+// taking back a prompt it had acknowledged (LateRefusal), the model that answered (Answered), and
+// the connection going away (Closed); and one mark that is no agent fact, the place in the queue
+// a consumer asked for (Drained). The acknowledgement of a prompt is not one of them — it is
+// Conn.Prompt's return, so the one goroutine that sent the prompt is the one that learns it was
+// taken (B4).
 type Event interface{ isEvent() }
 
 // AgentSecretsIdentity is the pod's session identity a hello2 carried (shimwire.AgentSecretsHello):
@@ -145,6 +147,14 @@ type Closed struct {
 	Claim claim.Token
 }
 
+// Drained is the mark Listener.Drain queued: every event the listener had queued when it was
+// asked for comes before it on Events(). It is no agent fact. The consumer closes Done once it
+// has handled each event of Claim that came before the mark, which is what its asker waits on.
+type Drained struct {
+	Claim claim.Token
+	Done  chan<- struct{}
+}
+
 func (Hello) isEvent()        {}
 func (TurnStart) isEvent()    {}
 func (TurnEnd) isEvent()      {}
@@ -153,6 +163,7 @@ func (PromptResult) isEvent() {}
 func (LateRefusal) isEvent()  {}
 func (Answered) isEvent()     {}
 func (Closed) isEvent()       {}
+func (Drained) isEvent()      {}
 
 // eventQueue is the ordered, unbounded hand-off between every connection's reader and the one
 // channel Events() returns.
