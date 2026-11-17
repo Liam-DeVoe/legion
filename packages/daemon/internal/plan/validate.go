@@ -33,15 +33,16 @@ var recordWord = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 const recordForm = "is not of the form [a-z][a-z0-9-]* with at most 32 characters: Dispatch's step record takes no other."
 
-// Validate is what Legion cannot carry out in any release (R14), each cause refused once: a plan
-// with no task; each role the plan defines whose name or type Dispatch's step record cannot hold,
-// or whose name the deployment or Legion holds already (LegionNames); each role whose model the
-// deployment does not list, at the first step of each task that names it, or for the whole plan
-// where no step names it; each agent (AgentOf) whose steps name roles of two models or two
-// harnesses, and each step of the key owner whose role's model is not the owner's; and each step
-// that names a role neither d nor the plan defines, at the first step of each task that names it
-// (B-11). A type no list holds, and a role with no type or no model, are taken. It refuses no plan
-// for a step the plan lacks, and it holds a role's prompt to no bound of its own.
+// Validate is what Legion cannot carry out in any release (R14): a plan with no task; each role the
+// plan defines whose name or type Dispatch's step record cannot hold, or whose name the deployment
+// or Legion holds already (LegionNames); each role whose model the deployment does not list, at the
+// first step of each task that names it, or for the whole plan where no step names it; each agent
+// (AgentOf) whose steps name roles of two models or two harnesses, once, and each role the key
+// owner does at a step of a task whose model is not the owner's, at its first such step; and each
+// step that names a role neither d nor the plan defines, refused once for each role at the first
+// step of each task that names it (B-11). A type no list holds, and a role with no type or no
+// model, are taken. It refuses no plan for a step the plan lacks, and it holds a role's prompt to
+// no bound of its own.
 func Validate(p Plan, d Deployment) []Refusal {
 	if len(p.Tasks) == 0 {
 		return []Refusal{{Reason: noTask}}
