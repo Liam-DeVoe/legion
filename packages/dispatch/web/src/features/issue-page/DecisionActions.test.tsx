@@ -538,6 +538,97 @@ test("Keep leaves a tree read in flight to finish and reads the tree again after
   }
 });
 
+// Decision 227 of dispatch://INFRA-1196/artifact/part-decisions-md: a write of the new page whose
+// answer changes what the tree draws reads the tree itself (`refreshQueries` of the tree's key, as
+// Keep does) and drops the held views, and none reaches the tree through another read's
+// invalidation alone. A Change is such a write: the tree read hangs it under its decision. TanStack
+// dispatches no `invalidate` for a read that is already invalidated (an owed refresh, a failed
+// background read), so where the comments read already is, a Change that only invalidates it
+// leaves the page's tree, and the views it holds, drawing the decision as it stood.
+test("a Change sent while the comments read is already invalidated reads the tree again and drops the held views", async () => {
+  const client = heldReads([ONE]);
+  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  if (held === undefined) throw new Error("the client holds no tree read");
+  // The Decisions and Spec views, held as the page holds them once each has been open.
+  client.setQueryData(viewKey(KEY, "decisions"), held);
+  client.setQueryData(viewKey(KEY, "spec"), held);
+  // The comments read, held and already invalidated before the Change is sent.
+  client.setQueryData(["comments", KEY], []);
+  await client.invalidateQueries({ exact: true, queryKey: ["comments", KEY], refetchType: "none" });
+  const tree = spyOn(api, "getIssueTree").mockResolvedValue(held);
+  const createComment = spyOn(api, "createComment").mockResolvedValue({ id: "change-1" } as never);
+  const user = userEvent.setup();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <PageTreeRead />
+      <DecisionActions document={document_} isClosed={false} nodeReference={REFERENCE} />
+    </QueryClientProvider>
+  );
+  try {
+    expect(
+      client.getQueryState(["comments", KEY])?.isInvalidated,
+      "the comments read was not invalidated before the Change"
+    ).toBe(true);
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    await user.type(screen.getByLabelText(CONTROL_LABELS.your_change), "Say where.");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.send_change }));
+    await waitFor(() =>
+      expect(createComment, "the Change was never sent").toHaveBeenCalledTimes(1)
+    );
+    await waitFor(
+      () =>
+        expect(
+          tree.mock.calls.some(([, query]) => query?.view === undefined),
+          "the Change did not read the tree again"
+        ).toBe(true),
+      { timeout: 3000 }
+    );
+    expect(
+      [viewKey(KEY, "decisions"), viewKey(KEY, "spec")].map((key) => client.getQueryData(key)),
+      "the Change left a held view drawing the decision as it stood"
+    ).toEqual([undefined, undefined]);
+  } finally {
+    view.unmount();
+    tree.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// Decision 227: Keep reads the tree again, and drops the held views, every one of them: the Spec
+// view's column draws how each decision stands from its own read too, so a Spec view held from
+// before the Keep would draw the kept decision as still waiting for review.
+test("Keep drops every held view, the Spec view's among them", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue({
+    artifact_id: document_.id,
+    block_id: ONE.id,
+    changed_version: 1,
+    kept_at: "2026-11-17T00:00:00Z",
+    kept_by: "alice",
+  } satisfies DecisionKeep);
+  const user = userEvent.setup();
+  const { client, unmount } = renderActions();
+  const held = client.getQueryData<TreeAnswer>(issueTreeKey(KEY));
+  client.setQueryData(viewKey(KEY, "decisions"), held);
+  client.setQueryData(viewKey(KEY, "spec"), held);
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.keep_decision }));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        client.getQueryData(viewKey(KEY, "decisions")),
+        "the Keep did not drop the held Decisions view"
+      ).toBeUndefined()
+    );
+    expect(
+      client.getQueryData(viewKey(KEY, "spec")),
+      "the Keep left the held Spec view drawing the decision as it stood"
+    ).toBeUndefined();
+  } finally {
+    unmount();
+    keep.mockRestore();
+  }
+});
+
 // The node finds its decision in the reads the page already holds, through observers
 // that are never enabled, so drawing Keep and Change sends no request, though neither held answer
 // is fresh and an enabled observer would read it again as it mounts.
