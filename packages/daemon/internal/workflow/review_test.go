@@ -53,7 +53,7 @@ func TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings(t *testing.T) {
 			review := func() {
 				t.Helper()
 				if _, err := intake.ApplyFact(ctx, pool, "github", "review", intake.PullRequestReview{
-					Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne),
+					Repo: "sjawhar/legion", Number: 42, State: tc.decision, CommitID: headOne, Author: testReviewApp, Body: roundReviewBody(t, pool, "ses-reviewer", "the review", headOne),
 					SubmittedAt: reviewTestedAt}, engine); err != nil {
 					t.Fatalf("apply the review: %v", err)
 				}
@@ -1780,7 +1780,7 @@ func TestInTheReviewersFirstRoundOnlyItsOwnSessionDecides(t *testing.T) {
 			var logs bytes.Buffer
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
 			apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: tc.state, CommitID: headOne, Author: testReviewApp,
-				Body:        "the review\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
+				Body:        roundReviewBody(t, pool, tc.session, "the review", headOne),
 				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)})
 			row := reviewerRow(t, pool)
 			if row.Claim != "" {
@@ -1898,7 +1898,7 @@ func TestAReviewThatWaitedForTheReviewersSessionIsJudgedByTheSessionRecordedThen
 			var logs bytes.Buffer
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil))))
 			review := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headOne, Author: testReviewApp,
-				Body:        "ship it\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
+				Body:        roundReviewBody(t, pool, tc.session, "ship it", headOne),
 				SubmittedAt: time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)}
 			apply("the review's webhook", review)
 			if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -2053,7 +2053,7 @@ func TestTheRoundRecordsTheHeadTheReviewsFooterNames(t *testing.T) {
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	apply("push", intake.Push{Repo: "sjawhar/legion", Branch: "legion/LEGION-208", Before: headOne, After: headTwo, Pusher: "legion-implementer[bot]"})
 	apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: headTwo,
-		Author: testReviewApp, Body: reviewBody("ship it", headOne), SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
+		Author: testReviewApp, Body: roundReviewBody(t, pool, "ses-reviewer", "ship it", headOne), SubmittedAt: time.Date(2026, 9, 22, 23, 59, 0, 0, time.UTC)})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the approval the issue is in %s, want reviewing: a push is on its way from the head it read", got)
 	}

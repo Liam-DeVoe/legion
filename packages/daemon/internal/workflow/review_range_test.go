@@ -42,11 +42,14 @@ func roleRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseRow 
 // completion is not.
 var reviewTestedAt = time.Date(2026, 9, 23, 0, 0, 5, 0, time.UTC)
 
-// reviewAt is the review App's review of state as the reviewer posts it, its Legion footer naming
-// head and the session the shared fixtures record on the reviewer's claim (seedRoundOneRows).
-func reviewAt(id int64, state, head string, at time.Time) intake.PullRequestReview {
+// reviewAt is the review App's review of state as the reviewer posts it for the round that
+// stands, its Legion footer naming head, the session the shared fixtures record on the reviewer's
+// claim (seedRoundOneRows) and the entry the reviewer's row holds when it is built
+// (roundReviewBody). A review of another round sets its own body (reviewBodyOfEntry).
+func reviewAt(t *testing.T, pool *pgxpool.Pool, id int64, state, head string, at time.Time) intake.PullRequestReview {
+	t.Helper()
 	return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: id, State: state, CommitID: head,
-		Author: testReviewApp, Body: reviewBody("the review", head), SubmittedAt: at}
+		Author: testReviewApp, Body: roundReviewBody(t, pool, "ses-reviewer", "the review", head), SubmittedAt: at}
 }
 
 // backToReviewing takes LEGION-208 from implementing through testing into reviewing again, as the
@@ -67,7 +70,7 @@ func TestADecidingReviewRecordsTheCommitItRead(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the request for changes the issue is in %s, want implementing", got)
 	}
@@ -119,31 +122,41 @@ func decidedAtHeadOne(t *testing.T, pool *pgxpool.Pool, engine *Engine, state st
 }
 
 // undecidingReview is a review that decides no round: a comment, a review refused for the head
-// its footer names, or a review of an issue outside reviewing.
+// its footer names, or a review of an issue outside reviewing. Each is the reviewer's own review
+// of the round that stands, its footer naming that round's entry, so only what decides the round
+// keeps it from moving the commit.
 type undecidingReview struct {
-	name   string
-	review intake.PullRequestReview
+	name  string
+	state string
+	// footerHead is the head its footer names.
+	footerHead string
 	// outsideReviewing puts the issue in testing before the review arrives.
 	outsideReviewing bool
 }
 
-// reviewsThatDecideNothing are the three undeciding reviews, each the review App's review id of
-// head submitted at at.
-func reviewsThatDecideNothing(id int64, head string, at time.Time) []undecidingReview {
-	refused := reviewAt(id, "changes_requested", head, at)
-	refused.Body = reviewBody("the review", headEarlier)
+// reviewsThatDecideNothing are the three undeciding reviews of head.
+func reviewsThatDecideNothing(head string) []undecidingReview {
 	return []undecidingReview{
-		{name: "a comment", review: reviewAt(id, "commented", head, at)},
-		{name: "a review its footer's head refuses", review: refused},
-		{name: "a review outside reviewing", review: reviewAt(id, "approved", head, at), outsideReviewing: true},
+		{name: "a comment", state: "commented", footerHead: head},
+		{name: "a review its footer's head refuses", state: "changes_requested", footerHead: headEarlier},
+		{name: "a review outside reviewing", state: "approved", footerHead: head, outsideReviewing: true},
 	}
+}
+
+// review is the review App's review id of head, submitted at at, as the reviewer posts it once the
+// fixture stands where the case puts it.
+func (u undecidingReview) review(t *testing.T, pool *pgxpool.Pool, id int64, head string, at time.Time) intake.PullRequestReview {
+	t.Helper()
+	review := reviewAt(t, pool, id, u.state, head, at)
+	review.Body = roundReviewBody(t, pool, "ses-reviewer", "the review", u.footerHead)
+	return review
 }
 
 // Only a review that decides the round in reviewing moves the commit: a comment decides nothing, a
 // review refused for the head its footer names decides nothing, and a review of an issue outside
 // reviewing decides no round.
 func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
-	for _, tc := range reviewsThatDecideNothing(1, headOne, reviewTestedAt) {
+	for _, tc := range reviewsThatDecideNothing(headOne) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
@@ -151,7 +164,7 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 				standsIn(t, pool, phase.Testing, "testing")
 			}
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-			apply("review", tc.review)
+			apply("review", tc.review(t, pool, 1, headOne, reviewTestedAt))
 			row := reviewerRow(t, pool)
 			if row.Decision != nil && row.Decision.State != "" {
 				t.Fatalf("the reviewer's row holds the decision %+v, want none: the review decides nothing", row.Decision)
@@ -170,13 +183,13 @@ func TestAReviewThatDecidesNothingRecordsNoCommit(t *testing.T) {
 // other than headOne. A path that cleared the commit would read none, and one that moved it would
 // read the head that review names.
 func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testing.T) {
-	for _, tc := range reviewsThatDecideNothing(2, headTwo, reviewTestedAt.Add(2*time.Hour)) {
+	for _, tc := range reviewsThatDecideNothing(headTwo) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			seedReviewOf(t, pool, headOne, "green")
 			engine := testEngine(config.DesignGateRootIssues, nil)
 			apply := applyFacts(t, pool, engine)
-			apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
 			backToReviewing(t, apply, 2)
 			if got := issuePhase(t, pool); got != phase.Reviewing {
@@ -188,7 +201,7 @@ func TestAReviewThatDecidesNothingKeepsTheCommitAnEarlierReviewRecorded(t *testi
 			if tc.outsideReviewing {
 				standsIn(t, pool, phase.Testing, "testing")
 			}
-			apply("review", tc.review)
+			apply("review", tc.review(t, pool, 2, headTwo, reviewTestedAt.Add(2*time.Hour)))
 			row := reviewerRow(t, pool)
 			if row.Decision != nil && row.Decision.State != "" {
 				t.Fatalf("the reviewer's row holds the decision %+v, want none: the review decides nothing", row.Decision)
@@ -208,7 +221,7 @@ func TestAPersonsReviewDoesNotMoveTheReviewersCommit(t *testing.T) {
 	pool := migratedPool(t)
 	seedReviewOf(t, pool, headOne, "green")
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
-	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	apply("reviewer-requests-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	backToReviewing(t, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
@@ -256,7 +269,7 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 	seedReviewOf(t, pool, headOne, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	apply := applyFacts(t, pool, engine)
-	apply("reviewer-requests-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	apply("reviewer-requests-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
 		t.Fatalf("after the reviewer's own review the reviewer's row reads the reviewed commit %q, want %s: its footer names the session on the reviewer's claim", got, headOne)
 	}
@@ -269,7 +282,7 @@ func TestAReviewAppReviewFromAnotherSessionDoesNotMoveTheReviewersCommit(t *test
 	}
 
 	apply("another-session-requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 2, State: "changes_requested", CommitID: headTwo,
-		Author: testReviewApp, AuthorCanWrite: true, Body: "rename it\n\n<!-- legion: {\"session\":\"ses-controller\",\"phase\":\"review\",\"head\":\"" + headTwo + "\"} -->",
+		Author: testReviewApp, AuthorCanWrite: true, Body: roundReviewBody(t, pool, "ses-controller", "rename it", headTwo),
 		SubmittedAt: reviewTestedAt.Add(2 * time.Hour)})
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the other session's request for changes the issue is in %s, want implementing: its author can write, so it decides the round", got)
@@ -307,7 +320,7 @@ func TestAReviewFromAnotherReviewAppSessionMovesNoCommitInTheReviewersFirstRound
 			seedReviewOf(t, pool, headOne, "green")
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			apply("requests-changes", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 7, State: "changes_requested", CommitID: headOne,
-				Author: testReviewApp, AuthorCanWrite: true, Body: "rename it\n\n<!-- legion: {\"session\":\"" + tc.session + "\",\"phase\":\"review\",\"head\":\"" + headOne + "\"} -->",
+				Author: testReviewApp, AuthorCanWrite: true, Body: roundReviewBody(t, pool, tc.session, "rename it", headOne),
 				SubmittedAt: reviewTestedAt})
 			row := reviewerRow(t, pool)
 			if row.ReviewedHead != tc.want {
@@ -366,7 +379,7 @@ func entersRoundOne(t *testing.T, pool *pgxpool.Pool) (*Engine, func(string, int
 // at headOne in its first.
 func reviewedTwice(t *testing.T, apply func(string, intake.Fact) intake.Result, pool *pgxpool.Pool) {
 	t.Helper()
-	apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	backToReviewing(t, apply, 2)
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester passed round 2 the issue is in %s, want reviewing", got)
@@ -459,7 +472,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 // that reads round 2's work again.
 func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.T) {
 	pool, engine, apply := reviewRoundOne(t)
-	apply("request-changes-1", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+	apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after round 1's request for changes the issue is in %s, want implementing", got)
 	}
@@ -474,7 +487,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 		t.Fatalf("round 2's task = %q, want it to name %s, the commit round 1's review read", second, headOne)
 	}
 
-	apply("request-changes-2", reviewAt(2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour)))
+	apply("request-changes-2", reviewAt(t, pool, 2, "changes_requested", headTwo, reviewTestedAt.Add(2*time.Hour)))
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after round 2's request for changes the issue is in %s, want implementing", got)
 	}
@@ -496,7 +509,7 @@ func TestALaterRoundNamesTheCommitOfTheReviewersNewestDecidingReview(t *testing.
 // range from a head the reviewer never read.
 func TestALaterRoundNamesTheHeadTheReviewsFooterNamesAndNotItsCommitID(t *testing.T) {
 	pool, _, apply := reviewRoundOne(t)
-	review := reviewAt(1, "changes_requested", headOne, reviewTestedAt)
+	review := reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt)
 	review.CommitID = headTwo
 	apply("request-changes", review)
 	if got := issuePhase(t, pool); got != phase.Implementing {
@@ -521,7 +534,7 @@ func TestTheReviewedCommitSurvivesEachWayBackIntoReviewing(t *testing.T) {
 	resumeWant := "Continue root. Issue: LEGION-208. Phase: reviewing." + reviewedPartOf(headOne) + " Resume the existing phase work."
 	t.Run("the architect's move back after an approval", func(t *testing.T) {
 		pool, _, apply := reviewRoundOne(t)
-		apply("approve", reviewAt(1, "approved", headOne, reviewTestedAt))
+		apply("approve", reviewAt(t, pool, 1, "approved", headOne, reviewTestedAt))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting", got)
 		}
@@ -805,7 +818,7 @@ func TestAReviewFromBeforeAReadmissionAppliedBeforeThePromotionMovesNoCommit(t *
 	mergeStateUnknown(t, apply)
 	entered := engine.now()
 	readmitsTheTree(t, pool, engine, entered.Add(2*time.Hour))
-	apply("late-approval", reviewAt(2, "approved", headOne, entered.Add(time.Hour)))
+	apply("late-approval", reviewAt(t, pool, 2, "approved", headOne, entered.Add(time.Hour)))
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the late approval the issue is in %s, want reviewing: the approval waits on GitHub's merge state", got)
 	}
@@ -841,7 +854,7 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 			entered := engine.now()
 			readmitsTheTree(t, pool, engine, entered.Add(2*time.Hour))
 			promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-			apply("approval", reviewAt(2, "approved", headOne, entered.Add(tc.submitted)))
+			apply("approval", reviewAt(t, pool, 2, "approved", headOne, entered.Add(tc.submitted)))
 			if got := issuePhase(t, pool); got != phase.Reviewing {
 				t.Fatalf("after the approval the issue is in %s, want reviewing: the approval waits on GitHub's merge state", got)
 			}
@@ -882,7 +895,7 @@ func TestAReviewWithNoSubmissionTimeMovesNoCommit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _, apply := reviewRoundOne(t)
-			apply("request-changes", reviewAt(1, "changes_requested", headOne, tc.submitted))
+			apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, tc.submitted))
 			if got := issuePhase(t, pool); got != phase.Implementing {
 				t.Fatalf("after the request for changes the issue is in %s, want implementing: it decides the round", got)
 			}
@@ -911,7 +924,7 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenSubmittedAfterThePromotion
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, apply := reviewRoundOne(t)
 			entered := engine.now()
-			apply("request-changes-1", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
 			backToReviewing(t, apply, 2)
 			if got := reviewerRow(t, pool).ReviewedHead; got != headOne {
@@ -924,7 +937,7 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenSubmittedAfterThePromotion
 			carried.Generation++
 			seedIssue(t, pool, *carried)
 			promotesTheReviewer(t, pool, engine, entered.Add(3*time.Hour))
-			apply("request-changes-2", reviewAt(2, "changes_requested", headTwo, entered.Add(tc.submitted)))
+			apply("request-changes-2", reviewAt(t, pool, 2, "changes_requested", headTwo, entered.Add(tc.submitted)))
 			if got := issuePhase(t, pool); got != phase.Implementing {
 				t.Fatalf("after the carried reviewer's request for changes the issue is in %s, want implementing: the review decides the round", got)
 			}
@@ -951,7 +964,7 @@ func TestALaterReviewRoundWithItsRecordRemovedIsToldNoCommit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, _, apply := reviewRoundOne(t)
 			first := reviewerRow(t, pool)
-			apply("request-changes", reviewAt(1, "changes_requested", headOne, reviewTestedAt))
+			apply("request-changes", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			if tc.removed {
 				if _, err := pool.Exec(context.Background(), "update phases set reviewed_head = '' where issue = 'LEGION-208' and role = 'reviewer'"); err != nil {
 					t.Fatalf("remove the reviewed commit: %v", err)
