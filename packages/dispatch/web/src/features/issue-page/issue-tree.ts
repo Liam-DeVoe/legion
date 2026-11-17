@@ -350,6 +350,15 @@ export interface IssueTreeReads {
 export const FIRST_LINE_LIMIT = 100;
 
 /**
+ * A leading label: a first word of at most five characters that ends in `.` and holds a digit,
+ * as `R1.`, `12.` or `1.2.`. Its dot is read as part of the line and no sentence end, so a line
+ * that opens with one runs on to the first sentence end after it (`firstLineOf`). Every place
+ * that reads where a line's first sentence ends reads its label by this one rule. It carries no
+ * `g` or `y` flag, so `exec` keeps no state between the places that share it.
+ */
+export const LEADING_LABEL = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u;
+
+/**
  * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
  * comes first, cut at a word wherever the limit falls near one. A leading label - a first word
  * of at most five characters that ends in `.` and holds a digit, as `R1.`, `12.` or `1.2.` - is
@@ -370,7 +379,7 @@ export function firstLineOf(text: string): {
   readonly sentence: boolean;
 } {
   const whole = text.replace(/\s+/gu, " ").trim();
-  const label = /^(?=\S*\d)\S{0,4}\.(?=\s|$)/u.exec(whole)?.[0] ?? "";
+  const label = LEADING_LABEL.exec(whole)?.[0] ?? "";
   const rest = /^.*?[.!?](?=\s|$)/u.exec(whole.slice(label.length))?.[0];
   const first = rest === undefined ? undefined : `${label}${rest}`;
   if (first !== undefined && first.length <= FIRST_LINE_LIMIT) {

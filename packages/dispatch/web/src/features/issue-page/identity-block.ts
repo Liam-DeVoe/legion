@@ -32,7 +32,7 @@ export const FOOT_HEIGHT_PROPERTY = "--issue-composer-height";
 
 /** How far from the band a target is placed when it has to be scrolled to: enough that it does
  *  not sit flush against it. */
-const CLEARANCE = 8;
+export const CLEARANCE = 8;
 
 /**
  * Brings `element` inside the viewport, clear of the band that stays at the top of the screen

@@ -1,6 +1,6 @@
 import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
@@ -22,6 +22,8 @@ import {
   ReferenceNamesProvider,
   useKnownAmbiguousReferences,
   useKnownReferenceName,
+  useKnownReferenceNames,
+  usePublishReferenceNames,
 } from "./reference-names";
 import { nodesInOrder } from "./tree-keys";
 import { useIssueTree } from "./useIssueTree";
@@ -445,6 +447,93 @@ test("the page publishes an ambiguous reference a comment cites as ambiguous, a 
   } finally {
     for (const stub of stubs) stub.mockRestore();
   }
+});
+
+/** What one surface publishes: the names it read and the references it read as ambiguous. */
+interface Published {
+  readonly ambiguous: ReadonlySet<string>;
+  readonly names: ReadonlyMap<string, string>;
+}
+
+/** What a link under the provider read on its latest render. */
+interface Seen {
+  ambiguous?: ReadonlySet<string>;
+  names?: ReadonlyMap<string, string>;
+}
+
+/** A surface that publishes `published` for as long as it is mounted. */
+function Publisher({ published }: { readonly published: Published }): ReactNode {
+  usePublishReferenceNames(published.names, published.ambiguous);
+  return null;
+}
+
+/** A link under the provider, which writes what it reads into `seen` on every render. */
+function Reader({ seen }: { readonly seen: Seen }): ReactNode {
+  seen.ambiguous = useKnownAmbiguousReferences();
+  seen.names = useKnownReferenceNames();
+  return null;
+}
+
+// More than one surface can publish under the one provider at a time: the page's own column and
+// a sheet that draws the outline beside it each read the tree and publish what they read. One of
+// them leaving - the sheet closing, or a pane unmounting at a narrow width while the outline
+// stays - withdraws only what it published itself, so every link keeps the names the surfaces
+// still mounted read, and draws the references they read as ambiguous as written.
+test("one publisher leaving keeps the names and ambiguous references another published", () => {
+  const shared = `dispatch://${KEY}/comment/c0ffee00`;
+  const other = "dispatch://CORE-7";
+  const pageAmbiguous = `dispatch://${KEY}/comment/c0b271c7`;
+  const sheetAmbiguous = `dispatch://${KEY}/ask/a5`;
+  const page: Published = {
+    ambiguous: new Set([pageAmbiguous]),
+    names: new Map([
+      [TASK_REF, TASK_WORDS],
+      [shared, "Hold the deploy."],
+    ]),
+  };
+  const sheet: Published = {
+    ambiguous: new Set([sheetAmbiguous]),
+    names: new Map([
+      [other, "Another issue"],
+      [shared, "Hold the deploy until Friday."],
+    ]),
+  };
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  // Both publish, the sheet last, so its name stands for the reference both name.
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names).toEqual(
+    new Map([
+      [TASK_REF, TASK_WORDS],
+      [shared, "Hold the deploy until Friday."],
+      [other, "Another issue"],
+    ])
+  );
+  expect(seen.ambiguous).toEqual(new Set([pageAmbiguous, sheetAmbiguous]));
+  // A render in which no publisher changes hands the link the same map and the same set.
+  const { ambiguous, names } = seen;
+  view.rerender(surfaces({ page: true, sheet: true }));
+  expect(seen.names).toBe(names);
+  expect(seen.ambiguous).toBe(ambiguous);
+
+  // The sheet closes: the page's names stay, its own for the reference both named among them,
+  // and so does the reference it read as ambiguous.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names).toEqual(page.names);
+  expect(seen.ambiguous).toEqual(page.ambiguous);
+
+  // The page leaves too: nothing is published.
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.names).toEqual(new Map());
+  expect(seen.ambiguous).toEqual(new Set());
+  view.unmount();
 });
 
 // R21: the batched read names an ask by its question as stored, which is markdown, and every
