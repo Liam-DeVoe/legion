@@ -368,9 +368,7 @@ export function IssueTableSelection({
         searchLabel="Search epics"
         triggerClassName={`max-w-60 rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}
         value={epic === "" ? undefined : epic}
-      >
-        {epic === "" ? "Move to epic…" : undefined}
-      </MultiSelect>
+      />
       <StepButton
         ariaDisabled={busy || epic === ""}
         onClick={() => {
