@@ -157,10 +157,9 @@ function TaskTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
           tablist and the details rail wear, so the cut column reads as more to scroll rather than
           as clipped text. The scroll box sits inside the card so the fade masks the table and not
           the card's border; `overflow-hidden` keeps the scrolled rows inside the card's rounded
-          corners. `relative` keeps the scrolled table's cells inside the scroll box, as the
-          Settings tables do (`features/settings/classes.ts`). */}
+          corners. */}
       <div className={`overflow-hidden rounded-xl border ${card}`}>
-        <div className={`relative overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
+        <div className={`overflow-x-auto ${tableFade.fade}`} ref={tableFade.ref}>
           <table aria-label={`Steps of task ${task}`} className="w-full text-left text-xs">
             <thead
               className={`border-b ${surfaceMutedBg} ${borderDefault} ${textSecondaryOnSurface}`}
