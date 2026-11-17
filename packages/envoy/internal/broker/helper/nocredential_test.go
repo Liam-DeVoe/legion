@@ -370,7 +370,14 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 		// Reading it there rather than from the session leaves the register below the only
 		// thing the settle this row pins can change, and it puts a retry of the enroll loop's
 		// own in flight while that register runs — the very attempt a register that did not
-		// see it start must not wait on.
+		// see it start must not wait on. The retry's backoff runs on the rig's clock, which only
+		// the test moves, so the row moves it to the retry once the 503 has armed it.
+		retry := r.clock.Now().Add(time.Second)
+		testwait.Until(t, "the confirming renew's retry, a second after its 503", func() ([]time.Time, bool) {
+			armed := r.clock.Armed()
+			return armed, slices.ContainsFunc(armed, retry.Equal)
+		})
+		r.clock.Set(retry)
 		waitFor(t, func() bool {
 			r.fake.mu.Lock()
 			defer r.fake.mu.Unlock()
