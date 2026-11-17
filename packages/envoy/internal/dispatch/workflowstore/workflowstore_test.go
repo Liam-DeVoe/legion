@@ -276,9 +276,7 @@ func TestTwoWritesOfOneIDAtOneTimeKeepBoth(t *testing.T) {
 		errs := make([]error, 2)
 		for index, write := range []StepWrite{start, end} {
 			begun.Add(1)
-			done.Add(1)
-			go func() {
-				defer done.Done()
+			done.Go(func() {
 				tx, err := pool.Begin(ctx)
 				begun.Done()
 				if err != nil {
@@ -292,7 +290,7 @@ func TestTwoWritesOfOneIDAtOneTimeKeepBoth(t *testing.T) {
 					return
 				}
 				errs[index] = tx.Commit(ctx)
-			}()
+			})
 		}
 		begun.Wait()
 		close(release)
