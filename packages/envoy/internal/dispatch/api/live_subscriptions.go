@@ -25,8 +25,10 @@ import (
 // beside itself.
 //
 // The socket holds at most contracts.LiveSocketMaxSubscriptions, of every kind; one more is
-// refused TOO_MANY_SUBSCRIPTIONS and starts nothing. A subscribe for a sub the socket holds
-// replaces it, whatever its kind. Every subscription ends when the socket does.
+// refused TOO_MANY_SUBSCRIPTIONS and starts nothing. A delivery view the hub dropped on its own,
+// one a re-check found its caller may no longer read (recheckReaders), holds no place. A subscribe
+// for a sub the socket holds replaces it, whatever its kind. Every subscription ends when the
+// socket does.
 
 // errLiveSocketClosed is what SendWait answers once the socket has ended.
 var errLiveSocketClosed = errors.New("dispatch: the live socket closed")
@@ -189,6 +191,15 @@ func (s *server) subscribeLive(socket *liveSocket, frame LiveSubscribe) {
 		return
 	}
 	held := socket.subs[sub]
+	if held == nil && len(socket.subs) >= contracts.LiveSocketMaxSubscriptions {
+		// A delivery view the hub dropped on its own holds no place, so the socket lets go of each
+		// before it counts.
+		for id, kept := range socket.subs {
+			if kept.streamed == nil && !s.deliveryHub.Holds(socket, id) {
+				delete(socket.subs, id)
+			}
+		}
+	}
 	if held == nil && len(socket.subs) >= contracts.LiveSocketMaxSubscriptions {
 		socket.Send(liveRefusal(sub, "TOO_MANY_SUBSCRIPTIONS", fmt.Sprintf(
 			"a socket holds at most %d subscriptions; unsubscribe one before subscribing another", contracts.LiveSocketMaxSubscriptions)))

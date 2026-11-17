@@ -248,6 +248,15 @@ func (h *deliveryHub) Close(conn deliveryLiveConn) {
 	}
 }
 
+// Holds reports whether conn holds sub, a delivery view's subscription. The hub drops one on its
+// own when a re-check finds that the view's GET row refuses the sub's new reader (recheckReaders),
+// and the socket asks here before it counts its subscriptions against the cap (subscribeLive).
+func (h *deliveryHub) Holds(conn deliveryLiveConn, sub string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.generation != nil && h.generation.conns[conn][sub] != nil
+}
+
 // dropLocked drops conn's sub id, the view it leaves without a sub, and conn once it holds none. The
 // drop that leaves the hub no conn stops its generation: its listener closes its connection, its
 // intake cancels its relay subscription, and nothing reads either log until the next Subscribe.

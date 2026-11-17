@@ -110,8 +110,9 @@ type liveSocket struct {
 	// writer sets once it has closed; closing stops further extensions.
 	deadline sync.Mutex
 	closing  bool
-	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
-	// the read loop, then the cleanup once the loop has ended.
+	// subs is every subscription the socket holds, by sub. A delivery view's stays here after the
+	// hub drops it on its own until the socket next counts at the cap (subscribeLive). Only the
+	// handler's goroutine touches it: the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
 	// ending counts the subscriptions stopping beside the read loop, which the socket waits for
 	// once it ends.
