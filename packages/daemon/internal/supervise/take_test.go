@@ -634,3 +634,43 @@ func TestTakeFromAClaimRestoredWorkingIsTheWorkersWordThatItIsIdle(t *testing.T)
 		t.Fatalf("pending %+v, want the turn that followed the take's own", p)
 	}
 }
+
+// A take whose decision fails on a read of the store before it is answered — the connection
+// dropped under the read of the issue's phase — is answered with no outcome, which the take route
+// answers 500 CLAIM_WRITE_FAILED. The plugin sends no take again after an answer that carries a
+// code, and asks again only at a newer revision of the value (pi-shared's task-take.ts,
+// unanswered), so the record, which still owes the task with no hold standing, writes the value
+// again under its number (R2: whenever the record owes a claim a task the claim is free to take);
+// otherwise the task never reaches the worker and no bound charges anyone for it.
+func TestTakeWhoseDecisionFailedIsWrittenAgainForTheWorkerToAsk(t *testing.T) {
+	failing := true
+	h := waitsHarness(t, func(d *Deps) {
+		d.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) {
+			if failing {
+				return false, errBoom
+			}
+			return true, nil
+		}
+	})
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+	asked := h.seen()
+	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
+		t.Fatalf("take while the phase read fails = %+v, %v; want no answer and the read's failure", answer, err)
+	}
+	failing = false
+
+	h.advance(takeBound)
+	h.observe(runtime.Alive)
+
+	value, held := h.values.value(h.token)
+	if !held || value.Number != asked.Number || value == asked {
+		t.Fatalf("a first bound after the failed take the bucket holds %+v (held %t), want task %d written again at a newer revision than %d, the plugin's only signal to ask again",
+			value, held, asked.Number, asked.Revision)
+	}
+	if answer, err := h.takeValue(value); answer.Outcome != TakeOutcomeAccepted {
+		t.Fatalf("the take at the newer revision = %+v, %v; want it accepted", answer, err)
+	}
+	h.wantCharges()
+}

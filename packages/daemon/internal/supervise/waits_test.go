@@ -578,3 +578,38 @@ func TestSilentRestoredClaimWithNoHelloIsRetiredAtTheReconnectDeadline(t *testin
 		}
 	})
 }
+
+// A take whose accept the store refused to write is answered with no outcome, which the take route
+// answers 500 CLAIM_WRITE_FAILED, and the plugin sends no take again after an answer that carries a
+// code (pi-shared's task-take.ts, unanswered): its worker never learned the take was accepted, so
+// no turn of it can start. The second bound passing over that take would charge the worker for the
+// daemon's own failed write. The worker is not charged, and the task still reaches it: by an
+// accepted answer, or at a newer revision of the value, which is when the plugin asks again.
+func TestChargeNoneForATakeWhoseAcceptTheStoreRefused(t *testing.T) {
+	h := waitsHarness(t)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
+	asked := h.seen()
+	h.store.fail("PutClaim", errBoom)
+	h.store.fail("PutDelivery", errBoom)
+	answer, _ := h.takeValue(asked)
+	h.store.fail("PutClaim", nil)
+	h.store.fail("PutDelivery", nil)
+
+	accepted := answer.Outcome == TakeOutcomeAccepted
+	for waited := time.Duration(0); !accepted && waited <= turnStartBound; waited += time.Minute {
+		h.advance(time.Minute)
+		h.observe(runtime.Alive)
+		if value, held := h.values.value(h.token); held && value != asked {
+			asked = value
+			next, _ := h.takeValue(value)
+			accepted = next.Outcome == TakeOutcomeAccepted
+		}
+	}
+
+	h.wantCharges()
+	if !accepted {
+		t.Fatalf("no take of task %d was accepted within the second bound after the store refused the first take's write", asked.Number)
+	}
+}
