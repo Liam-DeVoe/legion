@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -419,6 +420,34 @@ func TestRunRecordsNoBootWhenItCannotTakeItsPort(t *testing.T) {
 	}
 	if count, _ := boots(t, cfg); count != 0 {
 		t.Fatalf("boots after a start that never served = %d, want 0", count)
+	}
+}
+
+// The boot itself says once that the deployment names no shared leak check, and says nothing of it
+// under a deployment that names one: run logs it (logLeakCheck) before anything that can stop the
+// boot, so a boot that then fails on its port has logged it all the same.
+func TestRunLogsTheLeakCheckLineAtBoot(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		setting leakguard.Setting
+		want    int
+	}{
+		{name: "no shared leak check", want: 1},
+		{name: "the deployment's check", setting: leakCheckSetting, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t)
+			cfg.LeakCheck = tc.setting
+			o := fakeRuntime(fake.NewRuntime(), &built{})
+			o.listen = nil
+			var logged strings.Builder
+			if err := run(context.Background(), cfg, slog.New(slog.NewJSONHandler(&logged, nil)), o); err == nil {
+				t.Fatal("run returned no error although another listener held its port")
+			}
+			if got := strings.Count(logged.String(), leakCheckNotConfigured); got != tc.want {
+				t.Fatalf("the boot logged the leak-check line %d times, want %d; log:\n%s", got, tc.want, logged.String())
+			}
+		})
 	}
 }
 

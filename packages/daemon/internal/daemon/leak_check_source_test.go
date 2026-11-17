@@ -384,6 +384,26 @@ func TestADaemonWithNoAppsOrNoLeakCheckSettingHasNoLeakCheckSource(t *testing.T)
 	}
 }
 
+// The deployment's shared leak check reaches the runtime that starts each role, under either
+// runtime: the Sandbox runtime's Options carry the whole setting, which it reads the check with
+// and tells every role the checker of, and the tmux runtime's carry the checker, which every pane
+// is told. A daemon that dropped either would start roles that never ran the deployment's check.
+func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
+	cfg := config.Config{Runtime: config.Runtime{Name: "tmux"}, LeakCheck: leakCheckSetting}
+	if got := tmuxOptions(cfg, "test", nil, "", "", quietLogger()).LeakCheckSHA256; got != leakCheckSetting.CheckerSHA256 {
+		t.Errorf("tmux LeakCheckSHA256 = %q, want the deployment's checker %q", got, leakCheckSetting.CheckerSHA256)
+	}
+	k := kubernetesConfig(t, "https://127.0.0.1:1")
+	k.LeakCheck = leakCheckSetting
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	if opts.LeakCheckSetting != leakCheckSetting {
+		t.Errorf("sandbox LeakCheckSetting = %+v, want the deployment's setting %+v", opts.LeakCheckSetting, leakCheckSetting)
+	}
+}
+
 // A deployment that names no shared leak check is told so once at boot, in one plain line naming
 // the two settings that would name one; a deployment that names one is told nothing of it, since
 // the check then runs as it always has.
