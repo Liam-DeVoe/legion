@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { type FinishedIssue, PROJECT_KEY_RULE, type ProjectPlans } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import type { Server } from "bun";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -291,16 +292,24 @@ describe("dispatch plans", () => {
 describe("dispatch plans on the command line", () => {
   const requests: string[] = [];
   const makeDirectory = temporaryDirectories("dispatch-plans");
-  const server = Bun.serve({
-    port: 0,
-    fetch(request) {
-      const { pathname, search } = new URL(request.url);
-      requests.push(`${request.method} ${pathname}${search}`);
-      if (pathname === "/api/v1/projects/INFRA/plans" && request.method === "GET") {
-        return Response.json({ project: "INFRA", issues: [ratedOnce, unrated] });
-      }
-      return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-    },
+  // Started in the hook whose twin stops it: Bun evaluates this body under a filter that selects
+  // none of its rows and then runs neither hook, so a server started here would outlive the run.
+  let server: Server<undefined>;
+  beforeAll(() => {
+    server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const { pathname, search } = new URL(request.url);
+        requests.push(`${request.method} ${pathname}${search}`);
+        if (pathname === "/api/v1/projects/INFRA/plans" && request.method === "GET") {
+          return Response.json({ project: "INFRA", issues: [ratedOnce, unrated] });
+        }
+        return Response.json(
+          { error: `unexpected ${request.method} ${pathname}` },
+          { status: 500 }
+        );
+      },
+    });
   });
   afterAll(() => server.stop(true));
 
