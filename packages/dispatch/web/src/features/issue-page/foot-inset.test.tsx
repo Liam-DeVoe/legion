@@ -11,10 +11,14 @@ import { FOOT_COMPOSER_INSET_PROPERTY, useFootInset } from "../../hooks/useFootI
  * own inline style, which `getComputedStyle` reads back.
  */
 function FootBox({
+  edge = "bottom",
   gap,
   height,
   position,
 }: {
+  /** The edge the box's own style holds it at: `bottom: 0` as the issue page's box is, or
+   *  `top: 0` as today's docked composer is (`sm:sticky sm:top-0`), with `bottom` unset. */
+  edge?: "bottom" | "top";
   gap: number;
   height: number;
   position: "static" | "sticky";
@@ -29,7 +33,7 @@ function FootBox({
         node.getBoundingClientRect = () =>
           new DOMRect(0, window.innerHeight - gap - height, 400, height);
       }}
-      style={{ position }}
+      style={edge === "bottom" ? { bottom: 0, position } : { position, top: 0 }}
     />
   );
 }
@@ -63,4 +67,14 @@ test("a sticky box held at the screen's foot publishes its reach, and one scroll
   const laidOut = render(<FootBox gap={0} height={58} position="static" />);
   expect(published()).toBe("");
   laidOut.unmount();
+});
+
+// Today's docked composer is sticky too, held at the top of its column (`sm:sticky sm:top-0`)
+// with its `bottom` unset. On a short, wide window its bottom edge can meet the screen's, and
+// there it is still in the page, under nothing of the shell's, so it publishes nothing and the
+// status corner stays where `main` draws it.
+test("a sticky box held at the top publishes nothing, even where its bottom edge meets the screen's", () => {
+  const docked = render(<FootBox edge="top" gap={0} height={58} position="sticky" />);
+  expect(published()).toBe("");
+  docked.unmount();
 });
