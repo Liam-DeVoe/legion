@@ -633,8 +633,8 @@ export interface HeldRead {
   readonly release: () => Promise<void>;
 }
 
-/** Holds one read of the page's, so a row decides when its answer lands. */
-async function holdRead(page: Page, read: string): Promise<HeldRead> {
+/** Holds every read of the page's that `read` matches, so a row decides when its answer lands. */
+export async function holdRead(page: Page, read: string): Promise<HeldRead> {
   const held = Promise.withResolvers<void>();
   await page.route(read, async (route) => {
     await held.promise;

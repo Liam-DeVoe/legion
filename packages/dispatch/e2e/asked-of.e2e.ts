@@ -18,6 +18,7 @@ import { runDispatch } from "./dispatch-cli";
 import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
+import { handOnControl } from "./keyboard-complete";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -45,15 +46,6 @@ const asker = {
   },
   as: "agent" as const,
 };
-
-/** The ask card's hand-on control, wherever that card is drawn: the trigger of the list of
- *  people, inside the badge the card marks with its ask's id. Every query for it is scoped to
- *  the card's own ask rather than to a bare role, since a page can draw many cards. */
-function handOnControl(scope: Locator | Page, askId: string): Locator {
-  return scope
-    .locator(`[data-ask-hand-on="${askId}"]`)
-    .getByRole("button", { exact: true, name: "Hand this question to" });
-}
 
 /**
  * Hands the ask the control belongs to over to `login`, as a reader does: opens the list and

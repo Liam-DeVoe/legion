@@ -1,0 +1,485 @@
+/** What the rows of `keyboard-complete.e2e.ts` (dispatch://INFRA-2160, every page of Dispatch by
+ *  the keyboard) read and seed that no other helper does: a page a key opens in a new tab, a
+ *  move that loads no new document, the contrast of a choice, the writes a key sends, and the
+ *  seeds of their checks.
+ *
+ *  The rows run on a build of the merge base as their negative control, with that file and this
+ *  one checked out onto it, so nothing here imports what this tree adds to or changes in
+ *  `web/src`: a value the rows need from the app, such as the chord timeout, is written here.
+ *
+ *  Every document, project, person and host here is made up: this repository is public, so
+ *  nothing names a real one. */
+import {
+  type InboxDismissRequest,
+  type InboxDismissResponse,
+  type InboxDismissSeen,
+  inboxThreadRow,
+} from "@legion/contracts";
+import { type BrowserContext, expect, type Locator, type Page } from "@playwright/test";
+
+import { type FakeSession, setLiveSessions } from "./agents";
+import {
+  baseUrl,
+  createAsk,
+  createIssue,
+  createPriority,
+  editArtifact,
+  listMyReplies,
+  patchIssue,
+  putArchitectureSource,
+  requestApproval,
+  syncArchitectureSource,
+  userHeaders,
+  withOpenedAsk,
+} from "./api";
+import { composite, contrastRatio, parseComputedColor, toRgbString } from "./colors";
+import { seedFakeGithub } from "./fake-github-helpers";
+import { agentRowId, replyRowId } from "./inbox-threads";
+import { type KeyedWrite, watchWrites } from "./keyed-writes";
+import { machineSession } from "./machines";
+import { sessionIds } from "./session-ids";
+
+declare global {
+  interface Window {
+    __dispatchDocumentMark?: boolean;
+  }
+}
+
+/** How long a chord waits for its next press (`g` then `i`), as the registry waits it
+ *  (`CHORD_TIMEOUT_MS` of `web/src/features/shell/keymap.ts`), written here rather than imported,
+ *  since the merge base the rows also run on exports no such value. */
+export const CHORD_TIMEOUT_MS = 1000;
+
+/** The session that asks every question these seeds write, and edits every document. */
+export const asker = {
+  actor: { id: "e2e-keyboard-complete", kind: "session" as const },
+  as: "agent" as const,
+};
+
+// ---------------------------------------------------------------------------
+// A page opened in a new tab, and a move that loads no new document.
+// ---------------------------------------------------------------------------
+
+/** The other site the rows' web links point to (`https://example.com/a`). Each context serves
+ *  it itself (`newPageAt`), so no row reaches the network. */
+export const OTHER_SITE = "https://example.com";
+
+/** The contexts that already serve `OTHER_SITE`, so a second `newPageAt` in one context adds no
+ *  second route over the first. */
+const servingOtherSite = new WeakSet<BrowserContext>();
+
+/**
+ * The page `act` opens in `context`, read from the context's `page` event, which fires for every
+ * new page of the context however the page under test opened it: `window.open` with
+ * `noopener`, a modifier click, a middle click. The page is answered once its document has
+ * loaded, at the address it was opened at. Every `OTHER_SITE` address answers a page of its own
+ * from the context's route.
+ */
+export async function newPageAt(
+  context: BrowserContext,
+  act: () => Promise<unknown>
+): Promise<Page> {
+  if (!servingOtherSite.has(context)) {
+    servingOtherSite.add(context);
+    await context.route(`${OTHER_SITE}/**`, (route) =>
+      route.fulfill({
+        body: "<!doctype html><title>Another site</title><p>Another site.</p>",
+        contentType: "text/html",
+      })
+    );
+  }
+  const opened = context.waitForEvent("page");
+  await act();
+  const page = await opened;
+  await page.waitForLoadState("domcontentloaded");
+  return page;
+}
+
+/** Marks the document `page` shows, on its `window`: a move inside the app keeps the mark, and
+ *  a load of a new document, a reload included, replaces `window` and the mark with it. */
+export async function markDocument(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    window.__dispatchDocumentMark = true;
+  });
+}
+
+/** Whether `page` loaded a new document since `markDocument` marked the one it showed. */
+export async function reloaded(page: Page): Promise<boolean> {
+  return page.evaluate(() => window.__dispatchDocumentMark !== true);
+}
+
+// ---------------------------------------------------------------------------
+// The contrast of a choice.
+// ---------------------------------------------------------------------------
+
+/** One element's colours, as `contrastOf` reads them once they have stopped easing. */
+export interface Contrast {
+  /** The element's computed `color`, laid over `background`, as `rgb(r, g, b)`. */
+  readonly color: string;
+  /** What the text is read on: the first background that is not transparent on the element or
+   *  on an element above it, laid over the ones under it down to the first opaque one, as
+   *  `rgb(r, g, b)`. */
+  readonly background: string;
+  /** The element's own computed `background-color`, as the browser wrote it. */
+  readonly ownBackground: string;
+  /** That background's alpha: 0 is a transparent background, which a native `<select>` or
+   *  `<option>` must not have (k-menu-contrast). */
+  readonly ownBackgroundAlpha: number;
+  /** The WCAG 2.1 contrast ratio of `color` on `background`, from 1 to 21. */
+  readonly ratio: number;
+}
+
+/** What the page reports of one element: its `color`, the `background-color` of it and of each
+ *  element above it up to the root, and whether a `color` or `background-color` transition still
+ *  runs on any of them. */
+interface ColourReading {
+  readonly backgrounds: string[];
+  readonly color: string;
+  readonly easing: boolean;
+}
+
+/**
+ * The colours of the element `locator` names and their WCAG 2.1 contrast ratio, worked out here
+ * from the computed styles (`e2e/colors.ts`) rather than read from the app. A button or a link
+ * eases its `color` and `background-color` over 150 ms (`styles.css`), so after
+ * `page.emulateMedia({ colorScheme })` the reading is polled until no such transition runs on
+ * the element or above it. A translucent layer is laid over what is under it; `opacity` is not
+ * read. The root of every Dispatch page draws an opaque background (`:root` in `styles.css`), so
+ * an element with no opaque background under it is refused by name.
+ */
+export async function contrastOf(locator: Locator): Promise<Contrast> {
+  let reading: ColourReading | undefined;
+  await expect
+    .poll(
+      async () => {
+        reading = await locator.evaluate((element): ColourReading => {
+          const chain: Element[] = [];
+          for (let node: Element | null = element; node !== null; node = node.parentElement) {
+            chain.push(node);
+          }
+          // `getAnimations` brings the style up to date first, which starts any transition a
+          // switch of the colour scheme asks for, so a transition not yet begun is seen too.
+          const easing = chain.some((node) =>
+            node
+              .getAnimations()
+              .some(
+                (animation) =>
+                  animation instanceof CSSTransition &&
+                  (animation.transitionProperty === "color" ||
+                    animation.transitionProperty === "background-color")
+              )
+          );
+          return {
+            backgrounds: chain.map((node) => getComputedStyle(node).backgroundColor),
+            color: getComputedStyle(element).color,
+            easing,
+          };
+        });
+        return reading.easing;
+      },
+      { message: "the colours of the element and of those above it are still easing" }
+    )
+    .toBe(false);
+  if (reading === undefined) {
+    throw new Error("the element's colours were never read");
+  }
+  const layers = reading.backgrounds.map(parseComputedColor);
+  const first = layers.findIndex((layer) => layer.alpha > 0);
+  const opaque = layers.findIndex((layer, index) => index >= first && layer.alpha >= 1);
+  if (first === -1 || opaque === -1) {
+    throw new Error(
+      `no opaque background on the element or above it: ${reading.backgrounds.join(", ")}`
+    );
+  }
+  let background = layers[opaque].rgb;
+  for (let index = opaque - 1; index >= first; index -= 1) {
+    background = composite(layers[index], background);
+  }
+  const color = composite(parseComputedColor(reading.color), background);
+  return {
+    background: toRgbString(background),
+    color: toRgbString(color),
+    ownBackground: reading.backgrounds[0],
+    ownBackgroundAlpha: layers[0].alpha,
+    ratio: contrastRatio(color, background),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// The writes a key sends.
+// ---------------------------------------------------------------------------
+
+/** The route one dismissal, or one Move to Inbox, posts to. */
+const DISMISS_PATH = "/api/v1/me/inbox/dismiss";
+
+/** Every snooze `page` writes for the ask `askId` from here on, in order: `PUT
+ *  /api/v1/me/asks/{id}/snooze`, whose body names `snoozed_until`. */
+export function snoozeWrites(page: Page, askId: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "PUT", `/api/v1/me/asks/${encodeURIComponent(askId)}/snooze`);
+}
+
+/** Every Un-snooze `page` sends for the ask `askId` from here on: `DELETE
+ *  /api/v1/me/asks/{id}/snooze`. */
+export function unsnoozeWrites(page: Page, askId: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "DELETE", `/api/v1/me/asks/${encodeURIComponent(askId)}/snooze`);
+}
+
+/** Every review `page` posts of the document `artifactId` at whichever version the server takes
+ *  for its latest: `POST /api/v1/artifacts/{id}/reviews`, which the merge base's Approve posts
+ *  to. */
+export function reviewWrites(page: Page, artifactId: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "POST", `/api/v1/artifacts/${encodeURIComponent(artifactId)}/reviews`);
+}
+
+/** Every review `page` posts of version `version` of the document `artifactId`: `POST
+ *  /api/v1/artifacts/{id}/versions/{number}/reviews`, which `a`, Shift+R and Approve post to with
+ *  the version the page read. */
+export function versionReviewWrites(
+  page: Page,
+  artifactId: string,
+  version: number
+): KeyedWrite<unknown>[] {
+  return watchWrites(
+    page,
+    "POST",
+    `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions/${version}/reviews`
+  );
+}
+
+/** Every write `page` sends to the issue `issueKey` from here on - its priority, status,
+ *  assignee or repository: `PATCH /api/v1/issues/{key}`. */
+export function issueWrites(page: Page, issueKey: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "PATCH", `/api/v1/issues/${encodeURIComponent(issueKey)}`);
+}
+
+/** Every hand-on `page` writes for the ask `askId`: `PUT /api/v1/asks/{id}/asked-of`. */
+export function handOnWrites(page: Page, askId: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "PUT", `/api/v1/asks/${encodeURIComponent(askId)}/asked-of`);
+}
+
+/** Every answer `page` posts to the ask `askId`, an approval drawn as an ask card included:
+ *  `POST /api/v1/asks/{id}/answer`. */
+export function answerWrites(page: Page, askId: string): KeyedWrite<unknown>[] {
+  return watchWrites(page, "POST", `/api/v1/asks/${encodeURIComponent(askId)}/answer`);
+}
+
+/** Every dismissal and every Move to Inbox `page` posts: `POST /api/v1/me/inbox/dismiss`. */
+export function dismissWrites(page: Page): KeyedWrite<unknown>[] {
+  return watchWrites(page, "POST", DISMISS_PATH);
+}
+
+// ---------------------------------------------------------------------------
+// A control the rows reach for.
+// ---------------------------------------------------------------------------
+
+/** The ask card's hand-on control, wherever that card is drawn: the trigger of the list of
+ *  people, inside the badge the card marks with its ask's id. Every query for it is scoped to
+ *  the card's own ask rather than to a bare role, since a page can draw many cards. */
+export function handOnControl(scope: Locator | Page, askId: string): Locator {
+  return scope
+    .locator(`[data-ask-hand-on="${askId}"]`)
+    .getByRole("button", { exact: true, name: "Hand this question to" });
+}
+
+// ---------------------------------------------------------------------------
+// The seeds.
+// ---------------------------------------------------------------------------
+
+/**
+ * Takes the thread row `rowId` (`replyRowId`, `agentRowId`) out of `login`'s Inbox, as its
+ * Dismiss does: the dismissal carries in `seen_replies` what the list route answers for that
+ * row, which is what the page sends for a row it drew (`e2e/inbox-dismiss.e2e.ts`), so the
+ * server dismisses it rather than keeping it for a write the page never drew.
+ */
+export async function dismissThread(rowId: string, login = "alice"): Promise<void> {
+  const { rows } = await listMyReplies({ kind: ["reply", "agent"], state: "inbox" }, { login });
+  const row = (rows ?? [])
+    .map(inboxThreadRow)
+    .find(
+      (listed) =>
+        (listed.kind === "agent" ? agentRowId(listed.thread_id) : replyRowId(listed.thread_id)) ===
+        rowId
+    );
+  if (row === undefined) {
+    throw new Error(`${rowId} is not in the Inbox of ${login}`);
+  }
+  const seen: InboxDismissSeen =
+    row.kind === "agent"
+      ? { newest_reply: row.reply.id, unread_replies: row.unread_reply_ids }
+      : { version: row.version };
+  const request: InboxDismissRequest = { seen_replies: { [rowId]: seen }, threads: [rowId] };
+  const response = await fetch(new URL(DISMISS_PATH, baseUrl), {
+    body: JSON.stringify(request),
+    headers: { "Content-Type": "application/json", ...(await userHeaders(login)) },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(`POST ${DISMISS_PATH} failed: ${response.status} ${await response.text()}`);
+  }
+  const { dismissed } = (await response.json()) as InboxDismissResponse;
+  if (dismissed !== 1) {
+    throw new Error(`POST ${DISMISS_PATH} dismissed ${dismissed} threads where it named ${rowId}`);
+  }
+}
+
+/** How many paragraphs a tall spec holds: 160 one-line paragraphs run past four heights of the
+ *  reading column at 1440 by 900, the most any check asks of a document. */
+const TALL_PARAGRAPHS = 160;
+
+/** A spec of `TALL_PARAGRAPHS` numbered paragraphs under the heading `title`. */
+function tallSpec(title: string): string {
+  const notes = Array.from(
+    { length: TALL_PARAGRAPHS },
+    (_, index) =>
+      `${title} note ${index + 1}: the ledger and the mirror each keep a clock of their own.`
+  );
+  return [`# ${title}`, "", ...notes.flatMap((note) => [note, ""])].join("\n");
+}
+
+/** An approval request of one issue's spec, which the reading pane draws as that document. */
+export interface SeededApproval {
+  readonly artifactId: string;
+  readonly askId: string;
+  readonly issueKey: string;
+  /** The version of the spec the request asks the reader to approve. */
+  readonly version: number;
+}
+
+/** Three approval requests, each of its own issue's tall spec in `project`, which must exist,
+ *  in the order the Inbox lists them: the issues stand at P1, P2 and P3. */
+export async function seedTallAsks(project: string): Promise<SeededApproval[]> {
+  const seeded: SeededApproval[] = [];
+  for (const [index, title] of ["Ledger handover", "Mirror replay", "Clock audit"].entries()) {
+    const issue = await createIssue({ project, spec: tallSpec(title), title });
+    await patchIssue(issue.key, { priority: index + 1 });
+    const requested = withOpenedAsk(
+      await requestApproval(issue.primary_artifact_id, { summary: `The ${title} draft.` }, asker)
+    );
+    seeded.push({
+      artifactId: issue.primary_artifact_id,
+      askId: requested.ask.id,
+      issueKey: issue.key,
+      version: requested.version,
+    });
+  }
+  return seeded;
+}
+
+/** An issue titled `title` in `project`, which must exist, whose spec an agent edited once, so
+ *  it stands at version 2, with an open approval request of that version. */
+export async function seedApprovalAtVersionTwo(
+  project: string,
+  title: string
+): Promise<SeededApproval> {
+  const issue = await createIssue({ project, spec: `# ${title}\n\nThe plan.\n`, title });
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ find: "The plan.", op: "replace", with: "The revised plan." }] },
+    asker
+  );
+  const requested = withOpenedAsk(
+    await requestApproval(issue.primary_artifact_id, { summary: `${title}, revised.` }, asker)
+  );
+  expect(requested.version).toBe(2);
+  return {
+    artifactId: issue.primary_artifact_id,
+    askId: requested.ask.id,
+    issueKey: issue.key,
+    version: requested.version,
+  };
+}
+
+/** A priority and the one issue of `project` that advances it. */
+export interface PriorityWithWork {
+  readonly issueKey: string;
+  readonly priorityId: string;
+}
+
+/** A priority titled `title`, which alice owns, with work under it: an issue of `project`, which
+ *  must exist, in progress and advancing it. Each call writes the next priority in the one
+ *  order, so two calls make two priorities. */
+export async function seedPriorityWithWork(
+  project: string,
+  title: string
+): Promise<PriorityWithWork> {
+  const priority = await createPriority({ owner: "alice", title });
+  const issue = await createIssue({ project, title: `${title}: the first step` });
+  await patchIssue(issue.key, { advances: [priority.id], status: "in_progress" });
+  return { issueKey: issue.key, priorityId: priority.id };
+}
+
+/** The repository `seedArchitectureLeaf` reads `project`'s architecture from, on the fake
+ *  GitHub. */
+const ARCHITECTURE_REPO = "legion/arch";
+
+/** The one component of `seedArchitectureLeaf`'s model, which has no children. */
+export const ARCHITECTURE_LEAF = { id: "platform", title: "Platform" } as const;
+
+/** `project`'s architecture, which `project` must exist for: one component with no children,
+ *  imported from the fake GitHub. */
+export async function seedArchitectureLeaf(project: string): Promise<void> {
+  const leaf = `---\ntitle: ${ARCHITECTURE_LEAF.title}\n---\nEverything that runs.\n`;
+  await seedFakeGithub({
+    [ARCHITECTURE_REPO]: {
+      contents: "read",
+      files: { [`${ARCHITECTURE_LEAF.id}.md`]: leaf },
+      installation_id: 101,
+    },
+  });
+  await putArchitectureSource(project, { branch: "main", repo: ARCHITECTURE_REPO });
+  expect((await syncArchitectureSource(project, ARCHITECTURE_REPO)).last_error).toBeNull();
+}
+
+/** The two machines `seedTwoMachines` puts one live session on each of. */
+export const MACHINES = ["ledger-devbox", "mirror-laptop"] as const;
+
+/** One live session on each of `MACHINES`, seen 30 s before `now`, made live with `others` and
+ *  no other session; answers the two. Their ids are not those of the thread sessions
+ *  (`e2e/inbox-threads.ts`), so a row can name `THREAD_SESSION` among `others`. */
+export async function seedTwoMachines(
+  now: number,
+  others: readonly FakeSession[] = []
+): Promise<FakeSession[]> {
+  const sessions = [
+    machineSession(sessionIds.observer, "Ledger watcher", {
+      host: MACHINES[0],
+      lastSeen: now - 30_000,
+    }),
+    machineSession(sessionIds.archivist, "Mirror archivist", {
+      host: MACHINES[1],
+      lastSeen: now - 30_000,
+    }),
+  ];
+  await setLiveSessions([...sessions, ...others]);
+  return sessions;
+}
+
+/** One seeded question of `seedAsksOverTwoProjects`: the ask, its issue and where it stands. */
+export interface SpreadAsk {
+  readonly askId: string;
+  readonly issueKey: string;
+  readonly priority: 1 | 2;
+  readonly project: string;
+}
+
+/** Four questions that wait on alice, one on an issue of each of the two `projects`, which must
+ *  exist, at each of P1 and P2: a filter on either field keeps two of them, and a filter on both
+ *  keeps one. */
+export async function seedAsksOverTwoProjects(
+  projects: readonly [string, string]
+): Promise<SpreadAsk[]> {
+  const seeded: SpreadAsk[] = [];
+  for (const project of projects) {
+    for (const priority of [1, 2] as const) {
+      const issue = await createIssue({ project, title: `${project} rollout at P${priority}` });
+      await patchIssue(issue.key, { priority });
+      const ask = await createAsk(
+        issue.key,
+        { question: `Which window does ${project} replay at P${priority}?` },
+        asker
+      );
+      seeded.push({ askId: ask.id, issueKey: issue.key, priority, project });
+    }
+  }
+  return seeded;
+}
