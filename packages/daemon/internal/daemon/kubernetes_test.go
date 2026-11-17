@@ -151,7 +151,7 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 	t.Helper()
 	body := "apiVersion: v1\nkind: Config\n" +
 		"clusters:\n- name: test\n  cluster:\n    server: " + server + "\n" +
-		"users:\n- name: test\n  user:\n    token: kube-test-token\n" +
+		"users:\n- name: test\n  user:\n    token: " + kubeTestToken + "\n" +
 		"contexts:\n- name: test\n  context:\n    cluster: test\n    user: test\n"
 	if current != "" {
 		body += "current-context: " + current + "\n"
@@ -168,7 +168,14 @@ func writeKubeconfig(t *testing.T, server, current string) string {
 func TestAKubernetesDaemonRefusesAClusterWithoutAgentSandboxBeforeItsBoot(t *testing.T) {
 	var mu sync.Mutex
 	var requested []string
+	// The daemon's cluster client of these tests sends no bearer, so the stand-in records only a
+	// request of its shape, a Kubernetes API path; any other is another process's, answered 404 and
+	// recorded as nothing.
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -211,7 +218,14 @@ func TestAKubernetesDaemonRefusesALegacyPerClaimSandboxBeforeItOpensItsStore(t *
 	const legacy = "legion-test-legion-208-tester"
 	var mu sync.Mutex
 	var requested []string
+	// The daemon's cluster client of these tests sends no bearer, so the stand-in records only a
+	// request of its shape, a Kubernetes API path; any other is another process's, answered 404 and
+	// recorded as nothing.
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api") {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		requested = append(requested, r.Method+" "+r.URL.Path)
 		mu.Unlock()
@@ -1085,15 +1099,19 @@ func TestNoCredentialMaterialReachesAPod(t *testing.T) {
 func TestNewSecretsLoginLogsInWithTheDaemonsToken(t *testing.T) {
 	var mu sync.Mutex
 	var tokens []string
+	// The login's credential is its body's token, the one the token file holds. A request without
+	// it is another process's: it is answered 404, logged, and recorded as nothing. A daemon that
+	// posts another token is answered 404 too, so its login is never issued and the wait fails.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/v1/launcher-credentials/token" {
-			http.NotFound(w, r)
-			return
-		}
 		var body struct {
 			Token string `json:"token"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/launcher-credentials/token" || body.Token != "the-daemon's-token" {
+			t.Logf("a stand-in answered 404 to %.16q %.200q, which carries no credential of the daemon's", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		tokens = append(tokens, body.Token)
 		mu.Unlock()

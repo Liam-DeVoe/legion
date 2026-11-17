@@ -222,19 +222,14 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 	if _, err := exec.LookPath("jj"); err != nil {
 		t.Fatalf("this test drives a real jj: %v", err)
 	}
-	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests.Add(1)
-		http.Error(w, "no", http.StatusForbidden)
-	}))
-	t.Cleanup(server.Close)
+	remote, requests := loopbackRemote(t)
 
 	env := fixtureenv.Isolated(t.TempDir())
 	repo := t.TempDir()
 	mustRun(t, repo, env, fixturegit.JJInit(repo, true)...)
 	mustRun(t, repo, env, "jj", "describe", "-m", "work that must not leave the test", "-R", repo)
 	mustRun(t, repo, env, "jj", "bookmark", "set", "main", "-r", "@", "-R", repo)
-	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", server.URL+"/repo.git", "-R", repo)
+	mustRun(t, repo, env, "jj", "git", "remote", "add", "origin", remote, "-R", repo)
 	mustRun(t, repo, env, "git", "config", "protocol.http.allow", "always")
 
 	push := []string{"jj", "git", "push", "--remote", "origin", "--bookmark", "main", "-R", repo}
@@ -250,4 +245,24 @@ func TestIsolatedReachesNoNetworkRemoteWhateverTheRepositoryAllows(t *testing.T)
 	if requests.Load() == 0 {
 		t.Fatal("the push without GIT_ALLOW_PROTOCOL never reached the loopback server, so this test proves nothing")
 	}
+}
+
+// loopbackRemote is a git remote over HTTP on loopback that refuses every request, and the count
+// of the requests it was sent. A push sends it no credential, so it counts only a request of the
+// push's shape, one for the remote's own path (/repo.git/...); any other is another process's (a
+// loopback port the kernel gives a listener may be one a process of the machine still sends
+// to), answered 404 and counted as nothing.
+func loopbackRemote(t *testing.T) (string, *atomic.Int64) {
+	t.Helper()
+	requests := new(atomic.Int64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/repo.git/") {
+			http.NotFound(w, r)
+			return
+		}
+		requests.Add(1)
+		http.Error(w, "no", http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+	return server.URL + "/repo.git", requests
 }

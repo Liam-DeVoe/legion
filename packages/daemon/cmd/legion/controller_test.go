@@ -213,7 +213,13 @@ func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) 
 		Tokens: opts.tokens, GitHubRepositories: func() []ghrepo.Repository { return opts.repos },
 		State: fixedStateSource{repositories: opts.repositories}, StateTransactions: fixedStateTransactions{},
 	}).Handler
+	// The daemon records only requests of the shape the command sends, its API routes
+	// (/legion/v1/…); any other is another process's, answered 404 and recorded as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/legion/v1/") {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read the request body: %v", err)
@@ -1076,9 +1082,15 @@ func TestControllerStartAgainstADaemonBeforeContract12NamesTheSideToUpgrade(t *t
 		if r.Method == http.MethodGet && r.URL.Path == "/legion/v1/state" {
 			// A contract-11 daemon still serves state with a usable repository mapping: the
 			// repositories fetch, which runs before the mint, must succeed here so the test
-			// reaches the contract refusal it is actually about.
+			// reaches the contract refusal it is actually about. The state read carries no
+			// operator token, and the answer fails nothing whoever asks.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"repositories":{"mapped":[{"repo":"acme/widgets","default":true}]}}`))
+			return
+		}
+		// The secret request carries the operator token; any other request is another process's
+		// (fromTheDaemon).
+		if !fromTheDaemon(t, w, r, controllerOperatorToken) {
 			return
 		}
 		// The contract-11 daemon's controllerSecret: readBody into struct{}, unknown fields refused.

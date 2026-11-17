@@ -40,11 +40,20 @@ func waitDeadline(t *testing.T) time.Time {
 }
 
 // upstream is the database end of a test: a real local listener, so the bytes the proxy copies
-// really cross a connection and a test can read them.
+// really cross a connection and a test can read them. The proxy's dials are fakeDialer's, which
+// tells the upstream the local address of each (dialed); a connection from any other address is
+// another process's (a loopback port the kernel gives a listener may be one a process of the
+// machine still dials), which next passes over and the test's cleanup closes.
 type upstream struct {
 	listener net.Listener
 	accepted chan net.Conn
+	dialed   chan string
+	// unmatched holds each accepted connection next has not handed out, by its remote address.
+	unmatched map[string]net.Conn
 }
+
+// upstreams is each test's upstream by its listener's address, which fakeDialer dials.
+var upstreams sync.Map
 
 func newUpstream(t *testing.T) *upstream {
 	t.Helper()
@@ -52,7 +61,10 @@ func newUpstream(t *testing.T) *upstream {
 	if err != nil {
 		t.Fatalf("listen as the upstream: %v", err)
 	}
-	up := &upstream{listener: listener, accepted: make(chan net.Conn, 8)}
+	// dialed holds more dials than any test makes before it reads them, so a dial never waits on
+	// the notice.
+	up := &upstream{listener: listener, accepted: make(chan net.Conn, 8), dialed: make(chan string, 64), unmatched: map[string]net.Conn{}}
+	upstreams.Store(listener.Addr().String(), up)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -63,7 +75,11 @@ func newUpstream(t *testing.T) *upstream {
 		}
 	}()
 	t.Cleanup(func() {
+		upstreams.Delete(listener.Addr().String())
 		_ = listener.Close()
+		for _, conn := range up.unmatched {
+			_ = conn.Close()
+		}
 		for {
 			select {
 			case conn := <-up.accepted:
@@ -76,14 +92,24 @@ func newUpstream(t *testing.T) *upstream {
 	return up
 }
 
-// next is the connection the upstream accepted next, which is the one the proxy just dialed.
+// next is the connection of the proxy's next dial of the upstream, which fakeDialer reported:
+// the accepted connection whose remote address is that dial's local one.
 func (u *upstream) next(t *testing.T) net.Conn {
 	t.Helper()
-	return testwait.Receive(t, "the proxy's dial of the upstream", u.accepted)
+	from := testwait.Receive(t, "the proxy's dial of the upstream", u.dialed)
+	for {
+		if conn, ok := u.unmatched[from]; ok {
+			delete(u.unmatched, from)
+			return conn
+		}
+		conn := testwait.Receive(t, "the upstream's accept of the proxy's dial", u.accepted)
+		u.unmatched[conn.RemoteAddr().String()] = conn
+	}
 }
 
 // fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it and
-// hands back a real connection to the test's upstream listener.
+// hands back a real connection to the test's upstream listener, whose local address it tells the
+// upstream.
 type fakeDialer struct {
 	addr string
 
@@ -102,7 +128,11 @@ func (f *fakeDialer) Dial(ctx context.Context, instance string) (net.Conn, error
 		return nil, err
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", f.addr)
+	conn, err := dialer.DialContext(ctx, "tcp", f.addr)
+	if up, ok := upstreams.Load(f.addr); ok && err == nil {
+		up.(*upstream).dialed <- conn.LocalAddr().String()
+	}
+	return conn, err
 }
 
 func (f *fakeDialer) Close() error {

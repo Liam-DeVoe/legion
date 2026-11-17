@@ -23,6 +23,8 @@ import (
 // twoOwnersGitHub is GitHub's REST and GraphQL API for every repository, as the outbox's
 // repository-dependent rows call it: each default branch's ref, each create of a ref, and each
 // pull request read and disarm. It records each call as "<METHOD> <path or owner/name> <bearer>".
+// A request that carries no lease of the package's App token stand-ins (aLease) is another
+// process's: it is answered 404 and logged, and is recorded as no call.
 type twoOwnersGitHub struct {
 	url   string
 	mu    sync.Mutex
@@ -32,7 +34,7 @@ type twoOwnersGitHub struct {
 func newTwoOwnersGitHub(t *testing.T) *twoOwnersGitHub {
 	t.Helper()
 	g := &twoOwnersGitHub{}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
@@ -178,7 +180,7 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 // defaultBranch.
 func newRepositoryGitHubFor(t *testing.T, fullName, defaultBranch string) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+defaultBranch+`"}`)
 	}})
 }

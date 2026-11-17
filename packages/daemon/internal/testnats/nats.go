@@ -13,6 +13,12 @@
 // The end of the test's server is its leak check (leakcheck.go): a client still connected to the
 // server when the test ends fails that test, by name and CID.
 //
+// The server URL starts admits only a client that carries the test's credential, a token the URL
+// carries as its user, so no client of another process stays connected to it. Such a client can
+// reach the server, because the kernel may give the server a port that another process still
+// dials. Before the token, one did (an Envoy client's reconnect, dispatch://INFRA-3149), and the
+// leak check waited on it until the test binary's deadline.
+//
 // StartNkeyAuthorized and StartNkeyAuthorizedUsers start in-process servers of their own that admit
 // only nkey users. StartImage and StartOpenImage (image.go) are the two helpers that run a
 // container, for the tests whose subject is a published NATS image itself.
@@ -25,6 +31,7 @@
 package testnats
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"maps"
@@ -90,21 +97,30 @@ func Main(m *testing.M) int {
 	return code
 }
 
-// URL returns the client URL of t's own NATS server, which has JetStream and admits any client,
-// starting it on t's first call; every later call in t returns the same server. The server holds
-// nothing of another test's, so a test creates the streams it needs with CreateStream. When t
-// ends, after every cleanup t registered after its first call, the server runs the leak check
-// (leakcheck.go) and shuts down.
+// URL returns the client URL of t's own NATS server, which has JetStream, starting it on t's first
+// call; every later call in t returns the same server. The server holds nothing of another test's,
+// so a test creates the streams it needs with CreateStream. When t ends, after every cleanup t
+// registered after its first call, the server runs the leak check (leakcheck.go) and shuts down.
+//
+// The server admits only a client that carries a token of its own, which the URL carries as its
+// user (nats://<token>@127.0.0.1:<port>). nats.go sends a URL's user as the token at CONNECT, so
+// every client that dials the URL carries it: the fixture's, the daemon's, a child process's, and
+// a raw nats.Connect. A client of another process carries none. The server refuses it at CONNECT
+// (Authorization Violation) and closes it, and one that sends no CONNECT at all is closed when the
+// server's auth timeout ends. So such a client is never one of the connections the leak check
+// waits on.
 func URL(t testing.TB) string {
 	t.Helper()
 	if s := serverOf(t); s != nil {
-		return s.url
+		return s.client
 	}
-	s := start(t, &natsserver.Options{}, true)
+	token := rand.Text()
+	s := start(t, &natsserver.Options{Authorization: token}, true)
+	s.client = "nats://" + token + "@" + strings.TrimPrefix(s.url, "nats://")
 	serversMu.Lock()
 	ofTest[t.Name()] = s
 	serversMu.Unlock()
-	return s.url
+	return s.client
 }
 
 // serverOf is the server URL started for t, nil before t's first call.
@@ -116,10 +132,13 @@ func serverOf(t testing.TB) *server {
 
 // server is one nats-server running in this process, started for test.
 type server struct {
-	srv  *natsserver.Server
-	url  string
-	test string
-	log  *logCapture
+	srv *natsserver.Server
+	// url is the server's own address, with no credential.
+	url string
+	// client is the URL a test's clients dial: url with the token, for a server URL started.
+	client string
+	test   string
+	log    *logCapture
 }
 
 // unbounded is the readiness wait under -timeout 0, where the test binary has no deadline.

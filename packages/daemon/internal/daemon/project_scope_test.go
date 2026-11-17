@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -89,10 +88,12 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	})
 
 	// ownRun closes when the outbox first reaches Dispatch for this project's issue: its first batch
-	// after admission has run, and the other project's older row would have run before it.
+	// after admission has run, and the other project's older row would have run before it. The
+	// board is a dispatchBoard: a request without the daemon's bearer is another process's,
+	// answered 404, and fails nothing.
 	ownRun := make(chan struct{})
 	var ownOnce sync.Once
-	dispatchServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	cfg.DispatchURL = dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		if servedBootCall(t, w, r, own[:strings.Index(own, "-")]) {
 			return
 		}
@@ -111,9 +112,7 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		if err := json.NewEncoder(w).Encode([]map[string]any{{"key": own, "title": "This project's root", "status": "todo", "parent": nil, "rank": "m", "labels": []string{dispatch.LegionLabel}, "resolved_repo": "acme/widgets"}}); err != nil {
 			t.Errorf("write Dispatch issues: %v", err)
 		}
-	}))
-	t.Cleanup(dispatchServer.Close)
-	cfg.DispatchURL = dispatchServer.URL
+	})
 	github := newBranchGitHub(t, nil, branchCreated)
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)

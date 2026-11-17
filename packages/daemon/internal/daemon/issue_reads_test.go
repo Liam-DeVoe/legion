@@ -86,13 +86,14 @@ func TestThePerIssueReadFindsThePullRequestOfTheIssuesBranch(t *testing.T) {
 func TestThePerIssueReadTellsTheArchitectOfAMissingPullRequest(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	seedUnrecorded(t, pool, "handoff")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/repos/acme/widgets/pulls") {
 			_, _ = w.Write([]byte("[]"))
 			return
 		}
 		http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
 	for range 2 {
@@ -194,7 +195,7 @@ func newIssueReadStandIn(t *testing.T, updated time.Time) *issueReadStandIn {
 			`"body":"Dispatch: ` + issue + `","base":{"ref":"main"},"head":{"ref":"legion/` + issue + `","sha":"pushed"},` +
 			`"updated_at":"` + updated.Format(time.RFC3339) + `","mergeable":true}`
 	}
-	stand.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	stand.Server = githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		stand.mu.Lock()
 		stand.read[r.URL.Path]++
 		stand.mu.Unlock()
@@ -212,7 +213,8 @@ func newIssueReadStandIn(t *testing.T, updated time.Time) *issueReadStandIn {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	}})
+
 	t.Cleanup(stand.Server.Close)
 	return stand
 }
@@ -254,7 +256,7 @@ func TestTheReadStampIsWhenGitHubAnsweredNotWhenTheHeadFollowEnded(t *testing.T)
 	const followTakes = 300 * time.Millisecond
 	var mu sync.Mutex
 	var answered, followed time.Time
-	api := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch strings.ToLower(r.URL.Path) {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))

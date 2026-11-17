@@ -16,6 +16,9 @@ import (
 func TestCheckRunsReadsEveryRunOfTheCommitOnEveryPage(t *testing.T) {
 	var reads int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, testToken) {
+			return
+		}
 		reads++
 		if r.URL.Path != "/repos/acme/widgets/commits/abc123/check-runs" {
 			http.Error(w, `{"message":"No commit found for SHA"}`, http.StatusUnprocessableEntity)
@@ -34,7 +37,7 @@ func TestCheckRunsReadsEveryRunOfTheCommitOnEveryPage(t *testing.T) {
 			`"started_at":"2026-10-28T14:06:00Z","completed_at":null,"app":{"id":271000,"slug":"legion-review"},"pull_requests":[]}]}`))
 	}))
 	t.Cleanup(server.Close)
-	github := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	github := Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}
 
 	runs, err := github.CheckRuns(context.Background(), "abc123")
 	if err != nil || len(runs) != 2 || reads != 2 {

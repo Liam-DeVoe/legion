@@ -49,8 +49,9 @@ func usable(t *testing.T, conn *nats.Conn) {
 	}
 }
 
-// With no seed configured, the daemon connects to a server that asks for no credential, as it did
-// before servers required one.
+// With no seed configured, the daemon sends no nkey and connects with only the credential its URL
+// carries, as it did before servers required an nkey. Here that credential is the token of the
+// test's server, which testnats.URL carries as the URL's user.
 func TestNoSeedConnectsToAServerWithoutAuthorization(t *testing.T) {
 	conn, err := connect(t, testnats.URL(t), env(nil))
 	if err != nil {

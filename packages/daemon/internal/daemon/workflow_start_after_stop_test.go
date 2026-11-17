@@ -72,7 +72,7 @@ func startedAgainDispatch(t *testing.T, project string) string {
 // ever. Every other call is answered 404, as repositoriesGitHub answers one.
 func startedAgainGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {

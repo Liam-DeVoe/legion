@@ -85,7 +85,7 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 		pullFiles: `[{"filename":"src/main.go"}]`,
 		pullHead:  headSHA, mergeableState: "clean", pullState: "open", pullUpdatedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
 	}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		g.bearers = append(g.bearers, r.Header.Get("Authorization"))

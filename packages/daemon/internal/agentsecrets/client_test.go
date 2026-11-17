@@ -108,22 +108,21 @@ func newFakeBroker(t *testing.T) (*fakeBroker, *httptest.Server) {
 	return b, server
 }
 
+// handleTokenLogin takes a token login. Its credential is its body: the daemon's token and a
+// request object that decodes as a compact JWS. A login without them is another process's: it is
+// answered 404 and logged, and fails nothing (fromTheDaemonWhen).
 func (b *fakeBroker) handleTokenLogin(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Authorization") != "" || r.Header.Get("Proof") != "" {
-		b.t.Errorf("token login carried a credential header, want none: %v", r.Header)
-	}
 	var body struct {
 		Token   string `json:"token"`
 		Request string `json:"request"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		b.t.Errorf("token login body: %v", err)
+	decodeErr := json.NewDecoder(r.Body).Decode(&body)
+	_, payload, err := decodeCompactJWSRaw(body.Request)
+	if !fromTheDaemonWhen(b.t, w, r, decodeErr == nil && body.Token != "" && err == nil) {
 		return
 	}
-	_, payload, err := decodeCompactJWSRaw(body.Request)
-	if err != nil {
-		b.t.Errorf("token login request object: %v", err)
-		return
+	if r.Header.Get("Authorization") != "" || r.Header.Get("Proof") != "" {
+		b.t.Errorf("token login carried a credential header, want none: %v", r.Header)
 	}
 	detail := firstDetail(payload)
 	b.mu.Lock()
@@ -182,7 +181,13 @@ func firstDetail(payload map[string]any) map[string]any {
 	return detail
 }
 
+// handleEnrollmentRoute takes an enrollment-route request. Its credential is its launcher proof, a
+// Proof header that decodes as a compact JWS: a request without one is another process's, answered
+// 404 and logged, and recorded as nothing (fromTheDaemonWhen).
 func (b *fakeBroker) handleEnrollmentRoute(w http.ResponseWriter, r *http.Request) {
+	if _, _, err := decodeCompactJWSRaw(r.Header.Get("Proof")); !fromTheDaemonWhen(b.t, w, r, err == nil) {
+		return
+	}
 	req := enrollRequest{
 		method: r.Method, path: r.URL.Path,
 		proof: r.Header.Get("Proof"), authorization: r.Header.Get("Authorization"),
@@ -952,7 +957,7 @@ func TestARefusalBodyThatIsNotTheContractsShapeFallsBackToUNKNOWN(t *testing.T) 
 	}
 }
 
-func mustJSON(t *testing.T, v any) string {
+func mustJSON(t testing.TB, v any) string {
 	t.Helper()
 	raw, err := json.Marshal(v)
 	if err != nil {

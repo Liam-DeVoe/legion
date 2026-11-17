@@ -61,7 +61,14 @@ type listenerRecorder struct {
 
 func (l *listenerRecorder) server(t *testing.T) *httptest.Server {
 	t.Helper()
+	// The stop's two routes are the registry read and the session delete; a stop may carry no
+	// bearer, so the recorder records only requests of those shapes, and any other is another
+	// process's, answered 404 and recorded as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/registry/") && !strings.HasPrefix(r.URL.Path, "/v1/sessions/") {
+			http.NotFound(w, r)
+			return
+		}
 		asked := &l.read
 		if r.Method == http.MethodDelete {
 			asked = &l.delete

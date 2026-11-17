@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -19,14 +20,15 @@ import (
 // merge state named, and counting every read of it.
 func countingPullStandIn(t *testing.T, state string, reads *atomic.Int32) *httptest.Server {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/widgets/pulls/86" {
 			http.NotFound(w, r)
 			return
 		}
 		reads.Add(1)
 		w.Write([]byte(`{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"` + state + `"}`))
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	return server
 }
@@ -164,20 +166,20 @@ func TestAMergeStateRequestArrivingWhileTheLadderReadsIsNotLost(t *testing.T) {
 	approvedCapture(t, pool)
 	var reads atomic.Int32
 	release := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/repos/acme/widgets/pulls/86" {
 			http.NotFound(w, r)
 			return
 		}
 		state := "clean"
 		if reads.Add(1) == 1 {
-			// The first read is held until the second request has been queued, so the request
-			// lands while this ladder is reading rather than before or after it.
+
 			state = "blocked"
 			<-release
 		}
 		w.Write([]byte(`{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"` + state + `"}`))
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	w := readRuntime(pool, server.URL, quietLogger())
 	ctx, cancel := context.WithCancel(context.Background())

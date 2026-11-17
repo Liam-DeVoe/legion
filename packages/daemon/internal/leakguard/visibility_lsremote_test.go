@@ -141,7 +141,13 @@ func TestLsRemoteSendsNoNetrcCredential(t *testing.T) {
 	git := realGit(t)
 	var mu sync.Mutex
 	var requests, authorized int
+	// git sends this server no credential, so it counts only requests of the shape git's read
+	// sends, its ref discovery of the repository; any other is another process's, answered 404 and
+	// counted as nothing (fromTheDaemonWhen).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, strings.HasPrefix(r.URL.Path, "/private/invented-repo")) {
+			return
+		}
 		mu.Lock()
 		requests++
 		if r.Header.Get("Authorization") != "" {

@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
 	"slices"
@@ -554,7 +553,9 @@ func TestTheBootWarnsOfACommitTrailerRepositoryTheProjectDoesNotServe(t *testing
 // (its default) and zeta/tools to LEGION and answers its webhook App check for each repository
 // installed names, by "owner/name", or with the status and body failing names for it. Without
 // route it is a Dispatch older than the check: the route is not found. asked counts each
-// repository's checks.
+// repository's checks. It is a dispatchBoard, and serve gives the runtime's client its bearer
+// (workflowDispatchToken): a request without it is another process's, answered 404, and counts as
+// no check.
 type webhookDispatch struct {
 	url string
 
@@ -568,7 +569,7 @@ type webhookDispatch struct {
 func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *webhookDispatch {
 	t.Helper()
 	d := &webhookDispatch{route: route, installed: installed, failing: map[string]string{}, asked: map[string]int{}}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	d.url = dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		repo, check := strings.CutPrefix(r.URL.Path, "/api/v1/github/app-installation/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
@@ -593,15 +594,13 @@ func newWebhookDispatch(t *testing.T, route bool, installed map[string]bool) *we
 			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected", http.StatusTeapot)
 		}
-	}))
-	t.Cleanup(server.Close)
-	d.url = server.URL
+	})
 	return d
 }
 
 // serve is the rig option that has the runtime read Dispatch from d, through the real client.
 func (d *webhookDispatch) serve(w *workflowRuntime) {
-	w.dispatch = dispatch.New(d.url, "dispatch-test-token")
+	w.dispatch = dispatch.New(d.url, workflowDispatchToken)
 }
 
 // install has the check answer that Dispatch's GitHub App is installed on repo.
@@ -702,7 +701,7 @@ type namedGitHub struct{ url string }
 
 func newNamedGitHub(t *testing.T, repos map[string]string) *namedGitHub {
 	t.Helper()
-	return &namedGitHub{url: githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return &namedGitHub{url: githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/repos/")
 		named, ok := repos[strings.ToLower(path)]
 		if r.Method != http.MethodGet || !ok {

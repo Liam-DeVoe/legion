@@ -891,7 +891,7 @@ func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.
 // unanswered reaches github.com.
 func repositoriesGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		if r.Method != http.MethodGet || !isRepository || len(parts) != 2 {
@@ -1566,7 +1566,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 	t.Setenv("LEGION_GH_PATH", executable)
 	cfg.DispatchURL = dispatchServer.URL
 	cfg.DispatchTokenFile = filepath.Join(t.TempDir(), "dispatch-token")
-	if err := os.WriteFile(cfg.DispatchTokenFile, []byte("dispatch-test-token\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(workflowDispatchToken+"\n"), 0o600); err != nil {
 		t.Fatalf("write Dispatch token: %v", err)
 	}
 	cfg.Projects = map[string]config.Project{cfg.Project: {}}
@@ -1598,7 +1598,7 @@ func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _
 	defer r.mu.Unlock()
 	r.roles = append(r.roles, role)
 	// Each App has its own bot login, as a real token manager's leases do.
-	return appauth.Lease{Token: "workflow-test-token", ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
+	return appauth.Lease{Token: workflowAppToken, ExpiresAt: time.Now().Add(time.Hour), Identity: appauth.GitIdentity{Name: "legion-" + string(role) + "[bot]"}}, nil
 }
 
 // AppLogin answers each App's own bot login, as its lease names it.

@@ -978,7 +978,7 @@ func blockersDatabase(t *testing.T) string {
 func blockersGitHub(t *testing.T) string {
 	t.Helper()
 	const head = "c0ffee0123456789abcdef0123456789abcdef01"
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.SplitN(rest, "/", 3)
 		if !isRepository || len(parts) < 2 {

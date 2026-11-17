@@ -88,7 +88,7 @@ func reviewsStandIn(t *testing.T, reviews func() string, reads *atomic.Int64) *h
 // when asked, each read of it counted in outsiderReads.
 func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64, outsider func() string, outsiderReads *atomic.Int64) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: aLease, Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":true,"mergeable_state":"clean"}`))
@@ -737,7 +737,7 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 		t.Fatalf("seed a second open pull request: %v", err)
 	}
 	var paths []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86", "/repos/acme/widgets/pulls/87":
@@ -746,7 +746,8 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
 		}
-	}))
+	}})
+
 	t.Cleanup(server.Close)
 	readCapture(t, reviewReadRuntime(pool, server.URL))
 	if len(paths) != 2 || paths[1] != "/repos/acme/widgets/pulls/"+strings.TrimPrefix(paths[0], "/repos/acme/widgets/pulls/")+"/reviews" {

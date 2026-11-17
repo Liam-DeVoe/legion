@@ -118,22 +118,29 @@ func newIssueSandboxAPI(sandboxes ...map[string]any) *issueSandboxAPI {
 	return a
 }
 
-// serve puts the API on a server of its own, closed with the test, and answers its URL.
+// serve puts the API on a server of its own, closed with the test, and answers its URL. A request
+// without the bearer of the rig's Kubernetes clients (kubeTestToken) is another process's: it is
+// answered 404 and logged, and is recorded as nothing requireServed reads (fromTheDaemon).
 func (a *issueSandboxAPI) serve(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(a)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, kubeTestToken) {
+			a.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
 	a.url = server.URL
 	return a.url
 }
 
-// sandboxRESTConfig is how a test's runtime reaches the API served at host. The stand-in decodes
-// and encodes JSON alone, and client-go's typed clients prefer protobuf for the built-in group
-// unless the configuration names a content type (rest.Request.UseProtobufAsDefaultIfPreferred),
-// so it names JSON for both directions: without it a Secret write arrives as protobuf and the
-// stand-in answers 400.
+// sandboxRESTConfig is how a test's runtime reaches the API served at host, under the bearer of
+// the kubeconfig writeKubeconfig writes (kubeTestToken). The stand-in decodes and encodes JSON
+// alone, and client-go's typed clients prefer protobuf for the built-in group unless the
+// configuration names a content type (rest.Request.UseProtobufAsDefaultIfPreferred), so it names
+// JSON for both directions: without it a Secret write arrives as protobuf and the stand-in answers
+// 400.
 func sandboxRESTConfig(host string) *rest.Config {
-	return &rest.Config{Host: host, ContentConfig: rest.ContentConfig{
+	return &rest.Config{Host: host, BearerToken: kubeTestToken, ContentConfig: rest.ContentConfig{
 		ContentType: "application/json", AcceptContentTypes: "application/json",
 	}}
 }

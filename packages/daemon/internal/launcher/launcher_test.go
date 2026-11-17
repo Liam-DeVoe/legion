@@ -155,17 +155,16 @@ func (g *rig) accept() shimwire.LauncherState {
 }
 
 // acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet.
+// hello names, which has not been acknowledged yet. A connection that opens with anything but a
+// launcher's hello under its token is another process's (fromTheCode): it is closed and fails
+// nothing.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
-	conn, err := answered(t, "the launcher's connection", listener.Accept)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
-	hello, ok := c.next().(shimwire.LauncherHello)
-	if !ok || hello.Role == "" || hello.LauncherID == "" {
+	accepted := fromTheCode(t, listener, "the launcher's connection", launcherHello)
+	t.Cleanup(func() { _ = accepted.conn.Close() })
+	c := &roleConn{t: t, conn: accepted.conn, reader: accepted.reader, writer: shimwire.NewWriter(accepted.conn)}
+	hello := accepted.frame.(shimwire.LauncherHello)
+	if hello.Role == "" || hello.LauncherID == "" {
 		t.Fatalf("hello = %#v", hello)
 	}
 	c.hello = hello
@@ -446,16 +445,10 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	}
 
 	_ = g.conn.Close()
-	unacknowledged, err := answered(t, "the launcher's reconnection", g.listener.Accept)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := answered(t, "the hello of the connection the daemon ends unacknowledged", func() ([]byte, error) {
-		return bufio.NewReader(unacknowledged).ReadBytes('\n')
-	}); err != nil {
-		t.Fatalf("the hello of the connection the daemon ends unacknowledged: %v", err)
-	}
-	_ = unacknowledged.Close()
+	// The reconnection's hello is read as it is accepted (fromTheCode); the daemon end then drops
+	// the connection unacknowledged.
+	unacknowledged := fromTheCode(t, g.listener, "the launcher's reconnection", launcherHello)
+	_ = unacknowledged.conn.Close()
 	g.accept()
 	if lines := connected(); len(lines) != 2 {
 		t.Fatalf("after a dropped and an acknowledged hello the launcher logged %q, want a second line for the acknowledged one alone", lines)

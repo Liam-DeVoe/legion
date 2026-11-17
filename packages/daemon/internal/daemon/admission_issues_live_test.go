@@ -165,7 +165,7 @@ func admissionIssuesOwnDatabase(t *testing.T, p *liveProof) {
 // armed to take back. Nothing else is answered, and nothing reaches github.com.
 func admissionIssuesGitHub(t *testing.T) string {
 	t.Helper()
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {

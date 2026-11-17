@@ -341,7 +341,7 @@ type adminCall struct {
 // so a request the connector abandons stays recorded. It fails the test on a call it does not
 // answer.
 type adminAPIFake struct {
-	t     *testing.T
+	t     testing.TB
 	url   string
 	ca    *x509.Certificate
 	caKey *ecdsa.PrivateKey
@@ -382,7 +382,18 @@ func newAdminAPIFake(t *testing.T) *adminAPIFake {
 	return f
 }
 
+// ServeHTTP answers the connector's calls. A request that carries none of the tokens this test's
+// credential fakes mint (podToken, impersonatedAPIToken, impersonatedLoginToken) as its bearer is
+// another process's: it is answered 404 and logged before it is recorded, and fails nothing. Each
+// of the three is admitted, so checkAdminCalls still tells a call signed with the wrong one.
 func (f *adminAPIFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.Header.Get("Authorization") {
+	case "Bearer " + podToken, "Bearer " + impersonatedAPIToken, "Bearer " + impersonatedLoginToken:
+	default:
+		f.t.Logf("a stand-in answered 404 to %.16q %.200q, which carries no credential of the connector's", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
 	call := adminCall{path: r.URL.Path, authorization: r.Header.Get("Authorization")}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == connectSettingsPath:
@@ -507,7 +518,7 @@ func certificatePEM(der []byte) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
+func writeJSON(t testing.TB, w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		t.Errorf("write the answer: %v", err)

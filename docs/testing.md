@@ -616,6 +616,10 @@ The server is the nats-server the test binary links in (`github.com/nats-io/nats
 So the daemon's Go tests need no container runtime and no NATS server named in the environment, and no test reads `LEGION_TEST_NATS_URL`.
 The server holds nothing of another test's, so a test creates the streams it needs with `testnats.CreateStream`.
 The server stops when the test ends, and `testnats.Main`, which the package's `TestMain` returns, fails the run when a server outlives its test.
+The server `URL` starts admits only a client that carries a token of the test's own.
+The URL carries the token as its user (`nats://<token>@127.0.0.1:<port>`), so every client that dials the URL carries it: the fixture's, the daemon's, a child process's and a raw `nats.Connect`.
+A client of another process can reach the server, because the kernel may give the server a port that the other process still dials.
+The server refuses such a client at `CONNECT`, so it never holds the test's leak check open (dispatch://INFRA-3149).
 `StartNkeyAuthorized` and `StartNkeyAuthorizedUsers` start in-process servers that admit only nkey users.
 Two tests run a container, because their subject is a server the test binary does not link:
 `TestDaemonPermissionsOnRealServers`, whose subject is the published NATS images (`testnats.StartImage`, in `image.go`), and `TestOpenConsumersRefusesAServerThatSkipsAFilter` (`packages/daemon/internal/intake`), whose subject is the daemon's refusal of nats:2.10, a server that can skip a message on a consumer filtering on a wildcard and a literal at the same token (`testnats.StartOpenImage` with `testnats.SkippingImage`).

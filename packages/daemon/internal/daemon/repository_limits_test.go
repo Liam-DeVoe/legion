@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,7 +45,7 @@ type limitedGitHub struct {
 func newLimitedGitHub(t *testing.T, named map[string]string, refuse func(w http.ResponseWriter, repo string, read int) bool) *limitedGitHub {
 	t.Helper()
 	g := &limitedGitHub{reads: map[string]int{}}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		repo := strings.ToLower(strings.TrimPrefix(r.URL.Path, "/repos/"))
 		answer, ok := named[repo]
 		if r.Method != http.MethodGet || !ok {
@@ -713,10 +712,12 @@ func TestTheBootsReadsAfterARateLimitRunMappingReadsAtATime(t *testing.T) {
 }
 
 // liveBootDispatch is a Dispatch for a daemon's boot whose project maps repos, the first its
-// default, and lists listed, answering every other call every boot makes (servedBootCall).
+// default, and lists listed, answering every other call every boot makes (servedBootCall). It is a
+// dispatchBoard: a request without the daemon's bearer is another process's, answered 404, and
+// fails nothing.
 func liveBootDispatch(t *testing.T, project string, repos []string, listed []map[string]any) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		var body any
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
@@ -738,9 +739,7 @@ func liveBootDispatch(t *testing.T, project string, repos []string, listed []map
 		if err := json.NewEncoder(w).Encode(body); err != nil {
 			t.Errorf("write %s: %v", r.URL.Path, err)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	})
 }
 
 // listedAs is an unlabelled issue as Dispatch's listing shows it, in status on repo.

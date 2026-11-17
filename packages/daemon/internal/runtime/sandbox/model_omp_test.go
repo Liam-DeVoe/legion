@@ -99,7 +99,14 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var systems []string
+	// The provider endpoint records only a request under the profile's API key ("unused"), the
+	// credential Oh My Pi presents to it (ompProfileKey); any other is another process's, answered
+	// 404.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ompProfileKey(r) {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -255,7 +262,14 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 	}
 	var mu sync.Mutex
 	hits := map[string]int{}
+	// Each provider endpoint counts only a request under the profile's API key ("unused"), the
+	// credential Oh My Pi presents to it (ompProfileKey); any other is another process's, answered
+	// 404.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !ompProfileKey(r) {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		first := strings.HasPrefix(r.URL.Path, "/first")
 		if first {
@@ -388,4 +402,11 @@ func promptOnce(t *testing.T, argv []string, dir string, environ []string, messa
 		t.Fatalf("omp %s never answered the prompt\nstderr: %s", strings.Join(argv[1:], " "), errOut.String())
 	}
 	return frames, errOut.String()
+}
+
+// ompProfileKey reports whether r carries the API key the test profiles give each provider,
+// "unused": omp 18.16.0 sends it as a bearer (Authorization: Bearer unused), and Anthropic's own
+// header (x-api-key) is taken too.
+func ompProfileKey(r *http.Request) bool {
+	return r.Header.Get("Authorization") == "Bearer unused" || r.Header.Get("x-api-key") == "unused"
 }

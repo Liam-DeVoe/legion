@@ -234,7 +234,13 @@ func newOperatorDaemon(t *testing.T) *operatorDaemon {
 	}).Handler
 
 	d := &operatorDaemon{t: t, runtime: rt, conns: conns, claimSupervisor: claims, tokenFile: writeFile(t, "operator-token", claimsOperatorToken+"\n")}
+	// The daemon records only requests of the shape the command sends, its API routes
+	// (/legion/v1/…); any other is another process's, answered 404 and recorded as nothing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/legion/v1/") {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read the request body: %v", err)

@@ -139,6 +139,8 @@ func (c *watchedContext) Done() <-chan struct{} {
 // fakeTokenGitHub answers what token mode asks of GitHub under an installation token: GraphQL's
 // viewer, GET /apps/<slug>, GET /users/<login> and GET /installation/repositories. It refuses any
 // JWT-only route (GET /app, the installation listing and exchange), since token mode signs none.
+// A request without an installation token of the fake broker's (`token ghs_…`) is another
+// process's: it is answered 404 and logged, and is recorded as nothing asked.
 type fakeTokenGitHub struct {
 	mu        sync.Mutex
 	slug      string
@@ -150,13 +152,9 @@ type fakeTokenGitHub struct {
 }
 
 func (g *fakeTokenGitHub) serve(t *testing.T) *httptest.Server {
-	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: anInstallationToken, Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "token ghs_") {
-			t.Errorf("%s %s with authorization %q, want an installation token", r.Method, r.URL.Path, auth)
-		}
 		g.asked = append(g.asked, r.Method+" "+r.URL.Path)
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/graphql":

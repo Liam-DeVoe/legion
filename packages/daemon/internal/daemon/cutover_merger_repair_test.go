@@ -1104,7 +1104,7 @@ func (r *cutoverRig) github(t *testing.T) string {
 		pulls[strconv.Itoa(issue.number)] = issue
 	}
 	repo := "/repos/" + startedAgainRepo
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, req *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, req *http.Request) {
 		path := req.URL.Path
 		write := func(value any) {
 			_ = json.NewEncoder(w).Encode(value)

@@ -49,6 +49,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -449,14 +451,28 @@ type conflictListener struct {
 	refusals map[string][]listenerPublish
 }
 
+// conflictEnvoyToken is the bearer the proof's daemon presents to its Envoy listener
+// (newConflictListener).
+const conflictEnvoyToken = "envoy-test-token"
+
 // newConflictListener puts this listener in front of the proof's noticeListener and points the
-// configuration the daemon boots with at it.
+// configuration the daemon boots with at it, with conflictEnvoyToken as the bearer the daemon
+// presents to it. A request without that bearer is another process's: it is answered 404 and
+// logged, and fails nothing (fromTheDaemon).
 func newConflictListener(t *testing.T, proof *liveProof) *conflictListener {
 	t.Helper()
 	l := &conflictListener{t: t, notices: proof.notices, unheld: map[string]bool{}, refusals: map[string][]listenerPublish{}}
-	server := httptest.NewServer(l)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fromTheDaemon(t, w, r, conflictEnvoyToken) {
+			l.ServeHTTP(w, r)
+		}
+	}))
 	t.Cleanup(server.Close)
 	proof.cfg.EnvoyURL = server.URL
+	proof.cfg.EnvoyTokenFile = filepath.Join(t.TempDir(), "envoy-token")
+	if err := os.WriteFile(proof.cfg.EnvoyTokenFile, []byte(conflictEnvoyToken+"\n"), 0o600); err != nil {
+		t.Fatalf("write the Envoy token: %v", err)
+	}
 	return l
 }
 

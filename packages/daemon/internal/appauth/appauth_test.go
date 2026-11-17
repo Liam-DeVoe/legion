@@ -132,7 +132,7 @@ func mintedFor(token string, expires time.Time, permissions map[string]string, r
 // and as GitHub parses it: the permissions the token is to hold. A stand-in GitHub answers from
 // it, as GitHub answers a token request from the body it was sent (mintedFor), and a test that
 // asks whether a request named a repository at all reads the text.
-func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
+func askedInExchange(t testing.TB, r *http.Request) (string, accessTokensBody) {
 	t.Helper()
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -224,7 +224,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	exchanges, discoveries, identities := 0, 0, 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/app/installations":
@@ -261,7 +261,7 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -301,11 +301,11 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 // ErrNotInstalled, an answer about the owner, rather than an error a caller retries without end;
 // and an App installed there again, under a new installation, mints on that one.
 func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	installation, discoveries := "77", 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		current := installation
 		mu.Unlock()
@@ -343,7 +343,7 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
@@ -380,11 +380,11 @@ func TestAnInstallationRemovedAfterItWasFoundIsAnsweredNotInstalled(t *testing.T
 // token's, in any case of the owner's name, so the next Token and ReadToken each mint again; a
 // lease it did not drop is still served from the cache, and each lease records when it was minted.
 func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	exchanges := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/app/installations":
 			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
@@ -404,7 +404,7 @@ func TestForgetMakesTheNextTokenAndReadTokenMintAgain(t *testing.T) {
 		default:
 			t.Errorf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
@@ -451,7 +451,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	var mu sync.Mutex
 	var bodies []string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		switch r.URL.Path {
 		case "/app/installations":
@@ -474,7 +474,7 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -799,11 +799,11 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 		{"the secondary limit in the body", nil, `{"message":"You have exceeded a secondary rate limit."}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, privatePEM := testAppKey(t)
+			key, privatePEM := testAppKey(t)
 			now := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
 			var mu sync.Mutex
 			exchanges := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.URL.Path == "/app/installations":
 					fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
@@ -821,7 +821,7 @@ func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 				default:
 					t.Errorf("unexpected GitHub path %s", r.URL.Path)
 				}
-			}))
+			}})
 			defer server.Close()
 
 			var stderr bytes.Buffer
@@ -857,7 +857,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 	releaseExchange := make(chan struct{})
 	var mu sync.Mutex
 	exchanges := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		jwt := r.Header.Get("Authorization")
 		if r.URL.Path == "/app/installations/77/access_tokens" {
 			verifyAppJWT(t, jwt[len("Bearer "):], &key.PublicKey, now, "12345")
@@ -882,7 +882,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 		default:
 			t.Fatalf("unexpected GitHub path %s", r.URL.Path)
 		}
-	}))
+	}})
 	defer server.Close()
 
 	tokens := New(config.GitHubApps{
@@ -926,7 +926,7 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 // for, or an owner the App is not installed on is refused at once. The boot's retry reads nothing
 // else.
 func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
-	_, privatePEM := testAppKey(t)
+	key, privatePEM := testAppKey(t)
 	status := func(code int, header ...string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			for i := 0; i+1 < len(header); i += 2 {
@@ -981,7 +981,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			ctx, cancel := context.WithCancel(testwait.Context(t))
 			defer cancel()
 			endCaller = cancel
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/app/installations":
 					tc.discovery(w, r)
@@ -997,7 +997,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 				default:
 					t.Errorf("unexpected GitHub path %s", r.URL.Path)
 				}
-			}))
+			}})
 			defer server.Close()
 			tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
 				Options{BaseURL: server.URL, HTTPClient: server.Client()})
@@ -1020,7 +1020,9 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // GitHub parsed it (bodies) and as the text it was sent as (raw), which is what a test asking
 // whether a request named a repository must read. answer decides each exchange from the body it
 // carried and how many came before it, and granted, when it is set, answers the permissions
-// read of an installation instead of its grants.
+// read of an installation instead of its grants. A request without the credential of a Manager
+// holding the App key (anAppCredential) is another process's: it is answered 404 and logged, and
+// is recorded as nothing.
 type keyModeGitHub struct {
 	mu      sync.Mutex
 	owners  []string
@@ -1033,9 +1035,9 @@ type keyModeGitHub struct {
 	granted func(installation string, read int) (int, string)
 }
 
-func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
+func (g *keyModeGitHub) serve(t testing.TB, key *rsa.PublicKey) *httptest.Server {
 	t.Helper()
-	return githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(key), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			listed := make([]string, 0, len(g.owners))
@@ -1108,8 +1110,8 @@ func (g *keyModeGitHub) permissionReads() []string {
 // the buffer holds is what the Manager logged.
 func keyModeManager(t *testing.T, github *keyModeGitHub, now *time.Time, stderr *bytes.Buffer) *Manager {
 	t.Helper()
-	_, privatePEM := testAppKey(t)
-	server := github.serve(t)
+	key, privatePEM := testAppKey(t)
+	server := github.serve(t, &key.PublicKey)
 	tokens := New(config.GitHubApps{
 		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
 		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},

@@ -20,6 +20,9 @@ func TestCompareReadsOneCommitAPageAndKeepsAMissingListMissing(t *testing.T) {
 		"/repos/acme/widgets/compare/code...empty":   `{"status":"identical","files":[]}`,
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemon(t, w, r, testToken) {
+			return
+		}
 		if got := r.URL.Query().Get("per_page"); got != "1" {
 			t.Errorf("compare %s asked for per_page=%q, want 1", r.URL.Path, got)
 		}
@@ -31,7 +34,7 @@ func TestCompareReadsOneCommitAPageAndKeepsAMissingListMissing(t *testing.T) {
 		w.Write([]byte(answer))
 	}))
 	t.Cleanup(server.Close)
-	github := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	github := Client{Token: testToken, API: server.URL + "/repos/acme/widgets"}
 
 	got, err := github.Compare(context.Background(), "code", "handoff")
 	if err != nil || got.Status != "ahead" || got.Files == nil {

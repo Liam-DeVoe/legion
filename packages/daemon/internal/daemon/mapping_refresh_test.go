@@ -858,12 +858,20 @@ type failingGitHub struct {
 func (g *failingGitHub) start(t *testing.T) string {
 	t.Helper()
 	named := newNamedGitHub(t, g.named)
-	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Credential: aLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if g.fail.Load() && (g.only == "" || strings.Contains(r.URL.Path, g.only)) {
 			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 			return
 		}
-		proxied, err := http.Get(named.url + r.URL.Path)
+		// The read goes on to newNamedGitHub under the daemon's own lease, which it holds the
+		// read to (aLease).
+		forward, err := http.NewRequestWithContext(r.Context(), http.MethodGet, named.url+r.URL.Path, nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		forward.Header.Set("Authorization", r.Header.Get("Authorization"))
+		proxied, err := http.DefaultClient.Do(forward)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return

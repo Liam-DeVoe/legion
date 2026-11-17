@@ -57,27 +57,41 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		}, &stdout, &stderr)
 	}()
 
+	// Each accepted connection's first frame is read on a goroutine of its own, so one that sends
+	// nothing holds up no other. Only a launcher hello under one of the roles' tokens is the
+	// command's: any other connection is another process's (a loopback port the kernel gives a
+	// listener may be one a process of the machine still dials), closed and failing nothing.
+	type opened struct {
+		conn  net.Conn
+		hello shimwire.LauncherHello
+	}
+	launchers := make(chan opened, 2)
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				line, err := bufio.NewReader(conn).ReadBytes('\n')
+				frame, decodeErr := shimwire.Frame(nil), err
+				if err == nil {
+					frame, decodeErr = shimwire.Decode(line)
+				}
+				if hello, ok := frame.(shimwire.LauncherHello); decodeErr == nil && ok && strings.HasPrefix(hello.Token, "token-") {
+					launchers <- opened{conn, hello}
+					return
+				}
+				_ = conn.Close()
+			}()
+		}
+	}()
 	hellos := map[string]shimwire.LauncherHello{}
 	for range 2 {
-		conn, err := listener.Accept()
-		if err != nil {
-			t.Fatalf("accept: %v; the launcher's log: %s", err, stderr.String())
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		line, err := bufio.NewReader(conn).ReadBytes('\n')
-		if err != nil {
-			t.Fatal(err)
-		}
-		frame, err := shimwire.Decode(line)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hello, ok := frame.(shimwire.LauncherHello)
-		if !ok {
-			t.Fatalf("first frame = %#v, want a launcher hello", frame)
-		}
-		hellos[hello.Role] = hello
-		if err := shimwire.NewWriter(conn).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
+		launcher := testwait.Receive(t, "the launcher's connection of each role", launchers)
+		t.Cleanup(func() { _ = launcher.conn.Close() })
+		hellos[launcher.hello.Role] = launcher.hello
+		if err := shimwire.NewWriter(launcher.conn).WriteFrame(shimwire.LauncherHelloAck{}); err != nil {
 			t.Fatal(err)
 		}
 	}

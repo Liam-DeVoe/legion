@@ -20,7 +20,7 @@ import (
 // guarded test process, whose environment it inherits, so it holds nothing of the pod's either.
 var helperChildVariables = []string{
 	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv,
-	roleInitEnv, roleProbeEnv,
+	roleInitEnv, roleProbeEnv, standInChildEnv,
 }
 
 // TestMain takes out of the process every variable that could lead git or jj to a workspace,

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -369,9 +370,10 @@ func TestCreateStreamRefusesAStreamThatIsNotEmpty(t *testing.T) {
 
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
 // such a server enforces no nkey users, and every refusal a test expects of it would pass for the
-// wrong reason. The server URL starts, which asks for no credential, stands in for one.
+// wrong reason. A server started with no credential at all stands in for one (URL's server asks a
+// token, so it is no such stand-in).
 func TestTheNkeyReadinessWaitRefusesAServerThatAdmitsAnyone(t *testing.T) {
-	url := URL(t)
+	url := start(t, &natsserver.Options{}, false).url
 	wait := &fatalRecorder{TB: t}
 	done := make(chan struct{})
 	go func() {

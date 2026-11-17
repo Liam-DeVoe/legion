@@ -67,7 +67,8 @@ func jwtIssuer(t *testing.T, r *http.Request) string {
 
 // appTokens is a real App token manager whose GitHub is a stand-in, the implement App id 1 and the
 // review App id 2; discover answers each installation discovery, with its App and its number, from 1,
-// among that App's.
+// among that App's. A request without the manager's credential (anAppCredential) is another
+// process's: it is answered 404 and logged, and counts as no discovery.
 func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Request, app string, n int)) (appauth.Tokens, *gitHubStandIn) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -76,7 +77,7 @@ func appTokens(t *testing.T, discover func(w http.ResponseWriter, r *http.Reques
 	}
 	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	standIn := &gitHubStandIn{discoveries: map[string]int{}}
-	server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+	server := githubtest.Serve(t, githubtest.Spec{Credential: anAppCredential(&key.PublicKey), Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/app/installations":
 			app := jwtIssuer(t, r)

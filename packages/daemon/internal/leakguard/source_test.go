@@ -438,12 +438,18 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	const downloads = "codeload.leak-check.test"
 	raw := leakguardtest.GitHubTarball(t, theCheck(answersItsHelp))
 	var downloadAuth atomic.Value
+	// The read hands the download host no credential, so the host keeps only a request of the
+	// shape the read sends it, the redirect's target; any other is another process's, answered 404
+	// and kept as nothing (fromTheDaemonWhen).
 	download := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if !fromTheDaemonWhen(t, w, r, r.URL.Path == "/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/"+theTag) {
+			return
+		}
 		downloadAuth.Store(r.Header.Get("Authorization"))
 		_, _ = w.Write(raw)
 	}})
 	var asked atomic.Value
-	api := githubtest.Server(t, githubtest.Spec{Token: sourceToken,
+	api := githubtest.Server(t, githubtest.Spec{Credential: sourceBearer, Token: sourceToken,
 		Record: func(r *http.Request) { asked.Store(r.Header.Clone()) },
 		Handle: func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != tarballRoute+theTag {

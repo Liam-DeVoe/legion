@@ -72,9 +72,11 @@ func tokenInFreshProcess(t *testing.T, cfg Config, env ...string) childResult {
 
 // fakeCognito answers the two calls of Cognito's custom authentication: InitiateAuth with
 // CUSTOM_AUTH, then RespondToAuthChallenge with the pod's service-account token as the answer.
-// accessToken, when set, is the access token every sign-in returns in place of access-<n>.
+// accessToken, when set, is the access token every sign-in returns in place of access-<n>. A
+// request that is no sign-in call of the configured app client (fromTheSignIn) is another
+// process's: it is answered 404 and logged, fails nothing, and counts as no call.
 type fakeCognito struct {
-	t               *testing.T
+	t               testing.TB
 	mu              sync.Mutex
 	signIn          int
 	refuse          bool
@@ -86,16 +88,13 @@ type fakeCognito struct {
 }
 
 func (f *fakeCognito) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.calls.Add(1)
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		f.t.Errorf("decode request: %v", err)
+	body, ok := fromTheSignIn(f.t, w, r)
+	if !ok {
+		return
 	}
+	f.calls.Add(1)
 	target := strings.TrimPrefix(r.Header.Get("X-Amz-Target"), "AWSCognitoIdentityProviderService.")
 	w.Header().Set("Content-Type", "application/x-amz-json-1.1")
-	if body["ClientId"] != "client-id" {
-		f.t.Errorf("%s ClientId = %#v", target, body["ClientId"])
-	}
 	switch target {
 	case "InitiateAuth":
 		parameters, _ := body["AuthParameters"].(map[string]any)
@@ -292,8 +291,14 @@ func TestTokenRefusesAResponseLongerThanTheCap(t *testing.T) {
 
 // A 302 is an endpoint answer, never a second destination for the sign-in.
 func TestTokenFollowsNoRedirect(t *testing.T) {
+	// The target counts the requests a sign-in that followed the redirect would send: a call of
+	// Cognito's, named by its X-Amz-Target header. Any other is another process's.
 	var elsewhere atomic.Int32
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { elsewhere.Add(1) }))
+	target := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Header.Get("X-Amz-Target"), "AWSCognitoIdentityProviderService.") {
+			elsewhere.Add(1)
+		}
+	}))
 	defer target.Close()
 	cognito := &fakeCognito{t: t}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -341,8 +346,14 @@ func TestTokenTrustsNoTLSRootFromTheEnvironment(t *testing.T) {
 
 // HTTPS_PROXY and HTTP_PROXY, which a workspace's .env can set, never carry the sign-in.
 func TestTokenTakesNoProxyFromTheEnvironment(t *testing.T) {
+	// The proxy counts the requests that would carry the sign-in: a tunnel to, or a request for,
+	// the endpoint 192.0.2.1. Any other is another process's.
 	var proxied atomic.Int32
-	proxy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { proxied.Add(1) }))
+	proxy := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.Host, "192.0.2.1") {
+			proxied.Add(1)
+		}
+	}))
 	defer proxy.Close()
 
 	// 192.0.2.1 is TEST-NET-1: unreachable directly, and not a loopback address, which net/http's

@@ -1312,12 +1312,18 @@ func (n *podNetwork) addresses() []string {
 }
 
 // healthServer is a cache's /healthz at an httptest listener, naming repo and recording the
-// Authorization header of every request it answers.
+// Authorization header of every health read it answers. The read carries no credential, so the
+// server records only a request of its shape, GET /healthz; any other is another process's,
+// answered 404 and recorded as nothing.
 func healthServer(t *testing.T, repo string) (*httptest.Server, func() []string) {
 	t.Helper()
 	var mu sync.Mutex
 	var credentials []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
 		mu.Lock()
 		credentials = append(credentials, r.Header.Get("Authorization"))
 		mu.Unlock()

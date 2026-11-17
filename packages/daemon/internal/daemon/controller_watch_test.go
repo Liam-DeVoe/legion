@@ -74,11 +74,17 @@ func recordControllerSession(t *testing.T, cfg config.Config, project, session s
 
 // envoyRoleRegistry answers the controller role lookup: session holds the role, seen now, when
 // alive is true, and nobody does otherwise. It counts the lookups, one per sweep that reads a
-// registered controller.
+// registered controller. It counts only a request of the shape the sweep sends, a role lookup,
+// which carries a token only where the daemon has one; any other is another process's, answered
+// 404 and counted as nothing.
 func envoyRoleRegistry(t *testing.T, session string, alive bool) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	var lookups atomic.Int64
 	envoy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/v1/roles/") {
+			http.NotFound(w, r)
+			return
+		}
 		code, body := http.StatusNotFound, any(map[string]any{})
 		if alive {
 			code, body = http.StatusOK, map[string]any{"holder": session, "last_seen": time.Now().UnixMilli()}

@@ -1,7 +1,6 @@
 package launcher
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -553,17 +552,12 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		testwait.Receive(f.t, "the shim's return after its context ended", exited)
 	})
 
-	conn, err := answered(f.t, "the shim's connection", listener.Accept)
-	if err != nil {
-		f.t.Fatal(err)
-	}
+	// The shim's connection opens with its hello under the boot token it was given; any other
+	// connection is another process's, closed and failing nothing (fromTheCode).
+	accepted := fromTheCode(f.t, listener, "the shim's connection", shimHello("boot"))
+	conn := accepted.conn
 	defer conn.Close()
-	reader := shimwire.NewReader(bufio.NewReader(conn))
-	if line, err := answered(f.t, "the shim's hello", reader.ReadLine); err != nil {
-		f.t.Fatalf("the shim's hello: %v", err)
-	} else if frame, err := shimwire.Decode(line); err != nil || frame.FrameType() != shimwire.TypeHello2 {
-		f.t.Fatalf("the shim opened with %v (%v)", frame, err)
-	}
+	reader := shimwire.NewReader(accepted.reader)
 	writer := shimwire.NewWriter(conn)
 	if err := writer.WriteFrame(shimwire.HelloAck{}); err != nil {
 		f.t.Fatal(err)

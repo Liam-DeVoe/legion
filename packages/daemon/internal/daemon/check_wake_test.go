@@ -5,7 +5,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -46,7 +45,7 @@ type checkWakeGitHub struct {
 func newCheckWakeGitHub(t *testing.T) *checkWakeGitHub {
 	t.Helper()
 	g := &checkWakeGitHub{}
-	g.url = githubtest.Server(t, githubtest.Spec{Record: func(r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Credential: aLease, Record: func(r *http.Request) {
 		g.mu.Lock()
 		g.paths = append(g.paths, r.URL.Path)
 		g.mu.Unlock()
@@ -75,10 +74,11 @@ func (g *checkWakeGitHub) read() []string {
 
 // checkWakeDispatch is a Dispatch that maps sjawhar/legion to project as its default and lists no
 // issues; every other call is unavailable, as a Dispatch whose dependencies are down answers, and
-// is not what these tests are about.
+// is not what these tests are about. It is a dispatchBoard: another process's request is answered
+// 404.
 func checkWakeDispatch(t *testing.T, project string) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return dispatchBoard(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
@@ -88,9 +88,7 @@ func checkWakeDispatch(t *testing.T, project string) string {
 		default:
 			http.Error(w, "unavailable", http.StatusServiceUnavailable)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	})
 }
 
 // checkWakeRig is a daemon over a closed root of its project whose tree lingers for another hour,

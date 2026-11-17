@@ -2,7 +2,6 @@ package claudebridge
 
 import (
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,27 +28,7 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 		reports: make(chan claim.TurnOutcomeRequest, 16),
 		answer:  func(claim.TurnOutcomeRequest) claim.TurnOutcomeResponse { return claim.TurnOutcomeResponse{} },
 	}
-	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/legion/v1/claims/turn-outcome" {
-			t.Errorf("the bridge posted to %s, want the turn-outcome route", request.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		body, err := io.ReadAll(request.Body)
-		if err != nil {
-			t.Errorf("read the bridge's report: %v", err)
-			return
-		}
-		var report claim.TurnOutcomeRequest
-		if err := json.Unmarshal(body, &report); err != nil {
-			t.Errorf("decode the bridge's report %s: %v", body, err)
-			return
-		}
-		r.reports <- report
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(r.answer(report))
-	}))
-	t.Cleanup(daemon.Close)
+	daemon := r.serve(t)
 	tokenFile := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(tokenFile, []byte(testBootToken+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -60,6 +39,31 @@ func newReportingRig(t *testing.T, args ...string) *reportingRig {
 		"LEGION_GENERATION=4",
 	}, args...)
 	return r
+}
+
+// serve is the rig's daemon stub, closed with the test: it takes each report the bridge posts to
+// the turn-outcome route, sends it on reports, and answers as answer says. A request whose body
+// carries no report under the launch's boot token is another process's (fromTheBridge): it is
+// answered 404 and logged, and fails nothing. A report under the token to any other route fails
+// the test.
+func (r *reportingRig) serve(t testing.TB) *httptest.Server {
+	t.Helper()
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		report, ok := fromTheBridge(t, w, request)
+		if !ok {
+			return
+		}
+		if request.URL.Path != "/legion/v1/claims/turn-outcome" {
+			t.Errorf("the bridge posted to %s, want the turn-outcome route", request.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		r.reports <- report
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(r.answer(report))
+	}))
+	t.Cleanup(daemon.Close)
+	return daemon
 }
 
 // reported is the next turn the bridge reported.
