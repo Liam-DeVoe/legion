@@ -637,11 +637,14 @@ func (c *Client) ensureStream(js nats.JetStreamContext, defaultsAnUnsetCap bool)
 // superseded (runSuperseded): it starts no recovery and leaves the hooks due, and the run the next
 // connection event brings makes the ensure again (afterReconnect, onReconnect, onClosed). Every
 // request of the ensure is made under ctx, the run's context (requestsUnder), so one sent on a
-// connection that drops ends with it.
+// connection that drops ends with it, and bound to the life of the client that owns conn
+// (JetStream), so one the connection's loss cut off answers ErrConnectionLost. The owner is conn's,
+// not c: a conn no client owns, such as a test's own, makes unbound requests, where binding them to
+// c would bind them to a connection c does not hold.
 func (c *Client) ensureStreamOn(ctx context.Context, conn *nats.Conn) error {
-	js, err := conn.JetStream(nats.MaxWait(10 * time.Second))
+	js, err := JetStream(conn, nats.MaxWait(10*time.Second))
 	if err == nil {
-		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, bindJetStream(c, js)))
+		err = c.ensureStreamReported(lookOnce(), conn, requestsUnder(ctx, js))
 	}
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", Stream, err)
@@ -687,12 +690,13 @@ func (c *Client) untilStopped() (context.Context, context.CancelFunc) {
 // ctx, and keeps them for DeployedStreamCaptures. A read that fails keeps what the client held. It
 // reports false only when the server refused the read under the NATS user's permissions: such a
 // user cannot read them later either, so the client keeps deciding by what it holds, and reads no
-// more (subjectsRefused).
+// more (subjectsRefused). Its requests are bound to the life of the client that owns conn
+// (JetStream), as the ensure hook's are.
 func (c *Client) readDeployedSubjects(ctx context.Context, conn *nats.Conn, timeout time.Duration) bool {
-	js, err := conn.JetStream(nats.MaxWait(timeout))
+	js, err := JetStream(conn, nats.MaxWait(timeout))
 	if err == nil {
 		var subjects []string
-		if subjects, err = readStreamSubjects(requestsUnder(ctx, bindJetStream(c, js))); err == nil {
+		if subjects, err = readStreamSubjects(requestsUnder(ctx, js)); err == nil {
 			c.deployedSubjects.Store(&subjects)
 			return true
 		}
