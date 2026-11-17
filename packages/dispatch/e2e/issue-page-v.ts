@@ -10,10 +10,12 @@ import {
   getIssueCoverage,
   recordCheckResult,
 } from "./api";
+import type { WholeIssueSeed } from "./issue-layout-seed";
 import { HEAD_SHA, PROJECT, pause, recorderActor } from "./issue-layout-seed-support";
-import { specBlockRef } from "./issue-layout-seed-text";
+import { requirementBlockId, specBlockRef } from "./issue-layout-seed-text";
 import { issuePage } from "./issue-page";
 import { longWords } from "./issue-page-g";
+import { openPreset } from "./issue-page-i";
 
 /**
  * How part V's rows read the Verification view of the new issue page (dispatch://INFRA-1196
@@ -38,9 +40,18 @@ import { longWords } from "./issue-page-g";
  *   then the table `[data-verification-table]` and its headings `[data-verification-head]`.
  * - **Under a statement's checks** the line `[data-verification-elsewhere]` that counts the
  *   checks of the issues under this one that serve it.
+ * - **Over the tree**, for each read that failed before it first answered, one line
+ *   `[data-verification-unreadable]` whose value names that read (`coverage`, `results` or
+ *   `blocks`): the page's words for it and a "Retry" button that asks that read alone again.
+ *
+ * Each row of the tree (`[data-node-row]`), the issue's row, each card, each check and each
+ * other row, carries its own id as `data-verification-row`; a check drawn under a statement
+ * carries the statement's id and its own, joined by a space.
  *
  * Each measure over the cards fails when the view draws none, so a view that draws nothing
- * never passes a reading of what it draws. Row 3's issue is `seedLinkedChecks`, at the end.
+ * never passes a reading of what it draws. `openSettledView` opens `seedWholeIssue`'s issue and
+ * reads its view once every read has answered, and row 3's issue is `seedLinkedChecks`, at the
+ * end.
  */
 
 /** The selectors the readers pass into the browser. */
@@ -85,6 +96,19 @@ export function copyCommandControls(page: Page): Locator {
 /** The view's body, which holds its one tree. */
 export function verificationBody(page: Page): Locator {
   return issuePage(page).locator("[data-verification-body]");
+}
+
+/** Each line the view draws over its tree for a read that failed before it first answered,
+ *  whose `data-verification-unreadable` names that read; given `read`, that read's line alone. */
+export function verificationUnreadable(
+  page: Page,
+  read?: "blocks" | "coverage" | "results"
+): Locator {
+  return issuePage(page).locator(
+    read === undefined
+      ? "[data-verification-unreadable]"
+      : `[data-verification-unreadable="${read}"]`
+  );
 }
 
 /** The issue's own row, the first row of the view's tree, which holds the summary and the
@@ -502,6 +526,107 @@ export function tabWalk(
       await page.keyboard.press("Tab");
     }
   };
+}
+
+// ---------------------------------------------------------------------------------------------
+// The whole issue's view once every read has answered, and what the view draws of it before.
+// ---------------------------------------------------------------------------------------------
+
+/** What the view draws of each statement `ids` names - the checks drawn under it, and how many
+ *  lines it draws that say no check serves it or that checks serve it elsewhere - or null where
+ *  it draws no card for it; and every check it draws as one that serves no statement. */
+export interface ServedReading {
+  readonly loose: readonly string[];
+  readonly statements: Readonly<
+    Record<string, { checks: string[]; elsewhere: number; gaps: number } | null>
+  >;
+}
+
+export function readServed(page: Page, ids: readonly string[]): Promise<ServedReading> {
+  return page.evaluate(
+    ({ selectors, statementIds }) => {
+      const issue = selectors.issuePage;
+      const statements: Record<
+        string,
+        { checks: string[]; elsewhere: number; gaps: number } | null
+      > = {};
+      for (const id of statementIds) {
+        const card = document.querySelector(`${issue} ${selectors.card}[data-node-id="${id}"]`);
+        statements[id] =
+          card === null
+            ? null
+            : {
+                checks: [...card.querySelectorAll("[data-verification-check]")].map(
+                  (check) => check.getAttribute("data-node-id") ?? ""
+                ),
+                elsewhere: card.querySelectorAll("[data-verification-elsewhere]").length,
+                gaps: card.querySelectorAll("[data-gap-kind]").length,
+              };
+      }
+      const loose = [
+        ...document.querySelectorAll(`${issue} [data-verification-check][data-verification-loose]`),
+      ].map((check) => check.getAttribute("data-node-id") ?? "");
+      return { loose, statements };
+    },
+    { selectors: SELECTORS, statementIds: ids }
+  );
+}
+
+/** Each thing `held` draws that `truth`, the view once every read has answered, does not: a
+ *  check drawn as one that serves no statement, and a statement drawn with other checks, or with
+ *  a line saying none serves it or that its checks stand elsewhere. A statement not drawn at all
+ *  says nothing, so it contradicts nothing. */
+export function contradictions(truth: ServedReading, held: ServedReading): string[] {
+  const found = held.loose
+    .filter((id) => !truth.loose.includes(id))
+    .map((id) => `${id} is drawn as a check that serves no statement`);
+  for (const [id, drawn] of Object.entries(held.statements)) {
+    if (drawn === null) continue;
+    const settled = truth.statements[id];
+    if (JSON.stringify(drawn) !== JSON.stringify(settled)) {
+      found.push(
+        `${id} draws ${JSON.stringify(drawn)} where it settles on ${JSON.stringify(settled)}`
+      );
+    }
+  }
+  return found;
+}
+
+/** What `openSettledView` read of `seedWholeIssue`'s issue. */
+export interface SettledView {
+  /** The node ids of statements 1 to 6, in document order. */
+  readonly ids: readonly string[];
+  /** Each of the issue's six checks by its node id, with the node id of the statement it
+   *  serves: check i serves statement i (`seedWholeIssue`). */
+  readonly served: readonly { readonly check: string; readonly statement: string }[];
+  /** The view once every read has answered, as `readServed` reads it. */
+  readonly truth: ServedReading;
+}
+
+/** Opens the Verification view on `seedWholeIssue`'s issue and waits until each of statements 1
+ *  to 6 draws the one check that serves it, which it does once every read has answered. */
+export async function openSettledView(page: Page, seeded: WholeIssueSeed): Promise<SettledView> {
+  const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
+    getArtifact(seeded.specArtifactId),
+    getArtifact(seeded.verificationArtifactId),
+  ]);
+  // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
+  const served = seeded.checks.all.map((check, at) => ({
+    check: blockNodeId(verificationSlug, check),
+    statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
+  }));
+  const ids = served.map((one) => one.statement);
+  await openPreset(page, seeded.key, "verification");
+  await expect
+    .poll(
+      async () => {
+        const now = await readServed(page, ids);
+        return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
+      },
+      { message: "the settled view draws a statement without the check that serves it" }
+    )
+    .toBe(true);
+  return { ids, served, truth: await readServed(page, ids) };
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { chipWords } from "../web/src/features/issue-page/node-row-chip";
 import {
+  ANSWER_LINES,
   CHECK_WHEN_WORDS,
   type CheckState,
   CONTROL_LABELS,
@@ -46,15 +47,18 @@ import {
   asRecorder,
   boxesPastTheirCard,
   checkLegendCounts,
+  contradictions,
   copyCommandControls,
   type DrawnCheck,
   glyphsWithNoBox,
   linkLook,
   namedCommit,
   nodeCommands,
+  openSettledView,
   overlappingTexts,
   paintedMarks,
   RUNBOOK,
+  readServed,
   STATEMENT_B_WORDS,
   seedLinkedChecks,
   tabWalk,
@@ -66,8 +70,9 @@ import {
   verificationChip,
   verificationFrame,
   verificationIssueRow,
+  verificationUnreadable,
 } from "./issue-page-v";
-import { expect, type Page, type Route, test } from "./test";
+import { expect, type Route, test } from "./test";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 
 /**
@@ -1004,63 +1009,6 @@ test("the Verification view is worked by the keyboard alone", async ({ browser }
   });
 });
 
-/** What the view draws of each statement `ids` names - the checks drawn under it, and how many
- *  lines it draws that say no check serves it or that checks serve it elsewhere - or null where
- *  it draws no card for it; and every check it draws as one that serves no statement. */
-interface ServedReading {
-  readonly loose: readonly string[];
-  readonly statements: Readonly<
-    Record<string, { checks: string[]; elsewhere: number; gaps: number } | null>
-  >;
-}
-
-function readServed(page: Page, ids: readonly string[]): Promise<ServedReading> {
-  return page.evaluate((statementIds) => {
-    const issue = "[data-issue-page]";
-    const statements: Record<string, { checks: string[]; elsewhere: number; gaps: number } | null> =
-      {};
-    for (const id of statementIds) {
-      const card = document.querySelector(
-        `${issue} [data-verification-card][data-node-id="${id}"]`
-      );
-      statements[id] =
-        card === null
-          ? null
-          : {
-              checks: [...card.querySelectorAll("[data-verification-check]")].map(
-                (check) => check.getAttribute("data-node-id") ?? ""
-              ),
-              elsewhere: card.querySelectorAll("[data-verification-elsewhere]").length,
-              gaps: card.querySelectorAll("[data-gap-kind]").length,
-            };
-    }
-    const loose = [
-      ...document.querySelectorAll(`${issue} [data-verification-check][data-verification-loose]`),
-    ].map((check) => check.getAttribute("data-node-id") ?? "");
-    return { loose, statements };
-  }, ids);
-}
-
-/** Each thing `held` draws that `truth`, the view once every read has answered, does not: a
- *  check drawn as one that serves no statement, and a statement drawn with other checks, or with
- *  a line saying none serves it or that its checks stand elsewhere. A statement not drawn at all
- *  says nothing, so it contradicts nothing. */
-function contradictions(truth: ServedReading, held: ServedReading): string[] {
-  const found = held.loose
-    .filter((id) => !truth.loose.includes(id))
-    .map((id) => `${id} is drawn as a check that serves no statement`);
-  for (const [id, drawn] of Object.entries(held.statements)) {
-    if (drawn === null) continue;
-    const settled = truth.statements[id];
-    if (JSON.stringify(drawn) !== JSON.stringify(settled)) {
-      found.push(
-        `${id} draws ${JSON.stringify(drawn)} where it settles on ${JSON.stringify(settled)}`
-      );
-    }
-  }
-  return found;
-}
-
 // The root reviewer's High finding on pull request #4221 (review 5926082656, at
 // `slots/view-verification.tsx`). The slot counted its document's blocks read as answered by a
 // latch of its own, set from that read's `isSuccess` and empty each time the stage mounts the
@@ -1079,31 +1027,11 @@ test("the Verification view keeps its rows when its document's blocks read fails
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
-      getArtifact(seeded.specArtifactId),
-      getArtifact(seeded.verificationArtifactId),
-    ]);
-    // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
-    const served = seeded.checks.all.map((check, at) => ({
-      check: blockNodeId(verificationSlug, check),
-      statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
-    }));
-    const ids = served.map((one) => one.statement);
-
     // The view once every read has answered: each of the six statements draws the one check
     // that serves it.
-    await openPreset(page, seeded.key, "verification");
-    await expect
-      .poll(
-        async () => {
-          const now = await readServed(page, ids);
-          return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
-        },
-        { message: "the settled view draws a statement without the check that serves it" }
-      )
-      .toBe(true);
-    const truth = await readServed(page, ids);
+    const { ids, truth } = await openSettledView(page, seeded);
     const cards = await verificationCardBoxes(page).count();
+    const { slug: verificationSlug } = await getArtifact(seeded.verificationArtifactId);
 
     // From here on the Verification document's blocks read is refused, as many times as the page
     // asks it.
@@ -1167,25 +1095,26 @@ test("the Verification view keeps its rows when its document's blocks read fails
 // the view drew its rows once the coverage and results reads had answered, whether or not that
 // read had. So while it was out, and for good once it failed, the view drew every check of the
 // issue as one that serves no statement, and each statement as served by none of them (part V's
-// R1, R3 and R9). While that read is held, and once it is refused, the view draws nothing its
-// reads do not say once they have all answered; once it answers, each statement draws its check.
+// R1, R3 and R9). While that read is held the view draws nothing its reads do not say once they
+// have all answered, and once it answers each statement draws its check. A read refused from the
+// first load holds nothing to draw, and the view once drew an empty tree for it, which says
+// nothing a reader can act on; the architect's decisions 117 and 126 on dispatch://INFRA-1196
+// (V's own review 5929572432) replace that. So the view says, over its tree, that it could not
+// load the checks, in one line with a Retry, and draws no card, no row and nothing its reads do
+// not say; once the refusal is lifted, that Retry asks the read again and the view settles on
+// each statement's check.
 // SLOW(>=2s): a whole seeded issue loaded three times, two of them read for 1.5 s each while the
-// blocks read is held or refused.
+// blocks read is held or refused, then the refused read asked again by Retry.
 test("the Verification view says nothing of a check's statements before the Verification document's blocks are read", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
-    const [{ slug: specSlug }, { slug: verificationSlug }] = await Promise.all([
-      getArtifact(seeded.specArtifactId),
-      getArtifact(seeded.verificationArtifactId),
-    ]);
-    // Check i serves statement i, for 1 to 6 (`seedWholeIssue`).
-    const served = seeded.checks.all.map((check, at) => ({
-      check: blockNodeId(verificationSlug, check),
-      statement: blockNodeId(specSlug, requirementBlockId(at + 1)),
-    }));
-    const ids = served.map((one) => one.statement);
+    // The view once every read has answered: each of the six statements draws the one check
+    // that serves it, and no check is drawn apart from a statement.
+    const { ids, truth } = await openSettledView(page, seeded);
+    expect(truth.loose, "the settled view draws a check that serves no statement").toEqual([]);
+
     const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
     const answered = (path: string) =>
       page.waitForResponse((response) => new URL(response.url()).pathname === path);
@@ -1195,7 +1124,7 @@ test("the Verification view says nothing of a check's statements before the Veri
         answered(`/api/v1/issues/${seeded.key}/results`),
       ]);
     // Every contradiction of the settled view the page draws over `ms`, read every 100 ms.
-    const contradictedOver = async (truth: ServedReading, ms: number): Promise<string[]> => {
+    const contradictedOver = async (ms: number): Promise<string[]> => {
       const end = Date.now() + ms;
       const seen = new Set<string>();
       while (Date.now() < end) {
@@ -1205,21 +1134,6 @@ test("the Verification view says nothing of a check's statements before the Veri
       }
       return [...seen];
     };
-
-    // The view once every read has answered: each of the six statements draws the one check
-    // that serves it, and no check is drawn apart from a statement.
-    await openPreset(page, seeded.key, "verification");
-    await expect
-      .poll(
-        async () => {
-          const now = await readServed(page, ids);
-          return served.every((one) => now.statements[one.statement]?.checks.join() === one.check);
-        },
-        { message: "the settled view draws a statement without the check that serves it" }
-      )
-      .toBe(true);
-    const truth = await readServed(page, ids);
-    expect(truth.loose, "the settled view draws a check that serves no statement").toEqual([]);
 
     // The blocks read held: the coverage and results reads answer, the blocks read does not.
     const held = Promise.withResolvers<void>();
@@ -1232,7 +1146,7 @@ test("the Verification view says nothing of a check's statements before the Veri
     await openPreset(page, seeded.key, "verification");
     await heldReads;
     expect(
-      await contradictedOver(truth, 1500),
+      await contradictedOver(1500),
       "the view draws what its reads do not say while the Verification document's blocks read is out"
     ).toEqual([]);
     held.resolve();
@@ -1243,7 +1157,9 @@ test("the Verification view says nothing of a check's statements before the Veri
       .toEqual(truth);
     await page.unroute(blocksRoute, hold);
 
-    // The blocks read refused, as many times as the page asks it (two retries after the first).
+    // The blocks read refused from the first load, as many times as the page asks it (two
+    // retries after the first): the view says so in one line with a Retry, over a tree that
+    // holds no card and no row, and draws nothing its reads do not say.
     let refusals = 0;
     const refusedThrice = Promise.withResolvers<void>();
     const refuse = async (route: Route) => {
@@ -1255,11 +1171,47 @@ test("the Verification view says nothing of a check's statements before the Veri
     const refusedReads = readsAnswered();
     await openPreset(page, seeded.key, "verification");
     await Promise.all([refusedReads, refusedThrice.promise]);
+    const failedLine = verificationUnreadable(page, "blocks");
+    const retry = failedLine.getByRole("button", { exact: true, name: "Retry" });
+    await expect(
+      failedLine,
+      "the view draws no failed-read line with Retry once its blocks read failed from the first load"
+    ).toHaveCount(1);
+    await expect(
+      failedLine,
+      "the failed-read line does not say the view could not load the checks"
+    ).toContainText(ANSWER_LINES.checks_unreadable);
+    await expect(retry, "the blocks read's failed-read line draws no Retry").toHaveCount(1);
+    await expect(
+      verificationUnreadable(page),
+      "the view draws a failed-read line for a read that answered"
+    ).toHaveCount(1);
     expect(
-      await contradictedOver(truth, 1500),
+      await contradictedOver(1500),
       "the view draws what its reads do not say once the Verification document's blocks read failed"
     ).toEqual([]);
+    await expect(
+      verificationCardBoxes(page),
+      "the view draws a card once its blocks read failed from the first load"
+    ).toHaveCount(0);
+    await expect(
+      nodeRows(page),
+      "the view draws a row once its blocks read failed from the first load"
+    ).toHaveCount(0);
+
+    // The refusal lifted, Retry asks the blocks read again, and the view settles on each
+    // statement's check.
     await page.unroute(blocksRoute, refuse);
+    await retry.click();
+    await expect
+      .poll(() => readServed(page, ids), {
+        message: "Retry does not bring the view to its settled rows",
+      })
+      .toEqual(truth);
+    await expect(
+      verificationUnreadable(page),
+      "the failed-read line stays once Retry brought the view its blocks"
+    ).toHaveCount(0);
   });
 });
 
