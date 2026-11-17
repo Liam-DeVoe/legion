@@ -42,6 +42,7 @@ import {
   type ParentLine,
   type TreeNode,
 } from "./issue-tree";
+import { LensChain } from "./lenses/LensChain";
 import { LensLines } from "./lenses/LensLines";
 import { kindWords } from "./lenses/lens-drafts";
 import { NodeFacts } from "./NodeFacts";
@@ -418,6 +419,7 @@ export function NodeRow({
               tabStops={tabStops}
             />
           ) : null}
+          {focused && node.type === "lens" ? <LensChain node={node} tabStops={tabStops} /> : null}
           {focused ? (
             <RowActs node={node} ownAnswer={ownAnswer} tabStops={tabStops} writer={writer} />
           ) : null}
