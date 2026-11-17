@@ -832,8 +832,11 @@ func TestAHeldRootKeepsItsPlaceOnTheRuntimeUntilItsOwnReleaseAdmitsIt(t *testing
 	done := make(chan struct{})
 	go func() { w.pollHoldRelease(ctx); close(done) }()
 
-	passes.until(t, passHoldRelease, "the held root takes the free slot once the quiet stream's idle poll releases it", func() bool {
-		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD")
+	// A slot taken is logged by intake.OnCommit once its transaction has committed, so the store
+	// can show the slot before the line is written: the wait asks for both, and the reads below
+	// then see every line the release wrote.
+	passes.until(t, passHoldRelease, "the held root takes the free slot once the quiet stream's idle poll releases it, and its slot is logged", func() bool {
+		return slices.Contains(tickSlotted(t, pool), "LEGION-HELD") && strings.Contains(logged.String(), slotTakenMessage)
 	})
 	cancel()
 	<-done
