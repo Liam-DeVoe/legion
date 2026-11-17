@@ -67,11 +67,15 @@
 #
 # THE FORMS RULE 8 READS, AND NO OTHERS (dispatch://INFRA-1545, round 37). Each reading of rule
 # 8 accepts the forms this tree writes, measured on the tree at d65e47ae with an instrumented copy
-# of this check, and refuses every other form by name where what it can hide fetches: the file,
-# the line, the step or the script, the form, and a listed form to write instead. A form that is
-# not on its list is not modelled, so it is charged nothing and refused, and never read as
-# nothing where the step may wait for it. Until round 37 each reading also modelled shapes no
-# step writes, and each round's newest model held the next undercount. The counts are the tree's.
+# of this check, and refuses every other form it finds by name where what it can hide fetches:
+# the file, the line, the step or the script, the form, and a listed form to write instead. A
+# form that is not on its list is not modelled, so it is charged nothing and refused by name
+# where a reading finds it and what it can hide fetches. A form no reading finds is read as
+# nothing: that is how round 37's probes found routes from text to a program that passed a
+# 1650 s call under a one-minute key, five at 125acdb7 and 14 at aaab38b5, each now refused by
+# its route (the reach under item 1), so this header claims no reading of a form it does not
+# name. Until round 37 each reading also modelled shapes no step writes, and each round's newest
+# model held the next undercount. The counts are the tree's.
 #
 #   1. A CALL OF A SCRIPT. SCRIPT_CALL finds each occurrence of a path naming a script under
 #      .github/scripts/, outside a comment, in a workflow step's `run:`, a composite action
@@ -117,22 +121,45 @@
 #      word, and it is refused where it could be a script under .github/scripts/ this check
 #      cannot name: its last path element is wholly an expansion (`"$p"`, `$(cmd)`), that
 #      element holds an expansion and ends in `.sh` (`"$dir/$name.sh"`), its literal directory
-#      is .github/scripts/ and that element holds an expansion, or it is a file the same text
-#      writes, as the operand of a shell whatever its name or as a command word ending in `.sh`
-#      (`cat > run.sh`, `echo <path> > run.sh` or `… | tee run.sh`, then `bash run.sh`). So is
-#      output piped into a shell that reads its standard input, or into an `xargs` that runs a
-#      shell or the line it reads. Not refused, since none can be such a script or another
-#      reading holds it: a target with no expansion, which SCRIPT_CALL reads; a last element
+#      is .github/scripts/ and that element holds an expansion, it names a script with no
+#      directory (`bash x.sh`, `x.sh`), which bash finds through the working directory or PATH,
+#      so after a `cd` into .github/scripts/ or with PATH reaching it, or it is a file the same
+#      text writes (written_files): as the operand of a shell, `.` or `source`, any file it
+#      writes, and as a command word, by any name, one holding text the step makes or a copy of
+#      such a script (`cat > run.sh`, `echo <path> > run`, `… | tee run.sh`, `… | dd of=run.sh`,
+#      then `bash run.sh` or `./run`), compared by its path and, where the text holds a `cd` or
+#      a `pushd`, by its name alone. And a route from text to a program is refused whatever the
+#      text: `eval`; a shell reading its program from its standard input, a here-string, a file
+#      redirected into it or a process substitution, and a `.` or `source` of a process
+#      substitution; output piped into a shell reading its standard input; and `find -exec`
+#      and `xargs` where what they run on what they read could run such a script: a shell,
+#      `eval`, `.` or `source`, a wrapper and nothing else (`xargs env`), or the placeholder
+#      itself (`-exec {} \;`). Round 37's probe at aaab38b5 found 14 such routes, 13a to 13n,
+#      each passing a 1650 s call under a one-minute key. Measured on the tree, the routes as
+#      first written refused six lines, so each was narrowed to its fetching case: the tree's
+#      three `xargs go test` and one `find … -exec rm -rf {} +` run a command named literally,
+#      and install-jj's `"$HOME/.local/bin/mise"` is a tool `install` copied from a file named
+#      literally, and each passes; install-jj's `"$HOME/.local/bin/jj" --version`, whose copy
+#      came from a path `mise x` printed, was rewritten to `jj --version`, which PATH finds
+#      there. Not refused, since none can be such a script or another reading holds it: a target
+#      with no expansion that holds a `/` and is no file the text writes, which SCRIPT_CALL
+#      reads, and a command word with no `/` and no `.sh`, a tool PATH finds; a last element
 #      that is literal, since a script of that directory is a file directly in it and its name
 #      is what SCRIPT_CALL reads, so `"$HOME/.local/bin/mise"` is a tool and
-#      `"$script_dir/ci-retry.sh"` is that script; a last element holding an expansion that is
-#      no `.sh` outside .github/scripts/, a data file such as `"$state_dir/$name.state"`; a
-#      literal directory outside .github/scripts/, `bash "scripts/e2e/$SCRIPT"`, the second
-#      limit below; the arguments a wrapper hands on, `"$@"`, `"${@}"` and `"${cmd[@]}"`; and a
-#      command word that is one variable's value in a text that can see a function that
-#      fetches, or inside a function's body, a call through a variable, which the declarations
-#      below read at the call or at the function's callers. A call of a function whose body
-#      runs one of its own positional parameters, `run() { "$@" >> "$log"; }`, is a run of the
+#      `"$script_dir/ci-retry.sh"` is that script; a
+#      last element holding an expansion that is no `.sh` outside .github/scripts/, a data file
+#      such as `"$state_dir/$name.state"`; a literal directory outside .github/scripts/, `bash
+#      "scripts/e2e/$SCRIPT"`, the second limit below; the arguments a wrapper hands on, `"$@"`,
+#      `"${@}"` and `"${cmd[@]}"`; a command word that is one variable's value in a text that
+#      can see a function that fetches, a call through a variable, which the declarations below
+#      read at the call; and one inside a function's body whose value the function's callers
+#      hand it, a positional parameter, a variable the body sets to one, or, in a library some
+#      text sources, a variable the library sets nowhere, read at those callers. Any other, such
+#      as `s=$(…); "$s"` inside a function, is refused as at the top level:
+#      the tree writes none, its three calls through a variable inside a function's body in a
+#      text that sees no fetching function each being `"$@"` (dispatch://INFRA-1545, round 37). A
+#      call of a function whose body runs one of its own positional parameters, or a variable
+#      it sets to one (`local s=$1`, then `"$s"`), `run() { "$@" >> "$log"; }`, is a run of the
 #      word it hands in that place, after the `shift`s the body writes first (runners_of): `run
 #      "$p"` and `run "$(cmd)"` are refused, and `run grep …` and a literal path pass. A function
 #      handing such a function its own parameter there, `wrap() { run "$@"; }`, runs it too, so
@@ -287,8 +314,9 @@
 # variable) and a curl `--max-time 0` bound nothing, since a 0 is no limit at all, and the fetch
 # behind `timeout`'s options stays a fetch (reduce_words, curl_options): rule 4 refuses such an
 # attempt, and the refusals above read it as a call with no figure rather than as 0 s.
-# And these are read without a model, as the shell's own operators, which charges a run in full
-# or refuses a place where its script fetches, and never charges less than the step waits for:
+# And these are read without a model, as the shell's own operators, which charges a run written
+# there in full or refuses its place where its script fetches, so a path written in one of them
+# is never charged less than the step waits for:
 # a path in a `[[ … ]]`, in an extglob pattern such as `@(a|b)` or in a `case` pattern, whose
 # `(`, `)`, `|`, `<` and `>` read as a subshell, a pipe and a redirect, so the path is a run, an
 # argument of the word before it, a redirect target or the words of the `case`. The one reading
@@ -310,12 +338,26 @@
 #
 # Two limits are left in that reading set, and each is a limit of what this check can read, a
 # script it cannot name, rather than a shape it reads and miscounts (dispatch://INFRA-1545,
-# round 37). A run whose target is built from data as the step runs is refused where that target
-# could be a script under .github/scripts/ (the reach under item 1), so what is left of the first
-# limit is what that reach lets pass: a call through a variable in a text that can see a
-# function that fetches, which the declarations read as a call of a function; and a file one
-# step or script writes that another runs by a literal path, `bash run.sh` in a later step, since
-# a file another text writes is no file this text writes. Until round 37 every call that did not
+# round 37). A run whose target is built from data as the step runs, or whose route from text to
+# a program this check does not follow, is refused where that target could be a script under
+# .github/scripts/ (the reach under item 1), so what is left of the first limit is what that
+# reach lets pass, each of these. A file one step or script writes that another runs by a
+# literal path holding a `/`, `./run` or `bash out/run.sh` in a later step, since a file another
+# text writes is no file this text writes; a file this text writes that holds a tool,
+# downloaded, built or copied from a file named literally, and runs as a command, whose bytes
+# this check does not read; and a command named literally that `xargs` or `find -exec` runs,
+# `xargs go test`. And, AN ACCEPTED LIMIT, the declaration model for calls through a variable:
+# a call through a variable in a text that can see a function that fetches is read as a call of
+# a function, refused unless a DECLARED_CALLS entry writes what it adds or a DECLARED_LOOPS entry
+# writes each fetch it can reach, and that figure stands for the call whatever the variable
+# holds, a script's path included; and a library function running a variable the library sets
+# nowhere runs what the sourcing text sets, which the reading of holders follows there only
+# where that text can see a function that fetches. The architect accepted this model for the
+# forms this tree writes, because a refusal alone would refuse the tree's own scripts:
+# ci-tools.sh's `$fetch` and `$seam`, whose fetches DECLARED_LOOPS prices, and release-push.sh's
+# `"$leak_engine"` and its `true` or `false` flags, DECLARED_CALLS entries, each run a function,
+# a tool or a builtin and never a script, and a declaration names its figure and why where a
+# reviewer reads it (dispatch://INFRA-1545, round 37). Until round 37 every call that did not
 # write the script's path was this limit. A path that is written, in a variable or in any other
 # place the first list refuses, is refused where its script fetches. And a script outside
 # .github/scripts/ is not read at all, since that one directory is the whole set: a `run:` that
@@ -1566,14 +1608,17 @@ class CallScanner(Scanner):
     header's rule 8 reading lists with what each makes of a path written there. Each command
     keeps which of its words a quote or a backslash was written in, as the Scanner's do, which
     is how a quoted `[[` is told from the test's own (variable_calls; dispatch://INFRA-1545,
-    round 37); and a parameter expansion is one word, as the Scanner reads it. And `written`
-    holds the word each redirect of output names, a file the text writes, which a run of that
-    file is read against (unnamed_runs; dispatch://INFRA-1545, round 37)."""
+    round 37); and a parameter expansion is one word, as the Scanner reads it. And each
+    command's `writes` holds the word each of its redirects of output names, a file the text
+    writes, `written` those of a redirect written where no command is, `} > file` after a group,
+    and each command's `input` is what its last redirect of standard input reads: `<<<` a
+    here-string, `<<` a heredoc, `<` a file and `<(` a process substitution, or ""
+    (written_files, unnamed_runs; dispatch://INFRA-1545, round 37)."""
 
     # What a substitution saves of the command it opens inside, and restores when it closes.
     SAVED = ("words", "spans", "word", "chars", "started", "at_word_start", "redirect_target",
              "open_command", "command_line", "command_offset", "word_quoted", "quoted", "braces",
-             "expansion", "redirect_out")
+             "expansion", "redirect_out", "command_input", "command_writes")
 
     def __init__(self, first_line: int) -> None:
         super().__init__(first_line)
@@ -1584,8 +1629,12 @@ class CallScanner(Scanner):
         self.comments: list[tuple[int, int]] = []
         self.continued: set[int] = set()
         self.written: list[str] = []
+        # The files the redirects of the command being read write.
+        self.command_writes: list[str] = []
         # Whether the redirect read last writes its target, a `>`, rather than reads it.
         self.redirect_out = False
+        # What the command being read takes its standard input from, as `input` says.
+        self.command_input = ""
 
     def add(self, char: str, offset: int) -> None:
         super().add(char, offset)
@@ -1602,7 +1651,7 @@ class CallScanner(Scanner):
         elif self.started and self.redirect_target and span:
             self.redirects.append(span)
             if self.redirect_out:
-                self.written.append(self.word)
+                self.command_writes.append(self.word)
         if self.started:
             self.redirect_target = False
         self.word = ""
@@ -1622,12 +1671,18 @@ class CallScanner(Scanner):
             command.spans = self.spans
             command.quoted = self.word_quoted
             command.context = tuple(entry[0] for entry in self.open_subs)
+            command.input = self.command_input
+            command.writes = self.command_writes
             self.commands.append(command)
+        else:
+            self.written += self.command_writes
         self.words = []
         self.spans = []
         self.word_quoted = []
         self.redirect_target = False
         self.open_command = False
+        self.command_input = ""
+        self.command_writes = []
 
     def open_sub(self) -> dict:
         """The outer command, saved mid-word: the text of a `$(…)` or a backtick substitution is
@@ -1640,7 +1695,7 @@ class CallScanner(Scanner):
         self.word_quoted, self.quoted = [], False
         self.braces, self.expansion = 0, False
         self.started, self.at_word_start, self.redirect_target = False, True, False
-        self.open_command = False
+        self.open_command, self.command_input, self.command_writes = False, "", []
         return saved
 
     def close_sub(self, text: str, i: int) -> None:
@@ -1735,6 +1790,8 @@ class CallScanner(Scanner):
                 if char == "(" and self.started and ASSIGNMENT.fullmatch(self.word):
                     kind = "array"
                 if char != "(":
+                    if char == "<" and (self.words or self.started):
+                        self.command_input = "<("
                     i += 1
                 self.end_command()
                 open_subs.append((kind, None))
@@ -1749,6 +1806,9 @@ class CallScanner(Scanner):
             elif char in "<>":
                 self.end_word()
                 self.redirect_out = char == ">"
+                if char == "<" and text[i + 1:i + 2] not in ("&", ">"):
+                    self.command_input = ("<<<" if text[i:i + 3] == "<<<"
+                                          else "<<" if text[i:i + 2] == "<<" else "<")
                 self.redirect_target = True
                 while text[i + 1:i + 2] in ("<", ">", "&", "|"):
                     i += 1
@@ -5151,12 +5211,15 @@ def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
     exact (dispatch://INFRA-1545, round 37). `"$1"` runs the first argument and `"$@"` the
     first one left, each after the `shift`s written in the body before that run, and a `shift`
     whose count is no literal number leaves the place inexact, the place or any after it. A
-    function whose body hands such a function one of its own positional parameters in the place
-    that function runs, `wrap() { run "$@"; }`, runs that parameter too, as the reading of calls
-    through a variable follows a library's holders up their callers (variable_holders), so the
-    call refused is the one handing `wrap` a word built from data. This tree defines three:
-    ci-retry.sh's `retry_fetch`, which reduce_words reads as a wrapper instead, and
-    check-plugin-names.sh's and check-private-names.sh's `run`."""
+    variable the body sets to one of them, `local s=$1` or `s=$1`, is that parameter, so a body
+    running `"$s"` runs it too: until round 37 only a parameter written as the command word was
+    read, and `acc_run() { local s=$1; "$s"; }` handed a path built from data ran a script no
+    reading named. A function whose body hands such a function one of its own positional
+    parameters in the place that function runs, `wrap() { run "$@"; }`, runs that parameter too,
+    as the reading of calls through a variable follows a library's holders up their callers
+    (variable_holders), so the call refused is the one handing `wrap` a word built from data.
+    This tree defines three: ci-retry.sh's `retry_fetch`, which reduce_words reads as a wrapper
+    instead, and check-plugin-names.sh's and check-private-names.sh's `run`."""
     if id(loops) in RUNNERS_READ:
         return RUNNERS_READ[id(loops)]
     text = without_arithmetic(loops.text)
@@ -5164,30 +5227,42 @@ def runners_of(loops: Loops) -> dict[str, tuple[int, bool]]:
     holders = function_bodies(commands)[0]
     bodies: dict[str, list[list[str]]] = {}
     for index, command, _after_bar in commands_read(commands, text):
-        reduced = reduce_words(command.words)[0]
-        if holders[index] is not None and reduced:
-            bodies.setdefault(holders[index], []).append(reduced)
+        if holders[index] is not None:
+            bodies.setdefault(holders[index], []).append(command.words)
     found: dict[str, tuple[int, bool]] = {}
     grown = True
     while grown:
         grown = False
         for holder, body in bodies.items():
             count, exact = 0, True
-            for reduced in body if holder not in found else ():
+            copies: dict[str, int] = {}
+            for words in body if holder not in found else ():
+                for word in words:
+                    copy = re.fullmatch(r"([A-Za-z_]\w*)=(.*)", word)
+                    if copy and (value := POSITIONAL.fullmatch(copy.group(2))):
+                        copies[copy.group(1)] = int(value.group(1) or value.group(2) or 1) + count
+                reduced = reduce_words(words)[0]
+                if not reduced:
+                    continue
                 if reduced[0] == "shift":
                     step = reduced[1] if len(reduced) > 1 else "1"
                     count, exact = (count + int(step), exact) if step.isdigit() else (count, False)
                     continue
                 runs = POSITIONAL.fullmatch(reduced[0])
+                place = int(runs.group(1) or runs.group(2) or 1) + count if runs else None
+                name = re.fullmatch(r"\$\{?([A-Za-z_]\w*)\}?", reduced[0])
+                if place is None and name and name.group(1) in copies:
+                    place = copies[name.group(1)]
                 sure_here = exact
-                if runs is None and reduced[0] in found and reduced[0] != holder:
-                    place, sure = found[reduced[0]]
-                    handed = reduced[place:place + 1] if sure else reduced[place:]
+                if place is None and reduced[0] in found and reduced[0] != holder:
+                    inner, sure = found[reduced[0]]
+                    handed = reduced[inner:inner + 1] if sure else reduced[inner:]
                     runs = next(filter(None, map(POSITIONAL.fullmatch, handed)), None)
+                    place = int(runs.group(1) or runs.group(2) or 1) + count if runs else None
                     sure_here = exact and sure and not any(
-                        POSITIONAL.fullmatch(word) for word in reduced[1:place])
-                if runs is not None:
-                    found[holder] = (int(runs.group(1) or runs.group(2) or 1) + count, sure_here)
+                        POSITIONAL.fullmatch(word) for word in reduced[1:inner])
+                if place is not None:
+                    found[holder] = (place, sure_here)
                     grown = True
                     break
     RUNNERS_READ[id(loops)] = found
@@ -5287,26 +5362,45 @@ def unnamed_target(word: str, action: str | None) -> str | None:
     return None
 
 
-def written_files(scanner: CallScanner, commands: list[Command]) -> set[str]:
-    """The files a body writes, each as its word is written: the target of each redirect of
-    output, each file `tee` writes, the last operand of `cp`, `mv`, `install` and `ln`, and the
-    file curl's `-o` and wget's `-O` name (dispatch://INFRA-1545, round 37)."""
-    written = set(scanner.written)
+def written_files(scanner: CallScanner, commands: list[Command],
+                  action: str | None) -> dict[str, bool]:
+    """The files a body writes, each as its word is written, normalised, with whether what it
+    holds could be a script under .github/scripts/ or text the step makes, True, or is a tool,
+    False (dispatch://INFRA-1545, round 37). Text: the target of a redirect of output, but of a
+    download; each file `tee` names; and the value of `of=` and of any other command's `-o`,
+    `--output` or `--output=`, as dd and `sort -o` write. A tool: what curl or wget downloads, by
+    a redirect, `-o`, `-O`, `--output` or `--output-document`, and what `go build -o` builds. A
+    copy, the last operand of `cp`, `mv`, `install`, `ln`, `rsync` or `scp`, holds what its
+    source holds: text where a source could be such a script (unnamed_target), names one, or is
+    text this body wrote, and a tool otherwise, as install-jj's `install -m 0755
+    "$dir/mise/bin/mise" "$HOME/.local/bin/mise"` is. Until round 37 `dd of=` was none of these,
+    so `echo <path> | dd of=run.sh` and then `bash run.sh` ran a script no reading named."""
+    files = {os.path.normpath(word): True for word in scanner.written if word}
+
+    def holds_text(word: str) -> bool:
+        return bool(unnamed_target(word, action)
+                    or any(str(SCRIPTS / match.group(1)) in script_files
+                           for match in SCRIPT_CALL.finditer(word))
+                    or files.get(os.path.normpath(word)))
+
     for command in commands:
         reduced = reduce_words(command.words)[0]
         head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] if reduced else ""
+        tool = head in ("curl", "wget") or (head == "go" and "build" in reduced)
         operands = [word for word in reduced[1:] if not word.startswith("-")]
+        found = [(word, not tool) for word in command.writes]
         if head == "tee":
-            written.update(operands)
-        elif head in ("cp", "mv", "install", "ln") and len(operands) > 1:
-            written.add(operands[-1])
-        elif head in ("curl", "wget"):
-            short, long = ("-o", "--output") if head == "curl" else ("-O", "--output-document")
-            written.update(after for word, after in zip(reduced, reduced[1:])
-                           if word in (short, long))
-            written.update(word.split("=", 1)[1] for word in reduced
-                           if word.startswith(f"{long}="))
-    return {os.path.normpath(word) for word in written if word}
+            found += [(word, True) for word in operands]
+        elif head in ("cp", "mv", "install", "ln", "rsync", "scp") and len(operands) > 1:
+            found.append((operands[-1], any(map(holds_text, operands[:-1]))))
+        found += [(after, not tool) for word, after in zip(reduced, reduced[1:])
+                  if word in ("-o", "-O", "--output", "--output-document")]
+        found += [(word.split("=", 1)[1], not tool or word.startswith("of=")) for word in reduced
+                  if word.startswith(("--output=", "--output-document=", "of="))]
+        for word, text in found:
+            if word:
+                files[os.path.normpath(word)] = files.get(os.path.normpath(word), False) or text
+    return files
 
 
 def shell_operand(words: list[str]) -> tuple[str, str]:
@@ -5335,66 +5429,130 @@ def shell_operand(words: list[str]) -> tuple[str, str]:
     return ("script", words[at]) if at < len(words) else ("stdin", "")
 
 
-def xargs_runs(words: list[str]) -> str:
-    """What an `xargs`, its words once the wrappers are gone, runs on what it reads, where that
-    is something this check cannot name: a shell, or the line itself, as `-I {} {}` runs it;
-    "" otherwise."""
-    replace = None
-    at = 1
-    while at < len(words) and words[at].startswith("-"):
-        word = words[at]
-        if word in ("-I", "-n", "-L", "-P", "-d", "-a", "-E", "-s"):
-            replace = words[at + 1] if word == "-I" and at + 1 < len(words) else replace
-            at += 2
-            continue
-        if word.startswith("--replace"):
-            replace = word.partition("=")[2] or "{}"
-        elif word.startswith("-i"):
-            replace = word[2:] or "{}"
-        elif word.startswith("-I"):
-            replace = word[2:]
-        at += 1
-    command = reduce_words(words[at:])[0]
-    if not command:
-        return ""
-    if PROGRAM.sub("", command[0]).rsplit("/", 1)[-1] in INTERPRETERS:
-        return f"which runs `{command[0]}` on what it reads"
-    if replace is not None and command[0] == replace:
-        return "which runs each line it reads as a command"
-    return ""
+# The words of `find` that run a command on each file it finds (unnamed_runs).
+FIND_RUNS = {"-exec", "-execdir", "-ok", "-okdir"}
+# Where a shell reading its program from its standard input takes it, by the redirect of that
+# input CallScanner read; a heredoc's body is read by unread_heredocs instead (unnamed_runs).
+STDIN_PROGRAM = {"<<<": "a here-string", "<": "a file redirected into it",
+                 "<(": "a process substitution", "": "its standard input"}
 
 
 def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
-                 runners: dict[str, tuple[int, bool]]) -> list[tuple[int, int, str, str, str]]:
+                 runners: dict[str, tuple[int, bool]],
+                 library: bool) -> list[tuple[int, int, str, str, str]]:
     """Each run of a body whose target could be a script under .github/scripts/ that this check
-    cannot name, as (the first and the last line of its command, what the command does, why it
-    is refused, the form to write instead), UNNAMED_RUN's three parts (dispatch://INFRA-1545,
-    round 37). A target is the operand of `bash`, `sh`, `dash`, `zsh`, `.` or `source`, the text
-    of a shell's `-c` where it is no single-quoted text, or a command word; it is refused where
-    unnamed_target says it could be such a script, and where it is a file this body writes
-    (written_files): an operand of a shell, `.` or `source` whatever its name, since the shell
-    runs that file as shell text, and a command word ending in `.sh`. A written file run as a
-    command under any other name is a tool the step installed, as install-jj's
-    `"$HOME/.local/bin/mise"` is. A command whose output a pipe hands to a shell reading its
-    standard input, or to an `xargs` that runs a shell or the line itself, runs text this check
-    cannot name, and is refused as well.
+    cannot name, or whose route from text to a program this check does not follow, as (the
+    first and the last line of its command, what the command does, why it is refused, the form
+    to write instead), UNNAMED_RUN's three parts (dispatch://INFRA-1545, round 37). One class,
+    refused by its route rather than modelled shape by shape:
+      - a target, the operand of `bash`, `sh`, `dash`, `zsh`, `.` or `source`, the text of a
+        shell's `-c` where it is no single-quoted text, or a command word, refused where
+        unnamed_target says it could be such a script; where it names a script with no
+        directory, `bash x.sh` or `x.sh`, which bash finds through the working directory or
+        PATH, so after a `cd` into .github/scripts/ or with PATH reaching it; and where it is a
+        file this body writes (written_files), by any name, compared by its path and, where the
+        body holds a `cd` or a `pushd`, by its name alone, since this reading does not follow
+        the directory. A command word holding no `/` is a name PATH finds, and no such file;
+      - a shell reading its program from its standard input, a here-string, a file redirected
+        into it or a process substitution, and a `.` or `source` of a process substitution; a
+        heredoc's body is read by unread_heredocs, and a shell a pipe feeds is refused at the
+        command whose output the pipe hands it;
+      - `eval`, whatever it is handed, and `find` with `-exec`, `-execdir`, `-ok` or `-okdir` and
+        `xargs` where the command they run on what they read could run such a script: a shell,
+        `eval`, `.` or `source`; a wrapper and nothing else, `xargs env`, which runs each word
+        it reads; the placeholder itself, `-exec {} \\;` or `xargs -I{} {}`; or a target
+        refused as above. `xargs go test …` and `-exec rm -rf {} +` run a command named
+        literally, and pass: the tree writes three of the first and one of the second.
+    Until round 37 each of those routes ran a script that fetches and was charged nothing:
+    round 37's probe at aaab38b5 found 14, from `eval "$p"` to `xargs env`. A file this body
+    writes is refused as a command word where it holds text or a copy of such a script, and
+    passes where it holds a tool the body downloads or installs from a file named literally,
+    as install-jj's `"$HOME/.local/bin/mise"` does; as the operand of a shell, `.` or `source`
+    it is refused whatever it holds, since the shell runs it as shell text.
 
     A command word that is one parameter's value, `"$fn"`, is a call through a variable, which
     the reading of such calls holds where the text can see a function that fetches,
-    `sees_fetching` (variable_calls), and inside a function's body, whose call through a
-    variable runs what the function's callers hand it and is read at those callers, as a
-    library's `run() { "$1"; }` is (variable_holders): such a call is read there and not here.
-    Anywhere else it is a target like any other. And a call of one of `runners`, a function
-    whose body runs one of its positional parameters (runners_of), runs the word in that place,
-    which is refused as any other target is. A positional parameter handed on there is the
-    holder's own run where the holder is one of `runners` too (runners_of), read at its callers,
-    and refused anywhere else, since this reading does not follow a script's callers. A literal
-    word, `run grep …`, and a literal path pass."""
+    `sees_fetching` (variable_calls): such a call is read there and not here. Inside a
+    function's body, one whose value the function's callers hand it is read at those callers,
+    and not here: a positional parameter or a variable the body sets to one, `"$1"` or `local
+    s=$1; "$s"` (runners_of), and, in a library some text sources (`library`), a variable that
+    library sets nowhere, `r37_go() { "$r37_fn"; }`, whose value the sourcing text hands it
+    and whose call the holder reading follows there (variable_holders). Any other, `s=$(…);
+    "$s"`, or one a step's own text runs inside a function, is a target like any other: until
+    round 37 every call through a variable inside a function's body was left to those
+    readings, which follow callers and never what the body sets. And a call of one of
+    `runners`, a function whose body runs one of its positional parameters or a variable set to
+    one (runners_of), runs the word in that place, which is refused as any other target is. A
+    positional parameter handed on there is the holder's own run where the holder is one of
+    `runners` too (runners_of), read at its callers, and refused anywhere else, since this
+    reading does not follow a script's callers. A literal word, `run grep …`, and a literal path
+    pass."""
     text = without_arithmetic(loops.text)
     scanner = CallScanner(loops.first_line)
     commands = scanner.scan(text)
     action = str(Path(path).parent) if path in actions else None
-    written = written_files(scanner, commands)
+    written = written_files(scanner, commands, action)
+    moved = any(reduce_words(command.words)[0][:1] in (["cd"], ["pushd"])
+                for command in commands)
+    # The names the text sets, or writes as a word, `s=…`, `s+=…`, `s[…]=…`, `read -r s`, `for s
+    # in`, and those each function's body sets to one of its positional parameters.
+    named: set[str] = set()
+    copies: dict[str | None, set[str]] = {}
+    for command in commands:
+        for word in command.words:
+            setting = re.fullmatch(r"([A-Za-z_]\w*)(=|\+=|\[)(.*)", word, re.DOTALL)
+            if setting and setting.group(2) == "=" and POSITIONAL.fullmatch(setting.group(3)):
+                copies.setdefault(loops.function_of(command.line), set()).add(setting.group(1))
+            elif setting or re.fullmatch(r"[A-Za-z_]\w*", word):
+                named.add(setting.group(1) if setting else word)
+
+    def handed_in(command: Command, word: str) -> bool:
+        """Whether a call through the variable `word`, inside a function's body, runs a value
+        the function's callers hand it, which the readings of runners and holders follow."""
+        holder = loops.function_of(command.line)
+        if holder is None:
+            return False
+        name = re.match(r"\$\{?([A-Za-z_]\w*)", word)
+        if name is None:
+            return True
+        return (name.group(1) in copies.get(holder, set())
+                or (library and name.group(1) not in named))
+
+    def unseen(target: str, operand: bool) -> str | None:
+        """Why a literal target is a file this check cannot name, or None: an operand of a shell,
+        `.` or `source` where it is any file this body writes, a command word holding a `/`
+        where it is one holding text or a copy of a script (written_files), and either where it
+        names a script with no directory."""
+        if operand or "/" in target:
+            files = {word for word, text in written.items() if operand or text}
+            if os.path.normpath(target) in files:
+                return "a file this text writes before it runs it"
+            if moved and os.path.basename(os.path.normpath(target)) in map(os.path.basename,
+                                                                          files):
+                return ("the name of a file this text writes elsewhere, which a `cd` or a "
+                        "`pushd` this check does not follow may make the file it runs")
+        if "/" not in target and target.endswith(".sh") and not expansions_in(target):
+            return ("which names a script with no directory, so bash finds it through the "
+                    "working directory or `PATH`, neither of which this check follows")
+        return None
+
+    def handed(words: list[str], placeholder: str | None, read: str) -> str | None:
+        """Why the command `xargs` or `find` runs on `read`, what it reads, could run a script
+        this check cannot name, or None where it names it literally."""
+        if not words:
+            return None
+        reduced = reduce_words(words)[0]
+        if not reduced:
+            return f"which hands {read} to `{words[0]}`, which runs it as a command"
+        if placeholder is not None and placeholder in reduced[0]:
+            return f"which runs {read} as a command"
+        if PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1] in INTERPRETERS | {"eval", ".",
+                                                                          "source"}:
+            return f"which runs `{reduced[0]}` on {read}"
+        why = unnamed_target(reduced[0], action) or unseen(reduced[0], False)
+        return why and f"which runs `{reduced[0]}`, {why}"
+
+    fed: set[int] = set()
     found = []
     for index, command, after_bar in commands_read(commands, text):
         reduced = reduce_words(command.words)[0]
@@ -5402,26 +5560,58 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
             continue
         head = PROGRAM.sub("", reduced[0]).rsplit("/", 1)[-1]
         why = None
-        if head in INTERPRETERS | {".", "source"} and not expansions_in(reduced[0]):
+        if head == "eval":
+            does = f"runs `eval` on `{' '.join(reduced[1:])}`"
+            why = "which runs those words as shell text"
+        elif head == "find":
+            for at, word in enumerate(reduced):
+                if word in FIND_RUNS:
+                    end = next((stop for stop in range(at + 1, len(reduced))
+                                if reduced[stop] in (";", "+")), len(reduced))
+                    why = handed(reduced[at + 1:end], "{}", "each file it finds")
+                    if why:
+                        does = f"runs `find` with `{word}`"
+                        break
+        elif head == "xargs":
+            placeholder = None
+            at = 1
+            while at < len(reduced) and reduced[at].startswith("-"):
+                word = reduced[at]
+                if word in ("-I", "-n", "-L", "-P", "-d", "-a", "-E", "-s"):
+                    placeholder = reduced[at + 1] if word == "-I" and at + 1 < len(reduced) else (
+                        placeholder)
+                    at += 2
+                    continue
+                if word.startswith("--replace"):
+                    placeholder = word.partition("=")[2] or "{}"
+                elif word.startswith("-i"):
+                    placeholder = word[2:] or "{}"
+                elif word.startswith("-I"):
+                    placeholder = word[2:]
+                at += 1
+            does, why = "runs `xargs`", handed(reduced[at:], placeholder, "each word it reads")
+        elif head in INTERPRETERS | {".", "source"} and not expansions_in(reduced[0]):
             kind, target = shell_operand(reduced)
             at = len(command.words) - len(reduced) + reduced.index(target) if target else 0
             span = command.spans[at] if target else None
-            if kind == "text" and span and text[span[0] - 1:span[0]] != "'":
+            if (kind == "stdin" and index not in fed and command.input != "<<"
+                    and (head in INTERPRETERS or command.input == "<(")):
+                # A `.` or a `source` given no file runs nothing, but given a process
+                # substitution it runs what that prints.
+                does = f"runs `{head}`"
+                why = f"which reads the program it runs from {STDIN_PROGRAM[command.input]}"
+            elif kind == "text" and span and text[span[0] - 1:span[0]] != "'":
                 does = f"runs `{head} -c` on `{target}`"
                 why = unnamed_target(target, action) and "text built from data"
             elif kind == "script":
                 does = (f"sources `{target}`" if head in (".", "source")
                         else f"runs `{target}` with `{head}`")
-                why = unnamed_target(target, action) or (
-                    "a file this text writes before it runs it"
-                    if os.path.normpath(target) in written else None)
+                why = unnamed_target(target, action) or unseen(target, True)
         elif not (VARIABLE_CALL.fullmatch(reduced[0])
-                  and (sees_fetching or loops.function_of(command.line) is not None)):
+                  and (sees_fetching or handed_in(command, reduced[0]))):
             target = reduced[0]
             does = f"runs `{target}` as a command"
-            why = unnamed_target(target, action) or (
-                "a file this text writes before it runs it"
-                if target.endswith(".sh") and os.path.normpath(target) in written else None)
+            why = unnamed_target(target, action) or unseen(target, False)
         ends = [span[1] for span in command.spans if span]
         last = loops.first_line + text.count("\n", 0, max(ends)) if ends else command.line
         if why:
@@ -5445,18 +5635,14 @@ def unnamed_runs(path: str, loops: Loops, sees_fetching: bool,
                                   f"`{word}`", why, UNNAMED_CALL_CURE.format(name=callee)))
                     break
         if command.piped:
-            consumer = next((other for other in commands[index + 1:]
+            consumer = next((at for at, other in enumerate(commands[index + 1:], index + 1)
                              if other.context == command.context), None)
-            words = reduce_words(consumer.words)[0] if consumer is not None else []
-            if not words:
-                continue
-            name = PROGRAM.sub("", words[0]).rsplit("/", 1)[-1]
-            if name in INTERPRETERS and shell_operand(words)[0] == "stdin":
+            words = reduce_words(commands[consumer].words)[0] if consumer is not None else []
+            if (words and PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] in INTERPRETERS
+                    and shell_operand(words)[0] == "stdin"):
+                fed.add(consumer)
                 found.append((command.line, last, f"pipes the output of `{head}` into "
                               f"`{words[0]}`", "which runs it as shell text", UNNAMED_CURE))
-            elif name == "xargs" and (runs := xargs_runs(words)):
-                found.append((command.line, last, f"pipes the output of `{head}` into `xargs`",
-                              runs, UNNAMED_CURE))
     return found
 
 
@@ -5559,6 +5745,12 @@ for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
 # The library calls each body makes more than once, as (file, step name or "-", the step's
 # Budget or None, what a refusal calls the body, {library: (line, the functions called)}).
 library_calls: list[tuple[str, str, "Budget | None", str, dict[str, tuple[int, list[str]]]]] = []
+# Every library some text sources, there or through another library: a function such a library
+# defines runs what the sourcing text hands it, which the reading of holders follows there
+# (unnamed_runs; dispatch://INFRA-1545, round 37).
+SOURCED_LIBRARIES = {library for _path, _name, (_who, _loops, _found, called), _owner in body_reads
+                     for call in called if call.kind == CALL_SOURCED
+                     for library in libraries_of(call.target)}
 for path, name, (who, loops, found, called), owner in body_reads:
     libraries: dict[str, str] = {}
     holders: dict[str, tuple[str, str]] = {}
@@ -5669,7 +5861,8 @@ for path, name, (who, loops, found, called), owner in body_reads:
         for library in libraries_of(call.target) if call.kind == CALL_SOURCED else ():
             for function, place in runners_of(script_read[library][1]).items():
                 runners.setdefault(function, place)
-    for line, last, does, why, cure in unnamed_runs(path, loops, bool(reached), runners):
+    for line, last, does, why, cure in unnamed_runs(path, loops, bool(reached), runners,
+                                                    name == "-" and path in SOURCED_LIBRARIES):
         named_at = tuple(f"::error file={path},line={at}::{who} " for at in range(line, last + 1))
         if not any(earlier.startswith(named_at) for earlier in problems):
             problem(path, line, f"{who} " + UNNAMED_RUN.format(does=does, why=why, cure=cure)

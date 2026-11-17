@@ -12879,7 +12879,7 @@ for refusal in \
   "25	Read it into a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
   "30	Echo it into a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
   "35	Assign it to a variable and run the variable	runs .\$p. as a command, whose last path element is an expansion" \
-  "39	Echo it into xargs running bash	pipes the output of .echo. into .xargs., which runs .bash. on what it reads" \
+  "39	Echo it into xargs running bash	runs .xargs., which runs .bash. on each word it reads" \
   "44	Print its parts into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
   "49	Tee it into a file and run the file	runs .run.sh. with .bash., a file this text writes before it runs it" \
   "55	Run it through a concatenated variable	runs .\$dir/\$name.sh. as a command, which ends in .\.sh. and holds an expansion" \
@@ -12989,6 +12989,224 @@ check "tells each call to hand the function a literal name" \
 check "passes the literal command and the literal path" \
   "$(is "$(contains "$out" "step 'Hand a wrapper a literal command and a literal path'")" false)"
 check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# E3. Round 37's probe at aaab38b5 found 14 routes by which text becomes a program that this
+# check did not follow, 13a to 13n, and each is refused by its route (dispatch://INFRA-1545,
+# round 37): `eval`, of anything (13a, 13b); a shell reading its program from a here-string, a
+# file or a process substitution, and a `source` of one (13c, 13d, 13m, 13n); a file the step
+# writes, run by a name with no `.sh` (13e), written by dd (13f), or run after a `cd` (13g); a
+# function running a local copy of its argument (13h); `xargs` handing a wrapper what it reads
+# (13i) and `find -exec {}` (13j); and a script named with no directory, found through the
+# working directory or PATH (13k, 13l). Each step runs r37-c.sh or r37-here.sh, one retry_fetch
+# at 180 s or 300 s, under a key of 1 minute, and the gate at aaab38b5 passed every one. Commands
+# named literally pass: `xargs grep`, `find … -exec rm -rf {} +`, and a tool installed from a
+# file named literally and then run.
+echo "case: r37 E3 each route by which text becomes a program this check does not follow is refused by name"
+root=$(fixture r37-routes)
+cat > "$root/.github/scripts/r37-c.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/r37-here.sh" <<'SH'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/ci-retry.sh"
+retry_fetch "the asset" 300 -- curl -fsSL --max-time 300 -o a https://example.com/a
+SH
+chmod +x "$root/.github/scripts/r37-c.sh" "$root/.github/scripts/r37-here.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 13a eval a variable read from a heredoc
+        timeout-minutes: 1
+        run: |
+          read -r p <<'EOF'
+          .github/scripts/r37-c.sh
+          EOF
+          eval "$p"
+      - name: 13b eval a file's text
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh > run.txt
+          eval "$(< run.txt)"
+      - name: 13c feed bash a here-string
+        timeout-minutes: 1
+        run: |
+          read -r p <<'EOF'
+          .github/scripts/r37-c.sh
+          EOF
+          bash <<< "$p"
+      - name: 13d feed bash a file on its standard input
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh > run.txt
+          bash < run.txt
+      - name: 13e run a written file named with no .sh
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh > run
+          chmod +x run
+          ./run
+      - name: 13f write the file with dd
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh | dd of=run.sh status=none
+          bash run.sh
+      - name: 13g run a written file after a cd
+        timeout-minutes: 1
+        run: |
+          mkdir -p w
+          echo 'cd .. && .github/scripts/r37-c.sh' > w/run.sh
+          cd w
+          bash run.sh
+      - name: 13h hand a function that runs a local copy of its argument
+        timeout-minutes: 1
+        run: |
+          r37_run() {
+            local s=$1
+            "$s"
+          }
+          read -r p <<'EOF'
+          .github/scripts/r37-c.sh
+          EOF
+          r37_run "$p"
+      - name: 13i pipe the path into xargs env
+        timeout-minutes: 1
+        run: |
+          echo .github/scripts/r37-c.sh | xargs env
+      - name: 13j run what find finds
+        timeout-minutes: 1
+        run: |
+          find .github/scripts -name r37-c.sh -exec {} \;
+      - name: 13k run a script by its name after a cd
+        timeout-minutes: 1
+        run: |
+          cd .github/scripts && bash r37-here.sh
+      - name: 13l run a script by its name through PATH
+        timeout-minutes: 1
+        run: |
+          PATH="$PWD/.github/scripts:$PATH" r37-here.sh
+      - name: 13m source a process substitution
+        timeout-minutes: 1
+        run: |
+          source <(echo .github/scripts/r37-c.sh)
+      - name: 13n run bash on a process substitution
+        timeout-minutes: 1
+        run: |
+          bash <(echo .github/scripts/r37-c.sh)
+      - name: Literal commands through xargs and find, and an installed tool
+        timeout-minutes: 1
+        run: |
+          printf '%s\n' notes.txt list.txt | xargs grep -c x
+          find . -name node_modules -prune -exec rm -rf {} +
+          install -m 0755 "$RUNNER_TEMP/unpacked/bin/tool" "$RUNNER_TEMP/tool"
+          "$RUNNER_TEMP/tool" --version
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in \
+  "13	13a eval a variable read from a heredoc	runs .eval. on .\$p., which runs those words as shell text" \
+  "18	13b eval a file's text	runs .eval. on .\$(< run.txt)., which runs those words as shell text" \
+  "25	13c feed bash a here-string	runs .bash., which reads the program it runs from a here-string" \
+  "30	13d feed bash a file on its standard input	runs .bash., which reads the program it runs from a file redirected into it" \
+  "36	13e run a written file named with no .sh	runs .\./run. as a command, a file this text writes before it runs it" \
+  "41	13f write the file with dd	runs .run\.sh. with .bash., a file this text writes before it runs it" \
+  "48	13g run a written file after a cd	runs .run\.sh. with .bash., the name of a file this text writes elsewhere, which a .cd. or a .pushd. this check does not follow may make the file it runs" \
+  "59	13h hand a function that runs a local copy of its argument	calls .r37_run., which runs the word it is handed, with .\$p., whose last path element is an expansion" \
+  "63	13i pipe the path into xargs env	runs .xargs., which hands each word it reads to .env., which runs it as a command" \
+  "67	13j run what find finds	runs .find. with .-exec., which runs each file it finds as a command" \
+  "71	13k run a script by its name after a cd	runs .r37-here\.sh. with .bash., which names a script with no directory, so bash finds it through the working directory or .PATH., neither of which this check follows" \
+  "75	13l run a script by its name through PATH	runs .r37-here\.sh. as a command, which names a script with no directory, so bash finds it through the working directory or .PATH., neither of which this check follows" \
+  "79	13m source a process substitution	runs .source., which reads the program it runs from a process substitution" \
+  "83	13n run bash on a process substitution	runs .bash., which reads the program it runs from a process substitution"; do
+  IFS=$'\t' read -r line step says <<<"$refusal"
+  check "refuses '$step' by name at its run" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' $says, so this check cannot name the script that runs there")"
+done
+check "passes the literal commands and the installed tool" \
+  "$(is "$(contains "$out" "step 'Literal commands through xargs and find, and an installed tool'")" false)"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 14)"
+
+# E4. A call through a variable inside a function's body whose value the function's callers do
+# not hand it is a run like one at the text's top level (dispatch://INFRA-1545, round 37): a
+# variable the body sets from a substitution or reads with `read`, and one the step sets before
+# it defines the function, each run of r37-c.sh, 1050 s, under a key of 1 minute, and each left
+# by the gate before this round to the readings of runners and holders, which follow callers. A
+# body running a copy of its argument, handed a literal name, and a library function running a
+# variable the library sets nowhere, whose value the sourcing step hands it, pass.
+echo "case: r37 E4 a call through a variable a function's body or its text sets is refused by name"
+root=$(fixture r37-body-variables)
+cat > "$root/.github/scripts/r37-c.sh" <<'SH'
+#!/usr/bin/env bash
+. .github/scripts/ci-retry.sh
+retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+SH
+cat > "$root/.github/scripts/r37-holder.sh" <<'SH'
+#!/usr/bin/env bash
+r37_go() { "$r37_fn"; }
+SH
+chmod +x "$root/.github/scripts/r37-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a variable a function sets from a substitution
+        timeout-minutes: 1
+        run: |
+          run_it() {
+            local s
+            s=$(echo .github/scripts/r37-c.sh)
+            "$s"
+          }
+          run_it
+      - name: Run a variable a function reads
+        timeout-minutes: 1
+        run: |
+          run_it() {
+            read -r s < list.txt
+            "$s"
+          }
+          run_it
+      - name: Run a variable the step sets before the function
+        timeout-minutes: 1
+        run: |
+          s=$(echo .github/scripts/r37-c.sh)
+          run_it() { "$s"; }
+          run_it
+      - name: Hand a function a literal name it copies and runs
+        timeout-minutes: 1
+        run: |
+          run_it() { local s=$1; "$s"; }
+          run_it date
+      - name: Hand a library function a value it runs
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/r37-holder.sh
+          r37_fn=date
+          r37_go
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "13	Run a variable a function sets from a substitution" \
+  "21	Run a variable a function reads" "28	Run a variable the step sets before the function"; do
+  IFS=$'\t' read -r line step <<<"$refusal"
+  check "refuses '$step' by name at its run" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' runs .\$s. as a command, whose last path element is an expansion, so this check cannot name the script that runs there")"
+done
+for step in "Hand a function a literal name it copies and runs" \
+  "Hand a library function a value it runs"; do
+  check "passes '$step'" "$(is "$(contains "$out" "step '$step'")" false)"
+done
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 3)"
 
 # The promise rule 8 exists to keep: no retried job whose key is below its own sum reaches main.
 # Every case above proves one shape on a fixture written for it, which leaves open whether a shape

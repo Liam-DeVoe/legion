@@ -113,4 +113,8 @@ runs:
           rm -f "$RUNNER_TEMP/jj"
         fi
         echo "$jj_tool: $HOME/.local/bin/jj"
-        "$HOME/.local/bin/jj" --version
+        # `jj` is ~/.local/bin/jj: the 'Install mise' step above appends $HOME/.local/bin to
+        # $GITHUB_PATH, which GitHub prepends to PATH for every later step, this one included. A
+        # bare name keeps check-download-retry.sh from reading this run as one of a file whose
+        # source a command printed (dispatch://INFRA-1545, round 37).
+        jj --version
