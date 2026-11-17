@@ -12,7 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -301,8 +303,7 @@ func (s *server) readDecisions(
 			decision.Kept = &keep
 		}
 		decision.TextSHA256 = decisionTextSum(decision.Text)
-		decision.WaitingReview = decision.Kind == "agent" && !decision.Replaced &&
-			(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
+		decision.WaitingReview = waitsForReview(decision)
 		decisions = append(decisions, decision)
 	}
 	for index := range decisions {
@@ -611,6 +612,15 @@ func decisionTextSum(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// waitsForReview is the rule a decision's review state reads (dispatch://INFRA-1150 R2): an
+// agent's decision waits for a person's review unless it is marked replaced, or the text sum the
+// Keep recorded on it is its text sum as it stands. A person's decision, an answered ask, never
+// waits: the person decided it.
+func waitsForReview(decision model.Decision) bool {
+	return decision.Kind == "agent" && !decision.Replaced &&
+		(decision.Kept == nil || decision.Kept.TextSHA256 != decision.TextSHA256)
+}
+
 // decisionSections cuts the decisions document into its sections: each `##` heading outside
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
 // next heading of its level or higher.
@@ -753,12 +763,15 @@ type keepDecisionInput struct {
 }
 
 // keepDecision is POST /api/v1/artifacts/{id}/blocks/{block_id}/keep {"text_sha256": "<sum>"}:
-// the caller agrees with the decision that heading block opens, as the text they read it at.
-// The sum is the `text_sha256` the view served them, and a decision whose text has changed
-// since is 409 DECISION_CHANGED with nothing written: a Keep over text nobody read is the one
-// thing Keep exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given
-// on. Any other block - one that is no decision heading, or a decision under `## Replaced`,
-// which is no longer the design - is 404 TARGET_NOT_FOUND.
+// the caller agrees with a decision, as the text they read it at. The block is an agent's
+// decision, a `decision` block of any document of the issue, whose node the Keep acts on
+// (keepDecisionNode); or, in an issue's decisions.md, the heading block a decision's section
+// opens with, kept on the decision_keeps row alone as it always was. The sum is the
+// `text_sha256` the read served them, and a decision whose text has changed since is 409
+// DECISION_CHANGED with nothing written: a Keep over text nobody read is the one thing Keep
+// exists to prevent, as `409 ASK_EDITED` holds an answer to the wording it was given on. Any other
+// block - one that is neither, or a decision marked replaced, which is no longer the design - is
+// 404 TARGET_NOT_FOUND. The route is the `person` scope's (routeScopes): a Keep is a person's.
 func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -780,7 +793,7 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	blockID := r.PathValue("block_id")
-	decision, err := s.keptDecision(r.Context(), actor, document, blockID)
+	decision, onNode, err := s.keptDecision(r.Context(), actor, document, blockID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -796,25 +809,13 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	keep := model.DecisionKeep{ArtifactID: document.ID}
-	if err := tx.QueryRow(r.Context(), `
-		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
-		values ($1::uuid, $2, $3, $4, $5)
-		on conflict (artifact_id, block_id) do update
-			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
-				kept_by = excluded.kept_by, kept_at = now()
-		returning block_id, text_sha256, changed_version, kept_by, kept_at
-	`, document.ID, blockID, decisionTextSum(decision.Text), decision.ChangedVersion,
-		model.CanonicalLogin(actor.ID)).
-		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	var keep model.DecisionKeep
+	var event model.Event
+	if onNode {
+		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
+	} else {
+		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
 	}
-	event, err := s.appendEvent(r.Context(), tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
-		"artifact_id":     document.ID,
-		"block_id":        blockID,
-		"changed_version": keep.ChangedVersion,
-	}))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -827,32 +828,241 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, keep)
 }
 
-// keptDecision is the decision blockID opens in document, refused unless document is the
-// decisions.md of its issue - resolved as the view resolves it, by slug and then by filename, so
-// Keep and the view never disagree about which document holds the decisions - and that block is
-// the heading of a decision outside `## Replaced`.
-func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, error) {
+// keepDecisionHeading is the Keep of decision, a section of the issue's decisions.md opened by
+// its heading block, in tx: the decision_keeps row of that block, which no node projects, and the
+// decision.kept that records it.
+func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
+	keep := model.DecisionKeep{ArtifactID: document.ID}
+	if err := tx.QueryRow(ctx, `
+		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
+		values ($1::uuid, $2, $3, $4, $5)
+		on conflict (artifact_id, block_id) do update
+			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
+				kept_by = excluded.kept_by, kept_at = now()
+		returning block_id, text_sha256, changed_version, kept_by, kept_at
+	`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion,
+		model.CanonicalLogin(actor.ID)).
+		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	event, err := s.appendEvent(ctx, tx, issueOwner(*document.IssueKey).event("decision.kept", actor, map[string]any{
+		"artifact_id":     document.ID,
+		"block_id":        decision.BlockID,
+		"changed_version": keep.ChangedVersion,
+	}))
+	return keep, event, err
+}
+
+// keepDecisionNode is the Keep of decision, an agent's decision node of document (readDecisionNode),
+// in tx, as two appends on the node (dispatch://INFRA-1150 R2): a kept_by tuple to the person who
+// kept it and a kept_text_sum value holding the text sum they read it at, with decision_keeps, the
+// row the decision's block keys, as their projection, written in the same transaction. The Keep
+// records that the decision has been reviewed and not who else did, so a kept_by to a person
+// another Keep named is retracted, and the node holds one. The row's changed_version is the
+// version that last changed the decision's text (readDecisionNode).
+//
+// It writes as the store's writers do: the issue's owner row first, then the person's node (one
+// the store already holds moves nothing), the projection row, the decision.kept event, and last
+// the tuples, under that event (graphstore.WriteUncaused, graphstore.Caused).
+func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
+	own := issueOwner(*document.IssueKey)
+	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	login := model.CanonicalLogin(actor.ID)
+	address := decisionNodeAddress(document, decision.BlockID)
+	// The tuple's time is the projection row's, to the microsecond a timestamptz holds.
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
+	if err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	var tuples []graphstore.Tuple
+	for _, kept := range earlier {
+		if kept.ToKind != graphstore.KindPerson || kept.ToID != login {
+			tuples = append(tuples, graphstore.Tuple{
+				FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.TupleKeptBy,
+				ToKind: kept.ToKind, ToID: kept.ToID, At: at, Who: actor, Asserted: false,
+			})
+		}
+	}
+	tuples = append(tuples,
+		graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.TupleKeptBy,
+			ToKind: graphstore.KindPerson, ToID: login, At: at, Who: actor, Asserted: true,
+		},
+		graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: address, Kind: refs.ValueKeptTextSum,
+			ToKind: graphstore.KindValue, ToID: decision.TextSHA256, At: at, Who: actor, Asserted: true,
+		},
+	)
+	held, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
+	if err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	keep := model.DecisionKeep{ArtifactID: document.ID}
+	if err := tx.QueryRow(ctx, `
+		insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by, kept_at)
+		values ($1::uuid, $2, $3, $4, $5, $6)
+		on conflict (artifact_id, block_id) do update
+			set text_sha256 = excluded.text_sha256, changed_version = excluded.changed_version,
+				kept_by = excluded.kept_by, kept_at = excluded.kept_at
+		returning block_id, text_sha256, changed_version, kept_by, kept_at
+	`, document.ID, decision.BlockID, decision.TextSHA256, decision.ChangedVersion, login, at).
+		Scan(&keep.BlockID, &keep.TextSHA256, &keep.ChangedVersion, &keep.KeptBy, &keep.KeptAt); err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	event, err := s.appendEvent(ctx, tx, own.event("decision.kept", actor, map[string]any{
+		"artifact_id":     document.ID,
+		"block_id":        decision.BlockID,
+		"changed_version": keep.ChangedVersion,
+	}))
+	if err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
+		return model.DecisionKeep{}, model.Event{}, err
+	}
+	return keep, event, nil
+}
+
+// keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:
+// an agent's decision node of a document of the issue (readDecisionNode), else the decision a
+// heading block of the issue's decisions.md opens - that document resolved as the view resolves
+// it, by slug and then by filename, so Keep and the view never disagree about which document
+// holds the decisions. A decision marked replaced, a heading under `## Replaced` among them, is no
+// decision Keep acts on.
+func (s *server) keptDecision(ctx context.Context, who model.Actor, document model.Artifact, blockID string) (model.Decision, bool, error) {
 	notFound := errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", blockID, document.Name)
 	if document.IssueKey == nil {
-		return model.Decision{}, notFound
+		return model.Decision{}, false, notFound
+	}
+	node, found, err := s.readDecisionNode(ctx, s.deps.Store.Pool, document, blockID)
+	if err != nil {
+		return model.Decision{}, false, err
+	}
+	if found {
+		if node.Replaced {
+			return model.Decision{}, false, notFound
+		}
+		return node, true, nil
 	}
 	decisionsDocument, found, err := s.issueDecisionsDocument(ctx, *document.IssueKey)
 	if err != nil {
-		return model.Decision{}, err
+		return model.Decision{}, false, err
 	}
 	if !found || decisionsDocument.ID != document.ID {
-		return model.Decision{}, notFound
+		return model.Decision{}, false, notFound
 	}
 	decisions, err := s.readDecisions(ctx, who, document, artifactReference(document), "", nil)
 	if err != nil {
-		return model.Decision{}, err
+		return model.Decision{}, false, err
 	}
 	for _, decision := range decisions {
 		if decision.BlockID == blockID && !decision.Replaced {
-			return decision, nil
+			return decision, false, nil
 		}
 	}
-	return model.Decision{}, notFound
+	return model.Decision{}, false, notFound
+}
+
+// decisionNodeAddress is the address of the node of block blockID of document, as the block
+// index keys it: a U+0000 reads as U+FFFD, as the rendering writes it.
+func decisionNodeAddress(document model.Artifact, blockID string) string {
+	return document.RefKey + "#" + strings.ReplaceAll(blockID, "\x00", "\uFFFD")
+}
+
+// readDecisionNode is the agent's decision whose node is block blockID of document, a document
+// of an issue, in model.Decision's shape, as its node and the live document hold it, and whether
+// the store holds such a node: a live node of the `decision` supertag at that block's address.
+//
+// Its text is the decision's own words (refs.DecisionWords), read off the live document, so the
+// readings it closes with are none of them, and its text_sha256 their sum. A decision the store
+// holds but the live document no longer holds as a decision - a block retyped or removed since,
+// which settlement has not stated yet - has no words and no sum, which no posted sum equals. It
+// is `replaced` where its node's replaced value says so. Its Keep is read off its node: the
+// person its kept_by names, when that tuple was written, and its kept_text_sum value, beside the
+// version the decision stood at when kept, which decision_keeps projects. Its changed version is
+// its document_blocks row's, the version that last changed its text; a document that still owes
+// its block index holds no such row yet, and its newest version, the newest that can have changed
+// the decision, is read instead. waiting_review follows the rule a decision's review state reads
+// (waitsForReview).
+func (s *server) readDecisionNode(ctx context.Context, q queryer, document model.Artifact, blockID string) (model.Decision, bool, error) {
+	if document.IssueKey == nil || document.Kind != "doc" {
+		return model.Decision{}, false, nil
+	}
+	address := decisionNodeAddress(document, blockID)
+	node, held, err := graphstore.ReadNode(ctx, q, refs.BlockNodeKind, address)
+	if err != nil || !held || node.Supertag != refs.DecisionSupertag || node.State != graphstore.StateLive {
+		return model.Decision{}, false, err
+	}
+	decision := model.Decision{
+		BlockID: blockID,
+		Ref:     refs.BlockRef(artifactReference(document), blockID),
+		Kind:    "agent",
+		Asks:    []string{},
+		Links:   []model.DecisionLink{},
+	}
+	markdown, err := s.deps.Docs.Text(ctx, document.ID)
+	if err != nil {
+		return model.Decision{}, false, err
+	}
+	if tree, err := pmdoc.ParseRendering(markdown); err == nil {
+		var found *pmdoc.Node
+		pmdoc.Walk(tree, func(block *pmdoc.Node) bool {
+			if id, _ := block.Attrs[pmdoc.BlockIDAttr].(string); found == nil && block.Type == refs.DecisionSupertag && id == blockID {
+				found = block
+			}
+			return found == nil
+		})
+		if found != nil {
+			if decision.Text, err = refs.DecisionWords(found); err != nil {
+				return model.Decision{}, false, err
+			}
+			decision.TextSHA256 = decisionTextSum(decision.Text)
+		}
+	}
+	if replaced, held, err := graphstore.CurrentValue(ctx, q, refs.BlockNodeKind, address, refs.ValueReplaced); err != nil {
+		return model.Decision{}, false, err
+	} else if held {
+		decision.Replaced = replaced == "true"
+	}
+	kept, err := graphstore.CurrentOut(ctx, q, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
+	if err != nil {
+		return model.Decision{}, false, err
+	}
+	keptSum, keptSumHeld, err := graphstore.CurrentValue(ctx, q, refs.BlockNodeKind, address, refs.ValueKeptTextSum)
+	if err != nil {
+		return model.Decision{}, false, err
+	}
+	if len(kept) > 0 && keptSumHeld {
+		newest := kept[0]
+		for _, tuple := range kept[1:] {
+			if tuple.Seq > newest.Seq {
+				newest = tuple
+			}
+		}
+		decision.Kept = &model.DecisionKeep{
+			ArtifactID: document.ID, BlockID: blockID, KeptBy: newest.ToID, KeptAt: newest.At, TextSHA256: keptSum,
+		}
+	}
+	var changedAt *time.Time
+	var keptVersion *int
+	if err := q.QueryRow(ctx, `
+		select coalesce(
+		         (select changed_version from document_blocks where artifact_id = $1::uuid and block_id = $2),
+		         (select max(number) from artifact_versions where artifact_id = $1::uuid), 0),
+		       (select changed_at from document_blocks where artifact_id = $1::uuid and block_id = $2),
+		       (select changed_version from decision_keeps where artifact_id = $1::uuid and block_id = $2)
+	`, document.ID, blockID).Scan(&decision.ChangedVersion, &changedAt, &keptVersion); err != nil {
+		return model.Decision{}, false, err
+	}
+	decision.ChangedAt = changedAt
+	if decision.Kept != nil && keptVersion != nil {
+		decision.Kept.ChangedVersion = *keptVersion
+	}
+	decision.WaitingReview = waitsForReview(decision)
+	return decision, true, nil
 }
 
 // getDocumentRead is GET /api/v1/me/documents/{id}/read: the caller's last read version of the

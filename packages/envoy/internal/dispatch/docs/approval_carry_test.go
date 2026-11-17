@@ -268,8 +268,71 @@ func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
 		if carried != test.carry {
 			t.Errorf("%s: carry = %v, want %v", test.name, carried, test.carry)
 		}
-		if carried && change != attributeRemovalCase.change {
-			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, attributeRemovalCase.change)
+		if want := attributeRemovalCase.change + carriedReasonEnd; carried && change != want {
+			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, want)
+		}
+	}
+}
+
+// The reading case (dispatch://INFRA-1150 R2) over the two versions: N carries the approval of A
+// when the two differ only in the readings their decisions and their answered asks close with -
+// one added, edited or removed - and the case composes with R10's, so one version that drops the
+// server-owned attributes and adds a reading carries, naming both changes. A reading in an ask
+// whose ask holds no answer, a decision's own words changed beside a reading, and a reading
+// retyped into a decision carry nothing.
+func TestCarryVerdictCarriesTheReadingsOfDecisionsAndAnsweredAsks(t *testing.T) {
+	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
+	decision := func(words string, closing ...string) string {
+		if len(closing) == 0 {
+			return `:::decision{#d1 replaced="false"}` + "\n" + words + "\n:::\n"
+		}
+		return `::::decision{#d1 replaced="false"}` + "\n" + words + "\n\n" + strings.Join(closing, "\n") + "::::\n"
+	}
+	reading := func(id, text string) string { return ":::reading{#" + id + "}\n" + text + "\n:::\n" }
+	const shipped = "We ship on Friday."
+	readOnce := reading("r1", "The agent reads it as Friday.")
+	readAgain := reading("r1", "The agent reads it as Friday morning.")
+	retyped := `:::decision{#r1 replaced="false"}` + "\nThe agent reads it as Friday.\n:::\n"
+	ownWithReading := `::::ask{#own urgency="low" multiple="false"}` + "\n" + strings.TrimSuffix(ownBody, ":::\n") + "\n" +
+		reading("r3", "The agent reads it as East.") + "::::\n"
+	answered := map[string]bool{"own": true}
+	parse := func(markdown string) *pmdoc.Node {
+		t.Helper()
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("parse %q: %v", markdown, err)
+		}
+		return tree
+	}
+	readings := readingCase.change + carriedReasonEnd
+	both := readingCase.change + ", and " + attributeRemovalCase.change + carriedReasonEnd
+	for _, test := range []struct {
+		name              string
+		approved, version string
+		answered          map[string]bool
+		change            string
+	}{
+		{"a reading added under a decision", prose + decision(shipped), prose + decision(shipped, readOnce), nil, readings},
+		{"a reading's text edited", prose + decision(shipped, readOnce), prose + decision(shipped, readAgain), nil, readings},
+		{"a reading removed", prose + decision(shipped, readOnce), prose + decision(shipped), nil, readings},
+		{"a second reading beside the first", prose + decision(shipped, readOnce), prose + decision(shipped, readOnce, reading("r2", "The agent reads it as this week.")), nil, readings},
+		{"a reading added inside an answered ask", prose + ownBare + ownBody, prose + ownWithReading, answered, readings},
+		{"a reading inside an ask that holds no answer", prose + ownBare + ownBody, prose + ownWithReading, nil, ""},
+		{"a decision's own words changed beside a reading", prose + decision(shipped, readOnce), prose + decision("We ship on Monday.", readAgain), nil, ""},
+		{"a reading retyped into a decision", prose + decision(shipped, readOnce), prose + decision(shipped, retyped), nil, ""},
+		{"prose changed beside a reading", prose + decision(shipped), strings.Replace(prose, "a flag", "a switch", 1) + decision(shipped, readOnce), nil, ""},
+		{"the attributes dropped and a reading added in one version", prose + decision(shipped) + "\n" + ownDecided + ownBody,
+			prose + decision(shipped, readOnce) + "\n" + ownBare + ownBody, nil, both},
+	} {
+		if rendered, err := pmdoc.Render(parse(test.approved)); err != nil || rendered != test.approved {
+			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
+		}
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, answered: test.answered})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if carried != (test.change != "") || change != test.change {
+			t.Errorf("%s: carry = %v with the change %q, want carry %v with %q", test.name, carried, change, test.change != "", test.change)
 		}
 	}
 }

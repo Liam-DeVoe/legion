@@ -22,8 +22,8 @@ import (
 // he approved rather than from nothing; a first request names none. A person's answer to a
 // decision block is held once, on the ask's node, and changes no byte of the document
 // (dispatch://INFRA-1150 R3), so it writes no version and an approval stands through it; the
-// carries that remain are those of a version restoring the approved text and of R10's case
-// (docs.carryApproval).
+// carries that remain are those of a version restoring the approved text, of R2's readings
+// (reading_approval_test.go) and of R10's case (docs.carryApproval).
 
 // carriedAsk is an approval ask as the carry tests read it: the document version it names and the
 // earlier approval it carries, absent when the document was never approved.

@@ -42,11 +42,16 @@ import (
 // ask block of N must also agree with its node (asksAgreeWithTheirNodes: backed by a row of this document, read
 // by settlement, showing no answer state other than its row's and no wording other than a decided
 // row's), since a block that shows a decision nobody made, or one under words nobody decided,
-// carries nothing however its bytes compare. And every block id A holds must still stand in N.
+// carries nothing however its bytes compare. And every block id A holds must still stand in N,
+// but for the readings a case takes out.
 //
-// The cases are R10's alone today: the server-owned ask attributes (attributeRemovalCase). The
-// readings of R2, the conversion of D6 and the restore of D1 join carryCases as further cases of
-// the same rule, each with the reason it records.
+// The cases are R2's and R10's today. A reading never changes the decision it reads, so the
+// readings of a version's decisions and of its answered asks, added, edited or removed, are no
+// change to anything its reviewer approved (readingCase): the version a session writes when it
+// adds its reading of a person's decision still reads approved, at the version it wrote. The
+// server-owned ask attributes are the other (attributeRemovalCase). The conversion of D6 and the
+// restore of D1 join carryCases as further cases of the same rule, each with the reason it
+// records.
 //
 // A version whose text is the approved text carries that approval too, byte for byte and before
 // any case is weighed (restoresApprovedText). The document's newest review approves version A; a
@@ -66,8 +71,12 @@ import (
 const restoreReason = "Carried forward from the approval of version %d: this version's text is that version's, unchanged."
 
 // carriedReasonPrefix opens the reason of every review a carry case records, naming the approval
-// it follows: the daemon's intake.CarriedApprovalReasonPrefix and the version.
+// it follows: the daemon's intake.CarriedApprovalReasonPrefix and the version. The changes of the
+// cases that carried follow it, joined, and carriedReasonEnd closes it.
 const carriedReasonPrefix = "Carried forward from the approval of version %d: "
+
+// carriedReasonEnd closes a carried reason after the changes it names (carryVerdict).
+const carriedReasonEnd = ", were the whole change since it."
 
 // askServerAttributeNames are the attributes of an ask block the release before kept in agreement
 // with its ask row, which a stored version may hold: `invalid` never reaches stored bytes
@@ -80,31 +89,48 @@ var askServerAttributeNames = [...]string{"state", "answered_by", "answered_at",
 // carryCase is one kind of difference between an approved version and a later one that carries
 // the approval: what its reason says the change was, and neutral, a copy of a tree with what the
 // case may change taken out of it, with whether it took anything out. Two versions that differ by
-// such changes alone are the same once both are taken through it.
+// such changes alone are the same once both are taken through it. neutral reads the tree beside
+// answered, each ask block of the version whose ask holds an answer, by block id
+// (answeredAskBlocks).
 type carryCase struct {
 	change  string
-	neutral func(tree *pmdoc.Node) (*pmdoc.Node, bool)
+	neutral func(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, bool)
+}
+
+// readingCase is R2's: the readings a version's decisions and its answered asks close with,
+// added, edited or removed. A reading never changes the decision it reads, so writing, editing or
+// removing one never stales a person's approval of the document that holds the decision, and the
+// version it is written in reads approved. A reading in an ask that holds no answer reads no
+// decision, and stays a difference of its own: the write paths refuse one, and settlement flags
+// its ask block, which then agrees with no node.
+var readingCase = carryCase{
+	change:  "the readings of its decisions and of its answered asks, which change no decision",
+	neutral: withoutReadings,
 }
 
 // attributeRemovalCase is R10's: the server-owned attributes of every ask block
 // (askServerAttributeNames), which the first accepted write once the fleet is one build drops, and
 // which a write while two builds serve keeps in step with an answer given since.
 var attributeRemovalCase = carryCase{
-	change:  "the server-owned attributes of its ask blocks, which hold no answer, were the whole change since it.",
-	neutral: withoutAskServerAttributes,
+	change: "the server-owned attributes of its ask blocks, which hold no answer",
+	neutral: func(tree *pmdoc.Node, _ map[string]bool) (*pmdoc.Node, bool) {
+		return withoutAskServerAttributes(tree)
+	},
 }
 
 // carryCases are the cases carryVerdict composes, in the order their reasons are named.
-var carryCases = [...]carryCase{attributeRemovalCase}
+var carryCases = [...]carryCase{readingCase, attributeRemovalCase}
 
 // carryInput is what carryVerdict decides on: A's tree and the markdown it is stored with, and
-// N's tree, each as its own read gives it, and whether every ask block of N agrees with its node
-// (asksAgreeWithTheirNodes).
+// N's tree, each as its own read gives it, whether every ask block of N agrees with its node
+// (asksAgreeWithTheirNodes), and which of N's ask blocks show an ask that holds an answer
+// (answeredAskBlocks).
 type carryInput struct {
 	approved     *pmdoc.Node
 	approvedText string
 	version      *pmdoc.Node
 	agrees       bool
+	answered     map[string]bool
 }
 
 // carryApproval carries the document's newest approval to version, just written from rendered,
@@ -135,9 +161,10 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // storeArtifact) - once that version, number, is written with markdown and the open approval
 // request has moved to it (MoveApprovalAsk). tree is markdown's read-back, which the caller holds
 // when its write left one, and nil otherwise, when markdown is parsed here. The upload runs the
-// same rules as every other version write: an upload that drops the server-owned attributes of an
-// ask block, as every upload does, carries its approval where that is the whole change. It returns
-// the events it appended, as carryApproval does.
+// same rules as every other version write: an upload that adds, edits or removes the readings of
+// its decisions and answered asks, or that drops the server-owned attributes of an ask block, as
+// every upload does, carries its approval where those are the whole change. It returns the events
+// it appended, as carryApproval does.
 func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) ([]model.Event, error) {
 	newest, err := NewestReview(ctx, tx, artifactID)
 	if err != nil || newest == nil || newest.State != "approved" {
@@ -156,10 +183,11 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // version agrees with its node (asksAgreeWithTheirNodes), and then either the version's text is
 // A's stored text byte for byte (restoresApprovedText), or every difference from it is one of the
 // carry cases (carryVerdict). It appends nothing otherwise. A is read only for a version holding an
-// ask block: every case is a difference in ask blocks, and a version holding none either holds
-// A's text or holds none of A's ask blocks, which still have to stand.
+// ask block or a decision: every case is a difference in one of those blocks, and a version
+// holding neither either holds A's text or holds none of A's decisions and ask blocks, which
+// still have to stand.
 func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string) ([]model.Event, error) {
-	nodes, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
+	shown, agrees, err := asksAgreeWithTheirNodes(ctx, tx, artifactID, tree)
 	if err != nil || !agrees {
 		return nil, err
 	}
@@ -170,14 +198,18 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if restored {
 		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), serverURL)
 	}
-	if len(nodes) == 0 {
+	if len(shown.nodes) == 0 && !holdsDecision(tree) {
 		return nil, nil
 	}
 	approved, approvedText, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
 	if err != nil || !readable {
 		return nil, err
 	}
-	change, carried, err := carryVerdict(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees})
+	answered, err := answeredAskBlocks(ctx, tx, shown, approved)
+	if err != nil {
+		return nil, err
+	}
+	change, carried, err := carryVerdict(carryInput{approved: approved, approvedText: approvedText, version: tree, agrees: agrees, answered: answered})
 	if err != nil {
 		return nil, skipUnreadableVersion(artifactID, number, err)
 	}
@@ -185,6 +217,17 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		return nil, nil
 	}
 	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, newest.Version)+change, serverURL)
+}
+
+// versionAsks is what asksAgreeWithTheirNodes read of a version's ask blocks: each one by block id
+// (askNodes), the asks of the document that index them (loadAskBlocks), and, of each block no
+// such ask indexes, the ask of another document it is a copy of (readCopiedAskSources), by block
+// id. The reading case reads through the last two whether the ask a block shows holds an answer
+// (answeredAskBlocks), as settlement does.
+type versionAsks struct {
+	nodes   map[string]*pmdoc.Node
+	rows    map[string]model.Ask
+	sources map[string]copiedSource
 }
 
 // asksAgreeWithTheirNodes is every ask block of a version, tree, by block id (askNodes), and
@@ -196,49 +239,106 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 // neither indexed nor a copy - one forged on the socket, or one whose update the room has not
 // credited yet - does not, and leaves its decisions unknown to every carry rule. The rows are read
 // only for a version holding an ask block, and the sources only for one holding a block no row
-// indexes; the carry opens no ask from what it reads, so it takes no copy lock.
-func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (map[string]*pmdoc.Node, bool, error) {
+// indexes; the carry opens no ask from what it reads, so it takes no copy lock. What it read of
+// the blocks is answered beside the verdict (versionAsks).
+func asksAgreeWithTheirNodes(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node) (versionAsks, bool, error) {
 	nodes, readable := askNodes(tree)
 	if !readable || len(nodes) == 0 {
-		return nil, readable, nil
+		return versionAsks{}, readable, nil
 	}
 	rows, err := loadAskBlocks(ctx, tx, artifactID)
 	if err != nil {
-		return nil, false, err
+		return versionAsks{}, false, err
 	}
 	var copies []askBlock
 	var unindexed []string
 	for id, node := range nodes {
 		if ask, indexed := rows[id]; indexed {
 			if !askAgreesWithItsNode(node, ask) {
-				return nil, false, nil
+				return versionAsks{}, false, nil
 			}
 			continue
 		}
 		block, err := parseAskBlock(node)
 		if err != nil {
-			return nil, false, nil
+			return versionAsks{}, false, nil
 		}
 		copies, unindexed = append(copies, block), append(unindexed, id)
 	}
 	if len(copies) == 0 {
-		return nodes, true, nil
+		return versionAsks{nodes: nodes, rows: rows}, true, nil
 	}
 	owner, err := documentOwner(ctx, tx, artifactID)
 	if err != nil {
-		return nil, false, err
+		return versionAsks{}, false, err
 	}
 	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, copies, unindexed)
 	if err != nil {
-		return nil, false, err
+		return versionAsks{}, false, err
 	}
 	for _, block := range copies {
 		source, copied := sources[block.id]
 		if !copied || !copyAgreesWithItsSource(block.node, source) {
-			return nil, false, nil
+			return versionAsks{}, false, nil
 		}
 	}
-	return nodes, true, nil
+	return versionAsks{nodes: nodes, rows: rows, sources: sources}, true, nil
+}
+
+// answeredAskBlocks is each ask block of a version, read as asksAgreeWithTheirNodes read it
+// (shown), whose ask holds an answer, by block id, among those that close with a reading in that
+// version or in approved, the version its reviewer approved: the blocks whose readings read a
+// person's decision (readingCase). Whether a block's ask holds an answer is settlement's own
+// decision (readingAnswers), over the ask its own document's row indexes or, for a copy, its
+// source. A version none of whose ask blocks closes with a reading, in either version, reads no
+// ask.
+func answeredAskBlocks(ctx context.Context, tx pgx.Tx, shown versionAsks, approved *pmdoc.Node) (map[string]bool, error) {
+	var before map[string]*pmdoc.Node
+	read := false
+	var ids []string
+	for id, node := range shown.nodes {
+		if !closesWithReadings(node) {
+			if !read {
+				before, _ = askNodes(approved)
+				read = true
+			}
+			if held, approvedHeld := before[id]; !approvedHeld || !closesWithReadings(held) {
+				continue
+			}
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	answers, err := readingAnswers(ctx, tx, ids, shown.rows, shown.sources)
+	if err != nil {
+		return nil, err
+	}
+	answered := make(map[string]bool, len(answers))
+	for id, answer := range answers {
+		if answer.answered {
+			answered[id] = true
+		}
+	}
+	return answered, nil
+}
+
+// closesWithReadings reports whether node, a decision or an ask block, closes with a block its
+// type admits after its own content: a reading (pmdoc.TypedContent).
+func closesWithReadings(node *pmdoc.Node) bool {
+	_, admitted := pmdoc.TypedContent(node)
+	return len(admitted) > 0
+}
+
+// holdsDecision reports whether tree holds a decision block anywhere.
+func holdsDecision(tree *pmdoc.Node) bool {
+	held := false
+	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
+		held = held || node.Type == decisionType
+		return !held
+	})
+	return held
 }
 
 // copyAgreesWithItsSource reports whether node, a copy of source's ask on another document,
@@ -344,6 +444,43 @@ func withoutAskServerAttributesBelow(tree *pmdoc.Node) ([]*pmdoc.Node, bool) {
 		return tree.Children, false
 	}
 	return children, true
+}
+
+// withoutReadings is readingCase's neutral: a copy of tree with the readings left out that each
+// decision, and each ask block answered names, closes with (pmdoc.TypedContent), and whether it
+// left any out. A reading in an ask block whose ask holds no answer stays. As with
+// withoutAskServerAttributes, each container on the way and each block it left a reading out of is
+// a fresh node, and every other node is the tree's own, which nothing here changes.
+func withoutReadings(tree *pmdoc.Node, answered map[string]bool) (*pmdoc.Node, bool) {
+	if tree.Type == "text" || len(tree.Children) == 0 {
+		return tree, false
+	}
+	children, took := tree.Children, false
+	if id, _ := tree.Attrs[pmdoc.BlockIDAttr].(string); tree.Type == decisionType || tree.Type == "ask" && answered[id] {
+		if content, admitted := pmdoc.TypedContent(tree); len(admitted) > 0 {
+			children, took = slices.Clip(content), true
+		}
+	}
+	var below []*pmdoc.Node
+	for index, child := range children {
+		next, tookBelow := withoutReadings(child, answered)
+		if !tookBelow {
+			continue
+		}
+		if below == nil {
+			below = slices.Clone(children)
+		}
+		below[index] = next
+	}
+	if below != nil {
+		children, took = below, true
+	}
+	if !took {
+		return tree, false
+	}
+	copied := *tree
+	copied.Children = children
+	return &copied, true
 }
 
 // writeCarriedReview writes the carry of review to version number of artifactID with reason: the
@@ -474,9 +611,10 @@ func askNodes(tree *pmdoc.Node) (map[string]*pmdoc.Node, bool) {
 // carries; both trees, taken through every carry case (carryCases), render byte for byte the
 // same; at least one case took something out of one of them, since a version that equals A
 // without any is the restore's to carry (restoresApprovedText), or a change nobody approved; and
-// every block id A holds still stands in N (blockIDsStand). It answers what the carried reason
-// says the change was: the change of each case that took something out, in carryCases' order.
-// Its error is a refusal of this renderer.
+// every block id A holds, but for the readings readingCase took out of it, still stands in N
+// (blockIDsStand over the two trees each case left). It answers what the carried reason says the
+// change was: the change of each case that took something out, in carryCases' order, joined and
+// closed by carriedReasonEnd. Its error is a refusal of this renderer.
 func carryVerdict(input carryInput) (string, bool, error) {
 	if !input.agrees {
 		return "", false, nil
@@ -489,8 +627,8 @@ func carryVerdict(input carryInput) (string, bool, error) {
 	var changes []string
 	for _, carried := range carryCases {
 		var tookApproved, tookVersion bool
-		approved, tookApproved = carried.neutral(approved)
-		version, tookVersion = carried.neutral(version)
+		approved, tookApproved = carried.neutral(approved, input.answered)
+		version, tookVersion = carried.neutral(version, input.answered)
 		if tookApproved || tookVersion {
 			changes = append(changes, carried.change)
 		}
@@ -506,10 +644,10 @@ func carryVerdict(input carryInput) (string, bool, error) {
 	if err != nil || versionText != approvedText {
 		return "", false, err
 	}
-	if !blockIDsStand(input.approved, input.version) {
+	if !blockIDsStand(approved, version) {
 		return "", false, nil
 	}
-	return strings.Join(changes, " "), true, nil
+	return strings.Join(changes, ", and ") + carriedReasonEnd, true, nil
 }
 
 // blockIDsStand reports whether every typed block id approved holds - the ids a stored version

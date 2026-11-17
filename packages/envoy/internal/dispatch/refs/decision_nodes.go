@@ -46,6 +46,15 @@ const (
 	ValueReplaced          = "replaced"
 )
 
+// The two appends of a person's Keep on a decision's node (dispatch://INFRA-1150 R2), each under
+// its attribute's store name: kept_by ties the decision to the person who kept it, and
+// kept_text_sum holds the decision's text sum at the Keep, a value of its own because a tuple
+// holds one far end and nothing beside it. decision_keeps is their projection.
+const (
+	TupleKeptBy      = "kept_by"
+	ValueKeptTextSum = "kept_text_sum"
+)
+
 // typedKinds are the kinds of tie the typed-node pass states, whose block_refs rows it reconciles
 // on its own above the deferral bound (IndexDecisionNodes).
 var typedKinds = []string{graphstore.TupleDecidedBy, TupleFromAsk, TupleShaped}
@@ -300,6 +309,19 @@ func HoldsTypedBlocks(blocks []model.ArtifactBlock) bool {
 		}
 	}
 	return false
+}
+
+// DecisionWords is a decision's own words, the text its text sum covers (dispatch://INFRA-1150
+// R2): decision, a decision block node, rendered alone with the readings it closes with left out
+// (pmdoc.TypedContent). A reading never changes the decision it reads, so the decision's words,
+// and the sum a Keep records over them, are the same whether readings hang under it or not. The
+// attributes a markdown rendering never carries - decided_by, kept_by, kept_text_sum - are none
+// of its words.
+func DecisionWords(decision *pmdoc.Node) (string, error) {
+	content, _ := pmdoc.TypedContent(decision)
+	own := *decision
+	own.Children = content
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
 // typedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the

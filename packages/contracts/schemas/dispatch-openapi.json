@@ -1462,7 +1462,7 @@
     },
     "/api/v1/artifacts/{id}/blocks/{block_id}/keep": {
       "post": {
-        "description": "Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody.",
+        "description": "Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection; or the heading block of a decision of an issue's decisions.md outside `## Replaced`, whose sum is the text_sha256 GET /api/v1/issues/{key}/decisions serves. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, and any other block, is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody.",
         "operationId": "postApiV1ArtifactsByIdBlocksByBlockIdKeep",
         "parameters": [
           {
