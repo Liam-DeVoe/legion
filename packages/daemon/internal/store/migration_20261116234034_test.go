@@ -44,19 +44,7 @@ func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoun
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the reviewed commit: %v", err)
 	}
-	reviewerOf := func(st *Store) record.PhaseRow {
-		t.Helper()
-		var rows []record.PhaseRow
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
-			var err error
-			rows, err = record.NewStore().Phases(ctx, tx, "LEGION-208")
-			return err
-		}); err != nil {
-			t.Fatalf("read the phases rows of LEGION-208: %v", err)
-		}
-		return record.PhaseRowOf(rows, claim.RoleReviewer)
-	}
-	found := reviewerOf(store)
+	found := phaseRowOf(t, store, "LEGION-208", claim.RoleReviewer)
 	if found.Decision == nil || found.Decision.State != "changes_requested" || found.Entry != 1 {
 		t.Fatalf("the reviewer's row after the migration = decision %+v at entry %d, want the row the release before left", found.Decision, found.Entry)
 	}
@@ -73,7 +61,7 @@ func TestThePhaseReviewedHeadMigrationLeavesEveryRowWithNoCommitAndTheCommitRoun
 		t.Fatalf("put the reviewer's row with the commit its review read: %v", err)
 	}
 	for _, st := range []*Store{store, reopenStore(t, store)} {
-		if got := reviewerOf(st).ReviewedHead; got != reviewed {
+		if got := phaseRowOf(t, st, "LEGION-208", claim.RoleReviewer).ReviewedHead; got != reviewed {
 			t.Fatalf("the reviewer's row reads the reviewed commit %q, want %q as it was written", got, reviewed)
 		}
 	}
