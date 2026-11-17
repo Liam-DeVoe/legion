@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -107,8 +108,8 @@ func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 
 	longest := put(t, pool, rated(retroOf(uuid.NewString()), 5, strings.Repeat("é", 2000)), minute(0))
-	if longest.Rating != 5 || len([]rune(longest.RatingReason)) != 2000 {
-		t.Fatalf("a reason of 2,000 code points answers rating %d and %d code points, want 5 and 2,000", longest.Rating, len([]rune(longest.RatingReason)))
+	if count := utf8.RuneCountInString(longest.RatingReason); longest.Rating != 5 || count != 2000 {
+		t.Fatalf("a reason of 2,000 code points answers rating %d and %d code points, want 5 and 2,000", longest.Rating, count)
 	}
 }
 
