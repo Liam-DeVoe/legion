@@ -10,7 +10,7 @@ import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
 /**
- * The gate of the reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`): every rendered
+ * The gate of the reading list's walk (`e2e/reading-rows.ts`): every rendered
  * row of `DISPATCH_READING_SURFACES` has exactly one driver among the `reading-*.e2e.ts` specs,
  * a row titled with the surface's id followed by a colon, and so does every arm of one (the
  * surface's id, a `/` and the arm's, then the colon). Playwright runs every driver rather than

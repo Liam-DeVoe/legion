@@ -55,7 +55,7 @@ var searchSnippetLink = regexp.MustCompile(`\[[^\[\]\n]*\]\(` + notSpaceOrParen 
 // The source is read because the headline alone does not say what its words are. ts_headline
 // chooses a window of words and drops the punctuation it does not count as words, so the cut
 // lands inside a construct, and the cut text reads as something the stored text never wrote
-// (measured on PostgreSQL 18 with headlineOptions, INFRA-1702). "Run `CORE-1` locally", searched
+// (measured on PostgreSQL 18 with headlineOptions). "Run `CORE-1` locally", searched
 // for CORE-1, comes back as "CORE-1` locally": the opening backtick is lost, so code reads as
 // prose and the key as a reference. "See [the gyroscope](dispatch://CORE-1) now", searched for
 // CORE-1 too, comes back as "gyroscope](dispatch://CORE-1", a link's broken tail. "Ask

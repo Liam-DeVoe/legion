@@ -319,7 +319,7 @@ function referenceLink(reference: TextReference, ...words: Node[]): HTMLAnchorEl
  * marks inside the link where the server put them. Postgres's `ts_headline` marks the words it
  * matched, and it cuts an address or a key into its own words to do so: a search for `CORE-1`
  * answers `dispatch://<b>CORE</b><b>-1</b>` and `<b>CORE</b><b>-1</b>`, and one for `CORE`
- * answers `<b>CORE</b>-1` (measured against the pod's Postgres, 2026-11-13, INFRA-1702). The
+ * answers `<b>CORE</b>-1` (measured against the pod's Postgres, 2026-11-13). The
  * snippet's tree then holds the reference in more than one text node, and the link pass reads one
  * text node at a time, so it would find no reference there and the hit would show the raw address.
  *

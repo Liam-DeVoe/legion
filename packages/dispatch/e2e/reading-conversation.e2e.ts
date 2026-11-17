@@ -16,7 +16,7 @@ import { conversationTurn, RENDERED_BODY } from "./reference-surfaces";
 import { expect, test } from "./test";
 
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) across an issue's own pages:
+ * The reading list's walk (`e2e/reading-rows.ts`) across an issue's own pages:
  * the Activity tab's event body and an event's line, the three turns of the Conversation tab, the
  * quote above a reply and a handoff card's body there, and a decision on the Decisions tab. Each
  * row writes the one reading text into the record its surface shows, through the API as an agent

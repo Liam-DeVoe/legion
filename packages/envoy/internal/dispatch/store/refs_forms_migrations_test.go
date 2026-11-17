@@ -8,8 +8,11 @@ import (
 	"time"
 )
 
-// beforeRefsForms is the last migration before the forms queue: 20261117025900_refs_forms_owed
-// through 20261117025910_ask_block_refs_refs_forms_delete_trigger apply after it.
+// beforeRefsForms is the schema the seed's test stores its text at: a migration from before the
+// forms queue (20261115182525_near_copy_checks), though not the last one, since
+// 20261116163813_issue_role_holders, which creates a table that holds no text, applies after it
+// too, before 20261117025900_refs_forms_owed through
+// 20261117025910_ask_block_refs_refs_forms_delete_trigger.
 // lastRefsFormsTrigger is the last of the source triggers (20261117025901-20261117025904) that
 // the seed runs after.
 const (

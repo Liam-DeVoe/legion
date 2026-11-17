@@ -483,8 +483,7 @@ with q as (select
 // out the kinds the request did not name (searchKinds.exclusion), so ranked, legs, total and
 // reachable are the asked-for kinds' rows and not only their page; the related-item check passes
 // relatedExcludedOwners, because the page it takes is ten rows deep (suggestionSearchDepth) and
-// rows dropped after that page took places in it and hid the matches the check exists to find
-// (INFRA-1160).
+// rows dropped after that page took places in it and hid the matches the check exists to find.
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.

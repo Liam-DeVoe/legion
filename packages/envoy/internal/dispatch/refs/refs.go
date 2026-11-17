@@ -232,8 +232,6 @@ func settleOwed(ctx context.Context, tx pgx.Tx, fromKind, fromID string, queues 
 	switch queues {
 	case grammarQueue:
 		statement = `delete from refs_grammar_owed where kind = $1 and id = $2::uuid`
-	case formsQueue:
-		statement = `delete from refs_forms_owed where kind = $1 and id = $2::uuid`
 	case grammarQueue | formsQueue:
 		statement = `
 			with grammar as (delete from refs_grammar_owed where kind = $1 and id = $2::uuid)

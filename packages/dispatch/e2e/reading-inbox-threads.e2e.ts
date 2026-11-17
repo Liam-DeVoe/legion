@@ -20,7 +20,7 @@ import {
 import { expect, test } from "./test";
 
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) across the Inbox's questions
+ * The reading list's walk (`e2e/reading-rows.ts`) across the Inbox's questions
  * and threads: a reply under an ask, an approval's question in the reading column, a thread
  * turn's body in the reading column, and a thread row's title. Each is a record a reader meets
  * on `/`, so each must draw every form a stored text names a node by through the one renderer

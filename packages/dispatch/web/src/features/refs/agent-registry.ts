@@ -151,7 +151,7 @@ export interface AgentRegistry {
  * A read that failed is not asked again by a reader that mounts after it either: a page draws an
  * agent's name in many places, and each of them would ask a failed registry again with every
  * try the dashboard's retry rule allows, where the poller's own interval already asks it again
- * every 15 s (INFRA-1196, build rulings part 6).
+ * every 15 s.
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);

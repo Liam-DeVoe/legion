@@ -229,7 +229,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   { body: "See dispatch://CORE-1 now.", refs: ["dispatch://CORE-1"] },
   // A span's search for its closing run ends where the paragraph ends, at a blank line: one
   // unmatched backtick mutes nothing after it, and the party under it is delivered to, as every
-  // renderer draws it (INFRA-1702).
+  // renderer draws it.
   {
     body: "Rename the `foo field.\n\n[Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) please check `bar` too.",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
@@ -240,7 +240,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   // thematic break, and a setext heading's underline, written as `--` and as `===`. The span
   // search ends at each of them as well, so one backtick nothing closes in an item, in a
   // quote, above a heading or above an underline mutes no party written under it
-  // (INFRA-1702 R2).
+  // (a party there is delivered to).
   {
     body: "- Rename `foo field\n- ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
@@ -279,7 +279,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   },
   // A setext heading's underline ends the paragraph above it, so the indented line under the
   // underline opens a code block. goldmark, the browser editor's parser and the server's own
-  // pmdoc each read this body that way (measured 2026-11-11, INFRA-1702): a party written there
+  // pmdoc each read this body that way (measured 2026-11-11): a party written there
   // is named to no reader of the record, so it is delivered to nobody.
   {
     body: "Where to ask\n============\n    dispatch://role/reviewer\n",
@@ -289,7 +289,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   },
   // A footnote definition is a container whose content stands four columns in, so the indented
   // line under it is the note's own text and not a code block. goldmark, the browser editor's
-  // parser and pmdoc each read this body that way (measured 2026-11-11, INFRA-1702): every
+  // parser and pmdoc each read this body that way (measured 2026-11-11): every
   // reader of the record sees the party named there, so it is delivered to.
   {
     body: "[^who]: who to ask\n\n    dispatch://role/reviewer\n",
@@ -298,7 +298,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   // Those four columns are counted from where the definition's own container's content begins,
   // not from its marker, so a definition the writer indented one to three spaces holds its
   // note's lines as text too. goldmark with its footnote extension and remark with
-  // gfm-footnote both read it that way (measured 2026-11-12, INFRA-1702 round 5).
+  // gfm-footnote both read it that way (measured 2026-11-12).
   {
     // Four spaces, not six: four is where this fix moves the note's content column to, so the
     // line is code under the old reading (a definition two spaces in put its content at column
@@ -310,7 +310,7 @@ export const CODE_CONTEXT: readonly DispatchTextReferenceRow[] = [
   // Item 2 of a numbered list ends item 1's paragraph, as a bullet does, so one backtick
   // nothing closes in item 1 mutes no party written in item 2. CommonMark holds an ordered
   // marker that does not count from 1 back only where the paragraph is the open tip, which
-  // item 2 is not (INFRA-1702 round 3).
+  // item 2 is not.
   {
     body: "1. Rename `foo field\n2. ask [Planner](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551) about `bar`",
     refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],

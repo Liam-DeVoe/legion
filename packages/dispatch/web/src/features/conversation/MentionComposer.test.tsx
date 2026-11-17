@@ -671,7 +671,7 @@ test("a stopped role the issue records reads as its token in its pill, as on the
 
 // A mention reaches a draft from the channel it is written in (`seedMentions`) or from the
 // reply it answers: a pick in the reference picker writes the party's link and no record
-// (INFRA-1702 R3), so these rows seed what they deliver.
+// beside it, so these rows seed what they deliver.
 test("a seeded mention with /btw posts the canonical target and stripped body", async () => {
   const user = userEvent.setup();
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);

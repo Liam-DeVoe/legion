@@ -123,7 +123,7 @@ function notAnsweredMissing(query: { readonly state: { readonly error: unknown }
 
 /**
  * What every read a drawn reference observes is held to when its read failed, which is two
- * cases (INFRA-1196, build rulings part 6; INFRA-1702 round 13, Q7). A target Dispatch answered
+ * cases. A target Dispatch answered
  * does not exist (a 404) is an answer: the reference is drawn as the words its writer wrote by
  * design (R8), and the read is not asked again because another reference to the same target
  * mounts, or the same one mounts again. TanStack's default asks such a read again on every

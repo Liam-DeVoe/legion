@@ -5,7 +5,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-1702's `c-mention-is-a-reference`: a mention is a reference in the text, and nothing
+ * The check that a mention is a reference in the text, and nothing
  * beside it.
  *
  * What a pick writes is the link that names the party (R4), so the write carries no mentions

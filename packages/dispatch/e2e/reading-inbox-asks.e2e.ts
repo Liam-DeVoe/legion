@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over an ask as the Inbox
+ * The reading list's walk (`e2e/reading-rows.ts`) over an ask as the Inbox
  * draws it: an open ask's row and its card's question, its options and its earlier wording, and
  * the record an answered and a resolved ask's card becomes, with its earlier answers and the
  * options they chose. Each is a record a reader meets on `/`, so each must draw every form a

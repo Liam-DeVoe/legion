@@ -79,7 +79,7 @@ func TestSearchScanTakesARowWithANullHeadline(t *testing.T) {
 // punctuation it does not count as words, so for a search of CORE-1 it answers "CORE-1` locally
 // please" for the comment "Run `CORE-1` locally please", and the snippet read from that headline
 // alone showed the key as prose, and as a reference, where the comment holds it in code
-// (INFRA-1702). The scan reads the snippet out of the text the headline was cut from, which the
+// (a code span). The scan reads the snippet out of the text the headline was cut from, which the
 // row carries beside it, so both the HTML snippet and its tree keep the key in its code span.
 func TestSearchScanReadsTheSnippetOutOfTheTextTheHeadlineWasCutFrom(t *testing.T) {
 	database := storetest.Open(t)

@@ -236,8 +236,8 @@ test("a link to a block of a comment stops showing the block's text once its aut
 // fetches again: a document edit that deletes the cited block makes it answer 404, and the open
 // card and the link stop showing the block's text without a reload, reading as a freshly loaded
 // page reads the same link (no text of a block the document no longer holds). The reference then
-// reads the address its author wrote, with no link: INFRA-1702 R8, which replaces the link
-// INFRA-869 R4 kept, says "A reference whose target Dispatch cannot resolve … reads as a named
+// reads the address its author wrote, with no link: the reference rule, which replaces the link
+// an earlier rule kept, says "A reference whose target Dispatch cannot resolve … reads as a named
 // state rather than an error: the words the writer wrote, with no link." The hover card the
 // reader opened before the delete is not the reference's own words: it heads with the route's
 // short form, as it does for every target it has not read yet.

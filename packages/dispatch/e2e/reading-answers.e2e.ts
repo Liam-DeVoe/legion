@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over what a person wrote on an
+ * The reading list's walk (`e2e/reading-rows.ts`) over what a person wrote on an
  * ask or in a thread and reads back on their own pages: the Answers page's four texts - the
  * question a row answers, the label of an option the answer chose, the answer written on it, and
  * a reply written in its thread - and the subject line the Inbox's reading column opens a Reply

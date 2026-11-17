@@ -292,7 +292,7 @@ test("an approval whose document cannot be read falls back to the card, which dr
     await expect(card.getByText(FALLBACK_MARK)).toHaveCount(1);
     await expect(pane.getByText(FALLBACK_MARK)).toHaveCount(1);
     // Twice on the page in all: the list row draws the same subject in its own line, which the
-    // one renderer flattens whole where the regular-expression stripper INFRA-1702 R6 deleted
+    // one renderer flattens whole where the regular-expression stripper it replaced
     // showed its first line alone.
     await expect(page.getByText(FALLBACK_MARK)).toHaveCount(2);
   } finally {

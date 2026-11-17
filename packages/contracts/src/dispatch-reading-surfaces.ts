@@ -124,7 +124,7 @@ export type DispatchReadingSurface =
 
 /**
  * The seven ways a stored text names a node, each of which a rendered surface reads as R8 says
- * (INFRA-1702's checks A7 and A8): an issue key written bare, a `dispatch://` address, a URL of
+ * and the reading list's walk checks: an issue key written bare, a `dispatch://` address, a URL of
  * this dashboard, a question block's `#id`, an address whose item id is written short and a
  * mention of a party each read as the node's name, and a link to a node whose words its author
  * wrote reads as those words; each opens its node. Six of them are read from the text and the
@@ -274,7 +274,7 @@ const COMMAND_OUTPUT_REASON =
 /** Why a one-line field a writer fills in is shown as written, which is what a version's
  *  summary and a credential request's reason say. */
 const ONE_LINE_FIELD_REASON =
-  "It is a one-line field its writer fills in, which INFRA-1702's non-goals leave out of the reference framework, as they leave a title: it is stored and shown as the characters its writer gave it.";
+  "It is a one-line field its writer fills in, which the reference framework leaves out, as it leaves a title: it is stored and shown as the characters its writer gave it.";
 
 /** Why the Proof editor's own drawing of a document is no mount of the renderer, which is what
  *  the live document and a past version of one both say. */

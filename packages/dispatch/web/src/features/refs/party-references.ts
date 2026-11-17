@@ -10,7 +10,7 @@ import {
 import { readTextReferences, type TextReference } from "./text-references";
 
 /**
- * Who a draft addresses, read out of its own words. A mention is a reference (INFRA-1702 R4):
+ * Who a draft addresses, read out of its own words. A mention is a reference:
  * the party is written into the text as a link whose words are the mention sign and its name and
  * whose address names it, and nothing at all is kept beside the text. So every surface that asks
  * who a draft names - the delivery chips under a box, the composer's delivery notices, whether a

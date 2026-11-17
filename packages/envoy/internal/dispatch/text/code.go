@@ -121,8 +121,8 @@ const (
 // pmdoc.Parse, this repository's Milkdown-matched goldmark - on a body holding one reference,
 // and what each answered is written beside it. What keeps each of them out is written in its
 // own bullet: for the first, that the parsers disagree with one another and pmdoc refuses the
-// body; for the rest, that reading them would cost both readers a parse they do not make
-// (INFRA-1702). A shape every parser reads alike and this reader does not is a defect, and is
+// body; for the rest, that reading them would cost both readers a parse they do not make.
+// A shape every parser reads alike and this reader does not is a defect, and is
 // fixed rather than listed here.
 //
 //   - A table's rows, with an indented line under them: this reader and goldmark read that line
@@ -140,8 +140,7 @@ const (
 //     has no paragraph-level state to see that, so it ends the paragraph there and reads the
 //     indented line under the underline as code - the underline's own line is not in the
 //     range - muting a party both parsers draw as a link. Closing it needs that state rather
-//     than a condition, and the shapes are exotic, so they are recorded here rather than fixed
-//     (INFRA-1702 rounds 5 and 6).
+//     than a condition, and the shapes are exotic, so they are recorded here rather than fixed.
 //   - Tab stops a container's marker splits. A tab is measured to the next four-column stop, but
 //     one straddling a container's own content column is taken whole by that container, so a tab
 //     after a list marker is the item's indentation rather than indented code inside it. All
@@ -302,7 +301,7 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 				// definition indented one to three spaces would put too far right, reading its
 				// note's lines as an indented code block. So the indented lines under it are
 				// the note's own text: a party written there is named to every reader of the
-				// record, and every parser measured for INFRA-1702 reads those lines as prose.
+				// record, and every parser measured reads those lines as prose.
 				// The renderer counts no block for it, so a container opened inside it on a
 				// later line counts from the one around it, and one opened after it on this line
 				// counts from 0 (maxBlockNesting).
@@ -356,7 +355,7 @@ func codeBlocks(body string) (blocks []codeRange, breaks []int) {
 			// The underline the loop above read: it ends the paragraph it closes, and the break
 			// on the line under it leaves the heading's own text to itself, as an ATX heading's
 			// does. An indented line under it therefore opens a code block, which is what every
-			// parser measured for INFRA-1702 reads there.
+			// parser measured reads there.
 			ends, heading = true, true
 		case indent >= end || thematic:
 			// A line blank past the containers it carries - a bare `>` among them - and a
