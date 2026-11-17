@@ -420,7 +420,7 @@ export async function premortemConvertCommand(
     report = await client.convertPremortem(issueKey, stringArg(args, "artifact"), {
       actor,
       // The schema took the entries whole: one { risk, checks, reason } for each risk.
-      prevented_by: args.prevented_by as PremortemConvertInput["prevented_by"],
+      prevented_by: args["prevented_by"] as PremortemConvertInput["prevented_by"],
       dry_run: optionalBoolean(args, "preview") === true,
     });
   } catch (error) {
