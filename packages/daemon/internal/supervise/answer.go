@@ -4,7 +4,8 @@ import "context"
 
 // Answer is the model that answered the claim's agent last, as `<provider>/<model>` (or the
 // model alone when the agent's frame named no provider). The zero Answer is no answer: none since
-// this machine was built, or none in the claim's current session.
+// this machine was built, or none in the claim's current session; or one whose model no store can
+// keep, which the stream reads as an answer that names no model (stream.Answered).
 type Answer struct {
 	Model string
 }

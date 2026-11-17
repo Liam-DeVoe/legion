@@ -385,21 +385,27 @@ func TestAMessageEndNamesTheModelThatAnswered(t *testing.T) {
 
 // A provider or a model holding U+0000 names no model any store can keep: PostgreSQL's text and
 // jsonb refuse that character, and the model an answer names is written into the record of the
-// step it served. Such a frame is no Answered, and the stream says so in one line naming the claim
-// and the field, never the text; the next answer is read as before.
-func TestAMessageEndNamingAModelNoStoreTakesIsNoAnswer(t *testing.T) {
+// step it served. A model did answer, so such a frame is an Answered that names no model, which
+// leaves no earlier model the last; the stream says so in one line naming the claim and the field,
+// never the text, and the next answer is read as before.
+func TestAMessageEndNamingAModelNoStoreTakesAnswersWithNoModel(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
+	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"first","model":"first-model"}}`)})
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"secret\u0000model"}}`)})
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"secret\u0000provider","model":"second-model"}}`)})
 	p.send(shimwire.Raw{Type: "message_end", JSON: json.RawMessage(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
 	p.conn.Close()
-	want := Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}
-	if got := h.next(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers nothing", got, want)
-	}
-	if got := h.next(); got != (Closed{Claim: testClaim}) {
-		t.Fatalf("event after the answer = %#v, want the close", got)
+	for _, want := range []Event{
+		Answered{Claim: testClaim, Provider: "first", Model: "first-model", Generation: testGeneration},
+		Answered{Claim: testClaim, Generation: testGeneration},
+		Answered{Claim: testClaim, Generation: testGeneration},
+		Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration},
+		Closed{Claim: testClaim},
+	} {
+		if got := h.next(); !reflect.DeepEqual(got, want) {
+			t.Fatalf("event = %#v, want %#v: a model or a provider holding U+0000 answers with no model", got, want)
+		}
 	}
 	h.stop()
 	var dropped []string

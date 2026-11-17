@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -57,5 +58,40 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 	}
 	if got := w.stepAgent(mustClaimToken(t, "LEGION-208", claim.RoleImplementer)); got != (workflow.StepAgent{}) {
 		t.Fatalf("the agent read of a claim this daemon does not supervise = %+v, want nothing", got)
+	}
+}
+
+// An answer whose model no store can keep reaches the daemon as an Answered that names no model
+// (stream.Conn's answeredBy), and the daemon reads it as the claim's last answer like any other: the
+// record of the step names the session and no model, never the model that answered before it.
+func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
+	ctx := context.Background()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	w := &workflowRuntime{log: quietLogger()}
+	w.attach(&supervision{supervisor: sup, log: quietLogger()})
+	planner := mustClaimToken(t, "LEGION-208", claim.RolePlanner)
+	const generation = 3
+	machine, _, err := sup.Create(ctx, supervise.Claim{Token: planner, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+		Role: claim.RolePlanner, State: supervise.StateWorking, Session: "ses_planner", Generation: generation}, "")
+	if err != nil {
+		t.Fatalf("create the planner's claim: %v", err)
+	}
+	answered := func(ev stream.Answered) {
+		t.Helper()
+		mapped, err := superviseEvent(ev)
+		if err != nil {
+			t.Fatalf("map %#v: %v", ev, err)
+		}
+		if err := machine.Handle(ctx, mapped); err != nil {
+			t.Fatalf("the answer %#v: %v", ev, err)
+		}
+	}
+	answered(stream.Answered{Claim: planner, Provider: "first", Model: "first-model", Generation: generation})
+	if got := w.stepAgent(planner); got != (workflow.StepAgent{Session: "ses_planner", Model: "first/first-model"}) {
+		t.Fatalf("the agent read after the first answer = %+v, want its session and first/first-model", got)
+	}
+	answered(stream.Answered{Claim: planner, Generation: generation})
+	if got := w.stepAgent(planner); got != (workflow.StepAgent{Session: "ses_planner"}) {
+		t.Fatalf("the agent read after an answer naming no model = %+v, want its session and no model: first/first-model did not answer last", got)
 	}
 }
