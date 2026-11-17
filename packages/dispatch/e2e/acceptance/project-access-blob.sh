@@ -49,9 +49,9 @@
 # says `Dispatch-Private-Projects: 1` where the declared addition is `0`, and the run must fail
 # naming the header.
 #
-# The ports are the kernel's, chosen at the start. The work directory, under TMPDIR, holds the
-# base tree, both binaries, every process's log and every answer: removed when the run passes,
-# kept and printed when it fails.
+# The ports are the kernel's, each chosen as its service starts and held by that service from the
+# choice on. The work directory, under TMPDIR, holds the base tree, both binaries, every process's
+# log and every answer: removed when the run passes, kept and printed when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -108,17 +108,16 @@ case "$control" in
   *) fail "unknown control '$control': the controls are private-pub and private-header" ;;
 esac
 
-base_port=$(free_port)
-head_port=$(free_port)
-envoy_port=$(free_port)
+# Every port is one the kernel chooses as its service starts (two-builds.sh's empty ports): the
+# fake Envoy binds port 0 and reports it, and each build serves on a socket held from the kernel's
+# choice until it serves on it, so no other process can take one in between.
+base_port='' head_port='' envoy_port=''
 two_builds_setup 'project access blob e2e' "${forwarded[@]}"
-# Both servers stop before the databases they serve are dropped; two-builds' cleanup stops the
-# rest and exits with the run's status.
+# Both servers and the fake Envoy stop before the databases the servers serve are dropped;
+# two-builds' cleanup stops the rest and exits with the run's status.
 blob_cleanup() {
-  stop_pid "$head_pid"
-  stop_pid "$base_pid"
-  head_pid=''
-  base_pid=''
+  stop_all "$head_pid" "$base_pid" "$fake_envoy_pid"
+  head_pid='' base_pid='' fake_envoy_pid=''
   drop_own_databases
   cleanup "$1"
 }
@@ -194,21 +193,22 @@ two_builds_fake_envoy
 pass
 
 two_builds_identity
-build_url[base]=$base_url
-build_url[head]=$head_url
 
 # Both builds run with the test hooks on and no embedder, so search answers its keyword leg alone
-# and no answer waits on a model call or on a queue that drains in its own time.
+# and no answer waits on a model call or on a queue that drains in its own time. Each is given no
+# port, so start_server holds one and sets base_port and head_port.
 begin servers
-database_url=$base_database_url start_server base "$work/bin/dispatch-base" "$base_port" \
+database_url=$base_database_url start_server base "$work/bin/dispatch-base" '' \
   DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1
 head_private=()
 [ "$control" != private-header ] || head_private=(DISPATCH_PRIVATE_PROJECTS=PRIV)
-database_url=$head_database_url start_server head "$work/bin/dispatch-head" "$head_port" \
+database_url=$head_database_url start_server head "$work/bin/dispatch-head" '' \
   DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1 "${head_private[@]}"
-await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "$base_url/healthz"
-await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max-time 2 "$head_url/healthz"
-note "the base build serves $base_url, this build $head_url"
+build_url[base]=http://127.0.0.1:$base_port
+build_url[head]=http://127.0.0.1:$head_port
+await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "${build_url[base]}/healthz"
+await_start head "$head_pid" 120 "this build to answer /healthz" curl -fsS --max-time 2 "${build_url[head]}/healthz"
+note "the base build serves ${build_url[base]}, this build ${build_url[head]}"
 pass
 
 # The seven callers, in the order verification v17 names their kinds: the three people at a

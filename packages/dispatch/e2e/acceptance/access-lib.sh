@@ -28,11 +28,17 @@ readonly alice=alice@example.com bob=bob@outside.example carol=carol@example.com
 # The session the shared token's writes name as their actor.
 readonly seed_session=project-access-seed
 
-# free_port prints a port the kernel chose and nothing holds. Another process can take it before
-# the server binds it; two_builds_prerequisites refuses a port that answers, and a server that
-# loses the race fails to bind, so a run that loses it fails rather than talking to a stranger.
-free_port() {
-  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+# stop_all PID... stops each PID as lib/rig.sh's stop_pid does, but sends every one its TERM before
+# it waits on any, so they stop together rather than each after the one before has gone. It is a
+# cleanup's, so it never fails.
+stop_all() {
+  local pid
+  for pid in "$@"; do
+    [ -z "$pid" ] || ! signalable "$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  done
+  for pid in "$@"; do
+    stop_pid "$pid"
+  done
 }
 
 # own_database VAR NAME makes a database for the server NAME, on the server DATABASE_URL names,

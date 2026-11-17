@@ -102,10 +102,7 @@ esac
 two_builds_setup 'project access e2e'
 main_pid='' twin_pid='' nats_main_pid='' nats_twin_pid='' envoy_main_pid='' envoy_twin_pid='' fake_github_pid=''
 access_cleanup() {
-  local pid
-  for pid in "$main_pid" "$twin_pid" "$nats_main_pid" "$nats_twin_pid" "$envoy_main_pid" "$envoy_twin_pid" "$fake_github_pid"; do
-    stop_pid "$pid"
-  done
+  stop_all "$main_pid" "$twin_pid" "$nats_main_pid" "$nats_twin_pid" "$envoy_main_pid" "$envoy_twin_pid" "$fake_github_pid"
   drop_own_databases
   cleanup "$1"
 }
@@ -221,18 +218,33 @@ priv_object() {
   esac
 }
 
+# await_reported NAME VAR PATTERN WHAT waits, bounded, for the service NAME, which bound port 0
+# itself, to report the port it got in its log (lib/rig.sh's report_port, PATTERN), and assigns VAR
+# that port.
+await_reported() {
+  local pid_var=${1}_pid
+  await_start "$1" "${!pid_var}" 60 "$4 to report its port" report_port "$evidence/logs/$1.log" "$3"
+  printf -v "$2" '%s' "$(report_port "$evidence/logs/$1.log" "$3")"
+}
+
 begin services
-# Read through ${!port_var} below.
-# shellcheck disable=SC2034
-main_port=$(free_port)
-# shellcheck disable=SC2034
-twin_port=$(free_port)
+# Every service serves on a port the kernel chose, so no other process can serve on it in its
+# place: each fake and each NATS binds port 0 itself and reports what it got (report_port), and each
+# Dispatch serves on a socket held from that choice until it serves on it (start_server, given no
+# port, through lib/rig.sh's start_held). The fake GitHub, both NATS servers and both fake Envoys
+# start at once, and each is awaited before anything is sent to it. FAKE_*_PORT is set empty, since
+# a caller under with-harness.sh exports the harness's own.
 # shellcheck disable=SC2034 # read through ${!database_var} below
 main_database_url='' twin_database_url=''
-github_port=$(free_port)
-FAKE_GITHUB_PORT=$github_port start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
-await_start fake_github "$fake_github_pid" 60 "the fake GitHub to answer /healthz" \
-  curl -fsS --max-time 2 "http://127.0.0.1:$github_port/healthz"
+# Assigned by await_reported below.
+github_port='' envoy_port=''
+FAKE_GITHUB_PORT='' start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
+for server in main twin; do
+  mkdir -p "$work/nats-$server"
+  start_process "nats_$server" "$work/bin/natsd" -p -1 -store_dir "$work/nats-$server"
+  FAKE_ENVOY_PORT='' start_process "envoy_$server" bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+done
+await_reported fake_github github_port 'fake github listener on 127\.0\.0\.1:' "the fake GitHub"
 # The App is installed on both projects' repositories and on no other.
 curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$github_port/__fixture/repos" \
   -d '{"acme/pub-repo":{"contents":"read","installation_id":71},"acme/priv-repo":{"contents":"read","installation_id":72}}' \
@@ -241,17 +253,12 @@ agent_token=$(openssl rand -hex 24)
 signin_key=$(openssl rand -hex 32)
 app_pem=$(openssl genrsa 2048 2>/dev/null)
 for server in main twin; do
-  port_var=${server}_port
-  nats_port=$(free_port)
-  envoy_port=$(free_port)
-  mkdir -p "$work/nats-$server"
-  start_process "nats_$server" "$work/bin/natsd" -p "$nats_port" -store_dir "$work/nats-$server"
   nats_pid_var=nats_${server}_pid
-  await_start "nats_$server" "${!nats_pid_var}" 30 "the $server NATS to listen" port_answers "$nats_port"
-  FAKE_ENVOY_PORT=$envoy_port start_process "envoy_$server" bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-  envoy_pid_var=envoy_${server}_pid
-  await_start "envoy_$server" "${!envoy_pid_var}" 60 "the $server fake Envoy to answer /healthz" \
-    curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
+  await_start "nats_$server" "${!nats_pid_var}" 30 "the $server NATS to be ready" \
+    grep -q 'Server is ready' "$evidence/logs/nats_$server.log"
+  nats_port=$(report_port "$evidence/logs/nats_$server.log" 'Listening for client connections on [^ ]*:') ||
+    fail "the $server NATS logged no client port; see $evidence/logs/nats_$server.log"
+  await_reported "envoy_$server" envoy_port 'fake envoy listener on 127\.0\.0\.1:' "the $server fake Envoy"
   # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
   # PRIV wrote, so the twin holds PRIV's session too.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
@@ -267,10 +274,10 @@ for server in main twin; do
   # tokens as. DISPATCH_PRIVATE_PROJECTS is the comma-separated keys of the projects a deployment
   # has provisioned as private (cmd/dispatch privateProjectsSetting, which refuses the boot for
   # any entry that is no project key): main provisions PRIV, and the twin, which never makes a
-  # project private, sets none.
+  # project private, sets none. Given no port, start_server sets <server>_port.
   private_projects=()
   [ "$server" = twin ] || private_projects=(DISPATCH_PRIVATE_PROJECTS=PRIV)
-  envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" "${!port_var}" \
+  envoy_port=$envoy_port database_url=${!database_var} start_server "$server" "$work/bin/dispatch" '' \
     DISPATCH_NATS_DISABLED= \
     NATS_URLS="nats://127.0.0.1:$nats_port" \
     "${private_projects[@]}" \
@@ -280,6 +287,7 @@ for server in main twin; do
     DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
     DISPATCH_APP_PEM_B64="$app_pem" \
     DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$github_port"
+  port_var=${server}_port
   build_url[$server]=http://127.0.0.1:${!port_var}
 done
 await_start main "$main_pid" 120 "main to answer /healthz" curl -fsS --max-time 2 "${build_url[main]}/healthz"
@@ -580,6 +588,35 @@ reconciled() {
   done
 }
 
+# route_rows SELECT prints, in their order, the rows of the route index that the jq filter SELECT
+# keeps, each with what its Probe (RouteProbe, read once from probes.json) says of it, one line a
+# row and its fields joined by the unit separator (\x1f), a byte no compact JSON holds: the method;
+# the path; 1 when a Probe names the row; its test_hook; its no_project; its body as compact JSON;
+# 1 when its Probe map is not null; and that map, each wildcard and its kind joined by \x1d and the
+# pairs by \x1e (read_probe). A field the Probe does not hold is empty.
+route_rows() {
+  jq -r --slurpfile probes "$work/probes.json" "$1"' | . as $row
+    | ($probes[0] | map(select(.method == $row.method and .pattern == $row.path))[0]) as $entry
+    | [$row.method, $row.path,
+       (if $entry == null then "" else "1" end),
+       ($entry.test_hook // false | tostring),
+       ($entry.no_project // ""),
+       ((($entry.body // empty) | tojson) // ""),
+       (if $entry.probe == null then "" else "1" end),
+       ([$entry.probe // {} | to_entries[] | "\(.key)\u001d\(.value // "")"] | join("\u001e"))]
+    | join("\u001f")' "$work/routes"
+}
+
+# read_probe PAIRS sets probe_kind to the kind of each wildcard PAIRS names (route_rows' last field).
+declare -A probe_kind=()
+read_probe() {
+  local pair
+  probe_kind=()
+  while IFS= read -r -d $'\x1e' pair; do
+    probe_kind[${pair%%$'\x1d'*}]=${pair#*$'\x1d'}
+  done <<<"${1:+$1$'\x1e'}"
+}
+
 # walk_rows SELECT walks the rows of the route index that the jq filter SELECT keeps: a row whose
 # path names an object is filled from its Probe with PRIV's objects and with missing ones, and
 # each unseeing caller is answered the same for both; a GET row that names no object is a list,
@@ -590,23 +627,19 @@ reconciled() {
 # shows to an open viewer as it does today, and both servers hold the same ones: a row whose every
 # wildcard is one of them is filled alike on both servers and answered as the twin answers it.
 walk_rows() {
-  local row method pattern wildcards entry hidden none skip wildcard kind object body caller no_project target
+  local method pattern has_entry test_hook no_project body has_probe pairs wildcards hidden none skip wildcard kind object caller target
   walked=0 lists=0 refused=0
-  while IFS= read -r row; do
-    method=$(jq -r .method <<<"$row")
-    pattern=$(jq -r .path <<<"$row")
-    entry=$(jq -c --arg m "$method" --arg p "$pattern" 'map(select(.method == $m and .pattern == $p))[0] // empty' "$work/probes.json")
-    if [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" = true ]; then
+  while IFS=$'\x1f' read -r method pattern has_entry test_hook no_project body has_probe pairs; do
+    if [ "$test_hook" = true ]; then
       note "left out: $method $pattern is a test hook, which only DISPATCH_TEST_HOOKS mounts"
       continue
     fi
-    no_project=$(jq -r '.no_project // empty' <<<"${entry:-null}")
     if [ -n "$no_project" ]; then
       # The object belongs to no project, so there is no object of PRIV to hide: the row is held
       # to its class's refusal (scopeDeployment) of every caller that is not open.
       target=$(sed -E 's/\{[^}]+\}/project-access-walk/g' <<<"$pattern")
       for caller in bob alice-priv-token carol-priv-token; do
-        send main "$caller" "$method" "$target" "$(jq -c '.body // empty' <<<"$entry")"
+        send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
         [ "$status" = 403 ] || {
           printf '%s %s %s (%s): HTTP %s, want 403 for a caller that is not open: %s\n' "$caller" "$method" "$pattern" \
@@ -624,17 +657,18 @@ walk_rows() {
       fi
       continue
     fi
-    if [ -z "$entry" ] || [ "$(jq -c '.probe' <<<"$entry")" = null ]; then
+    if [ -z "$has_entry" ] || [ -z "$has_probe" ]; then
       unrun "$method $pattern names an object and has no Probe"
       continue
     fi
+    read_probe "$pairs"
     hidden=$pattern
     none=$pattern
     : >"$work/fill-hidden"
     : >"$work/fill-missing"
     skip=''
     for wildcard in $wildcards; do
-      kind=$(jq -r --arg w "$wildcard" '.probe[$w] // empty' <<<"$entry")
+      kind=${probe_kind[$wildcard]:-}
       if [[ "$projectless_kinds" == *" $kind "* ]]; then
         skip=projectless
         note "not walked: $method $pattern: {$wildcard} is a $kind, which no project owns"
@@ -666,17 +700,16 @@ walk_rows() {
     if [ "$hidden" = "$none" ]; then
       # Every wildcard is a no-project node: the path is the same on both servers.
       for caller in "${unseeing_callers[@]}"; do
-        compare_twin "$caller" "$hidden" "$method" "$(jq -c '.body // empty' <<<"$entry")"
+        compare_twin "$caller" "$hidden" "$method" "$body"
       done
       lists=$((lists + 1))
       continue
     fi
-    body=$(jq -c '.body // empty' <<<"$entry")
     for caller in "${unseeing_callers[@]}"; do
       compare_missing "$caller" "$method" "$pattern" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing" "$body"
     done
     walked=$((walked + 1))
-  done < <(jq -c "$1" "$work/routes")
+  done < <(route_rows "$1")
 }
 
 # The query parameters of the GET rows, read from the OpenAPI this checkout's server serves (`go run
@@ -744,16 +777,21 @@ query_fill() {
 # way a hidden and a missing answer would be alike whatever the server hides, so the parameter did
 # not run.
 walk_queries() {
-  local row pattern entry wildcards wildcard kind path param fixed values hidden none caller
+  local pattern test_hook pairs wildcards wildcard kind path param fixed values hidden none caller
+  local -A query_params=()
   queried=0
-  while IFS= read -r row; do
-    pattern=$(jq -r .path <<<"$row")
-    entry=$(jq -c --arg p "$pattern" 'map(select(.method == "GET" and .pattern == $p))[0] // empty' "$work/probes.json")
-    [ "$(jq -r '.test_hook // false' <<<"${entry:-null}")" != true ] || continue
+  # Each GET path's query parameters, in the OpenAPI's order, one per line, read in one pass.
+  while IFS=$'\x1f' read -r pattern param; do
+    query_params[$pattern]+=$param$'\n'
+  done < <(jq -r '.paths | to_entries[] | .key as $p | .value.get.parameters[]? | select(.in == "query") | [$p, .name] | join("\u001f")' \
+    "$root/packages/contracts/schemas/dispatch-openapi.json")
+  while IFS=$'\x1f' read -r _ pattern _ test_hook _ _ _ pairs; do
+    [ "$test_hook" != true ] || continue
+    read_probe "$pairs"
     path=$pattern
     wildcards=$(grep -oE '\{[^}]+\}' <<<"$pattern" | tr -d '{}' || true)
     for wildcard in $wildcards; do
-      case "$(jq -r --arg w "$wildcard" '.probe[$w] // empty' <<<"${entry:-null}")" in
+      case "${probe_kind[$wildcard]:-}" in
         project) path=${path//"{$wildcard}"/PUB} ;;
         issue) path=${path//"{$wildcard}"/PUB-1} ;;
         *)
@@ -816,8 +854,8 @@ walk_queries() {
         compare_missing "$caller" GET "$pattern?$param=<$kind>" "$hidden" "$none" "$work/fill-hidden" "$work/fill-missing"
       done
       queried=$((queried + 1))
-    done < <(jq -r --arg p "$pattern" '.paths[$p].get.parameters[]? | select(.in == "query") | .name' "$root/packages/contracts/schemas/dispatch-openapi.json")
-  done < <(jq -c 'select(.method == "GET")' "$work/routes")
+    done <<<"${query_params[$pattern]:-}"
+  done < <(route_rows 'select(.method == "GET")')
 }
 
 if [ "$priv_private" = 1 ]; then
@@ -858,6 +896,7 @@ if [ "$priv_private" = 1 ]; then
   [ -n "$schema_version" ] || fail "the block schema names no version"
   printf 'document\t%s\n' "$(recalled main "PRIV spec")" >"$work/fill-hidden"
   printf 'document\t%s\n' "${missing[document]}" >"$work/fill-missing"
+  declare -A live_pid=()
   for caller in "${unseeing_callers[@]}"; do
     for side in hidden missing; do
       id=${missing[document]}
@@ -867,31 +906,37 @@ if [ "$priv_private" = 1 ]; then
       keep_answer "$side" main "$work/fill-$side"
     done
     same_answers "$caller /ws/doc/{room}" hidden missing
-    # The live socket, live: the caller subscribes with no resume on each server, and while its
-    # socket is open carol comments on PRIV's issue (main only: the twin holds no PRIV) and then on
-    # PUB's. Each server's answer is the frames the caller was sent; each comment's id is
-    # remembered under one label on both servers, so the mask names it alike. A PRIV event on main
-    # differs from the twin's answer. Every unseeing caller but alice's PRIV token sees PUB, so the
-    # twin sends it the PUB comment, and an answer holding no event fails the pair: the compare
-    # must see the socket send something. alice's PRIV token sees no project, so both servers send
-    # it nothing, which the compare holds them to.
+    # The live socket, live: the caller subscribes with no resume on each server, both at once, and
+    # while both sockets are open carol comments on PRIV's issue (main only: the twin holds no
+    # PRIV) and then on PUB's, on each server. Each server's answer is the frames the caller was
+    # sent by that server; each comment's id is remembered under one label on both servers, so the
+    # mask names it alike. A PRIV event on main differs from the twin's answer. Every unseeing
+    # caller but alice's PRIV token sees PUB, so the twin sends it the PUB comment, and an answer
+    # holding no event fails the pair: the compare must see the socket send something. alice's PRIV
+    # token sees no project, so both servers send it nothing, which the compare holds them to.
     for server in main twin; do
-      rm -f "$work/live-ready" "$work/live-written"
+      rm -f "$work/live-ready-$server" "$work/live-written-$server"
       bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
-        "$work/live-ready" "$work/live-written" >"$work/live-body" 2>&1 &
-      live_pid=$!
-      until_true 10 "$caller's live socket on $server to start" test -e "$work/live-ready"
-      if [ "$server" = main ]; then
-        send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
-        expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
-      fi
+        "$work/live-ready-$server" "$work/live-written-$server" >"$work/live-body-$server" 2>&1 &
+      live_pid[$server]=$!
+    done
+    for server in main twin; do
+      until_true 10 "$caller's live socket on $server to start" test -e "$work/live-ready-$server"
+    done
+    send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
+    expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
+    for server in main twin; do
       send "$server" carol POST /api/v1/issues/PUB-1/comments '{"body":"A live remark on PUB."}'
       expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
       remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
-      : >"$work/live-written"
+    done
+    for server in main twin; do
+      : >"$work/live-written-$server"
+    done
+    for server in main twin; do
       status=socket
-      wait "$live_pid" || status=error
-      cp "$work/live-body" "$work/body"
+      wait "${live_pid[$server]}" || status=error
+      cp "$work/live-body-$server" "$work/body"
       keep_answer "$server" "$server"
     done
     [ "$caller" = alice-priv-token ] || grep -q '"type":"event"' "$work/answers/twin.body" || {
