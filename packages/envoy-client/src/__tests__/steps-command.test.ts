@@ -1,8 +1,13 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import { fakeDispatchFetch, startFakeDispatch } from "../../test/fake-dispatch";
+import {
+  type FakeDispatchOptions,
+  type FakeDispatchServer,
+  fakeDispatchFetch,
+  startFakeDispatch,
+} from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -202,12 +207,12 @@ describe("dispatch steps", () => {
 
 describe("dispatch steps on the command line", () => {
   const makeDirectory = temporaryDirectories("dispatch-steps");
-  const server = startFakeDispatch({
-    routes: {
-      [STEPS_PATH]: { issue: "LEG-1", tasks: [{ task: "default", steps: [implementer, tester] }] },
-    },
+  // Each row starts the fake Dispatch it reads, and this hook stops it. A server started in this
+  // body would start under a filter that selects no row here, and no hook would stop it.
+  const servers: FakeDispatchServer<unknown>[] = [];
+  afterEach(() => {
+    for (const server of servers.splice(0)) server.stop();
   });
-  afterAll(() => server.stop());
 
   let stateDir = "";
   beforeEach(() => {
@@ -215,7 +220,18 @@ describe("dispatch steps on the command line", () => {
     forgetKeyedLayerMemory();
   });
 
-  async function run(argv: readonly string[]): Promise<{ code: number; stdout: string }> {
+  /** A fake Dispatch on a loopback port of its own, answering as `options` say, which the hook
+   *  above stops when the row ends. */
+  function dispatchServing(options: FakeDispatchOptions): FakeDispatchServer<unknown> {
+    const server = startFakeDispatch(options);
+    servers.push(server);
+    return server;
+  }
+
+  async function run(
+    server: FakeDispatchServer<unknown>,
+    argv: readonly string[]
+  ): Promise<{ code: number; stdout: string }> {
     let stdout = "";
     const code = await runDispatchCli(
       argv,
@@ -240,13 +256,21 @@ describe("dispatch steps on the command line", () => {
   }
 
   test("--issue and a bare key read the same steps and print them, exit 0", async () => {
+    const server = dispatchServing({
+      routes: {
+        [STEPS_PATH]: {
+          issue: "LEG-1",
+          tasks: [{ task: "default", steps: [implementer, tester] }],
+        },
+      },
+    });
     for (const argv of [
       ["steps", "--issue", "LEG-1"],
       ["steps", "LEG-1"],
     ]) {
       const before = server.reads.length;
 
-      const { code, stdout } = await run(argv);
+      const { code, stdout } = await run(server, argv);
 
       expect(code, argv.join(" ")).toBe(0);
       // The run read the steps route once and asked Dispatch nothing else.
