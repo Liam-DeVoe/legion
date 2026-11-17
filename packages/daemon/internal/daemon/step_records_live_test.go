@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -238,7 +237,7 @@ func (l *stepRecordsLive) writerRefused() {
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
 	shell := cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
-	out, code := shell.bun(nil, filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
+	out, code := shell.bun(nil, dispatchCLI(l.root), "steps", "--issue", l.key)
 	return string(out.stdout) + string(out.stderr), code
 }
 
@@ -348,9 +347,10 @@ func holdsTen(printed stepsPrinted) error {
 	return nil
 }
 
-// holdsLines says whether lines hold each run of want, of the task default, ended with its
-// result, with an agent, and each of kind step with the model that answered it; with exact, they
-// hold no other run. The error names the first run that is missing or wrong as lineName spells it.
+// holdsLines says whether lines hold each run of want, of the task default, ended (its end a
+// moment, printedMoment) with its result, with an agent, and each of kind step with the model that
+// answered it; with exact, they hold no other run. The error names the first run that is missing
+// or wrong as lineName spells it.
 func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 	for _, w := range want {
 		got, name, typ := findLine(lines, w), lineName(w), printedType(w)
@@ -359,7 +359,7 @@ func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 			return fmt.Errorf("no line of %s", name)
 		case got.task != "default" || got.role != w.role || got.typ != typ || got.agent == "-":
 			return fmt.Errorf("%s prints %q: want task default, role %s, type %s and an agent", name, got.text, w.role, typ)
-		case got.started == "-" || got.ended == "running" || got.ended == "-" || got.result != w.result:
+		case got.started == "-" || !printedMoment(got.ended) || got.result != w.result:
 			return fmt.Errorf("%s prints %q: want a start, an end and result %s", name, got.text, w.result)
 		case w.kind == "step" && got.model != stepRecordsModel:
 			return fmt.Errorf("%s prints %q: want the model %s", name, got.text, stepRecordsModel)
@@ -369,6 +369,14 @@ func holdsLines(lines []stepLine, want []stepWant, exact bool) error {
 		return fmt.Errorf("%d lines of runs, want %d", len(lines), len(want))
 	}
 	return nil
+}
+
+// printedMoment is whether s, a column of `dispatch steps`, is a moment as Dispatch writes one
+// (RFC 3339): an end is one, and `running`, which steps.ts prints for a run that has not ended, or
+// any other text, is none.
+func printedMoment(s string) bool {
+	_, err := time.Parse(time.RFC3339Nano, s)
+	return err == nil
 }
 
 // findLine is the line of w's kind, step and attempt, the zero line when lines hold none.
@@ -394,4 +402,44 @@ func printedType(w stepWant) string {
 // review attempt 1 … failed`.
 func lineName(w stepWant) string {
 	return fmt.Sprintf("%d %s %s %s attempt %d … %s", w.step, w.kind, w.role, printedType(w), w.attempt, w.result)
+}
+
+// The driver's end check, which the proof runs over what `dispatch steps` prints: a line ends its
+// run only when it prints a moment as its end. steps.ts prints `running` there, and as the result,
+// for a run that has not ended; `-`, which a printer that wrote the end through orDash would print,
+// and any other word are no end either, so each fails the walk's read, naming the line. The control
+// is the same ten lines with every end a moment, which the check passes.
+func TestTheDriverReadsAnEndOnlyFromAMoment(t *testing.T) {
+	const key = "SR-1"
+	printed := func(end, result string) string {
+		lines := []string{key + ": 10 steps in 1 tasks"}
+		for _, w := range stepRecordsTen {
+			model, lineEnd, lineResult := "-", "2026-11-20T09:40:00.123456Z", w.result
+			if w.kind == "step" {
+				model = stepRecordsModel
+			}
+			if w.kind == "step" && w.step == 2 && w.attempt == 2 {
+				lineEnd, lineResult = end, result
+			}
+			lines = append(lines, fmt.Sprintf("default %d %s %s %s attempt %d agent-%s %s 2026-11-20T09:00:00Z %s %s",
+				w.step, w.kind, w.role, printedType(w), w.attempt, w.role, model, lineEnd, lineResult))
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+	read := func(out string) error {
+		parsed, err := parseSteps(key, out)
+		if err != nil {
+			t.Fatalf("parse %q: %v", out, err)
+		}
+		return holdsTen(parsed)
+	}
+	if err := read(printed("2026-11-20T09:40:00Z", "passed")); err != nil {
+		t.Fatalf("control: the ten lines, each ended at a moment, read as %v, want the walk's ten", err)
+	}
+	for _, no := range []struct{ end, result string }{{"running", "running"}, {"-", "passed"}, {"unknown", "passed"}} {
+		err := read(printed(no.end, no.result))
+		if err == nil || !strings.Contains(err.Error(), "2 step implementer implementation attempt 2") || !strings.Contains(err.Error(), "an end") {
+			t.Errorf("the ten lines with implementing's second run ending %q %q read as %v, want an error naming that run and its end", no.end, no.result, err)
+		}
+	}
 }

@@ -3,10 +3,12 @@
 // GET /api/v1/issues/{key}/steps, the read `dispatch steps` and the tab Steps make.
 //
 // Each test boots the whole daemon (startDaemonWithin) over the package's broker, the real store,
-// the real outbox and the real Dispatch client, and walks one issue from planning to done through
-// the transports production has: each role's agent over the worker stream and the daemon's HTTP
-// routes, its handoff record written to Dispatch under its own session, a person's review and the
-// merge as GitHub's envelopes on the stream, and the architect's sign-off through its own route.
+// the real outbox and the real Dispatch client, and walks an issue, from planning to done or
+// through the part of the walk the records it reads need (planning alone, or a child of the walk's
+// issue from its review to its retro), through the transports production has: each role's agent
+// over the worker stream and the daemon's HTTP routes, its handoff record written to Dispatch under
+// its own session, a person's review and the merge as GitHub's envelopes on the stream, and the
+// architect's sign-off through its own route.
 // What is stood in for is outside the records: GitHub's REST API (stepRecordsGitHub), and the
 // panes, which the fake runtime launches and the test plays.
 package daemon
@@ -51,8 +53,8 @@ const (
 	stepRecordsHead = "5e7f00d5a1b2c3d4e5f60718293a4b5c6d7e8f90"
 	// stepRecordsPerson is the account with write access whose reviews decide each round.
 	stepRecordsPerson = "a-person"
-	// stepRecordsModel is the model every agent of the walk answers with, as Oh My Pi's
-	// message_end names it: provider and model.
+	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
+	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
 	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
 	stepRecordsWait = 2 * time.Minute
@@ -442,11 +444,7 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	r.cfg.DispatchURL = r.dispatch.base
 	r.person(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Step records"}, http.StatusCreated, nil)
 	r.person(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	var created struct {
-		Key     string `json:"key"`
-		Rank    string `json:"rank"`
-		LastSeq int64  `json:"last_seq"`
-	}
+	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "One issue walks to done"}, http.StatusCreated, &created)
 	r.key = created.Key
 	r.person(http.MethodPatch, "/api/v1/issues/"+r.key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, http.StatusOK, &created)
@@ -457,6 +455,21 @@ func newStepRecordsRigOn(t *testing.T, proof liveProof, dispatch *scratchDispatc
 	// restart: a restarted daemon re-observes a claim it finds live and does not launch it again.
 	r.worker(claim.RoleArchitect)
 	return r
+}
+
+// createdIssue is an issue as Dispatch answers its creation: its key, its rank and the sequence
+// the daemon's store records as the last it saw of the issue.
+type createdIssue struct {
+	Key     string `json:"key"`
+	Rank    string `json:"rank"`
+	LastSeq int64  `json:"last_seq"`
+}
+
+// openPullRequest is pull request number of issue, open at stepRecordsHead on the branch
+// legion/<issue>, which GitHub reports clean, as the daemon's store records it.
+func openPullRequest(issue string, number int) record.PullRequest {
+	return record.PullRequest{State: record.PullRequestOpen, Issue: issue, Repo: liveRepo, Number: number,
+		Branch: "legion/" + issue, HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{}}
 }
 
 // seed records the issue as the daemon holds it the moment its architect's spec is approved: a
@@ -482,10 +495,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
-		})
+		return r.records.PutPullRequest(ctx, tx, openPullRequest(r.key, r.number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}
@@ -570,8 +580,8 @@ func (r *stepRecordsRig) retro() {
 	r.work(claim.RoleImplementer, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
 }
 
-// work is one role's turn of the walk: it takes the task, answering with stepRecordsModel, and
-// finishes it.
+// work is one role's turn of the walk: it takes the task, its agent's model answering (c.model),
+// and finishes it.
 func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	r.t.Helper()
 	c := r.worker(role)
@@ -596,40 +606,53 @@ func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCom
 	r.waitPhase(next)
 }
 
-// review is the reviewer taking its task and answering, and then a person with write access
-// submitting state on the pull request's head, as Envoy relays GitHub's review; the issue then
-// reaches next.
+// review is the reviewer taking its task and answering, and then a person submitting state on the
+// walk's pull request (publishReview); the issue then reaches next.
 func (r *stepRecordsRig) review(state string, next phase.Phase) {
-	t := r.t
-	t.Helper()
+	r.t.Helper()
 	c := r.worker(claim.RoleReviewer)
 	c.take()
 	c.endTurn()
+	r.publishReview(r.number, state)
+	r.waitPhase(next)
+}
+
+// publishReview is a person with write access submitting state on pull request number at
+// stepRecordsHead, as Envoy relays GitHub's review.
+func (r *stepRecordsRig) publishReview(number int, state string) {
+	t := r.t
+	t.Helper()
 	r.reviews++
 	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
 		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
-		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
-	r.waitPhase(next)
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
+	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
 }
 
-// accept is the tree architect answering and signing off through its own route.
+// accept is the tree architect answering and signing off the walk's issue (signOff).
 func (r *stepRecordsRig) accept() {
+	r.t.Helper()
+	r.signOff(r.key)
+}
+
+// signOff is the tree architect answering in a turn of its own and signing off issue, a member of
+// its tree, through its own route; issue then reaches its retro.
+func (r *stepRecordsRig) signOff(issue string) {
 	t := r.t
 	t.Helper()
 	c := r.worker(claim.RoleArchitect)
 	c.ownTurn()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": issue}, false)
 	if status != http.StatusOK {
-		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
+		t.Fatalf("the architect's sign-off of %s = %d %s, want 200", issue, status, body)
 	}
-	r.waitPhase(phase.Retro)
+	r.waitPhaseOf(issue, phase.Retro)
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request, which ends
@@ -671,10 +694,16 @@ func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
 	}
 }
 
-// token is the claim token of role on the issue, as the daemon spells it.
+// token is the claim token of role on the walk's issue, as the daemon spells it.
 func (r *stepRecordsRig) token(role claim.Role) claim.Token {
 	r.t.Helper()
-	token, err := claim.NewToken(r.project, r.key, role)
+	return r.tokenOf(r.key, role)
+}
+
+// tokenOf is the claim token of role on issue, as the daemon spells it.
+func (r *stepRecordsRig) tokenOf(issue string, role claim.Role) claim.Token {
+	r.t.Helper()
+	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -792,7 +821,7 @@ func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
 	return read, nil
 }
 
-// waitSteps waits for the issue's read to satisfy hold, and fails with hold's last answer.
+// waitSteps waits for the walk's issue's read to satisfy hold, and fails with hold's last answer.
 func (r *stepRecordsRig) waitSteps(what string, hold func(stepRecordsRead) error) {
 	r.t.Helper()
 	r.waitStepsOf(r.key, what, hold)
@@ -902,12 +931,37 @@ type stepWant struct {
 	// noAgentRead is a record whose end the roll forward of a rollback wrote: the daemon read no
 	// agent for it, and its start names none, so it holds no session and no model.
 	noAgentRead bool
+	// owner, when set, is whose the record is exactly: its agent, its session and its model, an
+	// empty session and model meaning none (the merger the merge launches never registers). Unset,
+	// the record is any agent's, and one of kind step names a session and stepRecordsModel.
+	owner *stepOwner
+}
+
+// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
+// model that answered it.
+type stepOwner struct {
+	agent, session, model string
+}
+
+// withOwners is want with owners[i] the owner of want[i], want itself left as it is; it fails the
+// test, naming both counts, when owners is not one owner for each record of want.
+func withOwners(t *testing.T, want []stepWant, owners ...*stepOwner) []stepWant {
+	t.Helper()
+	if len(owners) != len(want) {
+		t.Fatalf("%d owners for %d records, want one for each, owners[i] want[i]'s", len(owners), len(want))
+	}
+	owned := slices.Clone(want)
+	for i := range owned {
+		owned[i].owner = owners[i]
+	}
+	return owned
 }
 
 // stepsHold says whether read holds exactly the records of want, each of the task default, ended,
-// with its role, type, agent, start, end, result and return, and each of kind step with its session
-// and the model that answered it, or with neither where the roll forward wrote its end
-// (noAgentRead); the error names the first record that is missing or wrong.
+// with its role, type, agent, start, end, result and return; each of an owner named for that owner
+// exactly (owner), and each other of kind step with its session and the model that answered it,
+// or with neither where the roll forward wrote its end (noAgentRead). The error names the first
+// record that is missing or wrong.
 func stepsHold(read stepRecordsRead, want []stepWant) error {
 	for _, w := range want {
 		got := read.find(w.kind, w.step, w.attempt)
@@ -923,7 +977,9 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
 		case w.noAgentRead && (got.Session != "" || got.Model != ""):
 			return fmt.Errorf("%s names session %q and model %q, want neither: no agent was read for its end", name, got.Session, got.Model)
-		case w.kind == "step" && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
+		case w.owner != nil && (got.Agent != w.owner.agent || got.Session != w.owner.session || got.Model != w.owner.model):
+			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, w.owner.agent, w.owner.session, w.owner.model)
+		case w.kind == "step" && w.owner == nil && !w.noAgentRead && (got.Session == "" || got.Model != stepRecordsModel):
 			return fmt.Errorf("%s names session %q and model %q, want its agent's session and %s", name, got.Session, got.Model, stepRecordsModel)
 		}
 	}
@@ -945,6 +1001,9 @@ type stepClaimant struct {
 	bootToken string
 	prompts   chan shimwire.Prompt
 	mu        sync.Mutex
+	// model is the model the agent's answers name, `<provider>/<model>`: stepRecordsModel until
+	// its test gives the agent another.
+	model string
 	// sh is the shim's connection to the daemon now running, which a restart replaces.
 	sh *shim
 	// open is the id of each prompt whose turn has started and not ended.
@@ -965,7 +1024,7 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6],
+	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -1107,11 +1166,12 @@ func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	}
 }
 
-// answer is the agent's model answering, as Oh My Pi's message_end names it.
+// answer is the agent's model (c.model, `<provider>/<model>`) answering, which Oh My Pi's
+// message_end names as message.provider and message.model.
 func (c *stepClaimant) answer() {
 	t := c.r.t
 	t.Helper()
-	provider, model, _ := strings.Cut(stepRecordsModel, "/")
+	provider, model, _ := strings.Cut(c.model, "/")
 	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": model}})
 	if err != nil {
 		t.Fatal(err)
@@ -1221,60 +1281,32 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
 	r := newStepRecordsRig(t)
 	child := r.childInAccepting()
+	r.signOff(child)
 	architect := r.worker(claim.RoleArchitect)
-	architect.ownTurn()
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": child}, false); status != http.StatusOK {
-		t.Fatalf("the tree architect's sign-off of %s = %d %s, want 200", child, status, body)
-	}
-	r.waitPhaseOf(child, phase.Retro)
-	own, err := claim.NewToken(r.project, child, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := r.token(claim.RoleArchitect)
-	var last error
-	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readStepsOf(child)
-		if err != nil {
-			last = err
-			return false
-		}
+	own, tree := r.tokenOf(child, claim.RoleArchitect), r.token(claim.RoleArchitect)
+	r.waitStepsOf(child, "the child's acceptance as the tree architect's", func(read stepRecordsRead) error {
 		got := read.find("step", 5, 1)
 		switch {
 		case got.ID == "":
-			last = fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
+			return fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
 		case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
-			last = fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
+			return fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
 		case got.Agent != string(tree) || got.Agent == string(own):
-			last = fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
+			return fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
 		case got.Session != architect.session || got.Model != stepRecordsModel:
-			last = fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
-		default:
-			last = nil
+			return fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
 		}
-		return last == nil
-	}) {
-		t.Fatalf("the child's acceptance never reached Dispatch as the tree architect's: %v", last)
-	}
+		return nil
+	})
 }
 
 // childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has a
-// person approve its pull request's head, which moves it to accepting, the tree architect's step;
-// it answers the child's key once the child stands there.
+// person approve its pull request's head (publishReview), which moves it to accepting, the tree
+// architect's step; it answers the child's key once the child stands there.
 func (r *stepRecordsRig) childInAccepting() string {
-	t := r.t
-	t.Helper()
+	r.t.Helper()
 	child, number := r.seedChildInReviewing()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
-		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
+	r.publishReview(number, "APPROVED")
 	r.waitPhaseOf(child, phase.Accepting)
 	return child
 }
@@ -1287,7 +1319,8 @@ func (r *stepRecordsRig) childInAccepting() string {
 func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
-	planner.takeAnswering("stand-in/planner-first")
+	planner.model = "stand-in/planner-first"
+	planner.take()
 	req := api.HandoffCompleteRequest{Summary: "planned"}
 	req.HandoffID, req.HandoffVersion = r.writeHandoff(planner.session, "plan")
 	req.GrantID = planner.grant()
@@ -1318,7 +1351,8 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 	r := newStepRecordsRig(t)
 	child := r.childInAccepting()
 	architect := r.worker(claim.RoleArchitect)
-	architect.answerWith("stand-in/architect-first")
+	architect.model = "stand-in/architect-first"
+	architect.answer()
 	architect.send(shimwire.AgentStart{})
 	architect.waitState(supervise.StateWorking)
 	grant := architect.grant()
@@ -1343,13 +1377,14 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 
 // heldRequest sends c's request to path, one that ends c's step, while the answer c's model gave
 // last waits on the claim's feed, and answers the request's status and body. c's model answers as
-// model, and the feed stops before the machine decides that answer (overrides.beforeDecision):
-// the stream has read it, so whatever the stream reads after it comes after it, and the machine
-// holds no lock while it waits, so the request reads the claim's machine as it reads any live
-// claim's. A hold inside a decision would not do: the request's grant check reads the claim
-// (supervise.Machine.Claim), which waits for the decision in flight. The request is sent once the
-// answer is held; the hold ends once the daemon says the request began its wait for c's machine
-// (overrides.streamWaitBegan), or once the request has answered without one.
+// model, which c.model holds from then on, and the feed stops before the machine decides that
+// answer (overrides.beforeDecision): the stream has read it, so whatever the stream reads after it
+// comes after it, and the machine holds no lock while it waits, so the request reads the claim's
+// machine as it reads any live claim's. A hold inside a decision would not do: the request's grant
+// check reads the claim (supervise.Machine.Claim), which waits for the decision in flight. The
+// request is sent once the answer is held; the hold ends once the daemon says the request began
+// its wait for c's machine (overrides.streamWaitBegan), or once the request has answered without
+// one.
 func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body any) (int, []byte) {
 	t := r.t
 	t.Helper()
@@ -1360,7 +1395,8 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 		close(held.release)
 	})
 	t.Cleanup(release)
-	c.answerWith(model)
+	c.model = model
+	c.answer()
 	select {
 	case <-held.reached:
 	case <-time.After(stepRecordsWait):
@@ -1418,11 +1454,7 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
-	var created struct {
-		Key     string `json:"key"`
-		Rank    string `json:"rank"`
-		LastSeq int64  `json:"last_seq"`
-	}
+	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child the tree's architect accepts"}, http.StatusCreated, &created)
 	number := r.number + 1
 	parent := r.key
@@ -1435,10 +1467,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: created.Key, Repo: liveRepo, Number: number, Branch: "legion/" + created.Key,
-			HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{},
-		})
+		return r.records.PutPullRequest(ctx, tx, openPullRequest(created.Key, number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}
@@ -1453,8 +1482,8 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 func TestAModelHoldingANulIsNotKept(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
-	planner.takeAnswering("stand-in/mo\x00del")
-	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	planner.model = "stand-in/mo\x00del"
+	r.plan()
 	r.waitSteps("the end of planning", func(got stepRecordsRead) error {
 		switch found := got.find("step", 1, 1); {
 		case found.ID == "" || found.EndedAt == nil || found.Result != "passed":
@@ -1464,29 +1493,6 @@ func TestAModelHoldingANulIsNotKept(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-// takeAnswering is take with the agent's model answering as model, provider and model as Oh My
-// Pi's message_end names them.
-func (c *stepClaimant) takeAnswering(model string) {
-	c.r.t.Helper()
-	prompt := c.receive()
-	c.answerWith(model)
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
-	c.waitState(supervise.StateWorking)
-}
-
-// answerWith is the agent's model answering as model, `<provider>/<model>`, which Oh My Pi's
-// message_end names as message.provider and message.model.
-func (c *stepClaimant) answerWith(model string) {
-	t := c.r.t
-	t.Helper()
-	provider, name, _ := strings.Cut(model, "/")
-	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": name}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
 }
 
 // v-records, whose record is whose: each role's agent answers with a model of its own, and the
@@ -1499,7 +1505,8 @@ func (c *stepClaimant) answerWith(model string) {
 func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 	r := newStepRecordsRig(t)
 	planner := r.worker(claim.RolePlanner)
-	planner.takeAnswering("stand-in/planner")
+	planner.model = "stand-in/planner"
+	planner.take()
 	r.waitSteps("the start of planning", func(got stepRecordsRead) error {
 		switch found := got.find("step", 1, 1); {
 		case found.ID == "" || found.StartedAt == nil:
@@ -1510,34 +1517,31 @@ func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 		return nil
 	})
 	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
-	implement := func(model string) {
-		c := r.worker(claim.RoleImplementer)
-		c.takeAnswering(model)
-		r.finish(c, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
-	}
-	test := func(model string) {
-		c := r.worker(claim.RoleTester)
-		c.takeAnswering(model)
-		r.finish(c, "test", testCompletion, phase.Reviewing)
-	}
-	implement("stand-in/implementer")
-	test("stand-in/tester")
-	r.reviewAnswering("stand-in/reviewer", "CHANGES_REQUESTED", phase.Implementing)
-	implement("stand-in/implementer-2")
-	test("stand-in/tester-2")
-	r.reviewAnswering("stand-in/reviewer-2", "APPROVED", phase.Accepting)
-	r.acceptAnswering("stand-in/architect")
-	retro := r.worker(claim.RoleImplementer)
-	retro.takeAnswering("stand-in/implementer-3")
-	r.finish(retro, "", api.HandoffCompleteRequest{Summary: "retro written", Commit: stepRecordsHead}, phase.Merging)
+	// answering gives role's agent the model its next answers name.
+	answering := func(role claim.Role, model string) { r.worker(role).model = model }
+	answering(claim.RoleImplementer, "stand-in/implementer")
+	r.implement()
+	answering(claim.RoleTester, "stand-in/tester")
+	r.test()
+	answering(claim.RoleReviewer, "stand-in/reviewer")
+	r.review("CHANGES_REQUESTED", phase.Implementing)
+	answering(claim.RoleImplementer, "stand-in/implementer-2")
+	r.implement()
+	answering(claim.RoleTester, "stand-in/tester-2")
+	r.test()
+	answering(claim.RoleReviewer, "stand-in/reviewer-2")
+	r.review("APPROVED", phase.Accepting)
+	answering(claim.RoleArchitect, "stand-in/architect")
+	r.accept()
+	answering(claim.RoleImplementer, "stand-in/implementer-3")
+	r.retro()
 	r.merge()
 
-	own := func(role claim.Role, model string) stepOwner {
+	own := func(role claim.Role, model string) *stepOwner {
 		c := r.claims[r.token(role)]
-		return stepOwner{agent: string(c.token), session: c.session, model: model}
+		return &stepOwner{agent: string(c.token), session: c.session, model: model}
 	}
-	// Index for index with stepRecordsTen.
-	owners := []stepOwner{
+	want := withOwners(t, stepRecordsTen,
 		own(claim.RolePlanner, "stand-in/planner"),
 		own(claim.RoleImplementer, "stand-in/implementer"),
 		own(claim.RoleImplementer, "stand-in/implementer-2"),
@@ -1547,77 +1551,7 @@ func TestEachRecordNamesItsOwnAgentsSessionAndModel(t *testing.T) {
 		own(claim.RoleReviewer, "stand-in/reviewer-2"),
 		own(claim.RoleArchitect, "stand-in/architect"),
 		own(claim.RoleImplementer, "stand-in/implementer-3"),
-		{agent: string(r.token(claim.RoleMerger))},
-	}
-	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error {
-		return stepsOwnedBy(got, stepRecordsTen, owners)
-	})
-}
-
-// stepOwner is whose a record is: the claim token of its agent, that claim's session and the
-// model that answered it.
-type stepOwner struct {
-	agent, session, model string
-}
-
-// stepsOwnedBy says whether read holds exactly the records of want, each of the task default,
-// ended with its result and its return, and named for its owner, owners[i] for want[i]: its
-// agent, session and model exactly; the error names the first record that is missing or wrong.
-func stepsOwnedBy(read stepRecordsRead, want []stepWant, owners []stepOwner) error {
-	for i, w := range want {
-		got, owner := read.find(w.kind, w.step, w.attempt), owners[i]
-		name := fmt.Sprintf("%s %d attempt %d", w.kind, w.step, w.attempt)
-		switch {
-		case got.ID == "":
-			return fmt.Errorf("the read holds no record of %s", name)
-		case got.Task != "default" || got.Role != w.role || got.EndedAt == nil || got.Result != w.result:
-			return fmt.Errorf("%s is task %q, role %q, ended %v with %q; want task default, role %q, ended with %q", name, got.Task, got.Role, got.EndedAt, got.Result, w.role, w.result)
-		case (got.ReturnedTo == nil) != (w.returnedTo == nil) || got.ReturnedTo != nil && *got.ReturnedTo != *w.returnedTo:
-			return fmt.Errorf("%s returned to %v, want %v", name, got.ReturnedTo, w.returnedTo)
-		case got.Agent != owner.agent || got.Session != owner.session || got.Model != owner.model:
-			return fmt.Errorf("%s names agent %q, session %q and model %q; want %q, %q and %q", name, got.Agent, got.Session, got.Model, owner.agent, owner.session, owner.model)
-		}
-	}
-	if got := len(read.records()); got != len(want) {
-		return fmt.Errorf("the read holds %d records, want %d", got, len(want))
-	}
-	return nil
-}
-
-// reviewAnswering is review with the reviewer's model answering as model.
-func (r *stepRecordsRig) reviewAnswering(model, state string, next phase.Phase) {
-	t := r.t
-	t.Helper()
-	c := r.worker(claim.RoleReviewer)
-	c.takeAnswering(model)
-	c.endTurn()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
-		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
-	r.waitPhase(next)
-}
-
-// acceptAnswering is accept with the architect's model answering as model.
-func (r *stepRecordsRig) acceptAnswering(model string) {
-	t := r.t
-	t.Helper()
-	c := r.worker(claim.RoleArchitect)
-	c.send(shimwire.AgentStart{})
-	c.waitState(supervise.StateWorking)
-	c.answerWith(model)
-	c.send(shimwire.AgentEnd{})
-	c.waitState(supervise.StateIdle)
-	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
-	if status != http.StatusOK {
-		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
-	}
-	r.waitPhase(phase.Retro)
+		&stepOwner{agent: string(r.token(claim.RoleMerger))},
+	)
+	r.waitSteps("the ten records of the walk, each its own agent's", func(got stepRecordsRead) error { return stepsHold(got, want) })
 }
