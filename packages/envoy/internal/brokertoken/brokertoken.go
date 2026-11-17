@@ -400,19 +400,21 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	return token, answer, caller, nil
 }
 
-// SessionCaller is the one reading of the broker's answer about a token as a session's caller,
-// which Verify, Live and the NATS auth service (internal/broker/natscallout) all make: the token is
-// live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not have),
-// issued for acting as a session and of a shape this package reads (ErrNotASession), and the
-// Caller it names is callerOf the answer. It holds no proof to the key; whoever calls it checks the
-// proof its credential carries against answer.Thumbprint. It serves no read-only token, as a
-// verifier built without Options.ServesReadOnly serves none: the auth service admits none.
+// SessionCaller is the NATS auth service's reading of the broker's answer about a token as a
+// session's caller (internal/broker/natscallout): sessionCaller with the read-only switch off, so it
+// serves no read-only token, as a verifier built without Options.ServesReadOnly serves none. It
+// holds no proof to the key; whoever calls it checks the proof its credential carries against
+// answer.Thumbprint.
 func SessionCaller(answer Introspection) (Caller, error) {
 	return sessionCaller(answer, false)
 }
 
-// sessionCaller is SessionCaller with servesReadOnly as the read-only switch: a read-only token
-// passes only when it is set (Verifier.live passes its Options.ServesReadOnly).
+// sessionCaller is the one reading of the broker's answer about a token as a session's caller:
+// Verify and Live make it through live with their verifier's Options.ServesReadOnly, and the NATS
+// auth service through SessionCaller with the switch off. The token is live (ErrNotActive), bound
+// to a key (ErrKeyMismatch: no proof can be the key it does not have), and issued for acting as a
+// session in a shape this package reads, a read-only one only when servesReadOnly is set
+// (ErrNotASession); the Caller it names is callerOf the answer.
 func sessionCaller(answer Introspection, servesReadOnly bool) (Caller, error) {
 	if !answer.Active {
 		return Caller{}, ErrNotActive

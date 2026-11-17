@@ -195,9 +195,11 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 	})
 }
 
-// SessionCaller is the reading Verify makes of the broker's answer: for every answer, a live one
-// and each one Verify refuses, it answers what Verify answers for a request presenting a token the
-// broker answers that way with a sound proof.
+// SessionCaller is the reading a verifier built without Options.ServesReadOnly makes of the
+// broker's answer: for every answer, a live one and each one Verify refuses, it answers what such a
+// verifier's Verify answers for a request presenting a token the broker answers that way with a
+// sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
+// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)

@@ -49,8 +49,8 @@ type Deps struct {
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
 	// counted: a line for each kind at most once a minute and one more as the replica closes, each
-	// key's first with the connection's host, never its credential (reportWhileRunning). Nil logs
-	// nothing.
+	// key with its first event's detail, which for a refusal names the connection's host, and never
+	// a credential (reportWhileRunning). Nil logs nothing.
 	Log *slog.Logger
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
