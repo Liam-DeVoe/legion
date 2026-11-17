@@ -225,6 +225,81 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 	}
 }
 
+// planningBlock declares the experiment `planning`, drawn for each issue, whose arm `a` takes the
+// plan its issue's owner gives and whose arm `b` runs the project's default steps.
+const planningBlock = "planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}"
+
+// A variant names how the issues drawn into it are done (`plan`), and the declared list carries
+// that word on each arm, so an experiment whose arms name it says it sets how an issue is done.
+// The `memory` experiment, which every project declares and which names no plan, sets none. The
+// fault caught is a loader that reads the key into nothing, which leaves both arms at "".
+func TestAVariantNamesHowItsIssuesAreDone(t *testing.T) {
+	cfg, err := Load(writeConfigFile(t, experimentsFile("{"+planningBlock+"}", "")), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	declared := cfg.ExperimentsDeclared()
+	if len(declared) != 2 || declared[0].Name != MemoryExperimentName || declared[1].Name != "planning" {
+		t.Fatalf("declared experiments = %+v, want memory then planning", declared)
+	}
+	planning := declared[1]
+	if got := planning.Variants[0].Plan; got != PlanGroupOwner {
+		t.Errorf("variant a's plan = %q, want %q", got, PlanGroupOwner)
+	}
+	if got := planning.Variants[1].Plan; got != PlanGroupDefault {
+		t.Errorf("variant b's plan = %q, want %q", got, PlanGroupDefault)
+	}
+	if !planning.SetsPlan() {
+		t.Error("planning.SetsPlan() = false, want true: its arms name plan")
+	}
+	if declared[0].SetsPlan() {
+		t.Error("memory.SetsPlan() = true, want false: no arm of it names plan")
+	}
+}
+
+// Each rule of `plan` refuses its own fault with its own words: a word that is none of the three,
+// an arm that names none beside an arm that does, an experiment that sets it and draws for a
+// whole tree, two experiments of one project that both set it, and `owner-alone`, which this
+// release does not carry out. Each row's control is its file with the fault taken out, which
+// loads.
+func TestThePlanOfAVariantIsRefused(t *testing.T) {
+	cases := []struct{ name, block, fixed, want string }{
+		{name: "a word that is none of the three",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  `projects.DEMO.experiments.planning.variants.a.plan must be owner, default or owner-alone (got "alone")`},
+		{name: "an arm that names no plan beside one that does",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b names no plan: each variant of an experiment that sets plan names how its issues are done"},
+		{name: "an experiment that sets plan and draws for a tree",
+			block: "{planning: {mode: random, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning sets plan and is unit tree: an experiment that sets how an issue is done draws for each issue, so write unit: issue"},
+		{name: "two experiments that set plan",
+			block: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x, plan: owner}, {name: y, plan: default}]}}",
+			fixed: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x}, {name: y}]}}",
+			want:  "projects.DEMO.experiments.planning and projects.DEMO.experiments.steps both set plan: one experiment sets how an issue is done"},
+		{name: "the owner alone",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, experimentsFile(tc.block, "")), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+		t.Run(tc.name+", taken out", func(t *testing.T) {
+			if _, err := Load(writeConfigFile(t, experimentsFile(tc.fixed, "")), noEnv); err != nil {
+				t.Fatalf("Load of the file with its fault taken out: %v", err)
+			}
+		})
+	}
+}
+
 // Under kubernetes a variant's overlay must be a file one of the operator's mounts holds, since a
 // role's pod and the image probe see only those and the image: a sub_path mount of the file, an
 // item a directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path

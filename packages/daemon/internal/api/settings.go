@@ -342,7 +342,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 		}
 		for _, variant := range experiment.Variants {
 			declared.Variants = append(declared.Variants, config.Variant{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions})
+				ConfigFiles: variant.ConfigFiles, InstructionsPath: variant.Instructions, Plan: config.PlanGroup(variant.Plan)})
 		}
 		project.Experiments = append(project.Experiments, declared)
 	}
@@ -375,14 +375,16 @@ type ExperimentSettings struct {
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
 // random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
-// into it names, `[]` for an arm that names none, and the one instructions file such a role's
-// system prompt takes, absent where the arm names none. The paths are the operator's own file
-// names, which no credential rides in, as the `memory` block's are.
+// into it names, `[]` for an arm that names none, the one instructions file such a role's
+// system prompt takes, absent where the arm names none, and how the issues drawn into it are done
+// (`plan`), absent where the arm names none. The paths are the operator's own file names, which
+// no credential rides in, as the `memory` block's are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`
 	ConfigFiles  []string `json:"config_files"`
 	Instructions string   `json:"instructions,omitempty"`
+	Plan         string   `json:"plan,omitempty"`
 }
 
 // DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
@@ -694,7 +696,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 		}
 		for _, variant := range experiment.Variants {
 			entry.Variants = append(entry.Variants, VariantSettings{Name: variant.Name, Weight: variant.Weight,
-				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath})
+				ConfigFiles: stringsOf(variant.ConfigFiles), Instructions: variant.InstructionsPath, Plan: string(variant.Plan)})
 		}
 		declared = append(declared, entry)
 	}

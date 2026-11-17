@@ -551,6 +551,8 @@ var nestedKeys = []memberGroup{
 			Description: "The Oh My Pi settings overlays every role of a unit drawn into this arm names in `PI_CONFIG_FILES`, as absolute paths; the arm that names no file is the control the others are measured against."},
 		{Name: "instructions", Default: "a role of a unit drawn into this arm gains nothing", RequiredBy: "no",
 			Description: "One Markdown file on the daemon's own disk, which the daemon reads at boot and appends to the system prompt of every role of a unit drawn into this arm."},
+		{Name: "plan", Default: "the arm sets nothing: its issues run as with no experiment", RequiredBy: "when another arm of the experiment names it: each arm of an experiment that sets it names how its issues are done",
+			Description: "How the issues of this arm are done: `owner` writes its plan, `default` runs the project's default steps and Legion takes no plan from the owner; an experiment that names it draws for each issue."},
 	}},
 	{Path: "runtime.tmux", Members: []member{
 		{Name: "pane_env", Default: "a pane is told only what the runtime tells it", RequiredBy: "no",

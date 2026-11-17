@@ -45,6 +45,24 @@ const (
 // experimentUnits are the words `unit` takes, in the order its refusal names them.
 var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 
+// PlanGroup is `projects.<KEY>.experiments.<name>.variants[].plan`: how the issues drawn into an
+// arm are done. PlanGroupOwner runs an issue as an issue of no experiment runs: its owner gives
+// the plan with register_plan, and an issue whose owner gives none runs the project's default
+// steps. PlanGroupDefault runs the project's default steps (Project.RunsByDefault), and Legion
+// takes no plan from the issue's owner. PlanGroupOwnerAlone is the owner doing the whole issue
+// itself in one step, which this release refuses at load. The zero value is an arm that names no
+// plan, whose issues run as with no experiment.
+type PlanGroup string
+
+const (
+	PlanGroupOwner      PlanGroup = "owner"
+	PlanGroupDefault    PlanGroup = "default"
+	PlanGroupOwnerAlone PlanGroup = "owner-alone"
+)
+
+// planGroups are the words `plan` takes, in the order its refusal names them.
+var planGroups = []PlanGroup{PlanGroupOwner, PlanGroupDefault, PlanGroupOwnerAlone}
+
 // experimentNamePattern is what an experiment's name and a variant's name must match: 1 to 32
 // characters of a-z, 0-9 and `-`. A draw records both names, which the state's wire carries back
 // (api.Issue.Assignments), which name the directory and the file of an `experiments` arm's
@@ -114,6 +132,10 @@ type Variant struct {
 	// ConfigFilesField, Project.ExperimentsDeclared sets it as it builds the list, so a reader of
 	// the declared list takes it from the arm rather than asking Project.MemoryIsBlock again.
 	MemoryBlock bool
+	// Plan is `plan`: how the issues drawn into this arm are done, or "" where the arm names
+	// none. A draw records it beside the arm (record.Assignment.Plan), and the issue keeps that
+	// word for its whole life, whatever the file says later.
+	Plan PlanGroup
 }
 
 // MemoryExperimentName is the name of the experiment the `memory` block is: the block and the key
@@ -232,6 +254,14 @@ func (project Project) MemoryIsBlock() bool {
 	})
 }
 
+// SetsPlan is whether the experiment sets how its issues are done: true where any arm names
+// `plan`. The loader holds such an experiment to three rules (readExperiment, checkExperiments):
+// every arm of it names `plan`, it draws for each issue, and no other experiment of its project
+// sets `plan`, so an issue holds at most one draw that says how it is done.
+func (experiment Experiment) SetsPlan() bool {
+	return slices.ContainsFunc(experiment.Variants, func(variant Variant) bool { return variant.Plan != "" })
+}
+
 // ExperimentsDeclared is the experiments the project this daemon serves declares, under the key
 // that project is written at (Project.ExperimentsDeclared): the one list every reader of a
 // loaded file asks, which is what names that key once rather than at each of those readers.
@@ -278,6 +308,11 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 // must have; and `on_variant`, the arm mode on gives every unit, which that mode requires and
 // which must name an arm of this experiment. A mode other than off over one variant is refused:
 // a draw among one arm measures nothing, so the file is missing the arm it compares against.
+//
+// An experiment one of whose arms names `plan` sets how its issues are done, so every arm of it
+// names `plan`, since an arm with none would leave its issues' way of working to no word; and it
+// draws for each issue, since how an issue is done is read from the draw recorded against that
+// issue itself, and a tree's draw is recorded against the tree's root alone.
 func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	if value.Kind != yaml.MappingNode {
 		return Experiment{}, fmt.Errorf("%s must be a mapping", key)
@@ -323,6 +358,16 @@ func readExperiment(value *yaml.Node, key, name string) (Experiment, error) {
 	case experiment.OnVariant != "" && !slices.Contains(names, experiment.OnVariant):
 		return Experiment{}, fmt.Errorf("%s.on_variant names %q, which is no variant of the experiment (%s)", key, experiment.OnVariant, strings.Join(names, ", "))
 	}
+	if experiment.SetsPlan() {
+		for _, variant := range experiment.Variants {
+			if variant.Plan == "" {
+				return Experiment{}, fmt.Errorf("%s.variants.%s names no plan: each variant of an experiment that sets plan names how its issues are done", key, variant.Name)
+			}
+		}
+		if experiment.Unit != ExperimentIssue {
+			return Experiment{}, fmt.Errorf("%s sets plan and is unit %s: an experiment that sets how an issue is done draws for each issue, so write unit: issue", key, experiment.Unit)
+		}
+	}
 	return experiment, nil
 }
 
@@ -345,8 +390,10 @@ func readMode(value *yaml.Node, key string) (ExperimentMode, error) {
 // readVariants is an experiment's `variants`: a sequence of at least one arm, each a mapping with
 // a `name` the experiment names once, an optional `weight` (a whole number above zero, 1 where the
 // arm names none), optional `config_files` read as `role_config_files`' lists are
-// (readOverlayFiles), and an optional `instructions` path the daemon reads at boot. Neither file
-// key is required: the arm that names no file is the control the others are measured against.
+// (readOverlayFiles), an optional `instructions` path the daemon reads at boot, and an optional
+// `plan`, one of the words of PlanGroup. Neither file key is required: the arm that names no file
+// is the control the others are measured against. `plan: owner-alone` is refused: this release
+// does not carry it out.
 func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 	if value.Kind != yaml.SequenceNode {
 		return nil, fmt.Errorf("%s must be a sequence of variant blocks", key)
@@ -397,6 +444,17 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 			if variant.InstructionsPath, err = cleanAbsolutePath(instructions, field+".instructions"); err != nil {
 				return nil, err
 			}
+		}
+		plan, err := stringOf(fields["plan"], field+".plan")
+		if err != nil {
+			return nil, err
+		}
+		switch variant.Plan = PlanGroup(plan); {
+		case plan == "":
+		case !slices.Contains(planGroups, variant.Plan):
+			return nil, fmt.Errorf("%s.plan must be owner, default or owner-alone (got %q)", field, plan)
+		case variant.Plan == PlanGroupOwnerAlone:
+			return nil, fmt.Errorf("%s.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.", field)
 		}
 		variants = append(variants, variant)
 	}
@@ -483,11 +541,22 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 // The walk is of the declared list rather than of the file as it was read, so an arm is named by
 // the key path it carries (Variant.ConfigFilesField) and the spelling an operator reads in a
 // refusal is built in one place.
+//
+// It also refuses a project two of whose experiments set `plan` (Experiment.SetsPlan): each draws
+// for every new issue, so each issue would hold two words on how it is done, which may disagree,
+// and one experiment's measurement would run under the other's arms.
 func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		project := cfg.Projects[name]
 		block := project.MemoryIsBlock()
+		setsPlan := ""
 		for _, experiment := range project.ExperimentsDeclared("projects." + name) {
+			if experiment.SetsPlan() {
+				if setsPlan != "" {
+					return fmt.Errorf("projects.%s.experiments.%s and projects.%s.experiments.%s both set plan: one experiment sets how an issue is done", name, setsPlan, name, experiment.Name)
+				}
+				setsPlan = experiment.Name
+			}
 			if block && experiment.Name == MemoryExperimentName {
 				continue
 			}
