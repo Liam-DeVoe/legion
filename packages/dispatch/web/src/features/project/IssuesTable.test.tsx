@@ -1672,8 +1672,9 @@ test.each([
 });
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
-// two destructive selects may write on one, so each stages a value for a button to commit.
-test("an arrow key on the move or merge select writes nothing", async () => {
+// two destructive lists, Move to epic and Merge into another epic, may write on one, so each
+// stages a value for a button to commit.
+test("an arrow key on the move or merge list's trigger writes nothing", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-3") as never);
   restores.push(() => send.mockRestore());

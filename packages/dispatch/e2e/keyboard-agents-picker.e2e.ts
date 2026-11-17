@@ -754,7 +754,7 @@ test.describe("agents page", () => {
   // the issue header's Status select keeps a closed issue's own status among its options - so
   // what the list shows, what the toggle names and where the message goes stay one issue until
   // the reader picks another; a closed issue takes comments, so the message posts there.
-  test("an issue closed after the pick stays named in the select and the toggle, marked closed, and takes the message", async ({
+  test("an issue closed after the pick stays named in the list and the toggle, marked closed, and takes the message", async ({
     browser,
   }) => {
     const issueKey = await seedAgents();

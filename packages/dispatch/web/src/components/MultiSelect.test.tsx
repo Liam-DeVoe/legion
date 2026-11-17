@@ -382,6 +382,71 @@ test("Escape, Tab and an outside press close a single pick with nothing picked a
   }
 });
 
+/** Makes the document keep naming a focused element once it has left the page, as an engine that
+ *  moves the focus off a removed element only at its next rendering update does (the HTML spec's
+ *  focus fixup, `focusLost`); happy-dom names the body at once, as Chromium does. Answers what
+ *  puts the document back. */
+function keepRemovedFocus(): () => void {
+  let prototype: object | null = Object.getPrototypeOf(document);
+  let accessor: PropertyDescriptor | undefined;
+  while (prototype !== null && accessor === undefined) {
+    accessor = Object.getOwnPropertyDescriptor(prototype, "activeElement");
+    prototype = Object.getPrototypeOf(prototype);
+  }
+  const read = accessor?.get;
+  if (read === undefined) throw new Error("expected document.activeElement to be an accessor");
+  let last: Element | null = null;
+  const note = (event: Event) => {
+    if (event.target instanceof Element) last = event.target;
+  };
+  document.addEventListener("focus", note, true);
+  Object.defineProperty(document, "activeElement", {
+    configurable: true,
+    get() {
+      const focused: Element | null = read.call(document);
+      return focused === document.body && last !== null && !last.isConnected ? last : focused;
+    },
+  });
+  return () => {
+    Reflect.deleteProperty(document, "activeElement");
+    document.removeEventListener("focus", note, true);
+  };
+}
+
+// INFRA-3135, round 12: the close returned the focus to the trigger only where it had fallen to
+// the body, and an engine that moves the focus off a removed element only at its next rendering
+// update still names the text box the close took away when the close runs, so there Tab or
+// Shift+Tab out of the box left the focus to the page's rescue. A close the list makes itself puts
+// the reader on the trigger in every engine; a press outside still leaves them where it put them.
+test("where the engine still names a removed text box focused, Tab out of it puts the focus on the trigger and a press outside leaves it where it landed", async () => {
+  const user = userEvent.setup();
+  const restore = keepRemovedFocus();
+  const view = render(<SingleHost initial="api" options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    for (const shift of [false, true]) {
+      await user.click(trigger);
+      expect(screen.getByRole("combobox", { name: "Search epics" })).toHaveFocus();
+      await user.tab({ shift });
+      expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+      expect(
+        trigger,
+        `${shift ? "Shift+Tab" : "Tab"} left the focus off the trigger`
+      ).toHaveFocus();
+    }
+
+    await user.click(trigger);
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    await user.click(elsewhere);
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("a single pick's text box narrows its options, and Enter over none picks nothing", async () => {
   const user = userEvent.setup();
   const view = render(<SingleHost options={["api", "docs", "frontend"]} />);

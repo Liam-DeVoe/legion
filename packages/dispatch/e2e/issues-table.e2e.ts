@@ -1112,8 +1112,8 @@ test("a status the bundle does not know leaves the whole page standing", async (
 });
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// select stages a target instead, and the confirmation is what sends anything.
-test("an arrow key on the merge select closes no epic, and the confirmed merge does", async ({
+// list stages a target instead, and the confirmation is what sends anything.
+test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1128,8 +1128,8 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await page.goto("/projects/CORE/issues?group=epic");
     const heading = page.locator("tr", { has: page.getByRole("link", { name: /Arrow source/ }) });
     await heading.getByRole("button", { name: "Epic actions ▾" }).click();
-    const select = page.getByRole("button", { name: "Merge into another epic", exact: true });
-    await select.focus();
+    const trigger = page.getByRole("button", { name: "Merge into another epic", exact: true });
+    await trigger.focus();
     await page.keyboard.press("ArrowDown");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
     // in that keypress's own task, so this window is where its write and its dialog would show.
@@ -1139,7 +1139,7 @@ test("an arrow key on the merge select closes no epic, and the confirmed merge d
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
     // The confirmed path still merges, and says what it is about to do first.
-    await select.click();
+    await trigger.click();
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });

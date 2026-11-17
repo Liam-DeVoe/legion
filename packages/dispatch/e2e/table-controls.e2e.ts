@@ -3488,6 +3488,94 @@ interface DrawnItem {
 /** The four lists R8's row reads, each named as its failures name it. */
 type ItemList = "project Board" | "project List" | "Agents page" | "Delivery list";
 
+/** What R8 holds one row or card to: the parts it drew at the base, and its box there. Each size
+ *  is the px the base's CSS gave it, which no font moves; a height the fonts decide is `"lines"`
+ *  instead, the height `linedHeights` gives the item from the lines the page drew it in and the
+ *  base's classes. */
+interface ItemAtTheBase {
+  readonly parts: string;
+  readonly box: readonly [height: number | "lines", width: number, list: number];
+}
+
+/** The lists whose items' heights the fonts decide below `md`, as `linedHeights` reads them. */
+type LinedList = Extract<ItemList, "project Board" | "Agents page">;
+
+/**
+ * The height each item of `list` takes from the lines the page drew it in and the classes the
+ * base drew it with, for a list whose items' heights the fonts decide below `md`. There every
+ * control is at least 44 px tall and every link `inline-flex` (styles.css), so how many lines an
+ * item's controls wrap onto, and how tall the line box a link stands in is, follow the font's
+ * widths and its ascent and descent - the runner's installed fonts, since the stack (`Inter,
+ * ui-sans-serif, system-ui`, styles.css) loads none of its own. Read in this pod with three fonts
+ * in place of the stack's (DejaVu Sans Mono, and DejaVu Sans with its ascent and descent moved and
+ * its size 12% and 40% larger), these were the only sizes of R8's four lists that moved, in either
+ * project: the Board's cards from 129 to 130 px, and an Agents row from 126 to 174 px, at 390.
+ *
+ * - A Board card: its `border` (1 px) and `p-3` (12 px) above and below; the line box its title
+ *   link stands in, read from the page as the space from the top of the card's content box to the
+ *   margin of its row of controls - the font's part; that row's `mt-3` (12 px); and the row, each
+ *   of its lines the 44 px of its tallest control (PriorityControl's badge wrapper, `min-h-11`),
+ *   with `gap-2` (8 px) between two.
+ * - An Agents row: its `border` (1 px) and `py-1.5` (6 px) above and below, and `gap-y-1` (4 px)
+ *   between two of its lines; each line of controls is 44 px (the toggle's `min-h-11`, and every
+ *   control below 1280 px), and the directory's own line (`basis-full`) its lines of `text-xs`
+ *   (16 px). How many lines there are is the font's part.
+ */
+async function linedHeights(items: Locator, list: LinedList): Promise<number[]> {
+  return items.evaluateAll((nodes, which) => {
+    const px = (value: string): number => Number.parseFloat(value);
+    /** The boxes a flex box lays out: a `display: contents` wrapper's children stand in its
+     *  place, and an element drawn nowhere is no box. */
+    const flexItems = (container: Element): Element[] =>
+      [...container.children].flatMap((child): Element[] => {
+        if (getComputedStyle(child).display === "contents") return flexItems(child);
+        return child.getClientRects().length > 0 ? [child] : [];
+      });
+    /** How many lines `boxes` stand on: a box starts a line where it begins below every box of
+     *  the line before it. */
+    const lineCount = (boxes: readonly { bottom: number; top: number }[]): number => {
+      let lines = 0;
+      let bottom = Number.NEGATIVE_INFINITY;
+      for (const box of [...boxes].sort((a, b) => a.top - b.top)) {
+        if (box.top >= bottom) lines += 1;
+        bottom = box.top >= bottom ? box.bottom : Math.max(bottom, box.bottom);
+      }
+      return lines;
+    };
+    const rect = (element: Element) => element.getBoundingClientRect();
+    /** The lines `element`'s text is drawn on. */
+    const textLines = (element: Element): number => {
+      const rects: DOMRect[] = [];
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      for (let text = walker.nextNode(); text !== null; text = walker.nextNode()) {
+        const range = document.createRange();
+        range.selectNodeContents(text);
+        rects.push(...[...range.getClientRects()].filter((line) => line.width > 0));
+      }
+      return lineCount(rects);
+    };
+    return nodes.map((node): number => {
+      if (which === "project Board") {
+        const row = node.querySelector("[data-issue-link]")?.nextElementSibling;
+        if (row === null || row === undefined) return Number.NaN;
+        const card = getComputedStyle(node);
+        const contentTop = rect(node).top + px(card.borderTopWidth) + px(card.paddingTop);
+        const titleLine = rect(row).top - px(getComputedStyle(row).marginTop) - contentTop;
+        const rowLines = lineCount(flexItems(row).map(rect));
+        return 1 + 12 + titleLine + 12 + rowLines * 44 + (rowLines - 1) * 8 + 12 + 1;
+      }
+      const box = node.firstElementChild;
+      if (box === null) return Number.NaN;
+      const directory = box.querySelector("[data-agent-dir]");
+      const boxes = flexItems(box).filter((item) => item !== directory);
+      const controlLines = lineCount(boxes.map(rect));
+      const directoryLines = directory === null ? 0 : textLines(directory);
+      const lines = controlLines + (directoryLines > 0 ? 1 : 0);
+      return 1 + 6 + controlLines * 44 + directoryLines * 16 + (lines - 1) * 4 + 6 + 1;
+    });
+  }, list);
+}
+
 /** Reads every item `items` finds, each against the nearest ancestor `list` names. */
 async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
   return items.evaluateAll((nodes, listSelector) => {
@@ -3557,8 +3645,22 @@ async function drawnItems(items: Locator, list: string): Promise<DrawnItem[]> {
  * same; that reading was printed and copied here as it came. The Delivery list's rows are
  * found by `tbody tr[aria-rowindex]`, because the base's carry no `data-pr-row`: both builds
  * write `aria-rowindex` on each pull request's row in the list's body.
+ *
+ * Every size kept as a number is one the CSS fixes, which a runner with other fonts draws the
+ * same: none moved when this pod drew the lists in three other fonts (`linedHeights`). The Board
+ * card's 288 px and its column's are `w-72`, and its 114 px at 1440 is `border`, `p-3`, its key and
+ * title each one `text-sm` line of 20 px with `mt-1`, `mt-3` and the 32 px of its row of controls
+ * from `md`. A List row is the cell's `py-2` and border with its tallest cell: one 20 px title
+ * line, `space-y-1` and the 20 px asks badge (61 px), else the 32 px priority control (49 px); at
+ * 390 the title link's 44 px and `space-y-1`, with the badge (85 px) or without (65 px). The
+ * List's 2319.19 and 2106.69 px are its columns' widths, the title's a share of the box
+ * (`ISSUE_TABLE_COLUMNS`), so no text sets them. An Agents row at 1440 is one line from `md`
+ * (`md:flex-nowrap`): `border`, `py-1.5` and its 32 px controls. The Delivery row is the table's
+ * 36 px row height and its filled width. The heights the fonts do decide - the Board's cards and
+ * the Agents rows at 390, where a link's line box and how many lines the controls wrap onto
+ * follow the font - are `"lines"`.
  */
-const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnItem[]>>> = {
+const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly ItemAtTheBase[]>>> = {
   chromium: {
     "project Board": [
       {
@@ -3670,40 +3772,40 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
   iphone: {
     "project Board": [
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts: 'link "CORE-1 Keyboard issue" | "Priority" | combobox "Priority of CORE-1" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts: 'link "CORE-2 Rollout plan" | "Priority" | combobox "Priority of CORE-2"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-3 Rollout order" | "Priority" | combobox "Priority of CORE-3" | "frontend" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-4 Rollout budget" | "Priority" | combobox "Priority of CORE-4" | "backend" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-5 Ledger mirror" | "Priority" | combobox "Priority of CORE-5" | "frontend" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-6 Clock drift" | "Priority" | combobox "Priority of CORE-6" | "backend" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-7 Replay window" | "Priority" | combobox "Priority of CORE-7" | "frontend" | "1"',
       },
       {
-        box: [129, 288, 288],
+        box: ["lines", 288, 288],
         parts:
           'link "CORE-8 Lease handover" | "Priority" | combobox "Priority of CORE-8" | "backend" | "1"',
       },
@@ -3752,12 +3854,12 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
     ],
     "Agents page": [
       {
-        box: [126, 342, 342],
+        box: ["lines", 342, 342],
         parts:
           'checkbox "Select Planner for broadcast" | button "Planner" | link "Open live conversation with Planner" | button "Copy session ID 019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01" | button "Copy session title Planner" | link "box-1" | "· /srv/planner" | "planner" | time | link "Needs you 1" | button "Pin Planner"',
       },
       {
-        box: [126, 342, 342],
+        box: ["lines", 342, 342],
         parts:
           'checkbox "Select Reviewer for broadcast" | button "Reviewer" | link "Open live conversation with Reviewer" | button "Copy session ID 019a1c03-2f0d-7c4c-ab85-0c7d1e4f5a03" | button "Copy session title Reviewer" | link "box-1" | "· /srv/reviewer" | "reviewer" | time | button "Pin Reviewer"',
       },
@@ -3777,13 +3879,21 @@ const ITEMS_AT_THE_BASE: Partial<Record<string, Record<ItemList, readonly DrawnI
   },
 };
 
+/** An ask card's "Asked of" line from `md`, at the base: the 32 px of its badge's wrapper
+ *  (`badgeSelectWrapper`'s `md:min-h-8`), with the hand-on laid over the badge taking no room -
+ *  a native select then, a button now whose 44 px below 1280 px (styles.css) overhangs it. */
+const ASKED_OF_LINE = 32;
+
 // R8: "The rows, the cards, the reading pane and the panes' widths do not change." The Inbox's
 // rows and its reading pane are the stub row's (`table-controls.stub.e2e.ts`), and the tables
 // with no controls the row above; this one holds the Board's cards and the rows of the Agents
 // page, the project List and the Delivery list to what they drew at the base
 // (`ITEMS_AT_THE_BASE`), item by item: the same parts, in the same order, in a box of the same
-// size. The Delivery list draws its clock times in the browser's own zone and words, so both are
-// pinned to the ones the base was read in.
+// size, where a height the fonts decide is the one its lines and the base's classes give it
+// (`linedHeights`). It holds an ask card's "Asked of" line to its height at the base too, at
+// 1024x768, between `md` and `xl`, the widths where every button is 44 px tall. The Delivery list
+// draws its clock times in the browser's own zone and words, so both are pinned to the ones the
+// base was read in.
 test.describe("R8's rows and cards", () => {
   test.use({ locale: "en-US", timezoneId: "UTC" });
 
@@ -3844,40 +3954,81 @@ test.describe("R8's rows and cards", () => {
       await open();
       await expect(items.first(), `the ${name} draws no ${noun}`).toBeVisible();
       const base = atTheBase[name];
+      const lined = base.some((was) => was.box[0] === "lines");
+      /** What one reading draws other than the base: the parts of each item, and each size within
+       *  half a pixel, the rounding of a box's edge. */
+      const differences = (drawn: readonly DrawnItem[], heights: readonly number[]): string[] => {
+        const found: string[] = [];
+        if (drawn.length !== base.length) {
+          found.push(`the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`);
+        }
+        for (const [index, was] of base.entries()) {
+          const item = drawn[index];
+          if (item === undefined) continue;
+          const at = `the ${name}'s ${noun} ${index + 1}`;
+          if (item.parts !== was.parts) {
+            found.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+          }
+          const [height, width, listWidth] = was.box;
+          const ruled = height === "lines";
+          for (const [size, now, then, from] of [
+            [
+              "height",
+              item.box[0],
+              ruled ? (heights[index] ?? Number.NaN) : height,
+              ruled ? "by its lines and the base's classes" : "at the base",
+            ],
+            ["width", item.box[1], width, "at the base"],
+            ["list's width", item.box[2], listWidth, "at the base"],
+          ] as const) {
+            if (!(Math.abs(now - then) <= 0.5)) {
+              found.push(
+                `${at}'s ${size} is ${now}px, and ${Math.round(then * 100) / 100}px ${from}`
+              );
+            }
+          }
+        }
+        return found;
+      };
       // An item's parts arrive in turns - the read state, the asks, the live link - so the list
       // is read again until it is what the base drew or the wait runs out, and what differs
       // then is named below.
-      let drawn: DrawnItem[] = [];
+      let found: string[] = [];
       await expect
         .poll(
           async () => {
-            drawn = await drawnItems(items, list);
-            return JSON.stringify(drawn);
+            const drawn = await drawnItems(items, list);
+            const heights =
+              lined && (name === "project Board" || name === "Agents page")
+                ? await linedHeights(items, name)
+                : [];
+            found = differences(drawn, heights);
+            return found;
           },
           { timeout: 5_000 }
         )
-        .toBe(JSON.stringify(base))
+        .toEqual([])
         .catch(() => undefined);
-      if (drawn.length !== base.length) {
-        changed.push(`the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`);
-      }
-      for (const [index, was] of base.entries()) {
-        const item = drawn[index];
-        if (item === undefined) continue;
-        const at = `the ${name}'s ${noun} ${index + 1}`;
-        if (item.parts !== was.parts) {
-          changed.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
-        }
-        // Within half a pixel, the rounding of a box's edge.
-        for (const [size, now, then] of [
-          ["height", item.box[0], was.box[0]],
-          ["width", item.box[1], was.box[1]],
-          ["list's width", item.box[2], was.box[2]],
-        ] as const) {
-          if (Math.abs(now - then) > 0.5) {
-            changed.push(`${at}'s ${size} is ${now}px, and ${then}px at the base`);
-          }
-        }
+      changed.push(...found);
+    }
+
+    await page.setViewportSize({ height: 768, width: 1024 });
+    await page.goto("/?assignee=everyone");
+    const handOns = main.locator("[data-ask-hand-on]");
+    await expect(handOns.first(), "the Inbox draws no ask card at 1024x768").toBeVisible();
+    const askedOf = await handOns.evaluateAll((wrappers) =>
+      wrappers
+        .filter((wrapper) => wrapper.getClientRects().length > 0)
+        .map(
+          (wrapper) =>
+            Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
+        )
+    );
+    for (const [index, height] of askedOf.entries()) {
+      if (Math.abs(height - ASKED_OF_LINE) > 0.5) {
+        changed.push(
+          `the Inbox's ask card ${index + 1}'s "Asked of" line at 1024x768 is ${height}px, and ${ASKED_OF_LINE}px at the base`
+        );
       }
     }
     expect(
@@ -5356,7 +5507,7 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   ];
 }
 
-// SLOW(>=2s): ten lists on six pages, each list opened twice at each of two widths.
+// SLOW(>=2s): ten lists on six pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
 // Each list a reader picks one value from is the single-pick mode of the shared list
 // (`components/MultiSelect.tsx`): the search bar's Project and Status, the List's Move to epic, an
@@ -5364,20 +5515,24 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // composer's Issue, the Spec tab's Version (`SpecToolbar`), and a document page's Version
 // (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`). At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
-// only the options it matches, Escape picks nothing and changes no value, and Enter picks the
-// option the word left - the trigger shows it with the focus back on it, or where the pick
-// takes the trigger away the panel hands the focus on. A list that holds no text box is named
-// and the row goes on, so one run names every such list.
-// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter and Escape - as each
-// engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
-// under.
+// only the options it matches, Escape picks nothing and changes no value, Tab out of the text box
+// (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter
+// picks the option the word left - the trigger shows it with the focus back on it, or where the
+// pick takes the trigger away the panel hands the focus on. A list that holds no text box is
+// named and the row goes on, so one run names every such list.
+// `@firefox` and `@webkit`: the keys a text box takes - the typed word, Enter, Escape and Tab - as
+// each engine delivers them, the clause of `playwright.config.ts` the composer's Issue list is run
+// under; and the close a Tab makes, which an engine that moves the focus off a removed element
+// only at its next rendering update answers while it still names the text box the close took away
+// as focused (`focusLost`, `components/focus-place.ts`).
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
   // Seven page loads at each width, with the lists read between them. Measured in an issue pod
-  // (two cores): the row took 1.2 to 1.5 min in Chromium and 1.9 to 2.6 min in Firefox, and four
-  // minutes keeps that under two thirds of the budget for WebKit, which no pod runs.
-  test.setTimeout(240_000);
+  // (two cores), with each list opened three times: the row took 2.4 min in Chromium and 2.7 to
+  // 3.3 min in Firefox, which five minutes keeps under two thirds of the budget, and WebKit, which
+  // no pod runs, is given the same.
+  test.setTimeout(300_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
    *  a list holding other than one text box. */
@@ -5387,7 +5542,7 @@ test("every list of options a reader picks from holds a text box that narrows it
   const open = async (list: PickList, at: string): Promise<Locator | undefined> => {
     await list.trigger.click();
     const named = await expect(list.trigger)
-      .toHaveAttribute("aria-controls", /\S/, { timeout: 2_000 })
+      .toHaveAttribute("aria-controls", /\S/)
       .then(
         () => true,
         () => false
@@ -5451,6 +5606,18 @@ test("every list of options a reader picks from holds a text box that narrows it
         `${at}: Escape left the focus elsewhere`
       ).toBeFocused();
       expect(await list.value(), `${at}: Escape changed the list's value`).toBe(before);
+
+      // Tab out of the text box, or Shift+Tab, picks nothing and leaves the reader on the trigger.
+      const tab = step === 0 ? "Tab" : "Shift+Tab";
+      const tabbed = await open(list, at);
+      if (tabbed === undefined) continue;
+      await page.keyboard.press(tab);
+      await expect(list.trigger, `${at}: ${tab} left the list open`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
+      expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
       // Enter picks the option the word left.
       const entered = await open(list, at);

@@ -2099,6 +2099,56 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
   }
 });
 
+// INFRA-3135, round 12: the hand-on keeps a press on its badge, or in its list, from the row under
+// it by stopping the press, and that also kept the press from the document, where every open panel
+// listened for a press outside it: the Filter panel stayed open under a press on a card's badge,
+// and two cards' lists could stand open at once. A panel reads that press in the capture phase.
+test("a press on a card's Asked of badge closes the open Filter panel, and another card's open hand-on list", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    issueAsk({ id: "ask-a", question: "First question?" }),
+    issueAsk({
+      id: "ask-b",
+      issue: { assignee: "alice", key: "CORE-2", title: "Other thing" },
+      issue_key: "CORE-2",
+      question: "Second question?",
+    }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const { unmount } = renderInbox("/");
+  const badge = (askId: string) =>
+    within(rowOf(askId)).getByRole("button", { name: "Hand this question to" });
+  const handOnLists = () =>
+    screen.queryAllByRole("listbox", { name: "Hand this question to options" });
+  try {
+    await screen.findByText("Second question?");
+    await openFilterFields(user);
+    expect(screen.getByRole("dialog", { name: "Filter" })).toBeTruthy();
+    await user.click(badge("ask-a"));
+    expect(
+      screen.queryByRole("dialog", { name: "Filter" }),
+      "a press on the badge left the Filter panel open"
+    ).toBeNull();
+    await waitFor(() => expect(handOnLists()).toHaveLength(1));
+    const first = handOnLists()[0];
+
+    await user.click(badge("ask-b"));
+    expect(
+      first,
+      "a press on another card's badge left the first list open"
+    ).not.toBeInTheDocument();
+    expect(handOnLists()).toHaveLength(1);
+    expect(badge("ask-b")).toHaveAttribute("aria-expanded", "true");
+  } finally {
+    unmount();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a sibling ask of the same issue leaving the list does not drop an in-flight Assign to me: its refusal still shows", async () => {
   const user = userEvent.setup();
   // Two rows the server resolved nobody for, which is what "Assign to me" is written against.
