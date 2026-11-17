@@ -19,11 +19,20 @@
 -- linger and the root's re-admission, until its merger starts again. Such a run gets its end here,
 -- stopped, at the moment of the rollback, when Legion stopped recording it, as one step_record
 -- row of the identity the row kept (record) — the moment the run really ended is nowhere to be
--- read, and a record left without an end would read running for good. Then each row of an issue
--- whose witness changed reads 'uncounted', but one whose run still runs: an end of a run there
--- writes a record of its own at the next count (record.Store.EndUncountedStep), and a start counts
--- on as before. A run the earlier release did not end stands as the one the row counted and ends
--- under its own id. The kept witnesses go, so a later rollback keeps its own.
+-- read, and a record left without an end would read running for good.
+--
+-- A place reads 'uncounted' where the earlier release may have started a run there: the role
+-- that works it had its entry raised; it is accepting or the merge, whose starts can raise no
+-- entry (the architect's, and a merge GitHub had made already), and the issue moved on from
+-- another phase or moved back; or the issue's generation or its root's changed, whose
+-- re-admission or promotion may start any place again. An end of a run there writes a record of
+-- its own at the next count (record.Store.EndUncountedStep), and a start counts on as before. A
+-- run that still runs is no such place: nothing starts a place while its run is open. A run the
+-- earlier release ended at a place it started none reads 'ended', so a late completion of that
+-- run still writes its report on the record this release counted (workflow's reportEndedStep),
+-- and an end with no run open there writes nothing. A run the earlier release did not end stands
+-- as the one the row counted and ends under its own id. The kept witnesses go, so a later
+-- rollback keeps its own.
 --
 -- On a database no rollback touched step_starts_rollback is empty and this changes nothing. The
 -- way back below is what makes it run again: it keeps the witnesses and deletes this migration's
@@ -44,7 +53,9 @@ with witnessed as (
     -- The role whose entry each start of the place raises (workflow's stepOf): accepting's, the
     -- architect's, raises none.
     case s.kind when 'merge' then 'merger' when 'retro' then 'implementer'
-      else (array['planner', 'implementer', 'tester', 'reviewer'])[s.place] end as worker
+      else (array['planner', 'implementer', 'tester', 'reviewer'])[s.place] end as worker,
+    -- The phase of a place whose start may raise no entry.
+    case when s.kind = 'merge' then 'merging' when s.kind = 'step' and s.place = 5 then 'accepting' end as entryless
   from step_starts s join step_starts_rollback r on r.issue = s.issue
 ), judged as (
   select w.*, w.run = 'open' and (
@@ -55,7 +66,14 @@ with witnessed as (
         or w.was->'lingers' is distinct from w.now->'lingers')) as ended
   from witnessed w
 ), counted as (
-  select j.*, j.was is distinct from j.now and (j.run <> 'open' or j.ended) as uncounted from judged j
+  select j.*, (j.run <> 'open' or j.ended) and (
+      j.was->'generation' is distinct from j.now->'generation'
+      or j.was->'root_generation' is distinct from j.now->'root_generation'
+      or j.was->'entries'->j.worker is distinct from j.now->'entries'->j.worker
+      or j.entryless is not null
+        and (j.was->'at' is distinct from j.now->'at' or j.was->'pass' is distinct from j.now->'pass')
+        and not (j.was->>'at' is not distinct from j.entryless and j.was->'pass' is not distinct from j.now->'pass')) as uncounted
+  from judged j
 ), ends as (
   insert into outbox (kind, issue, payload, attempts, next_at, last_error)
   select 'step_record', issue, record || jsonb_build_object('ended_at', taken_at, 'result', 'stopped'), 0, now(), ''

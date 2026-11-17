@@ -210,15 +210,16 @@ func (s rollBackStore) assertRollForwardEnd(place string, end record.StepRecord,
 // A rollback hands the store to an earlier release, which moves issues and starts and ends their
 // steps without a row of step_starts. The way back keeps each issue's witness and the moment of the
 // rollback, and re-arms the roll forward, which the newer image's Migrate then applies again: each
-// row of an issue whose witness changed reads 'uncounted', and every other row stands as it was;
-// and each run such a row held open at the rollback, which the earlier release ended, gets the end
-// of its record, stopped at that moment, under the identity the row kept. Here the earlier release:
-// raises a root's pass (its tester failed and ran again), moves another into the phase whose
-// counted run had ended, re-admits a tree's root (its member's step starts again), lingers a
-// tree's root (its member's step ends, but not a member's merge that awaits its pull request),
-// releases a held issue into the phase it was held from, and re-admits a root of its own; it does
-// nothing to the last root. A second run of the way back, before any roll forward, keeps the
-// witness and the moment of the first, which the earlier release has moved since.
+// run a row held open at the rollback, which the earlier release ended, gets the end of its
+// record, stopped at that moment, under the identity the row kept; each place where that release
+// may have started a run reads 'uncounted', a run it ended at a place it started none reads
+// 'ended', and every other row stands as it was. Here the earlier release: raises a root's pass
+// (its tester failed and ran again), moves another into the phase whose counted run had ended,
+// re-admits a tree's root (its member's step starts again), lingers a tree's root (its member's
+// step ends, but not a member's merge that awaits its pull request), releases a held issue into
+// the phase it was held from, and re-admits a root of its own; it does nothing to the last root. A
+// second run of the way back, before any roll forward, keeps the witness and the moment of the
+// first, which the earlier release has moved since.
 func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.T) {
 	ctx := context.Background()
 	s := newRollBackStore(t)
@@ -252,9 +253,12 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 	if err := s.store.Pool().QueryRow(ctx, `select taken_at from step_starts_rollback where issue = 'LEGION-202'`).Scan(&rolledBackAt); err != nil {
 		t.Fatalf("read the moment the way back kept: %v", err)
 	}
-	// The earlier release.
+	// The earlier release, whose every start of a phase worker raises its role's entry.
 	s.exec(`update phases set pass = pass + 1 where issue = 'LEGION-202' and role = 'implementer'`)
+	s.entry("LEGION-202", "implementer")
+	s.entry("LEGION-202", "tester")
 	s.exec(`update issues set phase = 'testing' where key = 'LEGION-203'`)
+	s.entry("LEGION-203", "tester")
 	s.wayBack()
 	s.exec(`update issues set generation = 2 where key = 'LEGION-210'`)
 	s.exec(`update issues set linger_until = now() + interval '1 hour' where key = 'LEGION-220'`)
@@ -268,7 +272,8 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 		"LEGION-202 step 3": "uncounted", "LEGION-202 step 2": "uncounted",
 		"LEGION-203 step 3": "uncounted",
 		"LEGION-211 step 3": "uncounted",
-		"LEGION-221 step 3": "uncounted", "LEGION-222 merge 0": "open",
+		// The linger ended LEGION-221's run and started none: nothing runs there to count.
+		"LEGION-221 step 3": "ended", "LEGION-222 merge 0": "open",
 		"LEGION-230 step 3": "open",
 		"LEGION-240 step 4": "uncounted",
 	}
@@ -350,6 +355,65 @@ func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testin
 		t.Fatalf("the roll forward wrote %+v for LEGION-261, want one end of the merge its merger's new start ended", ends["LEGION-261"])
 	}
 	s.assertRollForwardEnd("LEGION-261 merge 0", ends["LEGION-261"][0], rolledBackAt)
+}
+
+// The roll forward uncounts only a place where the earlier release may have started a run: one
+// whose role's entry it raised, the two starts that raise none (accepting, and a merge GitHub had
+// made already) where the issue moved on to them or back, and every place of an issue whose run or
+// whose root's run is a new one. A forward move starts nothing behind it: an issue signed off
+// from accepting into the retro keeps its review's counted run ended, for a late completion of
+// that review to write its report on (workflow's reportEndedStep), and its acceptance, which no
+// move back brought it to again, reads ended once its open run gets its end. The retro and the
+// merge it may have reached since read uncounted, and so does every place an architect's move
+// back may have run again.
+func TestTheRollForwardUncountsOnlyThePlacesTheEarlierReleaseMayHaveStarted(t *testing.T) {
+	s := newRollBackStore(t)
+	for _, key := range []string{"LEGION-280", "LEGION-281", "LEGION-282"} {
+		s.issue(key, key, "accepting", "", 1)
+		s.entry(key, "reviewer")
+		s.row(key, "step", 4, "ended")
+		s.row(key, "step", 5, "open")
+	}
+	// LEGION-281 ran its retro and its merge once before, and a conflict sent it back.
+	s.row("LEGION-281", "retro", 0, "ended")
+	s.row("LEGION-281", "merge", 0, "ended")
+	s.wayBack()
+	var rolledBackAt time.Time
+	if err := s.store.Pool().QueryRow(s.t.Context(), `select taken_at from step_starts_rollback where issue = 'LEGION-280'`).Scan(&rolledBackAt); err != nil {
+		t.Fatalf("read the moment the way back kept: %v", err)
+	}
+	// The earlier release signs LEGION-280 and LEGION-281 off into the retro, whose start raises
+	// the implementer's entry, and moves LEGION-282 back to reviewing, raising its pass and its
+	// reviewer's entry.
+	s.exec(`update issues set phase = 'retro' where key in ('LEGION-280', 'LEGION-281')`)
+	s.entry("LEGION-280", "implementer")
+	s.entry("LEGION-281", "implementer")
+	s.exec(`update issues set phase = 'reviewing' where key = 'LEGION-282'`)
+	s.exec(`update phases set pass = pass + 1 where issue = 'LEGION-282' and role = 'implementer'`)
+	s.entry("LEGION-282", "reviewer")
+	s.rollForward()
+
+	starts, ends := s.starts(), s.ends()
+	want := map[string]string{
+		"LEGION-280 step 4": "ended", "LEGION-280 step 5": "ended",
+		"LEGION-281 step 4": "ended", "LEGION-281 step 5": "ended", "LEGION-281 retro 0": "uncounted", "LEGION-281 merge 0": "uncounted",
+		"LEGION-282 step 4": "uncounted", "LEGION-282 step 5": "uncounted",
+	}
+	for place, run := range want {
+		if got := starts[place]; got.run != run || got.starts != 2 {
+			t.Errorf("after the roll forward %s = %+v, want %q at the count 2", place, got, run)
+		}
+	}
+	if len(starts) != len(want) {
+		t.Errorf("step_starts holds %v after the roll forward, want the %d rows it held", starts, len(want))
+	}
+	for _, key := range []string{"LEGION-280", "LEGION-281", "LEGION-282"} {
+		if len(ends[key]) != 1 {
+			t.Errorf("the roll forward wrote %+v for %s, want the one end of its acceptance, which the move ended", ends[key], key)
+			continue
+		}
+		s.assertRollForwardEnd(key+" step 5", ends[key][0], rolledBackAt)
+	}
 }
 
 // The way back an operator runs keeps what the roll forward needs and touches nothing else: every

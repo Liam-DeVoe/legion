@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -138,6 +139,44 @@ func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) 
 		t.Fatalf("the merge's writes after the roll forward = %+v, want the one end of the record %s this release counted", after, merge)
 	}
 	assertEnd(t, after[0], "merge", 0, 3, "passed", nil)
+}
+
+// A review the review event approves before the reviewer completes ends passed with no report, and
+// the reviewer's completion names its handoff on that ended run's record when it lands
+// (reportEndedStep). A rollback between the two, under which the earlier release signs the issue
+// off into the retro, starts no review: the review's place is none that release may have run
+// again, so the roll forward leaves its counted run ended, and the late completion's report lands
+// on the record this release counted.
+func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
+	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	pool := migratedPool(t)
+	seedReview(t, pool, "green")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		return engine.StartStepRecord(ctx, tx, issue)
+	})
+	apply := applyFacts(t, pool, engine)
+	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
+		Body: reviewBody("the review", headOne)})
+	if got := issueAt(t, pool, "LEGION-208"); got != phase.Accepting {
+		t.Fatalf("LEGION-208 stands at %s after the approval, want accepting", got)
+	}
+	rollBackStepRecords(t, pool)
+	// The earlier release signs the issue off: accepting moves to the retro, whose start raises
+	// the implementer's entry.
+	execSQL(t, pool, `update issues set phase = 'retro' where key = 'LEGION-208'`)
+	execSQL(t, pool, `update phases set entry = entry + 1 where issue = 'LEGION-208' and role = 'implementer'`)
+	rollForwardStepRecords(t, pool)
+	before := len(stepWrites(t, pool, "LEGION-208"))
+	if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+		Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+	}
+	after := stepWrites(t, pool, "LEGION-208")[before:]
+	counted := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, 1)
+	if len(after) != 1 || after[0].ID != counted || after[0].Report == nil || *after[0].Report != report {
+		t.Fatalf("the late completion wrote %+v, want one write of the counted review's record %s naming %s", after, counted, report)
+	}
 }
 
 // execSQL runs one statement on pool, with args.
