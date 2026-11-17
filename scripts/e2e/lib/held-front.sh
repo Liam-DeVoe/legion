@@ -12,9 +12,10 @@
 # kept port still listens: the kernel queues a connection until the next front accepts it, so a
 # client sees a hang rather than a refusal, and every poll of a kept port carries a timeout.
 #
-# scripts/e2e/envoy-session-delivery.sh fronts natsd this way for each proxy it cuts, and
-# scripts/e2e/envoy-session-states.sh and packages/envoy/scripts/e2e-refill.sh front natsd itself,
-# which they stop and start again under a running listener.
+# scripts/e2e/envoy-session-delivery.sh fronts natsd this way for each proxy it cuts, and each
+# --build-from listener that takes no ENVOY_LISTEN_FD; scripts/e2e/envoy-session-states.sh and
+# packages/envoy/scripts/e2e-refill.sh front natsd itself, which they stop and start again under a
+# running listener.
 #
 # Sourced, never run: it defines held_front_argv and held_front_answers, starts nothing, and needs
 # python3 and socat (1.8.0 or later, for ACCEPT-FD) on the PATH the caller runs the front with.

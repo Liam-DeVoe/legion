@@ -310,6 +310,17 @@ say "built experiments, sessionworker, dbosworker, restateservice, gwworker and 
 
 # A free port, found rather than written down: several agents share this pod and a
 # literal port collides with another run of this same script.
+#
+# These two ports are the one place this script chooses a port that a server binds
+# later, so another program can take one in between, and the dev server then fails to
+# start. The dev server can do neither of the things that would close that gap: it takes
+# no listening socket from its caller, and it refuses port 0 (`--port 0` exits with
+# "failed starting server: missing frontend port"), so it cannot bind a port the kernel
+# chooses for this script to read back. The one other way is a network namespace of the
+# run's own (unshare --user --net), where no other program can bind; hosts that restrict
+# unprivileged user namespaces (kernel.apparmor_restrict_unprivileged_userns=1, Ubuntu
+# 24.04's default) refuse it, so it would stop this script running where it runs today.
+# The probe below keeps the gap to the moment between it and the server's bind.
 port_is_free() {
 	local port=$1
 	! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
@@ -322,7 +333,7 @@ taken_ports=()
 
 port_taken() {
 	local port=$1 taken
-	for taken in ${taken_ports[*]:-}; do
+	for taken in "${taken_ports[@]}"; do
 		[[ "$taken" == "$port" ]] && return 0
 	done
 	return 1
@@ -388,28 +399,13 @@ say "the dev server answers on $server_address"
 
 # --- 10. the twenty-one experiments ----------------------------------------------------
 
-# The flags one Restate run needs, and the label naming the ports it was given. Each
-# run of a Restate experiment -- and each control of one -- holds a restate-server of
-# its own, so each reserves a pair of ports for itself. They are globals rather than
-# printed output because every caller of free_port has to record what it was handed,
-# and a command substitution is a subshell that could not.
-restate_flags=()
-restate_label=''
-
-reserve_restate() {
-	local what=$1 ingress admin
-	ingress=$(free_port) || die "found no free port for $what's Restate ingress"
-	taken_ports+=("$ingress")
-	admin=$(free_port) || die "found no free port for $what's Restate admin API"
-	taken_ports+=("$admin")
-	restate_label=" (restate ingress 127.0.0.1:$ingress, admin 127.0.0.1:$admin)"
-	restate_flags=(
-		-restate-server "$restate_bin"
-		-restate-service "$bin_dir/restateservice"
-		-restate-ingress "127.0.0.1:$ingress"
-		-restate-admin "127.0.0.1:$admin"
-	)
-}
+# The flags one Restate run needs. Each run of a Restate experiment -- and each control
+# of one -- starts a restate-server of its own, which serves its admin API, its ingress
+# and its node's own channel on unix sockets in the experiment's directory and binds no
+# TCP port, and holds the loopback port of each service endpoint it starts from the
+# kernel's choice to the end of the run (prototype/internal/restatex), so this script
+# chooses no port for them.
+readonly restate_flags=(-restate-server "$restate_bin" -restate-service "$bin_dir/restateservice")
 
 # Every experiment is given a scratch directory of its own and the flags its own
 # product needs. Experiments 19, 20 and 21 run straight after experiment 6 because they
@@ -418,7 +414,7 @@ reserve_restate() {
 # timeout of four hours, which nothing in it waits for, and every wait it takes is
 # bounded in seconds, so the bound every other experiment shares covers it. The
 # Restate experiments start and stop their own restate-server, one per experiment, on
-# ports this script reserves for them.
+# unix sockets of its own.
 #
 # Each kill experiment that passed is followed by its control: the same experiment,
 # the same flags, -no-kill added, a scratch directory of its own so it neither reads
@@ -467,8 +463,6 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 		flags+=(-postgres-dsn "$postgres_dsn" -dbos-worker "$bin_dir/dbosworker")
 		;;
 	10 | 11 | 12)
-		reserve_restate "experiment $n"
-		label=$restate_label
 		flags+=("${restate_flags[@]}")
 		;;
 	13 | 14 | 15)
@@ -500,13 +494,6 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 			mkdir -p -- "$control_dir"
 			control_flags=("${flags[@]}")
 			control_label=$label
-			# A Restate control holds a restate-server of its own, as its
-			# experiment does, so it gets ports of its own the same way.
-			if ((n == 10)); then
-				reserve_restate "experiment $n's control"
-				control_flags=("${restate_flags[@]}")
-				control_label=$restate_label
-			fi
 			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
 			control_status=0
 			timeout "$bound" "$bin_dir/experiments" \

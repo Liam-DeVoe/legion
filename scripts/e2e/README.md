@@ -5031,8 +5031,8 @@ each listener through `ENVOY_LISTEN_FD`, Dispatch through `DISPATCH_LISTEN_FD`, 
 A restart serves the same port, and nothing else can take it while the server is down.
 A kept port with no server still listens: the kernel queues a connection and nothing answers it.
 A client of a server a window has stopped therefore waits rather than being refused, and the script polls every kept port with a timeout (`curl --max-time`, and for a proxy a read of natsd's `INFO` line within 2 s).
-Only a listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds a number:
-it can bind only the `PORT` it is given, so it gets a port picked free below the kernel's ephemeral range, and its restart binds the same number again.
+A listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds the `PORT` it is given, so it gets `PORT=0` and binds a port the kernel chooses.
+It logs only the address it was given, so the script reads that port from the kernel's list of the sockets the process holds (its descriptors' inodes against the LISTEN rows of `/proc/net/tcp`), and a held front on the listener's kept socket forwards to it; its restart binds a new port the kernel chooses, behind a new front, and the window's kill stops the front before the listener.
 
 Windows a to g publish these events.
 Each event carries a marker of its own in its text:
@@ -5053,7 +5053,7 @@ This is what sjawhar/legion#2720's deleted replay sweep did for a brand-new sess
 
 The listener sends go to listener `dispatch`, and to listener `shared` in window d.
 In window d, Dispatch cannot reach its listener:
-its lookup of the session (`GET /v1/registry/<id>`) gets no answer within its five-second window on the kept port (a picked port refuses the connection), so it records its two messages as failed attempts with no envelope.
+its lookup of the session (`GET /v1/registry/<id>`) gets no answer within its five-second window on the kept port, so it records its two messages as failed attempts with no envelope.
 Nothing was published for them, and they are expected 0 times (`/0` in the table).
 
 After each window, the script waits up to `SESSION_DELIVERY_SETTLE_S` for every marker to reach its session, then `SESSION_DELIVERY_HOLD_S` more for a repeat.
@@ -5895,7 +5895,8 @@ Each item below names a function, then what it does.
 
 - `start_reported NAME PORT_VAR PATTERN -- CMD…`
 
-  starts CMD as the service NAME (`start_process`), a server that takes no socket, binds a port the kernel chooses and names it in its own log, and sets PORT_VAR to the port `report_port` reads there with PATTERN, waited for while NAME lives.
+  starts CMD as the service NAME (`start_process`), a server that takes no socket, binds a port the kernel chooses and names it in its own log, and sets PORT_VAR to the port `report_port` reads with PATTERN in what the log gained from this start on, waited for while NAME lives.
+  Every start of NAME appends to the one log, so a restart reads its own start's line.
   The e2e harness's fakes are such servers when `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are unset: each logs `fake envoy listener on 127.0.0.1:<port>` or `fake github listener on 127.0.0.1:<port>`
 
 - `listening_holders PORT`

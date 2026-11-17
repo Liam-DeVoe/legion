@@ -140,15 +140,16 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_ROOT` | `${TMPDIR:-/tmp}/dispatch-loadtest` | The directory that holds all the stack's state, binaries and step output. On a Legion pod, `$TMPDIR` is `/legion/scratch/tmp`, the issue's volume. |
 | `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-listener` and `loadgen` from, and `envoy-dispatch` unless `LOADTEST_DISPATCH_SRC` or `LOADTEST_DISPATCH_COMMIT` names another. |
 | `LOADTEST_DISPATCH_SRC` | `LOADTEST_SRC` | The checkout that `stack.sh setup` builds `envoy-dispatch` from. It need not hold this package (Before and after across commits, below). `build-info`, `meta.json` and `seed.meta.json` record its commit. |
-| `LOADTEST_PG_PORT` | `15000 + 10k` | The Postgres port. |
-| `LOADTEST_PROXY_PORT` | `15001 + 10k` | The latency proxy port. |
-| `LOADTEST_PROXY_STATS_PORT` | `15007 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
-| `LOADTEST_NATS_PORT` | `15002 + 10k` | The NATS client port. |
-| `LOADTEST_NATS_MONITOR_PORT` | `15003 + 10k` | The NATS monitoring port (`/varz`). |
-| `LOADTEST_LISTENER_PORT` | `15004 + 10k` | The Envoy listener port. |
-| `LOADTEST_DISPATCH_PORT` | `15005 + 10k` | The Dispatch HTTP port. |
-| `LOADTEST_PPROF_PORT` | `15006 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
-| `LOADTEST_ENVOY_PROXY_PORT` | `15008 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PORT_BASE` | none | The first of the stack's nine ports, which are this number plus the offset in the default column below; 1024 to 65527. The stack chooses no port itself, so `stack.sh setup` refuses a first setup that gives a port to no key (Ports, below). |
+| `LOADTEST_PG_PORT` | `LOADTEST_PORT_BASE` | The Postgres port. |
+| `LOADTEST_PROXY_PORT` | `LOADTEST_PORT_BASE + 1` | The latency proxy port. |
+| `LOADTEST_PROXY_STATS_PORT` | `LOADTEST_PORT_BASE + 7` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
+| `LOADTEST_NATS_PORT` | `LOADTEST_PORT_BASE + 2` | The NATS client port. |
+| `LOADTEST_NATS_MONITOR_PORT` | `LOADTEST_PORT_BASE + 3` | The NATS monitoring port (`/varz`). |
+| `LOADTEST_LISTENER_PORT` | `LOADTEST_PORT_BASE + 4` | The Envoy listener port. |
+| `LOADTEST_DISPATCH_PORT` | `LOADTEST_PORT_BASE + 5` | The Dispatch HTTP port. |
+| `LOADTEST_PPROF_PORT` | `LOADTEST_PORT_BASE + 6` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
+| `LOADTEST_ENVOY_PROXY_PORT` | `LOADTEST_PORT_BASE + 8` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
@@ -159,25 +160,26 @@ same step before and after its change, and compares the two rows.
 | `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
 | `LOADTEST_NO_RESUME` | unset | `1`, under consumer delivery, leaves the resume point out of every registration's `delivery`, as a plugin sends that never wrote a frame. `stack.sh loadgen` passes it to `loadgen run`. |
 
-Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
-`k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
-`15000 + 10k` plus the offset above, so every port lies between 15000 and 16998 and no two ports of
-a root meet. The block is a hash, not a reservation: two roots land in one block about 1 pair in
-200, and then they hold the same 9 ports. Two Legion roles of one pod, each with its own
-`LOADTEST_ROOT`, therefore almost always run a stack each with no port variable set; on a collision
-`stack.sh start` refuses the second stack (`check_port`, so no stack is ever shared) and the
-refusal names the block and the remedies: set the `LOADTEST_*_PORT` variables, or move to another
-`LOADTEST_ROOT`, which picks another block with probability 199/200. Each `LOADTEST_*_PORT`
-overrides its own port, and `stack.json` keeps the port a `setup` recorded; a port that is not
-this root's block default any more is refused without the block explanation, which would name a
-block that has nothing to do with the port in use.
+#### Ports
+
+Every process listens on `127.0.0.1`, on the ports the operator gives: `LOADTEST_PORT_BASE` gives
+all nine, and each `LOADTEST_*_PORT` gives or overrides its own. The stack chooses no port of its
+own. A port that the stack chose and tested free could be taken by another program between the
+test and the server's bind, and the start would then fail or, worse, find another program on the
+port. So the first `stack.sh setup` with no port for a key is refused, naming the variables to set.
+Two stacks on one machine, such as two Legion roles of one pod each with its own `LOADTEST_ROOT`,
+take two bases nine or more apart.
 
 `stack.sh setup` writes the ports into `$LOADTEST_ROOT/stack.json`, and `stack.sh status` prints
 them with the path of that file. A later `setup` keeps the ports the file records and moves only
-those whose variable the environment sets, and it refuses to move a port while a stack process
-runs. `start` refuses a port that another process holds: it names the process when this PID
-namespace can see it, and says that it cannot see one when another Legion role of the pod, in its
-own PID namespace, holds the port.
+those that the environment gives, and it refuses to move a port while a stack process runs. A
+`stack.json` that an earlier `stack.sh` wrote holds ports that `stack.sh` chose itself, from a hash
+of `LOADTEST_ROOT`: `start` refuses it until a `setup` is given every port. `start` also refuses a
+port that another process holds: it names the process when this PID namespace can see it, and says
+that it cannot see one when another Legion role of the pod, in its own PID namespace, holds the
+port. A port that another program takes after that check fails the start: each server binds its
+own port, and `start` waits for that server, never for the port alone (the latency proxies until
+the proxy's own process holds its port).
 
 Every stack process starts under `env -i` with an explicit environment. The `DISPATCH_URL`,
 `ENVOY_URL`, `ENVOY_NATS_URL`, `AWS_*`, `HOME` and `XDG_*` of your shell never reach the stack or
