@@ -60,10 +60,8 @@ func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs 
 // reads (K6), in their order: a session passes when SessionClause passes on its id, which is the
 // reader's own session, a session with history in a project the reader sees (session_projects),
 // or, for an open viewer, any session with no history in a project it does not see. A session
-// with no history therefore reaches an open viewer alone. The listener's own list of a session's
-// projects (PlanC's envoy.Session.Projects, t-c-6) is not in this build; when it lands it joins
-// this statement as a second arm, a session whose projects meet the reader's sees, and nothing else
-// changes.
+// with no history therefore reaches an open viewer alone. A reader that sees every object
+// (seesEveryObject) passes every session, so listAgents does not ask (R9).
 func (s *server) visibleRosterSessions(ctx context.Context, viewer any, sessions []envoy.Session) ([]envoy.Session, error) {
 	ids := make([]string, len(sessions))
 	for index, session := range sessions {
@@ -222,9 +220,13 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return sessions[left].SessionID < sessions[right].SessionID
 	})
 	viewer := refs.VisibilityArg(reader)
-	if sessions, err = s.visibleRosterSessions(r.Context(), viewer, sessions); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// A reader that sees every object passes SessionClause on every id, so the read would cut
+	// nothing (R9).
+	if !seesEveryObject(reader) {
+		if sessions, err = s.visibleRosterSessions(r.Context(), viewer, sessions); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if len(sessions) == 0 {
 		WriteJSON(w, http.StatusOK, []agentResponse{})
