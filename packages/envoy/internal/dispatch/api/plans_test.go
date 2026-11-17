@@ -561,7 +561,8 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 // An issue that ran twice has two plans and two retros. The second run's plan is its owner's, with
 // the document, the version and two tasks in the order the owner gave them, not by id; the plan write
 // answers it whole. The read lists that plan, the highest generation, though the first run's plan
-// was written after it, and both ratings, in the order the retros ran.
+// was written after it, and both ratings whole, in the order the retros ran: each its own score,
+// reason, record and end, the two scores different, so a score read onto the other retro is seen.
 func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -579,12 +580,15 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
 	}
 	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 1))
-	for generation, retro := range map[int]struct {
+	retros := map[int]struct {
 		started time.Time
 		rating  int
 		reason  string
-	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}} {
+	}{1: {at(10), 3, "The plan was late."}, 2: {at(100), 4, "The second plan fit."}}
+	ids := map[int]string{}
+	for generation, retro := range retros {
 		id := uuid.NewString()
+		ids[generation] = id
 		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"started_at": retro.started}))
 		putStepOK(t, handler, issue, id, withStepFields(retroIdentity(daemon, generation), map[string]any{"result": "passed", "ended_at": retro.started.Add(time.Minute)}))
 		rateRetro(t, handler, "LEG", issue, id, generation, retro.rating, retro.reason)
@@ -598,13 +602,28 @@ func TestAnIssueWithTwoRetrosHasTwoRatings(t *testing.T) {
 	if plan := read.Issues[0].Plan; plan == nil || !reflect.DeepEqual(*plan, owners) {
 		t.Fatalf("the read lists the plan %+v, want the owner's plan of generation 2, %+v", plan, owners)
 	}
-	var got []string
-	for _, rating := range read.Issues[0].Ratings {
-		got = append(got, rating.Reason)
+	want := []model.PlanRating{
+		{Rating: 3, Reason: "The plan was late.", StepID: ids[1], EndedAt: new(at(11))},
+		{Rating: 4, Reason: "The second plan fit.", StepID: ids[2], EndedAt: new(at(101))},
 	}
-	if want := []string{"The plan was late.", "The second plan fit."}; !slices.Equal(got, want) {
-		t.Fatalf("the ratings are %v, want %v", got, want)
+	if got := planRatingsText(read.Issues[0].Ratings); !slices.Equal(got, planRatingsText(want)) {
+		t.Fatalf("the ratings are\n%s\nwant each retro's own, in the order they ran\n%s",
+			strings.Join(got, "\n"), strings.Join(planRatingsText(want), "\n"))
 	}
+}
+
+// planRatingsText is each rating of a read as one line, its score, reason, record and end, so two
+// lists compare whole and a difference prints whole.
+func planRatingsText(ratings []model.PlanRating) []string {
+	lines := make([]string, len(ratings))
+	for index, rating := range ratings {
+		ended := "no end"
+		if rating.EndedAt != nil {
+			ended = rating.EndedAt.UTC().Format(time.RFC3339Nano)
+		}
+		lines[index] = fmt.Sprintf("%d %q %s %s", rating.Rating, rating.Reason, rating.StepID, ended)
+	}
+	return lines
 }
 
 // A record whose start Dispatch never got (a step that started before the release) counts no time:
