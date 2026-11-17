@@ -23,9 +23,11 @@ async function resolved(
 ): Promise<NatsCredential | { readonly off: string }> {
   const config = path.join(tempDir(), "envoy.json");
   if (file !== undefined) writeFileSync(config, JSON.stringify(file));
-  const settings = await envoySettings(env, readEnvoyConfig(config, env, { cwd: tempDir() }), {
-    session: "ses_a",
-  });
+  const settings = await envoySettings(
+    env,
+    await readEnvoyConfig(config, env, { cwd: tempDir() }),
+    { session: "ses_a" }
+  );
   if (!settings.enabled) throw new Error(`Envoy is off: ${settings.error ?? settings.notice}`);
   return "off" in settings.inbound ? settings.inbound : settings.inbound.natsCredential;
 }
@@ -172,7 +174,9 @@ describe("which credential a session connects to NATS with", () => {
 
   test("a caller that opens no NATS connection resolves no credential", async () => {
     const env = { ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" };
-    const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
+    const config = await readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, {
+      cwd: tempDir(),
+    });
     const settings = await envoySettings(env, config, { nats: false });
     expect(settings.enabled && settings.inbound).toEqual({
       off: "this session opens no NATS connection",

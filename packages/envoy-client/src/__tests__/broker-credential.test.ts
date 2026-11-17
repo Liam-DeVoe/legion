@@ -30,7 +30,7 @@ const PERSON_TOKEN = fixtureSecret("dsp");
 test("a configured bearer is still the credential, whatever this machine could trade", async () => {
   const broker = stubBroker(600);
   const env = { ...podEnvironment(broker.url, "http://dispatch.test"), DISPATCH_TOKEN: "written" };
-  const resolution = await dispatchSettings(env, noFile(env));
+  const resolution = await dispatchSettings(env, await noFile(env));
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
   expect(resolution.credential.scheme).toBe("Bearer");
   expect(resolution.credential.secret()).toBe("written");
@@ -39,7 +39,7 @@ test("a configured bearer is still the credential, whatever this machine could t
 /** An envoy.json of a person's own, holding the Dispatch token that person writes Dispatch with:
  * what a box's operator has in `~/.config/legion/envoy.json`, and what a session launched on that
  * box reads as its chosen file. */
-function personalFile(env: DispatchEnvironment, serverUrl: string, token: string) {
+async function personalFile(env: DispatchEnvironment, serverUrl: string, token: string) {
   const file = path.join(tempDir(), "envoy.json");
   writeFileSync(file, JSON.stringify({ dispatch: { serverUrl, token } }));
   return readEnvoyConfig(file, env, { cwd: tempDir() });
@@ -52,7 +52,7 @@ test("told to hold its credential at the broker, a session reads no person's tok
   // the controller writing Dispatch as the operator; set, the session trades for its own.
   const broker = stubBroker(600);
   const env = podEnvironment(broker.url, "http://dispatch.test");
-  const config = personalFile(env, "http://dispatch.test", PERSON_TOKEN);
+  const config = await personalFile(env, "http://dispatch.test", PERSON_TOKEN);
 
   const shadowed = await dispatchSettings(env, config, { session: "legion-demo-controller" });
   if (!shadowed.enabled) throw new Error(`Dispatch is off: ${shadowed.error}`);
@@ -73,7 +73,7 @@ test("told to hold its credential at the broker, a session reads no bearer varia
     DISPATCH_TOKEN: PERSON_TOKEN,
     DISPATCH_TOKEN_BROKER: "1",
   };
-  const resolution = await dispatchSettings(env, noFile(env), {
+  const resolution = await dispatchSettings(env, await noFile(env), {
     session: "legion-demo-controller",
   });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
@@ -90,7 +90,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
     DISPATCH_TOKEN_BROKER: "1",
   };
 
-  const noBroker = await dispatchSettings({ ...env, AGENT_SECRETS_URL: "" }, noFile(env));
+  const noBroker = await dispatchSettings({ ...env, AGENT_SECRETS_URL: "" }, await noFile(env));
   expect(noBroker.enabled).toBe(false);
   expect(noBroker.enabled === false && noBroker.error).toContain(
     "AGENT_SECRETS_URL names no secrets broker"
@@ -98,7 +98,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
 
   const noIdentity = await dispatchSettings(
     { ...env, AGENT_SECRETS_MACHINE_IDENTITY: "" },
-    noFile(env)
+    await noFile(env)
   );
   expect(noIdentity.enabled === false && noIdentity.error).toContain(
     "AGENT_SECRETS_MACHINE_IDENTITY names no identity this machine proves"
@@ -108,7 +108,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
   // missing, as every other identity does, rather than reading as a machine with no route.
   const pool = await dispatchSettings(
     { ...env, AGENT_SECRETS_MACHINE_IDENTITY: "pool" },
-    noFile(env)
+    await noFile(env)
   );
   expect(pool.enabled === false && pool.error).toContain(
     "AGENT_SECRETS_MACHINE_AUDIENCE is required by AGENT_SECRETS_MACHINE_IDENTITY=pool"
@@ -117,7 +117,7 @@ test("told to hold a credential it cannot trade for, a session writes Dispatch w
   // A named identity missing its own variables still says which variable.
   const halfNamed = await dispatchSettings(
     { ...env, AGENT_SECRETS_MACHINE_TOKEN_FILE: "" },
-    noFile(env)
+    await noFile(env)
   );
   expect(halfNamed.enabled === false && halfNamed.error).toContain(
     "AGENT_SECRETS_MACHINE_TOKEN_FILE is required"
@@ -132,7 +132,7 @@ test("a DISPATCH_TOKEN_BROKER that is neither 1 nor unset is refused", async () 
     ...podEnvironment(broker.url, "http://dispatch.test"),
     DISPATCH_TOKEN_BROKER: "true",
   };
-  const resolution = await dispatchSettings(env, noFile(env));
+  const resolution = await dispatchSettings(env, await noFile(env));
   expect(resolution.enabled).toBe(false);
   expect(resolution.enabled === false && resolution.error).toContain(
     "DISPATCH_TOKEN_BROKER takes 1"
@@ -145,7 +145,7 @@ test("with no bearer at all, the session's credential is its own identity traded
   const broker = stubBroker(600);
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
-  const resolution = await dispatchSettings(env, noFile(env), {
+  const resolution = await dispatchSettings(env, await noFile(env), {
     session: "example-worker-session",
   });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
@@ -180,7 +180,7 @@ test("a session past its token's life trades again, with nothing restarted", asy
   const broker = stubBroker(1);
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
-  const resolution = await dispatchSettings(env, noFile(env), {
+  const resolution = await dispatchSettings(env, await noFile(env), {
     session: "example-worker-session",
   });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
@@ -204,7 +204,7 @@ test("each session of one process trades under its own name, read at every trade
   const dispatch = stubDispatch();
   const env = podEnvironment(broker.url, dispatch.url);
   let current = "session-one";
-  const resolution = await dispatchSettings(env, noFile(env), { session: () => current });
+  const resolution = await dispatchSettings(env, await noFile(env), { session: () => current });
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
 
   await new DispatchClient(resolution.url, resolution.credential).listAllIssues({});
@@ -228,12 +228,15 @@ test("each session of one process trades under its own name, read at every trade
 test("the listener takes the same credential, and a configured bearer still wins", async () => {
   const broker = stubBroker(600);
   const env = podEnvironment(broker.url, "http://listener.test");
-  const brokered = await envoySettings(env, noFile(env), { nats: false, session: "session-one" });
+  const brokered = await envoySettings(env, await noFile(env), {
+    nats: false,
+    session: "session-one",
+  });
   if (!brokered.enabled) throw new Error("Envoy is off");
   expect(brokered.credential?.scheme).toBe("DPoP");
 
   const listenerToken = fixtureSecret("listener");
-  const written = await envoySettings({ ...env, ENVOY_TOKEN: listenerToken }, noFile(env), {
+  const written = await envoySettings({ ...env, ENVOY_TOKEN: listenerToken }, await noFile(env), {
     nats: false,
   });
   if (!written.enabled) throw new Error("Envoy is off");
@@ -323,7 +326,7 @@ test("a role handed back for the session this process left presents that session
   const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
-  const resolution = await envoySettings(env, noFile(env), {
+  const resolution = await envoySettings(env, await noFile(env), {
     nats: false,
     session: () => current,
   });
@@ -377,7 +380,7 @@ test("a session the host has left keeps no key and no renewing token", async () 
   const listener = sessionBoundListener(broker.sessionOf);
   const env = podEnvironment(broker.url, listener.url);
   let current = "session-one";
-  const resolution = await envoySettings(env, noFile(env), {
+  const resolution = await envoySettings(env, await noFile(env), {
     nats: false,
     session: () => current,
   });
@@ -430,17 +433,20 @@ test("a pool machine has a route: Dispatch and the listener are given its broker
       "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider",
     AGENT_SECRETS_POOL_ACCOUNT: "example-fleet@example-project.iam.gserviceaccount.com",
   };
-  const envoy = await envoySettings(env, noFile(env), { nats: false, session: "session-one" });
+  const envoy = await envoySettings(env, await noFile(env), {
+    nats: false,
+    session: "session-one",
+  });
   if (!envoy.enabled) throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`);
   expect(envoy.credential?.scheme).toBe("DPoP");
-  const dispatch = await dispatchSettings(env, noFile(env), { session: "session-one" });
+  const dispatch = await dispatchSettings(env, await noFile(env), { session: "session-one" });
   if (!dispatch.enabled) throw new Error(`Dispatch is off: ${dispatch.error}`);
   expect(dispatch.credential.scheme).toBe("DPoP");
 
   // An identity this client cannot prove at all is still a mistake in the deployment.
   const unknown = await envoySettings(
     { ...env, AGENT_SECRETS_MACHINE_IDENTITY: "nonsense" },
-    noFile(env),
+    await noFile(env),
     { nats: false }
   );
   expect(unknown.enabled).toBe(false);

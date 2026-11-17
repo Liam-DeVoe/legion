@@ -135,7 +135,7 @@ async function signedInPod(
 async function dispatchOf(env: DispatchEnvironment, session?: string): Promise<DispatchClient> {
   const resolution = await dispatchSettings(
     env,
-    noFile(env),
+    await noFile(env),
     session === undefined ? {} : { session }
   );
   if (!resolution.enabled) throw new Error(`Dispatch is off: ${resolution.error}`);
@@ -292,7 +292,10 @@ test("a sign-in the broker refused for good fails every later call in its words,
   // The same session's later calls, Dispatch's and the listener's alike, are refused in the same
   // words with no refresh at the issuer, no trade at the broker and no request to Dispatch.
   expect(await refusalOf((await dispatchOf(env, "ses_01a9")).listAllIssues({}))).toBe(refused);
-  const listener = await envoySettings(env, noFile(env), { nats: false, session: "ses_01a9" });
+  const listener = await envoySettings(env, await noFile(env), {
+    nats: false,
+    session: "ses_01a9",
+  });
   if (!listener.enabled) throw new Error("Envoy is off");
   expect(
     await refusalOf(

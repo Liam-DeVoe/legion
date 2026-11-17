@@ -117,19 +117,20 @@ export function bearerCredential(token: string): RequestCredential {
 
 /**
  * Where `section`'s bearer comes from: `<SECTION>_TOKEN_FILE` (the trimmed contents of the file it
- * names, how the Legion daemon delivers it to a pane), then `<SECTION>_TOKEN`, then the bearer
- * `written` gives, which is asked for only when neither variable is set. An empty variable counts
- * as unset. Throws naming the variable whose file cannot be read or whose value is not `sendable`,
- * never falling back to the next source, and whatever `written` throws.
+ * names, how the Legion daemon delivers it to a pane, read without holding the event loop), then
+ * `<SECTION>_TOKEN`, then the bearer `written` gives, which is asked for only when neither variable
+ * is set. An empty variable counts as unset. Rejects naming the variable whose file cannot be read
+ * or whose value is not `sendable`, never falling back to the next source, and with whatever
+ * `written` throws.
  */
-export function bearerSource(
+export async function bearerSource(
   env: EnvoyConfigEnvironment,
   section: BearerSection,
   written: () => FileBearer | undefined
-): BearerSource {
+): Promise<BearerSource> {
   const pointer = nonEmpty(env[`${section}_TOKEN_FILE`]);
   if (pointer !== undefined) {
-    return { kind: "variable", token: readSecretFile(`${section}_TOKEN_FILE`, pointer) };
+    return { kind: "variable", token: await readSecretFile(`${section}_TOKEN_FILE`, pointer) };
   }
   const plain = nonEmpty(env[`${section}_TOKEN`]);
   if (plain !== undefined) {

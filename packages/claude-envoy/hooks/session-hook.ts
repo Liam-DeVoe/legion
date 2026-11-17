@@ -501,7 +501,7 @@ async function answersMessage(
     // The configured URL alone, no command run. With none (envoy.json unreadable, Dispatch off or
     // no URL), no token command can name one either: the hook starts no refresher and carries the
     // failure line naming why, never a list read for some URL.
-    dispatchUrl = sessionDispatchUrl(file, process.env, { cwd })
+    dispatchUrl = await sessionDispatchUrl(file, process.env, { cwd })
     if (dispatchUrl !== undefined) {
       const refreshed = await refreshedAnswers(session, cwd, dispatchUrl, startedAt, by)
       if ("text" in refreshed) return refreshed
@@ -588,7 +588,7 @@ async function answersRefresh(session: string, cwd: string): Promise<never> {
       // before any command runs: when envoy.json moved on since the hook started this refresher, no
       // hook carries what it read, and when the token command fails, the hook for the same URL
       // carries this refresher's failure line naming why.
-      const dispatchUrl = sessionDispatchUrl(file, process.env, { cwd }) ?? null
+      const dispatchUrl = (await sessionDispatchUrl(file, process.env, { cwd })) ?? null
       const { dispatch } = await sessionDispatchSettings(file, process.env, { cwd, session })
       const read = await readSessionAnswers({
         session,

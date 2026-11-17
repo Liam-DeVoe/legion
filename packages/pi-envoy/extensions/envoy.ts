@@ -781,13 +781,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   let askgateFile: Extract<SessionConfigFile, { error: null }> | null = null;
   const configFile = CONFIG_FILE.error === null ? CONFIG_FILE : null;
   const ownDispatch = async (file: string): Promise<boolean> => {
-    const own = readEnvoyConfig(file, process.env, { cwd: process.cwd() });
+    const own = await readEnvoyConfig(file, process.env, { cwd: process.cwd() });
     return (
       await dispatchSettings(process.env, own.kind === "read" ? { ...own, checkout: null } : own)
     ).enabled;
   };
   if (configFile !== null && (atStart.dispatch.enabled || (await ownDispatch(configFile.path)))) {
-    const setting = askgateSetting(configFile.path);
+    const setting = await askgateSetting(configFile.path);
     if (setting.error !== null) askgateNotices.push(setting.error);
     if (setting.enabled) askgateFile = configFile;
   }

@@ -78,7 +78,7 @@ export async function resolveDispatch(
   } catch (error) {
     throw new Error(`Dispatch is not configured: ${messageFor(error)}`);
   }
-  const resolution = await dispatchSettings(env, readEnvoyConfig(file, env, { cwd }));
+  const resolution = await dispatchSettings(env, await readEnvoyConfig(file, env, { cwd }));
   if (!resolution.enabled) {
     throw new Error(`Dispatch is not configured: ${resolution.error ?? resolution.notice}`);
   }

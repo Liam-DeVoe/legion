@@ -96,9 +96,15 @@ describe("operatorDispatch", () => {
   });
 });
 
-/** What a case that starts `bun` or `bash` is given, rather than Bun's 5 s: a process started on a
- *  loaded machine can take most of that before it runs a line, and these cases start up to three. */
-const SUBPROCESS_MS = 60_000;
+/** What one `bun lib/operator-dispatch.ts` start is given, rather than Bun's 5 s per case: three
+ *  times the 7.3 s one start took on a devbox at 1-minute load ~1035 (#4318's acceptance run, the
+ *  first case below), as a bound three times a measurement under load is sized
+ *  (docs/testing.md, "A test that waits for the event feed's first frame"). A case that starts
+ *  `bun` is given its own budget for the real starts it makes, as a test of real process I/O carries
+ *  its own (docs/solutions/testing/await-the-event-not-a-tick-budget.md, "Two clock pitfalls"). */
+const BUN_START_MS = 22_000;
+/** The budget of a case, or a hook, that starts `bun` `starts` times. */
+const startsBudget = (starts: number): number => starts * BUN_START_MS;
 
 // The bearer never reaches stdout, where an agent running the command would put it in its
 // transcript: it goes to a 0600 file whose path the caller passes, and lib/operator-dispatch.sh
@@ -125,7 +131,7 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       expect(readFileSync(bearer, "utf-8")).toBe("neutral-1");
       expect(statSync(bearer).mode & 0o777).toBe(0o600);
     },
-    SUBPROCESS_MS
+    startsBudget(1)
   );
 
   test(
@@ -150,7 +156,7 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       expect(JSON.parse(over.stdout.toString()).error).toContain(planted);
       expect(readFileSync(planted, "utf-8")).toBe("");
     },
-    SUBPROCESS_MS
+    startsBudget(3)
   );
 
   test(
@@ -162,7 +168,7 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       expect(JSON.parse(run.stdout.toString()).error).toContain("the secrets broker");
       expect(readdirSync(held)).toEqual([]);
     },
-    SUBPROCESS_MS
+    startsBudget(1)
   );
 
   test(
@@ -173,7 +179,7 @@ describe("bun lib/operator-dispatch.ts <bearer file>", () => {
       expect(run.stdout.toString()).toBe("");
       expect(run.stderr.toString()).toContain("usage: bun scripts/e2e/lib/operator-dispatch.ts");
     },
-    SUBPROCESS_MS
+    startsBudget(1)
   );
 });
 
@@ -215,7 +221,7 @@ printf '%s|%s|%s|%s\\n' "$operator_dispatch_file" "$operator_dispatch_url" "$ope
       })
     );
     inOldCheckout = run(oldCheckout);
-  }, SUBPROCESS_MS);
+  }, startsBudget(3));
 
   test("sets the file, URL and bearer the client resolves", () => {
     expect(on?.exitCode).toBe(0);
@@ -302,6 +308,6 @@ printf '%s|%s|%s\\n' "$prod_dispatch_url" "$prod_baseline" "$(ls -A "$work")"`;
         server.stop(true);
       }
     },
-    SUBPROCESS_MS
+    startsBudget(1)
   );
 });

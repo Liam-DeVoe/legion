@@ -1,5 +1,15 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, statSync } from "node:fs";
-import { chmod, type FileHandle, mkdtemp, open, rm } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  type FileHandle,
+  lstat,
+  mkdtemp,
+  open,
+  readFile,
+  readlink,
+  rm,
+  stat,
+} from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import * as path from "node:path";
 import type { Subprocess } from "bun";
@@ -265,25 +275,35 @@ function describeSchemaIssue(filePath: string, error: z.ZodError): string {
 }
 
 /** A dangling link's target, for a chosen file that does not exist. */
-function danglingLink(filePath: string): string | null {
+async function danglingLink(filePath: string): Promise<string | null> {
   try {
-    return lstatSync(filePath).isSymbolicLink() ? readlinkSync(filePath) : null;
+    return (await lstat(filePath)).isSymbolicLink() ? await readlink(filePath) : null;
   } catch {
     return null;
   }
 }
 
-function parseFile<Settings>(
+/** Whether anything is at `file`, as `existsSync` answers it: any error is nothing there. */
+async function exists(file: string): Promise<boolean> {
+  try {
+    await access(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function parseFile<Settings>(
   filePath: string,
   schema: z.ZodType<Settings>,
   checkout: boolean
-): ParsedFile<Settings> {
+): Promise<ParsedFile<Settings>> {
   let raw: string;
   try {
-    raw = readFileSync(filePath, "utf-8");
+    raw = await readFile(filePath, "utf-8");
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
-      return { kind: "absent", link: danglingLink(filePath) };
+      return { kind: "absent", link: await danglingLink(filePath) };
     }
     return { kind: "invalid", reason: `${filePath}: could not be read (${messageFor(error)})` };
   }
@@ -516,11 +536,11 @@ export async function fileValue(
 }
 
 /** The device a directory is on, as `stat` gives it, or undefined when it cannot be read. */
-export type DeviceOf = (directory: string) => number | undefined;
+export type DeviceOf = (directory: string) => Promise<number | undefined>;
 
-function statDevice(directory: string): number | undefined {
+async function statDevice(directory: string): Promise<number | undefined> {
   try {
-    return statSync(directory).dev;
+    return (await stat(directory)).dev;
   } catch {
     return undefined;
   }
@@ -532,13 +552,18 @@ function statDevice(directory: string): number | undefined {
  * bind-mounts from its host). There a `mv` would move the host's file into the box's own
  * filesystem, so the notice names the file to create and says to move the old one on the machine
  * that owns it, with no command. */
-function moveNotice(oldFile: string, newFile: string, move: string, deviceOf: DeviceOf): string {
-  const oldDevice = deviceOf(path.dirname(oldFile));
+async function moveNotice(
+  oldFile: string,
+  newFile: string,
+  move: string,
+  deviceOf: DeviceOf
+): Promise<string> {
+  const oldDevice = await deviceOf(path.dirname(oldFile));
   let ancestor = path.dirname(newFile);
-  let newDevice = deviceOf(ancestor);
+  let newDevice = await deviceOf(ancestor);
   while (newDevice === undefined && path.dirname(ancestor) !== ancestor) {
     ancestor = path.dirname(ancestor);
-    newDevice = deviceOf(ancestor);
+    newDevice = await deviceOf(ancestor);
   }
   if (oldDevice !== undefined && newDevice !== undefined && oldDevice !== newDevice) {
     return `${oldFile} is not read, and is on another filesystem than ${newFile} (a mount): create ${newFile}, and move ${oldFile} on the machine that owns it`;
@@ -553,19 +578,19 @@ function moveNotice(oldFile: string, newFile: string, move: string, deviceOf: De
  * file to copy or link it to; the neutral file under a relocated `XDG_CONFIG_HOME` (a Legion
  * pane's, under the daemon's state directory) says it is not read there, without asking anyone to
  * move it. Any other file says nothing of it. */
-function oldUserFileNotice(
+async function oldUserFileNotice(
   filePath: string,
   env: EnvoyConfigEnvironment,
   deviceOf: DeviceOf
-): string | undefined {
+): Promise<string | undefined> {
   const home = nonEmpty(env.HOME) ?? homedir();
   const old = path.join(home, ".config", "opencode", "envoy.json");
-  if (!existsSync(old)) return undefined;
+  if (!(await exists(old))) return undefined;
 
   const selected = path.resolve(filePath);
   const userFile = path.resolve(home, ".config", "legion", "envoy.json");
   if (selected === userFile) {
-    return moveNotice(
+    return await moveNotice(
       old,
       userFile,
       "mkdir -p ~/.config/legion && mv ~/.config/opencode/envoy.json ~/.config/legion/",
@@ -607,11 +632,12 @@ export function missingConfigNotice(filePath: string, missing: MissingConfig, of
 
 /**
  * Read the envoy.json at `filePath` (`envoyConfigPath`) and the checkout's `.envoy/envoy.json`
- * under `cwd`, whose `dispatch` section Dispatch's resolver reads beside the chosen file's. Runs no
- * command. A missing chosen file sets `missing`; a chosen file that cannot be read or is not valid
- * is `failed`, naming the file and the key. The checkout's file keeps its own outcome: one that
- * cannot be read or is not valid is an `invalid` checkout, which only Dispatch reads, and an
- * `envoy` section in it sets `checkout.envoyError` rather than configuring anything.
+ * under `cwd`, whose `dispatch` section Dispatch's resolver reads beside the chosen file's, without
+ * holding the event loop: a read on a loaded disk waits alone. Runs no command. A missing chosen
+ * file sets `missing`; a chosen file that cannot be read or is not valid is `failed`, naming the
+ * file and the key. The checkout's file keeps its own outcome: one that cannot be read or is not
+ * valid is an `invalid` checkout, which only Dispatch reads, and an `envoy` section in it sets
+ * `checkout.envoyError` rather than configuring anything.
  *
  * The OpenCode-era files are never read. While the chosen file is missing, its notice names
  * `$HOME/.config/opencode/envoy.json` when that file is there (`oldUserFileNotice`); while the
@@ -619,20 +645,20 @@ export function missingConfigNotice(filePath: string, missing: MissingConfig, of
  * Neither gives a `mv` across filesystems (`moveNotice`); `deviceOf` says which filesystem a
  * directory is on, `stat`'s device by default.
  */
-export function readEnvoyConfig(
+export async function readEnvoyConfig(
   filePath: string,
   env: EnvoyConfigEnvironment,
   options: { readonly cwd: string; readonly deviceOf?: DeviceOf | undefined }
-): EnvoyConfig {
+): Promise<EnvoyConfig> {
   const deviceOf = options.deviceOf ?? statDevice;
-  const chosen = parseFile(filePath, EnvoyFileSchema, false);
+  const chosen = await parseFile(filePath, EnvoyFileSchema, false);
   if (chosen.kind === "invalid") return { kind: "failed", path: filePath, error: chosen.reason };
   const resolvedChosen = path.resolve(filePath);
   const checkoutPath = path.resolve(options.cwd, ".envoy", "envoy.json");
   const checkoutFile =
     checkoutPath === resolvedChosen
       ? { kind: "absent" as const, link: null }
-      : parseFile(checkoutPath, CheckoutFileSchema, true);
+      : await parseFile(checkoutPath, CheckoutFileSchema, true);
   const own: EnvoyFile = chosen.kind === "valid" ? chosen.settings : {};
   let checkout: CheckoutEnvoyConfig | null = null;
   if (checkoutFile.kind === "invalid") {
@@ -652,9 +678,9 @@ export function readEnvoyConfig(
   }
   const oldCheckout = path.resolve(options.cwd, ".opencode", "envoy.json");
   const warnings =
-    oldCheckout !== resolvedChosen && !existsSync(checkoutPath) && existsSync(oldCheckout)
+    oldCheckout !== resolvedChosen && !(await exists(checkoutPath)) && (await exists(oldCheckout))
       ? [
-          moveNotice(
+          await moveNotice(
             oldCheckout,
             checkoutPath,
             `mkdir -p ${path.dirname(checkoutPath)} && mv ${oldCheckout} ${checkoutPath}`,
@@ -663,7 +689,7 @@ export function readEnvoyConfig(
         ]
       : [];
   const unreadOldUserFile =
-    chosen.kind === "absent" ? oldUserFileNotice(filePath, env, deviceOf) : undefined;
+    chosen.kind === "absent" ? await oldUserFileNotice(filePath, env, deviceOf) : undefined;
   return {
     kind: "read",
     path: filePath,
@@ -682,19 +708,19 @@ export function readEnvoyConfig(
 }
 
 /**
- * AskGate's switch in the session's envoy.json at `filePath`, read now. No file, no `askgate`
- * section, or `enabled: true` leaves it on; `enabled: false` turns it off. A section that does
- * not parse, or a file that cannot be read or is not JSON, leaves it on with an `error` that names
- * the file and `askgate.enabled`.
+ * AskGate's switch in the session's envoy.json at `filePath`, read now, without holding the event
+ * loop. No file, no `askgate` section, or `enabled: true` leaves it on; `enabled: false` turns it
+ * off. A section that does not parse, or a file that cannot be read or is not JSON, leaves it on
+ * with an `error` that names the file and `askgate.enabled`.
  */
-export function askgateSetting(filePath: string): AskgateSetting {
+export async function askgateSetting(filePath: string): Promise<AskgateSetting> {
   const stayOn = (reason: string): AskgateSetting => ({
     enabled: true,
     error: `${reason}; AskGate stays on`,
   });
   let raw: string;
   try {
-    raw = readFileSync(filePath, "utf-8");
+    raw = await readFile(filePath, "utf-8");
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT") || hasErrnoCode(error, "ENOTDIR")) {
       return { enabled: true, error: null };

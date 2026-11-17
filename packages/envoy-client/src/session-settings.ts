@@ -145,7 +145,7 @@ export async function sessionSettings(
     const off = offWithError(file.error);
     return { dispatch: off, envoy: off, notice: `${file.error}: Dispatch and Envoy are off` };
   }
-  const config = readEnvoyConfig(file.path, env, options);
+  const config = await readEnvoyConfig(file.path, env, options);
   const [dispatch, envoy] = await Promise.all([
     dispatchSettings(env, config, { session: options.session }),
     envoySettings(env, config, { nats: options.nats, session: options.session }),
@@ -187,7 +187,7 @@ export async function sessionDispatchSettings(
 ): Promise<SessionDispatch> {
   if (file.path === null)
     return { dispatch: offWithError(file.error), warnings: [], missing: null };
-  const config = readEnvoyConfig(file.path, env, options);
+  const config = await readEnvoyConfig(file.path, env, options);
   return {
     dispatch: await dispatchSettings(env, config, {
       commands: options.commands,
@@ -199,17 +199,17 @@ export async function sessionDispatchSettings(
 }
 
 /** The Dispatch URL `file` and the environment configure now (`dispatchUrl`), read without its
- * token, so no `!` command runs; undefined when Dispatch is off before its token is read or the
- * file's location could not be worked out. What a caller on a deadline names to
+ * token's value, so no `!` command runs; undefined when Dispatch is off before its token is read or
+ * the file's location could not be worked out. What a caller on a deadline names to
  * `readSessionAnswers` while `sessionDispatchSettings(…, { commands: "kept" })` is off with an
  * error, so only a list read from that URL stands in. */
-export function sessionDispatchUrl(
+export async function sessionDispatchUrl(
   file: SessionConfigFile,
   env: DispatchEnvironment,
   options: { readonly cwd: string }
-): string | undefined {
+): Promise<string | undefined> {
   if (file.path === null) return undefined;
-  return dispatchUrl(env, readEnvoyConfig(file.path, env, options));
+  return dispatchUrl(env, await readEnvoyConfig(file.path, env, options));
 }
 
 /** Envoy from `file` (`envoySettings`), for a command that resolves Envoy alone. A file whose
@@ -220,7 +220,7 @@ export async function sessionEnvoySettings(
   options: { readonly cwd: string; readonly nats?: boolean | undefined } & SessionNameOption
 ): Promise<EnvoySettings> {
   if (file.path === null) return offWithError(file.error);
-  return envoySettings(env, readEnvoyConfig(file.path, env, options), {
+  return envoySettings(env, await readEnvoyConfig(file.path, env, options), {
     nats: options.nats,
     session: options.session,
   });

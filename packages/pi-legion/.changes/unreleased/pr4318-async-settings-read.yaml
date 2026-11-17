@@ -5,7 +5,9 @@ body: |-
   publisher, and a build that failed is tried again at the next notice. A phase reminder's
   architect notice whose run ended while the publisher was built is not sent (it named a worker
   with 0 unanswered reminders), and a stall notice whose session's claim ended meanwhile is not
-  sent under the ended claim.
+  sent under the ended claim. A pane's boot token and the controller's secret, read from the files
+  their `*_FILE` variables name, are read without holding the process (`requiredSecret` and
+  `requiredControllerCapability` return Promises).
 time: 2026-11-17T12:31:04Z
 custom:
   Issue: pr4318

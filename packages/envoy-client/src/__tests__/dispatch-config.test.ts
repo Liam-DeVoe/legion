@@ -717,11 +717,11 @@ describe("sessionDispatchUrl", () => {
       enabled: false,
       error: expect.stringContaining("has not run"),
     });
-    expect(sessionDispatchUrl(file, env, { cwd })).toBe("http://dispatch.test");
+    expect(await sessionDispatchUrl(file, env, { cwd })).toBe("http://dispatch.test");
     expect(existsSync(marker)).toBe(false);
     // DISPATCH_URL names the server, as it does for the resolution itself.
     expect(
-      sessionDispatchUrl(
+      await sessionDispatchUrl(
         file,
         { ...env, DISPATCH_URL: "http://other.test/", DISPATCH_TOKEN: "v" },
         { cwd }
@@ -729,18 +729,24 @@ describe("sessionDispatchUrl", () => {
     ).toBe("http://other.test");
   });
 
-  test("is undefined when nothing configures Dispatch, a file turns it off, or the file cannot be used", () => {
+  test("is undefined when nothing configures Dispatch, a file turns it off, or the file cannot be used", async () => {
     const cwd = tempDir();
     const unset = { HOME: tempDir() };
-    expect(sessionDispatchUrl(sessionConfigFile("command", unset), unset, { cwd })).toBeUndefined();
+    expect(
+      await sessionDispatchUrl(sessionConfigFile("command", unset), unset, { cwd })
+    ).toBeUndefined();
     const off = { HOME: tempDir() };
     writeUserConfig(off.HOME, { dispatch: { enabled: false, serverUrl: "http://dispatch.test" } });
-    expect(sessionDispatchUrl(sessionConfigFile("command", off), off, { cwd })).toBeUndefined();
+    expect(
+      await sessionDispatchUrl(sessionConfigFile("command", off), off, { cwd })
+    ).toBeUndefined();
     const broken = { HOME: tempDir() };
     writeUserConfig(broken.HOME, "{not json");
     expect(
-      sessionDispatchUrl(sessionConfigFile("command", broken), broken, { cwd })
+      await sessionDispatchUrl(sessionConfigFile("command", broken), broken, { cwd })
     ).toBeUndefined();
-    expect(sessionDispatchUrl({ path: null, error: "relative" }, unset, { cwd })).toBeUndefined();
+    expect(
+      await sessionDispatchUrl({ path: null, error: "relative" }, unset, { cwd })
+    ).toBeUndefined();
   });
 });
