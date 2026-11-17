@@ -350,12 +350,22 @@ func (r *rig) nextRaw() map[string]any {
 	}
 }
 
-// next is the next frame the bridge wrote that is not a pane summary (tool_execution_start) and
-// not the name of the model that answered (answerFrame): the cases that read next are about turns.
+// nextWithSummaries is the next frame the bridge wrote that is not the name of the model that
+// answered (answerFrame), pane summaries (tool_execution_start) included.
+func (r *rig) nextWithSummaries() map[string]any {
+	r.t.Helper()
+	for {
+		if frame := r.nextRaw(); !answerFrame(frame) {
+			return frame
+		}
+	}
+}
+
+// next is nextWithSummaries without the pane summaries: the cases that read next are about turns.
 func (r *rig) next() map[string]any {
 	r.t.Helper()
 	for {
-		if frame := r.nextRaw(); frame["type"] != "tool_execution_start" && !answerFrame(frame) {
+		if frame := r.nextWithSummaries(); frame["type"] != "tool_execution_start" {
 			return frame
 		}
 	}
@@ -798,10 +808,7 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 	r.open()
 	var types []string
 	for ends := 0; ends < 2; {
-		frame := r.nextRaw()
-		if answerFrame(frame) {
-			continue
-		}
+		frame := r.nextWithSummaries()
 		typ, _ := frame["type"].(string)
 		types = append(types, typ)
 		if typ == "agent_end" {
@@ -886,10 +893,7 @@ func TestABackgroundTaskFinishingDuringATurnDoesNotEndIt(t *testing.T) {
 	// The turn's two tool calls, the background command and the foreground one; the task's three
 	// lines come between the second call and the turn's result, which the gate holds back.
 	for i := range 2 {
-		frame := r.nextRaw()
-		for answerFrame(frame) {
-			frame = r.nextRaw()
-		}
+		frame := r.nextWithSummaries()
 		if frame["type"] != "tool_execution_start" {
 			t.Fatalf("got %v, want tool call %d of the turn", frame, i+1)
 		}
