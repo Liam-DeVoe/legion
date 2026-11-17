@@ -2607,3 +2607,85 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
     }
   });
 });
+
+// `Shift+P` presses the pin while the menu is shut, so it opens nothing and closes nothing: the
+// focus stays where the reader had it, on the page's body or on the title's heading, and never
+// jumps to the menu's control.
+test("Shift+P pins and unpins and leaves the focus where it was", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectHeaderDrawn(page);
+    const header = issueHeader(page);
+    const pin = header.locator('[data-issue-action="pin"]');
+    await expect(pin).toHaveAttribute("aria-pressed", "false");
+
+    await leaveFocus(page);
+    await page.keyboard.press("Shift+P");
+    await expect(pin, "Shift+P did not pin the issue").toHaveAttribute("aria-pressed", "true");
+    await framesDrawn(page, 2);
+    const fromBody = await focusNow(page);
+    expect(
+      fromBody.onBody,
+      `Shift+P from the page's body moved the focus to ${fromBody.what}`
+    ).toBe(true);
+
+    const heading = header.getByRole("heading", { level: 1 });
+    await heading.focus();
+    await expect(heading).toBeFocused();
+    await page.keyboard.press("Shift+P");
+    await expect(pin, "Shift+P did not unpin the issue").toHaveAttribute("aria-pressed", "false");
+    await framesDrawn(page, 2);
+    await expect(heading, "Shift+P from the title's heading moved the focus").toBeFocused();
+  });
+});
+
+// On a gated root whose Verification document's and spec's requests both wait on the reader, `a`
+// on the spec's entry - the line's last entry, after the Verification document's - approves the
+// spec alone: it presses the Approve of the focused entry, never the first Approve on the line.
+test("an approval entry's a approves its own document when an earlier entry also waits", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      await createProject({ key: "LAST", name: "Last entry" });
+      await setGatedSteps("LAST", ["decisions", "criteria", "spec"]);
+      const root = await createIssue({ project: "LAST", spec: "The plan.", title: "Gated root" });
+      const verification = await createIssueArtifact(root.key, {
+        content: "# Verification\n\nOne check.\n",
+        name: "verification.md",
+      });
+      const spec = root.primary_artifact_id ?? "";
+      await requestApproval(spec, { summary: "Read it." });
+      await requestApproval(verification.artifact.id, { summary: "Read it." });
+      return { key: root.key, spec, verification: verification.artifact.id };
+    },
+    async (page, seeded) => {
+      const reviewed = reviewsSent(page);
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(waitingCount(page)).toHaveText("Waiting on you (2)");
+      const chip = approvalEntry(page, "spec").locator("[data-approval-artifact]");
+      await expect(chip, "the spec's entry draws another document's chip").toHaveAttribute(
+        "data-approval-artifact",
+        seeded.spec
+      );
+      await chip.focus();
+      await expect(chip).toBeFocused();
+      await page.keyboard.press("a");
+      await expect
+        .poll(async () => (await getArtifact(seeded.spec)).approval?.state, {
+          message: "a on the spec's entry recorded no approval of the spec",
+        })
+        .toBe("approved");
+      expect(reviewed, "a on the spec's entry reviewed another document").toEqual([seeded.spec]);
+      expect(
+        (await getArtifact(seeded.verification)).approval?.state,
+        "a on the spec's entry answered the Verification document's request"
+      ).toBe("awaiting");
+      await expect(waitingCount(page)).toHaveText("Waiting on you (1)");
+    }
+  );
+});
