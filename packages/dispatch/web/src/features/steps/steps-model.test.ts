@@ -84,6 +84,28 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
   expect(first?.rows[4]).toMatchObject({ agent: "", model: "", started: null, type: "" });
 });
 
+// The server orders tasks by each task's first step, which is no order of their names: three
+// tasks whose names sort neither up nor down keep the server's order, each with its own runs.
+test("stepTasks keeps the server's order of tasks, not the order of their names", () => {
+  const tasks = stepTasks({
+    issue: "CORE-1",
+    tasks: [
+      { steps: [record({ id: "review-1", task: "review" })], task: "review" },
+      {
+        steps: [record({ id: "default-1" }), record({ attempt: 2, id: "default-2" })],
+        task: "default",
+      },
+      { steps: [record({ id: "docs-1", task: "docs" })], task: "docs" },
+    ],
+  });
+
+  expect(tasks.map((task) => [task.task, task.rows.map((row) => row.id)])).toEqual([
+    ["review", ["review-1"]],
+    ["default", ["default-1", "default-2"]],
+    ["docs", ["docs-1"]],
+  ]);
+});
+
 // The generated shape lets both lists be null, and an issue Legion never ran has no task at all.
 test("stepTasks reads a null list as empty", () => {
   expect(stepTasks({ issue: "CORE-1", tasks: null })).toEqual([]);
