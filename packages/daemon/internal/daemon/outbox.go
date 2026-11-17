@@ -1203,7 +1203,7 @@ func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, pa
 	}
 	tasks := make([]dispatch.PlanTask, len(payload.Tasks))
 	for i, task := range payload.Tasks {
-		tasks[i] = dispatch.PlanTask{ID: task.ID, Steps: task.Steps}
+		tasks[i] = dispatch.PlanTask(task)
 	}
 	plan := dispatch.PlanWrite{Generation: payload.Generation, Source: payload.Source, ArtifactID: payload.ArtifactID,
 		Version: payload.Version, Tasks: tasks}

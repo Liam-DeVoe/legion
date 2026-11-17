@@ -118,18 +118,38 @@ func (r *recordRig) run() {
 }
 
 // A plan record is written once, under the row's issue and the plan's own id, with the run, the
-// source and every task with its steps in order, and the row is done.
+// source, the owner's document and its version where the plan has them, and every task with its
+// steps in order, and the row is done. The owner's plan carries every field a default plan leaves
+// empty, a version that is not its run, and two tasks out of the order of their ids, so a field the
+// copy to Dispatch drops, or a sort of the tasks, changes what Dispatch receives.
 func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
-	rig := newRecordRig(t, planRecordOf(), nil)
-	rig.run()
-	if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
-		t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
-	}
-	plans, steps := rig.client.received()
-	want := planPut{Issue: stepIssue, ID: planRecordID, Plan: dispatch.PlanWrite{Generation: 2, Source: "default",
-		Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}}
-	if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
-		t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
+	for _, tc := range []struct {
+		name string
+		plan record.PlanRecord
+		want dispatch.PlanWrite
+	}{
+		{name: "the default plan", plan: planRecordOf(), want: dispatch.PlanWrite{Generation: 2, Source: "default",
+			Tasks: []dispatch.PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}},
+		{
+			name: "an owner's plan of two tasks",
+			plan: record.PlanRecord{ID: planRecordID, Generation: 3, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4,
+				Tasks: []record.PlanRecordTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+			want: dispatch.PlanWrite{Generation: 3, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4,
+				Tasks: []dispatch.PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}, {ID: "api", Steps: []string{"reviewer", "implementer"}}}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newRecordRig(t, tc.plan, nil)
+			rig.run()
+			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+				t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
+			}
+			plans, steps := rig.client.received()
+			want := planPut{Issue: stepIssue, ID: planRecordID, Plan: tc.want}
+			if len(plans) != 1 || len(steps) != 0 || !reflect.DeepEqual(plans[0], want) {
+				t.Fatalf("Dispatch received the plans %+v and the step writes %+v, want the one plan %+v", plans, steps, want)
+			}
+		})
 	}
 }
 
