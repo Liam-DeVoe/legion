@@ -238,8 +238,11 @@ func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspe
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
-	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue, reviewedPart(owner.role, owner.issue.Phase, row)), 0,
-		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
+	resume, err := e.resumeTask(ctx, tx, owner.issue, reviewedPart(owner.role, owner.issue.Phase, row))
+	if err != nil {
+		return false, err
+	}
+	return false, e.started(ctx, tx, owner.issue, owner.role, resume, 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported

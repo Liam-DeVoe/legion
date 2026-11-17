@@ -406,7 +406,10 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
-		task = ResumePhaseTask(issue, reviewedPart(role, issue.Phase, row))
+		var err error
+		if task, err = e.resumeTask(ctx, tx, issue, reviewedPart(role, issue.Phase, row)); err != nil {
+			return err
+		}
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
@@ -428,7 +431,10 @@ func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue recor
 	if err != nil {
 		return err
 	}
-	task := ResumePhaseTask(issue, reviewed)
+	task, err := e.resumeTask(ctx, tx, issue, reviewed)
+	if err != nil {
+		return err
+	}
 	entry, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
@@ -773,9 +779,27 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
 }
 
+// The labels of a started worker's task that a prompt or a skill names to the worker, each the
+// text before the colon of one of the task's lines. Every line of the task is built from its
+// label here, and TestEachTaskLabelIsOneThePromptsName ties each one to the prompts and the
+// skills that tell the worker to read it, so a label renamed on one side alone fails there.
+// testerVerdictLabel and ReviewedCommitLabel, above, are two more, tied by tests of their own.
+const (
+	phaseLabel       = "Phase"
+	workingCopyLabel = "Working copy"
+	planTaskLabel    = "Task"
+	stepsLabel       = "Steps"
+	taskTextLabel    = "Task text"
+	reportedLabel    = "reported"
+	handoffLabel     = "Handoff"
+	pullRequestLabel = "Pull request"
+	reasonLabel      = "Reason"
+)
+
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
-// retro), and a resumed session cannot otherwise tell a new phase from its last.
+// retro), and a resumed session cannot otherwise tell a new phase from its last. at is where the
+// worker's work stands (standingPart), placed right after that line.
 // The handoff a phase ended with is a Dispatch handoff record on the issue, which the line names by
 // its phase word and version with the command that reads that version, the record the daemon
 // accepted, whatever was written to the phase since; a commit is named, as `Handoff commit:`,
@@ -788,11 +812,11 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // reviewed is the commit the reviewer's last deciding review read (reviewedPart), "" for every
 // start but a later review round's; the part that names it (reviewedCommit.part) is placed after
 // the pull request and before the reason.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reviewed reviewedCommit, reason string) string {
-	text := continueLine(issue)
+func task(issue record.Issue, at Standing, handoff record.PhaseRow, pr *record.PullRequest, reviewed reviewedCommit, reason string) string {
+	text := continueLine(issue) + string(at)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
-		text += fmt.Sprintf(" Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
+		text += fmt.Sprintf(" %s: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", handoffLabel, word, handoff.HandoffVersion, issue.Key, word, handoff.HandoffVersion)
 	}
 	if handoff.HandoffCommit != "" {
 		text += " Handoff commit: " + handoff.HandoffCommit + "."
@@ -801,13 +825,123 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 		text += " " + testerVerdictLabel + ": " + handoff.Verdict + "."
 	}
 	if pr != nil && pr.Number != 0 {
-		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
+		text += fmt.Sprintf(" %s: #%d.", pullRequestLabel, pr.Number)
 	}
 	text += reviewed.part()
 	if reason != "" {
-		text += " Reason: " + reason + "."
+		text += " " + reasonLabel + ": " + sentence(reason)
 	}
 	return text
+}
+
+// sentence is s ended as a sentence: s itself where it already ends with a full stop, a question
+// mark or an exclamation mark, as a review's body or a person's reason often does, and s with a
+// full stop otherwise, so a reason that ends its own sentence is not given a second stop.
+func sentence(s string) string {
+	if strings.HasSuffix(s, ".") || strings.HasSuffix(s, "?") || strings.HasSuffix(s, "!") {
+		return s
+	}
+	return s + "."
+}
+
+// Standing is the part of a start's task that names where the started worker's work stands, as
+// standingPart writes it: the working copy line for every start, and for an issue with plan rows
+// the task, the worker's step in it, the task's steps, the task's text and the report of each
+// earlier step. It has a type of its own, as reviewedCommit does, so a caller of task and
+// ResumePhaseTask passes the one writer's part and no other string in its place. A package outside
+// this one gets a value of it from WorkingCopy alone.
+type Standing string
+
+// WorkingCopy is the standing of a start of an issue with no plan rows, its working copy line
+// alone: ` Working copy: branch legion/<KEY>, directory <dir>.`, with the directory dir gives the
+// issue (Config.WorkspaceDir), and ` Working copy: branch legion/<KEY>.` where dir is nil or gives
+// none. The branch is the issue's (claim.IssueBranch), which its workspace's bookmark names.
+func WorkingCopy(issue record.Issue, dir func(record.Issue) string) Standing {
+	where := ""
+	if dir != nil {
+		where = dir(issue)
+	}
+	if where == "" {
+		return Standing(fmt.Sprintf(" %s: branch %s.", workingCopyLabel, claim.IssueBranch(issue.Key)))
+	}
+	return Standing(fmt.Sprintf(" %s: branch %s, directory %s.", workingCopyLabel, claim.IssueBranch(issue.Key), where))
+}
+
+// standingPart is where the work of a worker started in issue's phase stands, the part of its
+// task after the continue line (Standing). Every start names its working copy (WorkingCopy). An
+// issue with no plan rows names nothing else, so it is told today's task with that one line, and
+// the prompts read a task with no `Task:` line as such an issue's (R20). An issue with plan rows
+// names its one task: a step's worker is told ` Task: <id>. Step <i> of <n>: <role>.`, the task's
+// steps (stepsLine), ` Task text: ` and the text of the task's block, and the report of each step
+// before its own (reportsBefore). The retro and the merge run no step of the task, so their worker
+// is told ` Task: <id>.` and the task's steps alone: the merger reads from them whether the task
+// has a review step, and each reads the runs of the steps and their reports from Dispatch
+// (`dispatch steps`), which keeps every run, the failed ones too.
+//
+// The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
+// before it composes the task. A run with plan rows whose line holds no place in that phase is
+// refused: no start of such a run names one, and a task that named none would read as an issue
+// with no plan rows.
+func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue) (Standing, error) {
+	at := WorkingCopy(issue, e.cfg.WorkspaceDir)
+	w, err := e.walk(ctx, tx, issue)
+	if err != nil || !w.Stored {
+		return at, err
+	}
+	place, ok := w.PlaceOf(issue.Phase)
+	if !ok {
+		return "", fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
+	}
+	text := string(at) + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
+	if place.Kind != record.PlaceStep {
+		return Standing(text + stepsLine(w.Steps)), nil
+	}
+	text += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), stepWord(w.Steps[place.Position-1]))
+	text += stepsLine(w.Steps) + " " + taskTextLabel + ": " + strings.TrimSpace(w.Text)
+	rows, err := e.store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return "", err
+	}
+	return Standing(text + reportsBefore(rows, w, place.Position)), nil
+}
+
+// stepWord is step as its plan writes it: its role, and `:<key>` after it where the step names
+// the agent that runs it (acceptance:owner).
+func stepWord(step record.PlanStep) string {
+	if step.AgentKey == "" {
+		return step.Role
+	}
+	return step.Role + ":" + step.AgentKey
+}
+
+// stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`: each step of a
+// task by its place, in the order it runs, then the retro and the merge Legion runs after them.
+func stepsLine(steps []record.PlanStep) string {
+	named := make([]string, len(steps))
+	for i, step := range steps {
+		named[i] = fmt.Sprintf("%d %s", step.Position, stepWord(step))
+	}
+	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
+}
+
+// reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
+// task before the step at place whose role's phases row holds a handoff record: the record that
+// role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
+// reads. A role runs at most one step of an issue, so its row holds that step's facts, and each
+// step before a running one completed in the run that led to it: a step that runs again after a
+// return writes its new record on the row before the step after it starts. A step whose role
+// writes no handoff (the owner's acceptance) has no line.
+func reportsBefore(rows []record.PhaseRow, w Walk, place int) string {
+	var text strings.Builder
+	for j := 1; j < place; j++ {
+		role := phase.RoleFor(w.Line[j-1])
+		for _, row := range rows {
+			if row.Role == role && row.HandoffRecord != "" {
+				fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, stepWord(w.Steps[j-1]), reportedLabel, handoffWord(role), row.HandoffVersion)
+			}
+		}
+	}
+	return text.String()
 }
 
 // reviewedCommit is the commit the reviewer's last deciding review read, as a start's task names
@@ -863,7 +997,7 @@ func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 func continueLine(issue record.Issue) string {
-	return fmt.Sprintf("Continue %s. Issue: %s. Phase: %s.", issue.Title, issue.Key, issue.Phase)
+	return fmt.Sprintf("Continue %s. Issue: %s. %s: %s.", issue.Title, issue.Key, phaseLabel, issue.Phase)
 }
 
 // handoffWord is the word of the Dispatch handoff record role writes (phase.Handoff's writer), ""
@@ -879,13 +1013,24 @@ func handoffWord(role claim.Role) string {
 
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last. reviewed is
-// the commit the reviewer's last deciding review read (reviewedPart), whose part
-// (reviewedCommit.part) is placed after the continue line and before the closing sentence: a
-// reviewer resumed in a fresh session has no earlier task to read it from. It is "" for every
-// other start.
-func ResumePhaseTask(issue record.Issue, reviewed reviewedCommit) string {
-	return continueLine(issue) + reviewed.part() + " Resume the existing phase work."
+// the work on, which is what a resumed session needs to tell this phase from its last. at is where
+// the worker's work stands (standingPart), placed right after the continue line, as a start's
+// task places it (task): a worker resumed in a fresh session has no earlier task to read it from.
+// reviewed is the commit the reviewer's last deciding review read (reviewedPart), whose part
+// (reviewedCommit.part) is placed after that and before the closing sentence, for the same
+// reason. It is "" for every other start.
+func ResumePhaseTask(issue record.Issue, at Standing, reviewed reviewedCommit) string {
+	return continueLine(issue) + string(at) + reviewed.part() + " Resume the existing phase work."
+}
+
+// resumeTask is ResumePhaseTask of the worker of issue's phase, standing where the record holds
+// its work (standingPart).
+func (e *Engine) resumeTask(ctx context.Context, tx pgx.Tx, issue record.Issue, reviewed reviewedCommit) (string, error) {
+	at, err := e.standingPart(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return ResumePhaseTask(issue, at, reviewed), nil
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
