@@ -58,7 +58,7 @@ create table plan_tasks (
   part_of text not null default '',
   owner_role text not null default '',
   merges boolean not null default false,
-  state text not null constraint plan_tasks_state_check check (state in ('waiting', 'running', 'done', 'stopped')),
+  state text not null constraint plan_tasks_state_check check (state in ('waiting', 'running', 'done', 'stopped', 'left')),
   stopped_reason text not null default '',
   running_kind text not null default '' constraint plan_tasks_running_kind_check check (running_kind in ('', 'step', 'retro', 'merge')),
   position integer not null default 0 constraint plan_tasks_position_check check (position >= 0),

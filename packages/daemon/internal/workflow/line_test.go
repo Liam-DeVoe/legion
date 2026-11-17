@@ -110,7 +110,10 @@ func leaveAs(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status strin
 // the phase the store holds is the one the task's place derives (B-12, A-8, C2-6). A root and a
 // child with the plan `implementer reviewer` each walk it from admitted to their merge, and then
 // leave as done: the root through its linger (beginLinger), the child through its own write
-// (leave). The control writes the phase alone, as the old path did, and the check fails.
+// (leave). A root and a child parked at backlog in the middle of their first step leave before
+// their task is done: the task is left at that step, and the phase it derives is done, the phase of
+// an issue out of the workflow. The control writes the phase alone, as the old path did, and the
+// check fails.
 func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 	moves := []struct {
 		trigger TriggerKind
@@ -169,6 +172,52 @@ func TestTheTaskPlaceAndThePhaseMoveInOneWrite(t *testing.T) {
 		leaveAs(t, pool, engine, issue.Key, "done")
 		if err := taskStands(t, pool, engine, issue.Key, merge, record.TaskDone, phase.Done); err != nil {
 			t.Fatal(err)
+		}
+	})
+
+	// A leave at a status that is not done takes the issue out before its work is done: its task is
+	// left where it stands, not done, and a todo opens a new run with rows of its own.
+	stepOne := record.TaskPlace{Kind: record.PlaceStep, Position: 1}
+	t.Run("a child parked at backlog in the middle of its first step", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := stepEngine(nil)
+		issue := child(t, pool)
+		seedOwnersPlan(t, pool, issue.Key, issue.Generation)
+		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		leaveAs(t, pool, engine, issue.Key, "backlog")
+		if err := taskStands(t, pool, engine, issue.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("a root parked at backlog in the middle of its first step, through its linger", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := stepEngine(nil)
+		root := stepRoot(t, pool, phase.Admitted)
+		seedOwnersPlan(t, pool, root.Key, root.Generation)
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		leaveAs(t, pool, engine, root.Key, "backlog")
+		if err := taskStands(t, pool, engine, root.Key, stepOne, record.TaskLeft, phase.Done); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	// The same park of a child whose run has no plan rows writes its phase done, as today, and no
+	// task row (R20).
+	t.Run("a child with no plan rows parked at backlog stands done, as today", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := stepEngine(nil)
+		issue := child(t, pool)
+		move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+		leaveAs(t, pool, engine, issue.Key, "backlog")
+		var got string
+		var tasks int
+		if err := pool.QueryRow(t.Context(), `select phase, (select count(*) from plan_tasks where issue = $1) from issues where key = $1`,
+			issue.Key).Scan(&got, &tasks); err != nil {
+			t.Fatal(err)
+		}
+		if phase.Phase(got) != phase.Done || tasks != 0 {
+			t.Fatalf("the parked child with no plan rows stands at %s with %d task rows, want done and none", got, tasks)
 		}
 	})
 

@@ -463,6 +463,58 @@ func TestMoveTaskAndStopTaskWriteWhereATaskStands(t *testing.T) {
 	}
 }
 
+// A task whose issue leaves the workflow before the task is done is left where it stands: MoveTask
+// writes the state left at its place, and nothing starts it again, neither a stop (StopTask) nor a
+// move to any other state, since a todo opens a new run with rows of its own. The same stop and the
+// same move of the task while it still runs are written: that is the control, which shows each
+// refusal is the state's and not a write the task could not take.
+func TestATaskThatLeftTheWorkflowIsNeverStartedAgain(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	v, tasks, steps := ownersPlan(planIssue, 1, 2, planOwner, planGivenAt)
+	records := NewStore()
+	step2 := TaskPlace{Kind: PlaceStep, Position: 2}
+	inTx(t, st, func(tx pgx.Tx) {
+		putPlan(t, tx, v, tasks, steps)
+		must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", step2, TaskRunning))
+	})
+	acts := []struct {
+		name string
+		act  func(tx pgx.Tx) error
+	}{
+		{"a stop", func(tx pgx.Tx) error { return records.StopTask(ctx, tx, planIssue, 1, "a", "stopped by its owner") }},
+		{"a restart at its first step", func(tx pgx.Tx) error {
+			return records.MoveTask(ctx, tx, planIssue, 1, "a", TaskPlace{Kind: PlaceStep, Position: 1}, TaskRunning)
+		}},
+		{"a move to done", func(tx pgx.Tx) error { return records.MoveTask(ctx, tx, planIssue, 1, "a", step2, TaskDone) }},
+	}
+	try := func(t *testing.T, act func(tx pgx.Tx) error) error {
+		t.Helper()
+		tx, err := st.Pool().Begin(ctx)
+		must(t, err)
+		defer func() { _ = tx.Rollback(ctx) }()
+		return act(tx)
+	}
+	for _, a := range acts {
+		if err := try(t, a.act); err != nil {
+			t.Fatalf("control: %s of the running task = %v, want it written", a.name, err)
+		}
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.MoveTask(ctx, tx, planIssue, 1, "a", step2, TaskLeft))
+		if got := readPlan(t, tx, planIssue, 1).Tasks[0]; got.State != TaskLeft || got.Place != step2 {
+			t.Fatalf("task a after its issue left = %s at %+v, want left at step 2", got.State, got.Place)
+		}
+	})
+	for _, a := range acts {
+		t.Run(a.name, func(t *testing.T) {
+			if err := try(t, a.act); err == nil {
+				t.Fatalf("%s of a task that left the workflow was written, want it refused", a.name)
+			}
+		})
+	}
+}
+
 // Where a task stands names the place a step runs at, for the count of its starts and for its
 // record (record.StepPlace, the key of step_starts): the task, the kind and the place, in the words
 // the count of starts already writes (workflow's stepOf), so the start the walk counts for a task at

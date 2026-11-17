@@ -19,11 +19,12 @@ const issuePlansVersion = 20261117034837
 
 // 20261117034837 holds the plan of an issue as rows. A step's role is a role's name as a plan
 // writes it, lower case, so a role spelled another way is refused rather than stored as a role
-// nobody defines; and a task stands at no act, at a step, at its retro or at its merge, so an act of
-// another kind is refused rather than stored as a place the walk cannot read. Each refusal is the
-// table's own check (SQLSTATE 23514), named, and the same write with a role and a kind the plan
-// grammar takes is stored: that pair is the control, which shows each refusal is the check's and
-// not a row the write could not reach.
+// nobody defines; a task stands at no act, at a step, at its retro or at its merge, so an act of
+// another kind is refused rather than stored as a place the walk cannot read; and a task is in one
+// of the states the walk writes, left among them, the state of a task whose issue left the
+// workflow before it was done. Each refusal is the table's own check (SQLSTATE 23514), named, and
+// the same write with what the plan grammar and the walk take is stored: that pair is the control,
+// which shows each refusal is the check's and not a row the write could not reach.
 func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -57,6 +58,12 @@ func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
 			refused:    `update plan_tasks set running_kind = 'review' where issue = 'LEGION-208' and task = 'a'`,
 			stored:     `update plan_tasks set running_kind = 'step', position = 1 where issue = 'LEGION-208' and task = 'a'`,
 			constraint: "plan_tasks_running_kind_check",
+		},
+		{
+			name:       "a state no task is in",
+			refused:    `update plan_tasks set state = 'parked' where issue = 'LEGION-208' and task = 'a'`,
+			stored:     `update plan_tasks set state = 'left' where issue = 'LEGION-208' and task = 'a'`,
+			constraint: "plan_tasks_state_check",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

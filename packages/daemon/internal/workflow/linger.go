@@ -85,7 +85,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
 			return err
 		}
-		if err := e.beginLinger(ctx, tx, issue); err != nil {
+		if err := e.beginLinger(ctx, tx, issue, status); err != nil {
 			return err
 		}
 		if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
@@ -100,13 +100,13 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.endStep(ctx, tx, issue, stepStopped); err != nil {
 		return err
 	}
-	// The leave ends the child's task with its run: the task is done where it stands (moveTask).
+	// The leave ends the child's task with its run, where it stands (moveTask, leaveState).
 	if issue.Phase != phase.Done {
 		w, err := e.walk(ctx, tx, issue)
 		if err != nil {
 			return err
 		}
-		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, record.TaskDone); err != nil {
+		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, leaveState(w, status)); err != nil {
 			return err
 		}
 		issue.Hold = nil
@@ -188,6 +188,21 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	return e.openCheck(ctx, tx, issue, *pr, lingers)
+}
+
+// leaveState is the state the task of w is in once its issue leaves the workflow at status: done
+// where the status is done, which is a merged pull request's close and a person's close alike, and
+// left at any other status (backlog, icebox, triage), where the issue goes out before its task is
+// done. Either way the task keeps its place. A task that already left at an earlier leave of its
+// run, done or left, keeps the state that leave wrote, since nothing moves it again.
+func leaveState(w Walk, status string) string {
+	switch {
+	case w.State == record.TaskDone || w.State == record.TaskLeft:
+		return w.State
+	case status == "done":
+		return record.TaskDone
+	}
+	return record.TaskLeft
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
@@ -314,21 +329,22 @@ func indexIssues(issues []record.Issue, slots []record.Slot) (map[string]record.
 }
 
 // beginLinger suspends the root's whole tree and arms its linger deadline, ending the root's hold
-// if it has one, as a child's leave does. Its one caller (leave) calls it once per close: a root
-// that already lingers leaves no second time.
-func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue) error {
+// if it has one, as a child's leave does, and its task with the state its leave at status gives it
+// (leaveState). Its one caller (leave) calls it once per close: a root that already lingers leaves
+// no second time.
+func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, status string) error {
 	until := e.lingerAt()
 	members, err := e.treeMembers(ctx, tx, root)
 	if err != nil {
 		return err
 	}
 	root.LingerUntil = &until
-	// The root's leave writes it done, and its task with it: done where it stands (moveTask).
+	// The root's leave writes it done, and ends its task where it stands (moveTask, leaveState).
 	w, err := e.walk(ctx, tx, root)
 	if err != nil {
 		return err
 	}
-	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, record.TaskDone); err != nil {
+	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
 		return err
 	}
 	root.Hold, root.Awaiting = nil, nil

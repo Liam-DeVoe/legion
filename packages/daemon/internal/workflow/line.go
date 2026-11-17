@@ -88,12 +88,13 @@ func (w Walk) steps() []phase.Phase {
 }
 
 // issuePhaseOf is the phase an issue whose one task stands at place in state stands in (A-8): done
-// for a task that is done, the phase of the step at place, retro or merging at the task's retro or
-// merge, and admitted for a task at no act, which has not started. A task stopped or held keeps
-// its place, and the hold overlays this phase (record.Hold.From). A step place the line does not
-// hold derives no phase.
+// for a task that is done or left the workflow before it was done (record.TaskLeft), whatever its
+// place, which is the phase of an issue out of the workflow; the phase of the step at place, retro
+// or merging at the task's retro or merge; and admitted for a task at no act, which has not
+// started. A task stopped or held keeps its place, and the hold overlays this phase
+// (record.Hold.From). A step place the line does not hold derives no phase.
 func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
-	if state == record.TaskDone {
+	if state == record.TaskDone || state == record.TaskLeft {
 		return phase.Done
 	}
 	switch place.Kind {

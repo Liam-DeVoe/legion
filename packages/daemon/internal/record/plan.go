@@ -31,12 +31,15 @@ const (
 	PlanSourceDefault = "default"
 )
 
-// The states of a task (PlanTask.State).
+// The states of a task (PlanTask.State). A task whose issue leaves the workflow before the task is
+// done is left: it keeps its place, and nothing starts it again, since a todo opens a new run with
+// rows of its own.
 const (
 	TaskWaiting = "waiting"
 	TaskRunning = "running"
 	TaskDone    = "done"
 	TaskStopped = "stopped"
+	TaskLeft    = "left"
 )
 
 // The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
@@ -409,11 +412,12 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 // MoveTask writes where task stands in the plan of issue at generation, and its state: the one
 // write of the walk's moveTask. A stop is StopTask's, which records why, so the state stopped is
 // refused here, and a move takes a stop's reason away. A place no task can stand at, a step the
-// task does not have and a task the plan does not hold are refused.
+// task does not have, a task the plan does not hold and a task that left the workflow (TaskLeft),
+// which nothing moves again, are refused.
 func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
-	case TaskWaiting, TaskRunning, TaskDone:
+	case TaskWaiting, TaskRunning, TaskDone, TaskLeft:
 	case TaskStopped:
 		return fmt.Errorf("%s: a stop is StopTask's, which records why", describe)
 	default:
@@ -423,7 +427,7 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 		return fmt.Errorf("%s: no task stands at that place", describe)
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set running_kind = $4, position = $5, state = $6, stopped_reason = ''
-		where issue = $1 and generation = $2 and task = $3
+		where issue = $1 and generation = $2 and task = $3 and state <> 'left'
 		and ($4 <> 'step' or exists (select 1 from plan_steps where plan_steps.issue = $1 and plan_steps.generation = $2
 			and plan_steps.task = $3 and plan_steps.position = $5))`,
 		issue, int64(generation), task, place.Kind, place.Position, state)
@@ -431,26 +435,26 @@ func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, genera
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%s: the plan holds no such task, or the task no such step", describe)
+		return fmt.Errorf("%s: the plan holds no such task that is in the workflow, or the task no such step", describe)
 	}
 	return nil
 }
 
 // StopTask writes task of the plan of issue at generation stopped for reason, at the place it
 // stands, which a later start of the task reads. A stop without its reason, of a task that is done
-// or of a task the plan does not hold, is refused.
+// or left the workflow, or of a task the plan does not hold, is refused.
 func (s *Postgres) StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error {
 	describe := fmt.Sprintf("stop task %s of %s at generation %d", task, issue, generation)
 	if reason == "" {
 		return fmt.Errorf("%s: a stop records why", describe)
 	}
 	tag, err := tx.Exec(ctx, `update plan_tasks set state = 'stopped', stopped_reason = $4
-		where issue = $1 and generation = $2 and task = $3 and state <> 'done'`, issue, int64(generation), task, reason)
+		where issue = $1 and generation = $2 and task = $3 and state not in ('done', 'left')`, issue, int64(generation), task, reason)
 	if err != nil {
 		return fmt.Errorf("%s: %w", describe, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("%s: the plan holds no such task that is not done", describe)
+		return fmt.Errorf("%s: the plan holds no such task that is not done and in the workflow", describe)
 	}
 	return nil
 }
