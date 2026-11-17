@@ -10,6 +10,7 @@ import {
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
 import { buildGoBinaries } from "../../test/envoy-stack";
+import { routeAnswer } from "../../test/route-answers";
 
 // The fixture CI job of v-recorder: the last step of a job, packages/envoy's ci-report, run as
 // the job's own process in a checkout of the job's commit, over the job's go test report. It
@@ -620,12 +621,11 @@ describe.skipIf(!dispatchStackEnabled)(
     }, 120_000);
 
     /** A stand-in of Dispatch on a raw socket, so its answer is exactly these bytes: every POST
-     *  gets a 201 whose body is `{}`, which is not the route's row, and, with `echo`, the
-     *  request's own `Idempotency-Key` back, as Dispatch's keyed layer sends it on each 2xx of a
-     *  keyed write. It reads each request up to the end of its headers before it answers, and
-     *  counts the POSTs and the keys they carried. */
-    function rowlessDispatch(echo: boolean) {
-      const body = "{}";
+     *  gets a 201 whose body is `body`, by default `{}`, which is not the route's row, and, with
+     *  `echo`, the request's own `Idempotency-Key` back, as Dispatch's keyed layer sends it on each
+     *  2xx of a keyed write. It reads each request up to the end of its headers before it answers,
+     *  and counts the POSTs and the keys they carried. */
+    function answeringDispatch(echo: boolean, body = "{}") {
       const seen = { posts: 0, keys: [] as string[] };
       const heads = new Map<object, string>();
       const server = Bun.listen({
@@ -645,7 +645,7 @@ describe.skipIf(!dispatchStackEnabled)(
             socket.write(
               "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n" +
                 (echo ? `Idempotency-Key: ${key}\r\n` : "") +
-                `Content-Length: ${body.length}\r\n\r\n${body}`
+                `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
             );
             socket.end();
           },
@@ -681,7 +681,7 @@ describe.skipIf(!dispatchStackEnabled)(
     // traded at the stack's real broker; only Dispatch is a stand-in.
     test("a write whose 201 echoes its key and gives no stored result counts as written, and its line says that the answer was lost", async () => {
       const checkout = checkoutOf("answer-lost", SPEC_WITHOUT_SECOND);
-      const { seen, server } = rowlessDispatch(true);
+      const { seen, server } = answeringDispatch(true);
       try {
         const reported = await lastStep(
           checkout,
@@ -719,7 +719,7 @@ describe.skipIf(!dispatchStackEnabled)(
     // step counts no result as written, says that the outcome is unknown, and exits 1.
     test("a write whose 201 echoes no key and gives no stored result is not counted as written, and its line says that the outcome is unknown", async () => {
       const checkout = checkoutOf("no-echo", SPEC_WITHOUT_SECOND);
-      const { seen, server } = rowlessDispatch(false);
+      const { seen, server } = answeringDispatch(false);
       try {
         const reported = await lastStep(
           checkout,
@@ -755,6 +755,64 @@ describe.skipIf(!dispatchStackEnabled)(
           ],
           counted: "0 results written, 1 calls failed",
           posted: true,
+        });
+      } finally {
+        server.stop(true);
+      }
+      expect(await rowsAt(checkout.sha)).toEqual([]);
+    }, 120_000);
+
+    // The same 201 with no key carried back, now holding a stored result of the job's own write:
+    // its project, its check, its verdict, its job and its commit. A 201 that names no key back is
+    // no answer of Dispatch's to this write, whatever it holds, since a proxy or a cache can answer
+    // one write with another's row. So the CLI prints {"write_outcome_unknown":"HTTP_201"} and
+    // exits 1, and the step counts no result as written, says that the outcome is unknown, and
+    // exits 1.
+    test("a write whose 201 echoes no key and holds a stored result of its own check is not counted as written, and its line says that the outcome is unknown", async () => {
+      const checkout = checkoutOf("no-echo-row", SPEC_WITHOUT_SECOND);
+      const stored = routeAnswer(
+        "POST /api/v1/projects/{key}/results",
+        {
+          attestation: {
+            subject: [
+              {
+                name: `git+https://github.com/${running().repository}`,
+                digest: { gitCommit: checkout.sha },
+              },
+            ],
+            predicate: {
+              project: running().project,
+              check: PROBE,
+              verdict: "pass",
+              job: JOB,
+              leg: "",
+            },
+          },
+        },
+        201
+      );
+      const { seen, server } = answeringDispatch(false, JSON.stringify(stored));
+      try {
+        const reported = await lastStep(
+          checkout,
+          jobOf(checkout, 953),
+          "go-test-all-pass.jsonl",
+          JOB,
+          { DISPATCH_URL: `http://127.0.0.1:${server.port}` }
+        );
+        expect({ ...stepAnswer(reported), posts: seen.posts }).toEqual({
+          code: 1,
+          lines: [
+            {
+              check: PROBE,
+              outcome: "pass",
+              exit: 1,
+              result_id: "",
+              why: "the write went out and no answer said whether Dispatch stored it (HTTP_201): a second run of the step is safe, since Dispatch keeps each result",
+            },
+          ],
+          counted: "0 results written, 1 calls failed",
+          posts: 1,
         });
       } finally {
         server.stop(true);

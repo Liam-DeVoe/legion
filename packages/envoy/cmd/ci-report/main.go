@@ -40,11 +40,12 @@
 // got no call, and holds what the command printed on both streams when a call failed: the command
 // prints a refusal on standard output. A refused call stored nothing. A write whose outcome is
 // unknown, which the command prints as {"write_outcome_unknown":"<code>"} with exit 1 when the
-// write went out and no answer came, is a failed call whose why names the code, and it is never
-// read as a stored result: it may be stored, and a second run of the step is safe, since Dispatch
-// keeps each result. The command itself waits at most 60 s for a broker that answers 429 or 5xx
-// and for Dispatch's check of its token, so the step adds no retry of its own. The line holds no
-// raw line break, as encoding/json escapes each control character,
+// write went out and no answer of Dispatch's said whether it stored the result (a 2xx that
+// names no key back among them, whatever it holds), is a failed call whose why names the code,
+// and it is never read as a stored result: it may be stored, and a second run of the step is
+// safe, since Dispatch keeps each result. The command itself waits at most 60 s for a broker that
+// answers 429 or 5xx and for Dispatch's check of its token, so the step adds no retry of its own.
+// The line holds no raw line break, as encoding/json escapes each control character,
 // and the "[" of each "##[" in it is written as \u005b, which a JSON reader reads back as "[", so
 // the line starts no workflow command of a runner's log. Every other line goes to standard error
 // through runnerlog.Say with the prefix
@@ -323,7 +324,8 @@ func record(cli []string, project, commit string, p Planned) (code int, id, why 
 	decoded := json.NewDecoder(bytes.NewReader(stdout.Bytes())).Decode(&line) == nil
 	switch {
 	case decoded && line.Unknown != "":
-		// The write went out and no answer came: it may be stored, and it is never read as stored.
+		// The write went out and no answer of Dispatch's said whether it stored the result (a 2xx
+		// that names no key back among them): it may be stored, and it is never read as stored.
 		return code, "", fmt.Sprintf("the write went out and no answer said whether Dispatch stored it (%s): a second run of the step is safe, since Dispatch keeps each result", line.Unknown), false
 	case code != 0:
 		words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
