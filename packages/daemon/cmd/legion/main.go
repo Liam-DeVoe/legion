@@ -85,6 +85,16 @@ var release string
 // --check-config's resolution of the pair to install (applyLinkedPlugins, daemon.ResolvedPlugins).
 var piLegionVersion, piEnvoyVersion string
 
+// dispatchRelease is the build the daemon names itself by to Dispatch (`legion-daemon/<release>`,
+// daemon.Run): the release a release binary was built for, else the commit a worker image's build
+// links, else none, which the daemon's Dispatch client sends as `(devel)`.
+func dispatchRelease() string {
+	if release != "" {
+		return release
+	}
+	return revision
+}
+
 type command func(ctx context.Context, args []string, stdout, stderr io.Writer) int
 
 // commandEntry is one `legion` command: what runs it, and its line in `legion --help`.
@@ -495,7 +505,7 @@ func start(ctx context.Context, configPath string, stderr io.Writer) int {
 		}
 	}()
 
-	if err := daemon.Run(ctx, cfg, log, inherited); err != nil {
+	if err := daemon.Run(ctx, cfg, log, inherited, dispatchRelease()); err != nil {
 		fmt.Fprintf(stderr, "legion start: %v\n", err)
 		return 1
 	}

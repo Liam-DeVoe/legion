@@ -654,6 +654,9 @@ process.env.DISPATCH_HOST = "omp";
 // nothing on and turns both sections off.
 const CONFIG_FILE = sessionConfigFile("omp", process.env);
 if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
+/** What every Dispatch request this plugin makes on its own names it as: the program and the
+ *  release it ships in. The `dispatch` command its sessions run names itself apart. */
+const PI_ENVOY_USER_AGENT = `pi-envoy/${packageVersion}`;
 /**
  * The session's Dispatch for one request of this extension's own, which has `ms` to answer: the
  * one builder (`sessionDispatchClient`), resolved again per call, so a Dispatch that moved takes
@@ -663,7 +666,13 @@ if (CONFIG_FILE.path !== null) process.env.ENVOY_CONFIG_FILE = CONFIG_FILE.path;
  * is on by the time the request goes out.
  */
 const timedDispatchClient = (ms: number, session: () => string = currentSessionID) =>
-  sessionDispatchClient(CONFIG_FILE, process.cwd(), AbortSignal.timeout(ms), session)?.client;
+  sessionDispatchClient(
+    CONFIG_FILE,
+    process.cwd(),
+    AbortSignal.timeout(ms),
+    session,
+    PI_ENVOY_USER_AGENT
+  )?.client;
 
 export default function envoyExtension(pi: PiApi): void {
   logger.debug("extension instance loaded", { extension: import.meta.url });
@@ -1206,7 +1215,13 @@ export default function envoyExtension(pi: PiApi): void {
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    await postDeliveryReply(
+      dispatchConfigFor(replySessionID),
+      replySessionID,
+      delivery,
+      result,
+      PI_ENVOY_USER_AGENT
+    );
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -4148,6 +4163,7 @@ export default function envoyExtension(pi: PiApi): void {
           session: currentSessionID,
         }).dispatch,
         env: process.env,
+        userAgent: PI_ENVOY_USER_AGENT,
       });
       if (read.notice !== undefined) logger.warn(`envoy: ${read.notice}`);
       return carriedAnswers(read);
@@ -4563,6 +4579,7 @@ export default function envoyExtension(pi: PiApi): void {
       logger: gateLogger,
       runtimeLogger: logger,
       session: currentSessionID,
+      userAgent: PI_ENVOY_USER_AGENT,
     });
     askgateRecorder = registration;
     askgateLoad = registration.loaded.catch((error: unknown) => {

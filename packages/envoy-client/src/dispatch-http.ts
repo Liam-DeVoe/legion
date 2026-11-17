@@ -92,6 +92,7 @@ import {
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
+import { version as envoyClientVersion } from "../package.json" with { type: "json" };
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
 import { withoutUserinfo } from "./errors";
@@ -357,6 +358,31 @@ export interface IssueReadOptions {
 const ISSUE_EVENTS_PAGE_MAX = 200;
 
 export const DISPATCH_TOOL_DEADLINE_MS = 60_000;
+
+/**
+ * The `User-Agent` of a client made with no program named (a test, an operator script): this
+ * package and its version. Each Legion entry point names itself instead (`DispatchClient`'s
+ * `userAgent`), as `<program>/<release>`, so Dispatch's access log can tell its callers apart.
+ */
+export const DISPATCH_CLIENT_USER_AGENT = `dispatch-client/${envoyClientVersion}`;
+
+/**
+ * The headers one request sends: `headers`, then the credential's `presented` over them, then
+ * `userAgent`. A credential says who asks and never which program does, so a `User-Agent` among
+ * its headers, in any letter case, is left out rather than sent beside this client's own.
+ */
+function requestHeaders(
+  headers: Readonly<Record<string, string>>,
+  presented: Readonly<Record<string, string>>,
+  userAgent: string
+): Record<string, string> {
+  const sent: Record<string, string> = { ...headers };
+  for (const [name, value] of Object.entries(presented)) {
+    if (name.toLowerCase() !== "user-agent") sent[name] = value;
+  }
+  sent["User-Agent"] = userAgent;
+  return sent;
+}
 
 function requestSignal(signal: AbortSignal | undefined): AbortSignal {
   const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
@@ -861,6 +887,7 @@ export class DispatchClient {
   readonly #credential: RequestCredential;
   readonly #sleep: Sleep;
   readonly #retryNoRoute: boolean;
+  readonly #userAgent: string;
   readonly writeRetry: DispatchWriteRetry;
   /**
    * When this client was made, on the write clock (`#now`): its 60 s deadline counts from here, so
@@ -883,6 +910,9 @@ export class DispatchClient {
        *  of its own to a missing route and wants it at once, rather than after the waits of
        *  `NO_ROUTE_RETRY_DELAYS_MS`. */
       readonly retryNoRoute?: boolean | undefined;
+      /** The `User-Agent` every request sends, the program that made this client and its release
+       *  (`<program>/<release>`); `DISPATCH_CLIENT_USER_AGENT` when unset. */
+      readonly userAgent?: string | undefined;
     } = {}
   ) {
     this.#credential = credential;
@@ -891,6 +921,7 @@ export class DispatchClient {
     this.writeRetry = options.writeRetry ?? DISPATCH_WRITE_RETRY;
     this.#sleep = options.sleep ?? sleep;
     this.#retryNoRoute = options.retryNoRoute ?? true;
+    this.#userAgent = options.userAgent ?? DISPATCH_CLIENT_USER_AGENT;
     this.#madeAt = this.#now();
   }
 
@@ -2014,7 +2045,7 @@ export class DispatchClient {
     if (key === undefined) {
       return this.fetchImpl(url, {
         method,
-        headers: { ...headers, ...presented },
+        headers: requestHeaders(headers, presented, this.#userAgent),
         signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
         ...(body === undefined ? {} : { body: body.content }),
       });
@@ -2051,7 +2082,7 @@ export class DispatchClient {
         // Each attempt after the first presents the credential afresh: a resource server that
         // keeps a replay store refuses a proof it has already seen.
         if (attempt > 1) presented = await this.#credential.headers(method, url);
-        const sent = { ...headers, ...presented };
+        const sent = requestHeaders(headers, presented, this.#userAgent);
         answer = await writeAnswer(await this.#attempt(url, method, sent, body, silenceMs), key);
         if (answer.echoed) KEYED_LAYER_SEEN.set(this.#baseUrl, this.#now());
         if (!answer.again) return answer.response;
@@ -2223,7 +2254,11 @@ export class DispatchClient {
       const probe = `${this.#baseUrl}/healthz`;
       const response = await this.fetchImpl(probe, {
         method: "GET",
-        headers: { Accept: "application/json", ...(await this.#credential.headers("GET", probe)) },
+        headers: requestHeaders(
+          { Accept: "application/json" },
+          await this.#credential.headers("GET", probe),
+          this.#userAgent
+        ),
         signal: AbortSignal.any([this.#signal, AbortSignal.timeout(KEY_LAYER_PROBE_MS)]),
       });
       if (!isJson(response)) return false;

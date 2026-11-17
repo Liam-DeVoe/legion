@@ -760,12 +760,15 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   const root = await mkdtemp(path.join(tmpdir(), "legion-handoff-record-"));
   scratch.push(root);
   const file = { path: path.join(root, "envoy.json"), error: null } as const;
-  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const requests: Array<{ url: string; authorization: string | null; userAgent: string | null }> =
+    [];
   const answers: Response[] = [];
   const dispatch = (async (input, init) => {
+    const headers = new Headers(init?.headers);
     requests.push({
       url: input.toString(),
-      authorization: new Headers(init?.headers).get("authorization"),
+      authorization: headers.get("authorization"),
+      userAgent: headers.get("user-agent"),
     });
     return answers.shift() ?? Response.json({ error: "unexpected" }, { status: 500 });
   }) as typeof fetch;
@@ -774,7 +777,15 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
     DISPATCH_URL: "http://dispatch.test",
     DISPATCH_TOKEN: "pane-dispatch-token",
   };
-  const latestHandoff = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
+  // The plugin that reads names itself: this module ships in both, and knows neither.
+  const latestHandoff = paneLatestHandoff(
+    file,
+    paneEnv,
+    root,
+    "pane-session",
+    "example-plugin/1.2.3",
+    dispatch
+  );
   const report = () =>
     findHandoffReport({ phase: "reviewing", role: "reviewer", env: paneEnv, latestHandoff });
 
@@ -798,6 +809,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
     {
       url: "http://dispatch.test/api/v1/issues/LEGION-208/handoffs/review/latest",
       authorization: "Bearer pane-dispatch-token",
+      userAgent: "example-plugin/1.2.3",
     },
   ]);
 
@@ -813,7 +825,7 @@ test("the pane's Dispatch reads the phase's newest record as the session's confi
   );
 
   // A pane whose Dispatch is off says so, and asks nothing.
-  const off = paneLatestHandoff(file, env, root, "pane-session", dispatch);
+  const off = paneLatestHandoff(file, env, root, "pane-session", "example-plugin/1.2.3", dispatch);
   await expect(
     findHandoffReport({ phase: "reviewing", role: "reviewer", env, latestHandoff: off })
   ).rejects.toThrow(
@@ -862,7 +874,14 @@ test("a pane whose Dispatch is the broker's reads the record under its own sessi
     AGENT_SECRETS_MACHINE_TOKEN_FILE: identityFile,
   };
   try {
-    const latest = paneLatestHandoff(file, paneEnv, root, "pane-session", dispatch);
+    const latest = paneLatestHandoff(
+      file,
+      paneEnv,
+      root,
+      "pane-session",
+      "example-plugin/1.2.3",
+      dispatch
+    );
     await latest("LEGION-208", "review");
   } finally {
     broker.stop(true);

@@ -600,6 +600,41 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
   }
 })
 
+test("names itself to Dispatch as claude-envoy and its release", async () => {
+  let server: Server<undefined> | undefined
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = "reply-token"
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier: new FakeNotifier(),
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
+    await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })
+
+    expect(sent).toEqual([
+      {
+        path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply",
+        userAgent: `claude-envoy/${pkg.version}`,
+      },
+    ])
+  } finally {
+    server?.stop(true)
+  }
+})
+
 // The forwarder releases the claim of a frame Claude Code was not handed, so the re-send of a
 // Dispatch frame the channel answered with an error is answered again rather than dropped as a
 // repeat of its dedupe key.

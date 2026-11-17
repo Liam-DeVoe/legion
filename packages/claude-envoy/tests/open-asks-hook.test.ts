@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { version as packageVersion } from "../package.json" with { type: "json" }
 
 const hookEntry = resolve(import.meta.dir, "..", "hooks", "session-hook.ts")
 
@@ -87,6 +88,45 @@ test("summarises the session's open asks into context and records the session id
         "utf8",
       ),
     ).toBe("s-1\n")
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
+test("names itself to Dispatch as claude-envoy-hooks and its release", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-agent-"))
+  const sent: { readonly path: string; readonly userAgent: string | null }[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      sent.push({
+        path: new URL(request.url).pathname,
+        userAgent: request.headers.get("user-agent"),
+      })
+      return Response.json({
+        session_id: "s-1",
+        as_of: "2026-09-14T00:00:00Z",
+        opened_since: false,
+        count: 0,
+        waiting_on_human: 0,
+        waiting_on_agent: 0,
+        asks: [],
+      })
+    },
+  })
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN: "hook-token",
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(sent).toEqual([
+      { path: "/api/v1/asks/open", userAgent: `claude-envoy-hooks/${packageVersion}` },
+    ])
   } finally {
     server.stop(true)
     await rm(scratch, { recursive: true, force: true })

@@ -1,4 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   askgateState,
   bytesDigest,
@@ -52,6 +54,48 @@ export interface DispatchCliIo {
   readText(path: string): string;
   readonly cwd: string;
   readonly fetchImpl?: typeof fetch;
+  /** The `User-Agent` every Dispatch request of the call sends (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string;
+}
+
+/** What the `dispatch` command names itself when no host plugin's bundle runs it: a checkout's
+ *  `bin/dispatch.ts`, which no release built. */
+export const DISPATCH_COMMAND_SOURCE_USER_AGENT = "dispatch/0.0.0-dev (source)";
+
+/** A `User-Agent` token's characters: printable ASCII with no space, so no manifest can make a
+ *  header value that fetch refuses and every call fails on. */
+const USER_AGENT_TOKEN = /^[\x21-\x7e]+$/;
+
+/**
+ * The `User-Agent` of the `dispatch` command whose module is at `moduleUrl` (its
+ * `import.meta.url`): `dispatch/<version> (<package>)` of the host plugin that ships it, read from
+ * the `package.json` beside the plugin's `dist/dispatch.js`, where both hosts' builds write the
+ * bundle (`scripts/build-dispatch-cli.sh`, and claude-envoy's `scripts/build.ts`). Any other
+ * module, `bin/dispatch.ts` run from a checkout, or a bundle whose manifest gives no name and
+ * version, is `DISPATCH_COMMAND_SOURCE_USER_AGENT`. It never throws: no call is refused for how it
+ * names itself.
+ */
+export function dispatchCommandUserAgent(moduleUrl: string): string {
+  try {
+    const bundle = fileURLToPath(moduleUrl);
+    const dist = dirname(bundle);
+    if (basename(bundle) !== "dispatch.js" || basename(dist) !== "dist") {
+      return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+    }
+    const manifest: unknown = JSON.parse(readFileSync(join(dist, "..", "package.json"), "utf8"));
+    if (typeof manifest !== "object" || manifest === null)
+      return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+    const name: unknown = Reflect.get(manifest, "name");
+    const version: unknown = Reflect.get(manifest, "version");
+    return typeof name === "string" &&
+      typeof version === "string" &&
+      USER_AGENT_TOKEN.test(name) &&
+      USER_AGENT_TOKEN.test(version)
+      ? `dispatch/${version} (${name})`
+      : DISPATCH_COMMAND_SOURCE_USER_AGENT;
+  } catch {
+    return DISPATCH_COMMAND_SOURCE_USER_AGENT;
+  }
 }
 
 /** Exit codes, as `skill://dispatch` states them: written or read, a refusal, and a usage error.
@@ -498,6 +542,7 @@ export async function runDispatchCli(
       config,
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+      ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
       subscriptions,
     });
     text = result.text;

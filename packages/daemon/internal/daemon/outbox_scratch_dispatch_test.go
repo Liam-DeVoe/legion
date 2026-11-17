@@ -39,7 +39,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	first := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -51,7 +51,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 
 	restarted := &outbox{
 		dispatchProject: "LEGION",
-		pool:            pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool:            pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -61,7 +61,7 @@ func TestOutboxMessageCrashRecoveryPostsOnceAgainstScratchDispatch(t *testing.T)
 		t.Fatalf("outbox rows after recovery = %d, want finished row", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 
 	first := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: crashAfterPostStore{Store: records}, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now },
 	}
 	if err := first.RunOnce(context.Background()); err != nil {
@@ -107,7 +107,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 	}
 	restarted := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now.Add(outboxLease + time.Second) },
 	}
 	if err := restarted.RunOnce(context.Background()); err != nil {
@@ -117,7 +117,7 @@ func TestOutboxPostsALongPacketWholeAndOnceAgainstScratchDispatch(t *testing.T) 
 		t.Fatalf("outbox rows after recovery = %d, want the row posted and finished", remaining)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -144,14 +144,14 @@ func TestOutboxFinishesAPostDispatchRefusesAndTellsTheArchitectAgainstScratchDis
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, issue, over, now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("run the outbox: %v", err)
 	}
 
-	bodies, err := dispatch.New(baseURL, token).MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
+	bodies, err := dispatch.New(baseURL, token, "").MessageBodiesSince(context.Background(), issue, now.Add(-time.Second))
 	if err != nil {
 		t.Fatalf("read real Dispatch messages: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	issue := createScratchDispatchIssue(t, baseURL)
-	client := dispatch.New(baseURL, token)
+	client := dispatch.New(baseURL, token, "")
 	before, err := client.GetIssue(context.Background(), issue)
 	if err != nil {
 		t.Fatalf("read the scratch issue: %v", err)
@@ -198,7 +198,7 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		record.OrdinaryStatusWrite("done", before.Status, reason), now))
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
-		pool: pool, records: records, dispatch: dispatch.New(baseURL, token),
+		pool: pool, records: records, dispatch: dispatch.New(baseURL, token, ""),
 		now: func() time.Time { return now },
 	}
 	if err := runner.RunOnce(context.Background()); err != nil {
@@ -236,6 +236,68 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") {
 		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, Dispatch's refusal and the status it set", notice, issue)
 	}
+}
+
+// The daemon's Dispatch client names itself to a real Dispatch: the access-log line of its call
+// carries the User-Agent `legion-daemon/(devel)`, which a build no release stamps (this test
+// binary) sends, and the /api/v1 path the client still calls.
+func TestTheDaemonClientNamesItselfToScratchDispatch(t *testing.T) {
+	served := &syncBuffer{}
+	d := startScratchDispatchOn(t, scratchDispatchOptions{log: served})
+	issue := createScratchDispatchIssue(t, d.base)
+	if _, err := dispatch.New(d.base, d.token, "").GetIssue(context.Background(), issue); err != nil {
+		t.Fatalf("read %s through the daemon's client: %v", issue, err)
+	}
+
+	// Dispatch writes the line once its handler has returned, which can be just after the answer
+	// reached the client.
+	path := "/api/v1/issues/" + issue
+	var line string
+	if !testwait.Holds(10*time.Second, 20*time.Millisecond, func() bool {
+		line = accessLogLine(served.String(), http.MethodGet, path)
+		return line != ""
+	}) {
+		t.Fatalf("Dispatch logged no access line for GET %s:\n%s", path, served.String())
+	}
+	if got := textLogValue(line, "user_agent"); got != "legion-daemon/(devel)" {
+		t.Fatalf("the access line's user_agent = %q, want legion-daemon/(devel):\n%s", got, line)
+	}
+}
+
+// accessLogLine is the first of Dispatch's access-log lines in output (msg "dispatch: request",
+// internal/dispatch/accesslog) for method on path, or "" when it has written none.
+func accessLogLine(output, method, path string) string {
+	for line := range strings.Lines(output) {
+		if strings.Contains(line, `msg="dispatch: request"`) && textLogValue(line, "method") == method && textLogValue(line, "path") == path {
+			return strings.TrimRight(line, "\n")
+		}
+	}
+	return ""
+}
+
+// textLogValue is the value of key in one line of slog's text format, which Dispatch logs in: the
+// bare word after ` key=`, or the quoted string there unquoted; "" for a key the line lacks.
+func textLogValue(line, key string) string {
+	at := strings.Index(line, " "+key+"=")
+	if at < 0 {
+		return ""
+	}
+	rest := strings.TrimRight(line[at+len(key)+2:], "\n")
+	if strings.HasPrefix(rest, `"`) {
+		quoted, err := strconv.QuotedPrefix(rest)
+		if err != nil {
+			return ""
+		}
+		value, err := strconv.Unquote(quoted)
+		if err != nil {
+			return ""
+		}
+		return value
+	}
+	if end := strings.IndexByte(rest, ' '); end >= 0 {
+		return rest[:end]
+	}
+	return rest
 }
 
 // messageCreatedEvent is the issue's message.created event as Dispatch serves it: the body the

@@ -68,6 +68,9 @@ export interface ExecuteDispatchToolInput {
   /** The wait before each new attempt of a request Dispatch answered with no route
    *  (`DispatchClient`); a test passes one that returns at once. */
   readonly sleep?: Sleep;
+  /** The `User-Agent` the call's requests send (`DispatchClient`): the `dispatch` command names
+   *  itself and the host plugin that ships it (`dispatchCommandUserAgent`). */
+  readonly userAgent?: string;
   readonly exec?: ExecFn;
   /** The topics the session's Envoy subscriptions hold, or null when they cannot be read (Envoy
    *  off, or no answer from its listener); called only by a write that would name its owner as
@@ -326,6 +329,7 @@ export function sessionContext(
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        userAgent: input.userAgent,
       }),
   };
 }

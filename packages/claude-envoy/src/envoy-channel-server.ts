@@ -204,6 +204,10 @@ function undefinedOnNotFound(error: unknown): undefined {
 /** The MCP `serverInfo`; the version is the package's, so it is spelled once. */
 export const MCP_SERVER_INFO = { name: "envoy", version: packageVersion } as const
 
+/** What every Dispatch request of this server names it as: the program and the package's release.
+ *  The hooks and the `dispatch` command name themselves apart. */
+const CLAUDE_ENVOY_USER_AGENT = `claude-envoy/${packageVersion}`
+
 /**
  * What a session takes, which Dispatch checks every targeted delivery against.
  *
@@ -467,7 +471,7 @@ export async function postDispatchReply(
     session: () => identity.id,
   }).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
-  await postDeliveryReply(config, identity.id, delivery, result)
+  await postDeliveryReply(config, identity.id, delivery, result, CLAUDE_ENVOY_USER_AGENT)
 }
 
 /**
@@ -2126,7 +2130,13 @@ export async function runEnvoyChannelServer(): Promise<void> {
         claim: () => claim?.capability(),
         // The pane's own environment and PATH's jj, and the Dispatch this session's envoy.json
         // names, which the pane's `dispatch handoff-write` wrote the record to.
-        handoffReport: paneHandoffReport(configFile, process.env, directory, identity.id),
+        handoffReport: paneHandoffReport(
+          configFile,
+          process.env,
+          directory,
+          identity.id,
+          CLAUDE_ENVOY_USER_AGENT,
+        ),
         branchHead: () => findPushedBranchHead({ env: process.env }),
       }
       // The request's signal aborts on the client's notifications/cancelled, which ends a wait
@@ -2265,6 +2275,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
           ? undefined
           : new DispatchClient(active.url, active.credential, fetch, {
               signal: AbortSignal.timeout(ms),
+              userAgent: CLAUDE_ENVOY_USER_AGENT,
             })
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
