@@ -41,9 +41,9 @@ export interface OutlineWriter {
    *  never stands beside a reply, a statement, an answer or an edit. */
   readonly criterion: CriterionItem | undefined;
   /** Sets the line to write a criterion under `node`, an ask, a comment or a message
-   *  (`criterionItemOf`), and puts the caret in it (dispatch://INFRA-4066 R2): it ends the
-   *  reply, the statement, the answer and the edit, and setting any of them, or `clear`, ends
-   *  it. A node that is none of those sets nothing. */
+   *  (`criterionItemOf`), and puts the caret in it: it ends the reply, the statement, the
+   *  answer and the edit, and setting any of them, or `clear`, ends it. A node that is none of
+   *  those sets nothing. */
   readonly criterionUnder: (node: TreeNode) => void;
   /** Asks the outline to take the reader to what a write from the line just landed
    *  (`Landing`), once its read has drawn it. */
@@ -57,7 +57,7 @@ export interface OutlineWriter {
   /** Says the criterion line's write is out (`true`) or settled (`false`). While it is out the
    *  line keeps its target, as it does while a send of the line's own is out: every other
    *  target, and `clear`, is refused, so the criterion line keeps its text and draws its
-   *  refusal (dispatch://INFRA-4066 R2). */
+   *  refusal. */
   readonly holdCriterion: (out: boolean) => void;
   /** The issue the page is of: only its own nodes take a criterion (`takesCriterion`), and a row
    *  is edited in the room of its tree read (`useNodeEditing.ts`). */
@@ -94,10 +94,10 @@ export interface OutlineWriter {
    *  its words kept. Every aim then takes effect again, and a line that mounts again over that
    *  send writes on the issue. */
   readonly statement: StatementTarget | StatementAnchor | undefined;
-  /** Whether `node` carries the act that writes a criterion under it (dispatch://INFRA-4066 R2):
-   *  an ask, a comment or a message (`criterionItemOf`) whose own address names this issue, on
-   *  an issue whose tree read answers a tree and no `view_of` (`criterionOffered`). False for
-   *  every node while the cache holds no tree read of the issue (`useRoomFacts`). */
+  /** Whether `node` carries the act that writes a criterion under it: an ask, a comment or a
+   *  message (`criterionItemOf`) whose own address names this issue, on an issue whose tree
+   *  read answers a tree and no `view_of` (`criterionOffered`). False for every node while the
+   *  cache holds no tree read of the issue (`useRoomFacts`). */
   readonly takesCriterion: (node: TreeNode) => boolean;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
@@ -218,8 +218,8 @@ export function OutlineWriterProvider({
   // The node the line writes a criterion under, if it does: set by a row's Write a criterion
   // alone, and ended, as the statement is, by every other target and by `clear`.
   const [criterion, setCriterion] = useState<CriterionItem>();
-  // Whether the issue takes a criterion at all (R2): its tree read answers a tree, and no
-  // `view_of`, which no node of a view of another issue takes.
+  // Whether the issue takes a criterion at all: its tree read answers a tree, and no `view_of`,
+  // which no node of a view of another issue takes.
   const facts = useRoomFacts(issueKey);
   const offersCriterion = criterionOffered(facts);
   const agentText = useAgentText();
@@ -621,12 +621,12 @@ export interface StatementTarget extends StatementAnchor, StatementItem {
 }
 
 /**
- * The node a criterion is written under (dispatch://INFRA-4066 R2): an ask, a comment or a
- * message of the outline. Its `id` is the node's own row id, which the line marks
- * (`data-criterion-under`) and a landing names (`Landing.under`), and `IssueTree.tsx`'s
- * `landingParent` finds the node by it; `kind` is the conversation item the node is; `address`
- * is the node's whole `dispatch://` address, which the criterion names as its `parent`; and its
- * words, its reading and its record are what the line's target line cuts to their first line.
+ * The node a criterion is written under: an ask, a comment or a message of the outline. Its
+ * `id` is the node's own row id, which the line marks (`data-criterion-under`) and a landing
+ * names (`Landing.under`), and `IssueTree.tsx`'s `landingParent` finds the node by it; `kind` is
+ * the conversation item the node is; `address` is the node's whole `dispatch://` address, which
+ * the criterion names as its `parent`; and its words, its reading and its record are what the
+ * line's target line cuts to their first line.
  */
 export interface CriterionItem extends Pick<TreeNode, "source" | "text" | "tree"> {
   /** The node's own `dispatch://` address (`TreeNode.reference`): the criterion's `parent`. */
@@ -638,11 +638,11 @@ export interface CriterionItem extends Pick<TreeNode, "source" | "text" | "tree"
 }
 
 /** The node a criterion can be written under, where `node` is one: an item of the conversation
- *  (`conversationItem`, decision 94), as a row that takes a Reply is, with the address that
- *  names it. Undefined for every other node - a statement, a check, a decision, the issue
- *  itself - and for one with no such address. Whether the act is offered on it is the
- *  writer's (`OutlineWriter.takesCriterion`), which also asks that the address names this
- *  issue and that the issue takes a criterion (`criterionOffered`). */
+ *  (`conversationItem`), as a row that takes a Reply is, with the address that names it.
+ *  Undefined for every other node - a statement, a check, a decision, the issue itself - and
+ *  for one with no such address. Whether the act is offered on it is the writer's
+ *  (`OutlineWriter.takesCriterion`), which also asks that the address names this issue and that
+ *  the issue takes a criterion (`criterionOffered`). */
 export function criterionItemOf(
   node: Pick<TreeNode, "id" | "reference" | "source" | "text" | "tree" | "type">
 ): CriterionItem | undefined {

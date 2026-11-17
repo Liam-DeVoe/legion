@@ -23,11 +23,11 @@ import {
 import type { RoomFacts } from "./room-target";
 
 /**
- * A criterion written under a node of the outline (dispatch://INFRA-4066 R2, R6): its markdown,
- * its one request on the tree artifact, the line's text and answer as the write goes, and the
- * box's aim, which no other target ends while the write is out. Each request is answered at
- * `fetch` (`answerRequests`), so the write goes the whole way the page's does: the keyed write,
- * the client, and the refusal the client makes of Dispatch's answer.
+ * A criterion written under a node of the outline: its markdown, its one request on the tree
+ * artifact, the line's text and answer as the write goes, and the box's aim, which no other
+ * target ends while the write is out. Each request is answered at `fetch` (`answerRequests`), so
+ * the write goes the whole way the page's does: the keyed write, the client, and the refusal the
+ * client makes of Dispatch's answer.
  */
 
 const KEY = "CORE-1";
@@ -282,10 +282,10 @@ test("a refusal keeps the text", async () => {
   }
 });
 
-// R2: a criterion whose write is out holds the box. A row's Reply, `r` and `a`, another row's
-// Write a criterion, an edit, Write on the issue and `clear` are each refused, as they are while
-// a send of the line's own is out, so the line keeps its text and draws its refusal; once the
-// write settles each takes the line again.
+// A criterion whose write is out holds the box. A row's Reply, `r` and `a`, another row's Write a
+// criterion, an edit, Write on the issue and `clear` are each refused, as they are while a send
+// of the line's own is out, so the line keeps its text and draws its refusal; once the write
+// settles each takes the line again.
 test("a criterion out holds the box's other targets", () => {
   const client = signedInClient();
   client.setQueryData(["asks", KEY], []);
@@ -347,12 +347,12 @@ test("a criterion out holds the box's other targets", () => {
   }
 });
 
-// Decision 158: the criterion line's hint says where its words go, in words of its own, written
-// out here rather than read from the list the line reads them from, and never the document
-// editor's "A comment on the document", since the page draws no document there. Under a message
-// a reply tells nobody it names, so the words say a comment on the issue is what tells. Until
-// part T's tree read lets a row offer Write a criterion, no control reaches the line, so its row
-// is uncovered with a reason and draws no hint yet (decisions 154 and 163).
+// The criterion line's hint says where its words go, in words of its own, written out here rather
+// than read from the list the line reads them from, and never the document editor's "A comment on
+// the document", since the page draws no document there. Under a message a reply tells nobody it
+// names, so the words say a comment on the issue is what tells. Until the page reads the issue's
+// tree, no row offers Write a criterion and no control reaches the line, so its row is uncovered
+// with a reason and draws no hint yet.
 test("the criterion line's hint says it writes under what it answers", () => {
   expect(DISPATCH_WRITING_HINT_QUIET.criterion).toBe(
     "Type @ for an agent, a role or a person, # for an issue, [[ for anything else. A picked agent or role gets a link, and a picked person shows as a name without one. Nobody you pick is told. The criterion goes under the comment, question or message it answers. A comment on the issue tells a picked agent or role."

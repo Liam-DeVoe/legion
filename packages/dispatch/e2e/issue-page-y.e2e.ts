@@ -55,25 +55,24 @@ import { expect, test } from "./test";
 import { type ApiRequest, expectLoadSettled, type RouteCount, watchApiRequests } from "./traffic";
 
 /**
- * Part Y of dispatch://INFRA-1196 (dispatch://INFRA-4066): criteria, readings, a child issue's
- * checks under the statements they serve, and editing a converted issue in its one room, on the
- * new issue page. Each row is of one check of dispatch://INFRA-4066/artifact/verification-md,
- * which selects it by its `-g` string: row 1 is c-write's, row 2 c-readings', with a row of its
- * own, owed and tagged `@owed`, that c-readings' run leaves out, and row 3 c-editing's.
+ * Criteria, readings, a child issue's checks under the statements they serve, and editing a
+ * converted issue in its one room, on the new issue page. Each row is selected by its title, its
+ * `-g` string, from one of the issue's checks: row 1 by c-write, row 2 by c-readings, with a row
+ * of its own, owed and tagged `@owed`, that c-readings' run leaves out, and row 3 by c-editing.
  *
- * The rows are on the real stack, each through D's `phase` (a reset database, alice signed in,
- * the new page turned on with `withIssuePage`) on `seedModelRows` of `e2e/issue-page-y.ts`, an
- * issue born converted, and each first reads that the issue's tree read answers
- * `converted: true`. They are owed until INFRA-1253 serves the tree read
- * (`GET /api/v1/issues/{key}/tree`, its t16a), the issue room and writes to the tree artifact:
- * until then each row skips on `treeReadServed` (decision 170).
+ * The rows are on the real stack, each through `phase` of `e2e/issue-page.ts` (a reset database,
+ * alice signed in, the new page turned on with `withIssuePage`) on `seedModelRows` of
+ * `e2e/issue-page-y.ts`, an issue born converted, and each first reads that the issue's tree read
+ * answers `converted: true`. They are owed until the server serves the tree read
+ * (`GET /api/v1/issues/{key}/tree`), the issue room and writes to the tree artifact: until then
+ * each row skips on `treeReadServed`.
  */
 
 /** What a failure says where the issue's tree read does not answer `converted: true`. */
 const NOT_CONVERTED = "the issue's tree read does not answer converted: true";
 
 /** The criterion's attribute that names the node it was written under: the model's word, which
- *  no element of the page draws as its whole text (R7). */
+ *  no element of the page draws as its whole text. */
 const PARENT_ATTRIBUTE = "parent";
 
 /** At most how many presses of `f` cross a row's stops: its links, its chips and the acts no key
@@ -232,7 +231,7 @@ async function expectStatementSevenChecked(page: Page, row: string, where: strin
 }
 
 /**
- * What R7's last sentence forbids, as c-readings (4) reads it: each element on screen but a row's
+ * What the page may not draw, as c-readings (4) reads it: each element on screen but a row's
  * kind tag whose whole text is `criterion`, `reading` or `parent`, in any case, and each uuid the
  * page's text holds.
  */
@@ -296,24 +295,23 @@ async function expectNoCaret(page: Page, id: string, report: string, what: strin
   expect(await caretInNode(page), `Enter on ${what} put a caret somewhere`).toBe(false);
 }
 
-// Each row reads the issue's tree read, so each skips, owed, where the server does not serve it
-// (decision 170).
+// Each row reads the issue's tree read, so each skips, owed, where the server does not serve it.
 test.beforeEach(async () => {
   test.skip(!(await treeReadServed()), TREE_READ_OWED);
 });
 
-// c-write (R2, R6, R7). On the seed's first comment thread, `f` reaches Write a criterion and
-// Enter aims the box at the comment; what alice types and sends is a criterion under that
-// comment, as typed, drawn as hers; it stays after a reload, Spec counts it, and the header's
-// chip reads the approved version against the later one the criterion made. Escape before a send
-// writes nothing; the child, a view of the seed, and a check's row offer no Write a criterion; a
-// refused send keeps its text and says why; and the send costs one write and one or two tree
-// reads, on a first load that sends by route no more than a bare `seedWholeIssue` issue's. At
-// 1440 px, and on `iphone` at 390 px, where the box's placeholder takes its phone form.
+// c-write. On the seed's first comment thread, `f` reaches Write a criterion and Enter aims the
+// box at the comment; what alice types and sends is a criterion under that comment, as typed,
+// drawn as hers; it stays after a reload, Spec counts it, and the header's chip reads the approved
+// version against the later one the criterion made. Escape before a send writes nothing; the
+// child, a view of the seed, and a check's row offer no Write a criterion; a refused send keeps
+// its text and says why; and the send costs one write and one or two tree reads, on a first load
+// that sends by route no more than a bare `seedWholeIssue` issue's. At 1440 px, and on `iphone` at
+// 390 px, where the box's placeholder takes its phone form.
 //
 // Before (1) it loads a bare `seedWholeIssue` issue, a second seed of the row, and counts its first
 // load by route, then counts the seeded issue's the same way: (8) compares the two, so the first
-// assertion that fails at a merge-base holding part X is (1)'s.
+// assertion that fails at a merge-base that serves the tree read but lacks this change is (1)'s.
 // SLOW(>=2s): two whole issues seeded and each loaded cold until its reads settle, the second with
 // a decision, two readings, an approval and a child written over it and waited on in the tree
 // read; then four sends from the box, two of them refused, a reload and a load of the child.
@@ -522,18 +520,19 @@ test("a person writes a criterion under the words they are reading @phone", asyn
   });
 });
 
-// c-readings (R3, R4, R7). An agent's reading is a row under the decision or the answered question
-// it reads, tagged "reading", in the agents' grey and named by its agent's role; the child's check,
-// with its result, and its plan task are rows under the statement they serve, each marked with the
-// child's key as a link, and none under the child's own row; that statement draws no "No check" on
-// the outline or under Verification. Under Decisions the decision's reading is a row under it and
-// the question's is not drawn; and no element but a kind tag reads a model's word whole, nor any
-// text a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's,
-// owed on INFRA-1253's t16a.
+// c-readings. An agent's reading is a row under the decision or the answered question it reads,
+// tagged "reading", in the agents' grey and named by its agent's role; the child's check, with its
+// result, and its plan task are rows under the statement they serve, each marked with the child's
+// key as a link, and none under the child's own row; that statement draws no "No check" on the
+// outline or under Verification. Under Decisions the decision's reading is a row under it and the
+// question's is not drawn; and no element but a kind tag reads a model's word whole, nor any text
+// a uuid. At 1440 px. How the child's check stands, which its result gives, is the next row's,
+// owed until the tree read answers it.
 //
 // The steps are asserted in the order (1), (3), (2), (4), so that (3), the borrowed rows, is read
-// wherever part Q, which (2) needs, is not under the head. At a merge-base holding part X, and so
-// part T, no step drafts a reading, so the row fails there on (1)'s first assertion.
+// wherever the Decisions view, which (2) needs, is not under the head. At a merge-base that serves
+// the tree read but lacks this change, no step drafts a reading, so the row fails there on (1)'s
+// first assertion.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded and unfolded, and three views turned on.
 test("a reading stands under what it reads and a child's check under the statement it serves", async ({
@@ -656,14 +655,13 @@ test("a reading stands under what it reads and a child's check under the stateme
   });
 });
 
-// A reading c-readings owes, in a row of its own beside row 2 (decision 127): the child's check
-// under statement 7 stands as its passing result gives it, "passed" (decision 161). The page reads
-// that standing from the tree read: a result node's `verdict`, `retracted` and `check_sha256`, and
-// the check node's `text_sha256`, which part T's tree read asks of INFRA-1253's t16a; until that
-// read answers them the check draws no standing word, and the row is skipped. Its `@owed` tag is
-// what c-readings' run leaves out (`--grep-invert @owed`, decision 135), since a pass counts no
-// skipped case; the round that brings t16a takes the tag off, and c-readings' `-g` then selects
-// the row.
+// A reading c-readings owes, in a row of its own beside row 2: the child's check under statement
+// 7 stands as its passing result gives it, "passed". The page reads that standing from the tree
+// read: a result node's `verdict`, `retracted` and `check_sha256`, and the check node's
+// `text_sha256`, which the page's tree read asks of the server; until the server answers them the
+// check draws no standing word, and the row is skipped. Its `@owed` tag is what c-readings' run
+// leaves out (`--grep-invert @owed`), since a pass counts no skipped case; the change that makes
+// the server answer them takes the tag off, and c-readings' `-g` then selects the row.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, then loaded and unfolded.
 test("a reading stands under what it reads, and a child's check draws the standing its results give @owed", async ({
@@ -678,7 +676,7 @@ test("a reading stands under what it reads, and a child's check draws the standi
     const check = answer.nodes.find((node) => node.id === child.check.id);
     test.skip(
       result?.verdict == null || result.check_sha256 == null || check?.text_sha256 == null,
-      "owed: the child's check's standing needs INFRA-1253's t16a, a result node's verdict, retracted and check_sha256 and a check node's text_sha256 in the tree read (decision 161, skipped by decision 127, left out of c-readings' run by decision 135)"
+      "owed: the child's check's standing needs a result node's verdict, retracted and check_sha256 and a check node's text_sha256 in the tree read"
     );
 
     await openOutline(page, seeded.key);
@@ -689,17 +687,17 @@ test("a reading stands under what it reads, and a child's check draws the standi
   });
 });
 
-// c-editing (R5, R6). On a converted issue, Enter on a statement, on a check of `verification.md`
-// and on a criterion written into the issue puts the caret at the start of each one's words, each
-// through its own fragment of the issue's one room: the spec's and `verification.md`'s artifact
-// reads answer the tree artifact as their room, the criterion's editor opens the tree artifact
-// after one artifact read of it, each Enter opens at most one socket, and what is typed in all
-// three is in the tree read after a reload. A comment and an ask take no caret, and a check of the
-// child issue says it is edited on its own issue. At 1440 px.
+// c-editing. On a converted issue, Enter on a statement, on a check of `verification.md` and on a
+// criterion written into the issue puts the caret at the start of each one's words, each through
+// its own fragment of the issue's one room: the spec's and `verification.md`'s artifact reads
+// answer the tree artifact as their room, the criterion's editor opens the tree artifact after one
+// artifact read of it, each Enter opens at most one socket, and what is typed in all three is in
+// the tree read after a reload. A comment and an ask take no caret, and a check of the child issue
+// says it is edited on its own issue. At 1440 px.
 // c-editing's (4), an open editor that stays writable when the block schema changes, is not in
-// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are in INFRA-1253's
-// `e2e/block-schema.ts`, which is not under this branch. The round that brings that file adds the
-// step and the words "and an open editor survives a schema change" to this title.
+// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are in
+// `e2e/block-schema.ts`, which this branch does not hold. The change that brings that file adds
+// the step and the words "and an open editor survives a schema change" to this title.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, a criterion written and waited on too, then three
 // editors opened and typed in, a reload, and the tree read polled for the stored words.

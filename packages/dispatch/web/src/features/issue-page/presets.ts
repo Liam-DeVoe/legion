@@ -208,10 +208,10 @@ function filterView(
   // with its own rows under it, or, where it is no row, the rows of its branch lifted to where
   // it stood.
   const lift = (node: TreeNode): { readonly drawn: boolean; readonly rows: TreeNode[] } => {
-    // Decisions draws an agent decision's readings under it, and none of any question's (R3)
-    // but one the address names, which every filter draws (R20): the question is lifted again
-    // without the others, so this runs once for it. A reading stands only under an answered
-    // question, since the schema refuses one in an ask with no answer.
+    // Decisions draws an agent decision's readings under it, and none of any question's but one
+    // the address names, which every filter draws: the question is lifted again without the
+    // others, so this runs once for it. A reading stands only under an answered question, since
+    // the schema refuses one in an ask with no answer.
     if (node.type === "ask" && node.children.some(hiddenReading)) {
       const kept = node.children.filter((child) => !hiddenReading(child));
       return lift({ ...node, children: kept });

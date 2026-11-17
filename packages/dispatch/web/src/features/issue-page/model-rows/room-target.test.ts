@@ -9,11 +9,11 @@ import { blockNodeId } from "../tree-drafts";
 import { type RoomFacts, type RoomTarget, roomTarget } from "./room-target";
 
 /**
- * Where Enter puts the caret on a node (dispatch://INFRA-4066 R5): on a converted issue, in the
- * one room, through the fragment that holds the node's text - its document's, or the tree
- * artifact's own for a node written into the issue - and nowhere for a node of another issue, for
- * the conversation or for a result; on an issue the conversion has not reached, in its document's
- * room, as part I does.
+ * Where Enter puts the caret on a node: on a converted issue, in the one room, through the
+ * fragment that holds the node's text - its document's, or the tree artifact's own for a node
+ * written into the issue - and nowhere for a node of another issue, for the conversation or for a
+ * result; on an issue the conversion has not reached, in its document's room, as
+ * `useNodeEditing.ts` does without a room.
  */
 
 const KEY = "CORE-1";
@@ -88,9 +88,9 @@ function room(converted: boolean, tree: string | null = TREE): RoomFacts {
 const STATEMENT = block(SPEC, "r1", "requirement");
 const CHECK = block(VERIFICATION, "c1", "check");
 
-/** A criterion written into the issue, as part T drafts it: its bare read id, which is its block
- *  id in the tree artifact, and no address, since T's `referenceOf` writes none for a node no
- *  document holds. */
+/** A criterion written into the issue, as the page's tree read drafts it: its bare read id, which
+ *  is its block id in the tree artifact, and no address, since the tree read's `referenceOf`
+ *  writes none for a node no document holds. */
 const CRITERION = node("k1", "criterion");
 
 /** An ask written as a block of the spec, which the ask read placed: its address is the ask's. */
@@ -109,7 +109,7 @@ const MESSAGE = node("message-1", "message", [], {
   reference: `dispatch://${KEY}/message/message-1`,
 });
 
-/** A result of this issue's check c1, which T drafts with no address. */
+/** A result of this issue's check c1, which the page's tree read drafts with no address. */
 const RESULT = node("result-1", "result");
 
 /** A result of a check of another issue, addressed in that issue. */
@@ -186,7 +186,7 @@ test("an ask, a comment and a message take no caret on a converted issue", () =>
 
 test("a result takes no caret", () => {
   // No room holds a result's text, and a borrowed one says so too rather than naming its issue,
-  // whether or not the conversion reached this issue (decision 165).
+  // whether or not the conversion reached this issue.
   expect(parseNodeReference(BORROWED_RESULT.reference ?? "")).toMatchObject({ key: "CORE-2" });
   for (const one of [RESULT, BORROWED_RESULT]) {
     for (const facts of [room(true), room(false)]) {

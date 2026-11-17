@@ -6,14 +6,13 @@ import { type ANSWER_LINES, CONTROL_LABELS } from "../page-words";
 import type { RoomFacts } from "./room-target";
 
 /**
- * A criterion written under a node of the outline (dispatch://INFRA-4066 R2, R6): one block
- * appended to the issue's tree artifact, whose `parent` is the node's own `dispatch://` address
- * and whose words are the box's text as typed.
+ * A criterion written under a node of the outline: one block appended to the issue's tree
+ * artifact, whose `parent` is the node's own `dispatch://` address and whose words are the box's
+ * text as typed.
  *
- * The send is one `POST /api/v1/artifacts/{id}/edits` on the tree artifact (R6), a keyed write
- * the line shows the refusal of itself. A refusal is read by its status alone, never by the
- * server's text (the plan's decision "A refusal"): `criterionAnswer` answers the key of
- * `ANSWER_LINES` whose sentence the line draws.
+ * The send is one `POST /api/v1/artifacts/{id}/edits` on the tree artifact, a keyed write the
+ * line shows the refusal of itself. A refusal is read by its status alone, never by the server's
+ * text: `criterionAnswer` answers the key of `ANSWER_LINES` whose sentence the line draws.
  */
 
 /** Where a criterion is written: the issue it is written into, the node it stands under (`parent`,
@@ -79,12 +78,12 @@ function attributeValue(value: string): string {
 }
 
 /**
- * The criterion `text` makes under the node `parent` (its whole `dispatch://` address), as the
- * plan's decision "The criterion's text" says: its directive with no block id, which the server
- * mints, each line of the text written so the block holds `paragraph+` and its words read back
- * as typed (`paragraphLine`), and the closing fence. A blank line stays a paragraph break and a
- * single line break a soft break, as a comment's body keeps them. The text's trailing whitespace
- * is dropped; a text that is blank is the caller's to refuse (`useCriterionLine`'s `send`).
+ * The criterion `text` makes under the node `parent` (its whole `dispatch://` address): its
+ * directive with no block id, which the server mints, each line of the text written so the block
+ * holds `paragraph+` and its words read back as typed (`paragraphLine`), and the closing fence. A
+ * blank line stays a paragraph break and a single line break a soft break, as a comment's body
+ * keeps them. The text's trailing whitespace is dropped; a text that is blank is the caller's to
+ * refuse (`useCriterionLine`'s `send`).
  */
 export function criterionMarkdown(parent: string, text: string): string {
   return [
@@ -95,7 +94,7 @@ export function criterionMarkdown(parent: string, text: string): string {
 }
 
 /** `POST /api/v1/artifacts/{id}/edits` on the tree artifact `tree`: one insert of `markdown` at
- *  the artifact's end (R6). */
+ *  the artifact's end. */
 export function criterionRequest(tree: string, markdown: string) {
   return writeRequest(
     "post",
@@ -105,8 +104,8 @@ export function criterionRequest(tree: string, markdown: string) {
   );
 }
 
-/** What the line says of a refused criterion (R2), by the refusal's status alone: a 404 says the
- *  row it was written under is gone, and any other refusal that it was not written - a parent
+/** What the line says of a refused criterion, by the refusal's status alone: a 404 says the row
+ *  it was written under is gone, and any other refusal that it was not written - a parent
  *  comment deleted meanwhile answers `400 INVALID_MARKDOWN` (pmdoc's `itemReach`), which says
  *  the same. */
 export function criterionAnswer(error: unknown): CriterionAnswer {
@@ -115,9 +114,9 @@ export function criterionAnswer(error: unknown): CriterionAnswer {
     : "criterion_not_written";
 }
 
-/** Whether a node of this issue offers the act that writes a criterion (R2): only where the
- *  issue's tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the
- *  cache does not hold, which is every issue until part T's read is on the branch - offer none. */
+/** Whether a node of this issue offers the act that writes a criterion: only where the issue's
+ *  tree read answers a `tree` and no `view_of`. No facts - an issue whose tree read the cache
+ *  does not hold, which is every issue while this branch has no tree read - offer none. */
 export function criterionOffered(facts: RoomFacts | undefined): boolean {
   return facts !== undefined && facts.tree !== null && facts.viewOf === null;
 }
@@ -135,13 +134,13 @@ export interface CriterionWriteOptions extends CriterionAim {
 }
 
 /**
- * The criterion's keyed write (the plan's decision "The write"): each `mutate` is one press of
- * the line's markdown, in press order with every other criterion written under the same node
- * of the same tree (`criterion:<tree>:<parent>`), shown by the pending-writes indicator only
- * while it is out, since the line shows its refusal itself. It is told to `onOut` as it fires
- * and as it settles, and a landing then to `onLanded`. The landing invalidates no read yet:
- * part T's tree read is not on this branch, and t8 has it refresh `issueTreeKey(issueKey)`
- * here, before `onLanded`.
+ * The criterion's keyed write: each `mutate` is one press of the line's markdown, in press order
+ * with every other criterion written under the same node of the same tree
+ * (`criterion:<tree>:<parent>`), shown by the pending-writes indicator only while it is out,
+ * since the line shows its refusal itself. It is told to `onOut` as it fires and as it settles,
+ * and a landing then to `onLanded`. The landing invalidates no read yet: this branch has no tree
+ * read, and once the page reads the tree the landing is to refresh `issueTreeKey(issueKey)` here,
+ * before `onLanded`.
  */
 export function useCriterionWrite({ onLanded, onOut, parent, tree }: CriterionWriteOptions) {
   return useKeyedWrite({
@@ -177,11 +176,10 @@ export interface CriterionLineState {
 }
 
 /**
- * The state of the box's criterion line (R2, the plan's decision "The line"): its text, which
- * stays while the write is out and after a refusal, and the refusal's answer, which goes at the
- * next change of the text or the next send (a new press clears the write's error). The write's
- * going out and its settling are told to `onOut`; a landing, a 200 or `null`, is then told to
- * `onLanded` and lets the text go.
+ * The state of the box's criterion line: its text, which stays while the write is out and after
+ * a refusal, and the refusal's answer, which goes at the next change of the text or the next send
+ * (a new press clears the write's error). The write's going out and its settling are told to
+ * `onOut`; a landing, a 200 or `null`, is then told to `onLanded` and lets the text go.
  */
 export function useCriterionLine({ onLanded, ...aim }: CriterionWriteOptions): CriterionLineState {
   const [text, setTyped] = useState("");

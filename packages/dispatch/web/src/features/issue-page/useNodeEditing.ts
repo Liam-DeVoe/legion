@@ -74,9 +74,9 @@ export function useNodeEditing({
   const [editing, setEditing] = useState<EditedRow | undefined>(undefined);
   // The row the reader has just left the caret in, so that row takes the focus back.
   const leaving = useRef<string | undefined>(undefined);
-  // The room of the issue's tree read (dispatch://INFRA-4066 R5), read through a ref so `edit`
-  // keeps its dependencies, by the issue the page's writer is of (`OutlineWriter.issueKey`); with
-  // no writer there is none, and a row is edited as it is without a room.
+  // The room of the issue's tree read, read through a ref so `edit` keeps its dependencies, by
+  // the issue the page's writer is of (`OutlineWriter.issueKey`); with no writer there is none,
+  // and a row is edited as it is without a room.
   const room = useRoomFacts(useOutlineWriter()?.issueKey);
   const roomNow = useRef(room);
   roomNow.current = room;
@@ -84,7 +84,7 @@ export function useNodeEditing({
   const edit = useCallback(
     (row: string, node: TreeNode) => {
       // An issue whose tree read the cache holds is edited in its room: a node of another issue,
-      // and on a converted issue the conversation, take no caret there (R5).
+      // and on a converted issue the conversation, take no caret there.
       const facts = roomNow.current;
       if (facts !== undefined) {
         const target = roomTarget(node, artifacts, facts);

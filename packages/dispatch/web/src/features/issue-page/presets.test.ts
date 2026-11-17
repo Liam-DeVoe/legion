@@ -154,7 +154,7 @@ test("Spec draws the requirements as rows, the issue as none, and the ask above 
   });
 });
 
-// R1: a criterion is a row of Spec with the statements, and in its control's count; a statement
+// A criterion is a row of Spec with the statements, and in its control's count; a statement
 // written under a criterion stands under it.
 test("Spec counts criteria", () => {
   const root = node("CORE-1", "issue", [
@@ -257,8 +257,8 @@ test("the Decisions count leaves out a section that restates a person's answer",
   expect(filterSignals(root, "").decisions).toEqual({ count: 4 });
 });
 
-// R3: under Decisions an answered question draws no reading, since the question already draws
-// the person's answer.
+// Under Decisions an answered question draws no reading, since the question already draws the
+// person's answer.
 test("Decisions draws no reading of an answered ask", () => {
   const root = node("CORE-1", "issue", [
     node("ask-1", "ask", [node("reading-1", "reading")], { state: "answered" }),
@@ -267,8 +267,8 @@ test("Decisions draws no reading of an answered ask", () => {
   expect(filterSignals(root, "").decisions).toEqual({ count: 1 });
 });
 
-// R3, R20: a reading of an answered question the address names is drawn under Decisions all the
-// same, as every filter draws a node the address names.
+// A reading of an answered question the address names is drawn under Decisions all the same, as
+// every filter draws a node the address names.
 test("Decisions draws a reading the address names", () => {
   const root = node("CORE-1", "issue", [
     node("ask-1", "ask", [node("reading-1", "reading")], { state: "answered" }),
@@ -280,8 +280,8 @@ test("Decisions draws a reading the address names", () => {
   ]);
 });
 
-// R3: under Decisions an agent decision's readings are rows under it, and no reading is in the
-// count, which holds the asks and the decisions alone.
+// Under Decisions an agent decision's readings are rows under it, and no reading is in the count,
+// which holds the asks and the decisions alone.
 test("Decisions draws an agent decision's reading under it", () => {
   const planner = { id: "planner", kind: "session" as const };
   const root = node("CORE-1", "issue", [

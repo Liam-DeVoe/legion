@@ -342,9 +342,8 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     write: "ask-answer",
   },
   // Its criterion line writes a criterion into the issue's own text, which tells nobody, and says
-  // so in words of its own rather than the document editor's (INFRA-4066 R2, R8, decision 158).
-  // No row offers Write a criterion until part T's tree read names the issue's tree, so no
-  // control reaches the line yet (decisions 154 and 163).
+  // so in words of its own rather than the document editor's. No row offers Write a criterion
+  // until the page reads the issue's tree, so no control reaches the line yet.
   {
     box: "issue-page-composer",
     covered: false,
@@ -353,7 +352,7 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     issueRows: true,
     reach: "[data-issue-composer]",
     reason:
-      "No control reaches it yet: Write a criterion is offered only once part T's tree read (INFRA-4062, on INFRA-1253's t16a) names the issue's tree, and whichever of parts Y and T merges second covers it.",
+      "No control reaches it yet: Write a criterion is offered only once the page reads the issue's tree, which this server does not serve yet.",
     write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.

@@ -830,19 +830,18 @@ function CriterionLine({
 }
 
 /**
- * The criterion line (dispatch://INFRA-4066 R2, the plan's decision "The line"): "Criterion
- * under:" and the node's first line above it, then the field and Send. Enter sends and
- * Shift+Enter breaks the line; Escape, from any control of the line, and the target line's
- * control end the aim and take the reader back to the node's row. The text stays in the field
- * while the write is out and after a refusal, whose sentence is drawn under the line; a landing
- * lets the text go and takes the reader to their new criterion under the node. While the write
- * is out the box keeps the line's aim (`OutlineWriter.holdCriterion`): no other target, Escape
- * or the target line's control ends it, so its text and its refusal stay to be read.
+ * The criterion line: "Criterion under:" and the node's first line above it, then the field and
+ * Send. Enter sends and Shift+Enter breaks the line; Escape, from any control of the line, and
+ * the target line's control end the aim and take the reader back to the node's row. The text
+ * stays in the field while the write is out and after a refusal, whose sentence is drawn under
+ * the line; a landing lets the text go and takes the reader to their new criterion under the
+ * node. While the write is out the box keeps the line's aim (`OutlineWriter.holdCriterion`): no
+ * other target, Escape or the target line's control ends it, so its text and its refusal stay to
+ * be read.
  *
  * It is a form of its own beside the answer's, with the line that writes on the issue kept
- * mounted and hidden, so the page keeps one box (part L's R7). Its words go into the issue's own
- * text, which tells nobody they name, and its hint says so in words of its own (`criterion`,
- * decision 158).
+ * mounted and hidden, so the page keeps one box. Its words go into the issue's own text, which
+ * tells nobody they name, and its hint says so in words of its own (`criterion`).
  */
 function CriterionForm({
   issueKey,

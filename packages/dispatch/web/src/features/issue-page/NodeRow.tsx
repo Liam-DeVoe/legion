@@ -880,9 +880,8 @@ export function NodeOptions({
  * the row draws none of the three.
  *
  * After Reply, Write a criterion on an ask, a comment or a message of this issue, on an issue
- * that takes one (`OutlineWriter.takesCriterion`, dispatch://INFRA-4066 R2): it aims the line at
- * the node to write a criterion under it. No key presses it, and `f` reaches it as it reaches
- * every act (decision 69).
+ * that takes one (`OutlineWriter.takesCriterion`): it aims the line at the node to write a
+ * criterion under it. No key presses it, and `f` reaches it as it reaches every act.
  *
  * Last, Copy reference copies the node's `dispatch://` address, as today's page offers it on the
  * same node (part G's R6, root R19). It writes nothing, so it is drawn whether or not a writer

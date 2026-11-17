@@ -647,9 +647,9 @@ export const ANSWER_LINES = freeze({
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
-  /** What the box's criterion line says when Dispatch refused its write (R2). */
+  /** What the box's criterion line says when Dispatch refused its write. */
   criterion_not_written: "Could not write the criterion.",
-  /** What it says when the row the criterion is written under is gone, a 404 (R2). */
+  /** What it says when the row the criterion is written under is gone, a 404. */
   criterion_gone: "This is no longer here.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
@@ -885,7 +885,7 @@ export const CONTROL_LABELS = freeze({
   /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
    *  page offers it on the same node (part G's R6, root R19). */
   copy_reference: "Copy reference",
-  /** What the box's criterion line says of the row it writes under, before its first line (R2). */
+  /** What the box's criterion line says of the row it writes under, before its first line. */
   criterion_target: "Criterion under:",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
@@ -1102,14 +1102,14 @@ export const CONTROL_LABELS = freeze({
   /** What the line says while it is empty and replies to a row: where the words go, as the
    *  answering line says of an answer. */
   reply_placeholder: "Your reply, under the row it answers…  (Enter sends)",
-  /** What the box's criterion line says while it is empty (R2). */
+  /** What the box's criterion line says while it is empty. */
   criterion_placeholder: "What should a person be able to do?  (Enter sends)",
   /** What the line says while it is empty and edits the reader's own comment. */
   edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
   write_on_issue: "Write on the issue instead",
-  /** The act of a focused question, comment or message that aims the box's criterion line (R2). */
+  /** The act of a focused question, comment or message that aims the box's criterion line. */
   write_criterion: "Write a criterion",
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
    *  question on the issue itself (dispatch://INFRA-3949 R3): where the words go, as the reply's
@@ -1121,7 +1121,7 @@ export const CONTROL_LABELS = freeze({
    *  dispatch://INFRA-1196). */
   issue_placeholder_phone: "Write on the issue…",
   reply_placeholder_phone: "Your reply, under the row…",
-  /** What the box's criterion line says while it is empty, at 760 px and below (R2). */
+  /** What the box's criterion line says while it is empty, at 760 px and below. */
   criterion_placeholder_phone: "What should a person be able to do?",
   answer_placeholder_phone: "Answer in your own words…",
   edit_placeholder_phone: "Your comment, rewritten…",

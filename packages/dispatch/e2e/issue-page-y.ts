@@ -38,25 +38,26 @@ import { rowsOfType } from "./issue-page-i";
 import { composer } from "./issue-page-l";
 
 /**
- * What the rows of part Y of dispatch://INFRA-1196 (dispatch://INFRA-4066,
- * `e2e/issue-page-y.e2e.ts`) seed and read of the new issue page: criteria, readings, a child
- * issue's checks under the parent's statements, and editing a converted issue in its one room.
- * This is Y's own helper file (decision 2 of dispatch://INFRA-1196/artifact/part-decisions-md):
- * it imports D's, G's, I's and L's readers and changes none of them.
+ * What the rows of `e2e/issue-page-y.e2e.ts` seed and read of the new issue page: criteria,
+ * readings, a child issue's checks under the parent's statements, and editing a converted issue
+ * in its one room. Each of those rows is selected by its title from the issue's checks. This
+ * file is those rows' own: it imports the other issue-page e2e files' readers and changes none
+ * of them.
  *
- * - **The tree read** `GET /api/v1/issues/{key}/tree` is INFRA-1253's (its t16a), which
- *   `@legion/contracts` does not generate yet, so `treeAnswerOf` reads it with a plain request
- *   signed in as the reader, follows its `cursor` to the last page, and types the answer as
- *   narrowly as the rows read it: `converted`, `tree`, `view_of`, and each node's `id`,
- *   `supertag`, `parent` and `text`. `artifactRoomOf` reads the artifact read's `room` through
- *   `getArtifact`, typed by hand, since the generated artifact holds no such member yet.
- * - **The rows** are G's `[data-node-row]`, each carrying `data-node-type` (`NodeRow.tsx`): a
- *   criterion's row is `criterion` and a reading's `reading`. A node of another issue carries a
- *   link `[data-node-issue]` to that issue before its kind tag, which marks a borrowed row.
- * - **The box's criterion line** is L's box set to write a criterion (`IssueComposer.tsx`'s
- *   `CriterionForm`): a form `[data-criterion-under="<the node's row id>"]` inside
- *   `[data-testid="issue-composer"]`, its refusal in `[data-criterion-answer]`. The act that aims
- *   it is the focused row's `[data-row-act="criterion"]`.
+ * - **The tree read** `GET /api/v1/issues/{key}/tree` is a read `@legion/contracts` does not
+ *   generate yet, so `treeAnswerOf` reads it with a plain request signed in as the reader,
+ *   follows its `cursor` to the last page, and types the answer as narrowly as the rows read it:
+ *   `converted`, `tree`, `view_of`, and each node's `id`, `supertag`, `parent` and `text`.
+ *   `artifactRoomOf` reads the artifact read's `room` through `getArtifact`, typed by hand, since
+ *   the generated artifact holds no such member yet.
+ * - **The rows** are the outline's `[data-node-row]`, each carrying `data-node-type`
+ *   (`NodeRow.tsx`): a criterion's row is `criterion` and a reading's `reading`. A node of
+ *   another issue carries a link `[data-node-issue]` to that issue before its kind tag, which
+ *   marks a borrowed row.
+ * - **The box's criterion line** is the page's one box set to write a criterion
+ *   (`IssueComposer.tsx`'s `CriterionForm`): a form `[data-criterion-under="<the node's row id>"]`
+ *   inside `[data-testid="issue-composer"]`, its refusal in `[data-criterion-answer]`. The act
+ *   that aims it is the focused row's `[data-row-act="criterion"]`.
  * - **An editor's socket** is `/ws/doc/<artifact id>` (`ProofDocument`), which the rows count
  *   with `countDocumentSockets` (`e2e/editor.ts`) from just before the Enter that opens it.
  */
@@ -93,8 +94,8 @@ const MODEL_WORDS = {
 
 /** One node of the tree read, by the members these rows read. A result node's `verdict` and
  *  `check_sha256`, the sum of its check's words it was recorded against, and a check node's
- *  `text_sha256`, the sum of its current words, are INFRA-1253's t16a (decision 161): absent
- *  until its tree read answers them. */
+ *  `text_sha256`, the sum of its current words, are absent until the server's tree read answers
+ *  them. */
 export interface TreeReadNode {
   readonly check_sha256?: string | null;
   readonly id: string;
@@ -119,7 +120,7 @@ export interface TreeReadAnswer {
 }
 
 /** One page of the read: `converted`, `tree` and `view_of` are the first page's for the whole
- *  read, as part T's `mergeTreePages` takes them. */
+ *  read, as the page's own tree read (`mergeTreePages`) takes them. */
 interface TreeReadPage extends TreeReadAnswer {
   /** The next page's cursor, absent or null on the last page. */
   readonly cursor?: string | null;
@@ -141,11 +142,11 @@ async function readAnswer<T>(
   return (await response.json()) as T;
 }
 
-/** The gate of this file's rows (decision 170): every row reads the issue's tree read, which
- *  INFRA-1253's t16a serves (`GET /api/v1/issues/{key}/tree`) and which reaches this branch
- *  with part T. The server's route index (`GET /api/v1`, public, so read with no sign-in) says
- *  whether it is served, so a row skips, owed, on a server that does not serve it and runs for
- *  real on one that does. */
+/** The gate of this file's rows: every row reads the issue's tree read
+ *  (`GET /api/v1/issues/{key}/tree`), which this branch's server does not serve yet. The
+ *  server's route index (`GET /api/v1`, public, so read with no sign-in) says whether it is
+ *  served, so a row skips, owed, on a server that does not serve it and runs for real on one
+ *  that does. */
 export async function treeReadServed(): Promise<boolean> {
   const response = await fetch(new URL("/api/v1", baseUrl));
   if (!response.ok) throw new Error(`GET /api/v1 failed: ${response.status}`);
@@ -157,9 +158,9 @@ export async function treeReadServed(): Promise<boolean> {
   );
 }
 
-/** What a row says when it skips on that gate (decision 170). */
+/** What a row says when it skips on that gate. */
 export const TREE_READ_OWED =
-  "owed: this row reads the issue's tree read, which INFRA-1253's t16a serves and part T brings under this branch (decisions 61 and 170)";
+  "owed: this row reads the issue's tree read, `GET /api/v1/issues/{key}/tree`, which this server does not serve";
 
 /** The tree read of issue `key`, every page it names read in turn and merged. */
 export async function treeAnswerOf(key: string): Promise<TreeReadAnswer> {
@@ -174,8 +175,8 @@ export async function treeAnswerOf(key: string): Promise<TreeReadAnswer> {
   return { converted: first.converted, nodes, tree: first.tree, view_of: first.view_of };
 }
 
-/** The room the artifact read of `id` answers, the issue's tree artifact on a converted issue
- *  (INFRA-1253 spec version 103), or null where it answers none. */
+/** The room the artifact read of `id` answers, the issue's tree artifact on a converted issue,
+ *  or null where it answers none. */
 export async function artifactRoomOf(id: string): Promise<string | null> {
   const read = (await getArtifact(id)) as { readonly room?: string | null };
   return read.room ?? null;
@@ -300,9 +301,10 @@ export interface ModelNode {
   readonly address: string;
   /** The id the tree read answers for it. */
   readonly id: string;
-  /** The id the outline draws its row under (`data-node-id`): part T's `treeIdOf` keeps F's
-   *  `<slug>#b-<block>` for a block of one of this issue's documents, an ask's block included,
-   *  and a comment's own id, and gives the tree read's id to a node of another issue. */
+  /** The id the outline draws its row under (`data-node-id`): the page's tree read (`treeIdOf`)
+   *  keeps the model's `<slug>#b-<block>` (`blockNodeId`) for a block of one of this issue's
+   *  documents, an ask's block included, and a comment's own id, and gives the tree read's id to
+   *  a node of another issue. */
   readonly row: string;
 }
 
@@ -343,8 +345,7 @@ export interface ModelRowsSeed extends WholeIssueSeed {
 }
 
 /** The spec's `## Decisions` part: one decision of the planner's and its reading. A decision
- *  block is a four-colon fence in that part (INFRA-1150 R9), so the reading's three close it
- *  not. */
+ *  block is a four-colon fence in that part, so the reading's three colons close it not. */
 const DECISIONS_PART =
   `## Decisions\n\n::::decision{#${BLOCKS.decision} uncertainty="low"}\n` +
   `${MODEL_WORDS.decision}: the model's rows come from the one tree read.\n\n` +
@@ -447,7 +448,7 @@ function blockAddress(key: string, slug: string, block: string): string {
 }
 
 /**
- * The whole issue (`seedWholeIssue`) with what part Y draws written over it, every write as the
+ * The whole issue (`seedWholeIssue`) with what these rows draw written over it, every write as the
  * planner agent (`asPlanner`) unless it says alice, in this order:
  *
  * 1. a decision node and its reading, in the spec's `## Decisions`;

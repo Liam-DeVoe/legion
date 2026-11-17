@@ -8,15 +8,15 @@ import { documentOfNode } from "../issue-artifacts";
 import type { TreeNode } from "../issue-tree";
 
 /**
- * The room a node's text is edited in (dispatch://INFRA-4066 R5, the spec's Design, "The room").
+ * The room a node's text is edited in.
  *
  * An issue the conversion has reached is one room, and a node is edited through the fragment
  * that holds its text: its document's, or for a node written into the issue, such as a
  * criterion, the fragment of the tree artifact the tree read's `tree` names. A result's text is
- * no fragment's, this issue's result or a borrowed one (decision 165), so it takes no caret. A
- * node of another issue, such as a borrowed check, is read-only here and edited in its own
- * issue's room (dispatch://INFRA-1253 R5). On an issue the conversion has not reached, a node is
- * edited in its document's room, as `useNodeEditing.ts` does without this.
+ * no fragment's, this issue's result or a borrowed one, so it takes no caret. A node of another
+ * issue, such as a borrowed check, is read-only here and edited in its own issue's room. On an
+ * issue the conversion has not reached, a node is edited in its document's room, as
+ * `useNodeEditing.ts` does without this.
  *
  * `roomTarget` is pure. It answers the key of `KEY_REPORTS` a key reports, never its sentence.
  */
@@ -46,17 +46,17 @@ const NO_TEXT: RoomTarget = { report: "no_text" };
  * slug, as `issue-artifacts.ts` holds them). On an issue the conversion has not reached, a node
  * is edited in the document `documentOfNode` finds.
  *
- * A result answers `no_text` before its address is read: no room holds
- * a result's text, and a borrowed result says `no_text`'s sentence rather than `issue_above`'s
- * (R5, decision 165). Any other node whose address names another issue answers `issue_above`
- * before its id is read, since a borrowed node's id can carry the slug of one of this issue's own
- * documents. On a converted issue an ask, a comment or a message takes no caret, an ask written
- * as a block of a document too: its text is the conversation's, which no fragment holds. A node
- * of a document is edited in that document's fragment. A criterion no document holds and with no
- * address was written into the issue: part T drafts it with its read id, which is its block id,
- * and writes no address for it (`treeIdOf`, `referenceOf`), so it is edited in the tree
- * artifact's own fragment at its own id. Any other node whose address names a block of this
- * issue was written into the issue too, and is edited there at that block.
+ * A result answers `no_text` before its address is read: no room holds a result's text, and a
+ * borrowed result says `no_text`'s sentence rather than `issue_above`'s. Any other node whose
+ * address names another issue answers `issue_above` before its id is read, since a borrowed
+ * node's id can carry the slug of one of this issue's own documents. On a converted issue an ask,
+ * a comment or a message takes no caret, an ask written as a block of a document too: its text
+ * is the conversation's, which no fragment holds. A node of a document is edited in that
+ * document's fragment. A criterion no document holds and with no address was written into the
+ * issue: the page's tree read drafts it with its read id, which is its block id, and writes no
+ * address for it (`treeIdOf`, `referenceOf`), so it is edited in the tree artifact's own fragment
+ * at its own id. Any other node whose address names a block of this issue was written into the
+ * issue too, and is edited there at that block.
  */
 export function roomTarget(
   node: Pick<TreeNode, "id" | "reference" | "type">,
@@ -83,11 +83,11 @@ export function roomTarget(
 
 /**
  * The room facts of an issue's tree read, by the issue's key, read from the query cache with no
- * fetch of its own: the page's tree read is part T's (`issueTreeQuery`), and this answers
+ * fetch of its own: the page's tree read (`issueTreeQuery`) is what fetches it, and this answers
  * `undefined` for an issue whose tree read the cache does not hold, so its nodes are edited as
- * part I edits them.
+ * `useNodeEditing.ts` edits them without a room.
  *
- * Part T's read is not on this branch, so the cache holds no issue's tree read and this answers
+ * This branch has no tree read, so the cache holds no issue's tree read and this answers
  * `undefined` for every issue, whatever key it is given. It takes the cache's client already, so
  * its place among its caller's hooks is fixed before that read lands.
  */
@@ -102,12 +102,11 @@ export function useRoomFacts(_issueKey: string | undefined): RoomFacts | undefin
  * written into the issue, such as a criterion, is edited in it, so the body draws that
  * artifact's editor as it draws a document's. Its caller takes this only where no document the
  * issue read lists is `editing`, and that read never lists the tree artifact, so this asks the
- * tree read alone. The first Enter on such a
- * row reads it with the artifact read (`GET /api/v1/artifacts/{id}`, R6) under the key the
- * document's own editor reads an artifact by (`ProofDocument.tsx`), so it is read once.
- * `undefined` while the row edits anything else, or nothing. While it reads no tree it does not
- * subscribe to that key (`subscribed`), so a refetch of the edited document's own read under the
- * same key does not draw the body again.
+ * tree read alone. The first Enter on such a row reads it with the artifact read
+ * (`GET /api/v1/artifacts/{id}`) under the key the document's own editor reads an artifact by
+ * (`ProofDocument.tsx`), so it is read once. `undefined` while the row edits anything else, or
+ * nothing. While it reads no tree it does not subscribe to that key (`subscribed`), so a refetch
+ * of the edited document's own read under the same key does not draw the body again.
  */
 export function useEditedTree(issueKey: string, editing: string | undefined): Artifact | undefined {
   const tree = useRoomFacts(issueKey)?.tree;
