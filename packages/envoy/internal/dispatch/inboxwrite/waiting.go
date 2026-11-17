@@ -97,7 +97,9 @@ func HoldDefault(ctx context.Context, tx pgx.Tx, issueKey, artifactID *string) e
 // owner row and, where the ask falls through to its project's default, the project's row
 // (HoldDefault), so nothing it reads moves before the create commits: this build's creates store
 // an open ask, and a write that stores an ask already closed - the seed's - reaches nobody, as the
-// backfill gives an older build's ask that person's tuples only while it is open.
+// backfill gives an older build's ask that person's tuples only while it is open. A create that
+// read the person itself under those same locks hands them to Record instead (Write.WaitingOn),
+// and this read is not made.
 func waitingOn(ctx context.Context, tx pgx.Tx, askID string) (string, error) {
 	var waiting string
 	err := tx.QueryRow(ctx, `

@@ -58,8 +58,9 @@ var storeWriteCallSites = []string{
 	// transaction, and each site that moves that node onto the event it appends after the
 	// follow, and appends the node's base attributes under it, through Caused: the follower
 	// route, an ask's create, an approval request renewed, and a settlement's asks (asks'
-	// TestAFollowTakesTheStoreLockOrder proves both steps). The comment path and a delivery's
-	// reply give the follow their own event instead, which it states in its own statement.
+	// TestAFollowTakesTheStoreLockOrder proves both steps); an approval request opened does the
+	// same, and is listed below with the creates. The comment path and a delivery's reply give
+	// the follow their own event instead, which it states in its own statement.
 	"asks/followers.go#Follow",
 	"api/ask_followers.go#changeAskFollower",
 	"api/asks.go#createAskFor",

@@ -678,10 +678,20 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The person this request reaches, named on the answer as the question create names it
+	// (createAskFor in api/asks.go), read under this transaction once the insert or the hand-back
+	// is in, through the rule every read of that person shares: a new request's own insert reads
+	// it (openApprovalAsk), and an open one's is read here. The settled branch returned above
+	// answers no ask at all and so names nobody; every branch here has an open request, the one a
+	// hand-back puts back in front of the human.
 	ask := open
 	var events []model.Event
 	if open != nil {
 		if events, err = s.renewApprovalAsk(r.Context(), tx, open, actor, documents, summary); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -692,15 +702,6 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		events = []model.Event{opened}
-	}
-	// The person this request reaches, named on the answer as the question create names it
-	// (createAskFor in api/asks.go): read under this transaction, once the insert or the
-	// hand-back above is in, through the rule every read of that person shares. The settled
-	// branch returned above answers no ask at all and so names nobody; every branch here has
-	// an open request, the one a hand-back puts back in front of the human.
-	if ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
 	}
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
@@ -812,15 +813,29 @@ func (s *server) openApprovalAsk(
 	nodeKind, nodeAddress := graphstore.AskRowNode(ask.ID, marked)
 	// The row says in its own insert that the store holds what this write states of the request
 	// (asks.tuples_stored_at, migration 20261116140001), at its created_at: both take the
-	// transaction's clock, now().
+	// transaction's clock, now(). The same statement reads the person the request reaches, through
+	// the rule every read of that person shares, off the row it inserts: the owner row this request
+	// holds, and the project's row where the request falls through to its default
+	// (inboxwrite.HoldDefault), keep it from moving before the commit, so it is the person a read at
+	// the end of the transaction would name. It is set on the ask once the event's payload is
+	// built: model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
+	// (createAskFor).
+	var waiting string
 	if err := tx.QueryRow(ctx, `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, node_kind, node_address, tuples_stored_at)
-		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8, $9, now())
-		returning created_at
-	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, nodeKind, nodeAddress).Scan(&ask.CreatedAt); err != nil {
+		with inserted as (
+			insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, node_kind, node_address, tuples_stored_at)
+			values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8, $9, now())
+			returning issue_key, artifact_id, asked_of, created_at
+		)
+		select a.created_at, `+askedOfPersonExpression+`
+		from inserted a`+askedOfPersonJoins+`
+	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, nodeKind, nodeAddress).Scan(&ask.CreatedAt, &waiting); err != nil {
 		return nil, model.Event{}, err
 	}
+	// The request's node is the one this write made above, which the reconcile of its question
+	// and the index of its parts take from the reader rather than read back (refs.Reader.Wrote).
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL)
+	reader.Wrote(nodes[0])
 	askChanges, cited, err := refs.ReplaceCounted(ctx, tx, reader, ask.Question)
 	if err != nil {
 		return nil, model.Event{}, err
@@ -831,13 +846,25 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	// The requester follows the request it opened, and a session requester is a node of the store
+	// from this write on, held with its followed_by for the ask.opened below, as an ask's create
+	// holds its asker's (createAskFor). Nothing before the event reads the follower row: its
+	// payload's logins are the thread's (events.ThreadLogins), and the outbox reads the followers
+	// after the commit.
+	followed, err := asks.FollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt, graphstore.NoEvent)
+	if err != nil {
+		return nil, model.Event{}, err
+	}
 	payload, err := events.AskEventPayload(ctx, tx, ask, askChanges)
 	if err != nil {
 		return nil, model.Event{}, err
 	}
+	ask.WaitingOnPerson = waiting
 	// The requester takes part in the thread the request opens, recorded once its ask.opened is
-	// in, as an ask's create records its asker (createAskFor).
-	inbox := inboxwrite.Opened(ask.ID, actor, ask.CreatedAt, owner.IssueKey, owner.ArtifactID, project)
+	// in, as an ask's create records its asker (createAskFor), and the request reaches the person
+	// its insert named.
+	inbox := inboxwrite.Opened(ask.ID, actor, ask.CreatedAt, owner.IssueKey, owner.ArtifactID, project).
+		WaitingOn(waiting)
 	payload.ThreadLogins = inbox.ThreadLogins(payload.ThreadLogins)
 	event, err := s.appendEvent(ctx, tx, owner.event("ask.opened", actor, payload))
 	if err != nil {
@@ -846,21 +873,14 @@ func (s *server) openApprovalAsk(
 	if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
-	if err := graphstore.Caused(ctx, tx, askNode, event.ID); err != nil {
-		return nil, model.Event{}, err
+	// Everything the request states in the store, under its ask.opened and in one call: its
+	// node's facts, its parts' nodes with their part_of and links, its citations, and the
+	// requester's node and follow.
+	stated := graphstore.Uncaused{
+		Nodes:  slices.Concat(askNode.Nodes, indexed.Nodes, followed.Uncaused.Nodes),
+		Tuples: slices.Concat(askNode.Tuples, indexed.Tuples, cited.Tuples, followed.Uncaused.Tuples),
 	}
-	// What the question and the parts state in the store, under the same event: the parts'
-	// nodes, their part_of and links, and the request's citations.
-	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
-	if err := graphstore.Caused(ctx, tx, indexed, event.ID); err != nil {
-		return nil, model.Event{}, err
-	}
-	// The requester follows the request it opened, once the ask.opened that records it is
-	// appended, so a session requester's node is caused by that event in the follow's own
-	// statement and the request pays no second statement to move it there. Nothing before the
-	// event reads the follower row: its payload's logins are the thread's (events.ThreadLogins),
-	// and the outbox reads the followers after the commit.
-	if _, err := asks.FollowAuthor(ctx, tx, ask.ID, actor, ask.CreatedAt, event.ID); err != nil {
+	if err := graphstore.Caused(ctx, tx, stated, event.ID); err != nil {
 		return nil, model.Event{}, err
 	}
 	if err := inboxwrite.Record(ctx, tx, inbox, event.ID); err != nil {

@@ -690,7 +690,7 @@ var indexPasses = map[string]string{
 	"refs/refs.go#Stamp":                        "the event that recorded the write",
 	// The index of an item's body: its blocks' nodes, their part_of and links, and the item's
 	// citations, read off the item's text and compared with what the store holds of its blocks'
-	// placement alone (itemBlockParents), as reconcileBlockParents compares a document's.
+	// placement alone (itemBlockPlaces), as reconcileBlockParents compares a document's.
 	"refs/item_blocks.go#indexItemBlocks":  "the item's text",
 	"refs/ask_blocks.go#indexAskIfOwed":    "the ask's question, options and answer",
 	"refs/reply_blocks.go#IndexItemIfOwed": "the item's stored text, read from its own row",

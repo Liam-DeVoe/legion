@@ -70,6 +70,9 @@ type Write struct {
 	// ask is the answered ask as its answer writer read it before the update that writes the
 	// answer (ReadAsk), whose catch-up Record appends first.
 	ask *Ask
+	// waiting is, for an ask's create, the person the ask waits on as its writer read it
+	// (WaitingOn), and nil where Record reads it itself (waitingOn).
+	waiting *string
 }
 
 // Comment is a comment's write, a reply in the thread its head pointers name.
@@ -89,6 +92,17 @@ func Message(id string, author model.Actor, at time.Time, issueKey *string, proj
 func Opened(askID string, author model.Actor, at time.Time, issueKey, artifactID *string, project string) Write {
 	return Write{Arm: Opens, NodeKind: graphstore.KindAsk, NodeID: askID, Author: author, Who: author, At: at,
 		IssueKey: issueKey, ArtifactID: artifactID, Project: project}
+}
+
+// WaitingOn is w, an ask's create, with waiting, the person the ask waits on as its writer read
+// them after the ask's insert, through asks.AskedOfPersonExpression and under the locks waitingOn
+// reads under - the owner row and, where the ask falls through to its project's default, the
+// project's row (HoldDefault) - so nothing it read has moved since: Record's assignee arm then
+// delivers the ask to that person without reading them a second time. A create that names
+// nobody this way leaves the read to Record.
+func (w Write) WaitingOn(waiting string) Write {
+	w.waiting = &waiting
+	return w
 }
 
 // Answered is the write of answer to ask, which its writer read before its update (ReadAsk), made
@@ -143,8 +157,9 @@ func (w Write) keptLogin() (string, bool) {
 //     is null, and the participation of an older build's answer the ask holds;
 //  1. participates_in from A to T, whether A is a person or a session and whether or not T's
 //     owner resolves to a project; and, for an ask's create, the assignee arm: participates_in
-//     from the person the ask waits on to it and delivered_to from it to them (waitingOnTuples),
-//     which raises no version (P13);
+//     from the person the ask waits on - as the create read them (Write.WaitingOn), else read
+//     here (waitingOn) - to it and delivered_to from it to them (waitingOnTuples), which raises
+//     no version (P13);
 //  2. for a reply, every user_threads row of T, `for no key update` in ascending login order, in
 //     one pass (lockThread) - which takes the rows of the catch-up's persons with them, since
 //     each is a row of T - and the live participant set, read in the same statement: the current
@@ -217,8 +232,10 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 	}
 	if w.Arm == Opens {
-		waiting, err := waitingOn(ctx, tx, w.NodeID)
-		if err != nil {
+		waiting := ""
+		if w.waiting != nil {
+			waiting = *w.waiting
+		} else if waiting, err = waitingOn(ctx, tx, w.NodeID); err != nil {
 			return err
 		}
 		people = append(people, waitingOnTuples(w.NodeID, waiting, person, w.At, w.Who, event)...)

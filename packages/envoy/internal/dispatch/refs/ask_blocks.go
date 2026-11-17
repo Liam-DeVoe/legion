@@ -166,13 +166,14 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 // The parts are read through r, the Reader of the write that holds the ask's text, which the
 // write that reconciled the ask's own question through it passes on (ReplaceCounted,
 // ReindexOwed), so one write asks the database once per kind for the question and its parts
-// together.
+// together, and the ask's scope is the node a create handed r (Reader.Wrote), read from the store
+// otherwise.
 //
 // It returns the targets of the part mentions it moved, which the caller's event counts, and what
 // it states in the node and tuple store, held for that event (indexItemBlocks): each part's node,
 // its part_of to the ask and the links it holds.
 func IndexAskParts(ctx context.Context, tx pgx.Tx, r *Reader, ask model.Ask, at time.Time) ([]Target, graphstore.Uncaused, error) {
-	scope, err := readItemScope(ctx, tx, ItemAsk, ask.ID)
+	scope, err := r.itemScope(ctx, tx, ItemAsk, ask.ID)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
 	}

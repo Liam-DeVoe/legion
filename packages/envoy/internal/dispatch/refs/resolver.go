@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -19,7 +21,8 @@ import (
 // answered is the one transaction's view. It is the text.Resolver every write of a text passes
 // to the function that indexes it (ReplaceCounted, ReplaceCountedEdit, IndexAskParts,
 // IndexAskPartsCounted), so a write that holds two texts of one source - an ask's question and
-// its parts - reads both through one.
+// its parts - reads both through one. A write that made its source's node holds that node on
+// the reader too (Wrote), so neither pass reads back the row the write has just inserted.
 //
 // Every failure it meets reaching the database is logged here and answered as nothing resolved
 // for that kind, and no call site handles one: the swallow lives in this one place because the
@@ -48,6 +51,9 @@ type Reader struct {
 	// that names nothing or two items or more, so a body writing the same short id twice is one
 	// query.
 	items map[prefixKey]string
+	// wrote is the node of the source as the write holding this reader made it (Wrote), nil
+	// where it did not make it.
+	wrote *graphstore.Node
 }
 
 // prefixKey is one short id as ResolvePrefix is asked it: the kind of item it names, the owner it
@@ -62,6 +68,36 @@ type prefixKey struct {
 // pool or transaction that write runs in, with serverURL the server its mentions are read with.
 func NewReader(ctx context.Context, q Queryer, fromKind, fromID, serverURL string) *Reader {
 	return &Reader{ctx: ctx, q: q, kind: fromKind, id: fromID, serverURL: serverURL}
+}
+
+// Wrote tells the reader that its write made node, the node of the reader's source, in the
+// transaction the reader reads through: a create that drew the source's id in that transaction
+// and wrote its node there before the source's row (graphstore.WriteUncaused, an ask's create).
+// Every pass that indexes the source through the reader then takes node as the item's scope,
+// which is the row the store holds of it, rather than read that row back (readItemScope): no
+// other transaction can name an id this one drew until it commits, so nothing else has written
+// the node.
+func (r *Reader) Wrote(node graphstore.Node) {
+	r.wrote = &node
+}
+
+// sourceScope is the scope of the reader's source where it is an item - a comment, a message or
+// an ask - and none for a document's (replaceRefs).
+func (r *Reader) sourceScope(ctx context.Context, q Queryer) (itemScope, error) {
+	if kind := ItemKind(r.kind); slices.Contains(itemKinds, kind) {
+		return r.itemScope(ctx, q, kind, r.id)
+	}
+	return itemScope{}, nil
+}
+
+// itemScope is the scope of item itemID of kind: the node the reader's write made, where the
+// item is the reader's source and the write made it (Wrote), and otherwise the store's row of it,
+// read now (readItemScope).
+func (r *Reader) itemScope(ctx context.Context, q Queryer, kind ItemKind, itemID string) (itemScope, error) {
+	if r.wrote != nil && r.kind == string(kind) && r.id == itemID {
+		return itemScope{held: true, node: *r.wrote}, nil
+	}
+	return readItemScope(ctx, q, kind, itemID)
 }
 
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the

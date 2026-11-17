@@ -145,42 +145,53 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //  11. a batch of 3: that artifact's versions, its latest review and its open approval request
 //     (loadArtifactRow, queueArtifactDetails);
 //  12. the owning issue's row, locked (requireOpenOwner);
-//  13. the document's settled version number (settledVersionNumber);
-//  14. a batch of 2: the approval before the write - the latest review and the open request
+//  13. whether the request falls through to its project's default assignee, which it does not
+//     here: the issue holds an assignee, so no project row is taken (inboxwrite.HoldDefault);
+//  14. the document's settled version number (settledVersionNumber);
+//  15. a batch of 2: the approval before the write - the latest review and the open request
 //     (attachApproval, queueApprovals);
-//  15. the open approval ask naming this document, which there is none of
+//  16. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
-//  16. the new ask's id (select gen_random_uuid()::text);
-//  17. the latest approved review the request carries (docs.LatestApprovedReview);
-//  18. the ask's node, in its document's project, written before the ask row that holds it
-//     (graphstore.WriteUncaused, dispatch://INFRA-3862); the project is the document's, read with
-//     it, so it costs no round trip of its own;
-//  19. the ask row (openApprovalAsk);
-//  20. the question's references, none of which it names (replaceReferences);
-//  21. the row the ask owes the grammar's re-index queue, deleted where it has one
+//  17. the new ask's id and the transaction's clock (select gen_random_uuid()::text, now());
+//  18. the latest approved review the request carries (docs.LatestApprovedReview);
+//  19. the ask's node, in its document's project, with who requested it, written before the ask
+//     row that holds it (graphstore.AskFacts, graphstore.WriteUncaused, dispatch://INFRA-3862);
+//     the project is the document's, read with it, so it costs no round trip of its own;
+//  20. the ask row, and in the same statement the person the request reaches, which the answer
+//     names and the request is delivered to (openApprovalAsk, through the one rule every read of
+//     that person shares, and inboxwrite.Write.WaitingOn);
+//  21. the question's references, none of which it names (refs.ReplaceCounted); the ask's scope
+//     is the node the write made, which the reader holds (refs.Reader.Wrote), so neither this
+//     nor the parts' index reads it back;
+//  22. the row the ask owes the grammar's re-index queue, deleted where it has one
 //     (refs.settleOwed): the write holds the source's row and has just read its text with the
 //     whole grammar, so nothing is owed for it any more (INFRA-869);
-//  22. the ask's block-state row, inserted where it has none (refs.IndexAskPartsCounted, through
-//     lockItemState);
-//  23. that state row, read and locked;
-//  24. the part rows of the new ask - its question and each option (writeItemBlocks);
-//  25. the text of each part at the new revision;
-//  26. the state the parts were indexed at (storeItemState);
-//  27. the thread's followers, for the event payload (events.AskEventPayload);
-//  28. the issue's sequence, locked (appendEvent);
-//  29. the ask.opened event row, inserted with its id and time returned in one statement
+//  23. a batch of 2: the ask's block-state row, inserted where it has none, and that row, read
+//     and locked (refs.IndexAskPartsCounted, through lockItemState);
+//  24. the block nodes of the new ask's parts - its question and each option - written before the
+//     rows that name them (graphstore.WriteUncaused, through indexItemBlocks);
+//  25. a batch of 3: the part rows, the text of each part at the new revision (queueItemBlocks),
+//     and where the store places those parts already, which is nowhere (itemBlockPlaces);
+//  26. the state the parts were indexed at (recordItemIndexed);
+//  27. the requester's follow and the session node it records, in one statement, both held for
+//     the ask.opened (asks.FollowAuthor);
+//  28. the logins with a row on the request's thread, for the event payload
+//     (events.AskEventPayload);
+//  29. the issue's sequence, locked (appendEvent);
+//  30. the ask.opened event row, inserted with its id and time returned in one statement
 //     (events.Broker.AppendAll);
-//  30. a batch of 2: that event's payload, rewritten with its own id, and the issue's last_seq
+//  31. a batch of 2: that event's payload, rewritten with its own id, and the issue's last_seq
 //     (events.Broker.AppendAll);
-//  31. the references' source sequence (refs.Stamp);
-//  32. the source sequence of the links the ask's parts hold, none here (refs.Stamp's block arm);
-//  33. the ask's node moved onto the ask.opened (graphstore.Caused);
-//  34. the base attributes its node write stated - its visibility, its state and its project -
-//     appended under that event (graphstore.Caused);
-//  35. the author's follow and the session node it records, caused by the ask.opened, in one
-//     statement (asks.FollowAuthor);
-//  36. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
-//     every read of that person shares);
+//  32. a batch of 2: the references' source sequence, and that of the links the ask's parts hold,
+//     none here (refs.Stamp);
+//  33. a batch of 3: the nodes the write made - the ask's, its parts' and the requester's
+//     session's - moved onto the ask.opened, then every relation and every base attribute the
+//     write stated, appended under it (graphstore.Caused, called once for the whole write);
+//  34. the requester's participates_in in the thread the request opens (inboxwrite.Record);
+//  35. whether the ask's node is reserved for its author, which it is not, so the ask may reach
+//     another person (graphstore.ToPerson's read of the nodes reserved for their author);
+//  36. the participates_in and the delivered_to of the person the request waits on, with that
+//     person's node, in one statement (graphstore.ToPerson);
 //  37. a batch of 2: the approval as the request leaves it (attachApproval again);
 //  38. commit;
 //  39. the display trees of the texts the ask.opened event carries - its question and both option
@@ -189,8 +200,8 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
-// The five batches hold twelve statements between them, so a request that sent each statement on
-// its own would send forty-seven round trips.
+// The nine batches hold twenty-two statements between them, so a request that sent each
+// statement on its own would send fifty-three round trips.
 func TestApprovalRequestsCostAtMostFortyRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}

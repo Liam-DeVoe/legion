@@ -54,7 +54,8 @@ type Target struct {
 //
 // Its second result is what the reconcile states in the node and tuple store for a source that is
 // a comment, a message or an ask: the item's citations (replaceRefs), held for the event of the
-// write, which the caller appends after this and hands to graphstore.Caused.
+// write, which the caller appends after this and hands to graphstore.Caused. The item's scope is
+// the reader's (Reader.Wrote), read from the store where the write did not make the node.
 func ReplaceCounted(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -62,7 +63,11 @@ func ReplaceCounted(
 	body string,
 ) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, cited, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	scope, err := r.sourceScope(ctx, tx)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	changed, cited, err := replaceRefsOf(ctx, tx, r.kind, r.id, found, nil, scope)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -81,7 +86,11 @@ func ReplaceCountedEdit(
 	previous, body string,
 ) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	found := text.Refs(r.Mentions(body))
-	changed, cited, err := replaceRefs(ctx, tx, r.kind, r.id, found, nil)
+	scope, err := r.sourceScope(ctx, tx)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	changed, cited, err := replaceRefsOf(ctx, tx, r.kind, r.id, found, nil, scope)
 	if err != nil {
 		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
@@ -344,14 +353,14 @@ func refTargets(found []text.Ref) ([]string, []string) {
 // Stamp records eventID as the write that introduced every edge of one source that has no
 // provenance yet: the source's own refs and, for a document, a comment, a message or an ask, the
 // mentions its blocks hold, an ask's parts included. It runs after the source's event is
-// appended, in the same transaction, and leaves edges that survived a reconcile untouched.
+// appended, in the same transaction, and leaves edges that survived a reconcile untouched. The
+// two updates wait on no answer of each other, so a source with block mentions sends them as one
+// batch, which Postgres runs one after the other as it would run them sent apart.
 func Stamp(ctx context.Context, tx pgx.Tx, fromKind, fromID string, eventID int64) error {
-	if _, err := tx.Exec(ctx, `
+	const ownRefs = `
 		update refs set source_seq = $3
 		where from_kind = $1 and from_id = $2 and source_seq is null
-	`, fromKind, fromID, eventID); err != nil {
-		return fmt.Errorf("stamp references: %w", err)
-	}
+	`
 	var blockRefs string
 	switch fromKind {
 	case "artifact":
@@ -359,18 +368,30 @@ func Stamp(ctx context.Context, tx pgx.Tx, fromKind, fromID string, eventID int6
 	case string(ItemComment), string(ItemMessage), string(ItemAsk):
 		// An item's blocks are keyed by its uuid; an id that is none names no item and holds no
 		// block mention.
-		if uuid.Validate(fromID) != nil {
-			return nil
+		if uuid.Validate(fromID) == nil {
+			tables, _ := ItemKind(fromKind).tables()
+			blockRefs = `update ` + tables.refs + ` set source_seq = $2 where ` + tables.item + ` = $1::uuid and source_seq is null`
 		}
-		tables, _ := ItemKind(fromKind).tables()
-		blockRefs = `update ` + tables.refs + ` set source_seq = $2 where ` + tables.item + ` = $1::uuid and source_seq is null`
-	default:
+	}
+	if blockRefs == "" {
+		if _, err := tx.Exec(ctx, ownRefs, fromKind, fromID, eventID); err != nil {
+			return fmt.Errorf("stamp references: %w", err)
+		}
 		return nil
 	}
-	if _, err := tx.Exec(ctx, blockRefs, fromID, eventID); err != nil {
+	batch := &pgx.Batch{}
+	batch.Queue(ownRefs, fromKind, fromID, eventID)
+	batch.Queue(blockRefs, fromID, eventID)
+	results := tx.SendBatch(ctx, batch)
+	if _, err := results.Exec(); err != nil {
+		_ = results.Close()
+		return fmt.Errorf("stamp references: %w", err)
+	}
+	if _, err := results.Exec(); err != nil {
+		_ = results.Close()
 		return fmt.Errorf("stamp block references: %w", err)
 	}
-	return nil
+	return results.Close()
 }
 
 // CountedChangeLimit bounds the targets of one kind (issue, ask, artifact, block) an event names,

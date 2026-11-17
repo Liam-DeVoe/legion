@@ -107,24 +107,27 @@ func WriteUncaused(ctx context.Context, tx pgx.Tx, nodes []Node, stated []Tuple)
 // The nodes are not written again: causeNodes moves the event onto the rows already written, in
 // one statement over their addresses. Writing them again would pay a second node write per node
 // for one column, and the upsert's own guard would refuse it, since nothing else about the node
-// moved.
+// moved. That statement and the tuple appends after it wait on no answer of one another, so they
+// go to Postgres in one round trip (sendStatements), in that order.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
-	if err := causeNodes(ctx, tx, write.Nodes, event); err != nil {
-		return err
-	}
-	if len(write.Tuples) == 0 {
-		return nil
-	}
-	tuples := make([]Tuple, len(write.Tuples))
-	for index, held := range write.Tuples {
-		tuple := held.Tuple
-		tuple.SourceEvent = event
-		if held.LegacyFromCause && tuple.LegacySourceSeq == nil && event != NoEvent {
-			tuple.LegacySourceSeq = &event
+	statements := causeNodes(write.Nodes, event)
+	if len(write.Tuples) > 0 {
+		tuples := make([]Tuple, len(write.Tuples))
+		for index, held := range write.Tuples {
+			tuple := held.Tuple
+			tuple.SourceEvent = event
+			if held.LegacyFromCause && tuple.LegacySourceSeq == nil && event != NoEvent {
+				tuple.LegacySourceSeq = &event
+			}
+			tuples[index] = tuple
 		}
-		tuples[index] = tuple
+		appends, err := tupleAppends(tuples)
+		if err != nil {
+			return err
+		}
+		statements = append(statements, appends...)
 	}
-	return appendTuples(ctx, tx, tuples)
+	return sendStatements(ctx, tx, statements)
 }
 
 // The base attributes, as the kind of the tuple that states each spells it. graph_nodes carries a
@@ -484,31 +487,79 @@ func BaseAttributeFacts(nodes []Node) []UncausedTuple {
 // that index's exact column list and predicate - a partial index is not a constraint, so
 // `on conflict on constraint` cannot name it. Both keys are partial on `source_event <> 0`, so a
 // tuple at the sentinel is appended unconditionally. It is what Write and Caused append through,
-// so a tuple of ToPerson's three kinds naming a person is refused here (refusePersonTuples).
+// so a tuple of ToPerson's three kinds naming a person is refused here (refusePersonTuples). The
+// two statements wait on no answer of each other and go in one round trip (sendStatements).
 func appendTuples(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
-	if err := refusePersonTuples(tuples, nil); err != nil {
-		return err
-	}
-	relations, values := splitTuples(tuples)
-	if err := appendTupleRows(ctx, tx, tupleInsert(1, "")+relationRepeatKey, relations); err != nil {
-		return fmt.Errorf("append graph relations: %w", err)
-	}
-	if err := appendTupleRows(ctx, tx, tupleInsert(1, "")+valueRepeatKey, values); err != nil {
-		return fmt.Errorf("append graph attributes: %w", err)
-	}
-	return nil
-}
-
-func appendTupleRows(ctx context.Context, tx pgx.Tx, statement string, tuples []Tuple) error {
-	if len(tuples) == 0 {
-		return nil
-	}
-	args, err := tupleParams(tuples)
+	statements, err := tupleAppends(tuples)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, statement, args...)
-	return err
+	return sendStatements(ctx, tx, statements)
+}
+
+// tupleAppends is appendTuples' statements for tuples, the relations' first: none for a kind
+// tuples holds none of.
+func tupleAppends(tuples []Tuple) ([]storeStatement, error) {
+	if err := refusePersonTuples(tuples, nil); err != nil {
+		return nil, err
+	}
+	relations, values := splitTuples(tuples)
+	statements := make([]storeStatement, 0, 2)
+	for _, rows := range [...]struct {
+		sql, failure string
+		tuples       []Tuple
+	}{
+		{tupleInsert(1, "") + relationRepeatKey, "append graph relations", relations},
+		{tupleInsert(1, "") + valueRepeatKey, "append graph attributes", values},
+	} {
+		if len(rows.tuples) == 0 {
+			continue
+		}
+		args, err := tupleParams(rows.tuples)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", rows.failure, err)
+		}
+		statements = append(statements, storeStatement{sql: rows.sql, args: args, failure: rows.failure})
+	}
+	return statements, nil
+}
+
+// storeStatement is one statement of a store write, with the words its failure is reported in.
+type storeStatement struct {
+	sql     string
+	args    []any
+	failure string
+}
+
+// sendStatements runs statements in tx in the order given, in one round trip: a lone statement on
+// its own, and several as one batch. Postgres runs the statements of a batch one after another,
+// each a statement of its own in the caller's transaction, with the snapshot and the row locks it
+// would take sent alone, so a batch moves no step of the store's lock order and no statement of it
+// sees less than the statements before it wrote; what it saves is the round trip between two
+// statements whose arguments wait on no answer of the one before. The batch stops at the first
+// statement that fails, and the failure names that statement.
+func sendStatements(ctx context.Context, tx pgx.Tx, statements []storeStatement) error {
+	switch len(statements) {
+	case 0:
+		return nil
+	case 1:
+		if _, err := tx.Exec(ctx, statements[0].sql, statements[0].args...); err != nil {
+			return fmt.Errorf("%s: %w", statements[0].failure, err)
+		}
+		return nil
+	}
+	batch := &pgx.Batch{}
+	for _, statement := range statements {
+		batch.Queue(statement.sql, statement.args...)
+	}
+	results := tx.SendBatch(ctx, batch)
+	for _, statement := range statements {
+		if _, err := results.Exec(); err != nil {
+			_ = results.Close()
+			return fmt.Errorf("%s: %w", statement.failure, err)
+		}
+	}
+	return results.Close()
 }
 
 // encodeAttributes writes an empty object for a node that carries no attribute, since the column
@@ -520,14 +571,15 @@ func encodeAttributes(attributes map[string]any) ([]byte, error) {
 	return json.Marshal(attributes)
 }
 
-// causeNodes moves the cause onto the nodes a writer stated before its event existed (Caused).
-// A request writes a node before the row whose foreign key names it, and its event is appended
-// after both, so the node is written with the sentinel and learns its cause here. It is one
-// statement over the addresses the writer holds, not a second node write: writing those rows
-// again would double the cost of every pass for one column, and the upsert's own guard would
-// refuse it anyway, since nothing else about the node moved. Only a node still at the sentinel
-// takes the event, so a node an earlier version already caused keeps the cause it had.
-func causeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, event int64) error {
+// causeNodes is the statement that moves the cause onto the nodes a writer stated before its event
+// existed (Caused), and none where there is no node or no event. A request writes a node before
+// the row whose foreign key names it, and its event is appended after both, so the node is written
+// with the sentinel and learns its cause here. It is one statement over the addresses the writer
+// holds, not a second node write: writing those rows again would double the cost of every pass
+// for one column, and the upsert's own guard would refuse it anyway, since nothing else about the
+// node moved. Only a node still at the sentinel takes the event, so a node an earlier version
+// already caused keeps the cause it had.
+func causeNodes(nodes []Node, event int64) []storeStatement {
 	if len(nodes) == 0 || event == NoEvent {
 		return nil
 	}
@@ -536,14 +588,14 @@ func causeNodes(ctx context.Context, tx pgx.Tx, nodes []Node, event int64) error
 	for index, node := range nodes {
 		kinds[index], ids[index] = node.Kind, node.ID
 	}
-	_, err := tx.Exec(ctx, `
+	return []storeStatement{{
+		sql: `
 		update graph_nodes set source_event = $1
 		from unnest($2::text[], $3::text[]) as named(kind, id)
 		where graph_nodes.kind = named.kind and graph_nodes.id = named.id
 		  and graph_nodes.source_event = 0
-	`, event, kinds, ids)
-	if err != nil {
-		return fmt.Errorf("record what caused the graph nodes: %w", err)
-	}
-	return nil
+	`,
+		args:    []any{event, kinds, ids},
+		failure: "record what caused the graph nodes",
+	}}
 }

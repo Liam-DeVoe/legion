@@ -305,8 +305,10 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		}
 	}
 	// The question and the parts of this write through one reader: its parts hold its question,
-	// so the database answers once per kind for both.
+	// so the database answers once per kind for both, and both take the ask's node from the
+	// reader, as this write made it above, rather than read it back (refs.Reader.Wrote).
 	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
+	reader.Wrote(nodes[0])
 	askChanges, cited, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -341,7 +343,8 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	openedPayload.ThreadLogins = inbox.ThreadLogins(openedPayload.ThreadLogins)
 	// The person this question reaches, read under this write's own transaction through the rule
 	// every read of that person shares, so the caller is told whose Inbox it just landed in
-	// rather than having to read the ask again. It is set after the payload above is built:
+	// rather than having to read the ask again, and the ask's thread reaches that person without
+	// a second read (inboxwrite.Write.WaitingOn). It is set after the payload above is built:
 	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
 	ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
@@ -349,6 +352,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	inbox = inbox.WaitingOn(ask.WaitingOnPerson)
 	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
 	if err != nil {
 		s.writeHandlerError(w, err)

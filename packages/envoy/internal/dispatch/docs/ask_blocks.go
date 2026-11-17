@@ -285,7 +285,7 @@ func (r *settlementReconciliation) causeFollows(ctx context.Context, tx pgx.Tx, 
 // One settlement can index one ask twice - its restoration, then the rewording of the block that
 // came back (reconcileAskBlocks) - and the second index reads where the store places the ask's
 // parts while the first one's part_of is still held for its event, so it states again the part_of
-// of every part the first one placed (refs' itemBlockParents). A part has one place, so each part's
+// of every part the first one placed (refs' itemBlockPlaces). A part has one place, so each part's
 // part_of is appended once, under the event of the first write that stated it.
 func (r *settlementReconciliation) causeIndexedAsks(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
 	if len(r.indexed) == 0 {

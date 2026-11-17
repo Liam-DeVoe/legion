@@ -395,7 +395,7 @@ type itemBlockSource struct {
 // The nodes are written before the rows that name them, since each row's foreign key is checked
 // in the statement that writes it, and a node already there keeps its made_at and made_by. Each
 // block that is a node once the revision is written is placed in the item by a part_of, which is
-// stated only where the store does not place it there now (itemBlockParents), so a revision that
+// stated only where the store does not place it there now (itemBlockPlaces), so a revision that
 // only moved its blocks states nothing; a removed block keeps its part_of, which its node's state
 // and its row's lost position each take out of graph_edges. Each link is a tuple out of its
 // block's node, stated with the row the reconciliation inserts and retracted with the one it
@@ -545,9 +545,6 @@ func indexItemBlocks(
 		if write, err = graphstore.WriteUncaused(ctx, tx, nodes, nil); err != nil {
 			return nil, graphstore.Uncaused{}, fmt.Errorf("write the block nodes of %s %s: %w", kind, itemID, err)
 		}
-		if err := writeItemBlocks(ctx, tx, kind, tables, itemID, revision, at, madeAt, written, kept, removed); err != nil {
-			return nil, graphstore.Uncaused{}, err
-		}
 		// Every current block is one the revision wrote or kept, so the blocks it places are the
 		// current ones that are nodes, in body order.
 		placed := make([]string, 0, len(ids))
@@ -557,11 +554,17 @@ func indexItemBlocks(
 				placed = append(placed, id)
 			}
 		}
-		parents, err := itemBlockParents(ctx, tx, kind, itemID, at, scope, placed, rows, makers)
-		if err != nil {
+		// The block rows, their texts and the read of where the store places the blocks wait on
+		// no answer of one another, so they go in one round trip, in that order.
+		batch := &pgx.Batch{}
+		if err := queueItemBlocks(batch, kind, tables, itemID, revision, at, madeAt, written, kept, removed); err != nil {
 			return nil, graphstore.Uncaused{}, err
 		}
-		write.Tuples = append(write.Tuples, parents...)
+		places := queueItemBlockPlaces(batch, kind, itemID, placed)
+		if err := sendQueued(ctx, tx, batch); err != nil {
+			return nil, graphstore.Uncaused{}, err
+		}
+		write.Tuples = append(write.Tuples, places.parents(at, scope, rows, makers)...)
 	} else {
 		for _, row := range kept {
 			named[row.id] = rows[row.id].named
@@ -698,28 +701,40 @@ type itemState struct {
 }
 
 // lockItemState inserts the item's state row when it has none and locks it `for no key update`.
+// The lock waits on no answer of the insert, so the two go in one batch, which Postgres runs one
+// after the other: the lock's statement starts once the insert has put the row there.
 func lockItemState(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, itemID string) (itemState, error) {
-	if _, err := tx.Exec(ctx, `
+	lock := `select body_sha256 from ` + tables.state + ` where ` + tables.item + ` = $1::uuid for no key update`
+	if tables.revisions() {
+		lock = `
+			select s.revision, s.next_block, s.body_sha256, i.edited_at is not null
+			from ` + tables.state + ` s join ` + tables.items + ` i on i.id = s.` + tables.item + `
+			where s.` + tables.item + ` = $1::uuid
+			for no key update of s
+		`
+	}
+	batch := &pgx.Batch{}
+	batch.Queue(`
 		insert into `+tables.state+` (`+tables.item+`) values ($1::uuid) on conflict do nothing
-	`, itemID); err != nil {
+	`, itemID)
+	batch.Queue(lock, itemID)
+	results := tx.SendBatch(ctx, batch)
+	if _, err := results.Exec(); err != nil {
+		_ = results.Close()
 		return itemState{}, fmt.Errorf("create the block state of %s %s: %w", kind, itemID, err)
 	}
 	state := itemState{nextBlock: 1}
 	var sum *string
 	var err error
 	if tables.revisions() {
-		err = tx.QueryRow(ctx, `
-			select s.revision, s.next_block, s.body_sha256, i.edited_at is not null
-			from `+tables.state+` s join `+tables.items+` i on i.id = s.`+tables.item+`
-			where s.`+tables.item+` = $1::uuid
-			for no key update of s
-		`, itemID).Scan(&state.revision, &state.nextBlock, &sum, &state.edited)
+		err = results.QueryRow().Scan(&state.revision, &state.nextBlock, &sum, &state.edited)
 		state.indexed = state.revision > 0
 	} else {
-		err = tx.QueryRow(ctx, `
-			select body_sha256 from `+tables.state+` where `+tables.item+` = $1::uuid for no key update
-		`, itemID).Scan(&sum)
+		err = results.QueryRow().Scan(&sum)
 		state.indexed = sum != nil
+	}
+	if closed := results.Close(); err == nil {
+		err = closed
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		return itemState{}, fmt.Errorf("lock the block state of %s %s: the %s is gone", kind, itemID, kind)
@@ -826,22 +841,23 @@ type itemBlockRow struct {
 	named    bool
 }
 
-// writeItemBlocks stores one new revision of the item's blocks: written (new, changed or restored
-// blocks) take the revision and `at` as their changed facts, and a new one madeAt and `at` as its
-// created_at, the moment its part_of is dated by (itemBlockParents), which the insert writes rather
-// than leave to the column's default, the transaction's now(); a written row already stored keeps
-// its created_at. Kept blocks move their position, type and excerpt; removed ones lose their
-// position at `at`. A kind with revisions records each written block's text, and null for each
-// removed one, at the revision. A kind whose blocks record a maker writes each written block's; a
-// kept block keeps the maker it was written with, as it keeps its text.
+// queueItemBlocks queues on batch the statements that store one new revision of the item's
+// blocks: written (new, changed or restored blocks) take the revision and `at` as their changed
+// facts, and a new one madeAt and `at` as its created_at, the moment its part_of is dated by
+// (itemBlockPlaces.parents), which the insert writes rather than leave to the column's default,
+// the transaction's now(); a written row already stored keeps its created_at. Kept blocks move
+// their position, type and excerpt; removed ones lose their position at `at`. A kind with
+// revisions records each written block's text, and null for each removed one, at the revision. A
+// kind whose blocks record a maker writes each written block's; a kept block keeps the maker it
+// was written with, as it keeps its text. No statement of them waits on another's answer, so they
+// go with the rest of the batch in one round trip, in this order.
 //
 // Each written and kept row names its node in the statement that writes it where the block is a
 // node (itemBlockRow.named), and names none where it is not, so the row says which arm of
 // graph_edges answers it (migration 20261116140008); the node is already written, since the
 // foreign key is checked inside the statement. A removed row keeps the node columns it had.
-func writeItemBlocks(
-	ctx context.Context,
-	tx pgx.Tx,
+func queueItemBlocks(
+	batch *pgx.Batch,
 	kind ItemKind,
 	tables itemTables,
 	itemID string,
@@ -852,16 +868,16 @@ func writeItemBlocks(
 	removed []string,
 ) error {
 	if len(removed) > 0 {
-		if _, err := tx.Exec(ctx, `
+		queueExec(batch, func(err error) error {
+			return fmt.Errorf("remove the blocks %s %s no longer holds: %w", kind, itemID, err)
+		}, `
 			update `+tables.blocks+` set position = null, removed_at = $2
 			where `+tables.item+` = $1::uuid and block_id = any($3)
-		`, itemID, at, removed); err != nil {
-			return fmt.Errorf("remove the blocks %s %s no longer holds: %w", kind, itemID, err)
-		}
+		`, itemID, at, removed)
 	}
 	if len(written) > 0 {
 		ids, positions, types, sums, excerpts, named := itemBlockColumns(written)
-		var err error
+		recorded := func(err error) error { return fmt.Errorf("record the blocks of %s %s: %w", kind, itemID, err) }
 		if tables.revisions() {
 			// Only a kind whose blocks record a maker has the column, so the three fragments are
 			// empty for the others; kind is this package's own constant, never caller input.
@@ -869,11 +885,11 @@ func writeItemBlocks(
 			if tables.makers {
 				maker, makerValue, makerUpdate = ", made_by", ", b.made_by::jsonb", ", made_by = excluded.made_by"
 			}
-			var makers []*string
-			if makers, err = itemBlockMakers(kind, itemID, written); err != nil {
+			makers, err := itemBlockMakers(kind, itemID, written)
+			if err != nil {
 				return err
 			}
-			_, err = tx.Exec(ctx, `
+			queueExec(batch, recorded, `
 				insert into `+tables.blocks+` (`+tables.item+`, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_revision, changed_at, created_at`+maker+`)
 				select $1::uuid, b.id, '`+string(kind)+`/' || $1::uuid::text || '#' || b.id,
 				       case when b.named then $12 end, case when b.named then '`+string(kind)+`/' || $1::uuid::text || '#' || b.id end,
@@ -893,7 +909,7 @@ func writeItemBlocks(
 		} else {
 			// A message is never edited, so its blocks are made and last changed when it was
 			// written; a reindex under another parser moves only those of new text.
-			_, err = tx.Exec(ctx, `
+			queueExec(batch, recorded, `
 				insert into message_blocks (message_id, block_id, node_id, node_kind, node_address, position, type, text_sha256, excerpt, made_at, changed_at, created_at)
 				select $1::uuid, b.id, 'message/' || $1::uuid::text || '#' || b.id,
 				       case when b.named then $9 end, case when b.named then 'message/' || $1::uuid::text || '#' || b.id end,
@@ -910,20 +926,17 @@ func writeItemBlocks(
 					removed_at = null
 			`, itemID, at, ids, positions, types, sums, excerpts, named, BlockNodeKind)
 		}
-		if err != nil {
-			return fmt.Errorf("record the blocks of %s %s: %w", kind, itemID, err)
-		}
 	}
 	if len(kept) > 0 {
 		ids, positions, types, _, excerpts, named := itemBlockColumns(kept)
-		if _, err := tx.Exec(ctx, `
+		queueExec(batch, func(err error) error {
+			return fmt.Errorf("move the unchanged blocks of %s %s: %w", kind, itemID, err)
+		}, `
 			update `+tables.blocks+` b set position = k.position, type = k.type, excerpt = k.excerpt,
 				node_kind = case when k.named then $7 end, node_address = case when k.named then b.node_id end
 			from unnest($2::text[], $3::int[], $4::text[], $5::text[], $6::boolean[]) as k (id, position, type, excerpt, named)
 			where b.`+tables.item+` = $1::uuid and b.block_id = k.id
-		`, itemID, ids, positions, types, excerpts, named, BlockNodeKind); err != nil {
-			return fmt.Errorf("move the unchanged blocks of %s %s: %w", kind, itemID, err)
-		}
+		`, itemID, ids, positions, types, excerpts, named, BlockNodeKind)
 	}
 	if !tables.revisions() || len(written)+len(removed) == 0 {
 		return nil
@@ -936,14 +949,33 @@ func writeItemBlocks(
 	for _, id := range removed {
 		textIDs, texts = append(textIDs, id), append(texts, nil)
 	}
-	if _, err := tx.Exec(ctx, `
+	queueExec(batch, func(err error) error {
+		return fmt.Errorf("record the block texts of revision %d of %s %s: %w", revision, kind, itemID, err)
+	}, `
 		insert into `+tables.texts+` (`+tables.item+`, block_id, revision, text)
 		select $1::uuid, t.id, $2, t.text from unnest($3::text[], $4::text[]) as t (id, text)
 		on conflict (`+tables.item+`, block_id, revision) do update set text = excluded.text
-	`, itemID, revision, textIDs, texts); err != nil {
-		return fmt.Errorf("record the block texts of revision %d of %s %s: %w", revision, kind, itemID, err)
-	}
+	`, itemID, revision, textIDs, texts)
 	return nil
+}
+
+// queueExec queues statement on batch; failed is what its failure is answered as.
+func queueExec(batch *pgx.Batch, failed func(error) error, statement string, args ...any) {
+	batch.Queue(statement, args...).Fn = func(results pgx.BatchResults) error {
+		if _, err := results.Exec(); err != nil {
+			return failed(err)
+		}
+		return nil
+	}
+}
+
+// sendQueued sends what batch holds in tx, in one round trip, and answers the first failure of
+// its statements; a batch that holds none sends nothing.
+func sendQueued(ctx context.Context, tx pgx.Tx, batch *pgx.Batch) error {
+	if batch.Len() == 0 {
+		return nil
+	}
+	return tx.SendBatch(ctx, batch).Close()
 }
 
 // itemBlockColumns is rows as the parallel arrays an unnest reads.
@@ -977,67 +1009,79 @@ func itemBlockMakers(kind ItemKind, itemID string, rows []itemBlockRow) ([]*stri
 	return makers, nil
 }
 
-// itemBlockParents states the part_of of each block of the item that is a node once a revision is
-// written (placed, block ids in body order) and that the store does not place in the item now,
-// read the way the store reads a current relation (graphstore.CurrentTupleRead), in one statement
-// for every block rather than one per block, through graph_tuples_inbound, whose columns the read
-// binds up to the block's address. A block's place never moves - its parent is its item, which is
-// what its address names - so a block the store already places states nothing, and a re-index
-// that only moved the blocks appends nothing. Each part_of is dated by its block row's created_at,
-// the column the release before this one answers it from, so graph_edges answers it at one time on
-// either release: `at` for a row this revision inserted, which writeItemBlocks writes as its
-// created_at, and, for a row already stored (stored), which named no node until this pass took it
-// over, the row's own, the moment of the earlier write that inserted it. Each is made by the
-// block's maker (makerOf): whoever answered, for an ask's answer part, and the item's maker for
-// every other block.
-func itemBlockParents(
-	ctx context.Context,
-	tx pgx.Tx,
-	kind ItemKind,
-	itemID string,
-	at time.Time,
-	scope itemScope,
-	placed []string,
-	stored map[string]storedItemBlock,
-	makers map[string]model.Actor,
-) ([]graphstore.UncausedTuple, error) {
+// itemBlockPlaces is where the store places the blocks of the item that are nodes once a revision
+// is written (placed, block ids in body order, and addresses, their nodes' addresses): held is the
+// address of each the store places in the item now, read the way the store reads a current
+// relation (graphstore.CurrentTupleRead), in one statement for every block rather than one per
+// block, through graph_tuples_inbound, whose columns the read binds up to the block's address.
+// The read waits on no answer of the rows the revision writes and reads nothing they write, so it
+// is queued on their batch (queueItemBlockPlaces) and held is read once that batch is sent.
+type itemBlockPlaces struct {
+	kind              ItemKind
+	itemID            string
+	placed, addresses []string
+	held              []string
+}
+
+// queueItemBlockPlaces queues on batch the read of where the store places placed, the item's
+// blocks that are nodes once its revision is written, and nothing for no block.
+func queueItemBlockPlaces(batch *pgx.Batch, kind ItemKind, itemID string, placed []string) *itemBlockPlaces {
+	places := &itemBlockPlaces{kind: kind, itemID: itemID, placed: placed}
 	if len(placed) == 0 {
-		return nil, nil
+		return places
 	}
-	addresses := make([]string, len(placed))
+	places.addresses = make([]string, len(placed))
 	for index, id := range placed {
-		addresses[index] = itemBlockNodeAddress(kind, itemID, id)
+		places.addresses[index] = itemBlockNodeAddress(kind, itemID, id)
 	}
-	rows, err := tx.Query(ctx, `
+	batch.Queue(`
 		select held.from_id from (
 			`+graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
 		`t.to_kind = $1 and t.to_id = $2 and t.kind = $3 and t.from_kind = $4 and t.from_id = any($5)`)+`
 		) held
 		where held.asserted
-	`, string(kind), itemID, graphstore.TuplePartOf, BlockNodeKind, addresses)
-	if err != nil {
-		return nil, fmt.Errorf("read where the store places the blocks of %s %s: %w", kind, itemID, err)
-	}
-	held, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read where the store places the blocks of %s %s: %w", kind, itemID, err)
-	}
+	`, string(kind), itemID, graphstore.TuplePartOf, BlockNodeKind, places.addresses).Query(func(rows pgx.Rows) error {
+		held, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			return fmt.Errorf("read where the store places the blocks of %s %s: %w", kind, itemID, err)
+		}
+		places.held = held
+		return nil
+	})
+	return places
+}
+
+// parents states the part_of of each placed block that the store does not place in the item now.
+// A block's place never moves - its parent is its item, which is what its address names - so a
+// block the store already places states nothing, and a re-index that only moved the blocks appends
+// nothing. Each part_of is dated by its block row's created_at, the column the release before this
+// one answers it from, so graph_edges answers it at one time on either release: `at` for a row
+// this revision inserted, which queueItemBlocks writes as its created_at, and, for a row already
+// stored (stored), which named no node until this pass took it over, the row's own, the moment of
+// the earlier write that inserted it. Each is made by the block's maker (makerOf): whoever
+// answered, for an ask's answer part, and the item's maker for every other block.
+func (places *itemBlockPlaces) parents(
+	at time.Time,
+	scope itemScope,
+	stored map[string]storedItemBlock,
+	makers map[string]model.Actor,
+) []graphstore.UncausedTuple {
 	var tuples []graphstore.UncausedTuple
-	for index, address := range addresses {
-		if slices.Contains(held, address) {
+	for index, address := range places.addresses {
+		if slices.Contains(places.held, address) {
 			continue
 		}
 		placedAt := at
-		if row, kept := stored[placed[index]]; kept {
+		if row, kept := stored[places.placed[index]]; kept {
 			placedAt = row.createdAt
 		}
 		tuples = append(tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 			FromKind: BlockNodeKind, FromID: address, Kind: graphstore.TuplePartOf,
-			ToKind: string(kind), ToID: itemID,
-			At: placedAt, Who: scope.makerOf(makers, placed[index]), Asserted: true,
+			ToKind: string(places.kind), ToID: places.itemID,
+			At: placedAt, Who: scope.makerOf(makers, places.placed[index]), Asserted: true,
 		}})
 	}
-	return tuples, nil
+	return tuples
 }
 
 // itemBlockPairs is each distinct link the mentions in located write from the block of next
