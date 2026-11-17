@@ -56,7 +56,7 @@ The clones hold no ChatDev data [i-measure-chatdev-absence].
 
 The interview gives an accuracy cascade.
 Their study repeats the figures 0.99, 0.81 and 0.16 [i-measure-accuracy-cascade].
-The step to 98 percent for one misalignment is in no series of theirs [i-measure-one-failure-98].
+Their study gives no point for one misalignment; their blog, which the study cites as its earlier study, gives the interview's step, 0.98 for one failure category [i-measure-one-failure-98].
 The interview puts the cascade in their own five-agent deployments; their study puts the same numbers in public debate sessions [i-measure-cascade-source].
 
 The interview says a travel itinerary system was 66 percent up with 0 percent task completion.
@@ -70,7 +70,7 @@ The claim names no configuration space and no check, so it is not externally che
 ## Where the authors' account and the checked reading differ
 
 The interview tells a closed loop, and the code holds an open one: SCOPE marks drift [i-scope-drift] but starts no protocol [i-scope-triggers], the word trigger is absent from the worker that knows the protocols [i-scope-trigger-absence], and the components that find drift name neither protocol [i-scope-drift-protocol-absence], so a person or a harness must close the loop, and we must plan for that work.
-The interview also carries measurements more firmly than their own study does: their study reports that ACCORD's goal success is flat against the baseline, which the interview does not say [i-accord-benefit-flat]; it gives the cascade a different source [i-measure-cascade-source] and no one-failure step [i-measure-one-failure-98]; and two of the measurements rest on the interview alone [i-measure-travel, i-measure-config-error-free].
+The interview also carries measurements more firmly than their own study does: their study reports that ACCORD's goal success is flat against the baseline, which the interview does not say [i-accord-benefit-flat]; it gives the cascade a different source [i-measure-cascade-source] and no one-failure step, which only their earlier blog carries [i-measure-one-failure-98]; and two of the measurements rest on the interview alone [i-measure-travel, i-measure-config-error-free].
 For us this means two things: we read the study, not the interview, when we judge what these protocols buy; and we treat the drift-to-protocol link as work we would do ourselves, not as a feature we would adopt.
 One defect would hit us on the first day, because the names SCOPE looks for are not the names the skills carry [i-skill-name-mismatch].
 The parts we would use are real: the protocols are released as skills for Claude Code and Codex [i-skills-drop-in], SCOPE reads standard OpenTelemetry traces [i-scope-released], and the third tier the interview names does not exist in any form [i-three-tiers, i-third-protocol-absence].

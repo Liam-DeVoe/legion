@@ -22,8 +22,8 @@ The import and the load sit in a `try` whose handler is `except Exception:` at l
 The clause names `Exception`; it is not a bare `except`, which would also swallow `KeyboardInterrupt` [s-scorer-except-clause].
 Nothing in the file writes a log line, a warning or a stderr line about the choice, and no output of the tool names the backend that produced a score [s-scorer-no-backend-record].
 
-The design record under check also cites `accord_mce_metrics.terms.load_scorer` as this scorer.
-That function has one backend, not two: it returns `string_similarity`, the difflib ratio, for every call, and no branch of it can return a model (`terms.py`, lines 86 to 88) [s-loadscorer-one-backend].
+The design record under check cites `accord_mce_metrics.terms.load_scorer` as the string scorer, not the model, that ACCORD's published precision figure was computed with.
+That function has one backend, the difflib ratio, as the record says: it returns `string_similarity` for every call, and no branch of it can return a model (`terms.py`, lines 86 to 88) [s-loadscorer-one-backend].
 The whole `mce-metrics` package names `sentence_transformers` nowhere [s-mce-no-model].
 So ACCORD's own measurement package scores term agreement with difflib alone, whatever the kernel does [s-mce-difflib-only].
 
