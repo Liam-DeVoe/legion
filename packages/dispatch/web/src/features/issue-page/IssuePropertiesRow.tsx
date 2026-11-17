@@ -152,10 +152,12 @@ export function IssuePropertiesRow({
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
-  // palette already hold: only a root issue has gated steps at all (`gatedStepEntries`), so a
-  // child does not ask for the list, and while the read is pending or failed the issue draws
-  // its one chip rather than claiming a gate it has not read.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // palette already hold, kept fresh by the feed's events as the count's reads are
+  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root issue
+  // has gated steps at all (`gatedStepEntries`), so a child does not ask for the list, and while
+  // the read is pending or failed the issue draws its one chip rather than claiming a gate it has
+  // not read.
+  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn

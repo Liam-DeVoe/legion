@@ -293,12 +293,13 @@ test("the header hides whose turn when the server sent open asks without waiting
 });
 
 // The count reads the reader's login, the decisions, the coverage, the comments and the decisions
-// document's blocks, under the keys the outline reads them by. The header mounts again each time
-// the reader comes back to the issue's page, and under the app's `staleTime` a read is stale 30 s
-// after it answered (`main.tsx`), each observer judging it by its own options: read with the
-// app's defaults, the header mounted again past that would send all five again, although the
-// feed's events keep them fresh (decision 180).
-test("the header mounted again past 30 s sends none of the count's reads again", async () => {
+// document's blocks, under the keys the outline reads them by, and a root issue's header reads the
+// projects for its gated steps, under the key the shell's sidebar reads them by. The header mounts
+// again each time the reader comes back to the issue's page, and under the app's `staleTime` a
+// read is stale 30 s after it answered (`main.tsx`), each observer judging it by its own options:
+// read with the app's defaults, the header mounted again past that would send all five and the
+// projects read again, although the feed's events keep them fresh (decision 180).
+test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
   const decisionsDocument = {
     ...issue.artifacts[0],
     id: "artifact-decisions",
@@ -309,7 +310,7 @@ test("the header mounted again past 30 s sends none of the count's reads again",
   };
   const restore = stubHeader({ ...issue, artifacts: [...issue.artifacts, decisionsDocument] });
   // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
-  // what says the mount came past the age the five would go stale at.
+  // what says the mount came past the age the five and the projects read would go stale at.
   const getIssue = spyOn(api, "getIssue");
   // The login, the decisions and the blocks answered here, and the coverage and the comments by
   // what the file already answers them with; the decisions name the issue's decisions document,
@@ -325,6 +326,8 @@ test("the header mounted again past 30 s sends none of the count's reads again",
     spyOn(api, "listComments"),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
   ];
+  // The issue has no parent, so its header reads the projects, answered by `stubHeader`'s list.
+  const listProjects = spyOn(api, "listProjects");
   const sent = () => reads.map((read) => read.mock.calls.length);
   // The app's client's defaults (`main.tsx`), which a read that sets none of its own takes.
   const queryClient = new QueryClient({
@@ -335,6 +338,7 @@ test("the header mounted again past 30 s sends none of the count's reads again",
   try {
     // The login is the one the shell already holds, and each other read is sent once.
     await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(queryClient.isFetching()).toBe(0));
     const issueReads = getIssue.mock.calls.length;
     view.unmount();
@@ -348,10 +352,14 @@ test("the header mounted again past 30 s sends none of the count's reads again",
     expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
       0, 1, 1, 1, 1,
     ]);
+    expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
+      1
+    );
   } finally {
     view.unmount();
     setSystemTime();
     for (const read of reads) read.mockRestore();
+    listProjects.mockRestore();
     getIssue.mockRestore();
     restore();
   }
