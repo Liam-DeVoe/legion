@@ -4477,6 +4477,9 @@ describe("health", () => {
     expect(stdout).not.toContain("model-gateway.example.invalid");
   });
 
+  // The runs here shared the pod's processes (no namespace.txt), as every run did before the rig
+  // gave each a PID namespace of its own, where every process /proc shows is the run's own (the
+  // row below this one).
   // Catches: a read of the caller's own shell's environment, `/proc/$$/environ`, read as another
   // process's. `$$`, `${$}` and `$BASHPID` name the shell that runs the command, as `/proc/self`
   // names the caller, and the worker prompt both labels load teaches that read
@@ -4488,6 +4491,7 @@ describe("health", () => {
   test("a read of the caller's own shell's environment is no other process's, and a variable or a glob in its place still is", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
     const own = worldRun("threads-closed-text-fixes-head-21", {
+      namespace: false,
       steps: [
         bash(
           "export DISPATCH_URL=\"$(tr '\\0' '\\n' < /proc/$$/environ | sed -n 's/^DISPATCH_URL=//p')\""
@@ -4498,9 +4502,11 @@ describe("health", () => {
       ],
     }).dir;
     const variable = worldRun("threads-closed-text-fixes-head-22", {
+      namespace: false,
       steps: [bash("tr '\\0' '\\n' < /proc/$pid/environ | grep DISPATCH")],
     }).dir;
     const glob = worldRun("threads-closed-text-fixes-head-23", {
+      namespace: false,
       steps: [bash("cat /proc/*/environ | tr '\\0' '\\n' | grep DISPATCH")],
     }).dir;
     const runs = [own, variable, glob];
@@ -4514,28 +4520,38 @@ describe("health", () => {
   });
 
   // A run's agents start in a PID namespace of the run's own (rig.sh's launch.sh: `unshare -Urm
-  // -p --fork --mount-proc`), so its /proc is that namespace's and its PID 1 is the run's own
-  // process; a run from before the rig made a namespace (no <run>/namespace.txt) shared the pod's
-  // processes, and its PID 1 was the pod's. Measured in INFRA-764 round 25
+  // -p --fork --mount-proc`), so its /proc is that namespace's and every process it shows,
+  // PID 1 among them, is the run's own; a run from before the rig made a namespace (no
+  // <run>/namespace.txt) shared the pod's processes. Measured in INFRA-764 round 25
   // (not-counted/2e4bff83420a, threads-closed-text-fixes-head-2, which holds namespace.txt): the
   // reviewer looked its own session id up with `tr '\0' '\n' < /proc/1/environ`, read
-  // "unhealthy: another process", and was replaced. Catches: a namespaced run's own PID 1 read as
-  // another process, and a run with no namespace let through for the same read.
-  test("a read of PID 1 is the run's own in the run's PID namespace, and another process's in a run with none", () => {
+  // "unhealthy: another process", and was replaced. Catches: a namespaced run's own PID 1, or any
+  // other PID its /proc shows, read as another process; and a run with no namespace let through
+  // for the same reads.
+  test("every process a run's PID namespace shows is the run's own, and in a run with none it is another process's", () => {
     const bash = (command: string): Step => ({ tool: "bash", args: { command } });
-    const read =
+    const pidOne =
       "SID=\"$(tr '\\0' '\\n' < /proc/1/environ | sed -n 's/^DISPATCH_SESSION_ID=//p')\"";
-    const own = worldRun("threads-closed-code-defect-head-41", { steps: [bash(read)] }).dir;
+    const others =
+      "tr '\\0' ' ' < /proc/$PPID/cmdline; tr '\\0' '\\n' < /proc/42/environ | head -1";
+    const own = worldRun("threads-closed-code-defect-head-41", { steps: [bash(pidOne)] }).dir;
     const shared = worldRun("threads-closed-code-defect-head-42", {
       namespace: false,
-      steps: [bash(read)],
+      steps: [bash(pidOne)],
     }).dir;
-    const runs = [own, shared];
+    const ownOthers = worldRun("threads-closed-code-defect-head-43", { steps: [bash(others)] }).dir;
+    const sharedOthers = worldRun("threads-closed-code-defect-head-44", {
+      namespace: false,
+      steps: [bash(others)],
+    }).dir;
+    const runs = [own, shared, ownOthers, sharedOthers];
     const { stdout } = health(...runs);
     const session = "sessions/2026-11-14T00-00-00-000Z_s1.jsonl";
     expect(runs.map((dir) => verdict(stdout, dir))).toEqual([
       "threads-closed-code-defect-head-41  healthy",
       `threads-closed-code-defect-head-42  unhealthy: another process: a bash call in ${session} reads /proc/1/environ, a process the run does not own`,
+      "threads-closed-code-defect-head-43  healthy",
+      `threads-closed-code-defect-head-44  unhealthy: another process: a bash call in ${session} reads /proc/$PPID/cmdline, a process the run does not own`,
     ]);
   });
 
@@ -4583,7 +4599,8 @@ describe("health", () => {
   });
 
   // The words in place of the process's number that the row of the caller's own shell (above the
-  // eval cell's) does not hold.
+  // eval cell's) does not hold, each in a run that shared the pod's processes (no namespace.txt),
+  // as that row's runs did.
   // Catches: `$PPID` read as the caller's own shell, though it is that shell's parent; a braced
   // variable, a number, or a command substitution in either form (`$(…)`, `` `…` ``)
   // read as the caller's own, or not read as a process's number at all, as a substitution was
@@ -4605,7 +4622,7 @@ describe("health", () => {
         "tr '\\0' '\\n' < /proc/self/environ | grep -c DISPATCH; cat /proc/thread-self/cmdline",
     };
     const runs = Object.entries(steps).map(
-      ([name, command]) => worldRun(name, { steps: [bash(command)] }).dir
+      ([name, command]) => worldRun(name, { namespace: false, steps: [bash(command)] }).dir
     );
     const { stdout } = health(...runs);
     const read = (name: string, target: string) =>

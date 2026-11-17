@@ -61,8 +61,17 @@ import {
   type World,
 } from "./gh-call";
 // The review threads as the world holds them during a run, which the gh stand-in answers from: the
-// node ids of the threads a round opened, which a wake may name its findings by.
-import { type Json, recordedCalls, type ThreadRoute, threadState } from "./gh-threads";
+// node ids of the threads a round opened, which a wake may name its findings by, and the thread
+// the world filed each reply in.
+import {
+  commentsOf,
+  type Json,
+  recordedCalls,
+  type ThreadRoute,
+  type ThreadWorld,
+  threadCall,
+  threadState,
+} from "./gh-threads";
 import {
   CheckableFile,
   CheckableOutput,
@@ -1526,21 +1535,67 @@ function publishedTo(
 function bodyNames(message: string, name: string): boolean {
   return name !== "" && (message.includes(name) || namesCommit(message, [name]));
 }
-/** The review threads the run's gh calls opened up to `until` (a recorded call's time), as the
- * world holds them: the replay both stand-ins answer every thread read from (gh-threads.ts's
- * `threadState`), over the world's own routes (<run>/fixtures.json) and the record's calls made
- * by then, less the threads the world seeded. Each carries the node id GitHub gives it and the
- * path it is on. */
-function openedThreads(runDir: string, world: World, until: string): Json[] {
+/** What the run's review threads are replayed in (gh-threads.ts's `ThreadWorld`): the world's own
+ * routes (<run>/fixtures.json, which rig.sh writes for every run and whose graph holds the
+ * threads the world seeds) and its world.json. */
+function threadWorldOf(runDir: string, world: World): ThreadWorld {
   const fixtures = JSON.parse(readFileSync(path.join(runDir, "fixtures.json"), "utf8")) as {
     routes?: ThreadRoute[];
   };
-  const at = { routes: fixtures.routes ?? [], world };
+  return { routes: fixtures.routes ?? [], world };
+}
+/** The review threads the run's gh calls opened up to `until` (a recorded call's time), as the
+ * world holds them: the replay both stand-ins answer every thread read from (gh-threads.ts's
+ * `threadState`), over the world's own routes (`threadWorldOf`) and the record's calls made by
+ * then, less the threads the world seeded. Each carries the node id GitHub gives it and the path
+ * it is on. */
+function openedThreads(runDir: string, world: World, until: string): Json[] {
+  const at = threadWorldOf(runDir, world);
   const seeded = new Set(threadState(at, []).list.map((thread) => thread.id));
   const calls = recordedCalls(path.join(runDir, CALLS)).filter(
     (call) => call.at !== undefined && call.at <= until
   );
   return threadState(at, calls).list.filter((thread) => !seeded.has(thread.id));
+}
+/** The node ids of the review threads each call of `record` filed a comment in, for each call
+ * that filed one. The world keeps no record of which thread a reply went to, so this replays it
+ * as both stand-ins do (gh-threads.ts's `threadState`: the world's own threads, then `threadCall`
+ * for each call of the record in the order the run made them, every role's and every refused one
+ * among them) over the world's own routes (`threadWorldOf`), and reads which threads gained a
+ * comment at each call. `record` is every call of <run>/calls.jsonl, which are the lines the
+ * stand-ins replay (`recordedCalls`). A reply is filed where GitHub files it, whatever its text
+ * names: a REST reply `pulls/<n>/comments/<id>/replies` in the thread holding the comment whose
+ * databaseId is `<id>`, an `addPullRequestReviewThreadReply` in the thread its
+ * `pullRequestReviewThreadId` names, and one on a comment or a thread the world has not got in
+ * none. Measured in INFRA-764 round 25 (threads-closed-text-fixes-base-4): two REST replies on
+ * GitHub's own path that named the commit and no thread's node id were filed in their threads, and
+ * a reader of the node ids in a reply's text scored `replied=0`. */
+function commentedThreads(
+  runDir: string,
+  world: World,
+  record: readonly z.infer<typeof Call>[]
+): Map<z.infer<typeof Call>, string[]> {
+  const at = threadWorldOf(runDir, world);
+  const state = threadState(at, []);
+  const filed = new Map<z.infer<typeof Call>, string[]>();
+  for (const call of record) {
+    // The databaseId the call's first comment is given, if it makes one (gh-threads.ts's
+    // `newComment`): every comment from it on is the call's own.
+    const first = state.next;
+    threadCall(at, state, call);
+    if (state.next === first) continue;
+    filed.set(
+      call,
+      state.list
+        .filter((thread) =>
+          commentsOf(thread).some(
+            (comment) => typeof comment.databaseId === "number" && comment.databaseId >= first
+          )
+        )
+        .map((thread) => String(thread.id))
+    );
+  }
+  return filed;
 }
 /** Whether every message this agent sent went to `role`'s topic. The rule sends the
  * implementer's message to the reviewer's topic **and to that topic alone** (review-threads.md
@@ -1584,19 +1639,21 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *
  * The score reads what the run wrote, never the stand-in's static routes, which answer the same
  * whatever the run did: the gh calls the stand-in recorded (calls.jsonl), each carrying the role
- * that made it; the pushes the run's own bare remote logged (pushes.log) and the diff they
- * carry; the body the stand-in kept; and the two agents' transcripts. The threads are the
- * world's own (<run>/threads.json), and the case is the one <run>/case.txt and the run's
- * directory both name, which must agree.
+ * that made it, and the thread the world filed each reply among them in, replayed from those
+ * calls over the threads the world seeds (`commentedThreads`); the pushes the run's own bare
+ * remote logged (pushes.log) and the diff they carry; the body the stand-in kept; and the two
+ * agents' transcripts. The threads are the world's own (<run>/threads.json), and the case is the
+ * one <run>/case.txt and the run's directory both name, which must agree.
  *   text-fixes   two threads whose sentences a text fix closes, and both halves of the loop are
  *                scored. The implementer "fixes that text in its own live session … and makes
  *                one push of one commit of the text fixes. It replies on each thread, naming
  *                that commit, and resolves none": one push onto the issue branch whose diff
  *                against the head the reviewer approved touches the threads' own files and
- *                nothing else (`fixed`), one reply per thread naming that commit (`replied`),
- *                no resolution of its own (`fixResolves`), and the body's `Threads` entries
- *                rewritten at the head that push made, each naming the commit that closed it and
- *                none still open (`threadsLine`, references/pr-body.md). It pushes only while
+ *                nothing else (`fixed`), one reply per thread naming that commit, filed in that
+ *                thread by either route (`replied`), no resolution of its own (`fixResolves`),
+ *                and the body's `Threads` entries rewritten at the head that push made, each
+ *                naming the commit that closed it and none still open (`threadsLine`,
+ *                references/pr-body.md). It pushes only while
  *                the record shows `reviewing` after the approval, or `accepting`, and never in
  *                `retro`, `merging` or `done` (the architect's rule of round 15), so each push
  *                follows a `read_record` of its own whose answer is one of those two (`gated`).
@@ -1658,9 +1715,8 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
   const world = worldIn(runDir);
   const threads = json(path.join(runDir, "threads.json"), Threads);
-  const calls = parsed(path.join(runDir, CALLS), Call).filter(
-    (call) => call.as === "gh" && call.exit === 0
-  );
+  const record = parsed(path.join(runDir, CALLS), Call);
+  const calls = record.filter((call) => call.as === "gh" && call.exit === 0);
   const fixCalls = calls.filter((call) => call.by === FIXES);
   const reviewCalls = calls.filter((call) => call.by === RESOLVES);
   // The pushes onto the issue branch, and what the last of them left above the head the reviewer
@@ -1676,17 +1732,24 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const changed = tip === undefined ? [] : changedFiles(runDir, world.head, tip);
   const wanted = threads.map((thread) => thread.path).toSorted();
   const fixed = pushes.length === 1 && changed.toSorted().join("\n") === wanted.join("\n");
-  // One reply per thread, each naming the commit that fixed it. A reply that names more than one
-  // thread is no thread's own disposition reply, and one that names no commit names no fix.
+  // One reply per thread, each naming the commit that fixed it, read by the thread the world
+  // filed it in (`commentedThreads`) and never by the node ids its text names: GitHub's REST
+  // route names the thread by the id of a comment in it. A call that filed replies in two threads
+  // replied in both, as GitHub holds them, since the world, not the text, says where each went;
+  // a reply that names no commit names no fix.
+  const filed = commentedThreads(runDir, world, record);
   const replies = fixCalls
     .filter((call) => !resolvesAThread(call))
-    .map(callText)
-    .filter((text) => REPLY.test(text))
-    .map((text) => ({
-      named: threads.filter((thread) => text.includes(thread.id)).map((thread) => thread.id),
-      commit: tip !== undefined && namesCommit(text, [tip]),
-    }));
-  const replied = new Set(replies.flatMap(({ named }) => (named.length === 1 ? named : [])));
+    .map((call) => ({ call, text: callText(call) }))
+    .filter(({ text }) => REPLY.test(text))
+    .map(({ call, text }) => {
+      const filedIn = filed.get(call) ?? [];
+      return {
+        named: threads.filter((thread) => filedIn.includes(thread.id)).map((thread) => thread.id),
+        commit: tip !== undefined && namesCommit(text, [tip]),
+      };
+    });
+  const replied = new Set(replies.flatMap(({ named }) => named));
   const repliedCommit = replies.filter(({ commit }) => commit).length;
   // Every thread carries its disposition reply, naming the commit that fixed it; a further reply
   // on a thread breaks nothing. The rule is "one disposition reply per thread"
@@ -1695,7 +1758,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // answered something else, and a condition counting calls failed it for being useful, which is
   // a scorer scoring silence. Both scorings of that change are in pull request #2827's body.
   const repliedEach = threads.every((thread) =>
-    replies.some(({ named, commit }) => commit && named.length === 1 && named[0] === thread.id)
+    replies.some(({ named, commit }) => commit && named.includes(thread.id))
   );
   // Each call that resolved a thread, with every thread it named and those of the scenario among
   // them. The reference asks for one thread per call and never a bulk call (review-threads.md,

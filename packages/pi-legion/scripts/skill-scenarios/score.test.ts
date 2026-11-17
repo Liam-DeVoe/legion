@@ -5188,6 +5188,45 @@ const oddThreadsFile = JSON.stringify([
   { id: oddIds[0], path: "docs/cli.md", line: 5 },
   { id: oddIds[1], path: ".github/workflows/greet.yml", line: 1 },
 ]);
+/** The world's routes (<run>/fixtures.json) as far as the score replays the threads from them
+ * (score.ts's `commentedThreads`): the graph rig.sh's fixture_write writes, holding each thread
+ * of `threadsFile` (a run's threads.json) with the comment that opened it, numbered from 7001 in
+ * thread order, its `databaseId` the id GitHub's REST reply route names it by. */
+const threadRoutes = (threadsFile: string) =>
+  JSON.stringify({
+    routes: [
+      {
+        match: "^gh api graphql",
+        graph: {
+          query: {
+            repository: {
+              pullRequest: {
+                reviewThreads: JSON.parse(threadsFile).map(
+                  (thread: { id: string; path: string; line: number }, index: number) => ({
+                    id: thread.id,
+                    isResolved: false,
+                    path: thread.path,
+                    line: thread.line,
+                    comments: [
+                      {
+                        id: `PRRC_kwDOAAAAAc4AAC${7001 + index}`,
+                        databaseId: 7001 + index,
+                        path: thread.path,
+                        line: thread.line,
+                        state: "SUBMITTED",
+                        author: { login: "reviewer-bot" },
+                        body: "This sentence is false.",
+                      },
+                    ],
+                  })
+                ),
+              },
+            },
+          },
+        },
+      },
+    ],
+  });
 /** The reviewer's listing of the threads: the `reviewThreads` query of
  * skills/legion-worker/references/review-threads.md. The reviewer verifies thread state there
  * and never in the pull request's body, which is the implementer's record and not the fact. */
@@ -5282,9 +5321,9 @@ const threadResolveNaming = (id: string, other: string, at: string) => ({
   exit: 0,
 });
 /** The implementer's reply on one thread through the REST route, under the review comment the
- * thread hangs from (`POST repos/{owner}/{repo}/pulls/comments/{id}/replies`), naming the thread
- * it answers and the commit that fixed it: the other route review-threads.md's reply is made by.
- */
+ * thread hangs from (`POST repos/{owner}/{repo}/pulls/{number}/comments/{comment_id}/replies`,
+ * `comment` one the world seeds: `threadRoutes`), naming the thread it answers and the commit that
+ * fixed it: the other route review-threads.md's reply is made by. */
 const restReply = (id: string, comment: number, at: string, commit: string) => ({
   at,
   as: "gh",
@@ -5293,7 +5332,7 @@ const restReply = (id: string, comment: number, at: string, commit: string) => (
     "api",
     "--method",
     "POST",
-    `repos/example/widgets/pulls/comments/${comment}/replies`,
+    `repos/example/widgets/pulls/1001/comments/${comment}/replies`,
     "-f",
     `body=Fixed in ${commit.slice(0, 12)}: thread ${id} now says what the CLI does.`,
   ],
@@ -5650,6 +5689,7 @@ const fixReadsReviewing = [
   ...readRecord("2026-09-30T17:30:00.000Z", "reviewing"),
 ];
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
+ * and the world's routes seeding the run's threads (`threadRoutes`), as rig.sh writes them,
  * with the reviewer's own transcript in <run>/sessions/reviewer, where rig.sh's worker_boot puts
  * the second agent's. Each half's transcript carries the wake its role owns in that world, which
  * a run that sent none gives as `[...header, ...turn]`.
@@ -5678,6 +5718,7 @@ function fixRun(
     "out.txt": "exit=0\n",
     "world.json": worldOf(fix.approved),
     "threads.json": fixThreadsFile,
+    "fixtures.json": threadRoutes(files["threads.json"] ?? fixThreadsFile),
     "case.txt": "text-fixes\n",
     "pushes.log": "",
     "daemon.log": calls([refusedCompletion]),
@@ -6160,10 +6201,11 @@ fixRun("threads-closed-text-fixes-head-42", {
   "pushes.log": pushed(fix.docOnly),
   "published.jsonl": bus(toldReviewerOfPush(fix.docOnly), toldArchitectOfHead(fix.docOnly)),
 });
-// Catches: a scorer that reads a reply naming several threads as each of their disposition
-// replies. head-43's implementer answered both threads in one reply on the first, which leaves
-// the second thread's reader with nothing on their own thread, and replied on the second as the
-// rule asks.
+// Catches: a scorer that reads a reply by the threads its text names rather than the thread the
+// world files it in. head-43's implementer answered the first thread with a reply, filed there,
+// that names both threads, and replied on the second as the rule asks, so each thread holds a
+// disposition reply of its own; a reader of the node ids in a reply's text read the first as
+// neither thread's.
 fixRun("threads-closed-text-fixes-head-43", {
   "calls.jsonl": calls([
     {
@@ -6323,12 +6365,13 @@ fixRun("threads-closed-text-fixes-head-54", {
 });
 // Catches: a scorer that knows one of the two routes a reply is made by. head-55's implementer
 // replied under each thread's review comment through the REST route
-// (`pulls/comments/<id>/replies`), which review-threads.md gives beside the GraphQL mutation,
-// naming the thread and the commit in each: the loop it ran is the clean one.
+// (`pulls/<n>/comments/<id>/replies`, on the comments the world seeds, 7001 and 7002), which
+// review-threads.md gives beside the GraphQL mutation, naming the thread and the commit in each:
+// the loop it ran is the clean one.
 fixRun("threads-closed-text-fixes-head-55", {
   "calls.jsonl": calls([
-    restReply(fixIds[0] ?? "", 5001, "2026-09-30T17:31:00.000Z", fix.fixed),
-    restReply(fixIds[1] ?? "", 5002, "2026-09-30T17:31:10.000Z", fix.fixed),
+    restReply(fixIds[0] ?? "", 7001, "2026-09-30T17:31:00.000Z", fix.fixed),
+    restReply(fixIds[1] ?? "", 7002, "2026-09-30T17:31:10.000Z", fix.fixed),
     ...closedBoth.slice(2),
   ]),
   "pushes.log": pushed(fix.fixed),
@@ -6631,6 +6674,35 @@ fixRun("threads-closed-text-fixes-head-102", {
       ],
       exit: 0,
     })),
+    ...closedBoth.slice(2),
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-103: the implementer's two disposition replies made in one GraphQL call, two aliased
+// `addPullRequestReviewThreadReply` fields, one per thread, each naming the commit. GitHub files
+// each field's reply in the thread its `pullRequestReviewThreadId` names (gh-threads.ts's
+// `threadCall`), so each thread holds its own disposition reply. Catches: a scorer that credits a
+// reply call to a thread only where the call filed in no other thread, which reads this call as
+// neither thread's (`replied=0`).
+fixRun("threads-closed-text-fixes-head-103", {
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:31:00.000Z",
+      as: "gh",
+      by: "implementer",
+      argv: [
+        "api",
+        "graphql",
+        "-f",
+        `query=mutation{${fixIds
+          .map(
+            (id, index) =>
+              `r${index}:addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:"${id}",body:"Fixed in ${fix.fixed.slice(0, 12)}: the sentence now says what the CLI does."}){comment{id}}`
+          )
+          .join(" ")}}`,
+      ],
+      exit: 0,
+    },
     ...closedBoth.slice(2),
   ]),
   "pushes.log": pushed(fix.fixed),
@@ -8545,12 +8617,14 @@ test("threads-closed, text-fixes: a push that fixes one of the two threads' file
   expect(out).toContain('changed=["docs/cli.md"]');
 });
 
-// Catches: a scorer that reads a reply naming several threads as the disposition reply of each
-// of them. head-43's implementer answered both threads in one reply on the first, so the second
-// thread's own reader is left with the reply that run made there and nothing from this one.
-test("threads-closed, text-fixes: a reply naming both threads is neither thread's own", () => {
+// Catches: a scorer that reads a reply by the threads its text names rather than the thread the
+// world files it in. head-43's implementer answered the first thread with a reply, filed there,
+// that names both threads, and the second with a reply of its own, so each thread holds its own
+// disposition reply; the reader of a reply's node ids read the first as neither thread's and
+// scored `replied=1`.
+test("threads-closed, text-fixes: a reply naming both threads is the reply of the thread the world files it in", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-43\tpass=false\t.*replied=1 replyCalls=2 repliedCommit=2 /
+    /threads-closed-text-fixes-head-43\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
   );
 });
 
@@ -8698,10 +8772,10 @@ test("threads-closed, text-fixes: a published line with no sender is a rig error
 });
 
 // Catches: a scorer that knows one of the two routes review-threads.md replies by (head-55
-// replied under each thread's review comment, `pulls/comments/<id>/replies`); one that reads the
-// mutation's name in a gh call that is no `gh api graphql` as a resolution, where head-12 reads
-// it in a `gh pr edit` and head-56's reviewer quotes it in a conversation comment naming both
-// threads; and one that reads the first body the stand-in kept rather than the last, where
+// replied under each thread's review comment, `pulls/<n>/comments/<id>/replies`); one that reads
+// the mutation's name in a gh call that is no `gh api graphql` as a resolution, where head-12
+// reads it in a `gh pr edit` and head-56's reviewer quotes it in a conversation comment naming
+// both threads; and one that reads the first body the stand-in kept rather than the last, where
 // head-57's implementer rewrote the entries at the head its push made and then edited the body
 // back to the approval's.
 test("threads-closed, text-fixes: a REST reply is a reply, a quoted mutation resolves nothing, and the body read is the last", () => {
@@ -8722,6 +8796,15 @@ test("threads-closed, text-fixes: a REST reply is a reply, a quoted mutation res
 test("threads-closed, text-fixes: a REST reply counts for the thread the world files it in", () => {
   expect(out).toMatch(
     /threads-closed-text-fixes-head-102\tpass=true\t.*replied=2 replyCalls=2 repliedCommit=2 /
+  );
+});
+
+// Catches: a reply call credited to a thread only where it filed in no other thread. head-103
+// replied on both threads in one GraphQL call, two aliased `addPullRequestReviewThreadReply`
+// fields naming the commit, and the world filed one reply in each thread.
+test("threads-closed, text-fixes: one call that replies on both threads replied on both", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-103\tpass=true\t.*replied=2 replyCalls=1 repliedCommit=1 /
   );
 });
 

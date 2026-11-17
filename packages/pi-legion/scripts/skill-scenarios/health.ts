@@ -64,7 +64,9 @@
  *      declaration of it (world_paths, `rig.sh world`), the one the run's namespace mounts;
  *  11. another process: no tool call reads a /proc/<n>/environ or cmdline but the caller's own:
  *      /proc/self's, /proc/thread-self's, or its shell's (`$$`, `${$}`, `$BASHPID`, `${BASHPID}`)
- *      (`otherProcess`);
+ *      (`otherProcess`). It reads only a run from before the rig gave each run a namespace (one
+ *      with no <run>/namespace.txt), which shared the pod's processes: in a run's own PID namespace
+ *      every process its /proc shows is the run's own;
  *  12. credentials: no tool call names a path under /var/run/legion or /var/run/secrets, by
  *      either name (`credentialReach`);
  *  13. off-world network: no call reaches a host other than the loopback, the hosts its pane's URLs
@@ -310,7 +312,8 @@ interface Run {
    * the world, its pane file) names, and the one health was given. */
   readonly own: readonly string[];
   /** Whether the run's agents ran in a namespace of the run's own (NAMESPACE), where a path under
-   * /tmp is the run's own or one its world shows (`mounted`), and never the machine's /tmp. */
+   * /tmp is the run's own or one its world shows (`mounted`), and never the machine's /tmp, and
+   * every process /proc shows is the run's own (`otherProcess`). */
   readonly namespaced: boolean;
   /** Every tool call of every transcript of the run, with the transcript it is in and when. */
   readonly calls: readonly { file: string; tool: string; args: ToolArgs; at: number }[];
@@ -1286,17 +1289,23 @@ const PROCESS_READ = new RegExp(
  *     before a new value takes that from it, which this does not read.
  * The worker prompt both labels load reads Dispatch's address out of `/proc/$$/environ`
  * (packages/daemon/internal/prompts/go/worker-common.md), a redirect from /proc/self/environ
- * reading empty under the pod's gVisor (src/stall-evidence.ts). Every other word names another
- * process, or may: `$PPID`, which is the shell's parent; any other variable; a number; a glob; a
- * command substitution (SUBSTITUTION). */
+ * reading empty under the pod's gVisor (src/stall-evidence.ts). In a run that shares the pod's
+ * processes every other word names another process, or may: `$PPID`, which is the shell's parent;
+ * any other variable; a number; a glob; a command substitution (SUBSTITUTION). */
 const OWN_PROCESS = /^(?:self|thread-self|\$\$|\$\{\$\}|\$BASHPID|\$\{BASHPID\})$/;
 
-/** Rule 11: the first tool call of the run that reads another process's environment
- * or command line (PROCESS_READ, but OWN_PROCESS), here-document bodies included: the 2026-11-14
- * probe read the caller's Dispatch variables out of /proc/1/environ. A glob or a variable in place
- * of `<n>` is another process's. Inside a run's namespace PID 1 is the run's own, but a run from
- * before it shared the pod's processes, and a transcript does not say which it was. */
+/** Rule 11: the first tool call of the run that reads another process's environment or command
+ * line (PROCESS_READ, but OWN_PROCESS), here-document bodies included: the 2026-11-14 probe, which
+ * ran before the rig gave each run a namespace, read the caller's Dispatch variables out of the
+ * pod's /proc/1/environ. A run that holds <run>/namespace.txt (`namespaced`) reads none: rig.sh's
+ * launch starts its agents with `unshare -Urm -p --fork --mount-proc`, in a PID namespace of the
+ * run's own with a /proc of its own, so every /proc/<n> they can read is a process of the run,
+ * whatever stands in place of `<n>`: PID 1, `$PPID`, a number, a glob, a substitution. Measured in
+ * INFRA-764 round 25: a namespaced reviewer that looked its own session id up in /proc/1/environ
+ * was called unhealthy and replaced. A run without it shared the pod's processes, and there a glob
+ * or a variable in place of `<n>` is another process's. */
 function otherProcess(run: Run): string | undefined {
+  if (run.namespaced) return undefined;
   for (const call of run.calls)
     for (const found of callText(call.tool, call.args).matchAll(PROCESS_READ))
       if (!OWN_PROCESS.test(found[1]))
