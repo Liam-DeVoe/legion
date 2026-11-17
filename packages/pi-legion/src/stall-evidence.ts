@@ -513,9 +513,10 @@ export interface StallNoticeInput {
  * - the controller's own session tells nobody: it is the owner, and its evidence is in its
  *   transcript and its log.
  *
- * **A session never publishes to the role it holds itself.** A sub-architect is a phase worker
- * whose own claim may be its issue's live architect, so that choice would hand the session its
- * own message; the tree's architect is told instead.
+ * **A session never publishes to the role it holds itself.** The role it holds is its claim's
+ * token as the daemon registered it, which names its agent whatever role its claim holds now. A
+ * sub-architect is a phase worker whose own claim may be its issue's live architect, so that
+ * choice would hand the session its own message; the tree's architect is told instead.
  */
 export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   const { session, claim, project } = input;
@@ -537,7 +538,7 @@ export function stallNoticeTopic(input: StallNoticeInput): StallNotice {
   if (session.kind === "root-architect") {
     return { kind: "topic", topic: roleTopic(controllerToken(project)) };
   }
-  const own = roleToken(project, claim.issue, claim.role);
+  const own = claim.claimToken;
   const issueArchitect = roleToken(project, claim.issue, "architect");
   const treeArchitect = roleToken(project, claim.tree, "architect");
   const token = input.liveArchitect && issueArchitect !== own ? issueArchitect : treeArchitect;

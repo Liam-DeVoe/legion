@@ -340,12 +340,7 @@ export default function legionExtension(pi: PiApi): void {
     ) {
       return;
     }
-    const request = sessionActivityRequest({
-      project: process.env.LEGION_PROJECT,
-      claim,
-      report,
-    });
-    if (request === undefined) return;
+    const request = sessionActivityRequest({ claim, report });
     lastActivity = report;
     try {
       await roleDaemon().activity(request);
