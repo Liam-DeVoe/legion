@@ -7,6 +7,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 )
 
 // tupleColumns is what every tuple read answers, in the order scanTuples takes them.
@@ -136,10 +138,10 @@ func List(ctx context.Context, q Queryer) ([]Node, error) {
 // which implies the inbound index's own predicate.
 //
 // A priority belongs to no project, but each `advances` tuple into it names the issue at its far
-// end, which does: the third leg answers a tuple only where seen, the caller's predicate over that
-// issue's key (the column advancing.from_id), holds, with the caller's own arguments bound from $2.
-// The caller writes seen from its own text, never from a value a request carried.
-func Timeline(ctx context.Context, q Queryer, id, seen string, arguments ...any) ([]Tuple, error) {
+// end, which does: the third leg answers a tuple only where the viewer bound at $2 (the visibility
+// argument, refs.VisibilityArg) sees that issue's project (access.IssueProjectClause over the
+// column advancing.from_id).
+func Timeline(ctx context.Context, q Queryer, id string, viewer any) ([]Tuple, error) {
 	rows, err := q.Query(ctx, `
 		select `+tupleColumns+` from (
 			select `+tupleColumns+`
@@ -153,10 +155,10 @@ func Timeline(ctx context.Context, q Queryer, id, seen string, arguments ...any)
 			select `+tupleColumns+`
 			from priority_tuples advancing
 			where advancing.to_kind = '`+KindPriority+`' and advancing.to_id = $1 and advancing.kind = '`+RelationAdvances+`'
-				and `+seen+`
+				and `+access.IssueProjectClause("advancing.from_id", "$2")+`
 		) stated
 		order by seq desc
-	`, append([]any{id}, arguments...)...)
+	`, id, viewer)
 	if err != nil {
 		return nil, fmt.Errorf("read the history of priority %s: %w", id, err)
 	}
