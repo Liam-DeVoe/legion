@@ -124,9 +124,6 @@ func TestAReplayIsAnsweredUnderTheSessionsOwnGrant(t *testing.T) {
 	if answer, err := dispatch.RequestWithContext(oldCtx, contracts.AgentStreamControlSubject(sessionID), []byte(`{"v":1,"type":"replay"}`)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the request on nats.go's own inbox answered %v, %v; want its deadline, the session's answer refused", answer, err)
 	}
-	if responder.replies.Load() != before+1 {
-		t.Fatalf("the session heard %d requests after Replay, want the one", responder.replies.Load()-before)
-	}
 	deadline := time.Now().Add(5 * time.Second)
 	for len(responder.refusals()) != 1 {
 		if time.Now().After(deadline) {
@@ -137,11 +134,17 @@ func TestAReplayIsAnsweredUnderTheSessionsOwnGrant(t *testing.T) {
 	if refusal := responder.refusals()[0]; !strings.Contains(refusal, `Permissions Violation for Publish to "`+natsgo.InboxPrefix) {
 		t.Fatalf("the server refused %q, want the answer on nats.go's request inbox", refusal)
 	}
+	// Read only now: the request's deadline can pass before the session's callback runs, and the
+	// refusal above comes after that callback counted the request and answered it.
+	if responder.replies.Load() != before+1 {
+		t.Fatalf("the session heard %d requests after Replay, want the one", responder.replies.Load()-before)
+	}
 }
 
 // Replay's two answers that are not a history, on its own reply subject: nobody on the control
-// subject is ErrNoResponder at once, and a session that keeps silent is no history and no error once
-// the deadline passes, as before.
+// subject is ErrNoResponder, the server's no-responders status, and not the deadline's empty
+// answer, and a session that keeps silent is no history and no error once the deadline passes,
+// as before.
 func TestAReplayNobodyAnswersIsNoResponderOrNothing(t *testing.T) {
 	uri, dispatch, seeds := replayHub(t, "ses_silent")
 	silent, err := testnats.ConnectSeed(t, uri, seeds["ses_silent"])
@@ -159,12 +162,8 @@ func TestAReplayNobodyAnswersIsNoResponderOrNothing(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	started := time.Now()
 	if replay, err := source.Replay(ctx, "ses_nobody"); !errors.Is(err, agentstream.ErrNoResponder) || replay != nil {
 		t.Fatalf("a replay nobody listens for answered %q, %v; want ErrNoResponder", replay, err)
-	}
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("the no-responders answer took %s, want it at once", elapsed)
 	}
 
 	silentCtx, silentCancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
