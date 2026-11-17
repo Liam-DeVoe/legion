@@ -24,11 +24,12 @@ Three facts govern every thread, whoever opened it.
     gh api graphql -f query='mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}' -F id=<thread node id>
     ```
 
-    A thread a bot opened (a CI bot's, or an App-routed person's) it answers the same way; the
-    reviewer adjudicates the finding. The bot threads the reviewer accepted, which the reviewer
-    names to the implementer by node id (below), the implementer resolves with the same call, one
-    per thread, as soon as the message reaches it or as part of answering that review, and records
-    in the PR body's `Threads` section too; never one the reviewer did not name. When GitHub refuses
+    A thread a bot opened (a CI bot's, or an App-routed person's) it answers the same way; where
+    the task has a review step, the reviewer adjudicates the finding. The bot threads the reviewer
+    accepted, which the reviewer names to the implementer by node id (below), the implementer
+    resolves with the same call, one per thread, as soon as the message reaches it or as part of
+    answering that review, and records in the PR body's `Threads` section too; never one the
+    reviewer did not name. When GitHub refuses
     a resolution, report the thread and GitHub's message to the architect with `envoy_publish`,
     which opens a `dispatch ask` for a human to resolve it by hand; never skip it silently.
   - The **reviewer** cannot resolve a thread as its own App: GitHub refuses the review App

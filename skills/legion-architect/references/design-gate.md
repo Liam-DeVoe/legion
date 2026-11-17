@@ -22,11 +22,11 @@ document (`verification.md`) with it, uploading each version after the first wit
 `check` block per thing that must be proved, each with
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`, or `ci_check` in place of its `run` (below). The human approves both
-documents in one request (step 4 below), and every later role reads the checks: the implementer
-and the tester record a result against each check with no `ci_check`, and the
-reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
-check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
-pass recorded under an older wording of the check or a retracted one.
+documents in one request (step 4 below), and every later step reads the checks: the implementer
+and a tester step record a result against each check with no `ci_check`, and a reviewer step
+approves only once a pass stands for every `before_merge` check at the head, which is the check's
+own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a pass
+recorded under an older wording of the check or a retracted one.
 
 A check proves only the clauses that something drove, so each clause of its `negative_control`
 names the test row or the run that drives it. A check of a requirement over every member of a
@@ -64,9 +64,9 @@ Write a `ci_check` check by three rules:
    jobs. A roll-up run can pass at a head where the job of the check did not run.
 2. Name a job that the repository holds back from an ordinary pull request too, because a `run` in
    its place leaves the pod as the only place its proof runs. The worker adds the label that runs
-   the held-back jobs at the head, and the tester takes the result from that run. Without the
-   label such a job reads `skipped`, so the label stays on for as long as a check of the issue
-   names a held-back job, and each later head gets its own run.
+   the held-back jobs at the head, and `dispatch results` derives the check's result from that
+   run. Without the label such a job reads `skipped`, so the label stays on for as long as a check
+   of the issue names a held-back job, and each later head gets its own run.
 3. Write in `negative_control` the case inside that job that fails when the property breaks. A
    job's conclusion is not the property: a step with `continue-on-error` keeps its job green,
    and a test deleted from a suite takes its failure with it.
@@ -362,18 +362,20 @@ to the version it writes. Once they have answered:
   it; work already in flight, including what the daemon started at the answer, continues through
   its merge.
 
-A settled decision is the human's. A plan that would overturn one goes back to the planner with the
-decision kept, unless the planner brings evidence the human did not weigh that would change it
-(such as a measurement showing the settled choice cannot pass a check); then a decision
-block names the decision and that evidence. A plan never overturns a settled decision on its own.
+A settled decision is the human's. A planner step's plan that would overturn one goes back to the
+planner with the decision kept, unless the planner brings evidence the human did not weigh that
+would change it (such as a measurement showing the settled choice cannot pass a check); then a
+decision block names the decision and that evidence. A plan never overturns a settled decision on
+its own.
 A person's request after the approval becomes a requirement only when you write it into the spec
 and they approve that version; it is never another issue's, and no comment or answer of theirs
 takes a requirement out.
 
 A design change that leaves the Summary, the requirements, the checks, the scope and the settled
 decisions intact (a planner's measurement finding a better way to the same outcome) goes in the
-plan (the issue's `plan.md` and the planner's `plan` handoff), never into the approved spec, even
-where the spec's text describes the older design; the reviewer reads the plan beside the spec.
+plan (the issue's `plan.md`: the text of your task block, and a planner step's plan below it with
+its `plan` handoff), never into the approved spec, even where the spec's text describes the older
+design; the steps after it read the plan beside the spec.
 
 When a planner's `phase-finished` names a departure, compare it with the approved spec: with the
 Summary, the requirements, the checks, the scope and every settled decision unchanged, the plan

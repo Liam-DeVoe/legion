@@ -9,7 +9,7 @@ Retro output is one `dispatch comment` on the issue with what the work taught, t
 the repository's instructions derive from the pull request's changed paths at that head, and one
 `dispatch message` on the issue. Retro commits nothing and pushes nothing, since every handoff is
 a record on the Dispatch issue and `docs/solutions/` is history no role writes to now. Retro
-writes no handoff and never rewrites the reviewer-approved head.
+writes no handoff and never rewrites the head the task's last step passed.
 
 When the implementer reports that it cannot compute that body content or do the work a line of it
 affirms, that its read of the body failed or came back empty, or that GitHub refused the body, it
@@ -19,13 +19,15 @@ missing instruction.
 
 ## Accepting
 
+This section is for an issue whose task holds your step `acceptance:owner`: a task without it has
+no `accepting`, and its last step passing starts the retro (`skill://legion-architect`, section 5).
 Sign off an issue with no children once its evidence holds for its goal and every requirement of
-its spec, none unmet; a parent only after its last round (below), because
-before it the approved head does not carry its children's merges.
+its spec, none unmet; a parent only after its last round (below), because before it the head the
+step before your acceptance passed does not carry its children's merges.
 
 ```text
 dispatch comment --issue LEGION-40 --body-file - <<'EOF'
-<acceptance: scope, integration evidence, the tester's handoff, each check with its result, the approved head>
+<acceptance: scope, integration evidence, the tester's handoff where the task has a tester step, each check with its result, the head the step before your acceptance passed>
 EOF
 legion({ op: "sign_off", issue: "LEGION-40" })
 ```
@@ -50,7 +52,10 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
-  in `accepting` returns the issue to `implementing` by the daemon's table.
+  in `accepting` moves nothing: the daemon names the checks GitHub reported and leaves the decision
+  to you, so read the head's checks on GitHub before you accept and send a red head back with
+  `request_backward_move`. Only a head that conflicts with its base goes back to `implementing`
+  by itself (*A conflicting head*, below).
 - No `after_merge` result is asked here: the production check records it after the close, where
   the project's `production_check` opens one.
 - A finding ask on the issue holds the acceptance: one a worker sent you, or one `dispatch read`
@@ -64,7 +69,8 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ## The last round
 
 A parent's own pull request proves each of its checks, so sign off a parent with children only
-on an approved head carrying the merges of every child those checks need. Each needs a passing
+on a head that the step before your acceptance passed and that carries the merges of every child
+those checks need. Each needs a passing
 result at that head, or, for one in another repository, at a commit on the branch that
 issue's pull request merged into or on that repository's default branch — that default branch
 alone where Dispatch knows of no merge of the issue — and, for a `default_branch` check, on that
@@ -74,7 +80,7 @@ and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
 that waits for it waits forever, so work another child builds on is a child of its own.
-While the approved head does not carry those
+While that head does not carry those
 merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
 already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
@@ -83,9 +89,11 @@ downgrade it. A root's requirement stays the root's, pending
 until this round, where its head must meet it.
 Then, in one turn:
 
-1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
-   backward move's reason reaches only the implementer.
+1. Where the task has a tester step, `envoy_publish` to the tester's role topic: "The next round of
+   <KEY> is its last round: a full test round of every check of the issue with no `ci_check`, not
+   the forward-merge re-check." The backward move's reason reaches only the implementer. On a task
+   with no tester step, the implementer's own record of each check at the merge head
+   (`skill://legion-worker/references/conflicts-and-rewrites.md`) is that full round.
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
@@ -106,17 +114,21 @@ Once they have closed, have a fresh `task` subagent run each check with no `ci_c
 default branch and record each result. Read each `ci_check` check's derived result in
 `dispatch results`, which no role records. Post them in the acceptance comment, then `sign_off`.
 
-## The order after your acceptance
+## The order of the steps, the retro and the merge
 
-The daemon keeps this order from its fixed table; you start none of its steps:
+The daemon keeps this order from the steps of the issue's plan; you start none of them:
 
-1. The tester's last result is green and the reviewer approves the head.
-2. The reviewer's approval of the head by SHA moves the issue to `accepting`; your `sign_off` moves
-   it to `retro`.
+1. The task's steps pass in the order its plan names them: in the default steps, the tester's last
+   result is green and the reviewer approves the head.
+2. Where the task holds your step `acceptance:owner`, the pass of the step before it moves the issue
+   to `accepting` (in the default steps, the reviewer's approval of the head by SHA), and your
+   `sign_off` moves it to `retro`. On a task without it, the last step's pass moves the issue to
+   `retro`, or Legion holds a parent before its retro while an issue beneath it is still in the
+   workflow (`retro-held`).
 3. Retro records what the work taught as a `dispatch comment` on the issue and brings the PR body
-   up to date. It commits nothing, so the approved head is the head the merger merges. No merge
-   carries a handoff onto the default branch, since every handoff is a record on the Dispatch
-   issue and no commit carries one.
+   up to date. It commits nothing, so the head the task's last step passed is the head the merger
+   merges. No merge carries a handoff onto the default branch, since every handoff is a record on
+   the Dispatch issue and no commit carries one.
 4. The merger reads the pull request and merges that head itself, as the implement App and with the
    head it read as the head GitHub must match
    (into the default branch
@@ -129,17 +141,20 @@ The daemon keeps this order from its fixed table; you start none of its steps:
    never turns auto-merge on, and the daemon submits no merge and changes no merge setting. The
    repository's required reviews and
    checks decide when it lands; Legion neither reads nor writes those rules, and a review only a
-   person can give is waited for, never bypassed. Nothing compares that head with the approved one:
-   a repository that wants a later push reviewed says so in its own rulesets. The merger's
-   completion records its phase row and moves nothing, and the daemon posts no packet.
+   person can give is waited for, never bypassed. Where the task has no reviewer step and the base
+   requires an approving review that no step of the task gave, the merger waits and tells you which
+   review is missing, since only you or a person can give it or change the plan. Nothing compares
+   that head with the one an approval named: a repository that wants a later push reviewed says so
+   in its own rulesets. The merger's completion records its phase row and moves nothing, and the
+   daemon posts no packet.
 5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
    root's close waits until the rest of its tree has left the workflow.
 
-A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
-`retro` or `merging` the role holding the phase makes the `request_backward_move`.
+A person's request that arrives in `retro` or `merging` is a requirement of this issue, filed
+nowhere else, and the role holding the phase makes the `request_backward_move`.
 A merge the merger cannot make arrives while the merger holds `merging`, so the merger makes the
-move and you tell it which; from `accepting` you send an issue back only to `implementing` or
-`testing`.
+move and you tell it which; from `accepting` you send an issue back only to the phase of an earlier
+step of the task: `implementing`, or `testing` where the task has a tester step.
 
 - A failed verification the merger reports: handle it as the `pr-blocked` row of
   `skill://legion-architect/references/wake-routing.md` says, telling the merger to move the
@@ -157,12 +172,12 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a conflict-resolution merge whose
-fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
-that merges with the approved one: a repository that wants a later push reviewed says so in its
-own rulesets.
+What returns the tree to review, where its task has a review step, is a changed diff: a
+conflict-resolution merge whose fingerprint (the unchanged-diff check,
+`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the fingerprint of the
+head before it. A conflict merge whose fingerprint is unchanged does not, and no Legion check
+compares the head that merges with the one an approval named: a repository that wants a later push
+reviewed says so in its own rulesets.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
@@ -172,13 +187,13 @@ the issue was taken out of and whose reason reads
 `the head conflicts with <base>: GitHub runs no checks on it; merge <base> forward`. You start
 nothing for it.
 
-The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
-with the destination and pushes it (the procedure in
+The daemon then runs the task's steps from `implementing`: the implementer merges the bookmark
+forward with the destination and pushes it (the procedure in
 `skill://legion-worker/references/conflicts-and-rewrites.md`), posting the before and after
-fingerprints; the tester re-runs the bare gates only and the class search of every earlier
-round's findings at the new head; the reviewer approves the new head by SHA, or continues its
-round if it had not approved; the daemon carries the issue through your acceptance and retro to
-the merger's merge.
+fingerprints; a tester step re-runs the bare gates only and the class search of every earlier
+round's findings at the new head; a reviewer step approves the new head by SHA, or continues its
+round if it had not approved; the daemon carries the issue through your acceptance, where the
+task holds it, and retro to the merger's merge.
 
 ## A review thread GitHub will not resolve
 

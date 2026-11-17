@@ -62,8 +62,8 @@ architect, the worker of the issue's current phase and the implementer, and judg
 That message is the implementer's to act on while it still works the issue: a red that failed on
 its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
 event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a
-sleep loop; a red at the code is fixed, which the reviewer asks for anyway, since it reads the
-head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
+sleep loop; a red at the code is fixed, which a reviewer step asks for anyway, since the reviewer
+reads the head's checks on GitHub before it approves; and a red only GitHub can settle is GitHub's, which
 holds the merge for it under the base branch's own rules.
 A merge-group run is never re-run: the implementer finishes its round instead, and the pull request
 is tested again when it is queued again.
@@ -163,9 +163,11 @@ or on the repository's default branch, in its last round.
 
 **An issue with no `before_merge` check is a named gap.** One with no Verification document, or
 with none holding a `before_merge` check, has no evidence of its own. The tester names the gap
-in its handoff and the reviewer in its review, and neither sends the issue back for it; both
-tell the architect, who writes the checks, and the architect's acceptance comment names the gap
-and decides there, the only gate on such an issue.
+in its handoff and the reviewer in its review, each where the task has that step, and neither
+sends the issue back for it; each tells the architect, who writes the checks. Where the task holds
+the step `acceptance:owner`, the architect's acceptance comment names the gap and decides there,
+the only gate on such an issue; on a task without it, the issue has no gate beyond what its steps
+found.
 
 ## The rules every phase's evidence follows
 
@@ -196,8 +198,9 @@ and decides there, the only gate on such an issue.
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
   and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job, and no CI lane is
   rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
-  never waits for it, since a required red that settles sends the work back from `testing` and
-  the reviewer reads the head's checks before it approves.
+  never waits for it, since a red that settles moves the issue nowhere and reaches the implementer
+  in the daemon's message (above), a reviewer step reads the head's checks before it approves,
+  and GitHub holds the merge for a required red under the base branch's own rules.
   A `before_merge` check the implementer left with no pass standing at the head is a test failure, not a gap
   for the tester to fill: record it in `failures` (each `{check, evidence}`, `check` the block id)
   with `implementerProof.verdict: "rejected"`, complete the phase with
@@ -229,8 +232,9 @@ and decides there, the only gate on such an issue.
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
   implementing round, after its own results and before it completes that round,
   whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round
-  between a clean review and the approval, so this is the one slot before the tester and the
-  reviewer read the head; a later round answering a review runs no second pass. It is scoped to
+  between a clean review and the approval, so this is the one slot before the task's later steps
+  read the head (the tester and the reviewer, in the default steps); a later round answering a
+  review runs no second pass. It is scoped to
   the pull request's own diff at that head: nothing applied leaves the head as it is; applied →
   the implementer re-runs its fast local checks and the issue's own checks on the applied head
   for the surface the simplify diff touched, since a refactor that "preserves behaviour" is a

@@ -18,7 +18,8 @@ required check failed, so the merge waits.
    `CLAUDE.md`), its pull request template (`.github/pull_request_template.md` or
    `.github/PULL_REQUEST_TEMPLATE/`), and the workflow under `.github/workflows/` that reads the
    body, for lines they require per changed path. When they require none, there is nothing to do.
-2. List the paths the pull request changes at `<head>`, the approved head your task names:
+2. List the paths the pull request changes at `<head>`, the head your task names, which the task's
+   last step passed:
 
    ```bash
    base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch && jj -R "$LEGION_WORKSPACE" diff --from "fork_point(${base}@origin | <head>)" --to <head> --name-only
@@ -49,7 +50,7 @@ required check failed, so the merge waits.
    cd -- "$LEGION_WORKSPACE" && gh api --method PATCH repos/<owner>/<repo>/pulls/<n> -F body=@"$dir/body.md"
    ```
 
-   A body edit changes no commit, so the reviewer's approval stands, and a check that judges the
+   A body edit changes no commit, so an approval stands, and a check that judges the
    body runs again at once on the head as it is.
 
 When the write back is refused, or the check it feeds fails, report it to the architect as *When

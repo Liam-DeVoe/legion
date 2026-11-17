@@ -708,12 +708,15 @@ refusal changed nothing, and an accepted completion is answered with an empty ob
 merger merges and the daemon submits no merge. The
 operation mints its grant in-process and posts it with the request; nothing is written to the
 pane. A predecessor's handoff is read with `dispatch handoff-read`, at the version the task's
-`Handoff:` line names (`--version <n>`), except the plan.
-The plan is the issue's `plan.md` document, which its planner goes on writing after the planning
-phase ends, so a worker builds from `plan.md` at the newest version the plan review approved, the
+`Handoff:` line names (`--version <n>`), except the plan a planner step writes.
+That plan is the issue's `plan.md` document, which its planner goes on writing after the planning
+phase ends, so a worker of a task whose `Steps:` line names the planner, or of a task with no
+`Task:` line, builds from `plan.md` at the newest version the plan review approved, the
 version the `Approval:` line of `dispatch read` names, and reads the
-`Handoff: plan version <n>` line as the receipt for the record the daemon accepted. GitHub is the pane's
-`gh` and `git`, which read the role's App tokens from the gh bundle under `LEGION_GH_OWNERS_DIR`; no
+`Handoff: plan version <n>` line as the receipt for the record the daemon accepted; a worker of a
+task whose `Steps:` line names no planner builds from its `Task text:` and the issue's spec.
+GitHub is the pane's `gh` and `git`, which read the role's App tokens from the gh bundle under
+`LEGION_GH_OWNERS_DIR`; no
 tool operation writes to GitHub for a role. Review threads are the pull request author's to
 resolve: the reviewer, whose review
 App GitHub refuses `resolveReviewThread` on the implementer's pull request, names the bot threads

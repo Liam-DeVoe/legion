@@ -433,7 +433,7 @@ test("the forward-merge re-check searches the new head for each earlier finding'
     "The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base"
   );
   expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "the tester re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
+    "a tester step re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
   );
   countedOncePerFile(
     "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
@@ -804,4 +804,48 @@ test("the architect shows a person the surface before it asks them to approve th
   expect(gate).toContain(
     "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
   );
+});
+
+// An owner's plan picks which of the default steps an issue runs: one task whose steps are some of
+// `planner implementer tester reviewer acceptance:owner`, in that order, with `implementer` among
+// them, so a skill names the planner, the tester, the reviewer or the owner's acceptance only
+// where the issue's task holds that step, and says who holds its duty where it does not. These
+// are the words that named such a step as if every issue ran it: the list the daemon's
+// TestTheArchitectRolePartsNameOnlyTheStepsAnIssuesTaskRuns refuses in the architect role parts,
+// with the forms the skills carried. "reviewed head" alone is not in it, because the reviewer's
+// pair runs "at the reviewed head" of its own round (the `Thermo` line of pr-body.md), which is
+// true wherever a review step runs; the forms that named an issue's accepted head by it are. The
+// text is read folded, since a phrase broken across two lines is still a phrase its reader
+// follows. This shows the words are gone, never that a role follows the plan.
+test("no staged skill names a step as if every issue's task ran it", () => {
+  const retired = [
+    "fixed workflow table",
+    "from its fixed table",
+    "by the daemon's table",
+    "the tester and the reviewer name and neither refuses",
+    "`implementing` or `testing`",
+    // The space keeps a review step's "answer that the approved head" out.
+    " at the approved head",
+    "the planner's `plan` handoff",
+    "so its planner may already be reading it",
+    "since the reviewer approves only",
+    "the reviewer's approval moves an issue to `accepting`",
+    "The reviewer's approval moves this child to `accepting`",
+    "is mandatory after your acceptance",
+    "Your last act is `sign_off` of this child in `accepting`",
+    "a parent only on an approved head",
+    "accepted the reviewed head",
+    "Retro runs on the reviewed head",
+    "whose reviewed head the daemon has already accepted",
+    "the reviewer-approved head",
+  ];
+  const read = files(staged).filter((file) => file.endsWith(".md"));
+  expect(read.length).toBeGreaterThan(0);
+  const saying = read.flatMap((file) => {
+    const text = collapsed(file);
+    return retired
+      .filter((phrase) => text.includes(phrase))
+      .map((phrase) => `${path.join("skills", path.relative(staged, file))}: ${phrase}`);
+  });
+  expect(saying).toEqual([]);
 });
