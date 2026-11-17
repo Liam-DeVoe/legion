@@ -15,7 +15,8 @@ import { focusedNodeId, openEveryDeeperBranch } from "./issue-page-i";
  *
  * - **The history** `[data-testid="issue-history"]`, a `section` named "History"
  *   (`IssueHistory.tsx`). Each day is `[data-history-day]`, a day before today a `button` "<day>
- *   · <count>" with `aria-expanded`; each entry carries `data-history-entry` and
+ *   · <count>" with `aria-expanded` ("<day>" alone for the oldest day while older pages of the
+ *   log are left, whose count is not known yet); each entry carries `data-history-entry` and
  *   `data-event-seq` (0 for a thread whose first turn's event is on a page not read yet); a turn
  *   of an agents' thread is `[data-history-item="<id>"]`, its Reply `[data-history-reply]` and
  *   its time the link `[data-history-time]`; an upload run is `[data-history-uploads="<n>"]`.
