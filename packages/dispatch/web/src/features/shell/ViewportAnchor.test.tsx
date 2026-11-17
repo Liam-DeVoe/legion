@@ -868,3 +868,208 @@ test("the centre anchor stays inside a horizontally scrolled table's visible box
     view.unmount();
   }
 });
+
+/**
+ * Draws `drawn` in a scroller whose frames the case runs by hand, for the order of events within
+ * one frame: the case moves the box and sends each scroll event the frame raises, `resized` calls
+ * the root's size observers back as the frame's resize observations would, and `frameEnds` runs
+ * the frames asked for so far, as the browser runs a frame's animation-frame callbacks after its
+ * scroll steps. happy-dom keeps any offset it is given and raises no scroll event for it, runs
+ * frame requests on a timer of its own, and never calls a ResizeObserver back. The box is
+ * VIEWPORT_HEIGHT tall, its content running from its top to the last row's foot.
+ */
+function drawFrameByFrame(drawn: string[]) {
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const observers: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  const asked = new Map<number, FrameRequestCallback>();
+  let last = 0;
+  const request = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    last += 1;
+    asked.set(last, callback);
+    return last;
+  });
+  const cancel = spyOn(window, "cancelAnimationFrame").mockImplementation((frame) => {
+    asked.delete(frame);
+  });
+  restoreSpies.push(
+    () => request.mockRestore(),
+    () => cancel.mockRestore()
+  );
+  const view = render(<List rows={drawn} scroller={scrollerRef} />);
+  const scroller = scrollerRef.current;
+  if (scroller === null) throw new Error("scroller missing");
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: VIEWPORT_HEIGHT });
+  Object.defineProperty(scroller, "scrollHeight", {
+    configurable: true,
+    get: () => listTop + listHeight(),
+  });
+  return {
+    frameEnds: () => {
+      const due = [...asked.values()];
+      asked.clear();
+      for (const callback of due) callback(performance.now());
+    },
+    rerender: (next: string[]) => view.rerender(<List rows={next} scroller={scrollerRef} />),
+    resized: () => {
+      for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
+    },
+    scroller,
+    unmount: () => {
+      view.unmount();
+      globalThis.ResizeObserver = RealResizeObserver;
+    },
+  };
+}
+
+/** The reader's view in the cases below: the box scrolled to 300 px by the reader, and the focus
+ *  on r10's control, r10 standing 250 px down the view and its control 280 px down. */
+function readerOnR10(scroller: HTMLElement): void {
+  scroller.scrollTop = 300;
+  fireEvent.scroll(scroller);
+  const control = document.querySelector<HTMLElement>('[data-row="r10"] button');
+  if (control === null) throw new Error("r10 button missing");
+  control.focus();
+  expect(viewportTop("r10")).toBe(250);
+  expect(controlTop("r10")).toBe(280);
+}
+
+// The focus is on a control in the view, and a commit adds a row above it, which the anchor
+// answers by scrolling the box down by the row. In the same frame another write puts the box back
+// where it was, so the frame moves nothing and the browser raises no scroll event for the anchor's
+// scroll. The reader then scrolls. A mark the anchor kept for "the next scroll event" took the
+// reader's event for its own, and the place they scrolled to was never recorded: content above
+// cut afterwards moved the control away from where they saw it.
+test("the anchor's own scroll put back in its frame leaves the reader's next scroll the reader's", () => {
+  const box = drawFrameByFrame(ids(30));
+  try {
+    readerOnR10(box.scroller);
+    // A row arrives above r10, and the anchor scrolls the box down by it.
+    box.rerender(["new", ...ids(30)]);
+    expect(box.scroller.scrollTop).toBe(350);
+    expect(viewportTop("r10")).toBe(250);
+    // Another write in the same frame puts the box back: the frame moves nothing, raises no scroll
+    // event, and ends.
+    box.scroller.scrollTop = 300;
+    box.frameEnds();
+
+    // The reader scrolls down, and the browser says so.
+    box.scroller.scrollTop = 500;
+    fireEvent.scroll(box.scroller);
+    const seen = controlTop("r10");
+    expect(seen).toBe(130);
+
+    // Content above the rows is cut by a row's height in no commit of the anchor's.
+    listTop -= ROW_HEIGHT;
+    box.resized();
+    expect(controlTop("r10")).toBe(seen);
+  } finally {
+    box.unmount();
+  }
+});
+
+// Two scrolls of the anchor's own reach one frame: a put-back in the resize observations at the
+// end of one frame, and a commit's before the next. That next frame raises one scroll event for
+// the box, at the offset the second scroll left, and the event is the anchor's own: it records
+// nothing. Here the reader has pressed a key on the focused control, which lets the control go and
+// keeps the row's head; recording the place at that event would keep the control again, and the
+// row then opening below its head would push the head up out of the view.
+test("two scrolls of the anchor's own in one frame raise one event at the last offset, which records nothing", async () => {
+  const user = userEvent.setup();
+  const box = drawFrameByFrame(ids(30));
+  try {
+    readerOnR10(box.scroller);
+    await user.keyboard("{Enter}");
+
+    // Content above the rows grows by 30 px in no commit of the anchor's, and the anchor scrolls
+    // the box down by as much.
+    listTop += 30;
+    box.resized();
+    expect(box.scroller.scrollTop).toBe(330);
+    // A row arrives above r10 before the next frame, and the anchor scrolls the box down by it.
+    box.rerender(["new", ...ids(30)]);
+    expect(box.scroller.scrollTop).toBe(380);
+    // The next frame raises one scroll event for both, at the offset the second left, and ends.
+    fireEvent.scroll(box.scroller);
+    box.frameEnds();
+    expect(viewportTop("r10")).toBe(250);
+
+    // r10 opens by 400 px above its control, as "more" pressed on it draws a turn's words.
+    heights = { r10: 450 };
+    box.resized();
+    expect(viewportTop("r10")).toBe(250);
+    expect(controlTop("r10")).toBe(680);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The reader scrolls in the frame that reports the anchor's own scroll, before the browser raises
+// that frame's scroll event: the frame raises one event, at the offset the reader left the box at.
+// That event is the reader's, and the place they scrolled to is recorded.
+test("the reader scrolling after the anchor's own scroll and before its event makes that event the reader's", () => {
+  const box = drawFrameByFrame(ids(30));
+  try {
+    readerOnR10(box.scroller);
+    // A row arrives above r10, and the anchor scrolls the box down by it.
+    box.rerender(["new", ...ids(30)]);
+    expect(box.scroller.scrollTop).toBe(350);
+    // The reader scrolls down before the frame's scroll event, which comes at their offset.
+    box.scroller.scrollTop = 500;
+    fireEvent.scroll(box.scroller);
+    box.frameEnds();
+    const seen = controlTop("r10");
+    expect(seen).toBe(130);
+
+    // Content above the rows is cut by a row's height in no commit of the anchor's.
+    listTop -= ROW_HEIGHT;
+    box.resized();
+    expect(controlTop("r10")).toBe(seen);
+  } finally {
+    box.unmount();
+  }
+});
+
+// The anchor's own scroll is put back in its frame, which raises no event, and the frame ends.
+// Content above the rows is then cut while the box is off the place kept for the control, so the
+// cut moves the control. The reader then scrolls to the very offset the anchor's scroll had left:
+// that scroll is the reader's, and the place kept from then on is where they see the control now,
+// not the one kept before the cut.
+test("once the frame of the anchor's own scroll has ended, the reader scrolling to the offset it left is the reader's", () => {
+  const box = drawFrameByFrame(ids(30));
+  try {
+    readerOnR10(box.scroller);
+    // A row arrives above r10, and the anchor scrolls the box down by it.
+    box.rerender(["new", ...ids(30)]);
+    expect(box.scroller.scrollTop).toBe(350);
+    // Another write in the same frame puts the box back: the frame moves nothing, raises no scroll
+    // event, and ends.
+    box.scroller.scrollTop = 300;
+    box.frameEnds();
+
+    // Content above the rows is cut by a row's height while the box is off the kept place.
+    listTop -= ROW_HEIGHT;
+    box.resized();
+    expect(controlTop("r10")).toBe(280);
+
+    // The reader scrolls to the offset the anchor's own scroll left, and the browser says so.
+    box.scroller.scrollTop = 350;
+    fireEvent.scroll(box.scroller);
+    const seen = controlTop("r10");
+    expect(seen).toBe(230);
+
+    // Content above the rows is cut by a row's height again.
+    listTop -= ROW_HEIGHT;
+    box.resized();
+    expect(controlTop("r10")).toBe(seen);
+  } finally {
+    box.unmount();
+  }
+});

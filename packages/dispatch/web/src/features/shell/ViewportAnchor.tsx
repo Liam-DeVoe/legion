@@ -87,6 +87,11 @@ function rowWithin(root: HTMLElement, selector: string, node: Element | null): H
   return row !== null && root.contains(row) ? row : null;
 }
 
+/** How far the box that scrolls the rows is scrolled: `scroller`'s offset, or the window's. */
+function scrolledBy(scroller: HTMLElement | null): number {
+  return scroller === null ? window.scrollY : scroller.scrollTop;
+}
+
 /**
  * Keeps the row the reader is currently on pinned to its viewport position across commits that
  * shift content around it: a row inserted or removed above, a reorder within its section, a
@@ -161,10 +166,22 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     top: number;
   } | null = null;
   private contentSize: ResizeObserver | null = null;
-  /** Set by a scroll this component made, so the scroll event it raises is not read as the
-   *  reader moving the view. Scroll events run before resize observations in a frame, so
-   *  without this the compensation's own event would record the place it just corrected. */
-  private selfScrolled = false;
+  /** Where this anchor's own last scroll left the box (the window's `scrollY` where the document
+   *  scrolls the rows), and the frame asked for to end the mark. The scroll event that scroll
+   *  raises is not the reader moving the view: scroll events run before resize observations in
+   *  a frame, so the event of a put-back would otherwise record the place it just corrected.
+   *  An event does not say what moved the box, so it is taken for this anchor's own only while
+   *  the box stands at this offset (`viewScrolled`), and only within the frame the browser
+   *  reports the scroll in. A scroll that another write puts back in the same frame leaves the
+   *  box where the frame found it, and the browser raises no event for it: a mark kept for the
+   *  next event would outlive that frame and take the reader's next scroll for this anchor's
+   *  own, and their place would not be recorded. A frame runs its scroll steps, which raise
+   *  the event of a scroll made before them, ahead of its animation-frame callbacks, so a frame
+   *  asked for at the scroll ends the mark after any event the scroll raises. A scroll made
+   *  after a frame's scroll steps, in its animation-frame callbacks or its resize observations,
+   *  is reported in the next frame, and the frame asked for then is that next one, whose
+   *  callbacks again follow its scroll steps. */
+  private ownScroll: { at: number; frame: number } | null = null;
 
   /** Where the pointer last was, in viewport pixels. A row moving under a pointer that has not
    *  moved makes the browser dispatch `pointerout`/`pointerover` again, with the same
@@ -264,28 +281,42 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     return at === null || at.x !== event.clientX || at.y !== event.clientY;
   }
 
-  /** Moves the box this anchor owns and remembers that it did. */
+  /** Moves the box this anchor owns, and marks the offset the move left it at as this anchor's
+   *  own until the frame that reports the move has run (`ownScroll`). A second move before then
+   *  takes the mark with it: the frame raises one event for the box, at the offset the last
+   *  move left. A move the box did not follow, already at its end, leaves the mark as it was. */
   private scrollBy(delta: number): void {
     const scroller = this.scrollerElement();
-    if (scroller === null) {
-      const before = window.scrollY;
-      window.scrollBy(0, delta);
-      this.selfScrolled = window.scrollY !== before;
-      return;
-    }
-    const before = scroller.scrollTop;
-    scroller.scrollTop += delta;
-    this.selfScrolled = scroller.scrollTop !== before;
+    const before = scrolledBy(scroller);
+    if (scroller === null) window.scrollBy(0, delta);
+    else scroller.scrollTop += delta;
+    const at = scrolledBy(scroller);
+    if (at === before) return;
+    this.endOwnScroll();
+    const frame = window.requestAnimationFrame(() => {
+      this.ownScroll = null;
+    });
+    this.ownScroll = { at, frame };
   }
 
+  /** Ends the mark of this anchor's own scroll (`ownScroll`), and the frame asked for to end it. */
+  private endOwnScroll(): void {
+    if (this.ownScroll !== null) window.cancelAnimationFrame(this.ownScroll.frame);
+    this.ownScroll = null;
+  }
+
+  /** A scroll of the box this anchor owns. It is this anchor's own only where the box stands at
+   *  the offset its last scroll left it at, within the frame that reports that scroll
+   *  (`ownScroll`), and then records nothing: the place was just put back. Any other is the
+   *  reader's, or the page's, and the place is recorded where the view now shows it. The mark
+   *  ends here either way: a frame raises one scroll event for the box, whatever moved it. */
   private readonly viewScrolled = (event: Event): void => {
     const scroller = this.scrollerElement();
     const mine = scroller === null ? event.target === document : event.target === scroller;
     if (!mine) return;
-    if (this.selfScrolled) {
-      this.selfScrolled = false;
-      return;
-    }
+    const own = this.ownScroll;
+    this.endOwnScroll();
+    if (own !== null && own.at === scrolledBy(scroller)) return;
     // The browser pulling the box back to its end after its content shrank is no scroll of the
     // reader's. Keeping the row's place here would keep it where the shrink moved it, so it goes
     // back where the reader last saw it, as on any other change of the content's height. The
@@ -343,6 +374,7 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   componentWillUnmount(): void {
     window.removeEventListener("scroll", this.viewScrolled, true);
+    this.endOwnScroll();
     this.contentSize?.disconnect();
     this.contentSize = null;
   }
