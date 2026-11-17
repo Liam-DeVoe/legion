@@ -12,7 +12,8 @@
 #         alice's token that lists PRIV, carol's token that lists no project, and the shared
 #         token. Each project holds an issue whose spec is a document with blocks, a comment, an
 #         ask, a message, an issue document, a project document, an agent session of its own
-#         that the fake Envoy lists, and a repository mapped to it.
+#         that the fake Envoy lists, and a repository mapped to it; PRIV also holds ses-priv-worker,
+#         a session main's fake Envoy alone lists, which has history in PRIV (a comment on PRIV-1).
 #   twin  the same seed with PRIV never written: the same PUB, the same people, carol's token
 #         that lists no project, and alice's token, whose list names PRIV, a project the twin
 #         never holds.
@@ -260,9 +261,16 @@ for server in main twin; do
     fail "the $server NATS logged no client port; see $evidence/logs/nats_$server.log"
   await_reported "envoy_$server" envoy_port 'fake envoy listener on 127\.0\.0\.1:' "the $server fake Envoy"
   # Both servers' listeners hold the same sessions: a session is a no-project node, not an object
-  # PRIV wrote, so the twin holds PRIV's session too.
+  # PRIV wrote, so the twin holds PRIV's session too. Main's alone also holds ses-priv-worker, the
+  # session the seed has act in PRIV: a restricted reader or a listing token is shown a session
+  # only for its history in a project it sees (agents.go's visibleRosterSessions), not for the
+  # projects the listener names, so ses-priv-session, which has none, is never in their agents
+  # list. A session with history in PRIV alone is PRIV's, as hidden as its objects, and the twin,
+  # which never holds PRIV, holds no such session.
   sessions='[{"session_id":"ses-pub-session","title":"Works on PUB","projects":["PUB"],"capabilities":["aside","btw","steer"]}'
   sessions+=',{"session_id":"ses-priv-session","title":"Works on PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
+  [ "$server" = twin ] ||
+    sessions+=',{"session_id":"ses-priv-worker","title":"Worked in PRIV","projects":["PRIV"],"capabilities":["aside","btw","steer"]}'
   curl -fsS --max-time 5 -X PUT -H 'Content-Type: application/json' "http://127.0.0.1:$envoy_port/__fixture/sessions" \
     -d "$sessions]" >/dev/null || fail "the $server fake Envoy refused its sessions"
   database_var=${server}_database_url
@@ -369,6 +377,9 @@ map_repository main acme/priv-repo PRIV
 map_repository main acme/priv.lane.walk PRIV
 send main carol PUT /api/v1/projects/PRIV/access/groups/priv-group
 expect_status 200 "main: carol names the group priv-group on PRIV's list"
+# ses-priv-worker's history in PRIV, which shows it to bob and carol's PRIV token (confined).
+send main shared POST /api/v1/issues/PRIV-1/comments "$(jq -cn '{body: "Written by the PRIV worker.", actor: {kind: "session", id: "ses-priv-worker"}}')"
+expect_status 201 "main: ses-priv-worker comments on PRIV-1"
 # The objects of PRIV the walk's Probes name beyond seed_objects': a handoff, a check result and a
 # going run. A file of an agent's conversation is no project's, so it is seeded on both servers
 # in the loop above.
@@ -543,8 +554,8 @@ for caller in bob carol-priv-token; do
   # A person of PUB is one of PRIV's people only while PRIV is public (R2: every full member reads a
   # public project, and so is one of its people), so the people a restricted member and a token that
   # lists PRIV read is held to PRIV's own only once PRIV is private. Each list must be answered 200
-  # and name what the caller sees, carol and PRIV's session, or the name it must not hold could be
-  # missing from an error or an empty list.
+  # and name what the caller sees, carol and the session with history in PRIV (ses-priv-worker), or
+  # the name it must not hold could be missing from an error or an empty list.
   if [ "$priv_private" = 1 ]; then
     send main "$caller" GET /api/v1/users
     problem=''
@@ -563,8 +574,8 @@ for caller in bob carol-priv-token; do
   problem=''
   if [ "$status" != 200 ]; then
     problem="$caller GET /api/v1/agents: HTTP $status, want 200: $(head -c 300 "$work/body")"
-  elif ! grep -q ses-priv-session "$work/body"; then
-    problem="$caller GET /api/v1/agents: lists no ses-priv-session, PRIV's agent, which $caller sees, so it shows nothing: $(head -c 300 "$work/body")"
+  elif ! grep -q ses-priv-worker "$work/body"; then
+    problem="$caller GET /api/v1/agents: lists no ses-priv-worker, the session with history in PRIV, which $caller sees, so it shows nothing: $(head -c 300 "$work/body")"
   elif grep -q ses-pub-session "$work/body"; then
     problem="$caller GET /api/v1/agents: lists ses-pub-session, an agent of PUB"
   fi
