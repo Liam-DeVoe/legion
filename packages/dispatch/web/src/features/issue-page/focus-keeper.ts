@@ -1,6 +1,7 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 
 import { focusOnDocument } from "../shell/roving";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What a region lost the focus to, as each fallback of `useFocusKeeper` reads it. */
 export interface FocusLoss {
@@ -47,16 +48,30 @@ const LOSSES: MutationObserverInit = {
   subtree: true,
 };
 
-/** A layer a reader opens over the page and closes again: a dialog, or a drawer such as Details,
- *  which stands beside the page as an `aside` rather than as a dialog. */
-const LAYER = '[role="dialog"], aside';
+/** A layer a reader opens over the page and closes again: a dialog, or Details' drawer, which
+ *  stands beside the page as an `aside` rather than as a dialog. No other `aside` is a layer:
+ *  Details holds one of its own inside its drawer, and the Contents pane is one that stays. */
+const LAYER = `[role="dialog"], aside[${DETAILS_ATTRIBUTE}]`;
 
-/** The changes that can close a layer: its removal, and a hide or an inert of it or an ancestor. */
+/** The outermost layer around `element`, or null where it stands in none. A dialog inside
+ *  Details is a part of Details, which the reader is still in when that dialog closes. */
+function outermostLayer(element: Element): Element | null {
+  let outermost: Element | null = null;
+  let layer = element.closest(LAYER);
+  while (layer !== null) {
+    outermost = layer;
+    layer = layer.parentElement?.closest(LAYER) ?? null;
+  }
+  return outermost;
+}
+
+/** The changes that close a layer, observed on the layer and on each of its ancestors but not on
+ *  what they hold: the removal of the layer or of an ancestor is a change of its parent's
+ *  children, and a hide or an inert of either is a change of that element's own attributes. */
 const LAYER_CLOSINGS: MutationObserverInit = {
   attributeFilter: ["hidden", "inert"],
   attributes: true,
   childList: true,
-  subtree: true,
 };
 
 /** The elements `records` added, in the order they were added. */
@@ -122,15 +137,16 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
  * hold the focus it stays on the body. A region nobody has focused costs nothing: the keeper
  * watches the region only while the focus is inside it.
  *
- * When the focus leaves the region for a layer outside it - a dialog, or a drawer such as
- * Details: the nearest `[role="dialog"]` or `aside` around the element that took the focus - the
- * keeper stops watching the region as above, but remembers the control the focus left and that
- * layer (decision 237). A write may take that control away while the layer is open, as the
- * header's labels' count goes once every label fits; the layer, as it closes, then has nothing
- * to give the focus back to and leaves it on the body. So while the keeper remembers them it
- * watches the page, and one task after a change it asks `fallbacks` about that control, with no
- * added elements and no place, and focuses the first answer that can hold the focus, as for a
- * loss inside the region. It does so only when all of these hold:
+ * When the focus leaves the region for a layer outside it - the outermost dialog or Details'
+ * drawer (`aside[data-details]`) around the element that took the focus, so a dialog inside
+ * Details does not narrow the watch to that dialog - the keeper stops watching the region as
+ * above, but remembers the control the focus left and that layer (decision 237). A write may
+ * take that control away while the layer is open, as the header's labels' count goes once every
+ * label fits; the layer, as it closes, then has nothing to give the focus back to and leaves it
+ * on the body. So while the keeper remembers them it watches the layer and its ancestors, and
+ * one task after a change of them it asks `fallbacks` about that control, with no added elements
+ * and no place, and focuses the first answer that can hold the focus, as for a loss inside the
+ * region. It does so only when all of these hold:
  * - the layer is closed: out of the page, or under a hidden or inert element;
  * - the focus is on the body or nowhere, or still on a control of the closed layer, which the
  *   browser is about to drop to the body;
@@ -186,8 +202,8 @@ export function useFocusKeeper(
     /** Whether the reader's last pointer press since the focus was last inside the layer fell
      *  outside it: then that press, not the layer, put the focus where it is. */
     let pressedOutside = false;
-    /** The timer of the read of the layer, which waits one task after a change of the page, or
-     *  undefined while no read waits. */
+    /** The timer of the read of the layer, which waits one task after a change of the layer or of
+     *  an ancestor, or undefined while no read waits. */
     let layerRead: number | undefined;
 
     const notePress = (event: PointerEvent) => {
@@ -242,7 +258,7 @@ export function useFocusKeeper(
         // has left the region, and where they went into a layer the keeper waits for it to close.
         if (!region.contains(active)) {
           forget();
-          const layer = active?.closest(LAYER) ?? null;
+          const layer = active === null ? null : outermostLayer(active);
           if (layer !== null && !layer.contains(region)) watchLayer(lost, layer);
         }
         return false;
@@ -351,9 +367,13 @@ export function useFocusKeeper(
     };
     const watchLayer = (opener: HTMLElement, layer: Element) => {
       if (left === null) {
-        layerObserver.observe(page, LAYER_CLOSINGS);
         page.addEventListener("focusin", notePageFocus, true);
         page.addEventListener("pointerdown", notePagePress, true);
+      }
+      // Each change that closes the layer is a record on the layer or on one of its ancestors, so
+      // no other change of the page wakes the observer.
+      for (let node: Node | null = layer; node !== null; node = node.parentNode) {
+        layerObserver.observe(node, LAYER_CLOSINGS);
       }
       left = { layer, opener };
       pressedOutside = false;

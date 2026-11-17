@@ -8,6 +8,7 @@ import { jump, onFakeClock } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { useFocusKeeper } from "./focus-keeper";
+import { DETAILS_ATTRIBUTE } from "./margin-slot";
 
 /** What has become of the region's Save control: drawn, disabled, removed, or drawn anew under
  *  another key, which React draws as a new element in the old one's place. */
@@ -362,9 +363,9 @@ type LayerState = "open" | "hidden" | "removed";
 
 /**
  * A region holding an Opener and the two fallback buttons, and beside it, outside the region, a
- * layer: an `aside` holding a Close, as Details holds its own. The props remove the Opener, as a
- * write does while the layer is open; remove the Close, the layer's own control; and close the
- * layer.
+ * layer: Details' `aside`, holding a Close as Details holds its own, and inside it a dialog of
+ * its own drawn as an `aside`, holding a Field. The props remove the Opener, as a write does
+ * while the layer is open; remove the Close, the layer's own control; and close the layer.
  */
 function LayerRegion({
   close = true,
@@ -392,8 +393,11 @@ function LayerRegion({
         </button>
       </div>
       {layer === "removed" ? null : (
-        <aside hidden={layer === "hidden"}>
+        <aside hidden={layer === "hidden"} {...{ [DETAILS_ATTRIBUTE]: "" }}>
           {close ? <button type="button">Close</button> : null}
+          <aside role="dialog">
+            <button type="button">Field</button>
+          </aside>
         </aside>
       )}
     </>
@@ -414,7 +418,7 @@ test("a layer that closes after a write removed its opener hands the focus to th
     await onFakeClock(async () => {
       await openLayer();
       view.rerender(<LayerRegion opener={false} />);
-      // A read of the page waits one task after the change, and the layer is still open.
+      // One task after the write the layer is still open, and the focus stays on its Close.
       await jump(1);
       expect(button("Close")).toHaveFocus();
       // The layer closes, and its Close takes the focus with it to the body.
@@ -492,6 +496,30 @@ test("a layer hidden with the focus still on its Close hands the focus to the fi
       // the body only some tasks later: one task on, the focus is still on the Close.
       view.rerender(<LayerRegion layer="hidden" opener={false} />);
       expect(screen.getByRole("button", { hidden: true, name: "Close" })).toHaveFocus();
+      await jump(1);
+      expect(button("First fallback")).toHaveFocus();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a layer closed after the focus left a dialog inside it for the layer's Close hands the focus to the first fallback", async () => {
+  const view = render(<LayerRegion />);
+  try {
+    await onFakeClock(async () => {
+      // The focus goes from the Opener into the dialog inside Details, and the keeper's check of
+      // the focus leaving the region runs.
+      act(() => button("Opener").focus());
+      act(() => button("Field").focus());
+      await act(async () => {});
+      // The focus leaves that dialog for Details' own Close: the reader is still in Details.
+      act(() => button("Close").focus());
+      view.rerender(<LayerRegion opener={false} />);
+      await jump(1);
+      expect(button("Close")).toHaveFocus();
+      // Details closes by hiding its aside, with the focus still on its Close.
+      view.rerender(<LayerRegion layer="hidden" opener={false} />);
       await jump(1);
       expect(button("First fallback")).toHaveFocus();
     });

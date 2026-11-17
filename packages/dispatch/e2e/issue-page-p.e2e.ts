@@ -1,3 +1,4 @@
+import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { statusGlyph } from "../web/src/features/issue-page/issue-status";
 import { CONTROL_LABELS, STATE_LINES } from "../web/src/features/issue-page/page-words";
 import {
@@ -42,7 +43,6 @@ import {
   LONGEST_LABEL,
   labelFillingTheRoom,
   labelsAgainstTheCount,
-  labelsCutAsTheLineNarrows,
   labelsLeft,
   lineOrder,
   MEASURED_TITLE,
@@ -97,9 +97,11 @@ function writesField(request: Request, key: string, field: string): boolean {
 }
 
 /** The review actions of an approval inside `scope`: Approve (`Approve v2` on a stale approval)
- *  and Request changes. The chip itself (`Approved v1`) is none of them. */
+ *  and Request changes, by the words the header itself finds them by (`ACTION_WORDS`). The chip
+ *  itself (`Approved v1`) is none of them. */
 function reviewActions(scope: Locator): Locator {
-  return scope.getByRole("button", { name: /^(Approve( v\d+)?|Request changes)$/ });
+  const sources = Object.values(ACTION_WORDS).map((pattern) => pattern.source);
+  return scope.getByRole("button", { name: new RegExp(sources.join("|")) });
 }
 
 /** The words the labels' count reads with `left` labels it does not draw: `+3 labels`. */
@@ -394,7 +396,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       // again before the next step.
       if (width === DESKTOP.width || width === IPHONE_13.width) {
         expect(
-          await labelsCutAsTheLineNarrows(page, 60),
+          (await labelsAgainstTheCount(page, 60)).cut,
           `a label is cut in the frame after the line narrowed at ${width} px`
         ).toEqual([]);
         await propertiesLine(page).evaluate((line) => line.style.removeProperty("max-width"));
@@ -794,9 +796,6 @@ test("the header holds its limits when the typeface does not load @phone", async
       `the header's text is not drawn in ${TYPEFACE} first`
     ).toBe(TYPEFACE);
     const address = await typefaceAddress(page);
-    if (address === null) {
-      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-    }
 
     // With no request waiting and then one, the header holds its limits in the typeface at
     // 1440 px and 390 px; and with every request for its file refused, in the fallback, where
@@ -1746,34 +1745,12 @@ test("the labels' count names every label the line leaves out, at every width of
           element.style.maxWidth = `${at}px`;
         }, full - by);
         await framesDrawn(page, 4);
-        const reading = await line.evaluate((element, total) => {
-          const box = element.querySelector('[data-testid="issue-header-labels"]');
-          if (box === null) return "no labels' box";
-          const outer = box.getBoundingClientRect();
-          let whole = 0;
-          let cut = 0;
-          for (const chip of box.querySelectorAll("[data-header-label]")) {
-            const rect = chip.getBoundingClientRect();
-            const inside =
-              rect.left >= outer.left - 0.5 &&
-              rect.right <= outer.right + 0.5 &&
-              rect.top >= outer.top - 0.5 &&
-              rect.bottom <= outer.bottom + 0.5;
-            const outside =
-              rect.right <= outer.left + 0.5 ||
-              rect.left >= outer.right - 0.5 ||
-              rect.bottom <= outer.top + 0.5 ||
-              rect.top >= outer.bottom - 0.5;
-            if (inside) whole += 1;
-            else if (!outside) cut += 1;
-          }
-          const count = element.querySelector('[data-testid="issue-labels-left"]');
-          const left = Number(/\d+/.exec(count?.textContent ?? "")?.[0] ?? "0");
-          return whole + left === total && cut === 0
-            ? null
-            : `${whole} drawn whole, ${cut} cut, the count names ${left}, of ${total}`;
-        }, TWENTY_LABELS.length);
-        if (reading !== null) wrong.push(`${(full - by).toFixed(0)} px: ${reading}`);
+        const { cut, left, whole } = await labelsAgainstTheCount(page);
+        if (whole + left !== TWENTY_LABELS.length || cut.length > 0) {
+          wrong.push(
+            `${(full - by).toFixed(0)} px: ${whole} drawn whole, ${cut.length} cut, the count names ${left}, of ${TWENTY_LABELS.length}`
+          );
+        }
       }
       await line.evaluate((element) => {
         element.style.maxWidth = "";
@@ -1803,9 +1780,6 @@ test("the labels' count names every label the line does not draw whole after the
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectHeaderDrawn(page);
     const address = await typefaceAddress(page);
-    if (address === null) {
-      throw new Error(`the page's stylesheet declares no @font-face for ${TYPEFACE}`);
-    }
 
     // A context of its own, with nothing of the file in hand, whose requests for it wait until
     // the row lets them go.
@@ -1853,6 +1827,12 @@ test("the labels' count names every label the line does not draw whole after the
         inTheFace.whole + inTheFace.left,
         `once ${TYPEFACE} has loaded ${inTheFace.whole} labels are drawn whole and the count names ${inTheFace.left}`
       ).toBe(TWENTY_LABELS.length);
+      // A face whose chips came out no wider than the fallback's would leave every label where it
+      // was, and the row would pass with the typeface's listener taken out.
+      expect(
+        inTheFace.left,
+        `the face pushed no label off the line: the count names ${inTheFace.left} once ${TYPEFACE} has loaded and ${inTheFallback.left} in the fallback`
+      ).toBeGreaterThan(inTheFallback.left);
     } finally {
       await held.close();
     }
