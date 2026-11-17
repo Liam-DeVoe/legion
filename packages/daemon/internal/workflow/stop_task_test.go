@@ -141,6 +141,40 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
+	// A stop before the task's first step, while its issue stands at admitted, which its tree's
+	// architect works: no step runs, so no process is stopped, and the architect's claim is never
+	// suspended; the notice names the architect and admitted, as a stop at accepting names the
+	// owner's own step.
+	t.Run("at admitted no step runs and no claim is stopped", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+		stop := ownersStop(t, root.Key, "a")
+
+		if result := applyFacts(t, pool, engine)("stop", stop); result.Refusal != nil {
+			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+		}
+
+		if issue := issueOf(t, pool, engine, root.Key); issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Admitted, Reason: record.HoldTaskStopped}) {
+			t.Fatalf("%s stands in %s with hold %+v, want held from admitted for the stopped task", root.Key, issue.Phase, issue.Hold)
+		}
+		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskStopped || task.StoppedReason != stopsBy || task.Place != (record.TaskPlace{}) {
+			t.Fatalf("task a is %s (%q) at %+v, want stopped at no act with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
+		}
+		for _, op := range []string{"step_stop", "suspend"} {
+			if rows := superviseRowsOf(t, pool, root.Key, op); len(rows) != 0 {
+				t.Fatalf("the stop wrote the %s rows %+v, want none: no step runs at admitted, and the architect's claim is not the step's", op, rows)
+			}
+		}
+		notices := noticesOf(t, pool, root.Key, "task-stopped")
+		want := record.Notice{Kind: "task-stopped", Role: claim.RoleArchitect, Phase: phase.Admitted, StoppedBy: stop.By,
+			Reason: stopsBy + ", the architect legion-legion-legion-208-architect"}
+		if len(notices) != 1 || !reflect.DeepEqual(notices[0], want) {
+			t.Fatalf("the task-stopped notices = %+v, want the one %+v", notices, want)
+		}
+	})
+
 	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue, as it closes a hold of no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
