@@ -241,16 +241,28 @@ const COMMENT_MENTION_LIMIT_RULE = `mentions allow at most ${MAX_COMMENT_MENTION
 const MENTION_TARGET_PATTERNS = [/^role:[a-z0-9-]+$/, /^session:[A-Za-z0-9_-]+$/] as const;
 const COMMENT_MENTION_TARGET_RULE = "mention target must be role:<name> or session:<id>";
 
+/** The refusal of a target named twice in one comment's mentions, as Dispatch states it
+ *  (`validateCommentMentions`). */
+const COMMENT_MENTION_REPEAT_RULE = "mentions must not repeat a target";
+
 /** The mention rule a comment's mentions break, in Dispatch's words and in its order: the count
- *  first, then each target. Undefined when they keep both, or name none. */
+ *  first, then each target in turn, its form before whether an earlier one named it. Undefined
+ *  when they keep all three, or name none. */
 function mentionProblem(mentions: unknown): string | undefined {
   if (!Array.isArray(mentions)) return undefined;
   if (mentions.length > MAX_COMMENT_MENTIONS) return COMMENT_MENTION_LIMIT_RULE;
-  const kept = mentions.every(
-    (target) =>
-      typeof target === "string" && MENTION_TARGET_PATTERNS.some((pattern) => pattern.test(target))
-  );
-  return kept ? undefined : COMMENT_MENTION_TARGET_RULE;
+  const seen = new Set<string>();
+  for (const target of mentions) {
+    if (
+      typeof target !== "string" ||
+      !MENTION_TARGET_PATTERNS.some((pattern) => pattern.test(target))
+    ) {
+      return COMMENT_MENTION_TARGET_RULE;
+    }
+    if (seen.has(target)) return COMMENT_MENTION_REPEAT_RULE;
+    seen.add(target);
+  }
+  return undefined;
 }
 
 function commentProblem(value: unknown): string | undefined {
@@ -267,7 +279,7 @@ function commentProblem(value: unknown): string | undefined {
   ]);
 }
 
-const COMMENT_RULE = `${commentOwner.message} ${COMMENT_TURN_RULE} ${COMMENT_MENTION_LIMIT_RULE}, and each ${COMMENT_MENTION_TARGET_RULE}.`;
+const COMMENT_RULE = `${commentOwner.message} ${COMMENT_TURN_RULE} ${COMMENT_MENTION_LIMIT_RULE}, each ${COMMENT_MENTION_TARGET_RULE}, and ${COMMENT_MENTION_REPEAT_RULE}.`;
 
 const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
   check: (value) => commentProblem(value) === undefined,

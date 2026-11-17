@@ -7,7 +7,7 @@ import (
 )
 
 // commit_held.go holds the two reads the result handler makes before it stores a check result
-// (api/results.go, refuseUnknownCommit): whether a repository holds a commit at all, and whether
+// (api/results_linked.go, refuseUnknownCommit): whether a repository holds a commit at all, and whether
 // a pull request an issue links is open or merged, which says whether that pull request's
 // repository is one a result of the issue may name a commit of. Neither is an answer about a
 // branch, which branch.go owns alone, and neither keeps anything: GitHub is asked each time.
@@ -42,7 +42,7 @@ func RepositoryHoldsCommit(ctx context.Context, client *githubapp.Client, repoFu
 // (ErrPullRequestNotFound), a rate limit, a 5xx, a transport failure. Each says only that
 // Dispatch cannot tell but ErrPullRequestNotFound, which is GitHub's answer that there is no such
 // pull request; the results route reads it as a pull request that does not count
-// (api/results.go, linkedRepositoryHolds).
+// (api/results_linked.go, linkedRepositoryHolds).
 func PullRequestOpenOrMerged(ctx context.Context, client *githubapp.Client, repoFull string, number int) (bool, error) {
 	owner, repo, token, err := repositoryRead(ctx, client, repoFull)
 	if err != nil {

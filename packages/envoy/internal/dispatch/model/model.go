@@ -1296,7 +1296,8 @@ type ArtifactReviewEventPayload struct {
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
 // results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository or, for
+// one result, of a repository the issue links a pull request in (CheckBasis.Repo).
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
@@ -1352,9 +1353,16 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is.
+// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// repository, one the check's issue links a pull request in and does not resolve to: the head
+// of a pull request the issue links there, and a branch of it that a result whose commit is
+// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
+// which is of the repository the check's issue resolves to or is the commit a reader named, so
+// a reader can tell pull request #7 or branch main of the linked repository from those of the
+// issue's own.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
@@ -1426,11 +1434,18 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
-	// CommitRepo is the repository that holds CommitSHA where the record route found it in a
-	// repository the check's issue links a pull request in rather than the one that issue
-	// resolves to (check_results.commit_repo), and nil for every other result. The results read
-	// compares a branch check's result with that repository's branches where it is set. It is
-	// no part of the wire shape.
+	// CommitRepo is the linked repository the record route took CommitSHA to be of
+	// (check_results.commit_repo), one the check's issue links a pull request in and does not
+	// resolve to. It is one of two: a repository with an open or merged linked pull request
+	// that GitHub said holds the commit; or, where GitHub proved the repository that issue
+	// resolves to does not hold the commit and no linked repository was shown to, the first
+	// linked repository whose read — of a linked pull request's state or of the commit — did not
+	// answer, which no read showed to hold the commit but which may. It is nil for every other
+	// result: a commit of the issue's own repository, a commit whose read there did not answer
+	// and that no linked repository was shown to hold, and a result nothing was asked about. The
+	// results read compares a branch check's result with that repository's branches, and reads
+	// a `before_merge` result's pull requests through it, where it is set. It is no part of the
+	// wire shape.
 	CommitRepo *string `json:"-"`
 	// CommitStands is where this result's commit stands against what its check compared with,
 	// and CheckWordsMoved whether the check's words moved after the result was recorded, which

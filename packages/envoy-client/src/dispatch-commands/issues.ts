@@ -669,14 +669,31 @@ function learnedText(learned: BasisLearnedAt): string {
   return `GitHub updated it ${learned.at}`;
 }
 
+/** A pull request as a reader tells it apart: `owner/repo#7`, GitHub's own name for it, for one
+ *  of a repository the issue links a pull request in and does not resolve to, which the server
+ *  names in `repo`, and `pull request #7` for one of the issue's own repository. */
+function pullRequestName(basis: CheckBasis, number: number): string {
+  return basis.repo === undefined ? `pull request #${number}` : `${basis.repo}#${number}`;
+}
+
+/** A branch as a reader tells it apart: `main of owner/repo` for a branch of a linked repository,
+ *  and `main` for one of the issue's own repository. */
+function branchName(basis: CheckBasis): string {
+  const branch = basis.branch ?? "unnamed";
+  return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
+}
+
 /** One thing a check compared its results with, as the head line names it. */
 function basisText(basis: CheckBasis): string {
   const learned = basis.learned_at === undefined ? "" : ` (${learnedText(basis.learned_at)})`;
   if (basis.kind === "pull_request") {
-    const number = basis.pull_request === undefined ? "" : `#${basis.pull_request} `;
-    return `the head of pull request ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
+    const number =
+      basis.pull_request === undefined
+        ? "pull request "
+        : `${pullRequestName(basis, basis.pull_request)} `;
+    return `the head of ${number}at ${basis.commit ?? "an unnamed commit"}${learned}`;
   }
-  if (basis.kind === "branch") return `branch ${basis.branch ?? "unnamed"}${learned}`;
+  if (basis.kind === "branch") return `branch ${branchName(basis)}${learned}`;
   return `the commit you named, ${basis.commit ?? ""}${learned}`;
 }
 
@@ -686,9 +703,9 @@ function basisPlace(basis: CheckBasis): string {
   if (basis.kind === "pull_request") {
     return basis.pull_request === undefined
       ? "the head of a pull request"
-      : `the head of pull request #${basis.pull_request}`;
+      : `the head of ${pullRequestName(basis, basis.pull_request)}`;
   }
-  if (basis.kind === "branch") return `on branch ${basis.branch ?? "unnamed"}`;
+  if (basis.kind === "branch") return `on branch ${branchName(basis)}`;
   return "the commit you named";
 }
 

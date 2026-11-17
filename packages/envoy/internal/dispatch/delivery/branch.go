@@ -241,7 +241,7 @@ func (c *Branches) DefaultBranchOf(
 // commit the repository does not hold, which a result can be recorded at — the record route
 // refuses a commit only on GitHub's 422 proof that the repository does not hold it, so a
 // result recorded while the App could not read the repository is recorded whatever the commit
-// (api/results.go, refuseUnknownCommit). One such commit must not hold the branch that every
+// (api/results_linked.go, refuseUnknownCommit). One such commit must not hold the branch that every
 // `default_branch` result of the repository, and every `after_merge` result of it no stored
 // row answers, is measured against.
 //

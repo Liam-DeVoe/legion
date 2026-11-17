@@ -310,6 +310,54 @@ test("a check names what the server compared its results with", async () => {
   expect(compared[1]).toBe("This issue holds no pull request and no branch.");
 });
 
+// A basis in a repository the issue links a pull request in and does not resolve to carries that
+// repository, so the tab names it: the linked pull request as GitHub names it, owner/repo#7, and a
+// branch of that repository as branch main of owner/repo, beside the issue's own repository's pull
+// request and branch of the same number and name, which name none.
+test("a basis in a linked repository names that repository", async () => {
+  const linkedHead: CheckBasis = {
+    commit,
+    kind: "pull_request",
+    pull_request: 7,
+    repo: "acme/tools",
+  };
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-linked", [result({ commit_stands: { answer: "at_basis", basis: linkedHead } })], {
+      compared_with: [{ commit: otherCommit, kind: "pull_request", pull_request: 7 }, linkedHead],
+    }),
+    check(
+      "c-branch",
+      [
+        result({
+          commit_stands: {
+            answer: "at_basis",
+            basis: { branch: "main", kind: "branch", repo: "acme/tools" },
+          },
+          id: "result-2",
+        }),
+      ],
+      { compared_with: [{ branch: "main", kind: "branch" }], when: "after_merge" }
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  await screen.findByTestId("verification-checks");
+  const compared = screen
+    .getAllByTestId("verification-check-compared-with")
+    .map((row) => row.textContent);
+  expect(compared[0]).toContain(
+    `the head of pull request 7 ${otherCommit}, the head of acme/tools#7 ${commit}`
+  );
+  expect(compared[1]).toBe("branch main");
+  const stands = screen
+    .getAllByTestId("verification-result-commit-stands")
+    .map((field) => field.textContent);
+  expect(stands).toEqual([`At the head of acme/tools#7 ${commit}`, "At branch main of acme/tools"]);
+});
+
 test("a result shows how it ran, what was seen, its counts, its role and its screenshots", async () => {
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [

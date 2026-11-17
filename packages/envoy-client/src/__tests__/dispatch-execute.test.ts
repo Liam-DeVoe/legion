@@ -8086,6 +8086,117 @@ describe("executeDispatchTool", () => {
     expect(read.details).toMatchObject({ issue: "DSP-42", checks: 1, results: 3 });
   });
 
+  // A basis in a repository the issue links a pull request in and does not resolve to carries
+  // that repository (`repo`), so a reader can tell it from a pull request or a branch of the
+  // issue's own repository: the linked pull request prints as GitHub names it, owner/repo#7, and
+  // a linked branch as branch main of owner/repo, in the head line and in a result's place alike.
+  // A basis of the issue's own repository carries no `repo` and prints as it always did.
+  test("dispatch_results names the repository of a linked basis", async () => {
+    const linkedCommit = "7777777777777777777777777777777777777777";
+    const mergeCommit = "8888888888888888888888888888888888888888";
+    const result = (id: string, check: string, commit: string, basis: Record<string, unknown>) => ({
+      id,
+      issue_key: "DSP-42",
+      check_issue_key: "DSP-42",
+      check_artifact_id: "artifact-9",
+      check_block_id: check,
+      check_version: 1,
+      check_sha256: "d1",
+      check_words_moved: false,
+      role: "tester",
+      verdict: "pass",
+      commit_sha: commit,
+      commit_stands: { answer: "at_basis", basis },
+      surface: "",
+      run: "",
+      observed: "",
+      negative_control: "",
+      failed: 0,
+      skipped: 0,
+      excluded: 0,
+      screenshots: null,
+      session: "session-1",
+      actor: { kind: "session", id: "session-1" },
+      created_at: "2026-11-10T10:00:00Z",
+    });
+    const check = (block: string, when: string, compared: unknown[], results: unknown[]) => ({
+      artifact_id: "artifact-9",
+      block_id: block,
+      issue_key: "DSP-42",
+      ref: `dispatch://DSP-42/artifact/verification-md#b-${block}`,
+      sha256: "d1",
+      version: 1,
+      when,
+      text: "The check's words.",
+      surface: "",
+      run: "",
+      negative_control: "",
+      compared_with: compared,
+      pass_stands: { answer: "yes", roles: ["tester"] },
+      results,
+    });
+    const linkedHead = {
+      kind: "pull_request",
+      repo: "acme/tools",
+      commit: linkedCommit,
+      pull_request: 7,
+    };
+    const linked = {
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        check(
+          "k1",
+          "before_merge",
+          [{ kind: "pull_request", commit: headCommit, pull_request: 9 }, linkedHead],
+          [result("res-1", "k1", linkedCommit, linkedHead)]
+        ),
+        check(
+          "k4",
+          "after_merge",
+          [{ kind: "branch", branch: "main" }],
+          [
+            result("res-2", "k4", mergeCommit, {
+              kind: "branch",
+              repo: "acme/tools",
+              branch: "main",
+            }),
+          ]
+        ),
+      ],
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") return response(linked);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text.split("\n")).toEqual([
+      "Checks of DSP-42:",
+      "",
+      `- k1 (before_merge). Compared with the head of pull request #9 at ${headCommit}, the head of acme/tools#7 at ${linkedCommit}. A pass stands: yes, from tester.`,
+      "  The check's words: The check's words.",
+      `  - pass by tester at ${linkedCommit}. That commit is the head of acme/tools#7. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-1.`,
+      "    The role recorded no reading.",
+      "",
+      "- k4 (after_merge). Compared with branch main. A pass stands: yes, from tester.",
+      "  The check's words: The check's words.",
+      `  - pass by tester at ${mergeCommit}. That commit is on branch main of acme/tools. The check's words did not move after this result (result version 1, check version 1). Recorded 2026-11-10T10:00:00Z. Result res-2.`,
+      "    The role recorded no reading.",
+    ]);
+  });
+
   // --brief is for an issue holding hundreds of results: it cuts the readings that stand at none
   // of the compared commits, and leaves whole every reading a reader may act on.
   test("dispatch_results --brief cuts only a reading that stands at no compared commit", async () => {

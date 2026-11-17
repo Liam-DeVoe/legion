@@ -91,15 +91,20 @@ function Screenshot({ reference }: { reference: string }): ReactNode {
 }
 
 /** What one basis is, in words: the commit a reader named in the request, the head of a pull
- *  request, or a branch. The commit itself is drawn beside this, whole. */
+ *  request, or a branch. The commit itself is drawn beside this, whole. A basis in a repository
+ *  the issue links a pull request in and does not resolve to names that repository (`repo`), so
+ *  it reads apart from a pull request or a branch of the issue's own repository: `owner/repo#7`
+ *  is GitHub's own name for that pull request. */
 function basisWords(basis: CheckBasis): string {
   if (basis.kind === "branch") {
-    return `branch ${basis.branch ?? ""}`;
+    const branch = `branch ${basis.branch ?? ""}`;
+    return basis.repo === undefined ? branch : `${branch} of ${basis.repo}`;
   }
   if (basis.kind === "pull_request") {
-    return basis.pull_request === undefined
-      ? "the head of the pull request"
-      : `the head of pull request ${basis.pull_request}`;
+    if (basis.pull_request === undefined) return "the head of the pull request";
+    return basis.repo === undefined
+      ? `the head of pull request ${basis.pull_request}`
+      : `the head of ${basis.repo}#${basis.pull_request}`;
   }
   return "the commit this read named";
 }

@@ -859,12 +859,14 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 // linkedGitHub is the GitHub the tests of a repository the issue links a pull request in read
 // (TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn,
 // TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead,
-// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository). It is
-// resultsGitHubHolding's fixture with five differences: each repository holds commits of its
-// own, each pull request an issue links answers its state, the read-through of a commit names
-// the pull request heads says that commit is the head of, each repository's compare read
-// answers from the commits each of its branches carries, and each read of a pull request's
-// state, each ask of the read-through and each compare read is counted by repository.
+// TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepository and the
+// tests of results_linked_test.go). It is resultsGitHubHolding's fixture with five differences:
+// each repository holds commits of its own, each pull request an issue links answers its state,
+// the read-through of a commit names the pull request heads says that commit is the head of,
+// each repository's compare read answers from the commits each of its branches carries, and
+// each read of a pull request's state, each ask of the read-through and each compare read is
+// counted by repository. Two lists take a repository out of the App's reach: one the App is not
+// installed on, and one whose commit reads GitHub fails.
 type linkedGitHub struct {
 	mu sync.Mutex
 	// held is the commits each repository holds: GET /repos/{owner}/{repo}/commits/{sha}
@@ -884,6 +886,12 @@ type linkedGitHub struct {
 	// for a commit the repository does not hold (held), which is what GitHub answers a compare
 	// naming a commit it cannot find.
 	branches map[string][]string
+	// uninstalled is the repositories the App is not installed on: their installation lookup
+	// answers GitHub's 404, so no token is minted for them and nothing else of theirs is read.
+	uninstalled []string
+	// failing is the repositories whose GET /repos/{owner}/{repo}/commits/{sha} answers a 503,
+	// a read of GitHub's that did not answer, for every commit.
+	failing []string
 	// stateReads counts the reads of a pull request's state, readThroughs the asks for the
 	// pull requests of a commit (GET /repos/{owner}/{repo}/commits/{sha}/pulls), and compares
 	// the compare reads, by repository.
@@ -919,7 +927,12 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	linked.stateReads, linked.readThroughs, linked.compares = map[string]int{}, map[string]int{}, map[string]int{}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if slices.Contains(linked.uninstalled, r.PathValue("owner")+"/"+r.PathValue("repo")) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
 		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read"}}`)
 	})
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
@@ -931,6 +944,11 @@ func linkedRepositoriesGitHub(t *testing.T, linked *linkedGitHub) (http.Handler,
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		repo, sha := r.PathValue("owner")+"/"+r.PathValue("repo"), r.PathValue("sha")
+		if slices.Contains(linked.failing, repo) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"message":"Service Unavailable"}`)
+			return
+		}
 		if !slices.Contains(linked.held[repo], sha) {
 			w.WriteHeader(http.StatusUnprocessableEntity)
 			fmt.Fprintf(w, `{"message":"No commit found for SHA: %s"}`, sha)
@@ -1021,7 +1039,8 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 		pulls: map[string]string{
 			"acme/tools#7": "open", "acme/tools#8": "closed", "acme/tools#9": "merged",
 		},
-		heads: map[string]int{"acme/tools@" + linkedCommit: 7},
+		heads:       map[string]int{"acme/tools@" + linkedCommit: 7},
+		uninstalled: []string{"acme/elsewhere"},
 	}
 	handler, database := linkedRepositoriesGitHub(t, linked)
 	issue := issueInRepository(t, handler, "RELK", "acme/widgets", "Work in two repositories")
@@ -1078,6 +1097,17 @@ func TestResultAtACommitOfARepositoryTheIssueLinksAPullRequestIn(t *testing.T) {
 			name:  "a link to a pull request GitHub answers 404 for lets no unheld commit through",
 			links: []string{"https://github.com/acme/tools/pull/404"}, commit: nearHeadCommit, refused: true,
 			named: []string{"acme/widgets"}, unnamed: []string{"acme/tools"}, stateReads: 1,
+		},
+		{
+			// A link to a pull request of a repository the App is not installed on: GitHub
+			// answers the installation lookup 404, which is its answer about every pull request
+			// of that repository, so the repository does not count, no pull request of it is
+			// read, and the commit no repository holds is refused as it was before the issue
+			// carried that link. Read as a failure, it would store the result with that
+			// repository, where no read can ever place it.
+			name:  "a link to a pull request of a repository the App is not installed on lets no unheld commit through",
+			links: []string{"https://github.com/acme/elsewhere/pull/3"}, commit: nearHeadCommit, refused: true,
+			named: []string{"acme/widgets"}, unnamed: []string{"acme/elsewhere"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -1209,18 +1239,26 @@ func TestAResultAtTheHeadOfALinkedPullRequestFollowsThatHead(t *testing.T) {
 	}
 
 	// The record reads the pull requests of the commit through acme/tools, which stores #7 at
-	// that head, attributed to no issue; the read compares k1 with it all the same.
+	// that head, attributed to no issue; the read compares k1 with it all the same, and names
+	// acme/tools beside the number, which alone would read as a pull request of acme/widgets.
 	first := record(linkedCommit)
 	stands := standsAt(t, readResults(t, handler, issue.Key), "k1", first.ID,
 		"a result at the head of the linked open pull request", model.CommitAtBasis, false)
-	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisPullRequest ||
+	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisPullRequest || basis.Repo != "acme/tools" ||
 		basis.Commit != linkedCommit || basis.PullRequest == nil || *basis.PullRequest != 7 {
-		t.Fatalf("a result at the head of the linked open pull request stands at %+v, want #7 at %s", basis, linkedCommit)
+		t.Fatalf("a result at the head of the linked open pull request stands at %+v, want acme/tools#7 at %s", basis, linkedCommit)
 	}
 
 	// A push moves the linked pull request's head, which the reconcile or a `pull_request` event
-	// writes to its row.
+	// writes to its row, and GitHub moves with it: it names #7 for the new head and no longer
+	// heads it at the old one. The read asks acme/tools about the result at the old head, the
+	// repository the record stored with it, and a fixture still heading #7 there would be a
+	// GitHub that never saw the push.
 	writeHead(t, database, "acme/tools", 7, movedCommit, "open", "")
+	linked.mu.Lock()
+	delete(linked.heads, "acme/tools@"+linkedCommit)
+	linked.heads["acme/tools@"+movedCommit] = 7
+	linked.mu.Unlock()
 	standsAt(t, readResults(t, handler, issue.Key), "k1", first.ID,
 		"a result at the linked pull request's old head", model.CommitOtherCommit, false)
 	moved := record(movedCommit)
@@ -1330,14 +1368,21 @@ func TestABranchChecksResultAtALinkedPullRequestsMergeCommitIsComparedInThatRepo
 	read := readResults(t, handler, trunk)
 	stands := standsAt(t, read, "k4", linkedAfter.ID,
 		"an after_merge result at the merge commit of the linked pull request", model.CommitAtBasis, false)
-	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisBranch || basis.Branch != "main" {
-		t.Fatalf("the after_merge result at the linked merge commit stands at %+v, want the branch main", basis)
+	// The branch the linked result stands at is acme/tools' main, and names acme/tools; the
+	// issue's own result's main, and the check's own bases, name no repository.
+	if basis := stands.Basis; basis == nil || basis.Kind != model.CheckBasisBranch || basis.Branch != "main" ||
+		basis.Repo != "acme/tools" {
+		t.Fatalf("the after_merge result at the linked merge commit stands at %+v, want the branch main of acme/tools", basis)
 	}
 	standsAt(t, read, "k5", linkedDefault.ID,
 		"a default_branch result at the merge commit of the linked pull request", model.CommitAtBasis, false)
-	standsAt(t, read, "k4", own.ID,
+	ownStands := standsAt(t, read, "k4", own.ID,
 		"an after_merge result at a commit of the issue's own trunk", model.CommitAtBasis, false)
-	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" {
+	if basis := ownStands.Basis; basis == nil || basis.Branch != "main" || basis.Repo != "" {
+		t.Fatalf("the after_merge result at the issue's own trunk stands at %+v, want the branch main of no other repository", basis)
+	}
+	if compared := checkOf(t, read, "k4").ComparedWith; len(compared) != 1 || compared[0].Branch != "main" ||
+		compared[0].Repo != "" {
 		t.Fatalf("the after_merge check compared with %+v, want its own repository's main alone", compared)
 	}
 	if stood := checkOf(t, read, "k5").PassStands; stood.Answer != model.PassStandsYes {

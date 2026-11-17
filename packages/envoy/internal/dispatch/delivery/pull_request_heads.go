@@ -455,6 +455,14 @@ func upsertHeadUnderCanonicalName(
 // for an attributed pull request. A pull request that closed without a merge is no head, by the
 // state of its row, exactly as an attributed one that closed without a merge is no head.
 //
+// The owner and the name are held to GitHub's own characters, letters, digits and `-` for an
+// owner and `.` and `_` beside them for a name, and a name of `.` or `..` alone is no
+// repository: the reads build `/repos/{owner}/{repo}/...` from the two parts, and url.PathEscape
+// keeps a dot, so a link naming either would send a read up the path (`/repos/../x/installation`)
+// rather than to a repository. The issue PATCH takes any absolute HTTP(S) URL as a link
+// (api/issue_refs.go, validateExternalURL), so such a URL is still a link of the issue and is
+// simply no pull request here, as api's parseSourceRepo refuses the same two names for a source.
+//
 // The number is bounded to nine digits so that the cast cannot fail on a link a person typed.
 var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.IssueRepoTerms + `,
 	linked_pulls as (
@@ -462,10 +470,10 @@ var linkedPullRequestTerms = `subjects as (select $1::text as key), ` + refs.Iss
 		from (
 			select parsed.url, lower(parsed.part[1] || '/' || parsed.part[2]) as repo, parsed.part[3]::int as number
 			from (
-				select l.url, regexp_match(l.url, '^https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]{0,8})$') as part
+				select l.url, regexp_match(l.url, '^https://github\.com/([A-Za-z0-9-]+)/([A-Za-z0-9._-]+)/pull/([1-9][0-9]{0,8})$') as part
 				from issue_external_links l where l.issue_key = $1
 			) parsed
-			where parsed.part is not null
+			where parsed.part is not null and parsed.part[2] not in ('.', '..')
 		) link
 		join issues i on i.key = $1
 		` + refs.IssueRepoJoin + `
@@ -485,7 +493,7 @@ var linkedPullRequestsQuery = `with recursive ` + linkedPullRequestTerms + `
 
 // LinkedPullRequests is every pull request the external links of issueKey name in a repository
 // the issue does not resolve to, in the order the issue lists its links. The result route reads
-// it to say which repositories a result of the issue may name a commit of (api/results.go,
+// it to say which repositories a result of the issue may name a commit of (api/results_linked.go,
 // refuseUnknownCommit), so the route and the results read take one list.
 func LinkedPullRequests(ctx context.Context, q refs.Queryer, issueKey string) ([]LinkedPullRequest, error) {
 	rows, err := q.Query(ctx, linkedPullRequestsQuery, issueKey)
@@ -541,25 +549,38 @@ func HeadAttributedTo(ctx context.Context, pool *store.Pool, issueKey, sha strin
 // is when Dispatch last read the pull request from GitHub and EventAt is the pull request's
 // own update time as its newest webhook event carried it; each is nil where no writer has
 // carried it. The reader shows the later of the two and names which it is
-// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt).
+// (model.BasisLearnedReadAt, model.BasisLearnedUpdatedAt). LinkedRepo is the repository of a
+// pull request the issue links in a repository it does not resolve to (linkedPullRequestTerms),
+// under the canonical name those terms read, and "" for a pull request attributed to it: the
+// reader names that repository beside the number, which alone would read as a pull request of
+// the issue's own repository.
 type AttributedHead struct {
-	Number    int
-	HeadSHA   string
-	CheckedAt *time.Time
-	EventAt   *time.Time
+	Number     int
+	HeadSHA    string
+	CheckedAt  *time.Time
+	EventAt    *time.Time
+	LinkedRepo string
 }
 
 // headsAttributedQuery is HeadsAttributedTo's statement, its two arms HeadAttributedTo's: the
-// attributed rows and the linked ones. `union` drops a row both arms read, which a stale
-// attribution can make: one judged while the issue resolved to the pull request's repository.
+// attributed rows and the linked ones, the linked ones naming their repository. `distinct on`
+// drops a row both arms read, which a stale attribution can make — one judged while the issue
+// resolved to the pull request's repository — over the columns `union` dropped it by before the
+// linked arm named its repository, and keeps the linked arm's copy: the row is of a repository
+// the issue does not resolve to, which is what the name says.
 var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
-	select number, head_sha, checked_at, event_at from (
-		select number, head_sha, checked_at, event_at from pull_request_heads
-		where issue_key = $1 and state in ('open', 'merged')
-		union
-		select h.number, h.head_sha, h.checked_at, h.event_at from linked_pulls l
-		join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number
-		where h.state in ('open', 'merged')
+	select number, head_sha, checked_at, event_at, linked_repo from (
+		select distinct on (number, head_sha, checked_at, event_at)
+			number, head_sha, checked_at, event_at, linked_repo
+		from (
+			select number, head_sha, checked_at, event_at, '' as linked_repo from pull_request_heads
+			where issue_key = $1 and state in ('open', 'merged')
+			union all
+			select h.number, h.head_sha, h.checked_at, h.event_at, l.repo from linked_pulls l
+			join pull_request_heads h on lower(h.repo) = lower(l.repo) and h.number = l.number
+			where h.state in ('open', 'merged')
+		) arms
+		order by number, head_sha, checked_at, event_at, linked_repo desc
 	) heads
 	order by greatest(checked_at, event_at) desc nulls last, number desc`
 
@@ -586,7 +607,7 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	var heads []AttributedHead
 	for rows.Next() {
 		var head AttributedHead
-		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt); err != nil {
+		if err := rows.Scan(&head.Number, &head.HeadSHA, &head.CheckedAt, &head.EventAt, &head.LinkedRepo); err != nil {
 			return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 		}
 		heads = append(heads, head)
