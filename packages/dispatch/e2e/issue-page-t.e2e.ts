@@ -112,8 +112,8 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  * `@owed`: each runs for real once its gates are on T's base. Each clause a later gate holds is a
  * row of its own, titled its row's title and the clause and tagged `@owed`, which checks that gate
  * the same way and asserts the clause once it is met: row 1's decision clauses, for each seed that
- * holds a decision (G5); row 2's Decisions (G2); row 3's decision lines (part U); row 4's Keep (G2
- * and part U).
+ * holds a decision (G5); row 2's Decisions (G2); row 3's Decisions (G2) and its decision lines
+ * (part U); row 4's Keep (G2 and part U).
  */
 
 /** What every seed returns: the key of the issue the page opens. */
@@ -930,6 +930,45 @@ test("each filter draws its view read's rows, and each decision that shaped a st
         "each decision that shaped a statement is a line on that statement's row"
       ).toEqual([]);
       await releaseFilter(page, "spec");
+    });
+  }
+});
+
+// c-views for Decisions, owed on G2 (INFRA-1253's t16b and t16c): once the load reads the
+// decisions as the tree read's `view=decisions`, the Decisions filter draws that view read's rows,
+// as Spec, Verification and Plan draw theirs (INFRA-1196's decision on row 3's gap).
+// SLOW(>=2s): two seeded issues, each load waited out, and Decisions pressed, read until it holds
+// still, and released.
+test("each filter draws its view read's rows, and the Decisions filter draws its view read's rows @owed", async ({
+  browser,
+}) => {
+  test.setTimeout(ROW_MS);
+  for (const [name, seed] of VIEW_SEEDS) {
+    await phase(browser, seed, async (page, seeded) => {
+      owedUnless(await treeReadGate(page, seeded.key));
+      const decisions = viewAnswerOf(page, "decisions");
+      const traffic = watchApiRequests(page);
+      const load = await firstLoad(page, traffic, seeded.key);
+      owedUnless(decisionsViewGate(load, seeded.key));
+      const reads = await idReadsOf(seeded.key);
+      const view = PRESET_NAMES.decisions;
+      const where = `${name} under ${view}`;
+      const drawn = await pressFilter(page, traffic, "decisions");
+      const answer = await heldAnswer(decisions, `the ${view} view read`);
+      const expected = viewNodeIds(answer, "decisions", reads);
+      expect(
+        idSet(drawn.nodes.map((node) => node.id)),
+        `${where}, the rows are the view read's nodes of root R2's row kinds`
+      ).toEqual(idSet(expected.map((node) => node.id)));
+      expect(
+        idSet(drawn.nodes.flatMap((node) => (node.context ? [node.id] : []))),
+        `${where}, the rows drawn as context are the view read's context`
+      ).toEqual(idSet(expected.flatMap((node) => (node.mark === "context" ? [node.id] : []))));
+      expect(
+        drawn.count?.trim(),
+        `${where}, the control counts the view read's own ${R2_COUNTED_KINDS.decisions.join(", ")}`
+      ).toBe(String(viewCount(answer, "decisions")));
+      await releaseFilter(page, "decisions");
     });
   }
 });
