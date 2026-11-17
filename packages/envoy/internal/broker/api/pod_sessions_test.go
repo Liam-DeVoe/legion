@@ -180,6 +180,7 @@ type wirePodSession struct {
 // TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore holds the whole answer); and a
 // negative generation is 400 GENERATION_INVALID and writes nothing.
 func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
@@ -219,6 +220,7 @@ func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
 // SHA-256 thumbprint, 43 base64url characters, or the route refuses it 400 THUMBPRINT_INVALID
 // and writes nothing; one of that shape is stored and answered back.
 func TestTheRegistrationRouteHoldsTheThumbprintsShape(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
@@ -323,6 +325,8 @@ func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]
 // as registered, naming the thumbprint and generation the registrar sent beside those stored, and
 // no key replaced, since there was none to replace.
 func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
+	// Serial: it swaps the default logger (newRegistrationRig's logtest.SetDefault) to read the
+	// registration's records back.
 	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rig := newRegistrationRig(t, "pod-uid-fresh")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -337,6 +341,8 @@ func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 // stored. A renewal naming the key the row holds, and a write naming no key, which keeps it,
 // replace nothing and name nothing replaced.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
+	// Serial: it swaps the default logger (newRegistrationRig's logtest.SetDefault) to read the
+	// registration's records back.
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -364,6 +370,8 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 // than the row's changes nothing, so it is not logged as registered: it logs a WARN line of its
 // own naming the thumbprint and generation it sent beside the row's, which it left as it was.
 func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
+	// Serial: it swaps the default logger (newRegistrationRig's logtest.SetDefault) to read the
+	// registration's records back.
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-late")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})

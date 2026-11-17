@@ -20,6 +20,8 @@ import (
 // one whose bucket never opened, which only wakes the retry and arms it (armRepairWithin) and
 // answers nil. The test holds repairMu as the retry's attempt would.
 func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
+	// Serial: its assertion is a time (Rewatch returns within 1 s of its run's 100 ms deadline,
+	// with the retry's lock held).
 	for _, tc := range []struct {
 		name string
 		// open is the store and the connection its Rewatch is handed.

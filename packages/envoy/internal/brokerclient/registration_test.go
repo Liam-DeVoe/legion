@@ -119,6 +119,7 @@ const unregisteredLogLine = "the secrets broker has no registration for this pod
 // loop trades again after each refusal, 15 s doubling to its 5-minute cap, hands its caller the
 // token the eighth trade lands, and logs the wait once, naming the session.
 func TestAPodTradesOnceItsSessionIsRegistered(t *testing.T) {
+	t.Parallel()
 	const refusals = 7
 	landed, err, trades, waits, records := waitForRegistration(t, refusals)
 	if err != nil || landed == nil || landed.AccessToken != landedToken {
@@ -157,6 +158,7 @@ func TestAPodTradesOnceItsSessionIsRegistered(t *testing.T) {
 // and again 30 minutes after that — three lines across seventeen refusals and 3765 s, rather than
 // one per trade or one for ever.
 func TestAnUnregisteredSessionIsLoggedAgainEveryHalfHour(t *testing.T) {
+	t.Parallel()
 	const refusals = 17
 	landed, err, _, waits, records := waitForRegistration(t, refusals)
 	if err != nil || landed == nil {
@@ -193,6 +195,7 @@ func waitedOf(record slog.Record) time.Duration {
 // error_description, and every other refusal reads as it did — the same words under another
 // code, the words anywhere but at the start, and every other refusal the broker answers.
 func TestEveryOtherRefusalStaysPermanent(t *testing.T) {
+	t.Parallel()
 	_, unregistered := unregisteredAnswer(registeredSession)
 	description := unregistered["error_description"].(string)
 	for _, tc := range []struct {

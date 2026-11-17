@@ -54,6 +54,8 @@ func (w *heldStopWatcher) Stop() error {
 // the run ends at the drop rather than at the request's own bound, and the stop goes on by itself.
 // A run that does not end waits for the stop, so a live Rewatch that returned has the previous
 // watcher stopped. Either way the replacement is the cache's watcher.
+//
+// Serial: its assertion is a time (the Rewatch returns within 1 s of its run ending).
 func TestAWatchsRunDoesNotWaitOutThePreviousWatchersDelete(t *testing.T) {
 	for _, tc := range []struct {
 		name string

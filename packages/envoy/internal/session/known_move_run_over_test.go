@@ -21,6 +21,7 @@ import (
 // store, arms the retry. The listener's hook reads the same rule for its WARN
 // (cmd/listener, TestTheKnownSessionHookLogsNothingForARunThatIsOver).
 func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// arrange puts the store's connection in the case's state and returns the move's context.

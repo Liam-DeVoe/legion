@@ -926,6 +926,7 @@ func TestAnUnregisteredPodOfTheSameAccountIsRefusedTheName(t *testing.T) {
 // for good. It names the session, and the same pod's next trade under that name, once its
 // deployment has registered it, is answered.
 func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
+	t.Parallel()
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role, uid = "implementer-g1", "pod-uid-early"
