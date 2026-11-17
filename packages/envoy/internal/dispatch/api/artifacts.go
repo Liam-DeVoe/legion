@@ -50,10 +50,6 @@ const (
 	maxNewArtifactKeyBytes = 2692
 )
 
-// artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
-
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -397,46 +393,6 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
-// writeDocumentVersion stores the document-version row uploads write directly, returning the same
-// decoded version the route returns to its caller. Uploads keep this separate from
-// docs.writeVersionTx because they own their artifact event and approval move. stamp is what the
-// markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this transaction's
-// own write left, so a text read of a document still standing there serves the stored markdown
-// rather than rendering the document again.
-func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, error) {
-	encodedAuthors, err := json.Marshal(authors)
-	if err != nil {
-		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
-	}
-	var version model.Version
-	var authorsRaw []byte
-	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
-		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
-		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
-			`+docs.RenderStampValues+`, $7, $8)
-		returning number, named, summary, authors, created_at, `+model.VersionSize+`
-	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
-		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
-	); err != nil {
-		return model.Version{}, fmt.Errorf("write document version: %w", err)
-	}
-	if err := json.Unmarshal(authorsRaw, &version.Authors); err != nil {
-		return model.Version{}, fmt.Errorf("decode document version authors: %w", err)
-	}
-	return version, nil
-}
-
-// recordDocumentTaskProgress records the task count of the document a write just stored.
-// readBack is the rendering that write stored, read back by its own parse (docs'
-// Ledger.ReadBackOf): the count reads that tree rather than parsing the same markdown again, and
-// parses markdown itself when the write left none.
-func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID string, readBack *pmdoc.Node, markdown string) error {
-	if readBack != nil {
-		return docs.RecordTaskProgress(ctx, tx, artifactID, readBack)
-	}
-	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
-}
-
 func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
@@ -484,7 +440,7 @@ func (s *server) storeArtifact(
 			return
 		}
 		project = &loaded.Key
-		if err := lockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
+		if err := docs.LockProjectArtifacts(r.Context(), tx, loaded.Key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -515,16 +471,10 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		actorJSON, err := encodeJSON(actor)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
-			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
-			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
-			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
+		artifact, err = docs.InsertArtifact(r.Context(), tx, docs.NewArtifact{
+			IssueKey: target.IssueKey, Project: project, Session: session, Slug: slug, Name: input.name,
+			Kind: kind, Role: role, CreatedBy: actor,
+		})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -585,42 +535,17 @@ func (s *server) storeArtifact(
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
-	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
+	// the same markdown again (docs.RecordWrittenTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
 	var movedEvents []model.Event
 	if kind == "doc" {
-		if created {
-			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
-		} else {
-			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor)
-		}
+		written, err := docs.WriteDocumentText(documentCtx, s.deps.Docs, artifact.ID, nextNumber, string(input.content), actor, documentSummary, created)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		// The version credits the uploader alone, and holds the upload's write to the document,
-		// which clears the credit of every edit that write read when it changed the document. It
-		// carries the markdown it stored, whose display tree the commit stores
-		// (Ledger.storeVersionTrees), since this route writes the row itself.
-		ledger.WroteVersion(artifact.ID, version, documentMarkdown)
-		documentReadBack = ledger.ReadBackOf(artifact.ID, documentMarkdown)
-		// The version row exists now, so the count names it (LEGION-542).
-		err = recordDocumentTaskProgress(r.Context(), tx, artifact.ID, documentReadBack, documentMarkdown)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+		documentMarkdown, version, documentReadBack, documentChanges = written.Markdown, written.Version, written.ReadBack, written.Changes
 	} else {
 		authors, err := encodeJSON([]model.Actor{actor})
 		if err != nil {
@@ -693,7 +618,7 @@ func (s *server) storeArtifact(
 	if created {
 		eventType = "artifact.created"
 		artifact.Versions = []model.Version{version}
-		payload = artifactCreatedEventPayload(artifact, documentChanges)
+		payload = docs.ArtifactCreatedEventPayload(artifact, documentChanges)
 	}
 	published := movedEvents
 	if target.ownsEvents() {
@@ -1420,7 +1345,7 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
 // sequential loader that every other route calls.
 const issueArtifactsStatement = `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts where issue_key = $1 order by created_at, id
 	`
 
@@ -1443,7 +1368,7 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 // keeps a non-nil empty list, which the response carries as [].
 func collectArtifacts(rows pgx.Rows) ([]model.Artifact, error) {
 	artifacts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) {
-		return scanArtifact(row)
+		return docs.ScanArtifact(row)
 	})
 	if err != nil {
 		return nil, err
@@ -1599,14 +1524,14 @@ func isArtifactNotFound(err error) bool {
 
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
-		select ` + artifactColumns + `
+		select ` + docs.ArtifactColumns + `
 		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
-			select ` + artifactColumns + `
+			select ` + docs.ArtifactColumns + `
 			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
@@ -1614,7 +1539,7 @@ func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target a
 		return nil, err
 	}
 	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (model.Artifact, error) {
-		return scanArtifact(row)
+		return docs.ScanArtifact(row)
 	})
 	if err != nil {
 		return nil, err
@@ -1795,7 +1720,7 @@ func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.
 
 func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
 	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where ref_key = $1
 	`, refKey))
 }
@@ -1820,7 +1745,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 // both reads of an artifact share: the one that goes on to carry the versions and the approval
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
-	artifact, err := scanArtifact(row)
+	artifact, err := docs.ScanArtifact(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
 	}
@@ -1842,27 +1767,9 @@ func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artif
 		return model.Artifact{}, err
 	}
 	return scanArtifactOrNotFound(q.QueryRow(ctx, `
-		select `+artifactColumns+`
+		select `+docs.ArtifactColumns+`
 		from artifacts where id = $1
 	`, parsed))
-}
-
-// scanArtifact reads artifactColumns. A session-owned artifact's project is "".
-func scanArtifact(row pgx.Row) (model.Artifact, error) {
-	var artifact model.Artifact
-	var project *string
-	var createdBy []byte
-	if err := row.Scan(
-		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
-	); err != nil {
-		return model.Artifact{}, err
-	}
-	artifact.Project = deref(project)
-	if err := json.Unmarshal(createdBy, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
-	}
-	return artifact, nil
 }
 
 // artifactOwnerKey is the owner part of ref_key (artifactTarget.refPrefix), which the 0071
@@ -1880,7 +1787,7 @@ const artifactOwnerKey = `coalesce(issue_key, project_key, 'agent/' || session_i
 // slug and another whose name it is, which uploads stored before this lookup read slugs) gets the
 // one whose slug it is, the one a read by that reference resolves to (resolveDocumentReference).
 const (
-	artifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where ` + artifactOwnerKey +
+	artifactByNameOrSlugSQL = `select ` + docs.ArtifactColumns + ` from artifacts where ` + artifactOwnerKey +
 		` = $1 and $2 in (name, slug) order by slug = $2 desc limit 1`
 	artifactSlugTakenSQL = `select exists(select 1 from artifacts where ` + artifactOwnerKey + ` = $1 and slug = $2)`
 )
@@ -1901,7 +1808,7 @@ func (s *server) findArtifactByNameOrSlug(ctx context.Context, q queryer, target
 // lookupArtifactByNameOrSlug reads the artifact name finds under target's owner, without its versions.
 func lookupArtifactByNameOrSlug(ctx context.Context, q queryer, target artifactTarget, name string) (model.Artifact, error) {
 	query, owner := target.ownerLookup(artifactByNameOrSlugSQL, agentArtifactByNameOrSlugSQL)
-	return scanArtifact(q.QueryRow(ctx, query, owner, name))
+	return docs.ScanArtifact(q.QueryRow(ctx, query, owner, name))
 }
 
 // versionColumns is the column list a version read selects over artifact_versions aliased v, in
@@ -2196,19 +2103,6 @@ func newArtifactKeyRefusal(target artifactTarget, slug string) error {
 		target.refPrefix(), key, maxNewArtifactKeyBytes)
 }
 
-// lockProjectArtifacts serialises one project's own uploads (its documents, not its issues') for
-// the rest of tx, as lockAgentArtifacts does a conversation's. A project's upload otherwise locks
-// no row before it looks its artifact up by name or slug and takes a new slug, so two uploads at
-// once - `plan.md` and `plan-md` - could each miss the other and leave two documents that one
-// reference names. Only these uploads take the lock, and they take it before any row or room, so
-// it joins no lock cycle.
-func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('project-artifacts:' || $1))`, project); err != nil {
-		return fmt.Errorf("lock the project's documents: %w", err)
-	}
-	return nil
-}
-
 // beginArtifactWrite opens the transaction a write to one artifact runs in: it reads the
 // artifact the request names, takes its owner's lock and reads the row again under that lock. It
 // is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
@@ -2257,7 +2151,7 @@ func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx
 		}
 	case artifact.Project != "":
 		target = artifactTarget{Project: artifact.Project}
-		if err := lockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
+		if err := docs.LockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
 			return refused(err)
 		}
 	}

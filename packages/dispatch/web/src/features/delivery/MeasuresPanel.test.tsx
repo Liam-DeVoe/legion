@@ -39,7 +39,8 @@ function fixtureDaily(): DeliveryDailyPoint[] {
 }
 
 /** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
- *  stored (the reference request recorded on the slice 2 pull request). */
+ *  stored (the reference request recorded on the slice 2 pull request): no failure source exists,
+ *  so the change failure rate is null and neither of its verdicts is reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -56,19 +57,7 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: 1260, p90_minutes: 2874, max_minutes: 4320 },
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
-    change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 14, rate: 0 },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 5,
-        rate: 0,
-        confirmed_or_pending: 0,
-        upper_bound_rate: 0,
-      },
-    },
+    change_failure_rate: null,
     time_to_restore: { median_minutes: null },
     rework_share: 0.2857142857142857,
     deploy_run_success: {
@@ -82,17 +71,17 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
   flags_source: "none",
   unowned_p0: [{ key: "ACME-103", title: "Production deploy gate flakes" }],
   targets: {
-    deploys_per_day: 20,
-    change_failure_rate: 0.05,
-    merge_to_production_minutes: 45,
-    opened_to_merge_median_minutes: 60,
-    deploy_run_success_rate: 0.9,
-    unowned_p0: 0,
+    deploys_per_day: { value: 20, inclusive: true },
+    change_failure_rate: { value: 0.05, inclusive: false },
+    merge_to_production_minutes: { value: 45, inclusive: false },
+    opened_to_merge_median_minutes: { value: 60, inclusive: false },
+    deploy_run_success_rate: { value: 0.9, inclusive: true },
+    unowned_p0: { value: 0, inclusive: true },
   },
   status: {
     deploys_per_day: false,
-    change_failure_rate: true,
-    change_failure_rate_upper_bound: true,
+    change_failure_rate: null,
+    change_failure_rate_upper_bound: null,
     merge_to_production_median: false,
     merge_to_production: false,
     opened_to_merge: false,
@@ -135,7 +124,11 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   expect(deploys.getByRole("img", { name: "per-day trend" })).toBeDefined();
 
   const cfr = within(card("Change failure rate"));
-  expect(cfr.getByText("0.00%")).toBeDefined();
+  expect(cfr.getByText("n/a")).toBeDefined();
+  expect(cfr.getByText("no data")).toBeDefined();
+  expect(cfr.queryByText("\u2713 met")).not.toBeInTheDocument();
+  expect(cfr.queryByText("\u2717 missed")).not.toBeInTheDocument();
+  expect(cfr.queryByText("confirmed")).not.toBeInTheDocument();
   expect(cfr.getByText("Flags arrive with flag confirmation")).toBeDefined();
   expect(cfr.queryByText(/if every pending flag is confirmed/)).not.toBeInTheDocument();
   expect(cfr.getByText("target < 5% per deploy")).toBeDefined();
@@ -171,13 +164,63 @@ test("met, missed and no-data badges follow the response's status", () => {
   });
   expect(within(card("Deploys a day")).getByText("\u2713 met")).toBeDefined();
   expect(within(card("Deploy runs reaching production")).getByText("no data")).toBeDefined();
-  expect(within(card("Change failure rate")).getByText("\u2713 met")).toBeDefined();
+  expect(within(card("Change failure rate")).getByText("no data")).toBeDefined();
+});
+
+test("each target reads as its eval holds it: its sign follows inclusive, and one turned off reads off", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...fixtureMeasures.targets,
+      deploys_per_day: { value: 4, inclusive: false },
+      merge_to_production_minutes: { value: 45, inclusive: true },
+      unowned_p0: { value: 0, inclusive: true },
+      deploy_run_success_rate: null,
+    },
+    status: { ...fixtureMeasures.status, deploy_run_success: null },
+  });
+  expect(within(card("Deploys a day")).getByText("target > 4/day")).toBeDefined();
+  expect(
+    within(card("Merge \u2192 production")).getByText("target \u2264 45m for every change")
+  ).toBeDefined();
+  // At most 0 unowned P0 issues is exactly 0, so the inclusive target reads as the value alone.
+  expect(within(card("P0 issues with no owner")).getByText("target 0")).toBeDefined();
+  const runs = within(card("Deploy runs reaching production"));
+  expect(runs.getByText("target off")).toBeDefined();
+  expect(runs.getByText("no data")).toBeDefined();
+});
+
+test("a lead-time card whose target is off reads off alone, with no verdict", () => {
+  renderPanel({
+    ...fixtureMeasures,
+    targets: {
+      ...fixtureMeasures.targets,
+      merge_to_production_minutes: null,
+      opened_to_merge_median_minutes: null,
+    },
+    status: {
+      ...fixtureMeasures.status,
+      merge_to_production: null,
+      merge_to_production_median: null,
+      opened_to_merge: null,
+    },
+  });
+  for (const title of ["Merge \u2192 production", "PR open \u2192 merge"]) {
+    const lead = within(card(title));
+    expect(lead.getByText("target off")).toBeDefined();
+    expect(lead.getByText("no data")).toBeDefined();
+  }
 });
 
 test("with stored flags the change failure rate card shows the upper bound and the breakdown", () => {
   renderPanel({
     ...fixtureMeasures,
     flags_source: "stored",
+    status: {
+      ...fixtureMeasures.status,
+      change_failure_rate: false,
+      change_failure_rate_upper_bound: false,
+    },
     measures: {
       ...fixtureMeasures.measures,
       change_failure_rate: {
@@ -197,6 +240,8 @@ test("with stored flags the change failure rate card shows the upper bound and t
   });
   const cfr = within(card("Change failure rate"));
   expect(cfr.getByText("40.00%", { selector: "span.text-lg" })).toBeDefined();
+  expect(cfr.getByText("\u2717 missed")).toBeDefined();
+  expect(cfr.getByText("confirmed")).toBeDefined();
   expect(
     cfr.getByText(
       (_, element) =>
@@ -229,7 +274,7 @@ test("the strip shows the five headline numbers", () => {
   for (const [value, label] of [
     ["0.17/day", "Deploy freq"],
     ["8.5h", "Lead time (merge\u2192prod)"],
-    ["0.0%", "CFR (per PR)"],
+    ["n/a", "CFR (per PR)"],
     ["n/a", "Time to restore"],
     ["28.6%", "Rework share"],
   ]) {
@@ -251,6 +296,10 @@ test("the definitions fold opens to the definition cards and the per-day table, 
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText("Lead time (first commit \u2192 prod)")).toBeDefined();
   expect(screen.getByText("23.0h")).toBeDefined();
+  const perPR = screen.getByText("Change failure rate (per PR)").parentElement;
+  expect(perPR?.textContent).toBe(
+    "Change failure rate (per PR)n/aNo failure source yet: flags arrive with flag confirmation. Incidents: no source yet."
+  );
   const table = screen.getByRole("table");
   const rows = within(table).getAllByRole("row");
   // A header row, then every one of the window's 29 days.

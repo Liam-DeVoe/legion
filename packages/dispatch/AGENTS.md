@@ -749,9 +749,11 @@ The configured page ports the prototype's timeline view (`dispatch://LEGION-567`
 
 The page's window is the header's `WindowControl` (`lib/window.ts` holds the presets, `readWindow` and the 84-day check): a rolling preset kept as `window=7d|14d|84d` (the 28-day default leaves the URL bare), or a custom range of whole UTC days kept as `from`/`to`, its exclusive `to` the midnight after its last day, a range over 84 days refused in the control with the limit stated. A preset is subscribed by its days (`liveWindow`), so Dispatch keeps its end at the present and the header names the range it resolved, the answer's `window`; a custom range is subscribed by its ends. Only the control writes the window, and each change clears the brush. The control stays mounted across a change of the window, which starts its draft (the custom range's dates and refusal) again from the new window during render rather than through a key, so a preset picked with an arrow key keeps the focus on the Window select; the header's **clear brush window** goes with the brush and hands its focus to that select (`useFocusPlace`, the line it sits in being its container). Session groups (`dispatch://LEGION-682`) are the server's: a pull request whose first session a group holds has `parent_agent` `group:<id>`, and the timeline carries `session_groups`, `session_titles` and `session_pr_counts`. `lib/parentAgent.ts`'s `parentAgentLabel` is the one place a Parent agent value turns into words (a group by its name, a placeholder in words, anything else as written), read by the facet, the lanes, the list and the drill-down; those values are not agents and stay text ("How an agent is shown", below). `SessionGroupsEditor` (the **Edit groups** at the foot of the filter panel, where it went once Parent agent became a column of its own, mounted only while open) creates, renames, adds to, removes from and deletes groups through `api.createDeliverySessionGroup`/`updateDeliverySessionGroup`/`deleteDeliverySessionGroup`, invalidates every `["delivery", …]` read that is not live on success (the live views hear of the edit from Dispatch), and shows a refusal as the server wrote it; every session it lists, and every session id the drill-down lists, is an `AgentName`, so a member no window pull request names first, having no stored title, reads by its registry title, else its short id. Coloured by Parent agent, the `Own colour and lane` picker writes repeatable `agents` parameters: `buildColorScale(counts, chosen)` gives the chosen values the palette in the order chosen and every other value `OTHER_COLOR`, and `foldLanes`' `chosen` gives each its own lane, never folded, and the rest one Other lane; with nothing chosen both behave as before.
 
-Above the timeline sits `features/delivery/MeasuresPanel.tsx`, the delivery prototype's `DoraPanel` ported as it is: six KPI cards, the headline strip, and a `Definitions & alternatives` fold holding the alternative definitions and a per-day table, newest first. Every number, target and met/missed verdict comes from the server; the panel computes nothing. The measures follow the page's window, search and facets, and a brush window (`ws`/`we`) as well, which the timeline's own view does not take. With no brush the panel shows the timeline answer's own `measures`, computed from the population that view already holds, so the page subscribes once; a brush subscribes a measures view of its own for the brush window (`deliveryMeasuresQuery`, `["delivery", "measures", <view>]`, the `GET /api/v1/delivery/measures` body), dropped when the brush clears. A brushed measures failure shows its own `QueryError` with Retry and leaves the timeline in place. The cards lay out by the panel's own width (Tailwind container queries), since the sidebar takes a share of the viewport that varies by breakpoint. The charts are `Sparkbars` and `SpreadBars`, which share one scale (`lib/barScale.ts`) and fill with the `chartBar` tokens in `theme/classes.ts`. `e2e/delivery-seed.ts` is the one fixture the timeline's and the measures' browser rows and the docs screenshot seed.
+Above the timeline sits `features/delivery/MeasuresPanel.tsx`, the delivery prototype's `DoraPanel` ported as it is: six KPI cards, the headline strip, and a `Definitions & alternatives` fold holding the alternative definitions and a per-day table, newest first. Every number, target and met/missed verdict comes from the server; the panel computes nothing. While no failure source exists (`flags_source: none`) the server answers the change failure rate as `null` and the time to restore with no median, with no verdict for either, so their cards and strip entries read `n/a` under a `no data` badge and the change-failure-rate card says that flags arrive with flag confirmation: a 0 there would be a measured value, and none was measured. The measures follow the page's window, search and facets, and a brush window (`ws`/`we`) as well, which the timeline's own view does not take. With no brush the panel shows the timeline answer's own `measures`, computed from the population that view already holds, so the page subscribes once; a brush subscribes a measures view of its own for the brush window (`deliveryMeasuresQuery`, `["delivery", "measures", <view>]`, the `GET /api/v1/delivery/measures` body), dropped when the brush clears. A brushed measures failure shows its own `QueryError` with Retry and leaves the timeline in place. The cards lay out by the panel's own width (Tailwind container queries), since the sidebar takes a share of the viewport that varies by breakpoint. The charts are `Sparkbars` and `SpreadBars`, which share one scale (`lib/barScale.ts`) and fill with the `chartBar` tokens in `theme/classes.ts`. `e2e/delivery-seed.ts` is the one fixture the timeline's and the measures' browser rows and the docs screenshot seed.
 
-`features/delivery/PipelinePage.tsx` is `/pipeline` (the sidebar's `Pipeline` row under Delivery), the delivery prototype's Pipeline page ported as it is: the header line naming the seven UTC days, six cards with their `data-metric` attributes, then the slowest-jobs and failed-in-24-hours tables (`data-section`, `data-job`, `data-failing-job`). The cards take the prototype's column counts at the prototype's content widths - one column, two from 46rem, six from 78rem, its `md:grid-cols-2 xl:grid-cols-6` less its page padding - measured on the page's own width (Tailwind container queries) rather than the viewport, as the measures panel's are, since beside the sidebar the viewport rule left six cards too little room for their figures. It is a live view on the same socket (`deliveryPipelineQuery`, `["delivery", "pipeline", {kind, at}]`, the `GET /api/v1/delivery/pipeline` body), and computes nothing but the two lead-time cards' met/missed badge (`data-target-met`), judged as the prototype judges it against the `targets` the response carries: merge to production on the seven days' longest change, PR open to merge on their median. A settings row naming no staging end-to-end or staging deploy job answers that card `null`, and the page omits it. `?at=` in the page's URL is the test and screenshot hook: the page forwards it in its view and never writes it, so a fixture dated in the past renders as today, and a failed job's age is measured from it. Unconfigured delivery (`DELIVERY_NOT_CONFIGURED`) links to `/delivery`, whose setup form configures both pages. `e2e/delivery-seed.ts`'s `seedPipelineFixture` (with `PIPELINE_AT`) seeds the browser rows (`e2e/pipeline.e2e.ts`), and its `seedPipelineRows` the docs screenshot beside the measures fixture.
+`features/delivery/PipelinePage.tsx` is `/pipeline` (the sidebar's `Pipeline` row under Delivery), the delivery prototype's Pipeline page ported as it is: the header line naming the seven UTC days, six cards with their `data-metric` attributes, then the slowest-jobs and failed-in-24-hours tables (`data-section`, `data-job`, `data-failing-job`). The cards take the prototype's column counts at the prototype's content widths - one column, two from 46rem, six from 78rem, its `md:grid-cols-2 xl:grid-cols-6` less its page padding - measured on the page's own width (Tailwind container queries) rather than the viewport, as the measures panel's are, since beside the sidebar the viewport rule left six cards too little room for their figures. It is a live view on the same socket (`deliveryPipelineQuery`, `["delivery", "pipeline", {kind, at}]`, the `GET /api/v1/delivery/pipeline` body), and judges nothing itself: the two lead-time cards' met/missed badge (`data-target-met`) is the response's `status` (`merge_to_production`, `opened_to_merge`), each card's eval's own verdict by its target and the figures it judges (`evals.VerdictOf`, `dispatch://INFRA-2916` R5), and none where a person turned that target off. The cards show the figures those evals judge until someone changes them - merge to production the seven days' longest change, PR open to merge their median - and colour a day's bars by the eval's own rule, its target's inclusiveness included (`lib/target.ts`'s `judgedBy`, which `SpreadBars` takes as `met`), the one comparison the page makes, since the response states no verdict of a day. The slowest-jobs sentence names the response's `pr_checks.slowest_min_results`, the min_n of the deploy repository's project's `pr-ci` job series (50 where there is none), and never fewer than one, since a job with no timed result has no median to rank by. A settings row naming no staging end-to-end or staging deploy job answers that card `null`, and the page omits it. `?at=` in the page's URL is the test and screenshot hook: the page forwards it in its view and never writes it, so a fixture dated in the past renders as today, and a failed job's age is measured from it. Unconfigured delivery (`DELIVERY_NOT_CONFIGURED`) links to `/delivery`, whose setup form configures both pages. `e2e/delivery-seed.ts`'s `seedPipelineFixture` (with `PIPELINE_AT`) seeds the browser rows (`e2e/pipeline.e2e.ts`), and its `seedPipelineRows` the docs screenshot beside the measures fixture.
+
+Settings' Legion section (`features/settings/LegionDaemonsSection.tsx`, heading `Legion`, after the Delivery timeline section) is where a project's Legion daemon is named: the one whose `GET /legion/v1/state` Dispatch's sampler reads. No route lists every project's daemon, so the section reads the project list and then each project's `GET /api/v1/projects/{key}/legion/daemon` (`features/legion/useLegionDaemons.ts`, `legionDaemonQuery`, `["legion-daemon", <key>]`, `null` for a project that names none), one cache entry per project, and a project whose read fails fails the list rather than dropping out of it. One row per project that names a daemon, with its state URL and when it last changed; a person names a project's daemon with the `Legion project` picker and the `Legion daemon state URL` field (`Save Legion daemon`, `PUT /api/v1/projects/{key}/legion/daemon` with `{state_url}`) and stops the reading with a row's Remove (`DELETE` of the same path), both optimistic on that project's `["legion-daemon", <key>]` and put back as the repository mappings are. The field refuses a URL the route would refuse, in the route's own words (`legionStateUrl` in `packages/envoy/internal/dispatch/api/settings_legion.go`: an absolute http(s) URL with a host and no path, carrying no user, password, query or fragment), and a refusal the server made shows under the form as the server wrote it. Both writes are `scopeDeployment`, so the controls are offered to any signed-in person (`useIsHuman`) and the server refuses the rest, as the Delivery settings and Live grants gate. `e2e/legion.e2e.ts` drives that path end to end. This pull request ships no page that draws a daemon's board; the board route and the `/ws/live` `legion` view it feeds serve a reader a later tree adds.
 
 The primary document's `Version`, `Name version`, connection dot, and block-link controls live at the end of the active Spec tab row; on phones they wrap below the tabs. `Conversation`, `Children`, and the artifact list do not render those primary-Spec controls. Every other document page (a project document, an issue's other documents) carries them in `ArtifactHeader`, where `Name version`, `Diff vs current` and the connection dot are one group that wraps as a unit: at 390 px the picker, `Name version` and the dot are wider than the header card, and the dot alone would otherwise wrap onto a line of its own.
 
@@ -1646,10 +1648,11 @@ prosemirror-tables patch, and the four for an empty last row fail without the pr
 `e2e/read-back.ts` reads a stored document back through Go and through the headless engine
 (`e2e/engine-reading.ts`, run with bun). Its `engineParagraphs` answers what a reader sees of each
 paragraph, which is `readDocument`'s own field: whitespace collapsed to one space and trimmed. What
-a `<br>` and a `hardbreak` each contribute to that text is
-`packages/proof-editor/src/document-reading.ts:15-16`; what that does to a reading is the stored
-reading of `pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces
-end the line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
+a `<br>` and a `hardbreak` each contribute to that text is the module comment of
+`packages/proof-editor/src/document-reading.ts`, where a walk over the nodes disagrees with the
+serializer; what that does to a reading is the stored reading of
+`pmdoc/testdata/corpus/softbreak.md`, which reads `two spaces aloneare` where two spaces end the
+line and `a backslash keeps` where a tab stands before the backslash. So a row holding Go's
 spelling of a body against the engine's, where the whitespace between its words is the point, reads
 the stored bytes or `engineTables` instead.
 
@@ -1701,10 +1704,11 @@ a `catch`, and a write still retrying after a file's last test, are reported all
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
-The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
-with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
-are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
-page carrying that header, none of them about projects.
+The project list is read by the sidebar wherever it is drawn (`Sidebar`'s `projectsQuery` read in
+`features/sidebar/Sidebar.tsx`, with no `enabled` guard) and by the issue header for every root
+issue, to learn which design steps are gated (`IssueHeader`'s, in
+`features/issue/IssueHeader.tsx`); removing its answer fails 36 rows, every one a page carrying
+that header, none of them about projects.
 The sidebar's other reads, the Inbox and the pinned issues, are not answered here: a test that
 draws the sidebar answers them itself.
 Every other route is the test's own to answer, and there are four seams for it, from the top
@@ -2130,7 +2134,9 @@ the default listing 3.59 seconds on its own and the wall-clock one 1.25.
 The file allows three minutes,
 which is a ceiling for something being wrong rather than a budget for a
 listing. A row may stand all the same as a named exemption
-with its reason, written in `e2e/no-browser-rows.ts`, whose list ships empty;
+with its reason, written in `e2e/no-browser-rows.ts`, whose list holds the two
+rows of `e2e/reset-unnamed-table.e2e.ts` and nothing else, since what those two
+read is the reset this suite runs between its own rows and no other layer runs;
 the check refuses a stale exemption too — one naming a row the suite no longer
 holds, or one that drives a browser now — so the rule cannot come to lie in the
 other direction either.
@@ -2481,13 +2487,14 @@ Two sets of rows take no part in it: the stubbed layer, which declares its `test
 (`POST /api/v1/artifacts/_test/quiesce`, mounted by `DISPATCH_TEST_HOOKS=1`), which closes every
 live document and waits for the settlements in flight, so the documents the previous scenario had
 open finish writing before the delete rather than failing against the emptied tables after it.
-It then empties, in one statement, only the tables that hold rows among the ones it names and
-every table whose foreign keys reach them, and restarts the identity sequences of the tables it
-emptied, which is what `TRUNCATE ... RESTART IDENTITY CASCADE` did for all of
-them; emptying the tables that held nothing was most of the old reset's 441 ms,
-against 49 ms for the reset as it stands. It also puts `alice`'s and `bob`'s
-`user_sessions` rows back at generation 0, so a worker mints their sign-in
-cookie once rather than once per row. The delete locks its tables one at a
+It then empties, in one statement, only the tables that hold rows among the ones it empties at
+all — every ordinary table of the `public` schema except the few `keptTables` names in
+`e2e/seed.ts`, each beside the reason it stays, a set the reset reads from `pg_class` each time
+it runs — and restarts the identity sequences of the tables it emptied, which is what
+`TRUNCATE ... RESTART IDENTITY CASCADE` did for all of them. Emptying the tables that held
+nothing was most of the old reset's 441 ms. It also puts `alice`'s and `bob`'s `user_sessions`
+rows back at generation 0, so a worker mints their sign-in cookie once rather than once per row.
+The delete locks its tables one at a
 time, in its own order, so a transaction that reads two of them in another order can close a cycle
 with it, and PostgreSQL aborts one side: a settlement (which locks its document's owner row and
 then reads `artifact_versions`), a request from a page an earlier scenario left open, or one of
@@ -2784,7 +2791,9 @@ run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--
 `applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
 /api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
 /api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
-routes for the last window it applied and writes whether the pull request ids, run ids and every
+routes for the last window it applied (an evals view's list route for the view's own window, a
+preset's days ending then, since the body's `window` is the whole UTC days that window touches and
+can be a day past the route's 84) and writes whether the pull request ids, run ids and every
 measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
@@ -3183,12 +3192,12 @@ see - a colour change confined to fewer than about 20 pixels - rather than a mar
 the widest token, which overstates it by three orders of magnitude.
 
 **A swatch and a class literal are many-to-one, so a control must move the literal the page
-actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
-`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
-mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
-control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
-told you nothing about the token, only about the string you edited. So never read a clean
-comparison as proof that a token is absent from a baseline.
+actually draws.** `SURFACE` is spelled by both `surfaceBg` and `card` (each in
+`web/src/theme/classes.ts`), the same two colours in two strings, and only `card` draws the
+Settings mappings table: a control on `surfaceBg` left both `settings` shots untouched where the
+`card` control reddened them. It is the `palette.ts` trap above in a second shape - a clean
+comparison told you nothing about the token, only about the string you edited. So never read a
+clean comparison as proof that a token is absent from a baseline.
 
 **A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
 gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
@@ -3373,6 +3382,13 @@ Nothing fails when a phone test lacks the tag: it silently drops out of
 and check that it is listed. `e2e/__tests__/row-configurations.test.ts` is the
 other half: it refuses a row that runs twice in one engine, viewport, origin
 and server-process count.
+
+`@phone` is not the suite's only tag.
+Every spec of `e2e/legion.e2e.ts` carries `@legion`, which no project greps:
+it is how a person runs the Settings page's Legion daemon field's browser work and nothing else,
+`bunx playwright test --config e2e/playwright.config.ts --grep @legion`.
+Tag a feature's specs that way when one file is that feature's whole
+browser coverage and a reader will want to run it alone.
 
 A retracted ask is withdrawn history: the Inbox and the open-ask badges drop it, and the margin folds it into the `Resolved (N)` toggle beside resolved comment threads. The Conversation lists it like every other conversation, under `All` and under `Closed`; the tab has no `Show retracted` or `Show activity` control of its own. Ask event payloads carry `options` as an array (the server never emits `null`), so the Activity tab and the margin's Pinned tab render `event.payload` as the `Ask` it is.
 

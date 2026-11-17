@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -37,8 +39,11 @@ func sessionActor(session string) string {
 
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use. Each project also names the seed's own person as its
-// default assignee, the column every project fills
+// carrying a repository of their own use. Each mapping's trigger logs a settings change under the
+// change log's lock, so the transaction takes that lock first, before any row lock, and writes each
+// mapping under a mapping write's locks, as the mapping routes do (delivery.LockRepoProjectWrite),
+// which take the change log's lock before any row of repo_projects. Each project also names the
+// seed's own person as its default assignee, the column every project fills
 // (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and that person
 // is written first as somebody who has signed in (0068_people): every write that stores a
 // default holds it to a people row (allowedLogin, internal/dispatch/api/issue_assignee.go), so
@@ -48,6 +53,10 @@ func sessionActor(session string) string {
 // address before the seed ran.
 func (r *seedRun) writeProjects(ctx context.Context) error {
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if err := delivery.LockChanges(ctx, tx); err != nil {
+			return err
+		}
+		broker := events.NewBroker()
 		if _, err := tx.Exec(ctx, `
 			insert into people (email, signed_in_at) values ($1, $2) on conflict (email) do nothing
 		`, seedAuthor.ID, baseTime); err != nil {
@@ -64,6 +73,9 @@ func (r *seedRun) writeProjects(ctx context.Context) error {
 				repo    string
 				primary bool
 			}{{project.Repo, true}, {project.OwnRepo, false}} {
+				if _, err := delivery.LockRepoProjectWrite(ctx, tx, broker, mapping.repo, project.Key); err != nil {
+					return fmt.Errorf("lock repo mapping %s: %w", mapping.repo, err)
+				}
 				if _, err := tx.Exec(ctx, `
 					insert into repo_projects (repo, project, created_by, created_at, is_default)
 					values ($1, $2, $3::jsonb, $4, $5)

@@ -374,6 +374,24 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	}
 }
 
+// SafeOrAwait is H as Safe reads it, or as Await takes it where Safe answers 0. A Safe of 0 is a
+// horizon that has proven nothing yet, which is every first pass of a process, since one snapshot
+// never proves its own newest id: a pass that reads the events up to H takes one this way rather
+// than read no event at all.
+func (h *Horizon) SafeOrAwait(ctx context.Context) (int64, error) {
+	safe, err := h.Safe(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read the event log's safe horizon: %w", err)
+	}
+	if safe > 0 {
+		return safe, nil
+	}
+	if safe, err = h.Await(ctx); err != nil {
+		return 0, fmt.Errorf("await the event log's safe horizon: %w", err)
+	}
+	return safe, nil
+}
+
 // Pending reports whether an observed id stands above H (a gap a reader must re-read for).
 func (h *Horizon) Pending() bool {
 	h.mu.Lock()
@@ -391,6 +409,27 @@ func (h *Horizon) Proven() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.safe
+}
+
+// HeldBack reports whether a reader that read the log up to safe, the H a Safe, Await or
+// SafeOrAwait of this Horizon answered it, may have left an event unread: one that committed
+// while a lower id was still open, which the reader's pages stopped below. Such a reader asks for
+// another pass a gap of its own away, because nothing announces the moment those open writes end
+// and H moves past the event: any transaction holding a transaction id on the instance holds H
+// back, most write no event, and the end of one wakes no pass, so the event would wait for an
+// unrelated wake. A gap rather than at once, so a horizon held back costs one pass per gap rather
+// than a loop re-reading as fast as it can. A pass that finds nothing new when it comes reads
+// nothing and writes nothing.
+//
+// Two answers say an id stands above safe, and the reader needs both: an observation having seen
+// an id above H (Pending), and H now proven past safe, which is what Pending reads as settled once
+// another reader of the one Horizon - the event relay, the delivery hub - proves that observation
+// while this reader's pages run. Without the second, a reader whose held-back ids another reader
+// proved meanwhile would ask for nothing and leave those events to the next wake.
+func (h *Horizon) HeldBack(safe int64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.newest > h.safe || h.safe > safe
 }
 
 // Mark is one observation of the event log that a reader keeps for itself: Newest, the newest id

@@ -90,10 +90,10 @@ newest day first; a day the window only partly covers is marked partial.
   the window.
 - **Change failure rate**: confirmed failed changes over deploys (and, in the fold, over pull
   requests). Only a flag the dora role holder has confirmed counts; pending flags are shown
-  separately, as the rate if every one were confirmed. Until flags are recorded the card says so,
-  and the rate is zero.
+  separately, as the rate if every one were confirmed. Until flags are recorded the card says so
+  and shows no rate and no verdict: a rate that measured nothing is not zero.
 - **Time to restore**: the median time from a broken pull request's deploy to its fix's deploy,
-  over confirmed flags.
+  over confirmed flags. Until flags are recorded it has no value.
 - **Rework share**: pull requests whose title starts with `fix`, `revert` or `hotfix`, over all
   pull requests merged in the window.
 - **Deploy runs reaching production**: runs that reached the production job, over runs that
@@ -104,32 +104,47 @@ newest day first; a day the window only partly covers is marked partial.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that
-shipped a pull request when it shipped any pull request merged in the window, whatever the filters.
+shipped a pull request when it is, for at least one pull request, the first production deploy that
+contains it, whenever that pull request merged and whatever the filters.
 
 ## The targets
 
-| Figure | Target |
-| --- | --- |
-| Deploys a day | at least 20 |
-| Change failure rate, per deploy | under 5% |
-| Merge → production, for every change | under 45 minutes |
-| Pull request open → merge, median | under 60 minutes |
-| Deploy runs reaching production | at least 90% |
-| P0 issues with no owner | 0 |
+Each target is the target of an eval of the project the deploy repository is mapped to
+(**Settings → Repositories → Projects**), so a change to that eval's target, or to whether the
+target itself counts as met, moves the card's verdict and its label. Until someone changes one,
+and where the deploy repository is mapped to no project or the project has no such eval yet, the
+targets are these:
 
-"Under" is met strictly below the target. "At least" is met at the target.
+| Figure | Eval | Target |
+| --- | --- | --- |
+| Deploys a day | `deploy-frequency` | at least 20 |
+| Change failure rate, per deploy | `change-fail-rate` | under 5% |
+| Merge → production, for every change | `merge-to-production` | under 45 minutes |
+| Pull request open → merge, median | `pr-open-to-merge` | under 60 minutes |
+| Deploy runs reaching production | `deploy-run-success` | at least 90% |
+| P0 issues with no owner | `unowned-p0` | 0 |
+
+"Under" is met strictly below the target. "At least" is met at the target. An eval whose target is
+off has a card with no target and no verdict.
 
 ## For agents
 
 `GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
-targets, whether each is met, and the unowned P0 issues. It takes the timeline's parameters:
-`from` and `to` (the last seven days when both are left out, at most 84 days apart), `q` for the
-search, and any filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. Any
-signed-in person or agent token reads it. `GET /api/v1/delivery/timeline` carries the same
+targets, whether each is met, and the unowned P0 issues. Each target is `{"value", "inclusive"}`,
+where `inclusive` says whether the value itself is met, or null when the eval's target is off; each
+verdict under `status` is true, false, or null when there is no target or nothing to judge. The
+verdicts are the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`. The
+route takes the timeline's parameters: `from` and `to` (the last seven days when both are left
+out, at most 84 days apart), `q` for the search, and any filter repeated for several values, such
+as `&repo=acme/widgets&priority=P0`. `from`, `to` and `q`, and the Pipeline route's `at`, take one
+value each, and a query naming one of them twice is `400 INVALID_QUERY`, as it is on the eval
+routes. Any signed-in person or agent token reads it.
+`GET /api/v1/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
 code, so they agree. `flags_source` says whether recorded flags fed the change failure rate;
-`none` means no flags are recorded yet.
+`none` means no flags are recorded yet, so `change_failure_rate` is null, `time_to_restore` has
+no median, and `status.change_failure_rate` and `status.change_failure_rate_upper_bound` are null.
 
 `GET /ws/live` is the one websocket each browser tab keeps open for all of its live views. A
 signed-in person or agent token may open it; only a person may subscribe to an agent conversation.
@@ -140,8 +155,12 @@ Every client message is one JSON object:
 ```
 
 `sub` identifies that subscription in every response. `unsubscribe` with the same `sub` ends it.
-A delivery view is `timeline` or `measures` with its window and GET-route query, or `pipeline`
-with optional `at`; it may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
+A delivery view is `timeline` or `measures` with its window and GET-route query; `pipeline` with
+an optional `at`; `legion` with the `project` whose Legion board it shows (the body
+of `GET /api/v1/projects/{key}/legion/board`) and nothing else; or `evals` with the `project`
+whose evals it shows, its window, and the query `GET /api/v1/projects/{key}/evals` would be sent
+without `from` and `to` (`compare_from` and `compare_to`, `repo`, `kind`, `limit`, `offset`). A
+delivery view may resume with `{"seq":"…","revs":{…}}`. An event-feed view is
 `{"kind":"events"}` and resumes with `{"since":"<event id>"}`. An agent view is
 `{"kind":"agent","session_id":"<uuid>"}` and never has a resume. A resume of the wrong shape, or
 any unknown member, is an `INVALID_FRAME` error.
@@ -150,17 +169,21 @@ Dispatch answers a delivery view with:
 
 - a `snapshot`: the matching GET route's body for the window resolved now, the change it reflects
   (`seq`), when that change was recorded (`changed_at`), and a revision for every key it holds;
-- then only `delta` frames: the pull requests, runs and session groups that changed (`items`,
-  each list's `upsert` and the ids it `remove`s), the map entries and counts that changed (`maps`
-  and `counts`, null for a key that left), and the fields replaced whole (`set`, which carries
-  `window` whenever it moved, never alone);
-- `freshness`, the whole freshness verdict - the `freshness` object the snapshot carries (the last
-  event, the last reconcile, its error and how many pull requests cannot be fetched) and the
+- then only `delta` frames: the list items that changed (`items`, each list's `upsert` and the ids
+  it `remove`s: the timeline's pull requests, runs and session groups, and an evals view's evals,
+  by eval id), the map entries and counts that changed (`maps` and `counts`, a legion view's
+  issues by key among the maps, null for a key that left), and the fields replaced whole (`set`,
+  which carries `window` whenever it moved, never alone);
+- `freshness`, the whole freshness verdict - the `freshness` object a timeline, measures or
+  pipeline snapshot carries (the last event, the last reconcile, its error and how many pull
+  requests cannot be fetched) and the
   `stale` source list - sent right after a subscription's first answer when Dispatch
   holds one, so a socket opened or resumed after the verdict changed still gets it, and to every
   subscriber whenever it changes;
 - `error`, with the code the matching GET route would answer (`INVALID_QUERY`,
-  `DELIVERY_NOT_CONFIGURED`) or `INVALID_FRAME`; and
+  `DELIVERY_NOT_CONFIGURED`; `LEGION_NOT_CONFIGURED` for a legion view of a project with no Legion
+  daemon, `PROJECT_NOT_FOUND` for an evals view of a project that does not exist) or
+  `INVALID_FRAME`; and
 - `heartbeat`, every 15 seconds. While nothing the view shows changes, the heartbeat is the only
   frame sent.
 
@@ -272,15 +295,26 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   branch, is not counted. The first two are optional settings; a pipeline that names neither has no
   such card.
 - **Merge to production**: the delivery lead time, by the day each pull request merged. A pull
-  request still waiting has none yet. It is judged on the seven days' longest change: the target
-  is under 45 minutes for every change.
+  request still waiting has none yet. It is met or missed as the `merge-to-production` eval judges
+  it, on the seven days' longest change and their median until someone changes that: under 45
+  minutes for every change.
 - **PR open to merge**: every merged pull request, deployed or not, by the day it merged. It is
-  judged on the seven days' median: the target is a median under 60 minutes.
+  met or missed as the `pr-open-to-merge` eval judges it, on the seven days' median until someone
+  changes that: a median under 60 minutes.
+
+The verdict on these two cards is the eval's own, judged by the same code as
+`GET /api/v1/projects/{key}/evals`. Each day's bar on them is green where that day meets the
+eval's target, the target's own value included where the eval counts it as met, and red where it
+does not.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
-and shows five. A job needs 50 timed results in the seven days to be ranked, so a rarely run job
-cannot top the table on a handful of results. Only jobs of runs that ended in success or failure
-are counted.
+and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely
+run job cannot top the table on a handful of results: the `min_n` of the `job:*` series of the
+`pr-ci` eval in the project the deploy repository is mapped to (**Settings → Repositories →
+Projects**), which is 50 until someone changes it, and 50 where the deploy repository is mapped
+to no project or that project has no `pr-ci` eval yet. The page says the number it ranked by. The
+`pr-ci` eval's items sorted by median list every job ranked the same way. Only jobs of runs that
+ended in success or failure are counted.
 
 **PR CI: jobs that failed in the last 24 hours** lists every job that failed in a run completed in
 the last day, most failures first, with how many of its results there failed and a link to the run
@@ -290,4 +324,6 @@ whenever any of them does, nor a notification or guard step.
 
 For agents, `GET /api/v1/delivery/pipeline` answers the same numbers. Its optional `at`
 (RFC 3339) names the day the seven days end on and the moment the failing jobs look back from;
-left out, it is now. Any signed-in person or agent token reads it.
+left out, it is now. `pr_checks.slowest_min_results` is the number of timed results a job needed
+to be ranked among the slowest, `targets` holds the same targets as the measures route, and
+`status` the verdicts of the two lead-time cards. Any signed-in person or agent token reads it.

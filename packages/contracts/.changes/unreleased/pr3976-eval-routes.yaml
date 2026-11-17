@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Dispatch API contract carries the eval routes' types (the list, detail, items, readings and
+  register bodies, `EvalListItem` and the `evals` live view). The delivery measures'
+  `change_failure_rate` is nullable: it is null while no failure source exists. Each of the
+  delivery `DeliveryTargets` is a `DeliveryTarget`, `{value, inclusive}`, or null where its eval's
+  target is off; every `DeliveryKpiStatus` field is nullable; and `DeliveryPipelineResponse`
+  carries `status`, a `DeliveryPipelineStatus` of its two lead-time cards' verdicts.

@@ -407,62 +407,64 @@ test("an error frame rejects the query with an ApiError carrying the code", asyn
   }
 });
 
-// While a release rolls out, the socket can reach a process of an older build that refuses a frame
-// this page sends. The page closes that socket and reconnects with the lost socket's backoff, as
-// each reconnect may reach another process, and the new socket subscribes again.
-test("an INVALID_FRAME for a subscription the page holds opens a new socket", async () => {
+// While a release rolls out, the socket can reach a process of an older build that refuses one view
+// this page subscribes with `INVALID_FRAME` — a view kind or a member it does not know. The refusal
+// is that view's alone: the socket stays open, and every view the process does serve is still
+// answered on it. The refused view is sent again on the page's next socket, here the one a rotation
+// opens, which can reach a process that serves it.
+test("an INVALID_FRAME fails that view alone: the socket stays, its other views answer, and the next socket sends it again", async () => {
   jest.useFakeTimers();
-  // Each reconnect waits a draw of its delay (`reconnectDelayMs`); pinned at 0.625, the first
-  // waits 1,250 ms of the 2 s spread and the second 1,625 ms of its 1 to 2 s.
-  const random = spyOn(Math, "random").mockReturnValue(0.625);
-  const { observer, unsubscribe } = observe();
+  const pipelineView: DeliveryLiveView = { kind: "pipeline" };
+  const pipelineKey = ["delivery", "pipeline", pipelineView] as const;
+  const timeline = observe();
+  const pipeline = observe(pipelineView, pipelineKey);
   try {
     const { socket, sub } = await opened();
-    socket.receive(snapshot(sub));
-    await settle();
-
+    const refused = socket.subscribed("pipeline").sub;
     socket.receive({
       type: "error",
-      sub,
+      sub: refused,
       code: "INVALID_FRAME",
-      message: "type must be subscribe or unsubscribe",
+      message: "this build does not serve that view",
     });
-    expect(socket.closedWith).toBe(4000);
-    expect(live.state().state).toBe("reconnecting");
-    // The page keeps the data it holds while it reconnects.
-    expect(queryClient.getQueryData<DeliveryTimelineWithMeasures>(key)).toEqual(body);
-    expect(sockets.sockets).toHaveLength(1);
-    jest.advanceTimersByTime(1_249);
-    expect(sockets.sockets).toHaveLength(1);
-    jest.advanceTimersByTime(1);
-    expect(sockets.sockets).toHaveLength(2);
-
-    const again = sockets.latest();
-    again.open();
-    expect(again.subscribed("timeline")).toMatchObject({ sub });
-    // A second refusal waits twice as long: the refusal did not reset the backoff.
-    again.receive({
-      type: "error",
-      sub,
-      code: "INVALID_FRAME",
-      message: "type must be subscribe or unsubscribe",
-    });
-    expect(again.closedWith).toBe(4000);
-    jest.advanceTimersByTime(1_624);
-    expect(sockets.sockets).toHaveLength(2);
-    jest.advanceTimersByTime(1);
-    expect(sockets.sockets).toHaveLength(3);
-
-    // The process the third socket reaches serves the subscription.
-    const served = sockets.latest();
-    served.open();
-    served.receive(snapshot(served.subscribed("timeline").sub, "42"));
     await settle();
+    const failed = pipeline.observer.getCurrentResult();
+    expect(failed.status).toBe("error");
+    expect(failed.error).toBeInstanceOf(ApiError);
+    expect((failed.error as ApiError).code).toBe("INVALID_FRAME");
+    expect(socket.closedWith).toBeUndefined();
     expect(live.state().state).toBe("open");
-    expect(observer.getCurrentResult().data).toEqual(body);
+
+    // The view the process serves is answered on the same socket.
+    socket.receive(snapshot(sub));
+    await settle();
+    expect(timeline.observer.getCurrentResult().status).toBe("success");
+    expect(timeline.observer.getCurrentResult().data).toEqual(body);
+    // And the page opens no other socket: a reconnect would have waited at most the first
+    // attempt's spread.
+    jest.advanceTimersByTime(RECONNECT_SPREAD_MS);
+    expect(sockets.sockets).toHaveLength(1);
+    expect(socket.closedWith).toBeUndefined();
+
+    // Dispatch rotates the socket: the next one sends the refused view again with the timeline's
+    // resume, and a process that serves the view answers it.
+    socket.drop(LIVE_SOCKET_MAX_AGE_CLOSE);
+    const next = sockets.latest();
+    expect(next).not.toBe(socket);
+    next.open();
+    expect(next.subscribed("pipeline")).toEqual({
+      type: "subscribe",
+      sub: refused,
+      view: pipelineView,
+    });
+    expect(next.subscribed("timeline")).toMatchObject({ sub, resume: { seq: "40" } });
+    next.receive(snapshot(refused, "42"));
+    await settle();
+    expect(pipeline.observer.getCurrentResult().status).toBe("success");
+    expect(pipeline.observer.getCurrentResult().data).toEqual(body);
   } finally {
-    random.mockRestore();
-    unsubscribe();
+    timeline.unsubscribe();
+    pipeline.unsubscribe();
   }
 });
 

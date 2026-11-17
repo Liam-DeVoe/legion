@@ -282,11 +282,14 @@ func TestMigrateCreatesEmptySchemaAndIsIdempotent(t *testing.T) {
 	// events_person_words_with_declines instead. Migration 20261114081436 drops
 	// message_deliveries_session_created, 0147's index over a session's sent message deliveries:
 	// the same read takes queued ones too and reads message_deliveries_session_taken instead.
+	// Migration 20261116151147 drops issue_facts_open, 20261111090000's index over the open
+	// Legion facts rows: the sweep that read those rows every half minute was its one read, and
+	// that migration's columns end the sweep.
 	assertDatabaseObjectsAbsent(t, ctx, store.Pool, `
 		select indexname
 		from pg_indexes
 		where schemaname = current_schema()
-	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created"})
+	`, []string{"asks_open_artifact", "events_person_words", "message_deliveries_session_created", "issue_facts_open"})
 	assertDatabaseObjects(t, ctx, store.Pool, `
 		select viewname
 		from pg_views

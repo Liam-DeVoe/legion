@@ -146,6 +146,13 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's evals and its `evals-md` (dispatch://INFRA-2916, R5) are written in the
+	// transaction that creates it, which the document service joins, so no reader ever sees the
+	// project without them and a refused create leaves neither. The seed's versions record their
+	// changes in the change log's outbox and take no lock (evals.Store.EnsureTx); Committed moves
+	// them into the log once the transaction has committed.
+	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
+	defer ledger.Discard()
 	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name, default_assignee) values ($1, $2, $3)
@@ -164,11 +171,17 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	seeded, err := s.registry().EnsureTx(documentCtx, tx, created.Key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(r.Context(), event)
+	seeded.Committed(r.Context())
 	WriteJSON(w, http.StatusCreated, created)
 }
 

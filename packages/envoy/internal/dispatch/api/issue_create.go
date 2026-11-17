@@ -332,7 +332,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
 	}
 	// The project row is locked from here; the mapping check takes its key-share lock only now, in
-	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
+	// the project-then-mapping order every mapping write follows (delivery.LockRepoProjectWrite).
 	if repo != nil {
 		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
 			s.writeHandlerError(w, err)
@@ -450,10 +450,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	ledger.WroteVersionText(artifactID, markdown)
 	// documentReadBack is the rendering the seed stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
-	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
+	// the same markdown again (docs.RecordWrittenTaskProgress, documentBlocksFor).
 	documentReadBack := ledger.ReadBackOf(artifactID, markdown)
 	// The version row exists now, so the count names it (LEGION-542).
-	err = recordDocumentTaskProgress(r.Context(), tx, artifactID, documentReadBack, markdown)
+	err = docs.RecordWrittenTaskProgress(r.Context(), tx, artifactID, documentReadBack, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

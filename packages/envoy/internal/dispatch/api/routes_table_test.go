@@ -127,6 +127,63 @@ func TestRouteIndexListsEveryRouteSortedByPathThenMethod(t *testing.T) {
 	}
 }
 
+// legionSegment is the path segment that tells the routes dispatch://INFRA-1077 adds from the
+// ones Dispatch already had. Main's committed index where this change forked from it (c5d96534,
+// testdata/routes.txt) holds no path with a `legion` segment, and every route this change adds
+// holds one, so a line of the index with that segment is this change's and every other line is a
+// route R26 of dispatch://INFRA-979/artifact/spec does not bind (the rest move in
+// dispatch://INFRA-2946).
+const legionSegment = "legion"
+
+// projectPathPrefix is where R26 addresses everything that belongs to one project.
+const projectPathPrefix = "/api/v1/projects/{key}/"
+
+// legionRoutesOutsideTheProjectPath names each line of a route index, as routeIndexGolden holds
+// them, that is this change's and is not under projectPathPrefix. R26 of
+// dispatch://INFRA-979/artifact/spec puts everything of one project under a project path and
+// permits no Legion route outside it, so there is nothing to allow: every such line is refused.
+// A line that is not `METHOD path auth` is named too, so an index this cannot read is never
+// passed for one with nothing to refuse.
+func legionRoutesOutsideTheProjectPath(index string) []string {
+	var refused []string
+	for _, line := range strings.Split(strings.TrimSuffix(index, "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 {
+			refused = append(refused, line+" (not `METHOD path auth`)")
+			continue
+		}
+		path := fields[1]
+		if !slices.Contains(strings.Split(path, "/"), legionSegment) || strings.HasPrefix(path, projectPathPrefix) {
+			continue
+		}
+		refused = append(refused, line)
+	}
+	return refused
+}
+
+// TestEveryLegionRouteIsUnderTheProjectPath reads the committed route index and refuses a route
+// this change adds that is not under /api/v1/projects/{key}/ (R26), with no allowance: everything
+// of one project is under its path. It is held first to the four routes R26 moved, so a rule that
+// stopped refusing them fails here rather than passing every index.
+func TestEveryLegionRouteIsUnderTheProjectPath(t *testing.T) {
+	moved := []string{
+		"GET /api/v1/settings/legion any",
+		"DELETE /api/v1/settings/legion/{project} any",
+		"PUT /api/v1/settings/legion/{project} any",
+		"GET /api/v1/legion/board any",
+	}
+	if refused := legionRoutesOutsideTheProjectPath(strings.Join(moved, "\n") + "\n"); !slices.Equal(refused, moved) {
+		t.Fatalf("the rule refuses %q of the routes R26 moved, want all four", refused)
+	}
+	index, err := os.ReadFile(routeIndexGolden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range legionRoutesOutsideTheProjectPath(string(index)) {
+		t.Errorf("%s: %s is a route this change adds outside %s", routeIndexGolden, line, projectPathPrefix)
+	}
+}
+
 // WriteRouteIndex is what `envoy-dispatch routes` prints and the docs site's API reference is
 // generated from: every row of the table, as GET /api/v1 serves it, and no test hook.
 func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {

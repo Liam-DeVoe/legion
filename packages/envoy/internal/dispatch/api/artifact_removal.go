@@ -195,8 +195,8 @@ func artifactIsUntouched(ctx context.Context, tx pgx.Tx, artifact model.Artifact
 		return artifactNotUntouched(artifact, "it holds no version at all")
 	}
 	// An edit that has not settled, in the durable terms a room is read by: a doc_updates row
-	// above the latest version's doc_update_version, the cursor writeDocumentVersion stamps
-	// (artifacts.go). A live room is not read, in either of the ways the rebuild route reads one
+	// above the latest version's doc_update_version, the cursor docs.WriteDocumentVersion stamps.
+	// A live room is not read, in either of the ways the rebuild route reads one
 	// (docs/rebuild.go): a removal from the document's own page always has its room open, and a
 	// room that is merely open stores no update. doc_settlements_pending and doc_pending_authors
 	// are no part of this either, for the same reason: a settlement pass that writes nothing may

@@ -428,10 +428,10 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 	}
 }
 
-// TestChangeSeqsFollowCommitOrder: a second writer's change waits on the trigger's advisory lock
-// until the first writer commits, so it cannot take a seq a reader could pass before the first
-// writer's lands.
-func TestChangeSeqsFollowCommitOrder(t *testing.T) {
+// TestADirectChangeWaitsForTheWriterBeforeItSoNoCursorSkipsIt: a second writer's change waits on
+// the change log's lock in its trigger until the first writer commits, so it cannot take a seq a
+// reader could pass before the first writer's lands: a reader's cursor never skips a change row.
+func TestADirectChangeWaitsForTheWriterBeforeItSoNoCursorSkipsIt(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	before := latestChange(t, ctx, pool)
 	insert := `

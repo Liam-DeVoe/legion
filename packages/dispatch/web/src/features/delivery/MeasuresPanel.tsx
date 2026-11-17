@@ -35,7 +35,8 @@ import {
   textPrimaryOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import { formatMinutes, pct } from "./lib/format";
+import { formatMinutes, NO_VALUE, pct } from "./lib/format";
+import { judgedBy, meetsTarget, targetLabel } from "./lib/target";
 import { Sparkbars } from "./Sparkbars";
 import { TargetBadge } from "./TargetBadge";
 
@@ -131,7 +132,14 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       label: "Lead time (merge\u2192prod)",
       value: show((d) => formatMinutes(d.measures.lead_time.merge_to_production.median_minutes)),
     },
-    { label: "CFR (per PR)", value: show((d) => pct(d.measures.change_failure_rate.per_pr.rate)) },
+    {
+      label: "CFR (per PR)",
+      value: show((d) =>
+        d.measures.change_failure_rate === null
+          ? NO_VALUE
+          : pct(d.measures.change_failure_rate.per_pr.rate)
+      ),
+    },
     {
       label: "Time to restore",
       value: show((d) => formatMinutes(d.measures.time_to_restore.median_minutes)),
@@ -151,7 +159,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
       >
         <KpiCard
           met={status?.deploys_per_day}
-          target={targets === undefined ? PENDING : `\u2265 ${targets.deploys_per_day}/day`}
+          target={
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.deploys_per_day, "higher", (v) => `${v}/day`)
+          }
           title="Deploys a day"
         >
           <div className="flex items-baseline gap-2">
@@ -167,14 +179,17 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
               format={(v) => `${v} deploys`}
-              max={targets.deploys_per_day}
-              met={(v) => v >= targets.deploys_per_day}
+              max={
+                targets.deploys_per_day?.value ??
+                Math.max(1, ...(measures.daily ?? []).map((d) => d.deploys))
+              }
+              met={judgedBy(targets.deploys_per_day, "higher")}
               points={(measures.daily ?? []).map((d) => ({
                 label: d.day,
                 value: d.deploys,
                 partial: d.partial,
               }))}
-              target={targets.deploys_per_day}
+              target={targets.deploys_per_day?.value}
             />
           )}
         </KpiCard>
@@ -182,18 +197,26 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <KpiCard
           met={status?.change_failure_rate}
           target={
-            targets === undefined ? PENDING : `< ${pct(targets.change_failure_rate, 0)} per deploy`
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.change_failure_rate, "lower", (v) => `${pct(v, 0)} per deploy`)
           }
           title="Change failure rate"
         >
           <div className="flex items-baseline gap-2">
             {/* Two decimals: 4.96% meets the target, 5.00% does not. */}
             <BigNumber className={toneOf((d) => d.status.change_failure_rate)}>
-              {show((d) => pct(d.measures.change_failure_rate.per_deploy.rate, 2))}
+              {show((d) =>
+                d.measures.change_failure_rate === null
+                  ? NO_VALUE
+                  : pct(d.measures.change_failure_rate.per_deploy.rate, 2)
+              )}
             </BigNumber>
-            <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            {measures?.change_failure_rate === null ? null : (
+              <span className={`text-xs ${textMutedOnSurface}`}>confirmed</span>
+            )}
           </div>
-          {data === undefined ? null : data.flags_source === "none" ? (
+          {data === undefined ? null : data.measures.change_failure_rate === null ? (
             <div className={`text-xs ${textMutedOnCanvas}`}>
               Flags arrive with flag confirmation
             </div>
@@ -223,7 +246,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           target={
             targets === undefined
               ? PENDING
-              : `< ${targets.merge_to_production_minutes}m for every change`
+              : targetLabel(
+                  targets.merge_to_production_minutes,
+                  "lower",
+                  (v) => `${v}m for every change`
+                )
           }
           title={"Merge \u2192 production"}
         >
@@ -251,7 +278,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <KpiCard
           met={status?.opened_to_merge}
           target={
-            targets === undefined ? PENDING : `median < ${targets.opened_to_merge_median_minutes}m`
+            targets === undefined
+              ? PENDING
+              : targets.opened_to_merge_median_minutes === null
+                ? "off"
+                : `median ${targetLabel(targets.opened_to_merge_median_minutes, "lower", (v) => `${v}m`)}`
           }
           title={"PR open \u2192 merge"}
         >
@@ -275,7 +306,9 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
         <KpiCard
           met={status?.deploy_run_success}
           target={
-            targets === undefined ? PENDING : `\u2265 ${pct(targets.deploy_run_success_rate, 0)}`
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.deploy_run_success_rate, "higher", (v) => pct(v, 0))
           }
           title="Deploy runs reaching production"
         >
@@ -283,7 +316,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
             <BigNumber className={toneOf((d) => d.status.deploy_run_success)}>
               {show((d) =>
                 d.measures.deploy_run_success.rate === null
-                  ? "n/a"
+                  ? NO_VALUE
                   : pct(d.measures.deploy_run_success.rate)
               )}
             </BigNumber>
@@ -299,13 +332,13 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
               <Sparkbars
                 format={pct}
                 max={1}
-                met={(v) => v >= targets.deploy_run_success_rate}
+                met={judgedBy(targets.deploy_run_success_rate, "higher")}
                 points={(measures.daily ?? []).map((d) => ({
                   label: d.day,
                   value: d.run_success_rate,
                   partial: d.partial,
                 }))}
-                target={targets.deploy_run_success_rate}
+                target={targets.deploy_run_success_rate?.value}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 {measures.deploy_run_success.cancelled} cancelled runs not counted
@@ -316,7 +349,11 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
 
         <KpiCard
           met={status?.unowned_p0}
-          target={targets === undefined ? PENDING : `${targets.unowned_p0}`}
+          target={
+            targets === undefined
+              ? PENDING
+              : targetLabel(targets.unowned_p0, "lower", (v) => `${v}`)
+          }
           title="P0 issues with no owner"
         >
           <div className="flex items-baseline gap-2">
@@ -397,8 +434,8 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
   const newestFirst = useMemo(() => [...(measures.daily ?? [])].reverse(), [measures.daily]);
   const frequency = measures.deploy_frequency;
   const lead = measures.lead_time;
-  const perPR = measures.change_failure_rate.per_pr;
-  const perDeploy = measures.change_failure_rate.per_deploy;
+  // Null while no failure source exists (flags_source `none`): a rate nothing measured is no 0.
+  const failures = measures.change_failure_rate;
   return (
     <>
       <div
@@ -431,15 +468,32 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
           p90 {formatMinutes(lead.opened_to_production.p90_minutes)}
         </DefinitionCard>
 
-        <DefinitionCard title="Change failure rate (per PR)" value={pct(perPR.rate)}>
-          {perPR.confirmed} confirmed ({perPR.reverts} reverts), {perPR.pending} pending,{" "}
-          {perPR.rejected} rejected of {perPR.total} PRs. Incidents: no source yet.
-        </DefinitionCard>
+        {failures === null ? (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation. Incidents: no source yet.
+            </DefinitionCard>
+            <DefinitionCard title="Change failure rate (per deploy)" value={NO_VALUE}>
+              No failure source yet: flags arrive with flag confirmation.
+            </DefinitionCard>
+          </>
+        ) : (
+          <>
+            <DefinitionCard title="Change failure rate (per PR)" value={pct(failures.per_pr.rate)}>
+              {failures.per_pr.confirmed} confirmed ({failures.per_pr.reverts} reverts),{" "}
+              {failures.per_pr.pending} pending, {failures.per_pr.rejected} rejected of{" "}
+              {failures.per_pr.total} PRs. Incidents: no source yet.
+            </DefinitionCard>
 
-        <DefinitionCard title="Change failure rate (per deploy)" value={pct(perDeploy.rate)}>
-          {perDeploy.confirmed} of {perDeploy.total} deploys; {pct(perDeploy.upper_bound_rate)} if
-          every pending flag is confirmed
-        </DefinitionCard>
+            <DefinitionCard
+              title="Change failure rate (per deploy)"
+              value={pct(failures.per_deploy.rate)}
+            >
+              {failures.per_deploy.confirmed} of {failures.per_deploy.total} deploys;{" "}
+              {pct(failures.per_deploy.upper_bound_rate)} if every pending flag is confirmed
+            </DefinitionCard>
+          </>
+        )}
 
         <DefinitionCard
           title="Time to restore"
@@ -480,7 +534,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                 </TableCell>
                 <TableCell
                   align="right"
-                  tone={dayTone(d.partial, d.deploys >= targets.deploys_per_day)}
+                  tone={dayTone(
+                    d.partial,
+                    meetsTarget(d.deploys, targets.deploys_per_day, "higher")
+                  )}
                 >
                   {d.deploys}
                 </TableCell>
@@ -492,10 +549,10 @@ function Definitions({ data }: { data: DeliveryMeasuresResponse }): ReactNode {
                     d.partial,
                     d.run_success_rate === null
                       ? null
-                      : d.run_success_rate >= targets.deploy_run_success_rate
+                      : meetsTarget(d.run_success_rate, targets.deploy_run_success_rate, "higher")
                   )}
                 >
-                  {d.run_success_rate === null ? "n/a" : pct(d.run_success_rate)}
+                  {d.run_success_rate === null ? NO_VALUE : pct(d.run_success_rate)}
                 </TableCell>
                 <TableCell align="right">{d.cancelled}</TableCell>
               </TableRow>

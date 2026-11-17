@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    Dispatch's `LegionBoardCard` carries no `checks_verdict`: the Legion daemon's state has no CI
+    verdict since cybermonklabs/legion#2539, so the card has none to show.
+time: 2026-11-13T10:45:57.000000000Z
+custom:
+    Issue: pr2731

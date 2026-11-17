@@ -741,6 +741,13 @@ Each item below names a task and where its code is, then notes on it.
 
   React SPA and native Dispatch server; `bun run dispatch:local` runs it here, seeded and signed in
 
+- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`, `evals.go`
+
+  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
+  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded and the stored per-issue Legion facts (`legionfacts/`).
+  `legion/metrics/` computes the Legion measures from the same records (`ReadProject` and `ReadIssues`, then each issue's facts and the folds of `folds.go`), and the Legion evals serve them: `GET /api/v1/projects/{key}/evals?kind=legion`, and `GET /api/v1/evals?kind=legion` across projects.
+  The web side is the Settings page's Legion section, where a person names a project's daemon (`packages/dispatch/web/src/features/settings/LegionDaemonsSection.tsx`, `features/legion/useLegionDaemons.ts`); no page draws the board
+
 - Dispatch's document editor — `packages/proof-editor/`
 
   The editor entry, typed blocks and block ids, source-only.
