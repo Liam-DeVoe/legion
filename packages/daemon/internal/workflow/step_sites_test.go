@@ -50,22 +50,30 @@ func stepChild(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, hol
 	return child
 }
 
-// move runs one transition of key on trigger (into target, for a backward move) through engine,
-// on the record as the store holds it, with handoff as the completion's row.
-func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow) {
+// onStored runs write in one transaction on key's record as the store holds it.
+func onStored(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
 	t.Helper()
 	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := engine.store.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
+		return write(ctx, tx, *issue)
+	})
+}
+
+// move runs one transition of key on trigger (into target, for a backward move) through engine,
+// on the record as the store holds it, with handoff as the completion's row.
+func move(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow) {
+	t.Helper()
+	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		pr, err := engine.store.PullRequest(ctx, tx, key)
 		if err != nil {
 			return err
 		}
 		// A move no completion records (a conflict, a backward move) says why, as the engine
 		// requires of its notice; the other moves carry the reason unread.
-		return engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, "the step test's move")
+		return engine.transition(ctx, tx, issue, trigger, target, handoff, pr, "the step test's move")
 	})
 }
 
@@ -203,16 +211,6 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 	stepChild(t, pool, "LEGION-209", phase.Testing, nil)
 	engine := stepEngine(nil)
 	move(t, pool, engine, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
-	inStore := func(key string, write func(ctx context.Context, tx pgx.Tx, issue record.Issue) error) {
-		t.Helper()
-		applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-			issue, err := engine.store.Issue(ctx, tx, key)
-			if err != nil {
-				return err
-			}
-			return write(ctx, tx, *issue)
-		})
-	}
 	endTwice := func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 		if err := engine.EndRunningStep(ctx, tx, issue); err != nil {
 			return err
@@ -220,8 +218,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 		return engine.EndRunningStep(ctx, tx, issue)
 	}
 	for _, key := range []string{"LEGION-208", "LEGION-209"} {
-		inStore(key, endTwice)
-		inStore(key, endTwice)
+		onStored(t, pool, engine, key, endTwice)
+		onStored(t, pool, engine, key, endTwice)
 	}
 	testingWrites := func(key string) (starts, ends []record.StepRecord) {
 		for _, w := range stepWrites(t, pool, key) {
@@ -247,8 +245,8 @@ func TestTwoEndsOfOneRunQueueOneRow(t *testing.T) {
 		}
 		return engine.StartStepRecord(ctx, tx, issue)
 	}
-	inStore("LEGION-208", startTwice)
-	inStore("LEGION-208", endTwice)
+	onStored(t, pool, engine, "LEGION-208", startTwice)
+	onStored(t, pool, engine, "LEGION-208", endTwice)
 	starts, ends := testingWrites("LEGION-208")
 	if len(starts) != 2 || len(ends) != 2 || starts[1].ID != StepID("LEGION-208", 1, "default", "step", 3, 2) || ends[1].ID != starts[1].ID {
 		t.Fatalf("a start after the end, a second start and two ends wrote starts %+v and ends %+v, want the second run's one start and one end", starts, ends)
@@ -375,16 +373,12 @@ func TestALingeringTreesMergeEndsTheMergeStep(t *testing.T) {
 	}
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestMerged, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
 		Branch: "legion/LEGION-209", HeadSHA: "head-43", MergeSHA: "merge-43", Failing: []string{}})
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		member, err := engine.store.Issue(ctx, tx, "LEGION-209")
-		if err != nil {
-			return err
-		}
+	onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, member record.Issue) error {
 		pr, err := engine.store.PullRequest(ctx, tx, "LEGION-209")
 		if err != nil {
 			return err
 		}
-		return engine.closeMergedTelling(ctx, tx, *member, pr)
+		return engine.closeMergedTelling(ctx, tx, member, pr)
 	})
 	var ends []record.StepRecord
 	for _, w := range stepWrites(t, pool, "LEGION-209") {
