@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -232,15 +231,6 @@ func TestARatingIsOneToFiveWithAReason(t *testing.T) {
 // HandoffCompleteRequest leaves a nil member out rather than writing it null. A refusal records
 // nothing, and the completion each case corrects to is taken.
 func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
-	post := func(t *testing.T, h *harness, grant, members string) *httptest.ResponseRecorder {
-		t.Helper()
-		encoded, err := json.Marshal(grant)
-		if err != nil {
-			t.Fatalf("encode the grant: %v", err)
-		}
-		return h.request(http.MethodPost, "/legion/v1/handoff/complete",
-			fmt.Sprintf(`{"grantId":%s,"summary":"done","verdict":"","commit":"c0ffee"%s}`, encoded, members), nil)
-	}
 	type rating struct {
 		rating *int
 		reason *string
@@ -259,7 +249,7 @@ func TestAnEmptyPlanReasonIsAReasonNamed(t *testing.T) {
 		if got := facts.recorded(); len(got) != 0 {
 			t.Fatalf("facts after the refusals = %#v, want none applied", got)
 		}
-		completion(t, post(t, h, merger.grant(t), `,"planRating":null,"planReason":null`))
+		completion(t, h.completeRaw(merger.grant(t), `,"summary":"done","commit":"c0ffee","planRating":null,"planReason":null`))
 		if fact := lastCompletion(t, facts); fact.PlanRating != nil {
 			t.Fatalf("the completion writing both members null was taken rated %+v, want no rating", *fact.PlanRating)
 		}

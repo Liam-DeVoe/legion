@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -147,12 +146,7 @@ func TestACompletionHidesNoNulBehindARepeatedMember(t *testing.T) {
 		{name: "summary", commit: "c0ffee02", members: `"summary":"retro\u0000 done","summary":null,"planRating":4,"planReason":"fit"`, place: "summary", at: 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			grant, err := json.Marshal(implementer.grant(t))
-			if err != nil {
-				t.Fatalf("encode the grant: %v", err)
-			}
-			body := fmt.Sprintf(`{"grantId":%s,"verdict":"","commit":%q,%s}`, grant, tc.commit, tc.members)
-			wantRefusal(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", body, nil), http.StatusBadRequest,
+			wantRefusal(t, h.completeRaw(implementer.grant(t), fmt.Sprintf(`,"commit":%q,%s`, tc.commit, tc.members)), http.StatusBadRequest,
 				"invalid request body: "+nulError(tc.place, tc.at))
 			if got := facts.recorded(); len(got) != 0 {
 				t.Fatalf("facts after the refusal = %#v, want none applied", got)

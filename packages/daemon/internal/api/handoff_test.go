@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -255,6 +256,18 @@ func seedApproval(t *testing.T, h *harness, key, head string) {
 func (h *harness) complete(req HandoffCompleteRequest) *httptest.ResponseRecorder {
 	h.t.Helper()
 	return h.request(http.MethodPost, "/legion/v1/handoff/complete", req, nil)
+}
+
+// completeRaw posts to the completion route the body `{"grantId":<grant>,"verdict":""<members>}`,
+// written by hand: members, which start with a comma, are what HandoffCompleteRequest cannot write,
+// a member null or written twice.
+func (h *harness) completeRaw(grant, members string) *httptest.ResponseRecorder {
+	h.t.Helper()
+	encoded, err := json.Marshal(grant)
+	if err != nil {
+		h.t.Fatalf("encode the grant: %v", err)
+	}
+	return h.request(http.MethodPost, "/legion/v1/handoff/complete", fmt.Sprintf(`{"grantId":%s,"verdict":""%s}`, encoded, members), nil)
 }
 
 // refused asserts recorder is the refusal status and code, and returns its sentence.
