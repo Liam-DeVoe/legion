@@ -141,9 +141,13 @@ type acceptingBus struct{}
 func (acceptingBus) EnsurePrivate(context.Context, access.Querier, string) error { return nil }
 
 // makePrivate makes project key private as its owner carol, through the write the visibility
-// route makes.
+// route makes, after the fill marker the switch requires: a deployment holding a private project
+// has filled session_projects, since the switch refuses until it has.
 func (s privateSeed) makePrivate(t *testing.T, key string) {
 	t.Helper()
+	if _, err := s.database.Pool.Exec(t.Context(), `insert into session_projects_filled select now() where not exists (select 1 from session_projects_filled)`); err != nil {
+		t.Fatalf("write the fill marker before making %s private: %v", key, err)
+	}
 	s.setVisibility(t, key, model.ProjectPrivate)
 }
 
