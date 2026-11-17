@@ -106,6 +106,12 @@ export interface DataTableOptions<Row> {
   /** Names the view the reader chose. Where it changes, the box goes back to its top and
    *  `ViewportAnchor` does not hold the row in hand: the reader moved, not the rows. */
   readonly viewKey: string;
+  /** How tall the caller draws each of its rows, where it draws every row at one height: what
+   *  the virtualizer counts a row it has not measured yet at, so the box scrolls the page's whole
+   *  height from the first draw and no row moves once it is measured. A table given none counts
+   *  an unmeasured row at 64 px until it is drawn. A group's heading is counted at 48 px either
+   *  way. */
+  readonly rowHeight?: number;
   /** The selected rows, by id. A table without it selects nothing; one with it selects leaf
    *  rows, never a group's heading. */
   readonly selection?: {
@@ -195,6 +201,7 @@ export function useDataTable<Row>({
   onGroupingChange,
   onPaginationChange,
   onSortingChange,
+  rowHeight = 64,
   rows,
   search,
   selection,
@@ -279,7 +286,7 @@ export function useDataTable<Row>({
   const virtualizer = useVirtualizer({
     count: displayRows.length,
     getScrollElement: () => layout.scrollRef.current,
-    estimateSize: (index) => (displayRows[index]?.row.getIsGrouped() ? 48 : 64),
+    estimateSize: (index) => (displayRows[index]?.row.getIsGrouped() ? 48 : rowHeight),
     getItemKey: (index) =>
       `${displayRows[index]?.continued ? "continued-" : ""}${displayRows[index]?.row.id}`,
     initialRect: { width: 1000, height: 600 },
@@ -381,6 +388,12 @@ export interface DataTableProps<Row> {
   readonly pager?: PagerOptions;
   /** Draws the filter in a header cell, for every column that filters. */
   readonly renderFilter?: ColumnFilterRenderer<Row>;
+  /** The column that takes what a box wider than the columns has to spare, and is never drawn
+   *  narrower than its own width: the rows then reach the box's right edge rather than stop
+   *  short of it. The Delivery list names its `title`, which took the rest of its rows before
+   *  they were drawn here. A caller that names none, or names a column that is hidden or
+   *  pinned, draws every column at its own width. */
+  readonly fillColumn?: string;
   /** The column whose header stacks its sort and its filter one above the other in a box under
    *  640 px, where the two side by side leave the name of a narrow column unreadable. The List,
    *  the priorities table and the Delivery list each name their `title`; a caller that names none
@@ -395,6 +408,7 @@ export interface DataTableProps<Row> {
  *  elsewhere, its filter, and the edge that resizes it. */
 function TableHeaderCell<TData>({
   dragColumn,
+  fills,
   header,
   openFilter,
   order,
@@ -405,6 +419,9 @@ function TableHeaderCell<TData>({
   stacked,
 }: {
   dragColumn: string | undefined;
+  /** Whether this column takes what the table has over the other columns' widths: the caller's
+   *  `fillColumn`. Its header names no width, and a fixed table gives such a column the rest. */
+  fills: boolean;
   header: Header<TData, unknown>;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
@@ -439,7 +456,7 @@ function TableHeaderCell<TData>({
         setDragColumn(undefined);
       }}
       style={{
-        width: header.getSize(),
+        width: fills ? undefined : header.getSize(),
         left: pinned ? column.getStart("left") : undefined,
       }}
     >
@@ -508,6 +525,7 @@ function TableHeaderCell<TData>({
  */
 export function DataTable<Row>({
   empty,
+  fillColumn,
   filterCounts,
   filterUnloaded,
   label,
@@ -531,6 +549,11 @@ export function DataTable<Row>({
   const [dragColumn, setDragColumn] = useState<string>();
   // The order a drop rewrites, read once rather than per header cell.
   const columnOrder = table.getAllLeafColumns().map((column) => column.id);
+  // The caller's `fillColumn`, where it is drawn and scrolls with the rest. A pinned column
+  // keeps its own width, because the pinned columns after it are held at the sum of theirs.
+  const filled = table
+    .getVisibleLeafColumns()
+    .some((column) => column.id === fillColumn && !column.getIsPinned());
   const virtualRows = virtualizer.getVirtualItems();
   // The space the rows above and below the drawn window would take.
   const first = virtualRows[0];
@@ -593,7 +616,12 @@ export function DataTable<Row>({
             aria-label={label}
             aria-rowcount={headerGroups.length + displayRows.length}
             className="table-fixed border-separate border-spacing-0 text-sm"
-            style={{ width: table.getTotalSize() + trailingWidth }}
+            // A table with a column to fill is at least as wide as the box, and the column takes
+            // what that is over the others' widths (`TableHeaderCell`'s `fills`).
+            style={{
+              minWidth: filled ? "100%" : undefined,
+              width: table.getTotalSize() + trailingWidth,
+            }}
           >
             <thead>
               {headerGroups.map((group, index) => (
@@ -601,6 +629,7 @@ export function DataTable<Row>({
                   {group.headers.map((header) => (
                     <TableHeaderCell
                       dragColumn={dragColumn}
+                      fills={filled && header.column.id === fillColumn}
                       header={header}
                       key={header.id}
                       openFilter={openFilter}

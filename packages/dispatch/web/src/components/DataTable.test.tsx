@@ -134,6 +134,7 @@ const NO_COUNTS: ReadonlyMap<string, number> = new Map();
 /** A caller of the core: it holds the view itself, as the issue table holds it in the URL. */
 function Deploys({
   columns = COLUMNS,
+  fillColumn,
   groupSlot,
   grouping: initialGrouping = [],
   groupOrder,
@@ -145,11 +146,14 @@ function Deploys({
   pageSize = 25,
   pager = DEPLOY_PAGER,
   renderFilter,
+  rowHeight,
   rows = DEPLOYS,
   stackColumn,
   trailingWidth,
 }: {
   columns?: ColumnDef<Deploy>[];
+  /** The column that takes what the box has over the others' widths. */
+  fillColumn?: string;
   /** What this caller draws beside a group's heading, in place of the count of its deploys. */
   groupSlot?: ReactNode;
   grouping?: GroupingState;
@@ -166,6 +170,8 @@ function Deploys({
   /** The line under the table; `null` draws a table with no pager at all. */
   pager?: PagerOptions | null;
   renderFilter?: ColumnFilterRenderer<Deploy>;
+  /** The one height this caller draws every row at. */
+  rowHeight?: number;
   rows?: Deploy[];
   stackColumn?: string;
   /** The width of the action cell each row draws after its columns. */
@@ -198,6 +204,7 @@ function Deploys({
     onGroupingChange: setGrouping,
     onPaginationChange: setPagination,
     onSortingChange: setSorting,
+    rowHeight,
     rows,
     state,
     viewKey: JSON.stringify(state),
@@ -206,6 +213,7 @@ function Deploys({
     <section aria-label={layoutKey}>
       <DataTable
         empty="No deploys match."
+        fillColumn={fillColumn}
         filterCounts={NO_COUNTS}
         label={`Deploys ${layoutKey}`}
         model={model}
@@ -655,6 +663,35 @@ test("the column the caller names stacks its controls in a box under 640 px", as
   expect(controls(/Minutes/)).not.toContain("flex-col");
 });
 
+// The caller that asked for it: the Delivery list, whose Title took what its box had over the
+// other columns before the list was drawn here, so its rows reach the box's right edge. The table
+// is at least as wide as the box, and the named column's header carries no width, which a fixed
+// table gives the rest. A pinned column keeps its own width, since the pinned ones after it are
+// held at the sum of theirs, and a table that names none draws every column at its own width.
+test("the column the caller names takes what the box has over the other columns' widths", async () => {
+  const widths = (table: HTMLElement) =>
+    within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.style.width);
+  draw(<Deploys fillColumn="service" />, 1400);
+
+  const filled = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(filled.style.minWidth).toBe("100%");
+  expect(widths(filled)).toEqual(["150px", "", "150px", "150px", "150px"]);
+
+  for (const restore of restores.splice(0)) restore();
+  draw(<Deploys fillColumn="service" layoutColumns={PINNED_LAYOUT} layoutKey="pinned" />, 1400);
+  const pinned = await screen.findByRole("table", { name: "Deploys pinned" });
+  expect(pinned.style.minWidth).toBe("");
+  expect(widths(pinned).slice(0, 2)).toEqual(["120px", "240px"]);
+
+  for (const restore of restores.splice(0)) restore();
+  draw(<Deploys />, 1400);
+  const plain = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(plain.style.minWidth).toBe("");
+  expect(widths(plain)).toEqual(["150px", "150px", "150px", "150px", "150px"]);
+});
+
 // The caller that asked for it: the project List's Start next, which sits in a last cell with no
 // header of its own, and the priorities page's row actions.
 test("a trailing action cell is drawn after the columns, under a head cell of its width", async () => {
@@ -1047,4 +1084,20 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
   expect(
     within(grouped).getByRole("button", { name: "Collapse us" }).closest("tr")
   ).toHaveAttribute("aria-rowindex", "2");
+});
+
+// The caller that asked for it: the Delivery list, whose every row is the 36 px it was before the
+// list was drawn here. A row the box has not drawn is counted at the caller's height rather than
+// guessed at, so the space under the drawn window is what the rows it stands for take, and the
+// box scrolls the whole list's height from the first draw.
+test("a table whose rows are all one height counts the rows it has not drawn at that height", async () => {
+  linesTall();
+  draw(<Deploys pageSize={100} pager={null} rowHeight={LINE_PX} rows={manyDeploys(60)} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  const drawn = listed(table).length;
+  expect(drawn).toBeLessThan(60);
+  expect(table.querySelector<HTMLElement>("tbody > tr[aria-hidden]:last-child")?.style.height).toBe(
+    `${(60 - drawn) * LINE_PX}px`
+  );
 });
