@@ -5,7 +5,12 @@ import { usersQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectTrigger, badgeSelectWrapper } from "./badge-select";
+import {
+  badgeReachHandlers,
+  badgeSelectBadge,
+  badgeSelectTrigger,
+  badgeSelectWrapper,
+} from "./badge-select";
 import { useIssueAssignee } from "./useIssueAssignee";
 
 /** The option that stands for nobody: the issue goes back to having no assignee. */
@@ -40,7 +45,6 @@ export function AssigneeControl({
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const users = useQuery({ ...usersQuery(), enabled: wanted });
-  const want = () => setWanted(true);
   const [open, setOpen] = useState(false);
   const write = useIssueAssignee(issueKey);
   const logins = (users.data ?? []).map((user) => user.login);
@@ -51,17 +55,9 @@ export function AssigneeControl({
   const tone = assignee === null ? badgeLow : badgePrimary;
   return (
     <>
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only keep a press on the trigger, or in the list it opens (portalled, but a React child of this one), out of the header under it, and read the people as the reader reaches for either, so the wrapper needs no role of its own. Every open panel reads a press in the capture phase (`AnchoredPanel`), so stopping it here hides it from none of them. */}
       <span
         className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}
-        onFocus={want}
-        onMouseDown={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        onPointerEnter={want}
-        onTouchStart={(event) => {
-          event.stopPropagation();
-          want();
-        }}
+        {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
           disabled={disabled}

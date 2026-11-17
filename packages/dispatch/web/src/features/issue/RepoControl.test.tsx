@@ -2,11 +2,10 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, openList, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary, RepoProject } from "../../api/types";
@@ -169,28 +168,11 @@ function renderControl(
   };
 }
 
+/** The control's name: its trigger's, and its listbox's with ` options` after it. */
+const REPOSITORY = "Repository of CORE-1";
+
 function trigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: "Repository of CORE-1" }) as HTMLButtonElement;
-}
-
-/** Opens the list from its trigger and hands back its listbox. The list is portalled to the
- *  body, outside the control's own container. */
-async function openList(user: UserEvent): Promise<HTMLElement> {
-  await user.click(trigger());
-  return screen.findByRole("listbox", { name: "Repository of CORE-1 options" });
-}
-
-/** The open list's rows, each as its whole text: the tick of the picked one, then its label. */
-function rows(list: HTMLElement): string[] {
-  return within(list)
-    .getAllByRole("option")
-    .map((option) => option.textContent ?? "");
-}
-
-/** Opens the list and picks the row named `name`, once the mappings are in it. */
-async function pick(user: UserEvent, name: string): Promise<void> {
-  const list = await openList(user);
-  await user.click(await within(list).findByRole("option", { name }));
+  return screen.getByRole("button", { name: REPOSITORY }) as HTMLButtonElement;
 }
 
 /** The visible badge; the trigger's description repeats its text in a span of its own. */
@@ -216,7 +198,7 @@ test("RepoControl lists the project's mapped repositories, shows the resolved on
     fireEvent.focus(trigger());
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalled());
     // Inherit first, then CORE's mappings sorted; OTHER's absent.
-    const list = await openList(user);
+    const list = await openList(user, REPOSITORY);
     await waitFor(() => expect(rows(list)).toEqual(["✓Inherit", "acme/gadgets", "acme/widgets"]));
     await user.click(within(list).getByRole("option", { name: "acme/gadgets" }));
     await waitFor(() =>
@@ -244,7 +226,7 @@ test("RepoControl sends null for Inherit", async () => {
   try {
     // The issue's own repository is selectable before the mapping list has loaded.
     expect(trigger()).toHaveAccessibleDescription("acme/gadgets");
-    await pick(user, "Inherit");
+    await pick(user, REPOSITORY, "Inherit");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
     );
@@ -324,7 +306,7 @@ test("RepoControl shows a failed mappings read with a retry instead of hiding th
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(listRepoProjects).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(trigger()).toBeTruthy());
-    expect(rows(await openList(user))).toHaveLength(3);
+    expect(rows(await openList(user, REPOSITORY))).toHaveLength(3);
     expect(
       screen.queryByText("Could not load the repositories mapped to CORE.")
     ).not.toBeInTheDocument();
@@ -361,7 +343,7 @@ test("RepoControl rolls back and shows the server's refusal", async () => {
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    await pick(user, "acme/gadgets");
+    await pick(user, REPOSITORY, "acme/gadgets");
     expect(
       await screen.findByText(
         "acme/gadgets is not mapped to project CORE (Settings → Repositories → Projects)"
@@ -443,7 +425,7 @@ test("the issue header's Repository list says the repositories could not be load
     failFirstRead: true,
   });
   try {
-    const list = await openList(user);
+    const list = await openList(user, REPOSITORY);
     const panel = list.parentElement as HTMLElement;
     expect(
       await within(panel).findByText("Could not load the repositories mapped to CORE.")

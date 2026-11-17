@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { panelOf } from "../__tests__/list-picks";
 import { type ListMarks, MultiSelect } from "./MultiSelect";
 
 function Host({ onCreate, options }: { onCreate?: (value: string) => void; options: string[] }) {
@@ -539,11 +540,11 @@ test("the trigger names the open list's panel, the host's marks are on the trigg
     expect(trigger).not.toHaveAttribute("aria-controls");
     await user.click(trigger);
     expect(trigger).toHaveFocus();
-    const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+    const panel = panelOf(trigger);
     const search = screen.getByRole("combobox", { name: "Search epics" });
     expect(search).toHaveAttribute("data-test-search", "");
-    expect(panel?.contains(search)).toBe(true);
-    expect(panel?.contains(screen.getByRole("listbox", { name: "Epic options" }))).toBe(true);
+    expect(panel.contains(search)).toBe(true);
+    expect(panel.contains(screen.getByRole("listbox", { name: "Epic options" }))).toBe(true);
   } finally {
     view.unmount();
   }

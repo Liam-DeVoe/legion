@@ -170,7 +170,7 @@ export function IssuePriorityLine({
             onOpenChange={setListOpen}
             onPick={setPicked}
             open={listOpen}
-            optionLabel={(id) => labels.get(id) ?? id}
+            optionLabel={(id) => labels.get(id)}
             options={choices.map((row) => row.id)}
             searchLabel="Search priorities"
             triggerClassName={`min-h-11 max-w-56 min-w-0 shrink-0 truncate rounded-lg px-2 py-1 text-left text-sm md:min-h-8 ${inputClasses(true)}`}

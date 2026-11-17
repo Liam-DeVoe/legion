@@ -8,7 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { CreateIssueInput, Issue, Project } from "../../api/types";
@@ -244,14 +244,6 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
   }
 });
 
-/** The panel of the list `trigger` opened: it is portalled to the body, outside the dialog, and
- *  found through the panel its trigger names (`aria-controls`). */
-function openedPanel(trigger: HTMLElement): HTMLElement {
-  const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
-  if (panel === null) throw new Error("the trigger names no open list");
-  return panel;
-}
-
 // INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
 // options." The Create issue dialog's Project is such a list: its options are every project,
 // which grow with the deployment. Opened inside the dialog, it holds a text box of its own, and a
@@ -300,7 +292,7 @@ test("the Create issue dialog's Project list holds a text box that narrows the p
     expect(closed).toBe(0);
 
     await view.user.click(trigger);
-    await view.user.click(within(openedPanel(trigger)).getByRole("option", { name: /^OPS\b/ }));
+    await view.user.click(within(panelOf(trigger)).getByRole("option", { name: /^OPS\b/ }));
     expect(trigger).toHaveFocus();
     expect(trigger).toHaveAccessibleDescription("OPS · Operations");
 
@@ -328,7 +320,7 @@ test("the Create issue dialog's Project list says its projects are loading, then
   try {
     const trigger = await screen.findByRole("button", { name: "Project" });
     await view.user.click(trigger);
-    const panel = openedPanel(trigger);
+    const panel = panelOf(trigger);
     expect(within(panel).getByRole("listbox")).toHaveTextContent("Loading projects…");
     expect(within(panel).queryByText("No projects yet")).toBeNull();
 

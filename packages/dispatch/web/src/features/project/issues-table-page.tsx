@@ -363,7 +363,7 @@ export function IssueTableSelection({
           if (!busy) setEpic(picked);
         }}
         open={picking}
-        optionLabel={(key) => epicTitles.get(key) ?? key}
+        optionLabel={(key) => epicTitles.get(key)}
         options={epics.map((option) => option.key)}
         searchLabel="Search epics"
         triggerClassName={`max-w-60 truncate rounded-lg border px-2 py-1 text-left refused:opacity-40 ${borderDefault} ${surfaceBg}`}

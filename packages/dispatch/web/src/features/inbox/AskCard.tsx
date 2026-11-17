@@ -52,7 +52,12 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectTrigger, badgeSelectWrapper } from "../issue/badge-select";
+import {
+  badgeReachHandlers,
+  badgeSelectBadge,
+  badgeSelectTrigger,
+  badgeSelectWrapper,
+} from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -233,7 +238,6 @@ function useFormRef(): [
 function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
-  const want = () => setWanted(true);
   const [open, setOpen] = useState(false);
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
@@ -244,9 +248,11 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     return () => onLive(ask.id, false);
   }, [ask.id, live, onLive]);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
-  // The list draws its options only while it stands open, which is after the reader reached for
-  // the control and the people were asked for.
-  const logins = (people.data ?? [])
+  // The people are listed only while the list stands open, which is after the reader reached for
+  // the control and they were asked for: the query keeps its people for the session, so a card
+  // that built its options from whatever another control had already fetched would map every
+  // signed-in person on every render of every open ask on the page.
+  const logins = (open ? (people.data ?? []) : [])
     .map((user) => user.login)
     .filter((login) => login !== assignee);
   // Whoever holds the ask stays in the list even where the people list does not carry them (it
@@ -266,18 +272,10 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     >
       {/* The wrapper is the tap target with the focus ring, and the badge inside it is the
           list's trigger. */}
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only keep a press on the trigger, or in the list it opens (portalled, but a React child of this one), out of the row or card under it, and read the people as the reader reaches for either, so the wrapper needs no role of its own. Every open panel reads a press in the capture phase (`AnchoredPanel`), so stopping it here hides it from none of them. */}
       <span
         className={badgeSelectWrapper}
         data-ask-hand-on={ask.id}
-        onFocus={want}
-        onMouseDown={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        onPointerEnter={want}
-        onTouchStart={(event) => {
-          event.stopPropagation();
-          want();
-        }}
+        {...badgeReachHandlers(() => setWanted(true))}
       >
         <MultiSelect
           emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
@@ -296,7 +294,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           // The server's own answer, `""` where it names nobody, which only a Dispatch older
           // than every project naming a default answers: no option is that value, and nobody is
           // no pick (the route takes a person's email and refuses anything else), but the badge
-          // still describes the trigger, as the select's disabled Nobody did.
+          // still describes the trigger.
           value={waitingOn}
         >
           <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>

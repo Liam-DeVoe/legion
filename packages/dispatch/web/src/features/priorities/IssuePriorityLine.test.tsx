@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
@@ -83,14 +83,6 @@ function renderLine(advances: Issue["advances"], closed = false) {
   };
 }
 
-/** The listbox of the list `trigger` opened. The list is portalled to the body, outside this
- *  render's container, so it is found through the panel its trigger names (`aria-controls`). */
-function openedList(trigger: HTMLElement): HTMLElement {
-  const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
-  if (panel === null) throw new Error("the trigger names no open list");
-  return within(panel).getByRole("listbox");
-}
-
 test("the line names the priority an issue advances, by its order and title, and links to its page", async () => {
   const view = renderLine([{ id: "rocq-lean", inherited: false }]);
   try {
@@ -148,7 +140,7 @@ test("the control adds a priority, writing the issue's own set as advances", asy
     await waitFor(() => expect(view.listPriorities).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(picker).toHaveTextContent("Choose a priority"));
     await user.click(picker);
-    const list = openedList(picker);
+    const list = within(panelOf(picker)).getByRole("listbox");
     // A priority the issue already advances is no choice; the rest are offered in rank order.
     expect(
       within(list)

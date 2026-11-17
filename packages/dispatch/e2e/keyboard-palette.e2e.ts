@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { issueListOf, openAgents, seedAgents, shownAgentRows } from "./agents";
+import { issueSearchIn, openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { expect, test } from "./test";
@@ -434,7 +434,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
 
     // The row lands in the Issue list exactly as `i` does, and the list's own rule holds: the
     // arrows only move the active issue, and Enter picks it and hands the reader to the composer.
-    const picker = issueListOf(row).getByRole("combobox", { name: "Issue" });
+    const picker = issueSearchIn(row);
     const toggle = row.getByRole("button", { name: "Choose issue" });
     await expect(picker).toBeFocused();
     await page.keyboard.press("ArrowDown");

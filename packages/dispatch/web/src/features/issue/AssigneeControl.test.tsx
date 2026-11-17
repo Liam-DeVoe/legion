@@ -2,11 +2,10 @@ import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, openList, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { projectDefaultAssigneesQuery } from "../../api/queries";
@@ -168,28 +167,11 @@ function renderControl() {
   };
 }
 
+/** The control's name: its trigger's, and its listbox's with ` options` after it. */
+const ASSIGNEE = "Assignee of CORE-1";
+
 function trigger(): HTMLButtonElement {
-  return screen.getByRole("button", { name: "Assignee of CORE-1" }) as HTMLButtonElement;
-}
-
-/** Opens the list from its trigger and hands back its listbox. The list is portalled to the
- *  body, outside the control's own container. */
-async function openList(user: UserEvent): Promise<HTMLElement> {
-  await user.click(trigger());
-  return screen.findByRole("listbox", { name: "Assignee of CORE-1 options" });
-}
-
-/** The open list's rows, each as its whole text: the tick of the picked one, then its label. */
-function rows(list: HTMLElement): string[] {
-  return within(list)
-    .getAllByRole("option")
-    .map((option) => option.textContent ?? "");
-}
-
-/** Opens the list and picks the row named `name`, once the people are in it. */
-async function pick(user: UserEvent, name: string): Promise<void> {
-  const list = await openList(user);
-  await user.click(await within(list).findByRole("option", { name }));
+  return screen.getByRole("button", { name: ASSIGNEE }) as HTMLButtonElement;
 }
 
 test("AssigneeControl reads who has signed in only once the reader reaches for it, then lists Unassigned first", async () => {
@@ -204,7 +186,7 @@ test("AssigneeControl reads who has signed in only once the reader reaches for i
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    const list = await openList(user);
+    const list = await openList(user, ASSIGNEE);
     await waitFor(() => expect(rows(list)).toEqual(["Unassigned", "✓alice", "bob"]));
     expect(listUsers).toHaveBeenCalledTimes(1);
   } finally {
@@ -218,7 +200,7 @@ test("AssigneeControl reassigns optimistically on every surface and merges the s
   const { queryClient, unmount, user } = renderControl();
   try {
     await user.hover(trigger());
-    await pick(user, "bob");
+    await pick(user, ASSIGNEE, "bob");
     await waitFor(() => expect(trigger()).toHaveAccessibleDescription("bob"));
     expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt);
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)?.[0]?.assignee).toBe("bob");
@@ -242,7 +224,7 @@ test("AssigneeControl sends null for Unassigned", async () => {
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    await pick(user, "Unassigned");
+    await pick(user, ASSIGNEE, "Unassigned");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
@@ -284,7 +266,7 @@ test.each([
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    await pick(user, "Unassigned");
+    await pick(user, ASSIGNEE, "Unassigned");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
     );
@@ -320,7 +302,7 @@ test("AssigneeControl rolls back and shows the server's refusal when the person 
   try {
     // A focus with no press before it: user-event has no form for a bare focus.
     fireEvent.focus(trigger());
-    await pick(user, "bob");
+    await pick(user, ASSIGNEE, "bob");
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent('"bob" has not signed in to Dispatch');
     expect(trigger()).toHaveAccessibleDescription("alice");
@@ -341,7 +323,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
   const { queryClient, unmount, user } = renderControl();
   try {
     trigger().focus();
-    await pick(user, "bob");
+    await pick(user, ASSIGNEE, "bob");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { assignee: "bob" }, keyedAttempt)
     );
@@ -349,7 +331,7 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     expect(trigger().disabled).toBe(false);
     expect(trigger()).toHaveFocus();
 
-    await pick(user, "Unassigned");
+    await pick(user, ASSIGNEE, "Unassigned");
     expect(trigger()).toHaveAccessibleDescription("Unassigned");
     expect(patchIssue).toHaveBeenCalledTimes(1);
     await act(async () => {
@@ -433,7 +415,7 @@ test("the issue header's Assignee list says the people could not be loaded when 
   const { listUsers, unmount, user } = renderControl();
   listUsers.mockRejectedValue(new Error("users unreachable"));
   try {
-    const list = await openList(user);
+    const list = await openList(user, ASSIGNEE);
     const panel = list.parentElement as HTMLElement;
     expect(await within(panel).findByText("Could not load the people list.")).toBeTruthy();
     expect(rows(list)).toEqual(["Unassigned", "✓alice"]);

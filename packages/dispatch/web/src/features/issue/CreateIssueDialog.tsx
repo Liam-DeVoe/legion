@@ -158,7 +158,7 @@ export function CreateIssueDialog({
               onOpenChange={setProjectListOpen}
               onPick={setProject}
               open={projectListOpen}
-              optionLabel={(key) => projectLabels.get(key) ?? key}
+              optionLabel={(key) => projectLabels.get(key)}
               options={available.map((candidate) => candidate.key)}
               searchLabel="Search projects"
               triggerClassName={`mt-1 block min-h-11 w-full truncate rounded-lg border px-3 py-2 text-left text-sm font-normal outline-none ${inputClasses(true)} ${textPrimaryOnSurface}`}

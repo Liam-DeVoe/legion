@@ -9,7 +9,7 @@ import { useAskSnooze } from "./useAskSnooze";
 
 /**
  * The per-row defer control. On an ordinary row it is the "Snooze" badge with the same
- * invisible native `<select>` the priority and assignee pickers use, so the menu is one tap on
+ * invisible native `<select>` over it that the priority editor uses, so the menu is one tap on
  * a phone and one keyboard interaction on a desktop; the picks are `snooze.ts`'s presets and
  * the moment is computed when the reader picks, not when the page rendered. On a row already
  * inside its window it is the return time and the one button that ends the snooze early -

@@ -14,7 +14,7 @@ import {
   agentRow,
   type FakeSession,
   getSentMessages,
-  issueListOf,
+  issueSearchIn,
   pickAgentFilter,
   plannerSession,
   reviewerSession,
@@ -57,10 +57,10 @@ import {
   setSignIns,
 } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
-import { control, controlRow, openFilterPanel } from "./filters";
+import { control, controlRow, displayChoice, openFilterPanel } from "./filters";
 import { nextFrames, settledScrollTop } from "./frames";
 import { drawer, peekTrigger, seedAsk } from "./inbox-drawer";
-import { openFilterFields } from "./inbox-filter";
+import { assigneeFilter, assigneeOptions, openFilterFields } from "./inbox-filter";
 import { askControls, hasReadingPane, inboxRow, selectedRow, selectRow } from "./inbox-pane";
 import {
   asSession,
@@ -2248,7 +2248,8 @@ async function seedKeptAgents(): Promise<string> {
   return issue.key;
 }
 
-/** Reads each of the four group headings' names and counts, in the order the page draws them. */
+/** Reads each group heading's name and count, finding each heading by its test id, in
+ *  `AGENT_GROUP_ORDER`. */
 async function expectAgentGroups(
   page: Page,
   headings: readonly [string, string, string, string],
@@ -2418,7 +2419,7 @@ test("the Agents page keeps every narrowing, grouping, count, key, pin and broad
   await page.keyboard.press("i");
   const picker = reviewer.getByRole("button", { name: "Choose issue" });
   await expect(picker, "the i key").toHaveAttribute("aria-expanded", "true");
-  await expect(issueListOf(reviewer).getByRole("combobox", { name: "Issue" })).toBeFocused();
+  await expect(issueSearchIn(reviewer)).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(picker, "the Escape key, out of the Issue list").toHaveAttribute(
     "aria-expanded",
@@ -2878,22 +2879,6 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   ).toContain(`/issues/${seed.rollout}`);
 });
 
-/** The ids a list inside `root` draws, top to bottom: the drawer's own, never the page's under it
- *  (`drawnIds` reads the page's). */
-function idsIn(root: Locator): Promise<string[]> {
-  return root
-    .locator("[data-inbox-row]")
-    .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
-}
-
-/** Every band heading a list inside `root` draws, top to bottom, with its count. */
-function bandsIn(root: Locator): Promise<string[]> {
-  return root
-    .getByTestId("inbox-list")
-    .locator("h2 button")
-    .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
-}
-
 /** Shuts the surface's display menu by pressing its trigger again. Escape would be the drawer's
  *  too once the focus has left the menu, and would shut the drawer with it. */
 async function shutDisplay(root: Locator): Promise<void> {
@@ -2974,7 +2959,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await page.keyboard.press("i");
   await expect(peek, "the i key").toBeVisible();
   await expect(listed).toHaveCount(alices.length);
-  expect((await idsIn(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(alices);
+  expect((await drawnIds(peek)).sort(), "the drawer as it opens, on the reader's own").toEqual(
+    alices
+  );
   await page.keyboard.press("Escape");
   await expect(peek, "the drawer's own Escape").toHaveCount(0);
   await peekTrigger(page).click();
@@ -2983,9 +2970,9 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // The assignee control, with the count beside each person, cleared to everyone.
   await openFilterPanel(page, peek);
-  const assignee = page.getByRole("button", { name: "Filter by assignee" });
+  const assignee = assigneeFilter(page);
   await assignee.click();
-  const people = page.getByRole("listbox", { name: "Assignee options" });
+  const people = assigneeOptions(page);
   await expect(
     people.getByRole("option", { exact: true, name: "bob, 1 rows" }),
     "the count beside a person"
@@ -3008,7 +2995,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     await pickInboxField(page, field, value, peek);
     const expected = idsOf(matches);
     await expect(listed, `the drawer's ${field} field`).toHaveCount(expected.length);
-    expect((await idsIn(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
+    expect((await drawnIds(peek)).sort(), `the drawer's ${field} field`).toEqual(expected);
     await expect(chips.filter({ hasText: chip }), `the ${field} field's chip`).toHaveCount(1);
     await chips.filter({ hasText: chip }).click();
     await expect(listed).toHaveCount(rows.length);
@@ -3032,24 +3019,19 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
 
   // The six sorts, under no banding, and the seven groupings.
   const assigneeOf = new Map(rows.map((row) => [row.id, row.assignee]));
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Group by" })
-    .locator('input[value="none"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Group by", "none").click();
   for (const sort of ["newest", "priority", "urgency", "type", "project", "assignee"] as const) {
     const menu = await openDisplay(page, peek);
-    await menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`).click();
-    await expect(
-      menu.getByRole("group", { name: "Sort by" }).locator(`input[value="${sort}"]`)
-    ).toBeChecked();
+    await displayChoice(menu, "Sort by", sort).click();
+    await expect(displayChoice(menu, "Sort by", sort)).toBeChecked();
     if (sort !== "assignee") {
       await expect
-        .poll(() => idsIn(peek), { message: `the drawer's ${sort} sort` })
+        .poll(() => drawnIds(peek), { message: `the drawer's ${sort} sort` })
         .toEqual(sortedIds(rows, sort, at));
       continue;
     }
     // Each person's rows together, the order of the people being the server's.
-    const runs = (await idsIn(peek))
+    const runs = (await drawnIds(peek))
       .map((id) => assigneeOf.get(id))
       .filter((person, index, all) => index === 0 || person !== all[index - 1]);
     expect(runs, "the drawer's assignee sort").toEqual([...new Set(runs)]);
@@ -3064,7 +3046,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     "none",
   ] as const) {
     const menu = await openDisplay(page, peek);
-    await menu.getByRole("group", { name: "Group by" }).locator(`input[value="${group}"]`).click();
+    await displayChoice(menu, "Group by", group).click();
     const expected =
       group === "none"
         ? []
@@ -3074,15 +3056,12 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
               (value) => `${bandLabel(group, value)} (${countsOf(rows, group).get(value)})`
             );
     await expect
-      .poll(() => bandsIn(peek), { message: `the drawer's ${group} grouping` })
+      .poll(() => bandHeadings(peek), { message: `the drawer's ${group} grouping` })
       .toEqual(expected);
   }
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Sort by" })
-    .locator('input[value="newest"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Sort by", "newest").click();
   await shutDisplay(peek);
-  await expect.poll(() => idsIn(peek)).toEqual(sortedIds(rows, "newest", at));
+  await expect.poll(() => drawnIds(peek)).toEqual(sortedIds(rows, "newest", at));
 
   // The keys over the rows: `f` and the Escape out of the box, `j`, `k` and the arrows.
   const order = sortedIds(rows, "newest", at);
@@ -3194,22 +3173,16 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     .toEqual([comment.id, message.id].sort());
 
   // The Dismissed view, and Move to Inbox from it.
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Show" })
-    .locator('input[value="dismissed"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Show", "dismissed").click();
   await shutDisplay(peek);
   await expect
-    .poll(async () => (await idsIn(peek)).sort(), { message: "the Dismissed view" })
+    .poll(async () => (await drawnIds(peek)).sort(), { message: "the Dismissed view" })
     .toEqual([comment.id, message.id].sort());
   await rowOf(comment.id).getByRole("checkbox").first().check();
   await bar.getByRole("button", { exact: true, name: "Move to Inbox selected threads" }).click();
   await expect(rowOf(comment.id), "Move to Inbox selected threads").toHaveCount(0);
   await expect.poll(dismissed, { message: "Move to Inbox" }).toEqual([message.id]);
-  await (await openDisplay(page, peek))
-    .getByRole("group", { name: "Show" })
-    .locator('input[value="inbox"]')
-    .click();
+  await displayChoice(await openDisplay(page, peek), "Show", "inbox").click();
   await shutDisplay(peek);
   await expect(rowOf(comment.id)).toHaveCount(1);
 
@@ -3233,7 +3206,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     ["Group by", "type"],
     ["Show", "dismissed"],
   ] as const) {
-    await menu.getByRole("group", { name: section }).locator(`input[value="${value}"]`).click();
+    await displayChoice(menu, section, value).click();
   }
   await shutDisplay(peek);
   await controlRow(peek).getByRole("button", { exact: true, name: "Clear filters" }).click();
@@ -3246,15 +3219,15 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
     ["Show", "dismissed"],
   ] as const) {
     await expect(
-      kept.getByRole("group", { name: section }).locator(`input[value="${value}"]`),
+      displayChoice(kept, section, value),
       `Clear filters took the ${section}`
     ).toBeChecked();
   }
 
   // The thread order and a folded band, stored for the reader and found again after a reload.
-  await kept.getByRole("group", { name: "Show" }).locator('input[value="inbox"]').click();
-  await kept.getByRole("group", { name: "Group by" }).locator('input[value="priority"]').click();
-  await kept.getByRole("group", { name: "Thread order" }).locator('input[value="newest"]').click();
+  await displayChoice(kept, "Show", "inbox").click();
+  await displayChoice(kept, "Group by", "priority").click();
+  await displayChoice(kept, "Thread order", "newest").click();
   await shutDisplay(peek);
   await search.fill("");
   const p0 = peek.getByTestId("inbox-list").locator("h2 button").filter({ hasText: /^P0 / });
@@ -3266,9 +3239,7 @@ test("the Inbox drawer keeps every field, sort, grouping, count, view, bulk acti
   await expect(listed.first()).toBeVisible();
   await expect(p0, "the folded band, after a reload").toHaveAttribute("aria-expanded", "false");
   await expect(
-    (await openDisplay(page, peek))
-      .getByRole("group", { name: "Thread order" })
-      .locator('input[value="newest"]'),
+    displayChoice(await openDisplay(page, peek), "Thread order", "newest"),
     "the thread order, after a reload"
   ).toBeChecked();
   await shutDisplay(peek);
@@ -3969,16 +3940,18 @@ test.describe("R8's rows and cards", () => {
       /** What one reading draws other than the base: the parts of each item, and each size within
        *  half a pixel, the rounding of a box's edge. */
       const differences = (drawn: readonly DrawnItem[], heights: readonly number[]): string[] => {
-        const found: string[] = [];
+        const differs: string[] = [];
         if (drawn.length !== base.length) {
-          found.push(`the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`);
+          differs.push(
+            `the ${name} draws ${drawn.length} ${noun}s, and ${base.length} at the base`
+          );
         }
         for (const [index, was] of base.entries()) {
           const item = drawn[index];
           if (item === undefined) continue;
           const at = `the ${name}'s ${noun} ${index + 1}`;
           if (item.parts !== was.parts) {
-            found.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
+            differs.push(`${at} draws ${item.parts}, and at the base ${was.parts}`);
           }
           const [height, width, listWidth] = was.box;
           const ruled = height === "lines";
@@ -3993,18 +3966,18 @@ test.describe("R8's rows and cards", () => {
             ["list's width", item.box[2], listWidth, "at the base"],
           ] as const) {
             if (!(Math.abs(now - then) <= 0.5)) {
-              found.push(
+              differs.push(
                 `${at}'s ${size} is ${now}px, and ${Math.round(then * 100) / 100}px ${from}`
               );
             }
           }
         }
-        return found;
+        return differs;
       };
       // An item's parts arrive in turns - the read state, the asks, the live link - so the list
       // is read again until it is what the base drew or the wait runs out, and what differs
-      // then is named below.
-      let found: string[] = [];
+      // then is named below; a list no read reached is named for that.
+      let found = [`the ${name} was never read`];
       await expect
         .poll(
           async () => {
@@ -4035,13 +4008,12 @@ test.describe("R8's rows and cards", () => {
             Math.round((wrapper.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
         )
     );
-    for (const [index, height] of askedOf.entries()) {
-      if (Math.abs(height - ASKED_OF_LINE) > 0.5) {
-        changed.push(
-          `the Inbox's ask card ${index + 1}'s "Asked of" line at 1024x768 is ${height}px, and ${ASKED_OF_LINE}px at the base`
-        );
-      }
-    }
+    /** Each line read at 1024x768: what it is, its height now, and its height at the base. */
+    const lines: [line: string, height: number, base: number][] = askedOf.map((height, index) => [
+      `the Inbox's ask card ${index + 1}'s "Asked of" line`,
+      height,
+      ASKED_OF_LINE,
+    ]);
 
     // The issue header's two badges, read once CORE maps a repository, so its rail draws one:
     // the Assignee's wrapper, the badge's own item in the wrapping row, and the `Repository:`
@@ -4056,9 +4028,9 @@ test.describe("R8's rows and cards", () => {
       repositoryControl,
       "the issue header draws no Repository at 1024x768"
     ).toBeVisible();
-    const badges = [
+    lines.push(
       [
-        "Assignee badge",
+        "the issue header's Assignee badge",
         await assigneeControl.evaluate(
           (control) =>
             Math.round((control.parentElement?.getBoundingClientRect().height ?? 0) * 100) / 100
@@ -4066,7 +4038,7 @@ test.describe("R8's rows and cards", () => {
         ASSIGNEE_BADGE,
       ],
       [
-        "`Repository:` line",
+        "the issue header's `Repository:` line",
         await repositoryControl.evaluate(
           (control) =>
             Math.round(
@@ -4074,13 +4046,11 @@ test.describe("R8's rows and cards", () => {
             ) / 100
         ),
         REPOSITORY_LINE,
-      ],
-    ] as const;
-    for (const [badge, height, atTheBase] of badges) {
-      if (Math.abs(height - atTheBase) > 0.5) {
-        changed.push(
-          `the issue header's ${badge} at 1024x768 is ${height}px, and ${atTheBase}px at the base`
-        );
+      ]
+    );
+    for (const [line, height, base] of lines) {
+      if (Math.abs(height - base) > 0.5) {
+        changed.push(`${line} at 1024x768 is ${height}px, and ${base}px at the base`);
       }
     }
     expect(
@@ -5638,13 +5608,16 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 
 // SLOW(>=2s): fourteen lists on seven pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// Each list a reader picks one value from is the single-pick mode of the shared list
-// (`components/MultiSelect.tsx`): the search bar's Project and Status, the List's Move to epic, an
-// epic's Merge into another epic, the Inbox's Hand this question to (`AskHandOn`), the Agents
-// composer's Issue, the Spec tab's Version (`SpecToolbar`), a document page's Version
-// (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue header's Assignee
-// (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance (`IssuePriorityLine`),
-// and the Create issue dialog's Project (`CreateIssueDialog`). At each width each list is
+// The row covers the fourteen single picks of the shared list (`components/MultiSelect.tsx`), the
+// lists whose options grow with the project among them: the search bar's Project and Status, the
+// List's Move to epic, an epic's Merge into another epic, the Inbox's Hand this question to
+// (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`), a document
+// page's Version (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue
+// header's Assignee (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance
+// (`IssuePriorityLine`), and the Create issue dialog's Project (`CreateIssueDialog`). The short
+// fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
+// the issue header's Status and the Agents page's Delivery mode - stay native selects by the
+// architect's ruling of 2026-11-17, and the row opens none of them. At each width each list is
 // opened from its trigger: exactly one text box is in the list's own panel, a typed word leaves
 // only the options it matches, Escape picks nothing and changes no value, Tab out of the text box
 // (Shift+Tab at the second width) picks nothing and leaves the reader on the trigger, and Enter

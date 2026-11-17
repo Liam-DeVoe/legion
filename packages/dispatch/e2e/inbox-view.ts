@@ -345,16 +345,18 @@ export function sortedIds(
     .map((row) => row.id);
 }
 
-/** The ids the list is drawing, top to bottom. */
-export async function drawnIds(page: Page): Promise<string[]> {
-  return page
+/** The ids the list inside `within` is drawing, top to bottom: the page's, or a drawer's own,
+ *  never the page's under it. */
+export async function drawnIds(within: Page | Locator): Promise<string[]> {
+  return within
     .locator("[data-inbox-row]")
     .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-row") ?? ""));
 }
 
-/** Every band heading the list is drawing, top to bottom, with its count. */
-export async function bandHeadings(page: Page): Promise<string[]> {
-  return inboxList(page)
+/** Every band heading the list inside `within` - the page, or a drawer - is drawing, top to
+ *  bottom, with its count. */
+export async function bandHeadings(within: Page | Locator): Promise<string[]> {
+  return inboxList(within)
     .locator("h2 button")
     .evaluateAll((nodes) => nodes.map((node) => (node.textContent ?? "").trim()));
 }

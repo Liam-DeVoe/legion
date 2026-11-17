@@ -5,7 +5,12 @@ import { api, apiErrorMessage } from "../../api/client";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectRailTrigger, badgeSelectRailWrapper } from "./badge-select";
+import {
+  badgeReachHandlers,
+  badgeSelectBadge,
+  badgeSelectRailTrigger,
+  badgeSelectRailWrapper,
+} from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
 
 /** The option that clears the issue's own repository, so it resolves to its nearest ancestor's,
@@ -51,7 +56,6 @@ export function RepoControl({
     queryKey: ["repo-projects"],
     queryFn: () => api.listRepoProjects(),
   });
-  const want = () => setWanted(true);
   const [open, setOpen] = useState(false);
   const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
@@ -86,17 +90,9 @@ export function RepoControl({
   // Nothing resolved and no list to pick from: the failure is all there is to show.
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
-      // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only keep a press on the trigger, or in the list it opens (portalled, but a React child of this one), out of the header under it, and read the mappings as the reader reaches for either, so the wrapper needs no role of its own. Every open panel reads a press in the capture phase (`AnchoredPanel`), so stopping it here hides it from none of them.
       <span
         className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
-        onFocus={want}
-        onMouseDown={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        onPointerEnter={want}
-        onTouchStart={(event) => {
-          event.stopPropagation();
-          want();
-        }}
+        {...badgeReachHandlers(() => setWanted(true))}
         title={
           repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
         }

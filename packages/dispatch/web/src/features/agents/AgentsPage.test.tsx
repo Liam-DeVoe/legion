@@ -12,7 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
-import { listOf, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, textBoxes } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -1215,10 +1215,7 @@ const coreIssue: IssueSummary = {
 /** The Issue list a card's own trigger opened, portalled out of the card: the panel the trigger
  *  names in `aria-controls`. */
 function issueList(agentCard: HTMLElement): HTMLElement {
-  const trigger = within(agentCard).getByRole("button", { hidden: true, name: "Choose issue" });
-  const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
-  if (panel === null) throw new Error("the card's Issue list is not open");
-  return panel;
+  return panelOf(within(agentCard).getByRole("button", { hidden: true, name: "Choose issue" }));
 }
 
 test("Agents keeps selected-issue sends on the issue message route", async () => {

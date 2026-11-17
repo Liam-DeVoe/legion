@@ -1,3 +1,5 @@
+import type { SyntheticEvent } from "react";
+
 import { hasFocusVisibleRing } from "../../theme/classes";
 
 const badgeSelectFrame = "relative inline-flex min-h-11 shrink-0 items-center rounded-sm";
@@ -32,3 +34,23 @@ export const badgeSelectTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-1.5`
  *  from `md`: there the 44 px trigger overhangs it by 8 px above and below, so the rail's line is
  *  the 28 px it was when a native select lay over the badge. */
 export const badgeSelectRailTrigger = `${badgeSelectTriggerFrame} md:max-xl:-my-2`;
+
+/** The handlers a badge-select wrapper spreads when its list reads its options only once the
+ *  reader reaches for it (the assignee, the repository, an ask card's hand-on): a press on the
+ *  trigger, or in the list it opens (portalled, but a React child of the wrapper), is kept out
+ *  of the row, card or header under it, and the pointer over the wrapper, a touch on it or the
+ *  focus in it calls `want`, which starts that read. Nothing here makes the wrapper interactive,
+ *  so it needs no role of its own; and every open panel reads a press in the capture phase
+ *  (`AnchoredPanel`), so stopping it here hides it from none of them. */
+export function badgeReachHandlers(want: () => void) {
+  return {
+    onFocus: want,
+    onMouseDown: (event: SyntheticEvent) => event.stopPropagation(),
+    onPointerDown: (event: SyntheticEvent) => event.stopPropagation(),
+    onPointerEnter: want,
+    onTouchStart: (event: SyntheticEvent) => {
+      event.stopPropagation();
+      want();
+    },
+  };
+}

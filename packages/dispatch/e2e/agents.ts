@@ -401,6 +401,12 @@ export function issueListOf(row: Locator): Locator {
   return row.locator("xpath=id(.//*[@data-agent-issue-picker]/@aria-controls)");
 }
 
+/** The text box of a row's open Issue list, which narrows its issues and takes the arrows and
+ *  Enter: found through `issueListOf`, so while the list is shut this finds nothing. */
+export function issueSearchIn(row: Locator): Locator {
+  return issueListOf(row).getByRole("combobox", { name: "Issue" });
+}
+
 /** The option of a row's open Issue list that picks `key`: an issue's key (its row reads
  *  `CORE-1 · <title>`, or `CORE-1 (closed)`), or `""` for `No issue`. */
 export function issueOption(row: Locator, key: string): Locator {
