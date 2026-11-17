@@ -63,6 +63,10 @@ import { type IssueHeaderWrites, useIssueHeaderWrites } from "./useIssueHeaderWr
 
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
+/** The page's words the labels control and the components picker are named from inside
+ *  `NoTooltips` (`labelsControlName`, `componentsControlName`). */
+const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
+
 /** Details as the details slot draws it (`slots/details.tsx`), alone and inside `NoTooltips`:
  *  the panel over its own set of the issue's writes, on the cached issue, so a write's landing
  *  is what the panel draws next. `beside` is drawn above it, over writes of its own. `drawer` is
@@ -1002,7 +1006,13 @@ test("removing the last label draws Add, whose Labels the row's control now answ
     await user.keyboard("{Escape}");
     await waitFor(() => expect(patched.length).toBeGreaterThan(0));
     expect(
-      await screen.findByRole("button", { name: labelsControlName([], "CORE-1", CONTROL_LABELS) }),
+      await screen.findByRole("button", {
+        name: labelsControlName("CORE-1", {
+          labels: [],
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
+      }),
       "the label was not removed"
     ).toBeInTheDocument();
     await waitFor(() =>
@@ -1302,7 +1312,13 @@ test("the Labels row of an issue with no label draws its name one time", async (
     const row = await waitFor(() => rowAt("labels"));
     expect(row).toHaveTextContent(CONTROL_LABELS.none);
     expect(
-      within(row).getByRole("button", { name: labelsControlName([], "CORE-1", CONTROL_LABELS) }),
+      within(row).getByRole("button", {
+        name: labelsControlName("CORE-1", {
+          labels: [],
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
+      }),
       "the Labels row of an issue with no label draws no Edit labels"
     ).toBeEnabled();
     expect(
@@ -1352,7 +1368,7 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
 
   try {
     const control = within(await waitFor(() => rowAt("labels"))).getByRole("button", {
-      name: labelsControlName([], "CORE-1", CONTROL_LABELS),
+      name: labelsControlName("CORE-1", { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
     });
     expect(control).toHaveAttribute("aria-expanded", "false");
 
@@ -1408,13 +1424,21 @@ test("while the labels are saving, the key l finds the labels control by the nam
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const savingName = labelsControlName([], "CORE-1", CONTROL_LABELS, ANSWER_LINES);
+  const savingName = labelsControlName("CORE-1", {
+    labels: [],
+    saving: true,
+    words: CONTROL_NAME_WORDS,
+  });
 
   try {
     const row = await waitFor(() => rowAt("labels"));
     await user.click(
       within(row).getByRole("button", {
-        name: labelsControlName(["bug"], "CORE-1", CONTROL_LABELS),
+        name: labelsControlName("CORE-1", {
+          labels: ["bug"],
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
       })
     );
     await user.click(await screen.findByRole("option", { name: "bug" }));
@@ -1475,7 +1499,8 @@ test("on an issue with no component, the Add menu's Components reaches the picke
     const picker = await screen.findByRole("button", {
       name: componentsControlName("CORE-1", {
         components: issue.components,
-        controlLabels: CONTROL_LABELS,
+        saving: false,
+        words: CONTROL_NAME_WORDS,
       }),
     });
     expect(picker).toHaveAttribute("aria-expanded", "false");

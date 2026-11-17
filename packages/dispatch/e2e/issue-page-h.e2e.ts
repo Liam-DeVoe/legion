@@ -5,7 +5,11 @@ import {
   MARGIN_SECTION_ORDER,
   PROPERTY_LABELS,
 } from "../web/src/features/issue-page/page-structure";
-import { CONTROL_LABELS, PROGRESS_NOUNS } from "../web/src/features/issue-page/page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  PROGRESS_NOUNS,
+} from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
 import { getIssue, patchIssue, putRepoProject } from "./api";
@@ -78,6 +82,10 @@ const ONE_DEVELOPMENT_ROWS = [
 
 /** The tags `e2e/accessibility.e2e.ts` holds the dashboard to. */
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"];
+
+/** The page's words the labels control is named from inside `NoTooltips`
+ *  (`labelsControlName`). */
+const CONTROL_NAME_WORDS = { ANSWER_LINES, CONTROL_LABELS };
 
 /** The page's ink, the grey of a link's underline, as the prototype's `.lnk` draws them, and
  *  the quieter grey of a row's name. */
@@ -249,7 +257,11 @@ test("Details opens on the properties and holds no conversation @phone", async (
         "an element of Details carries a title"
       ).toHaveCount(0);
       const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-        name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
+        name: labelsControlName(one, {
+          labels: TWENTY_LABELS,
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
       });
       await editLabels.click();
       await expect(page.getByRole("combobox", { name: "Search or create label" })).toBeVisible();
@@ -775,7 +787,11 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // (8) The labels: one removed and one added, then `l` from a closed Details.
     await reopen(one);
     const editLabels = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-      name: labelsControlName(TWENTY_LABELS, one, CONTROL_LABELS),
+      name: labelsControlName(one, {
+        labels: TWENTY_LABELS,
+        saving: false,
+        words: CONTROL_NAME_WORDS,
+      }),
     });
     await expect(editLabels, "Details draws no Edit labels").toBeVisible();
     await editLabels.click();
@@ -805,7 +821,11 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // read first, and only then whether Details is open on it.
     await expect(
       detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-        name: labelsControlName(relabelled, one, CONTROL_LABELS),
+        name: labelsControlName(one, {
+          labels: relabelled,
+          saving: false,
+          words: CONTROL_NAME_WORDS,
+        }),
       }),
       "l did not open Details at Edit labels"
     ).toHaveAttribute("aria-expanded", "true");
@@ -1053,7 +1073,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     // TWO has no label, so its control is named for adding one.
     await expect(
       detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
-        name: labelsControlName([], two, CONTROL_LABELS),
+        name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
       }),
       "a closed issue's labels can be edited"
     ).toBeDisabled();
