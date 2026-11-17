@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, renderHook, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -32,6 +32,7 @@ import { RepoControl, repoControlName } from "../issue/RepoControl";
 import { issue as marginIssue } from "../margin/margin-fixture";
 import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { issueStatuses } from "../project/board-model";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { writesOf } from "../writes/write-store";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
@@ -51,6 +52,11 @@ import { issueUpdateLabel, statusPickOnly, useIssueHeaderWrites } from "./useIss
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+
+// A document's approval reason comes with its reading (`doc`), which the engine makes.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 function narrowIssue(details: IssueDetails): Issue {
