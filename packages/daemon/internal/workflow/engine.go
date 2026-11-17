@@ -815,7 +815,9 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
-	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
+	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase),
+	// and the handoff it names is the report of the run of its step the move ended
+	// (reportEndedStep).
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
 	// issue has moved on without, the phase that role has left.
 	reported := phase.Of(fact.Role, issue.Phase)
@@ -881,7 +883,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	if !current {
-		return intake.Result{}, nil
+		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
 	}
 	switch issue.Phase {
 	case phase.Planning:

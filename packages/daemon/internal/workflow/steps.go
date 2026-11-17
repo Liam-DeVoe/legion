@@ -193,6 +193,31 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 	return e.enqueue(ctx, tx, before.Key, write)
 }
 
+// reportEndedStep writes report, the handoff a role's completion of at named, onto the record of
+// the run of at's step that ended before that completion landed: a review the review event moved
+// on, whose end the transition wrote with no report, since the reviewer had not completed yet. A
+// record's report is the handoff the ending role's completion named, whichever of the two lands
+// first. The run is the latest of at's place, ended, since the issue has left at and no start of
+// it came since (handoff's current). The write carries the run's identity and the report alone,
+// and Dispatch writes each field once, so it and the end merge in either order
+// (record.StepRecord). A completion that names no handoff writes nothing, and neither does a
+// place whose latest run is not marked ended (record.RunEnded) — none ran, one is open, or one an
+// earlier release started after a rollback, whose record this release has not written — nor a
+// record key that is no issue key.
+func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, report string) error {
+	place, role, typ, ok := stepOf(at)
+	if !ok || report == "" || !recordsSteps(issue) {
+		return nil
+	}
+	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	if err != nil || latest.Run != record.RunEnded {
+		return err
+	}
+	write := stepWrite(issue, place, role, typ, latest.Agent, latest.Starts)
+	write.Report = new(report)
+	return e.enqueue(ctx, tx, issue.Key, write)
+}
+
 // recordsSteps says whether issue's steps are recorded: its key is an issue key, which every key
 // Dispatch gives is, and so names claims (claim.NewToken) and an issue the route can hold. The
 // record has keys that are none only where a test wrote them, and those have no claims either,
