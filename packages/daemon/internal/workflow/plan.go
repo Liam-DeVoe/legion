@@ -182,7 +182,7 @@ func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.P
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskWaiting}
-	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
+	return version, []record.PlanTask{task}, record.NameAgents(nil, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps))
 }
 
 // planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
@@ -633,6 +633,21 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 	}
 
 	version, tasks, steps := givenRows(fact, stored, changed, e.cfg.DefaultSteps, e.now())
+	// Each step is named before anything is written, from every row of the issue as it stands now,
+	// since PutPlan deletes the steps of each task it gives: so a key keeps its name, and a version
+	// that would need a second agent of one role is refused as a plan, never by the write.
+	earlier, err := e.store.PlanStepsOf(ctx, tx, fact.Issue)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	steps = record.NameAgents(earlier, steps)
+	if unnamed := record.UnnamedAgents(steps); len(unnamed) > 0 {
+		reasons := make([]plan.Refusal, len(unnamed))
+		for i, step := range unnamed {
+			reasons[i] = intake.AgentUnnamed(step.Task, step.Position, string(record.RoleName(step.Role)))
+		}
+		return refuse(intake.PlanRefused(reasons))
+	}
 	var removed, stopped []string
 	if stored != nil {
 		for _, task := range stored.Tasks {
