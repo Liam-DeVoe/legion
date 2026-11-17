@@ -854,8 +854,9 @@ func TestAnApprovalStandsOnlyForTheHeadItNames(t *testing.T) {
 					if step == "cr" {
 						state = "changes_requested"
 					}
-					// The review App decides by its login; another account decides only with write
-					// access to the repository, which intake read before the fact arrived.
+					// The review App decides by its login and the reviewer's session its footer
+					// names (byReviewer); another account decides only with write access to the
+					// repository, which intake read before the fact arrived.
 					author, canWrite := testReviewApp, false
 					switch by {
 					case "outsider":
@@ -1339,8 +1340,9 @@ func TestARoundNoReviewDecidesTellsTheArchitect(t *testing.T) {
 // an author GitHub answers 404, or a 403 that is not its rate limit, for (intake retries every other
 // failed read before the review arrives): a round the reviewer completed undecided stays stuck, the
 // architect is told nothing more, and the review App's decision, submitted before the other review
-// but delivered after it, still ends the round. The review App's own reviews decide by its login:
-// GitHub gives its bot account no collaborator permission of its own.
+// but delivered after it, still ends the round. The review App's own reviews decide by its login
+// and the reviewer's session their footers name (byReviewer), never by write access: GitHub gives
+// its bot account no collaborator permission of its own.
 func TestOnlyTheReviewAppOrAWriterDecidesARound(t *testing.T) {
 	submitted := time.Date(2026, 9, 23, 0, 1, 0, 0, time.UTC)
 	for _, tc := range []struct {
