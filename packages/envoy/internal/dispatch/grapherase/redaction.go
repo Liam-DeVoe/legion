@@ -37,7 +37,12 @@ type redactedEvent struct {
 // beside every sibling's: it is redacted where the erased text stands as a block of its own
 // (redactBlockQuote) and nowhere else, which leaves a sibling's line in a version's markdown or
 // in a diff as it was written. A comment's or a message's own event carries that item's body and
-// nothing else of anybody's, so every one of those bytes goes wherever it stands.
+// nothing else of anybody's, so every one of those bytes goes wherever it stands in what a person
+// wrote.
+//
+// An event about the node whose payload holds an erased text in its structural values alone
+// (structuralKey) is not redacted, so it is none of these: the run leaves it whole, and the
+// search for the rows it leaves lists it (readLeft), so the listing says what the run does.
 func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	if len(read.texts) == 0 {
 		return nil
@@ -84,11 +89,15 @@ func (e *Erasure) readEvents(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 }
 
 // redactPayload replaces each erased text with the marker inside every string value of a JSON
-// payload, and answers the payload so redacted and each string value it rewrote as it stood
-// before. A key is never touched: a text is erased from what a payload says, and a key is its
-// shape, so an erase of `kind` leaves every "kind" key and redacts a body reading "kind". The
-// payload is a jsonb's text, so its numbers are read as the literals they are and its key order
-// is the one jsonb keeps whatever order it is written back in.
+// payload that carries what a person wrote, and answers the payload so redacted and each string
+// value it rewrote as it stood before. A key is never touched: a text is erased from what a
+// payload says, and a key is its shape. A value under a structural key is never touched either
+// (structuralKey), since it says what the payload is about and not what anybody wrote: an erase of
+// `kind` leaves every "kind" key and the kind each one names, and redacts a body reading "kind";
+// an erase of `sent` leaves a receipt's state reading "sent"; and an erase of a text that is part
+// of a session's id leaves that id whole. The payload is a jsonb's text, so its numbers are read
+// as the literals they are and its key order is the one jsonb keeps whatever order it is written
+// back in.
 //
 // quoted says the payload quotes a document, whose blocks are other nodes': a text is then
 // replaced only where it stands as a block of its own (redactBlockQuote).
@@ -100,10 +109,15 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		return nil, nil, err
 	}
 	var originals []string
-	var redact func(any) any
-	redact = func(value any) any {
+	// key is the key the value stands under, and the key of the array that holds it for an
+	// element of one: an array under a structural key is a list of structural values.
+	var redact func(value any, key string) any
+	redact = func(value any, key string) any {
 		switch held := value.(type) {
 		case string:
+			if structuralKey(key) {
+				return held
+			}
 			rewritten := held
 			if quoted {
 				rewritten = redactBlockQuote(held, texts, marker)
@@ -118,16 +132,16 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 			return rewritten
 		case []any:
 			for index := range held {
-				held[index] = redact(held[index])
+				held[index] = redact(held[index], key)
 			}
 		case map[string]any:
-			for key := range held {
-				held[key] = redact(held[key])
+			for name := range held {
+				held[name] = redact(held[name], name)
 			}
 		}
 		return value
 	}
-	value = redact(value)
+	value = redact(value, "")
 	if len(originals) == 0 {
 		return payload, nil, nil
 	}
@@ -138,6 +152,55 @@ func redactPayload(payload []byte, texts []string, marker string, quoted bool) (
 		return nil, nil, err
 	}
 	return bytes.TrimSpace(written.Bytes()), originals, nil
+}
+
+// structuralNames and structuralSuffixes are the keys of an event payload whose values are its
+// structure rather than what a person wrote: what names a thing, where it is addressed, which of
+// a closed set of states or kinds it is, and when it happened. They are the names the payloads
+// the erase reads carry, and one rule at every depth of every event type: the comment's own
+// events (model.CommentEventPayload, with the actors, anchors, mentions, attempts and references
+// inside it), its delivery receipts (model.CommentDeliveryEventPayload) and a document's events
+// (docs.ArtifactVersionEventPayload with its model.Version, model.Artifact,
+// model.ArtifactReviewEventPayload, model.ArtifactHumanEditedEventPayload and the block events).
+//
+// The rule names the structure and not the content because the two failures are not alike. A
+// key it does not know is read as content and redacted, so a field a later build adds that holds
+// what a person wrote loses the erased bytes as every other does; at worst such a field that is
+// structure takes the marker, which breaks a reader of that one value. A list of content keys
+// would leave the bytes standing in every content field a later build adds, which is the failure
+// an erase exists to prevent.
+var structuralNames = map[string]bool{
+	// Identifiers: a node's, the comment a reply replies to or answers, a person's login, a
+	// session's, a service's, a project's, a digest and where it was read from.
+	"id": true, "reply_to": true, "answers": true, "owner": true, "editors": true, "session": true,
+	"service": true, "project": true, "sha256": true, "content_sha256_source": true,
+	// Addresses: a delivery's target, an issue's route, a reference, a node's address, a slug.
+	"target": true, "route": true, "ref": true, "node": true, "slug": true,
+	// Enumerations: a kind, a type, a state, a status, a role, how a mention is delivered, whose
+	// turn it is, a credential's scopes, a version's media type, whom an ask waits on.
+	"kind": true, "type": true, "state": true, "status": true, "role": true, "delivery": true,
+	"turn": true, "scopes": true, "mime": true, "waiting_on": true,
+	// A time.
+	"at": true,
+}
+
+var structuralSuffixes = []string{
+	"_id", "_key", "_slug", "_route", "_type", "_kinds", "_state", "_status", "_waiting_on",
+	"_logins", "_sha256", "_at",
+}
+
+// structuralKey reports whether a value under key is structure (structuralNames), which the
+// redaction never rewrites. The top-level value of a payload stands under no key and is content.
+func structuralKey(key string) bool {
+	if structuralNames[key] {
+		return true
+	}
+	for _, suffix := range structuralSuffixes {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // redactEvents writes the payload of every event readEvents redacted. The event log is

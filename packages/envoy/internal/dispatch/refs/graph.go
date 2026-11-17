@@ -131,6 +131,23 @@ func blockHolds(alias, fromKind, table, column string) string {
 		and b.` + column + `::text = ` + alias + `.from_id))`
 }
 
+// blockRefListed is whether the block_refs row alias is listed: the types test of a typed
+// block's pointer, made the way the arm of graph_edges that answers the row makes it, so a read
+// of the rows themselves and a read of the view cannot answer one link differently.
+//
+// A row that names its node is the tuple arm's (migration 20261109215947): a mention is listed
+// whatever its target's type, and a pointer only while block_ref_listed holds of the targets the
+// attribute node declares now (block_pointer_targets), so a change of an attribute's targets
+// reaches every link of that attribute at its next read, with no pass over documents nobody
+// edits. A row that names no node, which a build before the store wrote, is the old block_refs
+// arm's, whose test reads the to_types the index copied into the row: such a row follows a
+// change of the targets only once a version is indexed again.
+func blockRefListed(alias string) string {
+	return `(case when ` + alias + `.node_kind is null
+		then ` + alias + `.to_types is null or block_ref_listed(` + alias + `.to_types, ` + alias + `.to_id)
+		else ` + alias + `.kind = 'mentions' or block_ref_listed(block_pointer_targets(` + alias + `.from_node, ` + alias + `.kind), ` + alias + `.to_id) end)`
+}
+
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
 // numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
 // block has no row, so the edges at it drop out of every list until a version holds its id again.
@@ -354,7 +371,7 @@ func readEdgeRows(ctx context.Context, q Queryer, who model.Actor, query Query) 
 			and ` + VisibleEnd("g.to_kind", "g.to_id", true, seen) + `
 			union all
 			select b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq, b.from_node
-			from block_refs b where b.artifact_id = ` + blocks + `::uuid and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))
+			from block_refs b where b.artifact_id = ` + blocks + `::uuid and ` + blockRefListed("b") + `
 			and ` + VisibleKind("block", "b.from_node", seen) + ` and ` + VisibleEnd("b.to_kind", "b.to_id", true, seen)
 	case query.Direction == "out" && itemBlocks:
 		tables, _ := item.tables()
@@ -554,6 +571,13 @@ func loadIssueNodes(ctx context.Context, q Queryer, who model.Actor, _ string, _
 // loadArtifactNodes resolves artifact nodes. An artifact is made by its creator; its last change
 // is its latest version, by that version's authors. It belongs to its issue, else to the session
 // whose conversation owns it, else (a project document) to no node.
+//
+// The address of a retired document of an issue (artifacts.retired_at, docs.RetireDocument),
+// `dispatch://KEY/artifact/<slug>` read by its ref_key, resolves to the issue KEY, whose node it
+// answers in the document's place (dispatch://INFRA-1150 R8, R11): the document plays no part in
+// its issue any more, and a citation of it stays valid and reaches what took its place, the issue
+// and its reads. The document read by its uuid is the document still, so its versions, its blocks
+// and its own edges stay readable.
 func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string, byRefKey bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	predicate := `a.id::text = any($1)`
 	if byRefKey {
@@ -561,7 +585,7 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 	}
 	rows, err := q.Query(ctx, `
 		select a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.name, a.kind, a.is_primary,
-		       a.created_by, a.created_at, latest.authors, latest.created_at
+		       a.created_by, a.created_at, latest.authors, latest.created_at, a.retired_at is not null
 		from artifacts a
 		left join lateral (
 			select v.authors, v.created_at from artifact_versions v
@@ -572,19 +596,28 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		return fmt.Errorf("load artifact nodes: %w", err)
 	}
 	defer rows.Close()
+	// retiredIssues is the issue each retired document's address resolves to, by that address.
+	var retiredIssues map[string]string
 	for rows.Next() {
 		var id, refKey, project, slug, name, kind string
 		var issueKey, session *string
-		var primary bool
+		var primary, retired bool
 		var createdBy, authors []byte
 		var createdAt time.Time
 		var versionAt *time.Time
-		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt); err != nil {
+		if err := rows.Scan(&id, &refKey, &issueKey, &project, &session, &slug, &name, &kind, &primary, &createdBy, &createdAt, &authors, &versionAt, &retired); err != nil {
 			return fmt.Errorf("scan artifact node: %w", err)
 		}
 		lookup := id
 		if byRefKey {
 			lookup = refKey
+		}
+		if byRefKey && retired && issueKey != nil {
+			if retiredIssues == nil {
+				retiredIssues = make(map[string]string)
+			}
+			retiredIssues[lookup] = *issueKey
+			continue
 		}
 		node := model.GraphNode{Kind: "artifact", ID: id, IssueKey: issueKey, Project: project, Ref: ArtifactRef(issueKey, project, session, slug, kind, primary)}
 		if err := setMadeAndChanged(&node, createdBy, createdAt, authors, versionAt, storedActors); err != nil {
@@ -598,7 +631,31 @@ func loadArtifactNodes(ctx context.Context, q Queryer, who model.Actor, _ string
 		}
 		nodes[[2]string{"artifact", lookup}] = resolvedNode{GraphNode: node, text: name, refKey: refKey}
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	if len(retiredIssues) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(retiredIssues))
+	for _, key := range retiredIssues {
+		if !slices.Contains(keys, key) {
+			keys = append(keys, key)
+		}
+	}
+	// The issue is read as the issue loader reads it, for who: an issue they may not see answers
+	// what an address nobody holds answers, as its own address would.
+	issues := make(map[[2]string]resolvedNode, len(keys))
+	if err := loadIssueNodes(ctx, q, who, "issue", false, keys, issues); err != nil {
+		return err
+	}
+	for lookup, key := range retiredIssues {
+		if issue, found := issues[[2]string{"issue", key}]; found {
+			nodes[[2]string{"artifact", lookup}] = issue
+		}
+	}
+	return nil
 }
 
 // loadBlockNodes resolves block nodes, addressed '<document ref_key>#<block id>', from the

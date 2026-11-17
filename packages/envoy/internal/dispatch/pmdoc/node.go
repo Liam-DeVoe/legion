@@ -676,22 +676,12 @@ func (n *Node) EqualWithBlockIDs(o *Node) bool {
 
 // EqualOutsideServerState compares document content, structure and block identity as
 // EqualWithBlockIDs does, but for the attributes of a typed block that the server keeps (the
-// schema's server attributes) other than an ask's answer (IsAnswerAttribute): an ask's state, who
-// answered it and when, and whether it reads. No caller writes those, they say what the server
-// knows about the block's own text, and each is a word or a timestamp beside it.
+// schema's server attributes): an ask's state, who answered it, when and with what, and whether it
+// reads. No caller writes those, and none of them is the block's own text: a person's answer is
+// held once, on the ask's node (dispatch://INFRA-1150 R3), and while two builds serve the server
+// keeps a copy of it in the block for the build before (docs' rollWindowAskAttributes).
 func (n *Node) EqualOutsideServerState(o *Node) bool {
 	return equalNode(n, o, attrsEqualOutsideServerState)
-}
-
-// IsAnswerAttribute reports whether name is a server attribute of an ask that holds the answer
-// itself rather than what the server knows of it: the answer's own words, and the options it
-// selects. The server keeps both in agreement with the ask, but both are caller text - a selection
-// copies the asker's option labels, and renders each escaped, a `<` as seven bytes, so one choice
-// of a 1,000,000-character label made a 1 MB document 8 MB. So a write that changes either is
-// weighed as caller text is (EqualOutsideServerState), and where the document has no room for
-// them the server records the answer on the ask and leaves both out of the block.
-func IsAnswerAttribute(name string) bool {
-	return name == "answer" || name == "selected"
 }
 
 func attrsEqualOutsideServerState(nodeType string, a, b Attrs) bool {
@@ -699,7 +689,7 @@ func attrsEqualOutsideServerState(nodeType string, a, b Attrs) bool {
 	if !typed {
 		return attrsEqual(a, b)
 	}
-	return attrsEqualBut(a, b, func(name string) bool { return !IsAnswerAttribute(name) && typ.Attributes.Get(name).Server })
+	return attrsEqualBut(a, b, func(name string) bool { return typ.Attributes.Get(name).Server })
 }
 
 // equalNode compares n and o, their content and structure, holding each node's attributes to

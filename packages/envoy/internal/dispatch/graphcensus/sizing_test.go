@@ -168,14 +168,21 @@ func renderedTexts(t *testing.T, markdown string) map[string]string {
 }
 
 // seedSizedHistory writes, as a build before the store writes them, the history of one document
-// the block index indexed twice inside the sizing window, one comment and one clear. The block
-// index records a version's blocks in document_block_texts and the version itself in
-// document_indexed_versions; this writes those rows by hand, each block's text exactly as the
-// index sums it, since this package cannot import the index (docs imports it).
+// the block index indexed twice inside the sizing window, one comment, one clear, a message and
+// its reply, one delivery and three events. The block index records a version's blocks in
+// document_block_texts and the version itself in document_indexed_versions; this writes those
+// rows by hand, each block's text exactly as the index sums it, since this package cannot import
+// the index (docs imports it).
 //
 // The comment is written by "Alice", whose canonical login is alice, anchored to the document and
 // owned by it, so its write states an authored_by, an anchored_to, an owned_by and the
 // recorded_as alias that keeps the raw id beside the canonical login.
+//
+// The message is alice's on the issue, addressed to the role sizer, and the reply is the session
+// ses_sized's, answering it; the delivery is the message's attempt to that session, which the
+// listener took. Three events stand for what the server appends beside such writes: the
+// message's message.created, which first addresses the role, and an ask's ask.opened and
+// ask.answered, whose ask no row holds, since the ask terms read the events alone.
 func seedSizedHistory(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -229,10 +236,12 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 			t.Fatalf("record version %d indexed: %v", number, err)
 		}
 	}
-	if _, err := database.Pool.Exec(ctx, `
+	var comment string
+	if err := database.Pool.QueryRow(ctx, `
 		insert into comments (artifact_id, author, body, anchor)
 		values ($1::uuid, '{"kind":"user","id":"Alice"}', 'A remark on the spec.', jsonb_build_object('artifact_id', $1::text))
-	`, document); err != nil {
+		returning id::text
+	`, document).Scan(&comment); err != nil {
 		t.Fatalf("write the comment: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
@@ -240,17 +249,124 @@ func seedSizedHistory(t *testing.T, database *store.Store) {
 	`); err != nil {
 		t.Fatalf("write the clear: %v", err)
 	}
+	var message string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into messages (issue_key, author, body, target)
+		values ('CORE-1', '{"kind":"user","id":"alice"}', 'Over to the sizer.', 'role:sizer')
+		returning id::text
+	`).Scan(&message); err != nil {
+		t.Fatalf("write the message: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into messages (issue_key, author, body, in_reply_to)
+		values ('CORE-1', '{"kind":"session","id":"ses_sized"}', 'On it.', $1::uuid)
+	`, message); err != nil {
+		t.Fatalf("write the reply: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
+		values ($1::uuid, 1, 'btw', 'ses_sized', 'sent')
+	`, message); err != nil {
+		t.Fatalf("write the delivery: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (issue_key, seq, type, actor, payload, notify) values
+			('CORE-1', 1, 'message.created', '{"kind":"user","id":"alice"}',
+			 jsonb_build_object('id', $1::text, 'target', 'role:sizer'), false),
+			('CORE-1', 2, 'ask.opened', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
+			('CORE-1', 3, 'ask.answered', '{"kind":"user","id":"bob"}', jsonb_build_object('id', $2::text), false),
+			('CORE-1', 4, 'ask.edited', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
+			('CORE-1', 5, 'ask.resolved', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
+			('CORE-1', 6, 'ask.asked_of', '{"kind":"user","id":"alice"}', jsonb_build_object('id', $2::text), false),
+			('CORE-1', 7, 'ask.follower_added', '{"kind":"session","id":"ses_sized"}',
+			 jsonb_build_object('ask_id', $2::text, 'session_id', 'ses_sized'), false)
+	`, message, "6a0e5d4c-3b2a-4f19-8e7d-6c5b4a392817"); err != nil {
+		t.Fatalf("write the events: %v", err)
+	}
+	seedSizedRelations(t, database, document, comment)
+}
+
+// seedSizedRelations writes, beside the history seedSizedHistory writes, one row for each further
+// table a term counts: a mention of the comment that resolved to a session, two body blocks of
+// the comment of which one is removed, a link out of the live one, a child issue that waits on
+// its parent, a failed result with two screenshots and its retraction, a Keep, and two components
+// of one imported snapshot, one under and depending on the other, with CORE-1 affecting the first.
+func seedSizedRelations(t *testing.T, database *store.Store, document, comment string) {
+	t.Helper()
+	ctx := context.Background()
+	for _, step := range []struct {
+		what, sql string
+		args      []any
+	}{
+		{"write the mention", `
+			insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
+			values ($1::uuid, 'role:sizer', 'btw', 'ses_sized')`, []any{comment}},
+		{"write the comment's body blocks", `
+			insert into comment_blocks (comment_id, block_id, node_id, position, type, text_sha256, excerpt,
+			                            changed_revision, changed_at, removed_at)
+			values ($1::uuid, 'b1', 'b1', 0, 'paragraph', 'x', 'A remark.', 1, now(), null),
+			       ($1::uuid, 'b2', 'b2', null, 'paragraph', 'y', 'Gone.', 1, now(), now())`, []any{comment}},
+		{"write the body block's link", `
+			insert into comment_block_refs (comment_id, block_id, from_node, to_kind, to_id)
+			values ($1::uuid, 'b1', 'b1', 'issue', 'CORE-1')`, []any{comment}},
+		{"write the child issue and its wait", `
+			with child as (
+				insert into issues (key, project_key, number, title, created_by, rank, parent_key)
+				values ('CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'V', 'CORE-1')
+				returning key
+			)
+			insert into issue_links (issue_key, kind, target_key) select key, 'blocked_by', 'CORE-1' from child`, nil},
+		{"write the result and its retraction", `
+			with result as (
+				insert into check_results (issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
+				                           check_sha256, role, commit_sha, failed, verdict, screenshots, actor)
+				values ('CORE-1', 'CORE-1', $1::uuid, 'c-one', 1, 'x', 'tester', repeat('a', 40), 1, 'fail',
+				        '{one.png,two.png}', '{"kind":"user","id":"alice"}')
+				returning id
+			)
+			insert into check_result_retractions (result_id, reason, actor)
+			select id, 'Run against the wrong head.', '{"kind":"user","id":"alice"}' from result`, []any{document}},
+		{"write the Keep", `
+			insert into decision_keeps (artifact_id, block_id, text_sha256, changed_version, kept_by)
+			values ($1::uuid, 'box', 'x', 1, 'alice')`, []any{document}},
+		{"write the components", `
+			with source as (
+				insert into architecture_sources (project_key, repo, branch, installation_id, created_by)
+				values ('CORE', 'o/r', 'main', 1, '{"kind":"user","id":"alice"}')
+				returning id
+			), snapshot as (
+				insert into architecture_snapshots (project_key, commit, files) values ('CORE', 'c0ffee', '{}')
+				returning id
+			), placed as (
+				insert into components (project_key, id, title, prose, parent, snapshot_id, source_id)
+				select 'CORE', c.id, c.id, '', c.parent, snapshot.id, source.id
+				from snapshot, source, (values ('root', null), ('leaf', 'root')) c (id, parent)
+				returning id
+			)
+			insert into component_depends (project_key, from_id, to_id)
+			select 'CORE', 'leaf', 'root' from placed where id = 'leaf'`, nil},
+		{"write the issue's components", `
+			with chosen as (insert into issue_components (issue_key, mode) values ('CORE-1', 'explicit') returning issue_key)
+			insert into issue_component_members (issue_key, project_key, component_id)
+			select issue_key, 'CORE', 'root' from chosen`, nil},
+	} {
+		if _, err := database.Pool.Exec(ctx, step.sql, step.args...); err != nil {
+			t.Fatalf("%s: %v", step.what, err)
+		}
+	}
 }
 
 // sizedTerm is one term of the sizing as the report prints it: its tuples a write, the writes the
-// window holds, and, for the moved parents, the versions it read and could not parse.
+// window holds, for the moved parents the versions it read and could not parse, and whether its
+// rate is assumed rather than read.
 type sizedTerm struct {
 	tuples, writes, read, unreadable int64
+	assumed                          bool
 }
 
 var (
 	tuplesAWriteLine = regexp.MustCompile(`(?m)^census: sizing tuples-a-write kind=(\S+) tuples=(\d+) `)
-	shareLine        = regexp.MustCompile(`(?m)^census: sizing share kind=(\S+) moved_by=\S+ writes_in_window=(\d+) share_of_tuples=\S+(?: versions_read=(\d+) versions_unreadable=(\d+))?$`)
+	shareLine        = regexp.MustCompile(`(?m)^census: sizing share kind=(\S+) moved_by=\S+ writes_in_window=(\d+) share_of_tuples=\S+(?: versions_read=(\d+) versions_unreadable=(\d+))?( rate=assumed)?$`)
 	tuplesADayLine   = regexp.MustCompile(`(?m)^census: sizing rows-a-day table=graph_tuples rows_a_day=(\S+)$`)
 )
 
@@ -278,6 +394,7 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 			t.Fatalf("the sizing prints the share of %s and no tuples a write for it:\n%s", match[1], printed)
 		}
 		term.writes, term.read, term.unreadable = number(match[2]), number(match[3]), number(match[4])
+		term.assumed = match[5] != ""
 		terms[match[1]] = term
 		shared++
 	}
@@ -292,14 +409,46 @@ func sizedTerms(t *testing.T, printed string) map[string]sizedTerm {
 // kind it leaves out reads the one-year verdict low. The history here holds a version that drops
 // a block, which the index states gone, and moves a paragraph out of a callout, which it states
 // as the retraction of one parent and the assertion of the other, beside the blocks each version
-// writes afresh and the texts INFRA-1253 states, a comment with each fact its write states, and
-// the read mark that comment moves and a clear, which INFRA-1152 states. Every term is printed,
-// each with its writes inside the window, and the rows a day of graph_tuples is exactly their sum.
+// writes afresh and the texts INFRA-1253 states, a comment with each fact its write states, the
+// read marks that comment and a message move, a clear, a message with a reply, a delivery, the
+// events of an ask, and a row of each further table a term counts (seedSizedRelations). Every
+// kind R20 gives the five children has a term, and every term is printed, each with its writes
+// inside the window or the writes it is assumed at, and the rows a day of graph_tuples is exactly
+// their sum.
 func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	database := storetest.Open(t)
 	seedSizedHistory(t, database)
 	printed := sizingCensus(t, database)
 	terms := sizedTerms(t, printed)
+	// Each kind R20 gives the five children (dispatch://INFRA-1149/spec#b-r-kinds-here), beside the
+	// term that counts it. A kind whose write states facts beyond its node has further terms, which
+	// want below holds; requirements, plan nodes and checks are typed blocks of a document, which
+	// the block term counts with their placement and the block_ref term with their serves, and a
+	// version's blocks are what the block and block_text terms count beside its own node.
+	kinds := []struct{ child, kind, term string }{
+		{movedHere, "comments", "comment"}, {movedHere, "blocks", "block"},
+		{movedHere, "block references", "block_ref"}, {movedHere, "people", "person"},
+		{movedHere, "sessions", "session"}, {movedHere, "roles", "role"}, {movedHere, "a role's page", "page"},
+		{movedWithInbox, "messages", "message"}, {movedWithInbox, "replies", "reply"},
+		{movedWithInbox, "mentions", "mention"}, {movedWithInbox, "deliveries", "person_delivery"},
+		{movedWithInbox, "delivery attempts", "delivery_attempt"}, {movedWithInbox, "threads", "participation"},
+		{movedWithInbox, "read state", "read_mark"}, {movedWithInbox, "body blocks", "body_block"},
+		{movedWithBlocks, "issues", "issue"}, {movedWithBlocks, "artifacts", "artifact"},
+		{movedWithBlocks, "versions", "document_version"}, {movedWithBlocks, "criteria", "criterion"},
+		{movedWithBlocks, "requirements", "block"}, {movedWithBlocks, "plan nodes", "block"},
+		{movedWithBlocks, "checks", "block"}, {movedWithBlocks, "results", "result"},
+		{movedWithBlocks, "component", "component"},
+		{movedWithAsks, "decisions", "decision"}, {movedWithAsks, "readings", "reading"},
+		{movedWithAsks, "asks", "ask"}, {movedWithAsks, "answers", "answer"},
+		{movedWithLenses, "interactions", "interaction"}, {movedWithLenses, "lenses", "lens"},
+		{movedWithLenses, "lens kinds", "lens_kind"}, {movedWithLenses, "constraints", "constraint"},
+		{movedWithLenses, "risks", "risk"},
+	}
+	for _, kind := range kinds {
+		if _, printedTerm := terms[kind.term]; !printedTerm {
+			t.Errorf("the sizing prints no term for %s of %s", kind.kind, strings.TrimPrefix(kind.child, "dispatch://"))
+		}
+	}
 	want := map[string]sizedTerm{
 		"comment": {tuples: 2, writes: 1}, "authored_by": {tuples: 1, writes: 1}, "anchored_to": {tuples: 1, writes: 1},
 		"owned_by": {tuples: 1, writes: 1}, "author_alias": {tuples: 1, writes: 1}, "delivery": {tuples: 1},
@@ -310,10 +459,40 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// version 2 moved one paragraph out of the callout.
 		movedParents: {tuples: 2, writes: 1, read: 2},
 		"block_ref":  {tuples: 2}, "block_text": {tuples: 2, writes: 7},
-		// The comment moves its author's read_through on its thread (migration 0095's trigger),
-		// which is a read mark of its own.
-		"message_delivery": {tuples: 1}, "read_mark": {tuples: 1, writes: 1}, "clear": {tuples: 1, writes: 1},
+		// The comment is alice's first, the delivery records ses_sized, and the message.created
+		// event is the first to address the role sizer, which takes a page with it.
+		"person": {tuples: 2, writes: 1}, "session": {tuples: 5, writes: 1}, "role": {tuples: 2, writes: 1},
+		"page": {tuples: 3, writes: 1},
+		// The comment and the message each move alice's read_through on their thread (migrations
+		// 0095 and 0097's triggers), so she takes part in two threads and each is a read mark; the
+		// reply, a session's, reaches her in the message's thread, and the ask opened reaches the
+		// person it waits on.
+		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
 		"dismissal": {tuples: 1}, "snooze": {tuples: 1},
+		"message": {tuples: 4, writes: 2}, "message_pointer": {tuples: 1, writes: 1}, "reply": {tuples: 2, writes: 1},
+		// The mention is one tuple to its role and one to the session the role resolved to.
+		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 2}, "person_delivery": {tuples: 1, writes: 2},
+		"ask_asked_of": {tuples: 4, writes: 1}, "body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
+		"body_block_ref": {tuples: 2, writes: 1}, "delivery_attempt": {tuples: 14, writes: 1},
+		// CORE-2 is a child of CORE-1 and waits on it.
+		"issue": {tuples: 2, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 1},
+		"document_version": {tuples: 2, writes: 2}, "criterion": {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},
+		"result": {tuples: 16, writes: 1}, "result_screenshot": {tuples: 1, writes: 2}, "result_retraction": {tuples: 1, writes: 1},
+		// The leaf's part_of the root and its depends_on it, and CORE-1's affects of the root.
+		"component": {tuples: 2, writes: 2}, "component_relation": {tuples: 1, writes: 3},
+		"ask": {tuples: 8, writes: 1}, "ask_edit": {tuples: 2, writes: 1}, "answer": {tuples: 5, writes: 1},
+		"ask_resolved": {tuples: 1, writes: 1}, "ask_follower": {tuples: 1, writes: 1}, "keep": {tuples: 2, writes: 1},
+		"decision": {tuples: 5, writes: 10 * sizingWindowDays, assumed: true},
+		"reading":  {tuples: 1, writes: 10 * sizingWindowDays, assumed: true},
+		// No table holds a kind of dispatch://INFRA-1950's yet, so each term reads the writes it
+		// is assumed at.
+		"interaction":  {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
+		"frame":        {tuples: 1, writes: 500 * sizingWindowDays, assumed: true},
+		"lens":         {tuples: 6, writes: 2 * sizingWindowDays, assumed: true},
+		"lens_finding": {tuples: 4, writes: 10 * sizingWindowDays, assumed: true},
+		"lens_kind":    {tuples: 8, writes: 11, assumed: true},
+		"constraint":   {tuples: 5, writes: 1 * sizingWindowDays, assumed: true},
+		"risk":         {tuples: 4, writes: 11 * sizingWindowDays, assumed: true},
 	}
 	for _, name := range slices.Sorted(maps.Keys(want)) {
 		got, printedTerm := terms[name]

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -173,7 +174,10 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 }
 
 // applyApprovals fills each document's Approval from its latest review and its open request, the
-// rule queueApprovals's apply runs once both statements have been read.
+// rule queueApprovals's apply runs once both statements have been read. A retired document's
+// approval is superseded by its retirement (docs.RetireDocument), which writes no version, so it
+// reads stale at its latest version as an approval a later version left behind reads: a gate or
+// a reader that asks whether the document stands approved hears that it does not.
 func applyApprovals(
 	byID map[string]*model.Artifact,
 	latestReviews map[string]model.ArtifactReview,
@@ -203,7 +207,7 @@ func applyApprovals(
 			switch {
 			case review.State == "changes_requested":
 				approval.State = "changes_requested"
-			case review.Version == latest:
+			case review.Version == latest && !artifact.Retired:
 				approval.State = "approved"
 			default:
 				approval.State = "stale"
@@ -644,10 +648,19 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	trees := wantsDisplayTrees(r)
-	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
+	// The approval before this request, and the transaction's now() beside it in the same batch:
+	// a request that opens an approval ask dates its node and its row by that now(), the default
+	// the row's insert gives created_at (openApprovalAsk), and reading it here costs that request
+	// no round trip of its own. A request that opens none reads it for nothing.
+	var now time.Time
+	batch := &pgx.Batch{}
+	applyApproval := queueApprovals(batch, []*model.Artifact{&artifact})
+	batch.Queue(`select now()`).QueryRow(func(row pgx.Row) error { return row.Scan(&now) })
+	if err := tx.SendBatch(r.Context(), batch).Close(); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	applyApproval()
 	// An approval of every document this request names, each at its current version, needs no
 	// request: return the named document's as it stands.
 	settled, err := docs.NamedDocumentsApproved(r.Context(), tx, documents, artifact.ID,
@@ -697,7 +710,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		}
 	} else {
 		var opened model.Event
-		if ask, opened, err = s.openApprovalAsk(r.Context(), tx, owner, artifact, actor, documents, question); err != nil {
+		if ask, opened, err = s.openApprovalAsk(r.Context(), tx, owner, artifact, actor, documents, question, now); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -741,7 +754,8 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 // its ask.opened event; the requester follows it. A document a human approved before carries that
 // approval's version, time and approver on the request (approval.approved), so the human reads
 // what the re-approval follows; a first request carries none. The approval named is the first
-// document's, the one the request was opened on.
+// document's, the one the request was opened on. createdAt is the transaction's now(), which the
+// caller read with the approval before the write.
 func (s *server) openApprovalAsk(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -750,14 +764,13 @@ func (s *server) openApprovalAsk(
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
 	question string,
+	createdAt time.Time,
 ) (*model.Ask, model.Event, error) {
-	// The request's id and created_at, drawn before anything is written, as createAskFor draws
-	// them: the node goes in before the row, dated by the default the insert gives created_at.
-	var rowID string
-	var createdAt time.Time
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
-		return nil, model.Event{}, err
-	}
+	// The request's id, drawn here as createAskBlock draws an ask block's, because the node goes
+	// in before the row; the node and its relations are dated by createdAt, the default the
+	// insert gives the row's created_at, so they are dated as the row is, by the database's
+	// clock. Neither costs a round trip.
+	rowID := uuid.NewString()
 	approval := &model.AskApproval{Documents: documents}
 	approved, err := docs.LatestApprovedReview(ctx, tx, artifact.ID)
 	if err != nil {

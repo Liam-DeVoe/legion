@@ -646,10 +646,13 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -891,10 +894,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			settled:          &st.reconciliation.sources,
 			closedIssue:      st.issueClosed,
 			settlement:       true,
 			keptEditor:       keptEditor,
-			settled:          &st.reconciliation.sources,
 		})
 		if writeErr != nil {
 			// The version a human approved holds an element this build does not know: the version
@@ -989,8 +992,14 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.moveRestored(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
-	// The copies among the document's ask blocks, once the version's blocks are nodes.
-	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.actor, time.Now().UTC(), copiesCause); err != nil {
+	// The copies among the document's ask blocks, once the version's blocks are nodes, in the name
+	// the version itself carries (versionActor), the event their claims are caused by; and, in
+	// the same name and under the same event, the readability of the asks whose blocks it read.
+	at := time.Now().UTC()
+	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.versionActor(), at, copiesCause); err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := st.reconciliation.stateInvalidReasons(ctx, tx, st.credit.versionActor(), at, copiesCause); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	// The commit marks the in-flight credits the version listed consumed before it releases the

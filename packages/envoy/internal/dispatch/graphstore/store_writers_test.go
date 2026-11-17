@@ -27,19 +27,18 @@ const graphstoreImportPath = "github.com/sjawhar/envoy/internal/dispatch/graphst
 const graphstoreDirectory = "internal/dispatch/graphstore"
 
 // storeWriteFunctions are the calls a write of graph_nodes and graph_tuples from outside this
-// package goes through, the same thirteen docs' register of the tree's passes scans for
-// (storeWriterCall), and the session writer beside them: Write, WriteUncaused and Caused in a
-// caller's transaction, WriteArms and WriteArmsUncaused spliced into a caller's statement,
-// Authored, Reached and SessionRecorded, which run those arms for the writers that record an
-// author, a reached session and a session an ask names, AttemptOpened and Attempted, which write a
-// delivery attempt's node before its row and state what its row holds after each write of it,
-// ToPerson, the one writer of a delivered_to, a mentions or a participates_in that names a person,
-// FromPerson, the one writer of a mark from a person (read_through, dismissed, cleared, reply_read
-// and snoozed), EraseNode, the erase's delete of a node and its tuples, and FillScopes, the
-// backfill's fill of the project of a node stored with none. Each is a function of the package,
-// never a method, so a call of one is named by the package and found here wherever it is made. A
-// write that holds a statement of its own instead is found by rawStoreWrite, and none outside this
-// package may hold one.
+// package goes through, the same fourteen docs' register of the tree's passes scans for
+// (storeWriterCall): Write, WriteUncaused and Caused in a caller's transaction, WriteArms and
+// WriteArmsUncaused spliced into a caller's statement, Authored, Reached and SessionRecorded, which
+// run those arms for the writers that record an author, a reached session and a session an ask
+// names, AttemptOpened and Attempted, which write a delivery attempt's node before its row and
+// state what its row holds after each write of it, ToPerson, the one writer of a delivered_to, a
+// mentions or a participates_in that names a person, FromPerson, the one writer of a mark from a
+// person (read_through, dismissed, cleared, reply_read and snoozed), EraseNode, the erase's delete
+// of a node and its tuples, and FillScopes, the backfill's fill of the project of a node stored
+// with none. Each is a function of the package, never a method, so a call of one is named by the
+// package and found here wherever it is made. A write that holds a statement of its own instead is
+// found by rawStoreWrite, and none outside this package may hold one.
 var storeWriteFunctions = []string{"Write", "WriteUncaused", "WriteArms", "WriteArmsUncaused", "Caused",
 	"Authored", "Reached", "SessionRecorded", "AttemptOpened", "Attempted", "ToPerson", "FromPerson", "EraseNode", "FillScopes"}
 
@@ -131,6 +130,15 @@ var storeWriteCallSites = []string{
 	"api/messages.go#writeMessageNode",
 	"api/reviews.go#openApprovalAsk",
 	"docs/ask_blocks.go#createAskBlock",
+	// A document's retirement (dispatch://INFRA-1150 R11), in the same order under the document's
+	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
+	// document.retired and the node's facts under it.
+	"docs/retire.go#RetireDocument",
+	"docs/retire.go#writeRetiredNode",
+	// A person's Keep of an agent's decision (dispatch://INFRA-1150 R2): under the issue's owner
+	// row, the person's node, then the decision_keeps row that projects the Keep, then
+	// decision.kept, and the kept_by tuple and the kept_text_sum value under it, through Caused.
+	"api/decisions.go#keepDecisionNode",
 	// The seed's comments, with their author's person node and each comment's authored_by
 	// tuple, which its one batch write states as a seeded database's own writer, the session
 	// nodes of the followers its ask batch copies, and its issues', asks' and messages' nodes,
@@ -175,8 +183,9 @@ var storeWriteCallSites = []string{
 	// Caused: the answer, resolve and decline routes' transition, an issue's close and reopen, the
 	// approval carry's answer, and a settlement's retractions and restorations. The settlement
 	// states the copies among a document's ask blocks as claims once its version is indexed, and
-	// the backfill of the boot step's first phase states the asks and the followers written before
-	// this release, each batch with its rows locked first.
+	// beside them the readability of each ask whose block it read, as that ask node's `invalid`
+	// value (G1), and the backfill of the boot step's first phase states the asks and the
+	// followers written before this release, each batch with its rows locked first.
 	"api/ask_transitions.go#closeAskTx",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx",
 	"api/issue_ask_lifecycle.go#restoreIssueAsksTx",
@@ -185,6 +194,7 @@ var storeWriteCallSites = []string{
 	"docs/approval_carry.go#answerApprovalAsk",
 	"docs/ask_blocks.go#causeSettledAnswers",
 	"docs/ask_blocks.go#claimCopies",
+	"docs/ask_blocks.go#stateInvalidReasons",
 	"graphcensus/backfill.go#writeAskBatch",
 	"graphcensus/backfill.go#writeAskFollowerBatch",
 	// The publisher's record of a batch, which splices the store's arms into its statement, and

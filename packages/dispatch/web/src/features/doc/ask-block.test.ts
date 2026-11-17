@@ -4,7 +4,12 @@ import type { EditorView } from "@milkdown/kit/prose/view";
 import { DOMSerializer, Schema } from "prosemirror-model";
 
 import type { BlockTypeSchema } from "../../api/types";
-import { askBlockEditingPlugin, editingAskBlockPos } from "./ask-block";
+import {
+  askBlockEditingPlugin,
+  editingAskBlockPos,
+  readingsInOpenAsks,
+  readingsInOpenAsksPlugin,
+} from "./ask-block";
 import { askBlockFacts, renderTypedBlock } from "./typed-block-drawing";
 
 const schema = new Schema({
@@ -348,4 +353,63 @@ test("an ask card reads its question and options past the reading it closes with
     { label: "Monday" },
   ]);
   expect(facts.malformedReason).toBeUndefined();
+});
+
+// The schema the refusal of a reading reads: an ask closing with readings, as the block schema
+// gives the editor.
+const readingSchema = new Schema({
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { content: "inline*", group: "block" },
+    text: { group: "inline" },
+    ask: { attrs: { blockId: { default: null } }, content: "paragraph+ reading*", group: "block" },
+    reading: { attrs: { blockId: { default: null } }, content: "paragraph+", parents: ["ask"] },
+  },
+});
+
+function askWithReading(blockId: string, withReading: boolean) {
+  return readingSchema.node("ask", { blockId }, [
+    readingSchema.node("paragraph", undefined, [readingSchema.text("Ship it?")]),
+    ...(withReading
+      ? [
+          readingSchema.node("reading", { blockId: `${blockId}-r1` }, [
+            readingSchema.node("paragraph", undefined, [readingSchema.text("Read as now.")]),
+          ]),
+        ]
+      : []),
+  ]);
+}
+
+test("the editor refuses a reading in an ask the server reads open, and takes one in an answered ask", () => {
+  const served: Record<string, string> = { "answered-ask": "answered", "open-ask": "open" };
+  const stateOf = (blockId: string) => served[blockId];
+  const state = EditorState.create({
+    doc: readingSchema.node("doc", undefined, [
+      askWithReading("open-ask", false),
+      askWithReading("answered-ask", false),
+    ]),
+    plugins: [readingsInOpenAsksPlugin(stateOf)],
+  });
+  const withReadingIn = (index: number) => {
+    let position = 0;
+    for (let child = 0; child < index; child++) {
+      position += state.doc.child(child).nodeSize;
+    }
+    const ask = state.doc.child(index);
+    return state.tr.replaceWith(
+      position,
+      position + ask.nodeSize,
+      askWithReading(String(ask.attrs.blockId), true)
+    );
+  };
+  // A refused transaction leaves the state as it was.
+  expect(state.applyTransaction(withReadingIn(0)).state.doc.eq(state.doc)).toBe(true);
+  const answered = state.applyTransaction(withReadingIn(1)).state;
+  expect(readingsInOpenAsks(answered.doc, stateOf)).toEqual(new Set());
+  expect(answered.doc.child(1).childCount).toBe(2);
+  // A remote update, the server's own sync of another writer's edit, is never refused.
+  const synced = state.applyTransaction(
+    withReadingIn(0).setMeta("y-sync$", { isChangeOrigin: true })
+  );
+  expect(synced.state.doc.child(0).childCount).toBe(2);
 });

@@ -191,6 +191,23 @@ export interface paths {
     patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
+  "/api/v1/artifacts/{id}/_test/ask-attributes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: read the attributes each ask block of a document holds in this process's live tree. */
+    get: operations["getApiV1ArtifactsByIdTestAskAttributes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
     parameters: {
       query?: never;
@@ -356,7 +373,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
+    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection; or the heading block of a decision of an issue's decisions.md outside `## Replaced`, whose sum is the text_sha256 GET /api/v1/issues/{key}/decisions serves. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, and any other block, is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
     post: operations["postApiV1ArtifactsByIdBlocksByBlockIdKeep"];
     delete?: never;
     options?: never;
@@ -1574,7 +1591,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -2213,6 +2230,40 @@ export interface paths {
     put?: never;
     /** @description The targeted session's reply to a delivery; the session names itself in actor. Once the attempt is answered, ?follow_up=true posts other text as the session's follow-up, threaded under its first reply; with follow_up=false or absent, or with text the session already posted there, nothing is posted and the stored message comes back marked duplicate. Any other follow_up is 400 MESSAGE_INPUT. */
     post: operations["postApiV1MessagesByIdReply"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/near-copy-checks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    get: operations["getApiV1NearCopyChecks"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/near-copy-checks/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. */
+    get: operations["getApiV1NearCopyChecksById"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -4193,6 +4244,56 @@ export interface components {
       question: string;
       suggestions: components["schemas"]["Suggestions"] | null;
     };
+    DecisionEntry: {
+      answer: null | string;
+      answer_state: null | string;
+      /** Format: date-time */
+      answered_at: null | string;
+      answered_by: null | string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      decided_by: components["schemas"]["DecisionEntryNode"] | null;
+      declined: boolean;
+      declined_note: null | string;
+      document: components["schemas"]["DecisionEntryDocument"] | null;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kept_by: null | string;
+      kept_text_sum: null | string;
+      kind: string;
+      multiple: null | boolean;
+      node: components["schemas"]["DecisionEntryNode"];
+      options: components["schemas"]["AskOption"][] | null;
+      question: null | string;
+      readings: components["schemas"]["DecisionReading"][] | null;
+      ref: string;
+      replaced: boolean;
+      resolution: components["schemas"]["AskResolution"] | null;
+      selected: string[] | null;
+      shaped: components["schemas"]["DecisionLink"][] | null;
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty: null | string;
+      uncertainty_reason: null | string;
+      urgency: null | string;
+      waiting_review: boolean;
+    };
+    DecisionEntryDocument: {
+      artifact_id: string;
+      block: string;
+      block_id: string;
+      ref: string;
+    };
+    DecisionEntryNode: {
+      id: string;
+      kind: string;
+    };
     DecisionKeep: {
       artifact_id: string;
       block_id: string;
@@ -4205,9 +4306,20 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_version: number;
+      event?: number;
       from_block: string;
       stale: boolean;
+      /** Format: date-time */
+      text_changed_at?: string;
+      text_changed_event?: number;
       to: components["schemas"]["GraphNode"];
+    };
+    DecisionReading: {
+      artifact_id: null | string;
+      authored_by: components["schemas"]["DecisionEntryNode"] | null;
+      block_id: string;
+      node: components["schemas"]["DecisionEntryNode"];
+      text: null | string;
     };
     DecisionResponse: {
       credential_id: null | string;
@@ -5074,6 +5186,7 @@ export interface components {
     IssueDecisions: {
       decisions: components["schemas"]["Decision"][] | null;
       document: null | string;
+      entries: components["schemas"]["DecisionEntry"][] | null;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDesignGate: {
@@ -5308,6 +5421,13 @@ export interface components {
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
     };
+    LiveAskAttributes: {
+      blocks: {
+        [key: string]: {
+          [key: string]: unknown;
+        };
+      } | null;
+    };
     LiveWritePauseState: {
       parked: boolean;
     };
@@ -5534,6 +5654,45 @@ export interface components {
     MyReplySession: {
       id: string;
       name: string;
+    };
+    NearCopyCheck: {
+      actor_id: string;
+      actor_kind: string;
+      build_commit: null | string;
+      candidates: components["schemas"]["NearCopyCheckCandidate"][] | null;
+      /** Format: date-time */
+      created_at: string;
+      force: boolean;
+      id: string;
+      issue: null | string;
+      /** Format: double */
+      nudge_score: number;
+      /** @enum {string} */
+      outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
+      parent: null | string;
+      project: string;
+      /** @enum {null|string} */
+      reason: "bound" | "failed" | "unrecorded" | null;
+      /** Format: double */
+      refuse_score: number;
+      spec?: string;
+      spec_sha256: string;
+      title: string;
+    };
+    NearCopyCheckCandidate: {
+      key: string;
+      /** Format: double */
+      score: number;
+      title: string;
+    };
+    NearCopyChecksPage: {
+      checks: components["schemas"]["NearCopyCheck"][] | null;
+      /** Format: date-time */
+      from: null | string;
+      next_after: null | string;
+      project: string;
+      /** Format: date-time */
+      to: null | string;
     };
     NewIssueSettings: {
       label: string;
@@ -6801,6 +6960,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdTestAskAttributes: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LiveAskAttributes"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11966,6 +12159,77 @@ export interface operations {
       };
     };
   };
+  getApiV1NearCopyChecks: {
+    parameters: {
+      query?: {
+        project?: string;
+        from?: string;
+        to?: string;
+        after?: string;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyChecksPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1NearCopyChecksById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyCheck"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1PeopleByLoginNodes: {
     parameters: {
       query?: {
@@ -13930,8 +14194,12 @@ export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuilds = components["schemas"]["DashboardBuilds"];
 export type Decision = components["schemas"]["Decision"];
 export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
+export type DecisionEntry = components["schemas"]["DecisionEntry"];
+export type DecisionEntryDocument = components["schemas"]["DecisionEntryDocument"];
+export type DecisionEntryNode = components["schemas"]["DecisionEntryNode"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
+export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
@@ -14048,6 +14316,7 @@ export type LauncherCredentialResp = components["schemas"]["LauncherCredentialRe
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
+export type LiveAskAttributes = components["schemas"]["LiveAskAttributes"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
@@ -14071,6 +14340,9 @@ export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
+export type NearCopyCheck = components["schemas"]["NearCopyCheck"];
+export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandidate"];
+export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type OpenAsk = components["schemas"]["OpenAsk"];

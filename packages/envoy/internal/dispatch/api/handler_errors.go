@@ -27,6 +27,10 @@ const (
 	codeInternal              = "INTERNAL"
 )
 
+// codeAnsweredAskKept refuses a document write by a credential with no person scope that would
+// drop or retype the block of an answered ask (docs.ErrAnsweredAskKept).
+const codeAnsweredAskKept = "ANSWERED_ASK_KEPT"
+
 // documentErrorCode names an error a document operation returns when it could not read or serve
 // the document, and is empty for any other error. writeHandlerError and anchorBlock both name a
 // document error by it, and both in one order, so the two cannot name one error differently.
@@ -190,6 +194,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, docs.ErrPreconditionBusy) {
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
+		return
+	}
+	var answeredAskKept *docs.ErrAnsweredAskKept
+	if errors.As(err, &answeredAskKept) {
+		writeError(w, codeAnsweredAskKept, http.StatusConflict, answeredAskKept.Error())
 		return
 	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock

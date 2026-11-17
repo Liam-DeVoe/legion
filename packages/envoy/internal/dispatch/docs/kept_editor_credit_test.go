@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -43,10 +42,14 @@ type keptEditorSweep struct {
 // the store's close margin admits alice's rewording however long the run takes
 // (observedBeforeClose). The ask repair withdraws the decision and the request, writing the
 // decision's block resolved first, all in one transaction holding the issue's row, as the repair's
-// final sweep does (api.sweepIssueAskBlocksTx).
+// final sweep does (api.sweepIssueAskBlocksTx). That write, and the reopen's that writes the block
+// open again, are made while another build serves (serveTwoBuilds), whose pages read an ask's
+// state from its block: on a fleet of one build neither changes a byte of the document
+// (WriteIssueAskStates), and no settlement would follow either.
 func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSweep {
 	t.Helper()
 	service, artifactID := newTestService(t)
+	serveTwoBuilds(t, service.store)
 	service.settle = time.Hour
 	ctx := context.Background()
 	seedServiceText(t, service, artifactID, keptEditorSpec)
@@ -94,14 +97,10 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 		if _, err := service.WriteIssueAskStates(ctx, "DOC-1", []model.Ask{withdrawnAsk(f.decision, closer)}, closer, true); err != nil {
 			return err
 		}
-		// The sweep appends no event here, so what each resolution states on its ask's node is
-		// caused at the sentinel.
+		// The sweep's ask.resolved events are no part of what this test reads, so each withdrawal
+		// states its facts on the ask's node at the sentinel (nil held, asks.Settle).
 		for _, id := range withdrawn {
-			var held graphstore.Uncaused
-			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, &held); err != nil {
-				return err
-			}
-			if err := graphstore.Caused(ctx, tx, held, graphstore.NoEvent); err != nil {
+			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, nil); err != nil {
 				return err
 			}
 		}

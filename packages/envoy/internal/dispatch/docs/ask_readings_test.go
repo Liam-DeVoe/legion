@@ -123,7 +123,8 @@ func TestAReadingInACopyOfAnAnsweredAskIsKept(t *testing.T) {
 
 // requireCopyKeptWithReading holds document, a copy, to its settlement having kept its ask block
 // ship as a copy of source: no ask of its own, the block showing the source's answer and naming
-// it, its reading r1 still in it, and no block.invalid written.
+// it as an agent reads it (TextWithAnswers) while no attribute of the block in the document holds
+// either (dispatch://INFRA-1150 R3), its reading r1 still in it, and no block.invalid written.
 func requireCopyKeptWithReading(t *testing.T, service *Service, document, source, what string) {
 	t.Helper()
 	if count := asksOn(t, service, document); count != 0 {
@@ -133,8 +134,15 @@ func requireCopyKeptWithReading(t *testing.T, service *Service, document, source
 	if invalid, flagged := ask.Attrs["invalid"]; flagged && invalid != nil {
 		t.Errorf("%s is flagged invalid: %v", what, invalid)
 	}
-	if ask.Attrs["state"] != asks.StateAnswered || ask.Attrs["copied_from"] != source {
-		t.Errorf("%s shows state %v copied from %v, want the answer of its source %s", what, ask.Attrs["state"], ask.Attrs["copied_from"], source)
+	if state, copied := ask.Attrs["state"], ask.Attrs["copied_from"]; state != nil || copied != nil {
+		t.Errorf("%s holds state %v copied from %v in the document, want neither: the copy's source's ask holds them", what, state, copied)
+	}
+	shown, err := pmdoc.Parse(copyAsAgentReadsIt(t, service, document))
+	if err != nil {
+		t.Fatalf("parse %s as an agent reads it: %v", what, err)
+	}
+	if shownAsk := firstAsk(shown); shownAsk.Attrs["state"] != asks.StateAnswered || shownAsk.Attrs["copied_from"] != source {
+		t.Errorf("%s shows an agent state %v copied from %v, want the answer of its source %s", what, shownAsk.Attrs["state"], shownAsk.Attrs["copied_from"], source)
 	}
 	if readings := closingReadings(ask); !slices.Equal(readings, []askReading{{ask: "ship", reading: "r1", kind: "reading"}}) {
 		t.Errorf("%s closes with %+v, want its reading r1 kept", what, readings)
@@ -212,7 +220,8 @@ func TestARetractedAnsweredAskReturningWithAReadingIsRestored(t *testing.T) {
 // answerAsRecorded answers the ask of blockID on artifactID as alice the way the answer route
 // records an answer: through the one writer of an ask's answer state (asks.Settle), with the
 // ask.answered event that records it - the event a restoration reads the state back from
-// (stateBeforeRetraction) - and the block's attributes showing it, in one joined transaction.
+// (stateBeforeRetraction) - and the block kept in step with it while another build serves
+// (KeepAskBlockInStep, which writes nothing on a fleet of one build), in one joined transaction.
 func answerAsRecorded(t *testing.T, service *Service, artifactID, blockID string, selected []string) {
 	t.Helper()
 	ask := blockAskOn(t, service, artifactID, blockID)
@@ -239,9 +248,7 @@ func answerAsRecorded(t *testing.T, service *Service, artifactID, blockID string
 		if err := graphstore.Caused(ctx, tx, held, appended.ID); err != nil {
 			return err
 		}
-		return service.SetBlockAttributes(ctx, artifactID, blockID, map[string]any{
-			"state": asks.StateAnswered, "answered_by": alice.ID, "answered_at": answer.At.Format(time.RFC3339Nano), "selected": selected, "answer": nil,
-		}, alice)
+		return service.KeepAskBlockInStep(ctx, ask, alice)
 	})
 }
 

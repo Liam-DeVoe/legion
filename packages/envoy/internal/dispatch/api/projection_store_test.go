@@ -295,13 +295,21 @@ func receiverName(fields *ast.FieldList) string {
 // A write is covered when its function writes the store itself, or when a function that does
 // reaches it: the two then run in one call, and so in one transaction. The block index's own
 // link writer is the second case - refs.IndexBlocks writes the nodes and calls it.
+//
+// The scan is held to finding the seed's write of comments too (seedCommentsWrite): it is the
+// one writer of comments outside internal/dispatch, so a scan that read less of the repository
+// than it should would still find the other two writers and pass without it.
 func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources) {
 	t.Helper()
 	covered, from := sources.reachedByAStoreWrite()
 	if len(sources.writes) == 0 {
 		t.Fatalf("the scan over %d Go source found no write of a projected table, and the three writers of comments alone are known", sources.files)
 	}
+	var comments []string
 	for _, write := range sources.writes {
+		if write.table == "comments" {
+			comments = append(comments, write.file+"#"+write.inside)
+		}
 		path := sources.path(from, write.inside)
 		if _, ok := covered[write.inside]; !ok {
 			t.Errorf("%s:%d writes %s inside %s, which no store write reaches: a row of a projected table is written only beside the node it projects",
@@ -310,7 +318,16 @@ func requireEveryWriteIsOnTheStorePath(t *testing.T, sources *projectionSources)
 		}
 		t.Logf("%s:%d %s in %s, through %s", write.file, write.line, write.table, write.inside, strings.Join(path, " -> "))
 	}
+	if !slices.Contains(comments, seedCommentsWrite) {
+		t.Errorf("the scan found the writes of comments in %v and not the seed's, %s: the seed is one of the writers of comments this check holds to the store writer's path",
+			comments, seedCommentsWrite)
+	}
 }
+
+// seedCommentsWrite is the seed's write of comments, by the file it is in and the function that
+// issues it, as the scan names a write: cmd/dispatch-seed writes the comments of its plan in
+// batches, each beside the nodes the batch's rows project.
+const seedCommentsWrite = "packages/envoy/cmd/dispatch-seed/write_items.go#main.*seedRun.writeComments"
 
 // reachedByAStoreWrite answers every function a store write reaches, with the function each was
 // first reached from, so a path can be read back.

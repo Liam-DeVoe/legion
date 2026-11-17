@@ -37,16 +37,20 @@ import (
 // (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
 // its node - a reading's check of its ask (askAnswers) and this step's own count - read an ask
 // phase 1 has not stated yet as open, and the release before keeps serving through a roll until
-// this process serves. It then runs on a tick of its own (Run) every BlockIndexReconcileInterval
-// for as long as the process runs: a process of another build can go live after a tick found
-// nothing to do - a rollback, or a process of the release before that starts late - so the tick
-// never stops for want of work. Phase 1 has work while an unmarked row stands
-// (graphcensus.AsksOwed). Phase 2 has work on each tick while processes.Live lists a process of
-// another build, once more on the first tick that finds the fleet one build, which is also a
-// process's first tick - the window it reads opens before this process started, so a restart of a
-// process on a fleet that stood whole never misses a write - and again after any pass on which an
-// ask failed. Each tick answers what the restore and the conversion owe (DecisionStepOwed), which
-// /healthz answers (Owed).
+// this process serves. The boot reads only what phase 1 needs - whether a row stands unmarked
+// (graphcensus.AsksOwed), and the rows the backfill states - and nothing else: a table no phase 1
+// statement reads, held by another transaction, must not keep the process from serving. It then
+// runs on a tick of its own (Run) every BlockIndexReconcileInterval for as long as the process
+// runs: a process of another build can go live after a tick found nothing to do - a rollback, or a
+// process of the release before that starts late - so the tick never stops for want of work.
+// Phase 1 has work while an unmarked row stands (graphcensus.AsksOwed). Phase 2 has work on each
+// tick while processes.Live lists a process of another build, once more on the first tick that
+// finds the fleet one build, which is also a process's first tick - the window it reads opens
+// before this process started, so a restart of a process on a fleet that stood whole never misses
+// a write - and again after any pass on which an ask failed. Each tick answers what the restore and
+// the conversion owe (DecisionStepOwed), which /healthz answers (Owed). The boot counts none of it,
+// since that count reads document_block_versions, which phase 1 never reads: the count stands
+// absent until the process's first tick has run.
 //
 // A tick with no work reads no table whole (probe): it reads the live processes, the newest event
 // and whether any document's block index is owed, each one probe of an index. graphcensus.AsksOwed
@@ -96,24 +100,36 @@ type DecisionStep struct {
 	owed atomic.Pointer[DecisionStepOwed]
 }
 
-// DecisionStepOwed is what the step's last pass found the restore and the conversion owe, as
-// /healthz answers it in `decisions_step_owed`: the decisions documents still standing, the
-// answered asks whose block left their spec, the stored lists of gated steps that hold
-// `decisions`, and their sum. A deploy check reads total 0 as the step having nothing left to do.
+// DecisionStepOwed is what the step's last pass found the restore and the conversion owe: the
+// decisions documents still standing, the answered asks whose block left their spec, the stored
+// lists of gated steps that hold `decisions`, and their sum. /healthz answers the sum alone, as
+// `decisions_step_owed` (OwedTotal), which a deploy check reads at zero as the step having nothing
+// left to do; each count logs the three parts beside it (recountOwed).
 type DecisionStepOwed struct {
-	DecisionsDocuments int64 `json:"decisions_documents"`
-	AnswersLeftSpec    int64 `json:"answers_left_spec"`
-	GatedStepsLists    int64 `json:"gated_steps_lists"`
-	Total              int64 `json:"total"`
+	DecisionsDocuments int64
+	AnswersLeftSpec    int64
+	GatedStepsLists    int64
+	Total              int64
 }
 
-// Owed is what the step's last pass found owed, nil before a pass has run - and so for as long as
-// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the step - and on a nil step.
+// Owed is what the step's last pass found owed, part by part, nil before a tick has counted it -
+// and so through the boot, whose pass counts nothing, for as long as
+// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the step, and on a nil step.
 func (s *DecisionStep) Owed() *DecisionStepOwed {
 	if s == nil {
 		return nil
 	}
 	return s.owed.Load()
+}
+
+// OwedTotal is the sum of what the step's last pass found owed (Owed), nil while Owed is.
+func (s *DecisionStep) OwedTotal() *int64 {
+	owed := s.Owed()
+	if owed == nil {
+		return nil
+	}
+	total := owed.Total
+	return &total
 }
 
 // countDecisionStepOwed reads what the restore and the conversion owe, in one statement. It is
@@ -173,10 +189,11 @@ const decisionStepLock int64 = 0x4444454349534E53
 // on.
 const decisionStepApplication = "dispatch-decision-step"
 
-// Boot is the step's pass at boot: it waits for the step's lock, then probes what each phase owes
-// (probe), graphcensus.AsksOwed among it, and runs phase 1 where a row stands unmarked. It answers
-// a failure of either, which stops the boot. It leaves the count owed again, so the process's first
-// tick counts what the writes since the boot's own count left.
+// Boot is the step's pass at boot: it waits for the step's lock, reads whether phase 1 owes a row
+// (graphcensus.AsksOwed), and runs phase 1 where one stands unmarked. It answers a failure of
+// either, which stops the boot. It reads nothing else - not whether another build is live, which
+// phase 1 does not wait on, and not what the restore and the conversion owe, which the process's
+// first tick counts (probe) - so the boot waits on no table phase 1 does not read.
 func (s *DecisionStep) Boot(ctx context.Context) error {
 	conn, err := s.database.Pool.Dedicated(ctx, decisionStepApplication)
 	if err != nil {
@@ -186,9 +203,8 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, `select pg_advisory_lock($1)`, decisionStepLock); err != nil {
 		return fmt.Errorf("take the decision step's lock: %w", err)
 	}
-	work, err := s.probe(ctx, true)
-	s.recount = true
-	if err != nil || !work.backfill {
+	owed, err := graphcensus.AsksOwed(ctx, s.database.Pool)
+	if err != nil || !owed {
 		return err
 	}
 	return s.backfill(ctx)
@@ -201,7 +217,7 @@ func (s *DecisionStep) Boot(ctx context.Context) error {
 // work, and runs each phase with work. A failure of a phase is logged and tried again at the next
 // tick; it answers a failure of the probes or of the lock.
 func (s *DecisionStep) Tick(ctx context.Context) error {
-	work, err := s.probe(ctx, false)
+	work, err := s.probe(ctx)
 	if err != nil {
 		return err
 	}
@@ -263,16 +279,16 @@ type decisionStepWork struct {
 	other bool
 }
 
-// probe reads what a pass owes: whether a process of another build is live, what the restore and
+// probe reads what a tick owes: whether a process of another build is live, what the restore and
 // the conversion owe (recountOwed), which Owed answers from then on, and whether phase 1 has a row
 // to state. graphcensus.AsksOwed reads the tables of its kinds to the end when nothing is owed - an
 // anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
-// which no index keys on a null marker - so it is read only at boot, on a tick that owes a
+// which no index keys on a null marker - so it is read only at boot (Boot), on a tick that owes a
 // catch-up, and after a tick that saw another build live, until a read of it finds nothing owed
 // with no other build live: this build's create sites write each node and marker in the write that
 // stores the row, so a row it finds is one another build wrote. Every other tick takes phase 1 to
 // owe nothing.
-func (s *DecisionStep) probe(ctx context.Context, boot bool) (decisionStepWork, error) {
+func (s *DecisionStep) probe(ctx context.Context) (decisionStepWork, error) {
 	var work decisionStepWork
 	var err error
 	if work.other, err = s.anotherBuildLive(ctx); err != nil {
@@ -284,7 +300,7 @@ func (s *DecisionStep) probe(ctx context.Context, boot bool) (decisionStepWork, 
 	if err := s.recountOwed(ctx, work.other); err != nil {
 		return decisionStepWork{}, err
 	}
-	if boot || s.backfillUnknown || s.catchUpOwed {
+	if s.backfillUnknown || s.catchUpOwed {
 		if work.backfill, err = graphcensus.AsksOwed(ctx, s.database.Pool); err != nil {
 			return decisionStepWork{}, err
 		}
@@ -327,6 +343,10 @@ func (s *DecisionStep) recountOwed(ctx context.Context, other bool) error {
 		return err
 	}
 	s.owed.Store(&owed)
+	s.logger.Info("dispatch: decisions step counted what it owes",
+		"owed", owed.Total, "decisions_documents", owed.DecisionsDocuments,
+		"answers_left_spec", owed.AnswersLeftSpec, "gated_steps_lists", owed.GatedStepsLists,
+		"commit", s.commit)
 	s.recount, s.countedThrough, s.countedIndexOwed = other, floor, indexOwed
 	return nil
 }

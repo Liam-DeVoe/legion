@@ -19,10 +19,11 @@ import (
 // tuple whose address is past graphstore.MaxAddressBytes, so the record commits and the stream
 // drains.
 //
-// Two targeted messages share one issue's batch: a role of exactly the bound, whose node is
-// written (its page, role/<name>, is five bytes longer and past the bound, so it is left out), and
-// a role a byte over, whose node and page are both left out. Both messages publish, and a record
-// after them publishes too.
+// Three targeted messages share one issue's batch: a role of exactly the bound, whose node is
+// written (its page, role/<name>, is five bytes longer and past the bound, so it is left out), a
+// role a byte over, whose node and page are both left out, and the 1,400-byte role, left out
+// whole. All three publish, the store then holds no node and no tuple end past the bound, and a
+// record after them publishes too.
 func TestADeliveredRoleIsLeftOutPastTheAddressBound(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -64,6 +65,28 @@ func TestADeliveredRoleIsLeftOutPastTheAddressBound(t *testing.T) {
 	requirePublished(t, database, atMsg, true)
 	requirePublished(t, database, overMsg, true)
 	requirePublished(t, database, blowsMsg, true)
+
+	// The record writes claims and tuples as well as nodes, and a tuple whose end is a longer role
+	// or a page is no node the reads below see, since they ask after six nodes by name. So both
+	// tables are read whole for any address past the bound. A value is no address, so a value's
+	// to_id is not counted.
+	var longNodes, longTuples int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_nodes where octet_length(id) > $1`,
+		graphstore.MaxAddressBytes).Scan(&longNodes); err != nil {
+		t.Fatalf("count the nodes past the bound: %v", err)
+	}
+	if longNodes != 0 {
+		t.Errorf("the store holds %d node(s) whose id is past the %d-byte bound, want none", longNodes, graphstore.MaxAddressBytes)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_tuples
+		where octet_length(from_id) > $1 or (to_kind <> 'value' and octet_length(to_id) > $1)
+	`, graphstore.MaxAddressBytes).Scan(&longTuples); err != nil {
+		t.Fatalf("count the tuples with an end past the bound: %v", err)
+	}
+	if longTuples != 0 {
+		t.Errorf("the store holds %d tuple(s) with an end past the %d-byte bound, want none", longTuples, graphstore.MaxAddressBytes)
+	}
 
 	// The role of exactly the bound is a node; its page is five bytes longer and left out.
 	requireLiveNode(t, database, graphstore.KindRole, atBound)

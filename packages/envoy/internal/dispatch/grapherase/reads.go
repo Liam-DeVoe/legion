@@ -312,7 +312,9 @@ func (e *Erasure) readTexts(ctx context.Context, tx pgx.Tx, read *erasedRead) er
 }
 
 // readTuples lists every tuple out of the node and into it, by its seq, each of which goes with
-// the node. A value tuple is listed without its value, which can be text.
+// the node. A value tuple is listed without its value, which can be text. Of an ask's node or a
+// block's, it also keeps the writers its authored_by, decided_by and answered_by tuples name
+// (Erasure.Writers), which the record of the run holds once those tuples go.
 func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
@@ -323,6 +325,7 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
 	defer rows.Close()
+	writers := map[ErasedWriter]struct{}{}
 	for rows.Next() {
 		var seq int64
 		var fromKind, fromID, kind, toKind, toID string
@@ -335,6 +338,9 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 		} else {
 			e.Inbound++
 		}
+		if out && writesTheNode(e.Kind, kind, toKind) {
+			writers[ErasedWriter{Kind: toKind, ID: toID}] = struct{}{}
+		}
 		far := toKind + ":" + toID
 		if toKind == graphstore.KindValue {
 			far = "a value"
@@ -346,6 +352,9 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
 	}
+	e.Writers = slices.SortedFunc(maps.Keys(writers), func(a, b ErasedWriter) int {
+		return strings.Compare(a.Kind+":"+a.ID, b.Kind+":"+b.ID)
+	})
 	return nil
 }
 
@@ -498,6 +507,23 @@ func (e *Erasure) readParts(ctx context.Context, tx pgx.Tx, read *erasedRead, ki
 		}
 	}
 	return rows.Err()
+}
+
+// writesTheNode reports whether a tuple of kind out of a node of nodeKind, reaching a node of
+// toKind, names who wrote or answered that node: an ask's authored_by, answered_by or decided_by,
+// or a decision's decided_by or a reading's authored_by, into a person or a session. A comment's
+// authored_by is not one: no record of an erase holds a comment's author.
+func writesTheNode(nodeKind, kind, toKind string) bool {
+	if toKind != graphstore.KindPerson && toKind != graphstore.KindSession {
+		return false
+	}
+	switch nodeKind {
+	case graphstore.KindAsk:
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleAnsweredBy || kind == graphstore.TupleDecidedBy
+	case refs.BlockNodeKind:
+		return kind == graphstore.TupleAuthoredBy || kind == graphstore.TupleDecidedBy
+	}
+	return false
 }
 
 // readRows lists the node's row, its projection rows by key, the rows that cannot exist without

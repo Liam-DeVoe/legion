@@ -12,6 +12,7 @@ import (
 	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // The OAuth scopes a credential can hold. ScopePerson is "this credential acts as its person",
@@ -54,9 +55,9 @@ func (a *ActorAct) Holds(scope string) bool {
 	return a == nil || slices.Contains(a.Scopes, scope)
 }
 
-// Credential is the request's credential as optionalActor resolved it: the scopes it holds, and
-// the agent it names. A pointer, so Actor stays comparable with ==, which this package's callers
-// and its tests rely on.
+// Credential is the request's credential as optionalActor resolved it: the scopes it holds, the
+// agent it names, and whether it may only read. A pointer, so Actor stays comparable with ==,
+// which this package's callers and its tests rely on.
 type Credential struct {
 	// Scopes are the OAuth scopes the credential holds: ScopePerson, ScopeApprove, or neither.
 	Scopes []string
@@ -66,6 +67,15 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
+	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// one the secrets broker minted from a read entry, naming a service and a session and no
+	// person and no project. Dispatch serves it on the routes its read list names
+	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
+	// (refuseReadOnlyToken), before anything else the route does. The scope itself is not among
+	// Scopes: those are what a route can require of a credential, and read meets no route's
+	// requirement; it narrows what this credential may call rather than widening it. False for
+	// every other credential.
+	ReadOnly bool
 }
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
@@ -148,10 +158,11 @@ func sameActorName(left, right *string) bool {
 	return *left == *right
 }
 
-// CanonicalLogin is the stored form of a person's email: trimmed and lowercased, the form the
-// identity implementations name a person by and the people table holds.
+// CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
+// (fold.ASCII) and nothing else folded, the form the identity implementations name a person by and
+// the people table holds.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // ActorOrigin describes the client environment of a session actor.
@@ -913,8 +924,10 @@ type WriteSuggestion struct {
 // it. LikelyDuplicate is the closest open issue of an unforced create whose near-copy score
 // reached the nudge bar but not the refusal's: a field of its own, because every released client
 // prints each TitleMatches entry as something the filer forced past. NearCopyCheck is set, to
-// why, exactly when the near-copy check before the create did not answer, so a filer knows the
-// create went in unchecked; it is absent on every other write, which runs no such check.
+// why, exactly when the near-copy check before the create made no check that could stop it: its
+// read did not answer, or it found a near copy whose refusal could not be recorded, which it then
+// names; so a filer knows the create went in unchecked. It is absent on every other write, which
+// runs no such check.
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
@@ -979,6 +992,64 @@ type RelatedCheckTiming struct {
 	P95       *int `json:"p95"`
 	Max       *int `json:"max"`
 	Over300MS int  `json:"over_300ms"`
+}
+
+// NearCopyCheck is one row of near_copy_checks: one answer the near-copy gate gave an issue
+// create. Outcome is refused (the gate refused it and nothing was written: every 409
+// POSSIBLE_DUPLICATE has this row, written before the answer; so does a refusal whose row landed
+// unseen when the create let in past it then failed), forced (written past a refusal with
+// `force`), nudged (written, its closest open issue named as a likely duplicate), passed (written
+// with nothing named, forced or not) or not_made (the gate made no check that could stop the
+// create, and it went in unchecked), and Reason says why a check was not made: bound (the read ran
+// out of its bound or its request went away), failed (the read failed) or unrecorded (the read
+// found a near copy, but the row of its refusal could not be confirmed, so it refused nothing);
+// null for every other outcome. Force is whether the create asked for `force`.
+//
+// Spec is the spec as sent, held for a refused create alone, which has no issue to hold it ("" for
+// one that sent none); it is absent from a page (NearCopyChecksPage) and from every other row.
+// SpecSHA256 is the spec's sha256 in hex on every row. Issue is the issue the create wrote, null
+// for a refusal. Candidates are the candidates the gate read at or above NudgeScore, at most
+// five, best score first, with each one's title as it then stood; RefuseScore and NudgeScore are
+// the bars the build read them against, and BuildCommit is the legion commit it was built from,
+// null for a build nothing stamped.
+type NearCopyCheck struct {
+	ID          string                   `json:"id"`
+	CreatedAt   time.Time                `json:"created_at"`
+	Project     string                   `json:"project"`
+	ActorKind   string                   `json:"actor_kind"`
+	ActorID     string                   `json:"actor_id"`
+	Outcome     string                   `json:"outcome" enum:"refused,forced,nudged,passed,not_made"`
+	Reason      *string                  `json:"reason" enum:"bound,failed,unrecorded"`
+	Force       bool                     `json:"force"`
+	Title       string                   `json:"title"`
+	Spec        *string                  `json:"spec,omitempty"`
+	SpecSHA256  string                   `json:"spec_sha256"`
+	Parent      *string                  `json:"parent"`
+	Issue       *string                  `json:"issue"`
+	Candidates  []NearCopyCheckCandidate `json:"candidates"`
+	RefuseScore float64                  `json:"refuse_score"`
+	NudgeScore  float64                  `json:"nudge_score"`
+	BuildCommit *string                  `json:"build_commit"`
+}
+
+// NearCopyCheckCandidate is one issue the near-copy gate read for a create, with the score it
+// read and the title the issue held at that moment.
+type NearCopyCheckCandidate struct {
+	Key   string  `json:"key"`
+	Title string  `json:"title"`
+	Score float64 `json:"score"`
+}
+
+// NearCopyChecksPage is GET /api/v1/near-copy-checks: one project's near-copy gate answers
+// recorded within [From, To), oldest first, at most the page's limit. Project, From and To echo
+// the query, From and To null when not given. NextAfter is the id to pass as ?after= for the
+// next page, null when this page holds the last row the window selects.
+type NearCopyChecksPage struct {
+	Project   string          `json:"project"`
+	From      *time.Time      `json:"from"`
+	To        *time.Time      `json:"to"`
+	Checks    []NearCopyCheck `json:"checks"`
+	NextAfter *string         `json:"next_after"`
 }
 
 // IssueChild is a child item embedded in an issue detail response. The subtree counts
@@ -1111,12 +1182,17 @@ type Artifact struct {
 	// Role is the part an issue's document plays beside its spec: ArtifactRoleVerification for
 	// the document created as verification.md, ArtifactRolePlan for the one created as plan.md,
 	// ArtifactRoleDecisions for the one created as decisions.md, "" for every other document.
-	// It is set from the document's slug when the row is created and never changes, as Primary
-	// never changes, and no request field sets it.
+	// It is set from the document's slug when the row is created, as Primary is, and no request
+	// field sets it; the one write that clears it is the document's retirement.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
-	Versions  []Version `json:"versions"`
+	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
+	// is in no list of its issue's or its project's documents, plays no role, and its approval no
+	// longer stands, while its row, its versions and its address stay readable. No response
+	// carries it.
+	Retired  bool      `json:"-"`
+	Versions []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
@@ -1157,7 +1233,8 @@ type ArtifactReview struct {
 // ArtifactApproval is a document's approval state as of its latest version:
 // draft (never reviewed or requested), awaiting (an approval ask is open),
 // approved (approved at the latest version), stale (approved at an older
-// version), or changes_requested (the latest review asks for changes). An
+// version, or approved before the document was retired, whose retirement
+// superseded the approval), or changes_requested (the latest review asks for changes). An
 // awaiting approval carries its request's WaitingOn: agent once a version moved
 // the request past the one its agent handed to the human, or a reply left it with
 // the agent; human otherwise (the ask reads' waiting_on). Seq is the latest
@@ -1204,6 +1281,32 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+}
+
+// DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
+// retires, on the document's owner.
+const DocumentRetiredEventType = "document.retired"
+
+// DocumentRetiredEventPayload is the payload of document.retired: the document, the role it
+// played until its retirement cleared it ("" for none), why it was retired, and the approval the
+// retirement superseded, nil where the document held none standing.
+type DocumentRetiredEventPayload struct {
+	ArtifactID         string              `json:"artifact_id"`
+	RefKey             string              `json:"ref_key"`
+	Name               string              `json:"name"`
+	Role               string              `json:"role,omitempty"`
+	Reason             string              `json:"reason"`
+	SupersededApproval *SupersededApproval `json:"superseded_approval"`
+}
+
+// SupersededApproval is an approval a write ended rather than carried: the review that gave it,
+// the version it approved, who gave it and of which kind (docs' ReviewKindPerson,
+// ReviewKindPlanReview).
+type SupersededApproval struct {
+	ReviewID        string `json:"review_id"`
+	ApprovedVersion int    `json:"approved_version"`
+	ApprovedBy      Actor  `json:"approved_by"`
+	Kind            string `json:"kind"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -3213,16 +3316,23 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a block it shaped: the decision's own block that
+// holds it, the block it names, when and in which version the link was first written, and whether
+// that block is out of date. A link of the decisions document's view reads stale when the
+// decision changed after it first linked that block and that block has not changed since; a link
+// of a decision node (internal/dispatch/decisionread) is its `shaped` tuple, Event the event that
+// wrote the tuple, TextChangedEvent and TextChangedAt the event and the time that wrote the version
+// the block's text last changed in, and Stale true when the block's text changed after the tuple
+// was written (dispatch://INFRA-1150 R5). The three are absent where the store holds none.
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
 // Decision is one decision of an issue's decisions.md: its heading block and every block after
@@ -3251,6 +3361,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.
