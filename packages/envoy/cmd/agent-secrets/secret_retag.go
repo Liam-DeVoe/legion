@@ -36,6 +36,24 @@ var errTagsChanged = errors.New("another write changed the secret after this ret
 // writer's, and restoring them would take that writer's retag away.
 var errTagsRaced = errors.New("this retag's write landed beside another writer's, and nothing was restored")
 
+// tagsLanded is a tag write's error that came after the write itself landed: an AWS tag call takes
+// no condition, so the write is made first and read back after (awsBackend.raceCheck), and a race
+// the read-back finds, or a read-back that fails, is answered with the write already in the store.
+// Its text is the error's own; it only marks the error, so a message can say the write landed
+// (writeLanded) rather than describe the tags as they were before it.
+type tagsLanded struct{ err error }
+
+func (e tagsLanded) Error() string { return e.err.Error() }
+
+// Unwrap is the error, so errors.Is still finds errTagsChanged and errTagsRaced through it.
+func (e tagsLanded) Unwrap() error { return e.err }
+
+// writeLanded reports whether err, a tag write's error, came after the write landed (tagsLanded).
+func writeLanded(err error) bool {
+	var landed tagsLanded
+	return errors.As(err, &landed)
+}
+
 // tagPairs is tags as sorted `key=value` pairs separated by single spaces, for a message that
 // names one read of a secret's tags beside another. A tag is metadata, never a value.
 func tagPairs(tags map[string]string) string {
@@ -236,6 +254,13 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
+			if rewrite != "" && writeLanded(err) {
+				// The removal landed, but on tags another writer changed or that could not be read
+				// back, so the retag writes nothing more on them: the requesters rewrite would
+				// send this retag's owner and tier over whatever the other writer wrote.
+				fmt.Fprintf(stderr, "agent-secrets %s: the removal landed, so its second write, %s's requesters as %q, was not made; read the tags as they now stand with `%s`, and run this retag again\n",
+					form, name, rewrite, s.backend.agentSecrets("secret", "show", name))
+			}
 			rereadIfRaced(s, stdout, stderr, form, name, err)
 			return 1
 		}
@@ -245,10 +270,21 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		}
 		if rewrite != "" {
 			if err := writeGuardRewrite(s, slug, after, rewrite); err != nil {
-				// What the requesters tag holds now is what it held before this retag: the
-				// removal did not touch it. The guard was either leaving it (harmless to leave)
-				// or joining it (the secret keeps a project tag with no guard, which a broker
-				// from before the project tags would serve), and the two need different words.
+				if writeLanded(err) {
+					// AWS: the rewrite landed, and its read-back then found another writer's
+					// retag beside it, or could not be read (awsBackend.raceCheck). The requesters
+					// tag holds what this retag wrote, so the message says so and names the read
+					// that shows the tags as they now stand.
+					fmt.Fprintf(stderr, "agent-secrets %s: the removal stands, and %s's requesters were written as %q, but %v; looked in %s. Read the tags as they now stand with `%s`\n",
+						form, name, rewrite, s.refusedAs(err), s.storeName(), s.backend.agentSecrets("secret", "show", name))
+					rereadRetag(s, stdout, stderr, form, name, policy.TypeFromTags(after))
+					return 1
+				}
+				// The rewrite did not land, so what the requesters tag holds now is what it held
+				// before this retag: the removal did not touch it. The guard was either leaving it
+				// (harmless to leave) or joining it (the secret keeps a project tag with no guard,
+				// which a broker from before the project tags would serve), and the two need
+				// different words.
 				_, guarded := policy.SplitRequestersGuard(held.tags[policy.TagRequesters])
 				state := fmt.Sprintf("The requesters tag still holds %s, which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads, as a refusal", policy.RequestersRollbackGuard)
 				if !guarded {

@@ -667,10 +667,15 @@ type secretBackend interface {
 	// setTags writes tags onto the secret in one call and leaves every other tag as it is.
 	// removeTags removes keys from it in one call and leaves every other tag as it is. Each writes
 	// against held, and answers errTagsChanged when another write raced it: GCP sends held's
-	// annotations, changed, with held's etag, which a raced write fails; AWS's tag calls take no
-	// condition, so its write reads the tags back and restores held's (awsBackend.raceCheck).
+	// annotations, changed, with held's etag, which a raced write fails, so nothing is written;
+	// AWS's tag calls take no condition, so its write lands first and is read back after
+	// (awsBackend.raceCheck), and an error from that read-back comes with the write in the store
+	// and nothing put back (tagsLanded, writeLanded).
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
+	// agentSecrets is an agent-secrets command line that signs in as this command did, for a
+	// message that names the command to run next.
+	agentSecrets(words ...string) string
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:
 	// DeleteSecret's own recovery window end; GCP: the expire_time it sets), nil only on error.
 	delete(ctx context.Context, slug string) (deletion *time.Time, err error)

@@ -22,6 +22,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -193,11 +194,34 @@ func rollbackAnswers(t *testing.T, loader policy.Loader) map[string]rollbackAnsw
 }
 
 // TestTheRollbackGuardBaseAnswersAreRecorded writes the golden, with -write-rollback-golden, at the
-// merge base alone. Without the flag there is nothing for it to check: a later broker answers
-// these secrets differently by design, which rollback_guard_test.go checks against the golden.
+// merge base alone. Without the flag it checks that the golden holds an answer for exactly the
+// cases rollbackGuardCases builds, by name, so a case added to or taken out of this file without
+// the golden written again at the merge base fails here rather than going unrecorded. What this
+// broker answers for each case is rollback_guard_test.go's check. It never skips: the broker
+// packages' run counts every skip as a database suite that did not run (database-skips.sh).
 func TestTheRollbackGuardBaseAnswersAreRecorded(t *testing.T) {
 	if !*writeRollbackGolden {
-		t.Skip("records the merge base's answers only with -write-rollback-golden; rollback_guard_test.go is the check")
+		raw, err := os.ReadFile(rollbackGolden)
+		if err != nil {
+			t.Fatalf("read %s: %v", rollbackGolden, err)
+		}
+		var golden map[string]rollbackAnswer
+		if err := json.Unmarshal(raw, &golden); err != nil {
+			t.Fatalf("decode %s: %v", rollbackGolden, err)
+		}
+		var cases, recorded []string
+		for _, c := range rollbackGuardCases() {
+			cases = append(cases, c.name)
+		}
+		for name := range golden {
+			recorded = append(recorded, name)
+		}
+		slices.Sort(cases)
+		slices.Sort(recorded)
+		if len(cases) == 0 || !slices.Equal(cases, recorded) {
+			t.Fatalf("this file builds the cases %v and %s records %v; want the same names, and above zero: write the golden again at the merge base, as the head comment says", cases, rollbackGolden, recorded)
+		}
+		return
 	}
 	answers := rollbackAnswers(t, policytest.Loader(rollbackGuardStore()))
 	raw, err := json.MarshalIndent(answers, "", "  ")

@@ -257,6 +257,14 @@ func TestAPrivateProjectSecretTagMovesTheVersionOnlyWhenPresent(t *testing.T) {
 			untagged: "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\n",
 			line:     "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t1h0m0s\t\tproject=PRIV\n",
 		},
+		// The one case with optional fields before the project field: requesters, scopes and
+		// admin are written first, and project after them, so a digest that moved project=
+		// ahead of any of them would move every such secret's version.
+		"a secret with requesters, scopes, admin and a max-grant": {
+			secret:   policy.Secret{Name: "A_KEY", Owner: carol, Tier: policy.TierHuman, Source: arn + "a-key", Requesters: carol, Scopes: "cloud-platform", Admin: true, MaxGrant: time.Hour},
+			untagged: "A_KEY\tcarol@example.com\thuman\t" + arn + "a-key\t1h0m0s\t\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\n",
+			line:     "A_KEY\tcarol@example.com\thuman\t" + arn + "a-key\t1h0m0s\t\trequesters=carol@example.com\tscopes=cloud-platform\tadmin=true\tproject=PRIV\n",
+		},
 		"a session-default secret": {
 			secret:   policy.Secret{Name: "A_KEY", Owner: carol, Tier: policy.TierAgent, Source: arn + "a-key", SessionDefault: true},
 			untagged: "A_KEY\tcarol@example.com\tagent\t" + arn + "a-key\t0s\t\tdefault-grant=session\n",

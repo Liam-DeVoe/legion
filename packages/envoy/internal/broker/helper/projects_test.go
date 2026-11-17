@@ -78,6 +78,44 @@ func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 	})
 }
 
+// TestAnAttachToARegisteredSessionKeepsItsProjects: `agent-secrets register` without --exec
+// attaches (Attach, and a RootPID naming the caller's launcher), and from inside a session it is
+// answered with that session. A session's projects are fixed at its first register on that path
+// too: an attach naming other projects, none, or one more is refused, and one naming the same list
+// is answered with the session's own runtime id, the control that shows the refusals are the
+// projects' doing and not the attach's.
+func TestAnAttachToARegisteredSessionKeepsItsProjects(t *testing.T) {
+	r := startRig(t, "")
+	r.callerPID.Store(int64(os.Getpid()))
+	defer r.callerPID.Store(0)
+	id := testSessionID
+	first := r.call(t, Request{Op: "register", SessionID: &id, Projects: []string{"PUB", "PRIV"}})
+	if !first.OK {
+		t.Fatalf("first register: %+v", first)
+	}
+	for _, c := range []struct {
+		name     string
+		projects []string
+		wantOK   bool
+	}{
+		{"other projects", []string{"PUB"}, false},
+		{"no projects", nil, false},
+		{"another private project", []string{"CORE", "PRIV", "PUB"}, false},
+		{"the same projects (control)", []string{"PRIV", "PUB"}, true},
+	} {
+		resp := r.call(t, Request{Op: "register", Attach: true, RootPID: os.Getppid(), Projects: c.projects})
+		if c.wantOK {
+			if !resp.OK || resp.RuntimeID != first.RuntimeID {
+				t.Errorf("%s: attach = %+v; want the session's own answer, runtime %s", c.name, resp, first.RuntimeID)
+			}
+			continue
+		}
+		if resp.OK || resp.Code != CodeBadRequest || !strings.Contains(resp.Error, "fixed at its first register") {
+			t.Errorf("%s: attach = %+v; want BAD_REQUEST saying the projects are fixed", c.name, resp)
+		}
+	}
+}
+
 // TestASessionComingBackUnderOtherProjectsGetsANewIdentity: a named session whose process is
 // gone is parked with its projects; coming back naming another list, it does not take the parked
 // key or enrollment, whose grants were decided under the old list: it gets a fresh key, and the
