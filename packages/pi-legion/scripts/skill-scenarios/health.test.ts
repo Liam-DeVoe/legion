@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { ANSWERS, labelOf, SKIPS, scenarioOf } from "./completion-answers";
@@ -14,7 +14,7 @@ import {
   unfinished,
   writtenBy,
 } from "./health";
-import { REMOVED_NAMES, vocabulary } from "./run-names";
+import { REMOVED_NAMES, systemPromptOf, vocabulary } from "./run-names";
 
 /** The world of a run whose pane names only the loopback. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -1354,9 +1354,12 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     content: text,
   });
   /** A run holding `transcripts` (each a path under the run and its entries, after a header) and
-   * `files` (each a path under the run and its text), read as `rig.sh health` reads it. */
-  function runWith(transcripts: Record<string, object[]>, files: Record<string, string> = {}) {
-    const dir = path.join(runs(), "0123456789ab");
+   * `files` (each a path under the run and its text), at `dir`, read as `rig.sh health` reads it. */
+  function runWith(
+    transcripts: Record<string, object[]>,
+    files: Record<string, string> = {},
+    dir = path.join(runs(), "0123456789ab")
+  ) {
     for (const [file, entries] of Object.entries(transcripts)) {
       mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
       writeFileSync(
@@ -1364,7 +1367,10 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
         [header, ...entries].map((entry) => `${JSON.stringify(entry)}\n`).join("")
       );
     }
-    for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text);
+    for (const [file, text] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), text);
+    }
     return loadRun(dir, "threads-closed", "head");
   }
   const FILE = "sessions/s1.jsonl";
@@ -1436,6 +1442,65 @@ describe("health: rule 17, names, traced to where an agent got them", () => {
     ).toBe(
       `names: a thinking part in sessions/reviewer/s2.jsonl says "threads-closed": "The scenario label points to the threads-closed case.", which the result of bash in sessions/reviewer/s2.jsonl held before any agent of the run wrote it`
     );
+  });
+
+  // Catches: a system prompt read at the path <run>/system-args names, which is the run's
+  // directory as it ran: rig.sh's archive_run moves a run that has ended to
+  // <work>/archive/runs/<id>, its prompt file with it, and every archived worker run read
+  // unhealthy on an ENOENT of the path it ran at, its file beside it all along (761887b1fe46,
+  // 2026-11-17T00:18Z). A file named under the record's `ran` is read at the same place under the
+  // run's present directory, and refused there; a file outside `ran` is read as named.
+  test("a system prompt file named under the directory a moved run ran in is read where the run is now", () => {
+    const work = runs();
+    const id = "0123456789ab";
+    const ran = path.join(work, "runs", id);
+    const dir = path.join(work, "archive", "runs", id);
+    const secret = "state/secrets/legion-wid-1-reviewer-system-prompt.md";
+    const prompt = "You review WID-1, whose threads are text-only.\n";
+    const said = "The threads are text-only, so I approve.";
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      `${dir}.json`,
+      JSON.stringify({
+        run: id,
+        scenario: "threads-closed",
+        case: "text-fixes",
+        label: "head",
+        n: 1,
+        name: "threads-closed-text-fixes-head-1",
+        batch: "legion-00000000-1",
+        ran,
+      })
+    );
+    const argument = `--append-system-prompt ${ran}/${secret}`;
+    const run = runWith(
+      { [FILE]: [says("text", said)] },
+      { "system-args": `${argument}\n`, [secret]: prompt },
+      dir
+    );
+    expect(systemPromptOf(dir)).toEqual({ argument, text: prompt, place: `<run>/${secret}` });
+    expect(namesSaid(run)).toBe(
+      `names: a text part in ${FILE} says "text-only": "${said}", which <run>/${secret} held before any agent of the run wrote it`
+    );
+    // Gone from the run's present directory, the file is refused there, though the path the run
+    // ran at holds one.
+    rmSync(path.join(dir, secret));
+    mkdirSync(path.dirname(path.join(ran, secret)), { recursive: true });
+    writeFileSync(path.join(ran, secret), prompt);
+    expect(namesSaid(loadRun(dir, "threads-closed", "head"))).toBe(
+      `names: the system prompt of ${id} names <run>/${secret}, which cannot be read: ENOENT: no such file or directory, open '${path.join(dir, secret)}', so no word it gave the run's agents can be traced`
+    );
+    // Beside the directory the run ran in, whose path starts with that directory's: outside it,
+    // so read as named.
+    const beside = `${ran}-prompts/reviewer.md`;
+    mkdirSync(path.dirname(beside), { recursive: true });
+    writeFileSync(beside, prompt);
+    writeFileSync(path.join(dir, "system-args"), `--append-system-prompt ${beside}\n`);
+    expect(systemPromptOf(dir)).toEqual({
+      argument: `--append-system-prompt ${beside}`,
+      text: prompt,
+      place: beside,
+    });
   });
 
   test("the same word written by the run's agents before any input held it is healthy, and reported as theirs", () => {

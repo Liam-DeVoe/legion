@@ -452,7 +452,8 @@ export interface SystemPrompt {
   /** The prompt's text. */
   readonly text: string;
   /** Where `text` was read: <run>/system-args for a prompt the argument carries itself, else the
-   * file the argument names, as <run>/… where the file is under the run. */
+   * file the argument names, where the run is now (`systemPromptIn`), as <run>/… where the file
+   * is under the run. */
   readonly place: string;
 }
 
@@ -476,10 +477,14 @@ export function systemPromptOf(runDir: string): SystemPrompt | undefined {
  * (shellprefix.Word: a bare path, or a single-quoted one), so the prompt is the file's text.
  * Before, the argument carried the prompt itself, one quoted word (the role prompts' `$(cat …)` and
  * the addressing, double-quoted), and that text is the prompt as the agent's command line held it;
- * a run composed or recorded then still holds that shape. Anything else is refused, and so are a
- * named file that cannot be read and an empty prompt, each naming the run and what it holds: a
- * reader that took one of them for a prompt would hold the agent's prompt to nothing, and a guard
- * or a rule that reads nothing finds nothing wrong. */
+ * a run composed or recorded then still holds that shape. The argument names the file as the run
+ * had it while it ran: a path under the directory its record says it ran in (`runIdentity`'s
+ * `ran`) is read at the same place under `runDir`, since rig.sh's archive_run moves a run that
+ * has ended, and its prompt file with it, and a run read from a copy holds its own file; any
+ * other path, and every path of a run with no record, is read as named. Anything else is
+ * refused, and so are a named file that cannot be read where it is read and an empty prompt, each
+ * naming the run and what it holds: a reader that took one of them for a prompt would hold the
+ * agent's prompt to nothing, and a guard or a rule that reads nothing finds nothing wrong. */
 export function systemPromptIn(argument: string, runDir: string): SystemPrompt {
   const refuse = (what: string): never => {
     throw new Error(`the system prompt of ${path.basename(runDir)} ${what}`);
@@ -504,12 +509,17 @@ export function systemPromptIn(argument: string, runDir: string): SystemPrompt {
     if ((quoted ?? word.slice(1, -1)).trim() === "") refuse(`is empty: ${held}`);
     return { argument: given, text: given, place: "<run>/system-args" };
   }
-  const relative = path.relative(runDir, named);
-  const place =
-    relative.startsWith("..") || path.isAbsolute(relative) ? named : `<run>/${relative}`;
+  // The path as the run had it (its record's `ran`), read where the run is now: an archived
+  // run's prompt file is under its archived directory, and nothing is at the path named.
+  const identity = runIdentity(runDir);
+  const ran = typeof identity === "string" ? undefined : identity.ran;
+  const moved = ran === undefined ? undefined : within(ran, named);
+  const file = moved === undefined ? named : path.join(runDir, moved);
+  const inRun = within(runDir, file);
+  const place = inRun === undefined ? file : `<run>/${inRun}`;
   let text = "";
   try {
-    text = readFileSync(named, "utf8");
+    text = readFileSync(file, "utf8");
   } catch (error) {
     refuse(
       `names ${place}, which cannot be read: ${error instanceof Error ? error.message : String(error)}`
@@ -517,6 +527,14 @@ export function systemPromptIn(argument: string, runDir: string): SystemPrompt {
   }
   if (text.trim() === "") refuse(`names ${place}, which is empty`);
   return { argument: given, text, place };
+}
+
+/** `file`'s path relative to `dir`, or undefined for a file outside it. */
+function within(dir: string, file: string): string | undefined {
+  const relative = path.relative(dir, file);
+  return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+    ? undefined
+    : relative;
 }
 
 /** The files of a run the rig composes for each launch of an agent, beside its pane file (read
