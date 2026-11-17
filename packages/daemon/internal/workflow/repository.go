@@ -28,8 +28,8 @@ type Repositories interface {
 // default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
 // but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
 // once GitHub answers for the repository (its recovery). Unmapped is an issue of a project that
-// maps no repository in Dispatch (Config.ProjectUnmapped), whatever the issue resolves to: the
-// remedy is mapping one, not setting the issue's.
+// maps no repository in Dispatch, which Repositories answers whatever the issue resolves to, an
+// empty resolution included: the remedy is mapping one, not setting the issue's.
 type Resolution struct {
 	Repo          string
 	DefaultBranch string
@@ -45,22 +45,22 @@ type Resolution struct {
 const resolvesToNone = "its repository resolves to none"
 
 // ResolveRepository is the repository an issue resolving to resolved is recorded on, or why it is
-// not recorded. Admission records roots and orphans with it, as the engine records children. A
-// project that maps no repository refuses every issue for that (Config.ProjectUnmapped), before
-// the issue's own repository is looked at.
+// not recorded, as the workflow's Repositories answers it. Admission records roots and orphans
+// with it, as the engine records children. An empty resolution is asked of Repositories too, which
+// answers Unmapped while the project maps no repository; any other answer for it is the issue
+// resolving to none (resolvesToNone): its project maps repositories and names no default.
 func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
-	if e.cfg.ProjectUnmapped != nil {
-		if reason := e.cfg.ProjectUnmapped(); reason != "" {
-			return Resolution{Refusal: reason, Unmapped: true}, nil
-		}
-	}
-	if resolved == "" {
-		return Resolution{Refusal: resolvesToNone}, nil
-	}
 	if e.cfg.Repositories == nil {
+		if resolved == "" {
+			return Resolution{Refusal: resolvesToNone}, nil
+		}
 		return Resolution{}, errors.New("the workflow holds no repository mapping to record an issue's repository from")
 	}
-	return e.cfg.Repositories.ResolveRepository(resolved)
+	got, err := e.cfg.Repositories.ResolveRepository(resolved)
+	if resolved == "" && err == nil && !got.Unmapped {
+		return Resolution{Refusal: resolvesToNone}, nil
+	}
+	return got, err
 }
 
 // SettleRetainedRepository is fact with a retained event's missing repository

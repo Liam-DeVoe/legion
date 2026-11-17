@@ -97,7 +97,7 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, ProjectUnmapped: w.repositories.unmapped,
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread,
 		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}

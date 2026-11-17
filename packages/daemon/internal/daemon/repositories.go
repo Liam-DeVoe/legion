@@ -249,6 +249,11 @@ func (r *repositories) Refused() []refusedRepository {
 func (r *repositories) lookup(resolved string) (mapped mappedRepository, refusal string, leftOut, unread bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.lookupLocked(resolved)
+}
+
+// lookupLocked is lookup with the read lock already held.
+func (r *repositories) lookupLocked(resolved string) (mapped mappedRepository, refusal string, leftOut, unread bool) {
 	// The read is a map lookup under the lock already held, so it fails for no reason and its
 	// error is always nil; ghrepo.Under holds the order the two names are read in.
 	answer, _ := ghrepo.Under(r.renames, resolved, func(name string) (heldRepository, error) {
@@ -258,6 +263,20 @@ func (r *repositories) lookup(resolved string) (mapped mappedRepository, refusal
 		return answer.mapped, answer.refusal, answer.leftOut, answer.unread
 	}
 	return mappedRepository{}, fmt.Sprintf("%s is not mapped to project %s in Dispatch", resolved, r.project), false, false
+}
+
+// resolving is the mapping's answer for an issue resolving to resolved, read under one lock:
+// while the mapping as last read names no repository of the project, served or left out, the
+// project's having none mapped (mapsNone, api.NoRepositoryMapped), whatever resolved names, an
+// empty resolution included; else lookup's answer.
+func (r *repositories) resolving(resolved string) (mapped mappedRepository, refusal string, leftOut, unread, mapsNone bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.accepted) == 0 && len(r.refused) == 0 {
+		return mappedRepository{}, api.NoRepositoryMapped(r.project), false, false, true
+	}
+	mapped, refusal, leftOut, unread = r.lookupLocked(resolved)
+	return mapped, refusal, leftOut, unread, false
 }
 
 // heldRepository is the mapping's answer for one name (held): the served repository, or the
@@ -373,11 +392,11 @@ func (r *repositories) servingNoneToSay() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cause := r.servingNoneLocked()
-	if cause == "" || r.saidNone {
-		r.saidNone = cause != ""
+	said := r.saidNone
+	r.saidNone = cause != ""
+	if said {
 		return ""
 	}
-	r.saidNone = true
 	return cause
 }
 
@@ -408,34 +427,15 @@ func (w *workflowRuntime) sayServingNone(refused []refusedRepository) {
 	w.log.Error(servingNoneLine, attrs...)
 }
 
-// unmapped is the workflow's Config.ProjectUnmapped: why the project serves no repository while
-// the mapping as last read names none of it (api.NoRepositoryMapped), or "" while it names one.
-func (r *repositories) unmapped() string {
+// mappingKey is which repositories the mapping as last read names, served or left out, as one
+// comparable key, and whether it serves none, read under one lock: the refresher starts its
+// backoff again when the names change or the flag turns true.
+func (r *repositories) mappingKey() (names string, none bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if len(r.accepted) == 0 && len(r.refused) == 0 {
-		return api.NoRepositoryMapped(r.project)
-	}
-	return ""
-}
-
-// membership is which repositories the mapping as last read names, served or left out, as one
-// comparable key: the refresher starts its backoff again when a read changes it (and on a
-// transition into serving none, servesNone).
-func (r *repositories) membership() string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := append(slices.Collect(maps.Keys(r.accepted)), slices.Collect(maps.Keys(r.refused))...)
-	slices.Sort(names)
-	return strings.Join(names, "\n")
-}
-
-// servesNone is whether the mapping as last read serves no repository: the refresher starts its
-// backoff again on a read that makes it true, so the serving-none line's retryIn is true.
-func (r *repositories) servesNone() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.servingNoneLocked() != ""
+	keys := append(slices.Collect(maps.Keys(r.accepted)), slices.Collect(maps.Keys(r.refused))...)
+	slices.Sort(keys)
+	return strings.Join(keys, "\n"), r.servingNoneLocked() != ""
 }
 
 // view is the mapping as the daemon's state shows it, with caches, the Kubernetes runtime's
@@ -1125,7 +1125,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	var heard []ghrepo.Repository
 	var added, removed []string
 	published := false
-	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(ctx, tx); err != nil {
 			return fmt.Errorf("serialize the mapping's publication with admission: %w", err)
 		}
@@ -1140,15 +1140,15 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 		w.repositories.setWithoutWebhookApp(w.repositories.servedGaps(gaps, refused))
 		w.markRecovered(before, readFailures(w.repositories.Refused()))
 		return nil
-	}); err != nil {
-		// The mapping in memory is published once set has run, whether or not the commit after it
-		// succeeds, so a failed commit that left the daemon serving none still says so now.
-		if published {
-			w.sayServingNone(refused)
-		}
+	})
+	// The mapping in memory is published once set has run, whether or not the commit after it
+	// succeeds, so a failed commit that left the daemon serving none still says so now.
+	if published {
+		w.sayServingNone(refused)
+	}
+	if err != nil {
 		return err
 	}
-	w.sayServingNone(refused)
 	// Third, the superset is narrowed to the snapshot's own set, again outside any transaction.
 	// Every admission that commits after the snapshot resolves against the new mapping, whose
 	// repositories the set contains, and every one that committed before it is in the snapshot,
@@ -1267,7 +1267,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 		after = time.After
 	}
 	recheckIn := mappingRecheckRetry.Initial
-	mapped, none := w.repositories.membership(), w.repositories.servesNone()
+	mapped, none := w.repositories.mappingKey()
 	for {
 		var recheck <-chan time.Time
 		// A read that changed which repositories the mapping names, or that brought the daemon
@@ -1277,7 +1277,7 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 		// 30 s. Any other read keeps the backoff it has: a GitHub outage read again, an admission
 		// held for a read, and a read that serves a repository again, which says nothing about how
 		// soon GitHub answers for the ones still left out for now.
-		nowMapped, nowNone := w.repositories.membership(), w.repositories.servesNone()
+		nowMapped, nowNone := w.repositories.mappingKey()
 		if nowMapped != mapped || (nowNone && !none) {
 			recheckIn = mappingRecheckRetry.Initial
 		}
@@ -2151,12 +2151,13 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 
 // ResolveRepository answers the workflow (workflow.Repositories) from memory: the served
 // repository resolved names, as GitHub names it, at the default branch last read for it, or why
-// Legion does not serve it. A served repository whose default branch was never read is an error:
-// its event's preparation (prepareRepository) did not run.
+// Legion does not serve it, the project mapping no repository (Resolution.Unmapped) whatever
+// resolved names, an empty resolution included. A served repository whose default branch was
+// never read is an error: its event's preparation (prepareRepository) did not run.
 func (w *workflowRuntime) ResolveRepository(resolved string) (workflow.Resolution, error) {
-	mapped, refusal, leftOut, unread := w.repositories.lookup(resolved)
+	mapped, refusal, leftOut, unread, mapsNone := w.repositories.resolving(resolved)
 	if refusal != "" {
-		return workflow.Resolution{Refusal: refusal, LeftOut: leftOut, Unread: unread}, nil
+		return workflow.Resolution{Refusal: refusal, LeftOut: leftOut, Unread: unread, Unmapped: mapsNone}, nil
 	}
 	read, ok := w.defaultBranches.Kept(mapped.Repo.String())
 	if !ok {

@@ -24,8 +24,11 @@ func TestAnIssueHandedToLegionWhileTheProjectMapsNoRepositoryIsToldTheProjectMap
 		name    string
 		mapping []dispatch.RepoProject
 		want    string
+		// remedy is what the note tells the person to do, and refused a remedy it must not give,
+		// since Dispatch refuses it then; "" checks none.
+		remedy, refused string
 	}{
-		{name: "no repository mapped", want: api.NoRepositoryMapped("LEGION")},
+		{name: "no repository mapped", want: api.NoRepositoryMapped("LEGION"), remedy: "Map the project's repositories", refused: "Set its repository"},
 		{
 			name:    "a repository mapped, none the default",
 			mapping: []dispatch.RepoProject{{Repo: "zeta/tools", Project: "LEGION"}},
@@ -57,6 +60,9 @@ func TestAnIssueHandedToLegionWhileTheProjectMapsNoRepositoryIsToldTheProjectMap
 			notes := repositoryNotes(t, w, issue.Key)
 			if len(notes) != 1 || !strings.Contains(notes[0], tc.want) {
 				t.Fatalf("notes on %s = %q, want one saying %q", issue.Key, notes, tc.want)
+			}
+			if (tc.remedy != "" && !strings.Contains(notes[0], tc.remedy)) || (tc.refused != "" && strings.Contains(notes[0], tc.refused)) {
+				t.Fatalf("the note on %s = %q, want it to say %q and not %q", issue.Key, notes[0], tc.remedy, tc.refused)
 			}
 		})
 	}
