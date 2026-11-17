@@ -6,6 +6,7 @@ import { DocumentStages } from "../document-stage";
 import { issueAddress } from "../issue-address";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
+import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot } from "./body";
 import { ViewDecisionsSlot } from "./view-decisions";
 import { ViewPlanSlot } from "./view-plan";
@@ -27,15 +28,17 @@ export function StageSlot(props: SlotProps): ReactNode {
   const { preset } = issueAddress(props.route, search, hash, primarySpec(props.issue)?.slug);
   const View = VIEW_SLOTS[preset];
   return (
-    <DocumentStages>
-      {View === undefined ? (
-        <BodySlot {...props} />
-      ) : (
-        <ViewStage view={preset}>
-          <View {...props} />
-        </ViewStage>
-      )}
-    </DocumentStages>
+    <ViewReadProvider issue={props.issue} preset={preset}>
+      <DocumentStages>
+        {View === undefined ? (
+          <BodySlot {...props} />
+        ) : (
+          <ViewStage view={preset}>
+            <View {...props} />
+          </ViewStage>
+        )}
+      </DocumentStages>
+    </ViewReadProvider>
   );
 }
 

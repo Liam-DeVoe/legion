@@ -6,6 +6,7 @@ import { NODE_TYPE_NAMES, type NodeType, type Preset } from "./page-words";
 import { filterSignals, presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
 import { everythingOpened } from "./tree-keys";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * The page with no filter on and the four filters as views of the one tree (dispatch://INFRA-1196
@@ -362,4 +363,75 @@ test("the words filter matches the words a node draws, never its stored source",
   const markup = presetView(root, "conversation", "**");
   expect(markup.matches).toBe(0);
   expect(markup.root.children).toEqual([]);
+});
+
+/** One node of a view read, marked as the query's or as context. */
+function viewNode(
+  id: string,
+  supertag: string,
+  mark: "context" | "query",
+  extra: Partial<TreeAnswerNode> = {}
+): TreeAnswerNode {
+  return {
+    attributes: {},
+    author: null,
+    id,
+    made_at: "2026-11-05T00:00:00Z",
+    mark,
+    parent: "CORE-1",
+    rank: null,
+    state: "live",
+    supertag,
+    text: id,
+    visibility: "project",
+    ...extra,
+  };
+}
+
+// dispatch://INFRA-4062 R4: once the Spec view read is held on the issue's node, Spec draws the
+// nodes its query took of R2's kinds, each as the tree's node of that id. The memo callout the
+// view answers first is no row, and a decision and a constraint the view answers as context are
+// never rows: each is a line of the row its tie names, a decision by its `shaped` tuple and a
+// constraint by the row's `constrained_by` tuple. The control counts the view's own statements.
+test("a view answer's decisions and constraints are lines, never rows", () => {
+  const spec: TreeAnswer = {
+    converted: true,
+    cursor: null,
+    nodes: [
+      viewNode("summary", "callout", "query"),
+      viewNode("r1", "requirement", "query"),
+      viewNode("r2", "requirement", "query"),
+      viewNode("d1", "decision", "context", { text: "Keep the model pure." }),
+      viewNode("k1", "constraint", "context", { text: "Ship on Fridays only." }),
+    ],
+    tree: "artifact-tree",
+    tuples: [
+      { from: "d1", kind: "shaped", to: "r1" },
+      { from: "r1", kind: "constrained_by", to: "k1" },
+    ],
+    view_of: null,
+  };
+  const root = node(
+    "CORE-1",
+    "issue",
+    [
+      node("spec#b-summary", "callout", [], { readId: "summary" }),
+      node("spec#b-r1", "requirement", [], { readId: "r1" }),
+      node("spec#b-r2", "requirement", [], { readId: "r2" }),
+      node("decisions-md#b-d1", "decision", [], { readId: "d1" }),
+    ],
+    { views: { spec } }
+  );
+
+  expect(drawn(root, "spec")).toEqual(["spec#b-r1", "spec#b-r2"]);
+  expect([...presetView(root, "spec", "").lines]).toEqual([
+    [
+      "spec#b-r1",
+      [
+        { id: "d1", text: "Keep the model pure.", type: "decision" },
+        { id: "k1", text: "Ship on Fridays only.", type: "constraint" },
+      ],
+    ],
+  ]);
+  expect(filterSignals(root, "").spec.count).toBe(2);
 });
