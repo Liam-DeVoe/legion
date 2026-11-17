@@ -55,8 +55,6 @@ type stepRecordsLive struct {
 	root    string
 	cliHome string
 	reader  string
-	// failed is the id of the failed review's record, which the read's control deletes.
-	failed string
 }
 
 // TestStepRecordsLive drives the proof's steps against one booted daemon and one Dispatch, over
@@ -166,14 +164,7 @@ func (l *stepRecordsLive) outage() {
 // record missing.
 func (l *stepRecordsLive) readByIssue() {
 	t := l.t
-	out, code := l.steps()
-	if code != 0 {
-		t.Fatalf("`dispatch steps --issue %s` exited %d: %s", l.key, code, out)
-	}
-	printed, err := parseSteps(l.key, out)
-	if err == nil {
-		err = holdsTen(printed)
-	}
+	out, err := l.stepsHoldTen("as the person")
 	if err != nil {
 		t.Fatalf("`dispatch steps --issue %s` printed\n%s\nand the read does not hold the walk: %v", l.key, out, err)
 	}
@@ -186,20 +177,13 @@ func (l *stepRecordsLive) readByIssue() {
 	if err != nil {
 		t.Fatalf("read the steps of %s: %v", l.key, err)
 	}
-	l.failed = read.find("step", 4, 1).ID
-	if l.failed == "" {
+	failed := read.find("step", 4, 1).ID
+	if failed == "" {
 		t.Fatalf("GET /api/v1/issues/%s/steps holds no record of step 4 attempt 1", l.key)
 	}
-	l.deleteStepRecord(l.failed)
-	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", l.failed)
-	out, code = l.steps()
-	if code != 0 {
-		t.Fatalf("control: `dispatch steps --issue %s` after the delete exited %d: %s", l.key, code, out)
-	}
-	printed, err = parseSteps(l.key, out)
-	if err == nil {
-		err = holdsTen(printed)
-	}
+	l.deleteStepRecord(failed)
+	l.note("control: deleted the failed review's record %s from Dispatch's database (its workflow_nodes row and its workflow_tuples rows)", failed)
+	out, err = l.stepsHoldTen("in the control, after the delete,")
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch steps --issue %s` passed with the failed review's record deleted:\n%s", l.key, out)
 	}
@@ -256,6 +240,22 @@ func (l *stepRecordsLive) steps() (string, int) {
 	shell := cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
 	out, code := shell.bun(nil, filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
 	return string(out.stdout) + string(out.stderr), code
+}
+
+// stepsHoldTen runs `dispatch steps --issue <KEY>` as the person, failing the test when the
+// command fails (when says at which point of the proof it ran), and answers what it printed and
+// whether that is the walk's ten runs (holdsTen).
+func (l *stepRecordsLive) stepsHoldTen(when string) (string, error) {
+	l.t.Helper()
+	out, code := l.steps()
+	if code != 0 {
+		l.t.Fatalf("`dispatch steps --issue %s` %s exited %d: %s", l.key, when, code, out)
+	}
+	printed, err := parseSteps(l.key, out)
+	if err != nil {
+		return out, err
+	}
+	return out, holdsTen(printed)
 }
 
 // putStep sends body to PUT /api/v1/issues/<KEY>/steps/<id> with bearer and returns Dispatch's
