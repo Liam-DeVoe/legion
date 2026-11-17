@@ -240,7 +240,7 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 // refused (409 REPO_PROJECT_IN_USE). A mapping of a project the caller cannot see answers 204, as a
 // repository no mapping holds does, and is not removed (hiddenMapping). The removal adds no lane,
 // and it leaves a private project's private-projects record naming the repository until the
-// record's writer rewrites it from the committed rows (busprojects.Writer.Run).
+// record's writer (K7) rewrites it from the committed rows.
 func (s *server) deleteRepoProject(w http.ResponseWriter, r *http.Request) {
 	var input actorInput
 	if !s.decodeOptionalJSON(w, r, &input) {
