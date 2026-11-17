@@ -604,27 +604,12 @@ func approvedNode(t *testing.T, nodes []specgraph.ApprovedNode, id string) *spec
 // specgraph holds the form of results.json, and a row of a test takes a member out of a result.
 func removeCheck(t *testing.T, dir, id string) {
 	t.Helper()
-	var block string
+	var document string
 	editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
-		block = approvedNode(t, nodes, id).Versions[0].Document
+		document = approvedNode(t, nodes, id).Versions[0].Document
 		return slices.DeleteFunc(nodes, func(n specgraph.ApprovedNode) bool { return n.ID == id })
 	})
-	paths, err := filepath.Glob(filepath.Join(dir, "files", "*", "spec.yaml"))
-	if err != nil || len(paths) == 0 {
-		t.Fatalf("no spec file under %s: %v", dir, err)
-	}
-	for _, path := range paths {
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		text := string(content)
-		if !strings.Contains(text, block) {
-			t.Fatalf("%s does not hold the document of %s", path, id)
-		}
-		text = strings.Replace(text, block, "", 1)
-		writeFile(t, path, []byte(text))
-	}
+	editSpecFiles(t, dir, document, "")
 	var results []map[string]any
 	readJSONFile(t, filepath.Join(dir, "results.json"), &results)
 	results = slices.DeleteFunc(results, func(r map[string]any) bool { return r["check"] == id })
