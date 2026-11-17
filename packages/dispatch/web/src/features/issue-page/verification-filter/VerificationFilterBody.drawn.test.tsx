@@ -1200,7 +1200,7 @@ test("a query that keeps only a result draws it with its check under its stateme
   const served = statementNode("r2", "The page draws it again.", [checkNode(thrice)]);
   const thriceRow = `${served.id} ${checkNode(thrice).id}`;
   /** The one card of `served`, its check drawing the results whose words are `results`. */
-  const servedCard = (results: readonly string[]) => [
+  const servedCard = (results: string[]) => [
     [served.id, [[checkNode(thrice).id, thriceRow, results]]],
   ];
   const drawnEarlier = servedCard(["41 passed", failure]);
