@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -69,7 +70,11 @@ type Config struct {
 	// project that opens none. It decides the checks opened under this configuration, never one
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
-	Clock               func() time.Time
+	// DefaultSteps are the project's default steps (config.Project.RunsByDefault): the steps of
+	// the one task default of an issue whose owner gives no plan, and of a task whose block names
+	// neither steps nor a sub-owner (R5). Nil takes the steps of a project that names none.
+	DefaultSteps []plan.Step
+	Clock        func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
 	// it submits decides a round whatever GitHub gives its bot account (DecidesRound) and can be the
 	// reviewer's answer to a round it left undecided (reviewersAnswer); a push by it is recorded as
@@ -150,8 +155,8 @@ type Engine struct {
 
 var _ intake.Handler = (*Engine)(nil)
 
-// New constructs a workflow engine, taking the shipped review round cap, production check bound
-// and clock for every one of them a caller omits.
+// New constructs a workflow engine, taking the shipped review round cap, production check bound,
+// default steps and clock for every one of them a caller omits.
 func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	if cfg.ReviewRoundCap <= 0 {
 		cfg.ReviewRoundCap = 3
@@ -164,6 +169,9 @@ func New(store record.Store, cfg Config, log *slog.Logger) *Engine {
 	}
 	if cfg.ExperimentSource == nil {
 		cfg.ExperimentSource = experiment.CryptoSource
+	}
+	if cfg.DefaultSteps == nil {
+		cfg.DefaultSteps = config.Project{}.RunsByDefault()
 	}
 	if log == nil {
 		log = slog.Default()
@@ -1835,15 +1843,19 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 	return e.notice(ctx, tx, issue.Key, ChildStartedNotice(issue.Key, issue.Tree, waited))
 }
 
-// gateOpened moves an admitted member of a tree whose gate is open into planning, behind a row
-// creating its branch (record.IssueBranch): its planner's start, the first worker start of every
-// member, waits for that row, so no planner's push is the one that creates the branch. A member
-// whose earlier row a linger dropped, or one admitted before the daemon queued such rows, gets its
-// row here. A plan an earlier owner of the issue gave is passed over first (passOverEarlierOwners),
-// so the walk the transition reads never takes it.
+// gateOpened moves an admitted member of a tree whose gate is open into the first step of its
+// plan, behind a row creating its branch (record.IssueBranch): its first worker's start waits for
+// that row, so no worker's push is the one that creates the branch. A member whose earlier row a
+// linger dropped, or one admitted before the daemon queued such rows, gets its row here. The plan
+// the transition walks is settled first (planFirstStep), only for an issue standing at admitted,
+// which the move starts: an issue past it, which no row of the table moves on the gate's opening,
+// keeps the plan rows it has, none for an issue that started its work before Legion took plans
+// (R20).
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	if err := e.passOverEarlierOwners(ctx, tx, issue); err != nil {
-		return err
+	if issue.Phase == phase.Admitted {
+		if err := e.planFirstStep(ctx, tx, issue); err != nil {
+			return err
+		}
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
 		return err

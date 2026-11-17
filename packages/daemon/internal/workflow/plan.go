@@ -86,40 +86,91 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 }
 
 // passOverEarlierOwners deletes each plan of issue that an earlier owner gave, before its first
-// step reads its plan, so the walk never takes one (C3-3, C4-2). An earlier owner's plan is the
-// version in force of a generation whose giver is no architect of the issue's tree now
-// (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree, the rule the routes hold every
-// architect's call to): the owner of an issue changes where an orphan is admitted again as a root
-// of its own and where an adoption moves a member to another tree, and the plan the earlier owner
-// gave is not the new owner's to run. Nothing is passed over in silence: each version passed over
-// is one log line naming the plan the first step runs, the owner's own where it gave one at the
-// issue's generation and otherwise the default steps, and the issue's architect is told once, in a
-// plan-not-taken notice. The rows go in this transaction, so the next first step finds none. An
-// issue with no plan rows, or only its owners', is read and nothing is written.
-func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+// step reads its plan, so the walk never takes one (C3-3, C4-2), and answers the versions it
+// passed over. An earlier owner's plan is the version in force of a generation whose giver is no
+// architect of the issue's tree now (record.Store's PlansOfEarlierOwners, record.ArchitectOfTree,
+// the rule the routes hold every architect's call to): the owner of an issue changes where an
+// orphan is admitted again as a root of its own and where an adoption moves a member to another
+// tree, and the plan the earlier owner gave is not the new owner's to run. The rows go in this
+// transaction, so the next first step finds none. An issue with no plan rows, or only its
+// owners', is read and nothing is written.
+func (e *Engine) passOverEarlierOwners(ctx context.Context, tx pgx.Tx, issue record.Issue) ([]record.PlanVersion, error) {
 	earlier, err := e.store.PlansOfEarlierOwners(ctx, tx, issue)
-	if err != nil || len(earlier) == 0 {
-		return err
+	if err != nil {
+		return nil, err
 	}
 	for _, version := range earlier {
 		if err := e.store.DeletePlan(ctx, tx, issue.Key, version.Generation); err != nil {
-			return err
+			return nil, err
 		}
+	}
+	return earlier, nil
+}
+
+// planFirstStep settles the plan the first step of issue's run walks, in the transaction that
+// starts it (gateOpened) and before the transition reads it (walk), so each run that starts its
+// work in this release has plan rows (R5). A plan an earlier owner gave is passed over first
+// (passOverEarlierOwners). A run whose generation then holds no plan rows takes the project's
+// default steps (defaultRows); one whose generation holds them, the owner's own or a hand-over's
+// carried plan, keeps them. Nothing is passed over in silence (tellPassedOver).
+func (e *Engine) planFirstStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	earlier, err := e.passOverEarlierOwners(ctx, tx, issue)
+	if err != nil {
+		return err
 	}
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil {
 		return err
 	}
-	runs, told := "default steps", "the default steps"
-	if stored != nil && stored.Version.Source == record.PlanSourceOwner {
-		runs = describeVersion(stored.Version)
-		told = runs
+	if stored == nil {
+		version, tasks, steps := e.defaultRows(issue)
+		if err := e.store.PutPlan(ctx, tx, version, tasks, steps); err != nil {
+			return err
+		}
+		stored = &record.StoredPlan{Version: version}
+	}
+	return e.tellPassedOver(ctx, tx, issue, earlier, stored.Version)
+}
+
+// defaultRows is the plan of issue's run whose owner gave none (R5): version 0 of the source
+// default, given now, with no document and no giver, and one task, default, whose block names no
+// steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act.
+func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
+	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
+	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",
+		StepsByDefault: true, State: record.TaskWaiting}
+	return version, []record.PlanTask{task}, planSteps(issue.Key, issue.Generation, defaultTask, e.cfg.DefaultSteps)
+}
+
+// planSteps is steps as the rows of the steps of task of issue's plan at generation: each at its
+// place from 1, with its agent key and the type of its role.
+func planSteps(issue string, generation uint64, task string, steps []plan.Step) []record.PlanStep {
+	rows := make([]record.PlanStep, len(steps))
+	for i, step := range steps {
+		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
+			Type: string(builtinDeployment.Roles[step.Role].Type), AgentKey: step.Key}
+	}
+	return rows
+}
+
+// tellPassedOver says what the first step of issue passed over, the plans of earlier owners
+// (passOverEarlierOwners): one log line for each version, naming the plan the first step runs
+// (runs, the version in force of its generation: the owner's, or the default steps), and one
+// plan-not-taken notice to the issue's architect. Nothing passed over tells nothing.
+func (e *Engine) tellPassedOver(ctx context.Context, tx pgx.Tx, issue record.Issue, earlier []record.PlanVersion, runs record.PlanVersion) error {
+	if len(earlier) == 0 {
+		return nil
+	}
+	ran, told := "default steps", "the default steps"
+	if runs.Source == record.PlanSourceOwner {
+		ran = describeVersion(runs)
+		told = ran
 	}
 	passed := make([]string, len(earlier))
 	for i, version := range earlier {
 		passed[i] = describeVersion(version)
 		e.logOnCommit(ctx, "workflow: a plan of an earlier owner is not taken", "issue", issue.Key, "generation", version.Generation,
-			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", runs)
+			"version", version.Version, "document", version.ArtifactID, "giver", version.GivenBy, "runs", ran)
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan of an earlier owner: %s. It runs %s. To run a plan it did not take, give it again with register_plan as your own.",
@@ -526,10 +577,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 		}
 	}
 
-	version, tasks, steps, err := givenRows(fact, stored, changed, e.now())
-	if err != nil {
-		return intake.Result{}, err
-	}
+	version, tasks, steps := givenRows(fact, stored, changed, e.cfg.DefaultSteps, e.now())
 	var removed, stopped []string
 	if stored != nil {
 		for _, task := range stored.Tasks {
@@ -615,15 +663,11 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 // version's block, and a task new to the generation waits at no act (PutPlan keeps where a task
 // the generation holds stands). A task the version leaves as it was keeps its stored steps, the
 // commit a review of each read included; any other task takes the steps its block names (StepsOf),
-// or, for a block that names none, the default steps (defaultPlanSteps), each with the type of its
-// role.
-func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep, error) {
+// or, for a block that names none, defaults, the project's default steps (Config.DefaultSteps),
+// each with the type of its role (planSteps).
+func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []string, defaults []plan.Step, now time.Time) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: fact.Issue, Generation: fact.Generation, Version: fact.Plan.Version, ArtifactID: fact.Plan.ArtifactID,
 		Source: record.PlanSourceOwner, GivenBy: fact.GivenBy, GivenAt: now}
-	defaults, err := defaultPlanSteps()
-	if err != nil {
-		return record.PlanVersion{}, nil, nil, err
-	}
 	var tasks []record.PlanTask
 	var steps []record.PlanStep
 	for _, given := range fact.Plan.Tasks {
@@ -634,20 +678,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue
 		}
-		for i, step := range plan.StepsOf(given, defaults) {
-			steps = append(steps, record.PlanStep{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, Position: i + 1,
-				Role: step.Role, Type: string(builtinDeployment.Roles[step.Role].Type), AgentKey: step.Key})
-		}
+		steps = append(steps, planSteps(fact.Issue, fact.Generation, given.ID, plan.StepsOf(given, defaults))...)
 	}
-	return version, tasks, steps, nil
-}
-
-// defaultPlanSteps is DefaultSteps as the steps of a plan: the steps a task whose block names
-// neither steps nor a sub-owner runs (plan.StepsOf, R5).
-func defaultPlanSteps() ([]plan.Step, error) {
-	steps, err := plan.ParseSteps(strings.Join(DefaultSteps(), " "))
-	if err != nil {
-		return nil, fmt.Errorf("the default steps %v: %w", DefaultSteps(), err)
-	}
-	return steps, nil
+	return version, tasks, steps
 }
