@@ -79,10 +79,10 @@ func TestTheRequestJudgesNoOtherProse(t *testing.T) {
 	})
 }
 
-// The red team's inputs of this round, through the approval request route: a name or the address
-// of a record that code font splits is refused as the page shows it, and so is one wholly in code
-// font; a definition wholly in its footnote opens; an address that the words show is one word of a
-// sentence; the address of a pull request whose host is in capitals is refused.
+// The red team's inputs of the page's words, through the approval request route: a name or the
+// address of a record that code font splits is refused as the page shows it, and so is one wholly
+// in code font; a definition wholly in its footnote opens; an address that the words show is one
+// word of a sentence; the address of a pull request whose host is in capitals is refused.
 func TestTheRequestJudgesTheTextThatThePageShows(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	requireFormRows(t, tree, []formRow{
@@ -153,8 +153,8 @@ func TestTheRequestReadsEachFormOfANameAsAWholeWord(t *testing.T) {
 
 // A line under the heading Terms that is no term line is refused, and the refusal names both ways
 // out: a line that defines no term, such as an example or a note, moves out from under the heading,
-// and a decision block goes above it. The red team of the next slice found that the refusal named
-// the decision block alone, which is wrong for a line of prose and for an example below a term.
+// and a decision block goes above it. The decision block alone is no way out for a line of prose or
+// for an example below a term.
 func TestALineUnderTermsIsRefusedWithBothWaysOut(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const moveOut = "Move a line that defines no term, such as an example or a note, out from under the heading Terms."
