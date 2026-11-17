@@ -27,9 +27,10 @@ type Block struct {
 
 // FromBlocks reads one version of the plan document from its blocks: each `plan_task` block is a
 // task and each `plan_role` block a role the plan defines, in the document's order, and every
-// other block is skipped. A document with no task block is read as a plan with no task, which
-// Validate refuses. It answers an error only for a block it cannot read at all: a task or a role
-// with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
+// other block is skipped. Each task's needs are the ids of the tasks they name (resolveNeeds), so
+// no plan holds a need as a word. A document with no task block is read as a plan with no task,
+// which Validate refuses. It answers an error only for a block it cannot read at all: a task or a
+// role with no id, one id on two such blocks, and a task whose `steps` is outside the grammar
 // (ParseSteps); the error names the block.
 func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 	p := Plan{ArtifactID: artifactID, Version: version}
@@ -55,7 +56,7 @@ func FromBlocks(artifactID string, version int, blocks []Block) (Plan, error) {
 		}
 		p.Tasks = append(p.Tasks, task)
 	}
-	return p, nil
+	return resolveNeeds(p), nil
 }
 
 // taskOf is one `plan_task` block as a task. `needs` is its words, each kept whole; `merges` is
@@ -79,12 +80,11 @@ func taskOf(block Block) (Task, error) {
 	return task, nil
 }
 
-// ResolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
+// resolveNeeds is p with each task's Needs as task ids: each word's id after its last "#b-",
 // decoded as Dispatch encodes a block id (neededID), or the word itself where it holds no "#b-".
 // The ids keep the order the block writes the words in, and a task a block names twice is needed
-// once. A word whose id is no task of p stays in Task.Unresolved, which Validate refuses. p itself
-// is left as it was.
-func ResolveNeeds(p Plan) Plan {
+// once. A word whose id is no task of p stays in Task.Unresolved, which Validate refuses.
+func resolveNeeds(p Plan) Plan {
 	ids := make(map[string]bool, len(p.Tasks))
 	for _, task := range p.Tasks {
 		ids[task.ID] = true
@@ -166,8 +166,10 @@ func ChangedTasks(held, next Plan) []string {
 	return changed
 }
 
-// sameBlock says whether two tasks of one id say the same thing.
+// sameBlock says whether two tasks of one id say the same thing: their needs are compared as the
+// tasks they name and as the words that name no task.
 func sameBlock(a, b Task) bool {
 	return a.Text == b.Text && a.PartOf == b.PartOf && a.Owner == b.Owner && a.Merges == b.Merges &&
-		a.HasSteps == b.HasSteps && slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Steps, b.Steps)
+		a.HasSteps == b.HasSteps && slices.Equal(a.Needs, b.Needs) && slices.Equal(a.Unresolved, b.Unresolved) &&
+		slices.Equal(a.Steps, b.Steps)
 }

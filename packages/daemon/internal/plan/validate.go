@@ -28,7 +28,7 @@ var todaysOrder = func() string {
 
 // Validate is what Legion cannot carry out in any release (R14): a plan with no task; for each
 // task, each `needs` word that names no task of the plan, in the block's order (Task.Unresolved,
-// so p is the plan ResolveNeeds answers), and each step that names a role neither d nor the
+// which FromBlocks fills), and each step that names a role neither d nor the
 // plan's own role blocks define, refused once for each role at the first step that names it
 // (B-11); then each cycle of needs (cycles), named by its first task in id order with the chain
 // from that task. It refuses no plan for a step the plan lacks. The other refusals of R14 need an
@@ -71,7 +71,7 @@ func Validate(p Plan, d Deployment) []Refusal {
 // cycle, the shortest cycle through it, once however many of its needs it is the shortest
 // through. So each need that closes a cycle is in one of them, and the answer holds at most one
 // cycle for each need. Each cycle is its tasks from its first in id order, and the cycles are in
-// the order of their tasks' ids, compared one by one. A need is a task id (ResolveNeeds); one that
+// the order of their tasks' ids, compared one by one. A need is a task id (FromBlocks); one that
 // names no task of tasks closes no cycle.
 func cycles(tasks []Task) [][]string {
 	needs := make(map[string][]string, len(tasks))
@@ -130,7 +130,7 @@ func shortestPath(needs map[string][]string, from, to string) []string {
 }
 
 // Supported is what this release does not carry out yet (C6): more than one task, more than one
-// task that no task needs (Sinks, so p is the plan ResolveNeeds answers), whose work would each
+// task that no task needs (Sinks, over the task ids FromBlocks reads), whose work would each
 // merge by itself where this release merges an issue's work as one change, a role block, and,
 // for each task, `needs`, `owner`, `part_of` and `merges`, each key but the owner's on
 // acceptance, acceptance with no key, a role named at two steps, steps in another order than

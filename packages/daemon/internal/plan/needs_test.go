@@ -27,37 +27,32 @@ func exampleAToE(t *testing.T) Plan {
 		taskNeeding("d", needWord("a"), needWord("c")), taskNeeding("e", needWord("d")))
 }
 
-// ResolveNeeds gives each task's Needs as the ids of the tasks they name, in the order the block
+// FromBlocks gives each task's Needs as the ids of the tasks they name, in the order the block
 // writes them: a reference's block id after its last `#b-`, decoded as Dispatch encodes one (`%2E`
 // is a `.`) with a pin after it left out, and a word with no `#b-` as itself. A task named twice is
-// needed once. Each word that names no task stays in Unresolved, and the plan given is left as it
-// was. The fault is a plan recorded with the words of its needs, which no reader of a task id can
-// read; the control is a ResolveNeeds that keeps each word whole, under which d needs the words.
-func TestResolveNeedsGivesTheIdsOfTheTasksNeeded(t *testing.T) {
-	given := planOf(t, 1, taskNeeding("a.b"), taskNeeding("c"),
+// needed once. Each word that names no task stays in Unresolved. So no caller holds a plan whose
+// needs are words. The fault is a plan read with the words of its needs, which no reader of a task
+// id can read, and which Validate takes; the control is a FromBlocks that keeps each word whole,
+// under which d needs the words.
+func TestFromBlocksReadsEachNeedAsTheTaskItNames(t *testing.T) {
+	read := planOf(t, 1, taskNeeding("a.b"), taskNeeding("c"),
 		taskNeeding("d", needWord("c")+"@v2", needWord("a%2Eb"), "x", "c"),
 		taskNeeding("e", "d", needWord("d")+"@vx"))
-	words := append([]string(nil), given.Tasks[2].Needs...)
-
-	resolved := ResolveNeeds(given)
-	if got := resolved.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a.b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
+	if got := read.Tasks[2]; !reflect.DeepEqual(got.Needs, []string{"c", "a.b"}) || !reflect.DeepEqual(got.Unresolved, []string{"x"}) {
 		t.Fatalf("d needs %q and leaves %q unresolved, want [c a.b] and [x]", got.Needs, got.Unresolved)
 	}
 	// A pin that is no `@v<N>` makes the reference name no block, as Dispatch reads it.
-	if got := resolved.Tasks[3]; !reflect.DeepEqual(got.Needs, []string{"d"}) || !reflect.DeepEqual(got.Unresolved, []string{needWord("d") + "@vx"}) {
+	if got := read.Tasks[3]; !reflect.DeepEqual(got.Needs, []string{"d"}) || !reflect.DeepEqual(got.Unresolved, []string{needWord("d") + "@vx"}) {
 		t.Fatalf("e needs %q and leaves %q unresolved, want [d] and the reference with the bad pin", got.Needs, got.Unresolved)
 	}
-	if got := resolved.Tasks[0]; got.Needs != nil || got.Unresolved != nil {
+	if got := read.Tasks[0]; got.Needs != nil || got.Unresolved != nil {
 		t.Fatalf("a, which needs nothing, needs %q and leaves %q unresolved", got.Needs, got.Unresolved)
-	}
-	if !reflect.DeepEqual(given.Tasks[2].Needs, words) || given.Tasks[2].Unresolved != nil {
-		t.Fatalf("ResolveNeeds changed the plan given: d needs %q, unresolved %q", given.Tasks[2].Needs, given.Tasks[2].Unresolved)
 	}
 }
 
 // R14: a need that names no task of the plan waits for a task that never runs, so Validate refuses
 // it for good, once for each such word in the order the block writes them, naming the word as the
-// block writes it. The fault is such a plan taken; the control is a ResolveNeeds that keeps each
+// block writes it. The fault is such a plan taken; the control is a FromBlocks that keeps each
 // word whole, under which the reference to b-x is refused by its id and the spec's example A to E
 // answers four refusals of a need of no task.
 func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
@@ -79,7 +74,7 @@ func TestANeedThatNamesNoTaskIsRefused(t *testing.T) {
 		{name: "the spec's example A to E", plan: exampleAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Validate(ResolveNeeds(tc.plan), d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -120,7 +115,7 @@ func TestATaskThatNeedsItselfIsRefused(t *testing.T) {
 		{name: "the spec's example A to E", plan: exampleAToE(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := Validate(ResolveNeeds(tc.plan), d); !reflect.DeepEqual(got, tc.want) {
+			if got := Validate(tc.plan, d); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
 			}
 		})
@@ -142,11 +137,11 @@ func TestTwoTasksThatNoTaskNeedsAreNotCarriedOutYet(t *testing.T) {
 		{Task: "", Reason: "the plan has 2 tasks (b, a), and this release runs one task for each issue." + yet},
 		{Task: "", Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself." + yet},
 	}
-	if got := Supported(ResolveNeeds(two)); !reflect.DeepEqual(got, want) {
+	if got := Supported(two); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Supported(a, b) =\n%+v\nwant\n%+v", got, want)
 	}
 
-	example := ResolveNeeds(exampleAToE(t))
+	example := exampleAToE(t)
 	if got := Sinks(example.Tasks); !reflect.DeepEqual(got, []string{"e"}) {
 		t.Fatalf("Sinks(the example A to E) = %q, want [e]", got)
 	}

@@ -196,7 +196,7 @@ func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock 
 	return block
 }
 
-// register_plan reads each need as the task it names (plan.ResolveNeeds) before either check, so
+// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
 // the reasons name the task a reference names, a task a reference names is needed (b alone ends
 // the first plan), and a word that names no task gets R14's reason rather than the reason of a
 // need this release does not carry out yet; the plan recorded is the one both checks read. The

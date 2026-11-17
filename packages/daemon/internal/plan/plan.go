@@ -1,9 +1,9 @@
 // Package plan is the plan the owner of an issue gives Legion: its tasks, the steps of each task,
 // the roles those steps name, and the two checks a plan passes before Legion takes it — Validate,
 // what Legion cannot carry out in any release (R14), and Supported, what this release does not
-// carry out yet (C6). It reads the blocks of one version of the plan document (FromBlocks), reads
-// each need as the task it names (ResolveNeeds) and compares two versions (ChangedTasks); it holds
-// no store and calls nothing.
+// carry out yet (C6). It reads the blocks of one version of the plan document, each need as the
+// task it names (FromBlocks), and compares two versions (ChangedTasks); it holds no store and calls
+// nothing.
 //
 // It imports internal/phase alone, so both the configuration loader, which reads a project's
 // default steps with this grammar and these checks, and the workflow, which walks the line they
@@ -52,12 +52,12 @@ const DefaultTask = "default"
 type Task struct {
 	// ID is the block's id, which every record of the task's steps names.
 	ID string
-	// Needs are the tasks this task needs. FromBlocks keeps each `needs` word whole, as the block
-	// writes it: a reference to a block or a word. ResolveNeeds reads each word as the id of the
-	// task it names, in the block's order, and keeps a word that names no task in Unresolved.
+	// Needs are the tasks this task needs, each by its id, in the order the block writes them:
+	// FromBlocks reads each `needs` word, a reference to a block or a word, as the id of the task
+	// it names, and keeps a word that names no task in Unresolved.
 	Needs []string
 	// Unresolved are the `needs` words that name no task of the plan, in the block's order, as
-	// ResolveNeeds leaves them; Validate refuses each one.
+	// FromBlocks leaves them; Validate refuses each one.
 	Unresolved []string
 	// PartOf is `part_of` and Owner is `owner`, each as the block writes it, "" when unset.
 	PartOf, Owner string
@@ -74,7 +74,7 @@ type Task struct {
 }
 
 // Sinks is the ids of the tasks of tasks that no task needs, in id order: the tasks whose work
-// ends the plan, where it merges. A need is read as a task id (ResolveNeeds).
+// ends the plan, where it merges. A need is a task id (FromBlocks).
 func Sinks(tasks []Task) []string {
 	needed := map[string]bool{}
 	for _, task := range tasks {

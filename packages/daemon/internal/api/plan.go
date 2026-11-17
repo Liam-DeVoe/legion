@@ -134,11 +134,10 @@ func (s *server) registerPlan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Each need is read as the task it names before either check, so a need that names no task is
-	// Validate's, and the plan recorded and answered holds task ids, which every reader of a need
-	// reads (plan.ResolveNeeds). Both checks run, so a plan with two causes gets two reasons: what
-	// this release does not carry out yet, then what no release can.
-	given = plan.ResolveNeeds(given)
+	// FromBlocks read each need as the task it names, so a need that names no task is Validate's,
+	// and the plan recorded and answered holds task ids, which every reader of a need reads. Both
+	// checks run, so a plan with two causes gets two reasons: what this release does not carry out
+	// yet, then what no release can.
 	refusals := append(plan.Supported(given), plan.Validate(given, plan.Deployment{Roles: plan.BuiltinRoles()})...)
 	if len(refusals) > 0 {
 		writeRefusal(w, intake.PlanRefused(refusals))
