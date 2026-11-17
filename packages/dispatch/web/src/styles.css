@@ -345,7 +345,7 @@ html:has([data-issue-page]) {
    outside the block, keeps no margin, so a focus on one of its controls that lies under the stuck
    block still scrolls it out from under the block. `[data-identity-block]` and
    `[data-issue-header]` are `IssueHeader.tsx`'s. */
-html:has([data-issue-page]) [data-identity-block] * {
+[data-identity-block] :is(a[href], button, input, select, textarea, [tabindex]) {
   scroll-margin-top: calc(
     -1 *
     max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
@@ -353,7 +353,7 @@ html:has([data-issue-page]) [data-identity-block] * {
 }
 
 @media (max-width: 760px) {
-  html:has([data-issue-page]) [data-issue-header] * {
+  [data-issue-page] [data-issue-header] :is(a[href], button, input, select, textarea, [tabindex]) {
     scroll-margin-top: calc(
       -1 *
       max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
