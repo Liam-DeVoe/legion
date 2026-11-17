@@ -605,30 +605,21 @@ check "the stand-in saw both lines' listings" \
 # GOPROXY=off is not offline while a GONOPROXY or GOPRIVATE the machine sets matches a module:
 # go fetches it directly first. Here the daemon requires a third-party module, with its go.sum
 # lines, that the empty cache lacks, and the machine's settings match it; a proxy recorder stands
-# in for the network. The case's first check is the recorder's own control: a go list outside the
-# check, under the same settings and GOPROXY=off, does try example.org.
+# in for the network, and go-offline-test-lib.sh's network_control is its own control.
 echo "case: an inherited GONOPROXY sends no go command of either line to the network"
 root=$(written network)
-printf 'module example.com/daemon\n\ngo 1.22\n\nrequire (\n\texample.com/envoy v0.0.0\n\texample.org/vendorlib v1.0.0\n)\n\nreplace example.com/envoy => ../envoy\n' \
-  > "$root/packages/daemon/go.mod"
-printf 'example.org/vendorlib v1.0.0 h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\nexample.org/vendorlib v1.0.0/go.mod h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n' \
-  > "$root/packages/daemon/go.sum"
-printf 'package main\n\nimport _ "example.org/vendorlib"\n' > "$root/packages/daemon/cmd/legion/vendor.go"
-proxy_recorder "$work/network"
-url=$(<"$work/network/url")
-inherited=(env -u NO_PROXY -u no_proxy HTTPS_PROXY="$url" https_proxy="$url" HTTP_PROXY="$url" http_proxy="$url"
-  GONOPROXY=example.org GOPRIVATE=example.org)
-mkdir "$work/network/cache"
-(cd "$root/packages/daemon" &&
-  "${inherited[@]}" GOPROXY=off GOFLAGS= GOMODCACHE="$work/network/cache" go list -e -deps ./cmd/legion > /dev/null 2>&1) || true
+printf 'module example.com/daemon\n\ngo 1.22\n\nrequire (\n\texample.com/envoy v0.0.0\n\t%s v1.0.0\n)\n\nreplace example.com/envoy => ../envoy\n' \
+  "$GO_OFFLINE_VENDOR" > "$root/packages/daemon/go.mod"
+go_offline_vendor_sums "$root/packages/daemon/go.sum"
+printf 'package main\n\nimport _ "%s"\n' "$GO_OFFLINE_VENDOR" > "$root/packages/daemon/cmd/legion/vendor.go"
+network_recorder "$work/network"
 check "the recorder sees a go list under GOPROXY=off alone try example.org" \
-  "$(contains "$(<"$work/network/requests")" '^CONNECT example.org:443$')"
-: > "$work/network/requests"
+  "$(network_control "$work/network" "$root/packages/daemon" ./cmd/legion)"
 set +e
-out=$("${inherited[@]}" "$root/.github/scripts/check-legion-version-inputs.sh" 2>&1)
+out=$("${GO_OFFLINE_INHERITED[@]}" "$root/.github/scripts/check-legion-version-inputs.sh" 2>&1)
 status=$?
 set -e
 check "the check passes, the third-party module aside" "$(is "$status" 0)"
-check "no go command of the check tried the network" "$(is "$(wc -l < "$work/network/requests")" 0)"
+check "no go command of the check tried the network" "$(is "$(network_requests "$work/network")" 0)"
 
 summary "check-legion-version-inputs.sh"

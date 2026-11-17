@@ -1533,15 +1533,16 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-filters.test.sh'
-              # :78-79 symlink the script and the four modules it runs on into every fixture.
+              # :79-81 symlink the script and the four modules it runs on into every fixture.
               - '.github/scripts/check-ci-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/ci_workflow_rules.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_offline.py'
-              # :54 sources the stand-in go its offline case reads the go commands' environment with.
+              # :55 sources the stand-in go and the proxy recorder procedure its last two cases
+              # read the go commands with.
               - '.github/scripts/go-offline-test-lib.sh'
-              # :2240 imports the table to derive the plain step's -run lists, and :2694 holds
+              # :2241 imports the table to derive the plain step's -run lists, and :2695 holds
               # the guide's slow-suite list to the jobs the full-ci label gates.
               - '.github/scripts/ci_job_reads.py'
               # ci_job_reads.py imports it.
@@ -1553,7 +1554,7 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-legion-version-inputs.test.sh'
               # The script under test and the modules it imports, symlinked into every fixture,
-              # and the stand-in go its offline case reads their environment with.
+              # and the stand-in go and proxy recorder procedure its last two cases read with.
               - '.github/scripts/check-legion-version-inputs.sh'
               - '.github/scripts/go_offline.py'
               - '.github/scripts/release_version_inputs.py'

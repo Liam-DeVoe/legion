@@ -21,9 +21,29 @@
 # instead of reaching the network. proxy_recorders_stop stops every recorder this shell started;
 # each harness calls it from its EXIT trap.
 #
-# Not executable: `source "$(dirname "${BASH_SOURCE[0]}")/go-offline-test-lib.sh"`.
+# The network case both harnesses make, in three calls, so its procedure is kept once:
+#   network_recorder <dir>  in the harness's own shell (the recorder must be this shell's to stop):
+#                           starts a recorder in <dir> and sets GO_OFFLINE_INHERITED, the `env`
+#                           command line a case runs its check under, the settings that send
+#                           GOPROXY=off alone to the network: the recorder as every proxy
+#                           variable, NO_PROXY unset, and GONOPROXY and GOPRIVATE matching
+#                           GO_OFFLINE_VENDOR, a third-party module no cache of a case holds.
+#   network_control <dir> <module dir> <package>
+#                           the recorder's own control: `go list -e -deps <package>` in
+#                           <module dir>, under those settings and GOPROXY=off alone over an empty
+#                           cache of its own; prints true when the recorder saw it try
+#                           example.org, else false, and then clears the recorder's log.
+#   network_requests <dir>  how many requests the recorder has seen since the control.
+# The case writes its fixture to require GO_OFFLINE_VENDOR (go_offline_vendor_sums writes the
+# go.sum lines that make go look for it rather than stop at a missing sum), runs its check under
+# "${GO_OFFLINE_INHERITED[@]}", and asserts its own verdict beside network_requests being 0.
+#
+# Not executable, and sourced after test-lib.sh, whose `contains` network_control reads with:
+# `source "$(dirname "${BASH_SOURCE[0]}")/go-offline-test-lib.sh"`.
 
 GO_OFFLINE_RECORDERS=()
+GO_OFFLINE_INHERITED=()
+GO_OFFLINE_VENDOR="example.org/vendorlib"
 
 go_spy() {
   local dir=$1 real
@@ -112,4 +132,32 @@ proxy_recorders_stop() {
     wait "$pid" 2>/dev/null || true
   done
   GO_OFFLINE_RECORDERS=()
+}
+
+go_offline_vendor_sums() {
+  printf '%s v1.0.0 h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n%s v1.0.0/go.mod h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n' \
+    "$GO_OFFLINE_VENDOR" "$GO_OFFLINE_VENDOR" > "$1"
+}
+
+network_recorder() {
+  local dir=$1 url
+  proxy_recorder "$dir"
+  url=$(<"$dir/url")
+  GO_OFFLINE_INHERITED=(env -u NO_PROXY -u no_proxy HTTPS_PROXY="$url" https_proxy="$url" HTTP_PROXY="$url"
+    http_proxy="$url" GONOPROXY="${GO_OFFLINE_VENDOR%%/*}" GOPRIVATE="${GO_OFFLINE_VENDOR%%/*}")
+}
+
+network_control() {
+  local dir=$1 module=$2 package=$3 seen
+  rm -rf "$dir/cache"
+  mkdir "$dir/cache"
+  (cd "$module" &&
+    "${GO_OFFLINE_INHERITED[@]}" GOPROXY=off GOFLAGS= GOMODCACHE="$dir/cache" go list -e -deps "$package" > /dev/null 2>&1) || true
+  seen=$(contains "$(<"$dir/requests")" "^CONNECT ${GO_OFFLINE_VENDOR%%/*}:443\$")
+  : > "$dir/requests"
+  echo "$seen"
+}
+
+network_requests() {
+  wc -l < "$1/requests"
 }

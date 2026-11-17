@@ -36,8 +36,9 @@
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs (ci_workflow_rules.py), the path model
 # they import (workflow_paths.py) and the module its go commands run through (go_offline.py) into
-# it, so the code under test is the code CI runs. Its last case holds that module's environment
-# with the stand-in go of go-offline-test-lib.sh. It needs go and a python3 with PyYAML.
+# it, so the code under test is the code CI runs. Its last two cases hold that module's go
+# commands to its environment, with the stand-in go of go-offline-test-lib.sh, and to no network
+# request, with that file's proxy recorder and its control. It needs go and a python3 with PyYAML.
 #
 # Run from anywhere: .github/scripts/check-ci-filters.test.sh
 # CI runs it in ci.yaml's test job.
@@ -2735,31 +2736,22 @@ check "every go command ran with GOPROXY=off, GONOPROXY=none and GOENV=off over 
 # GOPROXY=off is not offline while a GONOPROXY or GOPRIVATE the machine sets matches a module:
 # go fetches it directly first. Here the module requires a third-party one, with its go.sum lines,
 # that the empty cache lacks, cmd/app imports it, and the machine's settings match it; a proxy
-# recorder stands in for the network. The case's first check is the recorder's own control: a go
-# list outside the check, under the same settings and GOPROXY=off, does try example.org. The
-# check's own verdict is not this case's (the fixture's filters name no go.sum); that the engine
-# listed the app's closure is.
+# recorder stands in for the network, and go-offline-test-lib.sh's network_control is its own
+# control. The check's own verdict is not this case's (the fixture's filters name no go.sum); that
+# the engine listed the app's closure is.
 echo "case: an inherited GONOPROXY sends no go command of the engine to the network"
 root=$(fixture network)
-printf 'module example.com/m\n\ngo 1.21\n\nrequire example.org/vendorlib v1.0.0\n' > "$root/mod/go.mod"
-printf 'example.org/vendorlib v1.0.0 h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\nexample.org/vendorlib v1.0.0/go.mod h1:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=\n' \
-  > "$root/mod/go.sum"
-printf 'package main\n\nimport _ "example.org/vendorlib"\n' > "$root/mod/cmd/app/vendor.go"
-proxy_recorder "$work/network"
-url=$(<"$work/network/url")
-inherited=(env -u NO_PROXY -u no_proxy HTTPS_PROXY="$url" https_proxy="$url" HTTP_PROXY="$url" http_proxy="$url"
-  GONOPROXY=example.org GOPRIVATE=example.org)
-mkdir "$work/network/cache"
-(cd "$root/mod" &&
-  "${inherited[@]}" GOPROXY=off GOFLAGS= GOMODCACHE="$work/network/cache" go list -e -deps ./cmd/app > /dev/null 2>&1) || true
+printf 'module example.com/m\n\ngo 1.21\n\nrequire %s v1.0.0\n' "$GO_OFFLINE_VENDOR" > "$root/mod/go.mod"
+go_offline_vendor_sums "$root/mod/go.sum"
+printf 'package main\n\nimport _ "%s"\n' "$GO_OFFLINE_VENDOR" > "$root/mod/cmd/app/vendor.go"
+network_recorder "$work/network"
 check "the recorder sees a go list under GOPROXY=off alone try example.org" \
-  "$(contains "$(<"$work/network/requests")" '^CONNECT example.org:443$')"
-: > "$work/network/requests"
+  "$(network_control "$work/network" "$root/mod" ./cmd/app)"
 set +e
-out=$("${inherited[@]}" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
+out=$("${GO_OFFLINE_INHERITED[@]}" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
 status=$?
 set -e
 check "the engine listed the app's closure" "$(contains "$out" '^report: app: ')"
-check "no go command of the engine tried the network" "$(is "$(wc -l < "$work/network/requests")" 0)"
+check "no go command of the engine tried the network" "$(is "$(network_requests "$work/network")" 0)"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

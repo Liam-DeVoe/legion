@@ -2047,16 +2047,16 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:78-79)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:79-81)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (GO_OFFLINE, "the module the engine runs go through, linked in beside it"),
-        (GO_OFFLINE_STAND_IN, "check-ci-filters.test.sh:54 sources the stand-in go its offline case reads the engine's go "
-                              "commands' environment with"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2240 imports this table to derive the plain step's -run lists"),
-        (RELEASE_PLAN, "ci_job_reads.py, which check-ci-filters.test.sh:2240 imports, imports it"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2694 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (GO_OFFLINE_STAND_IN, "check-ci-filters.test.sh:55 sources the stand-in go and the proxy recorder procedure its "
+                              "last two cases read the engine's go commands with"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2241 imports this table to derive the plain step's -run lists"),
+        (RELEASE_PLAN, "ci_job_reads.py, which check-ci-filters.test.sh:2241 imports, imports it"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2695 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_legion_version_inputs_test", "Test the legion version input check",
             f"{SCRIPTS}/check-legion-version-inputs.test.sh", [
@@ -2064,8 +2064,8 @@ SCRIPT_TEST_GATES = [
         (GO_OFFLINE, "the module the script runs go through, linked in beside it"),
         (RELEASE_PLAN, "the release listings and version steps the script reads, linked in beside it, and which "
                        "check-legion-version-inputs.test.sh's canonical() builds each fixture's version steps from"),
-        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go its offline case reads the "
-                              "script's go commands' environment with"),
+        (GO_OFFLINE_STAND_IN, "check-legion-version-inputs.test.sh:26 sources the stand-in go and the proxy recorder "
+                              "procedure its last two cases read the script's go commands with"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:50)"),
