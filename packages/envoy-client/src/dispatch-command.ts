@@ -556,6 +556,16 @@ export function parseCommand(
     }
   }
 
+  // An empty issue key, project key or check id names nothing, and sent it reaches a route that is
+  // no route (`PATCH /api/v1/issues/`), which a rolling release also answers, so it is refused
+  // here, naming the flag that gave it: an empty variable in a job's step is how one is written.
+  for (const field of IDENTIFIER_FIELDS) {
+    if (args[field] === "") {
+      problems.push(
+        `${setBy.get(field)} is empty, so the call names no ${field}: a variable that gives it may be empty or unset`
+      );
+    }
+  }
   if (help) return { kind: "help", tool };
   if (problems.length > 0) {
     // When every problem is a bare `-`, the refusal is about values and lists no flags.
@@ -589,6 +599,9 @@ function appendedItem(
 
 /** A Dispatch issue key, `PROJECT-N`. */
 const ISSUE_KEY = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/** The fields that name what a call is about, each a key or an id that is never empty. */
+const IDENTIFIER_FIELDS = ["issue", "project", "check"] as const;
 
 /** A shell word: bare when it needs no quoting, otherwise POSIX single-quoted. */
 function quoteWord(value: string): string {

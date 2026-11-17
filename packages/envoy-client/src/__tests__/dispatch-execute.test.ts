@@ -5799,6 +5799,78 @@ describe("executeDispatchTool", () => {
     }
   });
 
+  // `dispatch issue` prints a created issue's project on its check lines, and the route always
+  // answers it, so the row requires it: a 2xx without it is a landing, never `--project undefined`.
+  test("dispatch_issue reads a created issue's 2xx without its project as a landing", async () => {
+    const failure = await executeDispatchTool({
+      tool: "dispatch_issue",
+      args: { project: "LEGION", title: "Architecture work" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: echoing({ key: "LEGION-216", title: "Architecture work" }) as typeof fetch,
+      sleep: async () => {},
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(failure).toBeInstanceOf(DispatchWriteLandedError);
+    expect(failure).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST }));
+  });
+
+  // `dispatch request-approval` reads `approval` where the answer holds no ask, and the route
+  // always answers it, so the row requires it: a 2xx without it is a landing, never a TypeError.
+  test("dispatch_request_approval reads a 2xx without its approval as a landing", async () => {
+    const { approval: _approval, ...answer } = routeAnswer(
+      "POST /api/v1/artifacts/{id}/approval-requests",
+      { ask: null, artifact_id: "artifact-42", version: 3 },
+      201
+    ) as Record<string, unknown>;
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [
+            {
+              id: "artifact-42",
+              slug: "spec",
+              name: "spec.md",
+              primary: true,
+              approval: { state: "draft", latest_version: 3 },
+            },
+          ],
+          open_asks: [],
+        });
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/blocks") {
+        return response([{ id: "p-1", type: "paragraph", from: 0, to: 12 }]);
+      }
+      if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
+        return echoing(answer)(url, init);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    const failure = await executeDispatchTool({
+      tool: "dispatch_request_approval",
+      args: { issue: "DSP-42", summary: "Proposes a live sync in place of the nightly export." },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+    expect(failure).toBeInstanceOf(DispatchWriteLandedError);
+    expect(failure).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST }));
+  });
+
   test("dispatch_issue_update maps an empty parent to null and reports the clear", async () => {
     const patches: unknown[] = [];
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {

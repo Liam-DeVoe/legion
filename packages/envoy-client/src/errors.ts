@@ -58,3 +58,21 @@ export function withoutUserinfo(url: string): string {
   const shown = parsed.toString();
   return shown.endsWith("/") && !url.endsWith("/") ? shown.slice(0, -1) : shown;
 }
+
+/**
+ * The origin a redirect points at, for the line that refuses it: the scheme and the host (with a
+ * port that is not the scheme's own) of `response`'s `Location`, read against `url`, the request
+ * it answers. Never its path, query, fragment or user, any of which can carry a secret. Undefined
+ * for an answer that is no redirect, and for a `Location` that is missing or names no http(s)
+ * origin.
+ */
+export function redirectOrigin(response: Response, url: string): string | undefined {
+  const location = response.headers.get("Location");
+  if (response.status < 300 || response.status > 399 || location === null) return undefined;
+  try {
+    const target = new URL(location, url);
+    return target.protocol === "http:" || target.protocol === "https:" ? target.origin : undefined;
+  } catch {
+    return undefined;
+  }
+}
