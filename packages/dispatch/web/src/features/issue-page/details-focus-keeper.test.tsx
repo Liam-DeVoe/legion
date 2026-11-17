@@ -1,10 +1,27 @@
 import { expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 
+import { onFakeClock } from "../../__tests__/fake-clock";
+import { Margin } from "../margin/Margin";
+import { MarginProvider } from "../margin/margin-context";
+import { issue, stubMatchMedia } from "../margin/margin-fixture";
+import { buildIssuePath } from "../refs/routes";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { useDetailsFocusKeeper } from "./details-focus-keeper";
+import { useDrawerPage } from "./drawer-page";
+import {
+  DETAILS_ATTRIBUTE,
+  type MarginDrawer,
+  type MarginDrawerPage,
+  type MarginFill,
+  MarginSlotProvider,
+  useFillMarginSlot,
+  useMarginDrawer,
+} from "./margin-slot";
 
 /** Where the focus is when no element holds it. */
 const PAGE = "the page";
@@ -87,6 +104,13 @@ function Fixture<S>({
 interface Drawn<S> {
   /** Sets the box's state, then waits until every observer and microtask it set off has run. */
   change: (state: S) => Promise<void>;
+  /** Sets the box's state as a write that lands does (`outsideAct`), then waits until React has
+   *  run the commit's passive effects and the keeper has had its task. In a browser React's
+   *  scheduler queues the task that runs those effects as the commit ends, before the keeper's
+   *  observer queues the keeper's own, so they run first. Under Bun the scheduler's tasks are
+   *  immediates, which run after a timer, so this holds the keeper's timer on the fake clock until
+   *  React's tasks have run, and then lets it fire. */
+  land: (state: S) => Promise<void>;
   /** Draws the box again with the keeper turned on or off, or the box hidden. */
   redraw: (props: { active?: boolean; hidden?: boolean }) => Promise<void>;
   unmount: () => void;
@@ -110,6 +134,12 @@ function drawBox<S>(active: boolean, initial: S, draw: Draw<S>): Drawn<S> {
       await act(async () => handle.set(state));
       await settled();
     },
+    land: async (state) => {
+      await onFakeClock(async () => {
+        outsideAct(() => handle.set(state));
+        await reactTasks();
+      });
+    },
     redraw: async (next) => {
       props = { ...props, ...next };
       view.rerender(fixture());
@@ -126,6 +156,31 @@ async function settled(): Promise<void> {
     setTimeout(resolve, 0);
     await promise;
   });
+}
+
+/** Runs `update` as code outside any event does - a write that lands - outside `act`, so React
+ *  renders it on its own scheduler and runs its passive effects in a task after the commit. React
+ *  is told it is not in a test while it runs, so it does not warn of an update outside `act`. */
+function outsideAct(update: () => void): void {
+  const environment = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+  const inTest = environment.IS_REACT_ACT_ENVIRONMENT;
+  environment.IS_REACT_ACT_ENVIRONMENT = false;
+  try {
+    update();
+  } finally {
+    environment.IS_REACT_ACT_ENVIRONMENT = inTest;
+  }
+}
+
+/** Lets React's scheduler run what an update outside `act` queued: the render and its commit in
+ *  one task, the commit's passive effects in the next. Under Bun the scheduler's tasks are
+ *  immediates, which the fake clock does not hold. */
+async function reactTasks(): Promise<void> {
+  for (let turn = 0; turn < 10; turn += 1) {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setImmediate(resolve);
+    await promise;
+  }
 }
 
 /** Where the focus is: its control's name, and the history entry the control stands in. */
@@ -174,8 +229,9 @@ test("a control disabled while its write is out hands the focus to the nearest c
 
 /** A turn's controls: Collapse; Show more, which gives way to a loading line while the rest of the
  *  turn is read; a line that counts the turns left; Copy link, further down. With `handsOn`, Copy
- *  link takes the focus itself as the loading line is drawn (`CopyLinkTakesFocus`). */
-function showMore(loading: boolean, handsOn = false): ReactNode {
+ *  link takes the focus itself as the loading line is drawn, in a layout effect of that commit
+ *  (`CopyLinkTakesFocus`) or in a passive one (`CopyLinkTakesFocusAfter`). */
+function showMore(loading: boolean, handsOn?: "layout" | "passive"): ReactNode {
   return (
     <>
       <button data-top={100} type="button">
@@ -189,8 +245,10 @@ function showMore(loading: boolean, handsOn = false): ReactNode {
         </button>
       )}
       <p data-top={170}>3 more turns</p>
-      {handsOn ? (
+      {handsOn === "layout" ? (
         <CopyLinkTakesFocus loading={loading} />
+      ) : handsOn === "passive" ? (
+        <CopyLinkTakesFocusAfter loading={loading} />
       ) : (
         <button data-top={300} type="button">
           Copy link
@@ -206,6 +264,22 @@ function CopyLinkTakesFocus({ loading }: { loading: boolean }): ReactNode {
   const button = useRef<HTMLButtonElement>(null);
   useLayoutEffect(() => {
     if (loading) button.current?.focus();
+  }, [loading]);
+  return (
+    <button data-top={300} ref={button} type="button">
+      Copy link
+    </button>
+  );
+}
+
+/** A site's own hand-on made in a passive effect, as the blocked-by editor's row makes it when
+ *  its editor goes: only where the focus fell to the page, Copy link takes it as Show more gives
+ *  way to its loading line. */
+function CopyLinkTakesFocusAfter({ loading }: { loading: boolean }): ReactNode {
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    const focus = document.activeElement;
+    if (loading && (focus === null || focus === document.body)) button.current?.focus();
   }, [loading]);
   return (
     <button data-top={300} ref={button} type="button">
@@ -332,6 +406,45 @@ test("a Retry that fails twice never leaves the focus on the page, and gets it b
   }
 });
 
+/** Save, disabled while its write is out, and Pin above it, which reads Unpin once pressed: the
+ *  write goes out, the reader presses Pin, where the keeper put the focus, and the write lands.
+ *  Returns where the focus is after each step. */
+async function pinPressedWhileSaving(): Promise<string[]> {
+  const box = drawBox(true, { pinned: false, writing: false }, (state, set) => (
+    <>
+      <button data-top={420} onClick={() => set({ ...state, pinned: !state.pinned })} type="button">
+        {state.pinned ? "Unpin" : "Pin"}
+      </button>
+      <button data-top={460} disabled={state.writing} type="button">
+        Save
+      </button>
+    </>
+  ));
+  const seen: string[] = [];
+  try {
+    screen.getByRole("button", { name: "Save" }).focus();
+    await box.change({ pinned: false, writing: true });
+    seen.push(focusName());
+    await userEvent.keyboard("{Enter}");
+    await settled();
+    seen.push(focusName());
+    await box.change({ pinned: true, writing: false });
+    seen.push(focusName());
+    return seen;
+  } finally {
+    box.unmount();
+  }
+}
+
+test("a control the keeper moved the focus off takes it back no more once the reader pressed the control it went to", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(await pinPressedWhileSaving()).toEqual(["Pin", "Unpin", "Unpin"]);
+  } finally {
+    restore();
+  }
+});
+
 /** Two turns of the log and, at its end, Load older, which goes away once the log's last page is
  *  read, with no control drawn in its place. */
 function logEnd(more: boolean): ReactNode {
@@ -379,6 +492,63 @@ test("Load older removed at the log's end hands the focus to the control just ab
   }
 });
 
+/** Details' resize handle, fixed to the screen and as tall as it, and under the box's head its
+ *  scrolling body, where Retry goes once its read answers. With `others`, Collapse and Copy link
+ *  stand in the body around Retry; without, Retry is the body's one control. */
+async function retryAnsweredBesideHandle(others: boolean): Promise<string> {
+  const box = drawBox(true, false, (answered) => (
+    <>
+      <button
+        aria-label="Resize Details"
+        data-height={560}
+        data-top={0}
+        style={{ position: "fixed" }}
+        type="button"
+      />
+      <div data-height={500} data-top={60} style={{ overflowY: "auto" }}>
+        {others ? (
+          <button data-top={260} type="button">
+            Collapse
+          </button>
+        ) : null}
+        {answered ? null : (
+          <button data-top={300} type="button">
+            Retry
+          </button>
+        )}
+        {others ? (
+          <button data-top={420} type="button">
+            Copy link
+          </button>
+        ) : null}
+      </div>
+    </>
+  ));
+  try {
+    screen.getByRole("button", { name: "Retry" }).focus();
+    await box.change(true);
+    return focusName();
+  } finally {
+    box.unmount();
+  }
+}
+
+test("a control gone from the box's scrolling body hands the focus to a control of that body, never to a fixed one", async () => {
+  const restore = chromiumLayout();
+  try {
+    expect(
+      await retryAnsweredBesideHandle(true),
+      "the handle stands at no distance from Retry's place, and comes first"
+    ).toBe("Collapse");
+    expect(
+      await retryAnsweredBesideHandle(false),
+      "with no other control in the body, the nearest in the rest of the box"
+    ).toBe("Close");
+  } finally {
+    restore();
+  }
+});
+
 /** Show more holds the focus, the reader moves it with `move`, and then Show more gives way to its
  *  loading line. */
 async function movedThenLoading(move: () => void): Promise<string> {
@@ -416,10 +586,23 @@ test("a focus the reader moved elsewhere stays where they put it", async () => {
 
 test("a site's own hand-on, made in the commit that changed the box, keeps the focus it gave", async () => {
   const restore = chromiumLayout();
-  const box = drawBox(true, false, (loading) => showMore(loading, true));
+  const box = drawBox(true, false, (loading) => showMore(loading, "layout"));
   try {
     screen.getByRole("button", { name: "Show more" }).focus();
     await box.change(true);
+    expect(focusName(), "the keeper's own choice, Collapse, is nearer").toBe("Copy link");
+  } finally {
+    box.unmount();
+    restore();
+  }
+});
+
+test("a site's own hand-on, made in a passive effect after a change from outside an event, keeps the focus it gave", async () => {
+  const restore = chromiumLayout();
+  const box = drawBox(true, false, (loading) => showMore(loading, "passive"));
+  try {
+    screen.getByRole("button", { name: "Show more" }).focus();
+    await box.land(true);
     expect(focusName(), "the keeper's own choice, Collapse, is nearer").toBe("Copy link");
   } finally {
     box.unmount();
@@ -449,6 +632,108 @@ test("the keeper does nothing while it is turned off or the box is hidden", asyn
       hidden.unmount();
     }
   } finally {
+    restore();
+  }
+});
+
+/** The new issue page's panel in Details, as its root fills the margin's slot: above the margin's
+ *  own content, Copy link, and a Retry that goes once it is pressed, as a Retry does once its read
+ *  answers. */
+function DetailsPanel(): ReactNode {
+  const [failed, setFailed] = useState(true);
+  return (
+    <>
+      <button data-top={300} type="button">
+        Copy link
+      </button>
+      {failed ? (
+        <button data-top={364} onClick={() => setFailed(false)} type="button">
+          Retry
+        </button>
+      ) : null}
+    </>
+  );
+}
+
+const fillDetails: MarginFill = (content) => (
+  <>
+    <DetailsPanel />
+    {content}
+  </>
+);
+
+/** What the new issue page's root does for Details: it sets the drawer's words and fills the
+ *  margin's slot with its panel; and the page's own control that opens the drawer. */
+function NewPageRoot(): ReactNode {
+  useDrawerPage(issue);
+  useFillMarginSlot(fillDetails);
+  const drawer = useMarginDrawer();
+  return (
+    <button onClick={() => drawer?.setOpen(true)} type="button">
+      Open Details
+    </button>
+  );
+}
+
+/** The shell as it draws the new issue page's frame (`app.tsx`'s `ShellProviders`): the margin's
+ *  providers, with Details as the margin's drawer, closed on the load, and the margin itself. */
+function NewPageShell(): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const drawer = useMemo<MarginDrawer>(() => ({ open, page, setOpen, setPage }), [open, page]);
+  return (
+    <MarginProvider>
+      <MarginSlotProvider drawer={drawer} drawsSlot>
+        <NewPageRoot />
+        <Margin />
+      </MarginSlotProvider>
+    </MarginProvider>
+  );
+}
+
+/** What the margin reads of the issue, answered before it asks. */
+function issueClient(): QueryClient {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      mutations: { retry: false },
+      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+    },
+  });
+  queryClient.setQueryData(["issue", issue.key], issue);
+  queryClient.setQueryData(["inbox"], []);
+  queryClient.setQueryData(["asks", issue.key], []);
+  queryClient.setQueryData(["user-state"], {});
+  queryClient.setQueryData(["comments", issue.key], []);
+  return queryClient;
+}
+
+test("Details' own drawer keeps the focus inside it when the control that held it goes", async () => {
+  const restore = chromiumLayout();
+  const restoreMatchMedia = stubMatchMedia(false);
+  const user = userEvent.setup();
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={issueClient()}>
+        <NewPageShell />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Open Details" }));
+    // `Margin` gives the drawer no `data-top` (`layoutOf`): it stands where the fixture's box does.
+    const drawer = screen.getByTestId("desktop-margin-shell");
+    drawer.setAttribute("data-top", "0");
+    drawer.setAttribute("data-height", "560");
+    screen.getByRole("button", { name: "Retry" }).focus();
+    await user.keyboard("{Enter}");
+    await settled();
+    expect(
+      document.activeElement?.closest(`[${DETAILS_ATTRIBUTE}]`) ?? null,
+      `the focus left Details for ${focusName()}`
+    ).not.toBeNull();
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
     restore();
   }
 });

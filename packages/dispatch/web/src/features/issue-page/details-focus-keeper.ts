@@ -12,6 +12,20 @@ const CLIPPING: Readonly<Record<string, true>> = {
   scroll: true,
 };
 
+/** The `overflow` values of a box that scrolls its content. */
+const SCROLLING: Readonly<Record<string, true>> = {
+  auto: true,
+  scroll: true,
+};
+
+/** The `position` values that pin an element to the screen or to the box it scrolls in, so that
+ *  it stands in sight, at no distance, wherever the reader has scrolled to: the drawer's resize
+ *  handle, as tall as the screen, for one. */
+const PINNED: Readonly<Record<string, true>> = {
+  fixed: true,
+  sticky: true,
+};
+
 /** What the keeper hears: the two attributes that take a control from the reader, and every
  *  element added or removed. */
 const WATCHED: MutationObserverInit = {
@@ -37,6 +51,14 @@ interface Bounds extends Span {
   readonly right: number;
 }
 
+/** What the keeper reads of an element between a control and the box, once per search: the part
+ *  of the window it cuts what it draws down to, where it cuts it (`CLIPPING`), and whether it is
+ *  pinned (`PINNED`). */
+interface Frame {
+  readonly clip: Bounds | null;
+  readonly pinned: boolean;
+}
+
 /** How the control that held the focus lost it. */
 type Loss = "disabled" | "hidden" | "removed";
 
@@ -51,17 +73,23 @@ type Loss = "disabled" | "hidden" | "removed";
  * The focus goes, in this order: to the control that replaced the lost one, a control drawn in the
  * same change with the same identity (`ControlIdentity`), as when React draws an entry anew under
  * a new key; else to the control nearest to where the lost one stood, among those that stay
- * enabled, drawn and in sight; else to the box's heading, its first `h2`. A control the keeper
- * moved the focus off because it turned disabled gets the focus back when it is enabled again, if
- * the focus is still where the keeper put it: a Retry that is busy while it reads, then fails.
+ * enabled, drawn and in sight and are not pinned (`PINNED`), looked for first inside the box that
+ * scrolls the lost one, Details' body, and only where that holds none in the rest of the box; else
+ * to the box's heading, its first `h2`. A control the keeper moved the focus off because it turned
+ * disabled gets the focus back when it is enabled again, if the focus is still where the keeper put
+ * it and the reader has done nothing inside the box since - pressed no key, pressed no pointer,
+ * moved no focus: a Retry that is busy while it reads, then fails.
  *
  * It is a backstop under each site's own hand-on, not a replacement for it. It hears a change
  * through one MutationObserver on the box, and through a `focusout` that names no next element,
- * which it reads a microtask later. React runs a site's own hand-on in a layout effect of the
- * commit that changed the DOM, before the observer's callback runs, so the site's choice already
- * holds the focus when the keeper looks: the keeper acts only on a focus left on the page, or
- * left on the disabled or hidden control itself, which Chromium moves to the page a moment later.
- * A focus the reader puts anywhere else, inside the box or outside it, stays where they put it.
+ * which it reads a microtask later, and it moves the focus one task after that. A site hands the
+ * focus on in an effect of the commit that changed the DOM. A layout effect runs before the
+ * observer's callback. A passive effect runs after it when the change came from outside an event,
+ * a save that lands, but in a task React queued as the commit ended, before the keeper queued its
+ * own. So the site's choice already holds the focus when the keeper moves: the keeper moves only a
+ * focus still on the page, or still on the disabled or hidden control itself, which Chromium moves
+ * to the page a moment later. A focus the reader puts anywhere else, inside the box or outside it,
+ * stays where they put it.
  *
  * It does nothing while `active` is false or the box is not drawn, and nothing while the focus is
  * outside the box: its observer runs only while a control inside the box holds the focus.
@@ -80,6 +108,10 @@ function keepFocusIn(root: HTMLElement): () => void {
   let held: { readonly control: HTMLElement; readonly identity: ControlIdentity } | null = null;
   // A control the keeper moved the focus off as it turned disabled, and where it put the focus.
   let restore: { readonly at: HTMLElement; readonly control: HTMLElement } | null = null;
+  // The move the keeper makes a task after the held control was lost: how it was lost, every
+  // record heard since, and the timer that makes it.
+  let pending: { loss: Loss; readonly records: MutationRecord[]; readonly timer: number } | null =
+    null;
   // Whether the focus moving now is the keeper's own move.
   let placing = false;
   const observer = new MutationObserver((records) => keep(records, false));
@@ -91,14 +123,22 @@ function keepFocusIn(root: HTMLElement): () => void {
       forget();
       return;
     }
+    cancel();
     held = { control: target, identity: identityOf(target) };
     observer.observe(root, WATCHED);
   }
 
   function forget(): void {
+    cancel();
     held = null;
     restore = null;
     observer.disconnect();
+  }
+
+  function cancel(): void {
+    if (pending === null) return;
+    window.clearTimeout(pending.timer);
+    pending = null;
   }
 
   function place(target: HTMLElement): boolean {
@@ -135,7 +175,7 @@ function keepFocusIn(root: HTMLElement): () => void {
       }
     }
     if (held === null) return;
-    const { control, identity } = held;
+    const { control } = held;
     const loss = lossOf(
       control,
       root,
@@ -153,15 +193,54 @@ function keepFocusIn(root: HTMLElement): () => void {
     // Off the page, the focus is the keeper's to move only while it is still on the disabled or
     // hidden control itself; a focus a site or the reader put anywhere else stays.
     if (!onPage && (focus !== control || loss === "removed")) return;
+    // A site's passive effect, where the change came from outside an event, runs after this, in a
+    // task React queued as the commit ended: the keeper moves in a task of its own, queued behind
+    // that one, with every record it heard until then.
+    if (pending === null) {
+      pending = { loss, records: [...records], timer: window.setTimeout(move, 0) };
+    } else {
+      pending.loss = loss;
+      pending.records.push(...records);
+    }
+  }
+
+  function move(): void {
+    if (pending === null || held === null) return;
+    const { loss, records } = pending;
+    pending = null;
+    const { control, identity } = held;
+    // A focus a site's passive effect or the reader put somewhere since stays where they put it,
+    // and so does one still on the lost control once it stands again.
+    const focus = document.activeElement;
+    if (
+      focus !== null &&
+      focus !== document.body &&
+      (focus !== control || lossOf(control, root, [], true) === null)
+    ) {
+      return;
+    }
     if (!drawn(root)) return;
-    const stood = placeOf(control, root, records);
+    const removal = removalOf(control, records);
+    const stood = placeOf(control, root, removal);
     const target =
-      replacementOf(identity, root, records, stood) ?? nearestTo(stood, root) ?? headingOf(root);
+      replacementOf(identity, root, records, stood) ??
+      nearestTo(stood, root, scrollerOf(removal?.target ?? control.parentElement, root)) ??
+      headingOf(root);
     if (target === null) return;
     const back = loss === "disabled" ? control : restore?.control;
     if (!place(target)) return;
     restore = back === undefined || back === target ? null : { at: target, control: back };
   }
+
+  // Any act of the reader inside the box is theirs to follow: a control the keeper moved the focus
+  // off no longer takes it back once they press a key or a pointer there, as when they press Pin,
+  // where the keeper put the focus, and Pin turns into Unpin under it. Heard as the event comes
+  // down to its target, before the press does anything, and whatever its target's own handler does.
+  const acted = () => {
+    restore = null;
+  };
+  root.addEventListener("keydown", acted, { capture: true, signal: listening.signal });
+  root.addEventListener("pointerdown", acted, { capture: true, signal: listening.signal });
 
   root.addEventListener(
     "focusin",
@@ -239,15 +318,14 @@ function identityOf(control: HTMLElement): ControlIdentity {
   ]);
 }
 
-/** Where the lost control stood. A removed one's place is the gap its removal left between the
+/** Where the lost control stood. A removed one's place is the gap its `removal` left between the
  *  drawn elements beside it; a disabled one is still drawn where it was; a hidden one stands where
  *  the outermost hidden element around it does among its siblings. */
 function placeOf(
   control: HTMLElement,
   root: HTMLElement,
-  records: readonly MutationRecord[]
+  removal: MutationRecord | undefined
 ): Span | null {
-  const removal = removalOf(control, records);
   if (removal !== undefined) {
     return between(removal.previousSibling, removal.nextSibling, removal.target, root);
   }
@@ -336,31 +414,57 @@ function replacementOf(
   return replacement;
 }
 
-/** The control in the reader's tab order, enabled and in sight, nearest to where the lost one
- *  stood; the first in the box's order of those as near. */
-function nearestTo(stood: Span | null, root: HTMLElement): HTMLElement | null {
+/** The control in the reader's tab order, enabled, in sight and not pinned, nearest to where the
+ *  lost one stood; the first in the box's order of those as near. It is looked for first inside
+ *  `scroller`, the box that scrolled the lost one, and only where that holds none in the rest of
+ *  the box, so the reader's next Tab goes on from their place in Details' body rather than from
+ *  its head, from which it goes to the body's first control and scrolls the body back to its top. */
+function nearestTo(
+  stood: Span | null,
+  root: HTMLElement,
+  scroller: Element | null
+): HTMLElement | null {
   if (stood === null) return null;
   const sight = sightOf(root);
-  const clips = new Map<Element, Bounds | null>();
-  let nearest: HTMLElement | null = null;
-  let best = Number.POSITIVE_INFINITY;
-  for (const control of root.querySelectorAll(CONTROLS)) {
-    if (
-      !(control instanceof HTMLElement) ||
-      control.tabIndex < 0 ||
-      control.matches(":disabled") ||
-      !drawn(control)
-    ) {
-      continue;
+  const frames = new Map<Element, Frame>();
+  const nearestIn = (scope: Element, searched: Element | null): HTMLElement | null => {
+    let nearest: HTMLElement | null = null;
+    let best = Number.POSITIVE_INFINITY;
+    for (const control of scope.querySelectorAll(CONTROLS)) {
+      if (
+        !(control instanceof HTMLElement) ||
+        control.tabIndex < 0 ||
+        control.matches(":disabled") ||
+        !drawn(control) ||
+        searched?.contains(control) === true
+      ) {
+        continue;
+      }
+      const rect = control.getBoundingClientRect();
+      const away = distance(rect, stood);
+      if (away < best && inSightUnpinned(control, rect, root, sight, frames)) {
+        best = away;
+        nearest = control;
+      }
     }
-    const rect = control.getBoundingClientRect();
-    const away = distance(rect, stood);
-    if (away < best && inSight(control, rect, root, sight, clips)) {
-      best = away;
-      nearest = control;
-    }
+    return nearest;
+  };
+  return (scroller === null ? null : nearestIn(scroller, null)) ?? nearestIn(root, scroller);
+}
+
+/** The nearest box at or around `start` that scrolls its content, inside the box and short of it:
+ *  Details' body, for a control drawn in it. Null where none stands between `start` and the box. */
+function scrollerOf(start: Node | null, root: HTMLElement): Element | null {
+  if (start === null || !root.contains(start)) return null;
+  for (
+    let node = start instanceof Element ? start : start.parentElement;
+    node !== null && node !== root;
+    node = node.parentElement
+  ) {
+    const style = getComputedStyle(node);
+    if (SCROLLING[style.overflowY] === true || SCROLLING[style.overflowX] === true) return node;
   }
-  return nearest;
+  return null;
 }
 
 /** The part of the window the box covers. */
@@ -374,31 +478,39 @@ function sightOf(root: HTMLElement): Bounds {
   };
 }
 
-/** Whether some of `rect` shows: inside the box's part of the window, and inside every element
- *  between the control and the box that cuts what it draws - the box's scrolling body, for one,
- *  whose controls scrolled out of it still stand inside the box's own rect. */
-function inSight(
+/** Whether `control` can be where the reader's place is: neither it nor any element between it
+ *  and the box is pinned (`PINNED`), and some of `rect` shows - inside the box's part of the
+ *  window, and inside every element between the control and the box that cuts what it draws: the
+ *  box's scrolling body, for one, whose controls scrolled out of it still stand inside the box's
+ *  own rect. */
+function inSightUnpinned(
   control: HTMLElement,
   rect: Bounds,
   root: HTMLElement,
   sight: Bounds,
-  clips: Map<Element, Bounds | null>
+  frames: Map<Element, Frame>
 ): boolean {
+  if (PINNED[getComputedStyle(control).position] === true) return false;
   let { bottom, left, right, top } = sight;
   for (
     let ancestor = control.parentElement;
     ancestor !== null && ancestor !== root;
     ancestor = ancestor.parentElement
   ) {
-    let clip = clips.get(ancestor);
-    if (clip === undefined) {
+    let frame = frames.get(ancestor);
+    if (frame === undefined) {
       const style = getComputedStyle(ancestor);
-      clip =
-        CLIPPING[style.overflowX] === true || CLIPPING[style.overflowY] === true
-          ? ancestor.getBoundingClientRect()
-          : null;
-      clips.set(ancestor, clip);
+      frame = {
+        clip:
+          CLIPPING[style.overflowX] === true || CLIPPING[style.overflowY] === true
+            ? ancestor.getBoundingClientRect()
+            : null,
+        pinned: PINNED[style.position] === true,
+      };
+      frames.set(ancestor, frame);
     }
+    if (frame.pinned) return false;
+    const { clip } = frame;
     if (clip !== null) {
       bottom = Math.min(bottom, clip.bottom);
       left = Math.max(left, clip.left);
