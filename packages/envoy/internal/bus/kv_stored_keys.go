@@ -20,17 +20,19 @@ import (
 // answered fewer subjects than the total says remain (StoredKeys).
 var ErrIncompleteKeyList = errors.New("the bucket's key list did not add up to one list")
 
-// ErrKeyListBehind is a list of a bucket's keys from a copy of its stream that had not yet
-// stored the sequence the list was asked through (StoredKeys).
-var ErrKeyListBehind = errors.New("the bucket's key list came from a copy of its stream behind the sequence asked for")
+// ErrKeyListBehind is a list of a bucket's keys from a copy of its stream that may lack a key the
+// bucket holds: one that is not the stream's leader, or one that had not yet stored the sequence
+// the list was asked through (StoredKeys).
+var ErrKeyListBehind = errors.New("the bucket's key list came from a copy of its stream that is not its leader, or is behind the sequence asked for")
 
 // subjectsPage is one STREAM.INFO answer with its subject list (nats-server v2.15.1
-// jetstream_api.go:503-507): the page's place in the whole list, and the stream's state with that
-// page of its subjects.
+// jetstream_api.go:503-507): the page's place in the whole list, the stream's state with that page
+// of its subjects, and the cluster the answering copy names, with its leader.
 type subjectsPage struct {
-	Error *jetstream.APIError    `json:"error,omitempty"`
-	Total int                    `json:"total"`
-	State *jetstream.StreamState `json:"state,omitempty"`
+	Error   *jetstream.APIError    `json:"error,omitempty"`
+	Total   int                    `json:"total"`
+	State   *jetstream.StreamState `json:"state,omitempty"`
+	Cluster *jetstream.ClusterInfo `json:"cluster,omitempty"`
 }
 
 // StoredKeys lists every key the bucket's stream holds a message on, from a copy of the stream
@@ -46,10 +48,19 @@ type subjectsPage struct {
 //
 // Which copy of the stream answers is nats-server's: its leader, but also one of its members while
 // the stream has no leader, or a new member while a stream of one replica scales up
-// (jetstream_api.go:2100-2134). Each page names the last sequence the answering copy has stored,
-// so a page whose copy has not stored through is refused (ErrKeyListBehind): a copy that has
-// stored through has applied every message up to it, so it holds a message on every key that held
-// a record at through, whether that record or a later one.
+// (jetstream_api.go:2100-2134). A member can have stored through and still lack a key the leader
+// holds: its older record expired or a snapshot it installed deleted it, and the record that
+// replaced it has not reached the member yet. So a page is taken only from the leader. Each answer
+// names the server its copy holds the stream's leader (`cluster.leader`, jetstream_cluster.go:14075)
+// and every other peer of the stream but the server answering (:14068-14121), so the answering
+// server is the leader exactly when it names a leader and no other peer of that name. A member
+// with no leader names none (:14075, 14081-14083); the preferred member of a scale-up, which
+// answers while another server leads (jetstream_api.go:2112-2133), names that leader among the
+// other peers; and a server that runs no cluster names itself and no peer
+// (jetstream_cluster.go:14013-14017). A page from any copy but the leader, or from one whose last
+// stored sequence is below through, is refused (ErrKeyListBehind): the leader stored every write it
+// acknowledged, through included, so it holds a message on every key that held a record at
+// through, whether that record or a later one.
 //
 // A list of more than JSMaxSubjectDetails subjects, 100,000 (jetstream_api.go:494-495), comes in
 // pages of the subjects sorted by name (jetstream_api.go:2214-2243), each read from the stream as
@@ -173,8 +184,17 @@ func storedKeys(prefix string, through uint64, read func(offset int) (subjectsPa
 }
 
 // current refuses page when the copy of the stream that answered it may lack a key that held a
-// record at sequence through (ErrKeyListBehind), as StoredKeys documents.
+// record at sequence through (ErrKeyListBehind): a copy that is not the stream's leader, by the
+// cluster it names, or one behind through, as StoredKeys documents.
 func current(page subjectsPage, through uint64) error {
+	if page.Cluster == nil || page.Cluster.Leader == "" {
+		return fmt.Errorf("%w: the copy that answered names no leader of the stream", ErrKeyListBehind)
+	}
+	for _, peer := range page.Cluster.Replicas {
+		if peer != nil && peer.Name == page.Cluster.Leader {
+			return fmt.Errorf("%w: the copy that answered names %s, another peer, the stream's leader", ErrKeyListBehind, peer.Name)
+		}
+	}
 	if page.State.LastSeq < through {
 		return fmt.Errorf("%w: the copy that answered has stored through sequence %d, the list was asked through %d",
 			ErrKeyListBehind, page.State.LastSeq, through)

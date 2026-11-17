@@ -133,6 +133,26 @@ func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 			pages: map[int]answer{0: {total: 1, first: 1, last: 2, msgs: 2, subjects: []string{"a"}}},
 			fails: ErrKeyListBehind,
 		},
+		{
+			// A member answers while the stream has no leader (jetstream_api.go:2100-2104) and
+			// names none (jetstream_cluster.go:14075, 14081-14083), with every peer, itself too.
+			name:  "a page from a member while the stream has no leader",
+			pages: map[int]answer{0: {total: 1, first: 1, last: 3, msgs: 3, subjects: []string{"a"}, leaderless: true, others: []string{"n1", "n2", "n3"}}},
+			fails: ErrKeyListBehind,
+		},
+		{
+			// The preferred member of a scale-up answers while n1 leads (jetstream_api.go:2112-2133):
+			// it names n1 the leader, among the peers other than itself.
+			name:  "a page from a member while another server leads",
+			pages: map[int]answer{0: {total: 1, first: 1, last: 3, msgs: 3, subjects: []string{"a"}, leader: "n1", others: []string{"n1", "n3"}}},
+			fails: ErrKeyListBehind,
+		},
+		{
+			// The leader of a clustered stream names itself, and every other peer but itself.
+			name:  "a page from the leader of a clustered stream",
+			pages: map[int]answer{0: {total: 1, first: 1, last: 3, msgs: 3, subjects: []string{"a"}, leader: "n2", others: []string{"n1", "n3"}}},
+			want:  []string{"a"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			keys, err := storedKeys(prefix, 3, pages(row.pages))
@@ -160,12 +180,17 @@ func TestStoredKeysTakesPagesOnlyWhenTheyAddUpToOneList(t *testing.T) {
 }
 
 // answer is one scripted STREAM.INFO answer with its subject list: the total the server counts,
-// the stream's first and last sequence and message count, and this page's subjects under the
-// prefix it is rendered with.
+// the stream's first and last sequence and message count, this page's subjects under the prefix it
+// is rendered with, and the cluster the answering copy names: the server it names the stream's
+// leader (s1, the one server of an unclustered deployment, unless leader is set; none when
+// leaderless) and the stream's other peers it lists (others).
 type answer struct {
 	total             int
 	first, last, msgs uint64
 	subjects          []string
+	leader            string
+	leaderless        bool
+	others            []string
 }
 
 // page is a's JSON as nats-server v2.15.1 sends it (jetstream_api.go:503-507), decoded as
@@ -176,10 +201,26 @@ func (a answer) page(t *testing.T, prefix string) subjectsPage {
 	for _, subject := range a.subjects {
 		subjects[prefix+subject] = 1
 	}
+	cluster := map[string]any{"name": "c"}
+	switch {
+	case a.leaderless:
+	case a.leader != "":
+		cluster["leader"] = a.leader
+	default:
+		cluster["leader"] = "s1"
+	}
+	var peers []map[string]any
+	for _, name := range a.others {
+		peers = append(peers, map[string]any{"name": name, "current": true, "active": 1000000})
+	}
+	if peers != nil {
+		cluster["replicas"] = peers
+	}
 	data, err := json.Marshal(map[string]any{
-		"type":  "io.nats.jetstream.api.v1.stream_info_response",
-		"total": a.total,
-		"state": map[string]any{"first_seq": a.first, "last_seq": a.last, "messages": a.msgs, "subjects": subjects},
+		"type":    "io.nats.jetstream.api.v1.stream_info_response",
+		"total":   a.total,
+		"state":   map[string]any{"first_seq": a.first, "last_seq": a.last, "messages": a.msgs, "subjects": subjects},
+		"cluster": cluster,
 	})
 	if err != nil {
 		t.Fatalf("render the scripted answer: %v", err)

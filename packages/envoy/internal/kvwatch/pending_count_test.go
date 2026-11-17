@@ -193,7 +193,10 @@ func TestARowTheLeaderCannotBeAskedAboutIsKeptAndTheReadFails(t *testing.T) {
 // (HeldFromLeader) build their requests on that connection, so they fail, while the read barrier,
 // every stream read and every watch go on as usual. With listGoesThrough, the first connection
 // asked for while failing is the live one: a read asks for it once for its list, before any
-// leader read, so only the leader's reads fail.
+// leader read, so only the leader's reads fail. StoredKeys takes the connection once per list,
+// before its first page, however many pages and asks it then sends on it (kv_stored_keys.go:94),
+// and each row checks that its read's WARN names the step that failed, so a list that asked for
+// the connection again would fail the leader-read row rather than pass it for another reason.
 type leaderReadsThrough struct {
 	jetstream.JetStream
 	closed          *natsgo.Conn

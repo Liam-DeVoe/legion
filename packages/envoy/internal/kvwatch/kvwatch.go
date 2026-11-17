@@ -863,9 +863,10 @@ const unmarkedReads = 16
 // The list is what finds a key the copy never held. Another writer's window write - stored after
 // the read's consumer was made, before the read began - that the bucket replaced ahead of the
 // consumer, after the barrier, is delivered only once the consumer passes the barrier, after a
-// delivery at the barrier has ended the wait. A copy of the stream that has stored through the
-// barrier holds a message on every key that held a record at the barrier, that record or a later
-// one, so the list names it, and the leader's read applies it before the read completes. The
+// delivery at the barrier has ended the wait. The list is taken only from the stream's leader,
+// and only once it has stored through the barrier (bus.ErrKeyListBehind), and the leader holds a
+// message on every key that held a record at the barrier, that record or a later one, so the list
+// names it, and the leader's read applies it before the read completes. The
 // list costs one STREAM.INFO per read that reaches its barrier, of one entry per key the bucket
 // holds a message on; the scan delivers every key's newest message, delete markers included, so
 // the leader reads only what the scan and the wait did not deliver.
