@@ -672,11 +672,36 @@ if [ "$priv_private" = 1 ]; then
       keep_answer "$side" main "$work/fill-$side"
     done
     same_answers "$caller /ws/doc/{room}" hidden missing
+    # The live socket, live: the caller subscribes with no resume on each server, and while its
+    # socket is open carol comments on PRIV's issue (main only: the twin holds no PRIV) and then on
+    # PUB's. Each server's answer is the frames the caller was sent; each comment's id is
+    # remembered under one label on both servers, so the mask names it alike. The twin always
+    # sends the caller its PUB comment, so an answer holding no event fails the pair, and a PRIV
+    # event on main differs from the twin's answer.
     for server in main twin; do
+      rm -f "$work/live-ready" "$work/live-written"
+      bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" \
+        "$work/live-ready" "$work/live-written" >"$work/live-body" 2>&1 &
+      live_pid=$!
+      until_true 10 "$caller's live socket on $server to start" test -e "$work/live-ready"
+      if [ "$server" = main ]; then
+        send main carol POST /api/v1/issues/PRIV-1/comments '{"body":"A live remark on PRIV."}'
+        expect_status 201 "main: carol comments on PRIV-1 while $caller's live socket is open"
+      fi
+      send "$server" carol POST /api/v1/issues/PUB-1/comments '{"body":"A live remark on PUB."}'
+      expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
+      remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
+      : >"$work/live-written"
       status=socket
-      bun "$(dirname "$0")/socket-access.ts" live "${build_url[$server]}" "$work/auth/$server-$caller" >"$work/body" 2>&1 || status=error
+      wait "$live_pid" || status=error
+      cp "$work/live-body" "$work/body"
       keep_answer "$server" "$server"
     done
+    grep -q '"type":"event"' "$work/answers/twin.body" || {
+      printf '%s /ws/live: the twin sent no event of carol'"'"'s PUB comment, so the compare saw nothing: %s\n' \
+        "$caller" "$(head -c 300 "$work/answers/twin.body")" >>"$work/differences"
+      differed=$((differed + 1))
+    }
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
   # The document socket admits a person by their cookie alone, at the merge base as now, so a

@@ -1,8 +1,9 @@
 /** `bun socket-access.ts doc <server> <header file> <document id> <schema version>` and
- *  `bun socket-access.ts live <server> <header file>`: opens one of Dispatch's two sockets as the
- *  caller whose credential the header file holds - one `Name: value` line, a `Cookie` or an
- *  `Authorization` - and prints what that caller is answered, in one form for every outcome, so a
- *  driver compares two callers' answers, or the answers to two ids, byte for byte.
+ *  `bun socket-access.ts live <server> <header file> <ready file> <written file>`: opens one of
+ *  Dispatch's two sockets as the caller whose credential the header file holds - one
+ *  `Name: value` line, a `Cookie` or an `Authorization` - and prints what that caller is answered,
+ *  in one form for every outcome, so a driver compares two callers' answers, or the answers to two
+ *  ids, byte for byte.
  *
  *  - An upgrade the server refuses prints `http <status> <body>`. Bun's WebSocket reports a
  *    refused upgrade as an error with no status, so the upgrade is asked once over a plain
@@ -10,9 +11,13 @@
  *  - `doc` sends the one token frame the browser's Hocuspocus provider sends (as socket-scope.ts
  *    does) and prints `authenticated <scope>` or `denied <reason>`, or `closed <code> <reason>`
  *    for a socket closed before either.
- *  - `live` subscribes to the event feed from the log's first event and prints the
- *    `events_start` frame and then every event frame as the server sent it, one per line, until
- *    no frame has arrived for `quietMs`: the replay of the whole log as this caller may read it.
+ *  - `live` subscribes to the event feed from now, with no resume, writes the ready file once the
+ *    feed's `events_start` frame has come, waits for the driver to make the written file (its
+ *    writes have committed), and prints the `events_start` frame and then every frame the server
+ *    sent, one per line, until no frame has come for `quietMs`: what this caller is sent live of
+ *    the writes the driver made. Each event's id, in the frame and in the event, is printed as
+ *    `<event>`: two servers number their events apart, and which events a caller is sent is the
+ *    answer, not their numbers.
  *
  *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached or gave no
  *  answer within ten seconds; 2 for a wrong call. e2e/acceptance/project-access.sh runs it. */
@@ -38,15 +43,17 @@ const quietMs = 1_500;
 function usage(): never {
   console.error(
     "usage: bun socket-access.ts doc <server> <header file> <document id> <schema version>\n" +
-      "       bun socket-access.ts live <server> <header file>"
+      "       bun socket-access.ts live <server> <header file> <ready file> <written file>"
   );
   process.exit(2);
 }
 
-const [mode, server, headerFile, documentId, schemaVersion] = Bun.argv.slice(2);
+const [mode, server, headerFile, third, fourth] = Bun.argv.slice(2);
 if (server === undefined || headerFile === undefined) usage();
-if (mode === "doc" && (documentId === undefined || schemaVersion === undefined)) usage();
 if (mode !== "doc" && mode !== "live") usage();
+if (third === undefined || fourth === undefined) usage();
+const [documentId, schemaVersion] = mode === "doc" ? [third, fourth] : [undefined, undefined];
+const [readyFile, writtenFile] = mode === "live" ? [third, fourth] : [undefined, undefined];
 
 const origin = new URL(server).origin;
 const credential = (await Bun.file(headerFile).text()).trim();
@@ -157,29 +164,44 @@ function documentAnswer(socket: WebSocket): Promise<string> {
   return answer.promise;
 }
 
-/** The event feed's replay from the log's first event, as the lines it printed. */
+/** What the event feed sends this caller of the driver's writes, as the lines it printed: the
+ *  feed starts with no resume, the ready file says it has, and the frames are read until the feed
+ *  has been quiet for `quietMs` after the written file appeared. */
 function liveAnswer(socket: WebSocket): Promise<string> {
   const answer = Promise.withResolvers<string>();
   const lines: string[] = [];
   let quiet: Timer | undefined;
+  let written = false;
   const settled = () => answer.resolve(lines.join("\n"));
+  const awaitQuiet = () => {
+    clearTimeout(quiet);
+    if (written) quiet = setTimeout(settled, quietMs);
+  };
   socket.addEventListener("open", () =>
-    socket.send(
-      JSON.stringify({
-        type: "subscribe",
-        sub: "e",
-        view: { kind: "events" },
-        resume: { since: "0" },
-      })
-    )
+    socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
   );
   socket.addEventListener("message", (event) => {
     if (typeof event.data !== "string") return;
-    const frame = JSON.parse(event.data) as { type?: string };
+    const frame = JSON.parse(event.data) as {
+      type?: string;
+      id?: string;
+      event?: { id?: unknown };
+    };
     if (frame.type === "heartbeat") return;
-    lines.push(event.data);
-    clearTimeout(quiet);
-    quiet = setTimeout(settled, quietMs);
+    if (frame.type === "event") {
+      frame.id = "<event>";
+      if (frame.event !== undefined) frame.event.id = "<event>";
+    }
+    lines.push(JSON.stringify(frame));
+    if (frame.type === "events_start") {
+      void (async () => {
+        await Bun.write(readyFile ?? "", "ready\n");
+        while (!(await Bun.file(writtenFile ?? "").exists())) await Bun.sleep(50);
+        written = true;
+        awaitQuiet();
+      })();
+    }
+    awaitQuiet();
   });
   socket.addEventListener("close", (event) => {
     lines.push(`closed ${event.code} ${event.reason}`);
