@@ -379,8 +379,9 @@ It copies nats-server's module at the version it runs out of the module cache, a
 `go test -tags odatrace -race -v -run '^TestForcedOrder'` with
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
-outside it, on a copy of the module's `go.mod`. Nothing else of nats-server changes, the
-repository's own files are never written, and no other build sees a hook.
+with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
+or that holds a replace, is refused. It reads go's JSON with `jq`. Nothing else of nats-server
+changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
 place), `flush.encoded`, `store.create`, `api.worker`, `client.publish` and `stream.apply`;
 `hooks.go` says where each one is.
