@@ -144,35 +144,48 @@ const drainBatch = 250
 
 // DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
 // eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
-// many it moved. It moves them a batch at a time, each batch one statement of its own,
-// delivery_changes_drain (migration 20261117100023), never a statement of a caller's transaction,
-// and moves another batch while a whole one moved. So it holds the change log's lock for one
-// batch's statement and its commit at a time, whatever the burst: each batch takes the lock first,
-// before the pending rows it deletes, and moves the lowest pending ids in id order, keeping each
-// row's at. Where nothing is pending it answers 0 and takes no lock. Two drains take turns on the
-// lock, and each pending row is moved exactly once.
+// many it moved. It moves them a batch at a time (DrainPendingBatch), each batch one statement of
+// its own, delivery_changes_drain (migration 20261117100023), never a statement of a caller's
+// transaction, and moves another batch while a whole one moved. So it holds the change log's lock
+// for one batch's statement and its commit at a time, whatever the burst: each batch takes the lock
+// first, before the pending rows it deletes, and moves the lowest pending ids in id order, keeping
+// each row's at. Where nothing is pending it answers 0 and takes no lock. Two drains take turns on
+// the lock, and each pending row is moved exactly once.
 //
 // A pending row's id is drawn at its insert and not at its commit, so seq follows the order the
 // drains move rows in, not the order their writers committed in; every seq is still drawn under
-// the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each eval,
-// refresher and Legion facts write, right after its commit and before its route answers; the live
-// hub, before each read of the log; the refresher, at the start of each pass; and the server's
-// boot, before it serves. A writer killed between its commit and its drain loses nothing: its
-// pending row's notification reached every live process's hub at that commit, and each drains on
-// that wake, or else the next process's boot does.
+// the lock (LockChanges), so a reader's cursor never skips a moved row. Its callers: each Legion
+// facts pass, right after its commit; the live hub, before each read of the log; the refresher, at
+// the start of each pass; and the server's boot, before it serves. An eval write, the registry's
+// and the refresher's, drains one batch instead (DrainPendingBatch), so a route that answers after
+// its drain waits for one batch at most, whatever backlog another writer left: those callers move
+// the rest. A writer killed between its commit and its drain loses nothing: its pending row's
+// notification reached every live process's hub at that commit, and each drains on that wake, or
+// else the next process's boot does.
 func DrainPending(ctx context.Context, pool *store.Pool) (int64, error) {
 	var total int64
 	for {
-		moved, err := drainOneBatch(ctx, pool)
+		moved, more, err := DrainPendingBatch(ctx, pool)
 		total += moved
-		if err != nil || moved < drainBatch {
+		if err != nil || !more {
 			return total, err
 		}
 	}
 }
 
-// drainOneBatch moves up to drainBatch pending rows into delivery_changes in one statement of its
-// own, and answers how many it moved (DrainPending).
+// DrainPendingBatch moves one batch of the committed pending change rows into delivery_changes, the
+// drainBatch lowest ids, in one statement of its own (drainOneBatch), and answers how many it
+// moved and whether rows may remain: a whole batch moved, so another may be pending behind it.
+// DrainPending moves batches while it says so; a caller that answers a request drains with it
+// alone, so its answer waits for one batch whatever the backlog, which leaves its own rows pending
+// where more than a batch was pending ahead of them.
+func DrainPendingBatch(ctx context.Context, pool *store.Pool) (int64, bool, error) {
+	moved, err := drainOneBatch(ctx, pool)
+	return moved, err == nil && moved == drainBatch, err
+}
+
+// drainOneBatch is the statement that moves up to drainBatch pending rows into delivery_changes,
+// and answers how many it moved (DrainPendingBatch).
 func drainOneBatch(ctx context.Context, pool *store.Pool) (int64, error) {
 	var moved int64
 	if err := pool.QueryRow(ctx, `select delivery_changes_drain($1)`, drainBatch).Scan(&moved); err != nil {

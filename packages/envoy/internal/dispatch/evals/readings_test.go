@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -475,6 +476,74 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 	}
 	if standing := r.count(t, `select count(*) from eval_readings where eval_id = $1 and superseded_at is null`, evalID); standing != 2 {
 		t.Errorf("%d readings of the eval stand, want 2 of its 4", standing)
+	}
+}
+
+// TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirst: two writes of one
+// series and day, each a reading measured at 12:00, the write that began later committing first,
+// and then a correction of the day's 08:00 reading, which folds the day's row again. The day's
+// last value is the reading of the write that began later, whose recorded_at (the time its
+// transaction began) breaks the tie, once both writes land and after the refold alike. The write
+// that began first also corrects a reading of the 3rd, and is held at its lock of that reading,
+// which it takes before anything of the eval, while the other writes and commits. Before, it
+// appended its reading to the row the other had written and so made it the day's last, as the
+// later part at an equal moment, and the refold, which orders the readings by when their writes
+// began, put the other's back: the day's last flipped from 10 to 20.
+func TestTheDaysLastSurvivesARefoldWhenTheLaterStartedOfTwoTiedWritesCommitsFirst(t *testing.T) {
+	r := newRig(t)
+	ctx := t.Context()
+	slug := "tie-break"
+	evalID, day, moment := EvalID(r.project, slug), at(4, 0, 0), at(4, 12, 0)
+	minutes := func(key string, value float64, measured time.Time, replaces string) json.RawMessage {
+		fields := map[string]any{"series": "minutes", "row_kind": "run", "row_key": key, "value": value, "measured_at": measured}
+		if replaces != "" {
+			fields["replaces"] = replaces
+		}
+		return row(t, fields)
+	}
+	stored := r.write(t, slug, alice, minutes("held", 1, at(3, 9, 0), ""), minutes("early", 1, at(4, 8, 0), ""))
+	held, early := stored.Readings[0].ID, stored.Readings[1].ID
+	holder, err := r.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+	if _, err := holder.Exec(ctx, `select 1 from eval_readings where id = $1::uuid for update`, held); err != nil {
+		t.Fatalf("lock the reading the first write corrects: %v", err)
+	}
+	firstErr, laterErr := race(t, holder,
+		func(ctx context.Context) error {
+			_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+				Rows: []json.RawMessage{minutes("held", 2, at(3, 9, 0), held), minutes("first", 10, moment, "")}})
+			return err
+		},
+		func(ctx context.Context) error {
+			_, err := r.registry.WriteReadings(ctx, Batch{Project: r.project, Slug: slug, Caller: alice, BuiltBy: testBuild,
+				Rows: []json.RawMessage{minutes("later", 20, moment, "")}})
+			return err
+		})
+	if firstErr != nil || laterErr != nil {
+		t.Fatalf("the write that began first answered %v and the one that began later %v", firstErr, laterErr)
+	}
+	var laterBegan bool
+	if err := r.database.Pool.QueryRow(ctx, `
+		select (select recorded_at from eval_readings where eval_id = $1 and row_key = 'first')
+		     < (select recorded_at from eval_readings where eval_id = $1 and row_key = 'later')
+	`, evalID).Scan(&laterBegan); err != nil || !laterBegan {
+		t.Fatalf("the reading of the write held first was not recorded before the other (%v): the race did not happen", err)
+	}
+	landed := r.day(t, evalID, "minutes", "", day)
+	r.write(t, slug, alice, minutes("early", 3, at(4, 8, 0), early))
+	refolded := r.day(t, evalID, "minutes", "", day)
+	t.Logf("the 4th's last once both writes landed: %s at %v; after the refold: %s at %v",
+		showValue(landed.LastValue), landed.LastAt, showValue(refolded.LastValue), refolded.LastAt)
+	for _, check := range []struct {
+		when string
+		row  DayRow
+	}{{"once both writes landed", landed}, {"after the refold", refolded}} {
+		if check.row.LastValue == nil || *check.row.LastValue != 20 || check.row.LastAt == nil || !check.row.LastAt.Equal(moment) {
+			t.Errorf("the 4th's last value %s is %s, want 20 at 12:00, the reading of the write that began later", check.when, showValue(check.row.LastValue))
+		}
 	}
 }
 

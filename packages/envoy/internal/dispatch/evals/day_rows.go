@@ -1,7 +1,6 @@
 package evals
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -260,16 +259,15 @@ func insertMissingDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy st
 	return writeDayRows(ctx, tx, rows, builtBy, `on conflict (project_key, eval_id, writer, series, repo, day) do nothing`)
 }
 
-// writeDayRows inserts rows in one statement, in key order, each the computation's (writer
-// `computation`) with built_by builtBy, and meets a row already stored as conflict says.
+// writeDayRows inserts rows in one statement, each the computation's (writer `computation`) with
+// built_by builtBy, and meets a row already stored as conflict says. It takes them in the byte
+// order of their keys (project, eval, series, repository, day), named as `collate "C"` as every
+// statement that inserts or locks day rows names it (compareDayKeys), whatever the database's
+// collation.
 func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, conflict string) error {
 	if len(rows) == 0 {
 		return nil
 	}
-	rows = slices.SortedFunc(slices.Values(rows), func(a, b DayRow) int {
-		return cmp.Or(cmp.Compare(a.ProjectKey, b.ProjectKey), cmp.Compare(a.EvalID, b.EvalID), cmp.Compare(a.Series, b.Series),
-			cmp.Compare(a.Repo, b.Repo), a.Day.Compare(b.Day))
-	})
 	count := len(rows)
 	projects, evals, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 	days, lastAts := make([]time.Time, count), make([]*time.Time, count)
@@ -298,6 +296,7 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 			$13::double precision[], $14::timestamptz[], $15::text[], $16::int[])
 			as given(project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
 				last_value, last_at, counts, via_repository)
+		order by given.project_key collate "C", given.eval_id collate "C", given.series collate "C", given.repo collate "C", given.day
 		`+conflict, projects, evals, series, repos, days, listed, ns, sums, nums, dens, maxes, samples, lastValues, lastAts, counts, via, builtBy, writerComputation); err != nil {
 		return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
 	}

@@ -28,8 +28,9 @@ import (
 //   - num and den, the weighted parts a weighted_mean folds: each value weighted by the reading's
 //     own n, or by 1 where the reading carries none;
 //   - last_value and last_at, the value measured last and when, which the `last` fold reads: a
-//     reading measured at or after last_at takes its place, the one written later winning a tie,
-//     and within one batch the later row.
+//     reading measured after last_at takes its place, and of readings measured at one moment the
+//     one written last holds it: the one of the later write (recorded_at, the time its
+//     transaction began) and within one write the later row (id), whichever path writes the row.
 //
 // The readings a row folds are the standing readings of its day (superseded_at is null) that have
 // a value and were written while the eval was logged (writtenWhileLogged): a reading written while
@@ -48,6 +49,13 @@ import (
 // fold of the readings it holds, so the row it leaves is the fold of those readings and the new
 // ones, in the order they were written.
 //
+// A row whose last a reading of the write ties, one measured at the row's last_at, is folded
+// again too: the row holds the moment of its last value and not which reading holds it, so only
+// the standing readings tell whether that reading was written before this write's or after it. A
+// write that began later can take the row's lock and commit first, and the row's last is then the
+// later written reading, which an append would replace by this write's and a later refold would
+// put back.
+//
 // A row whose readings are all taken away stays, as the zero row its day then is: n 0, sum, num and
 // den 0, no maximum, no sample and no last value.
 //
@@ -63,19 +71,35 @@ type dayKey struct {
 	day    time.Time
 }
 
-// compareDayKeys orders day keys as the rows' primary key does: by series, repository and day.
+// compareDayKeys orders day keys by series, repository and day, each string by its bytes: the
+// order every statement that inserts or locks one eval's day rows takes them in, which each names
+// as `collate "C"` rather than leave to the database's collation (ICU en-US on this deployment's
+// server orders a series `latency` before a series `Queue`, and bytes the other way), so two
+// writers of overlapping rows wait on each other rather than deadlock.
 func compareDayKeys(a, b dayKey) int {
 	return cmp.Or(cmp.Compare(a.series, b.series), cmp.Compare(a.repo, b.repo), a.day.Compare(b.day))
 }
 
-// dayPart is one reading's part of a day row: its value, its weight, when it was measured, and the
+// dayPart is one reading's part of a day row: its value, its weight, when it was measured, when
+// its write began and its id, which order it among the readings written (writtenBefore), and the
 // index in the write's batch of the reading it is the part of, -1 for a reading stored before the
 // write.
 type dayPart struct {
-	value  float64
-	weight float64
-	at     time.Time
-	row    int
+	value      float64
+	weight     float64
+	at         time.Time
+	recordedAt time.Time
+	id         string
+	row        int
+}
+
+// writtenBefore reports whether p's reading was written before q's: by an earlier write (its
+// recorded_at, the time its transaction began) or, within one write, earlier in the batch (its
+// id, a UUIDv7 parseRows mints in the batch's order, whose text sorts as the uuid does). It is the
+// order standingParts reads the readings in, and it breaks a tie of moments for a row's last value
+// (addParts) on every path that writes the row.
+func (p dayPart) writtenBefore(q dayPart) bool {
+	return cmp.Or(p.recordedAt.Compare(q.recordedAt), cmp.Compare(p.id, q.id)) < 0
 }
 
 // dayKeysOf is the day rows a reading counts in, and its part of each as the batch's row row, or
@@ -93,13 +117,13 @@ func dayKeysOf(reading Reading, row int) ([]dayKey, dayPart, bool) {
 	if reading.N != nil {
 		weight = float64(*reading.N)
 	}
-	return keys, dayPart{value: *reading.Value, weight: weight, at: reading.MeasuredAt, row: row}, true
+	return keys, dayPart{value: *reading.Value, weight: weight, at: reading.MeasuredAt, recordedAt: reading.RecordedAt, id: reading.ID, row: row}, true
 }
 
 // writeDays keeps the day rows of definition, a logged eval, for the readings a write added (in
-// the batch's order) and the readings it replaced that a row folded, in the write's transaction:
-// it makes sure each touched row exists, locks the rows in key order (so two writes of
-// overlapping days wait on each other rather than deadlock), folds each row again or appends to
+// the batch's order) and the readings it replaced that a row folded, in the write's transaction,
+// under the eval's lock (registerMissing): it makes sure each touched row exists and locks the
+// rows, both in the byte order of their keys (compareDayKeys), folds each row again or appends to
 // it, and writes every row's new parts in one statement, recording builtBy as the build that wrote
 // them. It runs after the write's readings are inserted and its replaced readings superseded, so a
 // read of the standing readings sees both. A row it would leave holding a value no float holds
@@ -141,19 +165,18 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	}
 	keys := slices.SortedFunc(maps.Keys(first), compareDayKeys)
 	seriesNames, repos, days, listed := make([]string, len(keys)), make([]string, len(keys)), make([]time.Time, len(keys)), make([]bool, len(keys))
-	var refolded []dayKey
 	for index, key := range keys {
 		seriesNames[index], repos[index], days[index], listed[index] = key.series, key.repo, key.day, series[key.series].Listed
-		if refold[key] {
-			refolded = append(refolded, key)
-		}
 	}
-	// A row two writes would both create is created once: the second insert waits for the
-	// first's and then does nothing, and both lock the row below.
+	// A row two writers would both create is created once: the second insert waits for the
+	// first's and then does nothing, and both lock the row below. Every writer of these rows holds
+	// the eval's lock, so none runs beside this one; each still takes the rows in this byte order,
+	// so two that did would wait on each other rather than deadlock.
 	if _, err := w.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, built_by)
 		select $1, $2, $3, k.series, k.repo, k.day, k.listed, $4
 		from unnest($5::text[], $6::text[], $7::date[], $8::bool[]) as k(series, repo, day, listed)
+		order by k.series collate "C", k.repo collate "C", k.day
 		on conflict (project_key, eval_id, writer, series, repo, day) do nothing
 	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed); err != nil {
 		return fmt.Errorf("make the day rows of %s: %w", definition.EvalID, err)
@@ -162,7 +185,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		select `+dayColumns+` from eval_days
 		where project_key = $1 and eval_id = $2 and writer = $3
 		  and (series, repo, day) in (select * from unnest($4::text[], $5::text[], $6::date[]))
-		order by series, repo, day
+		order by series collate "C", repo collate "C", day
 		for update
 	`, definition.ProjectKey, definition.EvalID, writerReadings, seriesNames, repos, days)
 	if err != nil {
@@ -174,6 +197,18 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 	}
 	if len(rows) != len(keys) {
 		return fmt.Errorf("the write touches %d day rows of %s and locked %d", len(keys), definition.EvalID, len(rows))
+	}
+	// A row whose last a part of this write ties is folded again, as a row a correction touches
+	// is: the row cannot tell which reading holds its last value.
+	var refolded []dayKey
+	for _, row := range rows {
+		key := dayKey{series: row.Series, repo: row.Repo, day: row.Day}
+		if row.LastAt != nil && slices.ContainsFunc(parts[key], func(part dayPart) bool { return part.at.Equal(*row.LastAt) }) {
+			refold[key] = true
+		}
+		if refold[key] {
+			refolded = append(refolded, key)
+		}
 	}
 	standing, err := standingParts(ctx, w.Tx, definition.EvalID, refolded, written)
 	if err != nil {
@@ -236,7 +271,12 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 // part after which a value of the row is past what a float holds, or -1 where every value stays
 // within it. A part of a reading stored before the write (row -1) that makes it so is answered
 // for by blame, the first row of the batch that touches the row. The row's sum and maximum are
-// read off its samples, in their order, as every write of the row reads them.
+// read off its samples, in their order, as every write of the row reads them. Its last value is
+// the part measured last, and of parts measured at one moment the one written last
+// (writtenBefore), in whatever order they come: a refold's standing parts come first and the
+// write's own after them, though a write that began later may have stored some of them. Against
+// the row's own last value a part counts by its moment alone; writeDays folds a row again rather
+// than append a part measured at the row's last_at, which nothing here could order.
 func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 	samples := slices.Clone(row.Samples)
 	num, den := measures.ValueOrZero(row.Num), measures.ValueOrZero(row.Den)
@@ -246,6 +286,8 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 		largest = max(largest, value)
 	}
 	lastValue, lastAt := row.LastValue, row.LastAt
+	// holder is the part whose value is the last, nil while the row's own last value is.
+	var holder *dayPart
 	overflow := -1
 	for _, part := range parts {
 		samples = append(samples, part.value)
@@ -253,9 +295,9 @@ func addParts(row DayRow, parts []dayPart, blame int) (DayRow, int) {
 		largest = max(largest, part.value)
 		num += part.value * part.weight
 		den += part.weight
-		if lastAt == nil || !part.at.Before(*lastAt) {
-			value, at := part.value, part.at
-			lastValue, lastAt = &value, &at
+		if lastAt == nil || part.at.After(*lastAt) || part.at.Equal(*lastAt) && (holder == nil || holder.writtenBefore(part)) {
+			value, at, held := part.value, part.at, part
+			lastValue, lastAt, holder = &value, &at, &held
 		}
 		if overflow < 0 && !finite(part.value, sum, num, den) {
 			overflow = part.row
@@ -312,14 +354,15 @@ const loggedSpans = `logged_spans as materialized (
 const writtenWhileLogged = `exists (select from logged_spans s where r.recorded_at >= s.from_at and r.recorded_at < s.until_at)`
 
 // standingParts is, for each of keys, the parts of the readings its row folds that were stored
-// before the write (whose own readings written names), in the order they were written: by the
-// write that stored them (recorded_at, its transaction's time) and, within one write, by id, which
-// is the batch's order (parseRows mints them so). That is the order an append took them in, so a
-// refold leaves the day's samples, sums and last value as the appends left them: two readings
-// measured at one moment keep the later one written as the day's last. They are the standing
-// readings of its day and series (of its repository, for a repository's row) that have a value
-// and were written while the eval was logged (writtenWhileLogged). One statement reads every
-// key's: the eval's standing readings of each day the keys name, once a day, through
+// before the write (whose own readings written names), in the order they were written
+// (writtenBefore): by the write that stored them (recorded_at, its transaction's time) and, within
+// one write, by id, which is the batch's order (parseRows mints them so). That is the order the
+// appends took them in wherever the writes committed in the order they began, so a refold leaves
+// the day's samples and sums as the appends left them; its last value is the appends' whatever
+// order the writes committed in, since every path breaks a tie of moments by this order. They are
+// the standing readings of its day and series (of its repository, for a repository's row) that
+// have a value and were written while the eval was logged (writtenWhileLogged). One statement
+// reads every key's: the eval's standing readings of each day the keys name, once a day, through
 // eval_readings_row with that day's range in its index condition, each then matched to the keys
 // of its day. Joined to every key at once instead, the readings were planned, for a week's keys,
 // as one scan of the eval that each key then filtered whole.
@@ -336,7 +379,7 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 		with `+loggedSpans+`, k as (
 			select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
 		)
-		select k.at, r.value, r.weight, r.measured_at
+		select k.at, r.value, r.weight, r.measured_at, r.recorded_at, r.id::text
 		from (select distinct day from k) d
 		cross join lateral (
 			select r.series, r.attributes ->> 'repo' as repo, r.value, coalesce(r.n, 1)::float8 as weight,
@@ -355,10 +398,11 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 	}
 	var at int
 	var value, weight float64
-	var measured time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&at, &value, &weight, &measured}, func() error {
+	var measured, recorded time.Time
+	var id string
+	if _, err := pgx.ForEachRow(rows, []any{&at, &value, &weight, &measured, &recorded, &id}, func() error {
 		key := keys[at-1]
-		standing[key] = append(standing[key], dayPart{value: value, weight: weight, at: measured.UTC(), row: -1})
+		standing[key] = append(standing[key], dayPart{value: value, weight: weight, at: measured.UTC(), recordedAt: recorded, id: id, row: -1})
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the standing readings of %d day rows of %s: %w", len(keys), evalID, err)

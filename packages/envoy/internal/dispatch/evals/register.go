@@ -372,10 +372,25 @@ func rankedByMinN(definition Definition, series string) bool {
 // read folds the listed rows alone (DayWindow), so a row stored before a version that listed its
 // series would otherwise stay out of every window, and one stored before a version that unlisted
 // it in. A row that holds the listing already is left as it is.
+//
+// It runs under the eval's lock (Register), which every other writer of these rows takes before
+// it reads the listing it writes (registerMissing, fillLoggedZeros), so no row is written with the
+// listing this write replaces once it has committed. It locks the rows before it updates them, in
+// the byte order of their keys (repository, day), the order every statement that inserts or locks
+// one eval's day rows takes them in (writeDays), where the update alone would take them in the
+// order its plan reads them.
 func relistDays(ctx context.Context, tx pgx.Tx, definition Definition, series Series) error {
 	if _, err := tx.Exec(ctx, `
-		update eval_days set listed = $4, updated_at = now()
-		where project_key = $1 and eval_id = $2 and writer = $5 and series = $3 and listed <> $4
+		with locked as (
+			select repo, day from eval_days
+			where project_key = $1 and eval_id = $2 and writer = $5 and series = $3 and listed <> $4
+			order by repo collate "C", day
+			for update
+		)
+		update eval_days d set listed = $4, updated_at = now()
+		from locked
+		where d.project_key = $1 and d.eval_id = $2 and d.writer = $5 and d.series = $3
+		  and d.repo = locked.repo and d.day = locked.day
 	`, definition.ProjectKey, definition.EvalID, series.Series, series.Listed, writerReadings); err != nil {
 		return fmt.Errorf("list the day rows of series %s of %s as %t: %w", series.Series, definition.EvalID, series.Listed, err)
 	}
