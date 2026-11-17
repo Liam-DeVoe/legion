@@ -1,0 +1,28 @@
+-- 20261117075935_claim_record_turn.up.sql — the claim's record of the turn that confirmed the
+-- daemon's own relaunch record (INFRA-1117): the message that tells a relaunched agent holding
+-- nothing what its last process ended.
+--
+-- claims.record_turn is supervise.Claim.RecordTurn, as JSON: the start of the turn that confirmed
+-- the record (the claim's last_turn_start at that confirmation), the claim's deaths and its run of
+-- pod ends from outside the pod at that confirmation (the base), and what the turn takes back of
+-- those two counts when it ends, at most one of each. Null is a claim that holds none: no turn has
+-- confirmed a record, or a task's confirmation or a turn start that confirmed no record cleared it.
+--
+-- A completed turn of the record ends neither count. It takes back only what the end that cut
+-- that record's earlier turn charged, which the confirmation of the record sent again measures as
+-- the counts then less the base, one at most for each count and never below zero. A fresh record's
+-- turn takes back nothing. The turn is the record's exactly while the column's start equals
+-- last_turn_start, so a daemon restarted inside that turn, or between the cut and the record's
+-- confirmation sent again, reads the same answer from the row.
+--
+-- Null for every row the table already holds, and nothing backfills it: the release this upgrades
+-- from recorded no base anywhere.
+--
+-- Rolling the image back restores nothing, but it clears this column beside the two runs
+-- (docs/kubernetes.md, "Rolling back the running copy"): store's claims.go is the only reader and
+-- writer of it, and the release before it names it in no statement, so its upserts leave whatever
+-- the column last held while its own turns end the counts and its records are cut and sent again.
+-- A daemon of this release rolled forward over a base left standing would measure from it at the
+-- next confirmation of a record sent again, and could take back an end that cut no turn of that
+-- record.
+alter table claims add column record_turn jsonb;

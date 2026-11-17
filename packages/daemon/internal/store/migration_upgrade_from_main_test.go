@@ -68,16 +68,18 @@ import (
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
 //
-// Four more are INFRA-1117's, which a database main migrated has not recorded either: the
+// Five more are INFRA-1117's, which a database main migrated has not recorded either: the
 // running copy's table (20261112105448), the newest push of each issue's branch and the heads its
 // pushes left (20261113005308), the claim's two runs of pod ends from outside the pod
-// (20261113020122), and the first ask of each pod for a restore with the write time of each saved
-// copy (20261114090103), which stands above every other version and is applied last. They add four
-// tables, two defaulted columns and a write time on each of the two copy tables, which every row
-// standing at the upgrade takes from the database's clock at the upgrade; the first also holds
-// issue_releases.id below 2^62, which no release id main wrote reaches, and the second widens
-// workspace_bundles' attempt-outcome check, so every value main's rows hold still passes it. None
-// of them touches outbox_kind_check.
+// (20261113020122), the first ask of each pod for a restore with the write time of each saved
+// copy (20261114090103), and the claim's record of the turn that confirmed the daemon's own
+// relaunch record (20261117075935), which stands above every other version and is applied last.
+// They add four tables, two defaulted columns, a write time on each of the two copy tables, which
+// every row standing at the upgrade takes from the database's clock at the upgrade, and one
+// nullable column that every such row takes null in; the first also holds issue_releases.id below
+// 2^62, which no release id main wrote reaches, and the second widens workspace_bundles'
+// attempt-outcome check, so every value main's rows hold still passes it. None of them touches
+// outbox_kind_check.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -85,7 +87,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112105448, 20261112180548, 20261113005308,
 	20261113020122, 20261113082214, 20261113082415, 20261113090512, 20261113110610, 20261113181500,
-	20261113182000, 20261114020537, 20261114031356, 20261114061900, 20261114090103,
+	20261113182000, 20261114020537, 20261114031356, 20261114061900, 20261114090103, 20261117075935,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -95,7 +97,7 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and INFRA-1117's four, which
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and INFRA-1117's five, which
 // is why the loop below holds the list rather than counting it, so that a version added above any
 // of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544

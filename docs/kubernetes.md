@@ -5135,9 +5135,12 @@ The first run counts the ends that find the claim's agent ready with work outsta
 When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.
 Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
 A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
-A turn of the daemon's own relaunch record, which tells a relaunched agent that holds nothing what its last process ended, starts nothing again unless an end cut off an earlier turn of that same record, and that record's end starts nothing again in any case: the record is the daemon's act, not the claim's work.
-An end that cuts off a turn of the record is counted against that turn, and the daemon sends the record again, so the completed turn of the record sent again is the work that end cut off, and it ends both this run and the claim's deaths.
-Any other turn of the record ends neither, since what it finds was counted against a turn a message started or a task.
+A turn of the daemon's own relaunch record, which tells a relaunched agent that holds nothing what its last process ended, starts nothing again, and neither does that record's end: the record is the daemon's act, not the claim's work.
+An end that cuts off a turn of the record is counted against that turn, and the daemon sends the record again, so the completed turn of the record sent again takes back what that one end charged: one from this run, and one from the claim's deaths where the end was charged as a death.
+Every end counted before it stands, so a run of ends whose last end cut off a turn of the record still reaches the limit.
+A turn of a record no end cut off takes back nothing, since what it finds was counted against a turn a message started or a task.
+The daemon measures what the end charged from the two counts it keeps in the claim's row when a turn of the record starts (`claims.record_turn`), so a daemon restart between the end and the completed turn of the record sent again changes nothing.
+A record cut off twice and then completed takes back the second end alone, and a record sent again takes back nothing when another turn of the agent's started between the end and the record's own, so in both cases the claim fails sooner.
 The ends inside the record's turns are counted all the same, so a claim whose pod or process ends in every such turn completes no turn and is charged at the limit.
 Nothing else resets it, the agent's ready included, so the run survives a relaunch: the agent that comes up has completed no turn, and the count goes on from where the last pod left it.
 An architect's turns and the controller's start from messages, so a claim whose pod the cluster ends in every such turn adds one to its run each time and is charged at the limit rather than being relaunched for ever.
@@ -5742,13 +5745,14 @@ Neither orders a copy wrongly against a pod's first ask: every first ask the tab
 An earlier daemon charges a death for every pod end again, as it did before this release, and records no reading.
 It also neither reads nor resets the claims' two runs of ends from outside the pod (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), since no earlier daemon names either column:
 the turns it completes do not start the first run again and the readies its agents reach do not start the second, so a roll forward would read back runs the earlier daemon had ended and could charge an end for them.
-Clear both columns in the same rollback:
+No earlier daemon writes the claim's record of a relaunch record's turn (`claims.record_turn`) either, so a base this release left in it would be read after a roll forward and measured against counts the earlier daemon had moved.
+Clear the three columns in the same rollback:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set pod_ends_not_ours = 0, start_ends_not_ours = 0;'
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set pod_ends_not_ours = 0, start_ends_not_ours = 0, record_turn = null;'
 ```
 
-It prints `UPDATE <n>`, and the columns then hold nothing a roll forward could charge by.
+It prints `UPDATE <n>`, and the columns then hold nothing a roll forward could charge or take back by.
 
 ### Liveness rules
 

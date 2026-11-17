@@ -18,17 +18,17 @@ import (
 //     cannot bound these; an agent that dies in its turn each time it is woken would otherwise be
 //     relaunched for ever. The count ends with the work it was charged against: the task's retire
 //     (retirePending) or a turn that ends normally (turnEnded), either of which says the agent got
-//     through what it was doing. A turn of the daemon's own relaunch record ends the deaths and
-//     PodEndsNotOurs only where that record's own earlier turn was cut off, since what it then
-//     ends was counted against that record's open turn; a fresh record's turn ends neither, and
-//     the record's retirement ends nothing (turnEndsCounts). The record is the daemon's act,
-//     given each relaunched agent that holds nothing, so an agent that dies in every turn a
-//     message starts would otherwise have its deaths ended by the record's turn after each
-//     relaunch and never reach the limit. A death with no turn open and nothing pending is not
-//     counted: a parked agent — idle, holding no task — that the environment kills now and then
-//     is relaunched however often it happens. One killed in its record's turn is counted against
-//     that open turn, and the re-sent record's turn ends the count when it completes; one killed
-//     in every such turn completes none, so its count only grows. Bounded by the launch failure
+//     through what it was doing. A turn of the daemon's own relaunch record ends neither the
+//     deaths nor PodEndsNotOurs: it takes back from each only what the end that cut that record's
+//     earlier turn charged, one at most, so a fresh record's turn takes back nothing, and the
+//     record's retirement ends nothing (turnEndsCounts). The record is the daemon's act, given
+//     each relaunched agent that holds nothing, so an agent that dies in every turn a message
+//     starts would otherwise have its deaths ended by the record's turn after each relaunch and
+//     never reach the limit. A death with no turn open and nothing pending is not counted: a
+//     parked agent — idle, holding no task — that the environment kills now and then is relaunched
+//     however often it happens. One killed in its record's turn is counted against that open turn,
+//     and the re-sent record's turn takes that one death back when it completes; one killed in
+//     every such turn completes none, so its count only grows. Bounded by the launch failure
 //     limit.
 //   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
 //     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
@@ -45,15 +45,16 @@ import (
 //     neither run. Each counted end is continued uncharged until this reaches the launch failure
 //     limit; from there every such end is charged as the claim's own death (died) until a turn
 //     completes (turnEnded) or the task it was counted against ends (retirePending, as Deaths
-//     does), either of which resets it. A turn of the daemon's own relaunch record resets it and
-//     the deaths only where that record's own earlier turn was cut off, and the record's
-//     retirement resets neither (turnEndsCounts): the daemon gives the record to a relaunched
-//     agent that holds nothing, so a fresh record's turn is the daemon's own act and says nothing
-//     of whether the claim's work gets through, where the re-sent record's turn completes the
-//     work the ends in its earlier turn cut off. The agent's ready does not reset it either, as
-//     it does not reset Deaths: a relaunch completes no turn, and a turn a message started, which
-//     leaves the relaunched agent with no task and no turn, would otherwise start a new run at
-//     each relaunch and never reach the limit.
+//     does), either of which resets it. A turn of the daemon's own relaunch record does not reset
+//     it, as it does not reset the deaths: it takes back only the one end that cut that record's
+//     earlier turn, and the record's retirement takes nothing (turnEndsCounts). The daemon gives
+//     the record to a relaunched agent that holds nothing, so a fresh record's turn is the
+//     daemon's own act and says nothing of whether the claim's work gets through, where the
+//     re-sent record's turn completes the work of its earlier turn, which that one end cut off.
+//     The agent's ready does not reset it either, as it does not reset Deaths: a relaunch
+//     completes no turn, and a turn a message started, which leaves the relaunched agent with no
+//     task and no turn, would otherwise start a new run at each relaunch and never reach the
+//     limit.
 //   - StartEndsNotOurs: the second run, of the same ends where they found the claim's agent not
 //     yet ready (unready), whatever work the claim holds, task or none. Such an end counts here
 //     alone, never in PodEndsNotOurs. Each is continued uncharged until this reaches the launch

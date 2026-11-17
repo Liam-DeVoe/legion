@@ -985,7 +985,9 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
 	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
 	// The guard above has already established that the claim holds no delivery, so this turn is
-	// no task's and the line names none. It goes before the write, as the others do.
+	// no task's and the line names none, and it confirms no record (forgetRecordTurn). The line
+	// goes before the write, as the others do.
+	m.forgetRecordTurn()
 	m.startTurn("")
 	return m.persist(ctx)
 }
@@ -1135,11 +1137,10 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	// task were counted against it, so they end with it, in the same write (chargeDeath,
 	// endedFromOutside, workOutstanding), where it is a task of the claim's (HoldsTask). The
 	// daemon's own relaunch record is none, so its retirement ends neither the run nor the deaths:
-	// a fresh record's turn ends neither, and a re-sent record's turn that ends them has ended
-	// them already, at its end (turnEndsCounts, which says why). The run of a start's ends
-	// (Budgets.StartEndsNotOurs) is the start's and not the task's: a task that ends while the
-	// agent starts leaves that start exactly as it was, so only the agent's ready ends that run
-	// (ready).
+	// a record's turn takes back, at its own end, only what the end that cut its earlier turn
+	// charged (turnEndsCounts, which says why). The run of a start's ends (Budgets.StartEndsNotOurs)
+	// is the start's and not the task's: a task that ends while the agent starts leaves that start
+	// exactly as it was, so only the agent's ready ends that run (ready).
 	if HoldsTask(p) {
 		retired.Budgets.Deaths, retired.Budgets.PodEndsNotOurs = 0, 0
 	}
@@ -1324,11 +1325,15 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // never one an earlier turn of the same task already got past. It is cleared on the delivery the
 // claim holds, which is the row putClaimAndPending writes, so the write below carries it.
 //
-// It is also where the turn is decided to be the turn of the claim's own work, of the daemon's
-// own relaunch record, or of a record a let-go took back from an earlier turn of it
-// (Machine.turnKind), for the counts the turn's end ends (turnEndsCounts, which says why that is
-// decided here and not at the end). Every path that confirms a delivery comes through here, and
-// the answer is kept in memory alone, as the turn's identity is (startTurn).
+// It is also where the claim's record of a relaunch record's turn is written (Claim.RecordTurn,
+// confirmRecordTurn): a record's confirmation dates the turn, records the two counts a completed
+// turn ends as its base, and measures what the turn takes back at its end — for a record a let-go
+// took back from an earlier turn of it, what the end that cut that turn charged, one at most of
+// each count — and a task's confirmation clears it (turnEndsCounts states the rule). Every path
+// that confirms a delivery comes through here — a turn's start (beginTurn), sendPending's askFirst
+// branch, and a prompt's result that confirms a task no start was matched to (promptResulted) —
+// and the record is the claim's own field, so it goes in the same write as the confirmation and
+// a restart reads it with the claim.
 //
 // A task of the entry the claim's handshake names records its confirmation there too, the first
 // one only (Claim.Handshake, EntryHandshake.confirmed): the delivery's own ConfirmedAt goes with
@@ -1358,7 +1363,7 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
-	m.turnKind = turnKindOf(*p)
+	m.confirmRecordTurn(*p)
 	m.claim.Handshake = m.claim.Handshake.confirmed(*p)
 	m.disarm(TimerTurn)
 	m.askFirst = false

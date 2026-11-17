@@ -497,8 +497,14 @@ const (
 // the four the constants above name. It is derived from the migrations the binary ships rather
 // than pinned, since a migration a branch adds above main's newest is one neither way back
 // deletes, and a pinned value broke on the one this branch adds. The five are named here rather
-// than read from the blocks, so the value never follows a block that forgot one of its deletes,
-// which the roll-forward then catches by applying one migration fewer than the five it wants.
+// than read from the blocks, so the value never follows a block that forgot one of its deletes.
+//
+// What the version check pins is only that no row above the five is deleted: while any migration
+// stands above all five, the highest row left is that one, whichever of the five a block
+// deletes. Leaving the five out of the derivation matters only while one of them is the newest
+// migration, as on main before this branch. A block that forgot one of its own deletes is caught
+// by the roll-forward instead, which then applies one migration fewer than the five it wants
+// (want = 5).
 func leftStandingVersion(t *testing.T) int {
 	t.Helper()
 	all, err := migrations.All()

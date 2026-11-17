@@ -16,21 +16,22 @@ body: |-
   bound repeated ends: `launch_failure_limit` of them while a ready agent has work outstanding are
   charged a death, and `launch_failure_limit` of them before the agent is ready are charged a launch
   failure. A completed turn of the daemon's own relaunch record, the message that tells a relaunched
-  agent what its last process ended, ends neither the first run nor the claim's deaths unless an end
-  cut off that record's own earlier turn, while a turn of real work still ends both. So a claim
-  whose turns keep being ended from outside the pod, or whose process keeps dying in a turn a
-  message started, now fails at the limit instead of being relaunched for ever; in earlier releases
-  the same loop of deaths never failed such a claim. An end from outside the pod is told to the next
-  process as an end from outside the pod, not as the daemon's replacement of the pod.
+  agent what its last process ended, ends neither the first run nor the claim's deaths. Where an end
+  cut off that record's earlier turn, the record sent again takes back that one end and no other, so
+  the ends before it still count, while a turn of real work still ends both. So a claim whose turns
+  keep being ended from outside the pod, or whose process keeps dying in a turn a message started,
+  now fails at the limit instead of being relaunched for ever; in earlier releases the same loop of
+  deaths never failed such a claim. An end from outside the pod is told to the next process as an
+  end from outside the pod, not as the daemon's replacement of the pod.
 
   An issue pod whose CPU or memory request is below its limit no longer carries
   `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
 
   The migrations add `workspace_running_copies`, `issue_pushes`, `issue_push_heads`,
-  `workspace_restore_asks`, `claims.pod_ends_not_ours`, `claims.start_ends_not_ours` and a
-  `written_at` column on `workspace_running_copies` and `workspace_bundles`. To roll back, the
-  operator first puts each lowered issue request back to its limit and waits for each pod's
-  update round, then pins the earlier image, and runs two `psql` statements: a required
-  `delete from workspace_running_copies;`, and `update claims set pod_ends_not_ours = 0,
-  start_ends_not_ours = 0;`. Re-pinning the image does neither (`docs/kubernetes.md`, "Rolling
-  back the running copy").
+  `workspace_restore_asks`, `claims.pod_ends_not_ours`, `claims.start_ends_not_ours`,
+  `claims.record_turn` and a `written_at` column on `workspace_running_copies` and
+  `workspace_bundles`. To roll back, the operator first puts each lowered issue request back to its
+  limit and waits for each pod's update round, then pins the earlier image, and runs two `psql`
+  statements: a required `delete from workspace_running_copies;`, and `update claims set
+  pod_ends_not_ours = 0, start_ends_not_ours = 0, record_turn = null;`. Re-pinning the image does
+  neither (`docs/kubernetes.md`, "Rolling back the running copy").

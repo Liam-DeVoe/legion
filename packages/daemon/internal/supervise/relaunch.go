@@ -3,7 +3,10 @@ package supervise
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -213,97 +216,182 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // share.
 func HoldsTask(pending *Delivery) bool { return pending != nil && !pending.Relaunch() }
 
-// turnKind is what a turn is the turn of, as the counts its end ends read it (turnEndsCounts):
-// the claim's own work, the daemon's own delivery of a relaunch's record (Delivery.Relaunch), or
-// such a record a let-go took back from an earlier turn of it (Delivery.Interrupted). Its zero,
-// turnUnknown, is a turn the machine holds no answer for.
-type turnKind uint8
-
-const (
-	turnUnknown turnKind = iota
-	turnOfWork
-	turnOfRecord
-	turnOfCutRecord
-)
-
-// turnKindOf is the kind of a turn that confirms d (confirm).
-func turnKindOf(d Delivery) turnKind {
-	switch {
-	case !d.Relaunch():
-		return turnOfWork
-	case d.Interrupted:
-		return turnOfCutRecord
-	}
-	return turnOfRecord
+// RecordTurn is the claim's record of the turn that confirmed the daemon's own relaunch record
+// (Delivery.Relaunch), which is what that turn's end reads to decide what it ends of the two counts
+// a completed turn ends (turnEndsCounts). confirm writes it at every confirmation of a record and
+// clears it at the confirmation of a task (confirmRecordTurn), and every turn start that confirms
+// no record clears it (forgetRecordTurn). It is persisted with the claim (store's record_turn), in
+// the write that confirms the record, so a daemon restarted at any point between that confirmation
+// and the turn's end reads what the daemon before it wrote. A claim holds none (nil) until a turn
+// confirms a record, and none is also what says the base is unknown.
+type RecordTurn struct {
+	// At is the start of the turn that confirmed the record: the claim's LastTurnStart at that
+	// confirmation. The turn now ending is that record's exactly while At is not zero and equals
+	// Claim.LastTurnStart (Claim.recordsTurn).
+	At time.Time `json:"at"`
+	// Base is the two counts when that confirmation was made, which the confirmation of the same
+	// record sent again measures the charge of the end between them from.
+	Base TurnCounts `json:"base"`
+	// TakeBack is what the record's turn takes back from the two counts when it ends, each 0 or 1.
+	// That end zeroes it in the write that takes it back, so it is taken back once.
+	TakeBack TurnCounts `json:"takeBack"`
 }
 
-// turnEndsCounts is whether the turn now ending ends the two counts a completed turn ends: the
-// deaths (Budgets.Deaths) and the run of pod ends from outside the pod that found the ready agent
-// at work (Budgets.PodEndsNotOurs). turnEnded asks it before anything there moves the claim. A
-// completed turn ends the counts that were counted against the work it completed:
+// TurnCounts is the two counts a completed turn ends (turnEndsCounts): the deaths
+// (Budgets.Deaths) and the run of pod ends from outside the pod that found the ready agent at work
+// (Budgets.PodEndsNotOurs).
+type TurnCounts struct {
+	Deaths         int `json:"deaths"`
+	PodEndsNotOurs int `json:"podEndsNotOurs"`
+}
+
+// UnmarshalJSON reads a record turn as the store keeps it (store's record_turn) and refuses one
+// no confirmation writes: a negative count, or a take-back above one. A daemon that read such a
+// record would take back more than any one end charges.
+func (r *RecordTurn) UnmarshalJSON(data []byte) error {
+	type stored RecordTurn
+	var read stored
+	if err := json.Unmarshal(data, &read); err != nil {
+		return err
+	}
+	for _, count := range []int{read.Base.Deaths, read.Base.PodEndsNotOurs, read.TakeBack.Deaths, read.TakeBack.PodEndsNotOurs} {
+		if count < 0 {
+			return fmt.Errorf("the record turn %s holds a negative count", data)
+		}
+	}
+	if read.TakeBack.Deaths > 1 || read.TakeBack.PodEndsNotOurs > 1 {
+		return fmt.Errorf("the record turn %s takes back more than one of a count", data)
+	}
+	*r = RecordTurn(read)
+	return nil
+}
+
+// countsOf is the two counts of b that a completed turn ends.
+func countsOf(b Budgets) TurnCounts {
+	return TurnCounts{Deaths: b.Deaths, PodEndsNotOurs: b.PodEndsNotOurs}
+}
+
+// oneAtMost is n clamped to 0..1: what one end can have charged one count.
+func oneAtMost(n int) int { return min(max(n, 0), 1) }
+
+// recordsTurn is whether the turn the claim last began is the turn that confirmed a relaunch
+// record: the claim holds a record turn whose start is that turn's (RecordTurn.At). It reads the
+// persisted claim alone.
+func (c Claim) recordsTurn() bool {
+	r := c.RecordTurn
+	return r != nil && !r.At.IsZero() && r.At.Equal(c.LastTurnStart)
+}
+
+// confirmRecordTurn records, at the confirmation of d (confirm), what the turn now confirming it
+// takes back at its end (turnEndsCounts, which states the rule). A task's confirmation clears the
+// record turn: its turn is the claim's own work. A record's confirmation dates the turn
+// (Claim.LastTurnStart) and records the two counts now as its base. Its take-back is zero but for
+// a record a let-go took back from an earlier turn of it (Delivery.Interrupted) whose base the
+// claim still holds: then each amount is the count now less that base, one at most and never
+// below zero, which is what the end that cut the earlier turn charged.
+func (m *Machine) confirmRecordTurn(d Delivery) {
+	if !d.Relaunch() {
+		m.claim.RecordTurn = nil
+		return
+	}
+	now := countsOf(m.claim.Budgets)
+	turn := &RecordTurn{At: m.claim.LastTurnStart, Base: now}
+	if last := m.claim.RecordTurn; d.Interrupted && last != nil {
+		turn.TakeBack = TurnCounts{
+			Deaths:         oneAtMost(now.Deaths - last.Base.Deaths),
+			PodEndsNotOurs: oneAtMost(now.PodEndsNotOurs - last.Base.PodEndsNotOurs),
+		}
+	}
+	m.claim.RecordTurn = turn
+}
+
+// forgetRecordTurn clears the record turn at a turn start that confirms no record: beginTurn's
+// start of a turn that is not the pending delivery's, the busy answer that records a turn
+// (recordBusyTurn), the agent's word that it is in a turn of its own after its task was dropped
+// (answerAskFirstAfterDrop), and a turn Oh My Pi starts under a compaction (turnStartedWhileBusy).
+// Such a turn is no record's, and an end that cuts it is counted against it, so the base is
+// forgotten: a record re-sent after it takes back nothing (turnEndsCounts), and the claim fails
+// sooner.
+func (m *Machine) forgetRecordTurn() { m.claim.RecordTurn = nil }
+
+// turnEndsCounts ends, at a turn's end (turnEnded), what that turn ends of the two counts a
+// completed turn ends: the deaths (Budgets.Deaths) and the run of pod ends from outside the pod
+// that found the ready agent at work (Budgets.PodEndsNotOurs). It is the one statement of that
+// rule. completed is false for a turn a compaction aborted, which completed nothing, so such a
+// turn takes nothing from the run (turnEnded).
 //
 //   - A turn of the claim's own work ends both: a task's turn, and a turn that confirmed nothing,
 //     such as one a message started.
-//   - A turn of the daemon's own relaunch record (queueRelaunch) ends both only where that
-//     record's own earlier turn was cut off. The let-go that cut it off took the record back
-//     (interrupted), which left it the claim's pending delivery under a new id that is still a
-//     record's (rotateTaskID) and marked it Interrupted. An end or a death in that turn was
-//     counted against the record's open turn (workOutstanding), so the re-sent record's turn that
-//     completes is the work those ends cut off. Read otherwise, a parked claim, holding no task,
-//     whose ends land in its record's turns would have each of them counted and none ever ended,
-//     and would fail, where a parked agent the environment ends now and then is relaunched
-//     however often it happens (Budgets.Deaths).
-//   - A fresh record's turn (Interrupted false) ends neither: the ends and deaths standing when it
-//     completes were counted against a message's turn or a task, not against it. The record is
-//     the daemon's own act, given a claim holding nothing at every relaunch's ready, and no work
-//     of the claim's, so a turn completed on it is no evidence that the claim's work gets
-//     through. Read as such evidence, it would end both at each relaunch after a message's turn
-//     the cluster ended or the process died in, and a claim whose messages keep ending its pod or
-//     killing its process would never reach the limit.
+//   - A turn of the daemon's own relaunch record (queueRelaunch) takes back only what the end that
+//     cut that record's earlier turn charged: at most one from each count, never below zero
+//     (RecordTurn.TakeBack, which confirmRecordTurn measured). A fresh record's turn takes back
+//     nothing. The ends and deaths standing when it completes were counted against a message's
+//     turn or a task, not against it, and the record is the daemon's own act, given a claim
+//     holding nothing at every relaunch's ready, so a turn completed on it is no evidence that
+//     the claim's work gets through. Read as such evidence, it would end both at each relaunch
+//     after a message's turn the cluster ended or the process died in, and a claim whose messages
+//     keep ending its pod or killing its process would never reach the limit. The turn of a
+//     record a let-go took back (interrupted) and the relaunch sent again completes the work the
+//     end in its earlier turn cut off, so it takes back that end's charge and no other: a run of
+//     ends whose last end cut a record's turn keeps every end before it, and reaches the limit
+//     as it would with no record at all.
 //
-// The record's retirement ends nothing (retirePending, HoldsTask): it is no task of the claim's,
-// and where its turn ends the counts, that turn's end has ended them already.
+// Nothing the claim holds says what an end charged: in died the take-back of the turn
+// (interrupted) runs before the charge (chargeDeath), and an end from outside the pod at the
+// limit raises the run and then goes to died, which raises the deaths too. So the charge is
+// measured: the confirmation of a record records the two counts (RecordTurn.Base), and the
+// confirmation of that record sent again takes the difference from them, one at most of each.
+// Two ends are mixed into one difference only where a second end is counted between the cut and
+// that confirmation. One is an end in a turn that confirms no record, and every such turn's start
+// forgets the base (forgetRecordTurn), so the record then takes back nothing and the claim fails
+// sooner. The other is an end while the claim works for a compaction, which starts no turn: the
+// cap takes back one of the two, and the other stands. Each confirmation measures from the one
+// before it, so a record cut twice and then completed takes back the second end's charge alone,
+// and the claim fails sooner there too.
 //
 // The rule is not that an end inside a record's turn goes uncounted. A claim whose process dies in
 // every turn of its record — a session Oh My Pi crashes on at its first prompt — or whose
 // Burstable pod evicts itself in every such turn completes no turn, and counting those ends
 // against the open record's turn is what bounds it; uncounted, it would be relaunched for ever.
+// A parked claim, holding no task, whose ends each land in a turn of its record has each one
+// taken back when the record sent again completes, so it is relaunched however often the
+// environment ends it (Budgets.Deaths).
 //
-// One shape of loop is left unbounded, by decision (dispatch://INFRA-1117's decisions document):
-// an end in a turn a message started, then an end in the record's turn that follows, then that
-// record's completed turn. The completed turn of the record the second end cut off ends both
-// counts, the first end's with them, so a loop that repeats those three steps resets every two
-// ends. Ending only the counts counted against the record would need a count of them on each
-// delivery, which is a column on every delivery for one shape that needs the record's turn to
-// complete every other cycle.
+// The record's retirement ends nothing (retirePending, HoldsTask): it is no task of the claim's.
 //
-// What the turn is the turn of is decided where the turn confirms its delivery (confirm), the one
-// place every confirming path goes through — a turn's start (beginTurn), sendPending's askFirst
-// branch, and a prompt's result that confirms a task no start was matched to (promptResulted) —
-// and kept in memory for the turn (Machine.turnKind). The claim read when the turn ends can say
-// another thing: a task delivered during a record's turn retires the confirmed record and takes
-// its place (queue), and a provider error's result before the turn's end takes the record back
-// unconfirmed (providerErrored), so read there, a record's turn would end the counts as a turn of
-// work does.
+// Whose turn is ending is decided from the persisted claim alone, read here: the turn is the
+// record's exactly while the claim's record turn starts where its last turn did
+// (Claim.recordsTurn). Every turn start either moves Claim.LastTurnStart or forgets the record
+// turn, and the one that confirms a record writes a new one, so no earlier turn's record can be
+// read for this one. A task delivered during the record's turn (queue) and a provider error's
+// result before its end (providerErrored) change the pending delivery and neither field, and a
+// daemon restarted before, after or between them reads both fields from the row, so none of them
+// changes the answer.
 //
-// Where the machine holds no answer — a turn that confirmed nothing, or a daemon restarted in the
-// middle of the turn — it reads the persisted claim: the turn is the record's where the claim
-// holds a record confirmed no earlier than the turn began, and that delivery's Interrupted says
-// whether its earlier turn was cut off. A start dates its turn before it writes the confirmation —
-// beginTurn sets Claim.LastTurnStart and then confirm sets ConfirmedAt, and the askFirst branch of
-// sendPending does the same in that order — so a delivery this turn confirmed was confirmed no
-// earlier than the turn began, and one an earlier turn confirmed, still held while its prompt's
-// result is to come, was confirmed before it. Both times are the claim's and persisted, so a
-// daemon restarted in the middle of the turn answers as the daemon before it would have.
-func (m *Machine) turnEndsCounts() bool {
-	kind := m.turnKind
-	if kind == turnUnknown {
-		kind = turnOfWork
-		if p := m.claim.Pending; p != nil && !p.ConfirmedAt.IsZero() && !p.ConfirmedAt.Before(m.claim.LastTurnStart) {
-			kind = turnKindOf(*p)
+// The record turn's take-back is zeroed here, beside the counts it changes, so the turn's end
+// writes both together and a second end of the same turn takes nothing more.
+func (m *Machine) turnEndsCounts(completed bool) {
+	b := &m.claim.Budgets
+	if !m.claim.recordsTurn() {
+		b.Deaths = 0
+		if completed && b.PodEndsNotOurs != 0 {
+			m.log.Info("supervise: a turn completed; the run of pod ends from outside the pod is over", "podEndsNotOurs", b.PodEndsNotOurs)
+			b.PodEndsNotOurs = 0
 		}
+		return
 	}
-	return kind != turnOfRecord
+	turn := *m.claim.RecordTurn
+	took := TurnCounts{Deaths: min(turn.TakeBack.Deaths, b.Deaths)}
+	if completed {
+		took.PodEndsNotOurs = min(turn.TakeBack.PodEndsNotOurs, b.PodEndsNotOurs)
+	}
+	b.Deaths -= took.Deaths
+	b.PodEndsNotOurs -= took.PodEndsNotOurs
+	turn.TakeBack = TurnCounts{}
+	m.claim.RecordTurn = &turn
+	m.log.Info("supervise: a turn of the relaunch's record ended; it takes back only what the end that cut its earlier turn charged",
+		"tookBackDeaths", took.Deaths, "tookBackPodEndsNotOurs", took.PodEndsNotOurs,
+		"deaths", b.Deaths, "podEndsNotOurs", b.PodEndsNotOurs)
 }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
