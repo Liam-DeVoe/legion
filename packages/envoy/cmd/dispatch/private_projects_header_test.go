@@ -164,7 +164,8 @@ func TestEveryResponseSaysWhetherAnyProjectIsPrivate(t *testing.T) {
 // Every call of newHTTPServer takes, as its handler, a variable assigned from serveHandler(…),
 // and no other http.Server is built in cmd/dispatch but newHTTPServer's own and pprof.go's, the
 // localhost listener that serves no Dispatch response. So no route can be registered outside the
-// response middleware without this test naming it.
+// response middleware without this test naming it. A walk that finds no newHTTPServer call, or
+// not its http.Server, read nothing it can vouch for, and fails as such.
 func TestTheServerServesOnlyTheWrappedHandler(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
@@ -172,6 +173,7 @@ func TestTheServerServesOnlyTheWrappedHandler(t *testing.T) {
 	}
 	set := token.NewFileSet()
 	var outside []string
+	var serves, servers int
 	for _, name := range files {
 		if strings.HasSuffix(name, "_test.go") {
 			continue
@@ -195,19 +197,26 @@ func TestTheServerServesOnlyTheWrappedHandler(t *testing.T) {
 			switch node := node.(type) {
 			case *ast.CallExpr:
 				if calls(node, "newHTTPServer") {
+					serves++
 					if variable, ok := node.Args[0].(*ast.Ident); !ok || !wrapped[variable.Name] {
 						outside = append(outside, set.Position(node.Pos()).String()+": newHTTPServer serves a handler no serveHandler call assigned")
 					}
 				}
 			case *ast.CompositeLit:
 				if selector, ok := node.Type.(*ast.SelectorExpr); ok && selector.Sel.Name == "Server" {
-					if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "http" && !allowedServer(file, name, node) {
-						outside = append(outside, set.Position(node.Pos()).String()+": an http.Server outside newHTTPServer")
+					if pkg, ok := selector.X.(*ast.Ident); ok && pkg.Name == "http" {
+						servers++
+						if !allowedServer(file, name, node) {
+							outside = append(outside, set.Position(node.Pos()).String()+": an http.Server outside newHTTPServer")
+						}
 					}
 				}
 			}
 			return true
 		})
+	}
+	if serves == 0 || servers == 0 {
+		t.Fatalf("the walk of %d files found %d newHTTPServer calls and %d http.Server literals: a renamed or moved server leaves it nothing to check", len(files), serves, servers)
 	}
 	if len(outside) > 0 {
 		t.Fatalf("a Dispatch response could leave without Dispatch-Private-Projects:\n%s", strings.Join(outside, "\n"))
@@ -252,7 +261,7 @@ type failedRow struct{}
 func (failedRow) Scan(...any) error { return errReadFailed }
 
 // A state's later read that fails answers 1, whatever it read before: the closed direction, which
-// turns plan F's check on.
+// a reader of the header takes as a deployment holding a private project.
 func TestAFailedReadSaysPrivate(t *testing.T) {
 	database := storetest.Open(t)
 	state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
