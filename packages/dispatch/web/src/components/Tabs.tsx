@@ -103,7 +103,8 @@ export function Tabs<Id extends string>({
   };
 
   // Reveal the selected tab when it is chosen, when the list narrows (the comment margin opens
-  // or the window narrows), and when a tab's width changes (a live count grows). A preceding tab
+  // or the window narrows), when a tab's width changes (a live count grows), and when a tab is
+  // added or taken away (the project's Architecture tab arriving before Issues). A preceding tab
   // can move the selection under the fade without changing the list's or selected tab's width.
   useEffect(() => {
     const selected = tabRefs.current[activeTab];
@@ -113,11 +114,22 @@ export function Tabs<Id extends string>({
       return;
     }
     const sizes = new ResizeObserver(() => revealTab(selected));
-    sizes.observe(list);
-    for (const tab of list.children) {
-      sizes.observe(tab);
-    }
-    return () => sizes.disconnect();
+    const observeAll = () => {
+      sizes.observe(list);
+      for (const tab of list.children) {
+        sizes.observe(tab);
+      }
+    };
+    observeAll();
+    const membership = new MutationObserver(() => {
+      observeAll();
+      revealTab(selected);
+    });
+    membership.observe(list, { childList: true });
+    return () => {
+      sizes.disconnect();
+      membership.disconnect();
+    };
   }, [activeTab]);
 
   const tabMinHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";

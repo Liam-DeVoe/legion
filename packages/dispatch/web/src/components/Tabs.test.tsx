@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 
+import { settle } from "../__tests__/fake-clock";
 import { installResizeObserver, layOutScrollBox } from "../__tests__/scroll-box";
 import { scrollFadeTrailing, scrollFadeTrailingPx } from "../theme/classes";
 import { Tabs } from "./Tabs";
@@ -271,6 +272,53 @@ test("a live count widening an earlier tab keeps the selected tab clear of the f
     sizes.resize(artifacts);
     expect(activity.getBoundingClientRect().right).toBe(268);
     expect(tablist.scrollLeft).toBe(8);
+  } finally {
+    view.unmount();
+    sizes.restore();
+  }
+});
+
+// The project page puts its Architecture tab before Issues once the project's source answers. In
+// an overflowing tablist that moves the selected tab right with no box changing size - the list's
+// stays the width it is given, and no tab that was there resized - so the move itself must
+// bring the selection back clear of the fade.
+test("a tab added before the selected tab keeps the selected tab clear of the fade", async () => {
+  const sizes = installResizeObserver();
+  const renderTabs = (withArchitecture: boolean) => (
+    <Tabs
+      activeTab="documents"
+      ariaLabel="Project"
+      idPrefix="project"
+      onSelect={() => {}}
+      tabs={[
+        ...(withArchitecture ? [{ id: "architecture", label: "Architecture" } as const] : []),
+        { id: "issues", label: "Issues" },
+        { id: "documents", label: "Documents" },
+        { id: "settings", label: "Settings" },
+      ]}
+    />
+  );
+  const view = render(renderTabs(false));
+
+  try {
+    const tablist = screen.getByRole("tablist", { name: "Project" });
+    const documents = screen.getByRole("tab", { name: "Documents" });
+    const box = { client: 300, scroll: 420 };
+    let documentsLeft = 180;
+    layOutScrollBox(tablist, box);
+    tablist.getBoundingClientRect = () => rect(0, 300);
+    documents.getBoundingClientRect = () =>
+      rect(documentsLeft - tablist.scrollLeft, documentsLeft + 88 - tablist.scrollLeft);
+    sizes.resize();
+    expect(documents.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
+
+    // Architecture arrives 100 px wide before Issues; no box the tablist watched changed size.
+    documentsLeft += 100;
+    box.scroll += 100;
+    view.rerender(renderTabs(true));
+    await settle();
+    expect(documents.getBoundingClientRect().right).toBe(300 - scrollFadeTrailingPx);
+    expect(tablist.scrollLeft).toBe(100);
   } finally {
     view.unmount();
     sizes.restore();
