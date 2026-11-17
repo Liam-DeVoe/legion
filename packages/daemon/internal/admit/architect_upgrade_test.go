@@ -2,7 +2,9 @@ package admit
 
 import (
 	"context"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -492,33 +494,48 @@ const (
 	entryVerbatimVersion  = 20261114061900
 )
 
-// leftStandingVersion is the version the store reports once both ways back have run: the highest
-// embedded migration that is none of the five rows the two blocks delete, this migration's and
-// the four the constants above name. It is derived from the migrations the binary ships rather
-// than pinned, since a migration a branch adds above main's newest is one neither way back
-// deletes, and a pinned value broke on the one this branch adds. The five are named here rather
-// than read from the blocks, so the value never follows a block that forgot one of its deletes.
-//
-// What the version check pins is only that no row above the five is deleted: while any migration
-// stands above all five, the highest row left is that one, whichever of the five a block
-// deletes. Leaving the five out of the derivation matters only while one of them is the newest
-// migration, as on main before this branch. A block that forgot one of its own deletes is caught
-// by the roll-forward instead, which then applies one migration fewer than the five it wants
-// (want = 5).
-func leftStandingVersion(t *testing.T) int {
+// wayBackVersionDelete is one statement of a way back that deletes a version row, the form each
+// block of a migration's header writes it in.
+var wayBackVersionDelete = regexp.MustCompile(`(?m)^delete from schema_version where version = (\d+);$`)
+
+// leftStandingVersion is the version the store reports once the ways back have run: the highest
+// embedded migration (migrations.All) whose version row none of them deletes, each deleted row
+// read from the block's own statements. It is computed rather than written down because every
+// migration added later that no block touches stands above the last one that did, as
+// docs/kubernetes.md says of a migration added after the blocks: written down, it was the newest
+// migration of the day it was written, and the next migration made it false. A block that deletes
+// no version row fails the test, since the ways back would then have nothing to say about the
+// version, and so would this.
+func leftStandingVersion(t *testing.T, wayBacks ...string) int {
 	t.Helper()
+	deleted := map[int]bool{}
+	for _, wayBack := range wayBacks {
+		statements := wayBackVersionDelete.FindAllStringSubmatch(wayBack, -1)
+		if len(statements) == 0 {
+			t.Fatalf("the way back deletes no version row, so no version can be said to stand after it:\n%s", wayBack)
+		}
+		for _, statement := range statements {
+			version, err := strconv.Atoi(statement[1])
+			if err != nil {
+				t.Fatalf("read the version the way back deletes in %q: %v", statement[0], err)
+			}
+			deleted[version] = true
+		}
+	}
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	deleted := []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
-	highest := 0
+	standing := 0
 	for _, migration := range all {
-		if migration.Version > highest && !slices.Contains(deleted, migration.Version) {
-			highest = migration.Version
+		if !deleted[migration.Version] && migration.Version > standing {
+			standing = migration.Version
 		}
 	}
-	return highest
+	if standing == 0 {
+		t.Fatalf("the ways back delete every one of the %d embedded migrations", len(all))
+	}
+	return standing
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
@@ -628,10 +645,12 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					Scan(&markColumn); err != nil {
 					t.Fatalf("look for the phases row's mark after the way back: %v", err)
 				}
-				if leftStanding := leftStandingVersion(t); version != leftStanding || marksTable || handshakeColumn || markColumn {
+				standing := leftStandingVersion(t, wayBack, headerWayBack(t, phaseEntryVersion))
+				t.Logf("the highest embedded migration neither way back deletes is %d", standing)
+				if version != standing || marksTable || handshakeColumn || markColumn {
 					t.Fatalf("after the two ways back the store reports version %d, the marks' table stands: %v, a handshake column "+
 						"stands: %v, and the phases row's mark stands: %v; want %d and none of them: the highest row neither block deletes",
-						version, marksTable, handshakeColumn, markColumn, leftStanding)
+						version, marksTable, handshakeColumn, markColumn, standing)
 				}
 			}
 
