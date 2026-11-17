@@ -2,7 +2,7 @@ import { type ReactNode, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { useFootInset } from "../../../hooks/useFootInset";
+import { FOOT_HELD_ATTRIBUTE, useFootInset } from "../../../hooks/useFootInset";
 import { type BoxPlace, IssueComposer, useComposerShown } from "../IssueComposer";
 import { IssueReadMark } from "../IssueReadMark";
 import { issueAddress } from "../issue-address";
@@ -20,7 +20,8 @@ import type { SlotProps } from "../slot-props";
  * from each side of the screen at 760 px and below, where the column's own inset is 14 px. It
  * draws no padding: the 8 px under the box and the fade above it are the box's own section
  * (`pageComposer.foot`), so nothing of the box shows while it is hidden. Its layer is over the
- * outline's rows and under the view row and Details. The reach it publishes lifts the shell's
+ * outline's rows and under the view row and Details. It says it is held at the foot
+ * (`FOOT_HELD_ATTRIBUTE`), so the reach it publishes while it stands there lifts the shell's
  * floating status above it (`useFootInset`).
  *
  * The mark stands in the flow after the stage and before the box, 12 px under the outline's last
@@ -52,6 +53,7 @@ export function FootSlot({ issue, route }: SlotProps): ReactNode {
       <div
         className="sticky bottom-0 z-[15] mx-auto mt-auto w-full max-w-[1000px] min-w-0 max-[761px]:-mx-1 max-[761px]:w-auto"
         ref={wrapper}
+        {...{ [FOOT_HELD_ATTRIBUTE]: "" }}
       >
         <IssueComposer
           documentOpen={place.documentOpen}

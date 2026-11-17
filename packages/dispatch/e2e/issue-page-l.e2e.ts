@@ -563,6 +563,22 @@ test("the box at the foot is one line at rest, and says where a reply goes @phon
         Math.round((foot?.y ?? 0) + (foot?.height ?? 0)),
         `the box does not stand at the foot of the screen at ${at}`
       ).toBe(size.height);
+      // Standing there, it publishes how far up from the screen's foot it reaches, which the
+      // shell's status corner rides above (`--foot-composer-inset`, `useFootInset`): the reach of
+      // its wrapper, the element its host marks as held at the foot (`data-foot-held`).
+      const wrapper = await page.locator("[data-foot-held]").boundingBox();
+      const reach = size.height - (wrapper?.y ?? size.height);
+      await expect
+        .poll(
+          async () =>
+            Number.parseFloat(
+              await page.evaluate(() =>
+                getComputedStyle(document.documentElement).getPropertyValue("--foot-composer-inset")
+              )
+            ),
+          { message: `the box does not publish its reach of ${reach.toFixed(1)} px at ${at}` }
+        )
+        .toBeCloseTo(reach, 0);
 
       // While it replies, its placeholder says where the words go.
       await focusRow(page, seeded.head);
