@@ -217,8 +217,14 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
     kind: "statement",
     text: "The box takes the focus.",
   });
-  // The statement's words with no mark of markdown, its two paragraphs one space apart.
-  const aimed: StatementTarget = { ...item, quote: "The page draws one box. It sits at the foot." };
+  // The statement's words with no mark of markdown, its two paragraphs one space apart, and its
+  // row, which a comment on it lands under.
+  const aimed: StatementTarget = {
+    artifact: "spec",
+    item,
+    quote: "The page draws one box. It sits at the foot.",
+    row: "spec#b-r1",
+  };
 
   const page = renderPage(
     node({ children: [statement, unread, comment, open, answered], id: KEY, type: "issue" }),
@@ -314,7 +320,7 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
       plainDelivery: "steer",
       replyTo: null,
       sendKey: "send-1",
-      statement: { artifact: aimed.artifact, quote: aimed.quote },
+      statement: { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row },
     };
     // The send stays out: Dispatch never answers it.
     const createComment = spyOn(api, "createComment").mockImplementation(
@@ -343,8 +349,8 @@ test("r on a statement aims the writer at it, and every other aim ends it", asyn
 // change of answer, an Edit - leaves the writer on that statement, so the refused words are
 // neither replaced by another target's seed nor sent under another target, as a refused reply
 // holds its reply (`redirectedReplyTarget`). A writer that mounts again over the refused send
-// takes its statement up from it - the document and the words the send keeps - and a Reply on
-// that same statement takes its row's whole target again.
+// takes its statement up from it - the document, the words and the row the send keeps - and a
+// Reply on that same statement takes its row's whole target again.
 test("a refused comment on a statement holds the writer on it, and a writer mounted again takes it up", async () => {
   const tree = displayTree(STATEMENT_WORDS);
   if (tree === undefined) throw new Error("the engine read no statement");
@@ -395,13 +401,17 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
   ];
   const aimed: StatementTarget = {
     artifact: "spec",
-    blockId: "r1",
-    id: "spec#b-r1",
-    kind: "statement",
+    item: {
+      artifact: "spec",
+      blockId: "r1",
+      id: "spec#b-r1",
+      kind: "statement",
+      source: SPEC_SOURCE,
+      text: STATEMENT_WORDS,
+      tree,
+    },
     quote: "The page draws one box. It sits at the foot.",
-    source: SPEC_SOURCE,
-    text: STATEMENT_WORDS,
-    tree,
+    row: "spec#b-r1",
   };
   const sendKey = ["issue-composer", KEY];
   const request: SentRequest = {
@@ -414,7 +424,7 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     plainDelivery: "steer",
     replyTo: null,
     sendKey: "send-1",
-    statement: { artifact: aimed.artifact, quote: aimed.quote },
+    statement: { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row },
   };
   const user = userEvent.setup();
   // Dispatch refuses the comment.
@@ -461,9 +471,10 @@ test("a refused comment on a statement holds the writer on it, and a writer moun
     // The writer mounted again in the same tab, over the send Dispatch refused.
     first.view.unmount();
     const again = renderPage(root, asks, first.client);
-    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    const held = { artifact: aimed.artifact, quote: aimed.quote, row: aimed.row };
+    expect(again.writer().statement).toEqual(held);
     await press("comment-1", "r");
-    expect(again.writer().statement).toEqual({ artifact: aimed.artifact, quote: aimed.quote });
+    expect(again.writer().statement).toEqual(held);
     expect(again.writer().reply).toBeNull();
     await press("spec#b-r1", "r");
     await waitFor(() => expect(again.writer().statement).toEqual(aimed));

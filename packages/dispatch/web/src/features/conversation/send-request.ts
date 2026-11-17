@@ -43,14 +43,21 @@ export const saveCommentEdit: SaveCommentEdit = (id, body, carried, bounds) =>
 /**
  * A statement of the issue's own documents that a comment is on, as the issue page's box writes
  * it: the document (its id or slug) and the statement's whole words, with no occurrence and no
- * mark. The server finds those words in the document and anchors the comment to the lowest block
- * that holds them, which for a statement of one paragraph is that paragraph, and refuses words
- * the document holds twice. No composer holds it as its own anchor (`ComposerAnchor`): the host
- * names it, and the send carries it beside the composer's anchor (`SentRequest.statement`).
+ * mark, and the statement's row on the page. The server finds those words in the document and
+ * anchors the comment to the lowest block that holds them, which for a statement of one paragraph
+ * is that paragraph, and refuses words the document holds twice. No composer holds it as its own
+ * anchor (`ComposerAnchor`): the host names it, and the send carries it beside the composer's
+ * anchor (`SentRequest.statement`).
  */
 export interface StatementAnchor {
   readonly artifact: string;
   readonly quote: string;
+  /** The statement's row in the issue page's outline, its node id `<slug>#b-<block id>`: the row
+   *  the comment lands under once it is sent (`Landing.under`). A held send keeps it with the
+   *  rest, so a box that mounts again over the send - after a reload, or after the reader left
+   *  the issue - lands there too. It is the page's own: the anchor the server is sent names the
+   *  document and the words alone (`attempt`). */
+  readonly row: string;
 }
 
 /**
@@ -239,7 +246,7 @@ function attempt(
   const { body, replacement } = draft;
   // A provisional mark is named by its id; a quote anchor (a closed issue's document) by its text
   // and occurrence, where the server writes the mark; a statement by its words alone, which the
-  // server finds in the document (`StatementAnchor`).
+  // server finds in the document, and never by its row, the page's own (`StatementAnchor`).
   const selection: AnchorInput | undefined =
     anchor === undefined
       ? statement === undefined

@@ -305,8 +305,9 @@ function Page({
 
 /** The page signed in as the reader, every read the writer and the box make answered from
  *  `reads` before it mounts. `redraw` moves the box to another place on the same mount: a view
- *  turned on or off, a document opened, the issue closed. A page drawn with an earlier page's
- *  `client` is that page mounted again in the same tab, its held sends with it. */
+ *  turned on or off, a document opened, the issue closed. `redrawOutline` draws the outline from
+ *  another tree on the same mount, as the read a landed write makes does. A page drawn with an
+ *  earlier page's `client` is that page mounted again in the same tab, its held sends with it. */
 function renderPage(
   place: Place = {},
   root: TreeNode = outline(),
@@ -323,7 +324,7 @@ function renderPage(
   client.setQueryData(["issue-messages", KEY], []);
   client.setQueryData(["agents"], [plannerAgent()]);
   const held: { writer?: OutlineWriter } = {};
-  const draw = (at: Place) => (
+  const draw = (at: Place, drawn = root) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <KeymapProvider>
@@ -331,7 +332,7 @@ function renderPage(
             <NoTooltips>
               <OutlineWriterProvider issueKey={KEY}>
                 <IssueScope />
-                <Page held={held} place={at} root={root} />
+                <Page held={held} place={at} root={drawn} />
               </OutlineWriterProvider>
             </NoTooltips>
           </MarginProvider>
@@ -350,7 +351,14 @@ function renderPage(
     await act(async () => row.focus());
     await user.keyboard(key);
   };
-  return { client, press, redraw: (at: Place) => view.rerender(draw(at)), view, writer };
+  return {
+    client,
+    press,
+    redraw: (at: Place) => view.rerender(draw(at)),
+    redrawOutline: (drawn: TreeNode) => view.rerender(draw(place, drawn)),
+    view,
+    writer,
+  };
 }
 
 /** The box's section. */
@@ -1313,8 +1321,8 @@ test("a statement's target line names the issue its words cite, never its addres
 // the statement - a Reply on another row, or an Answer, puts the caret back in it on that
 // statement, its refused words kept - and a box that mounts again over the refused send, as one
 // does when the reader leaves the issue and comes back, names the statement from the send and
-// sends the words to it again. The send keeps the statement's document and words alone, so the
-// line names it by those words, and a write to it lands on no row.
+// sends the words to it again. The send keeps the statement's document, words and row, so the
+// line names it by those words, and a write to it lands under the statement's row.
 test("a refused comment on a statement keeps its words and its statement, through a Reply elsewhere and a new mount", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1351,7 +1359,11 @@ test("a refused comment on a statement keeps its words and its statement, throug
   first.view.unmount();
   const again = renderPage({}, outline(), first.client);
   await waitFor(() => expect(targetWords()).toBe(named));
-  expect(again.writer().statement).toEqual({ artifact: "spec", quote: STATEMENT_QUOTE });
+  expect(again.writer().statement).toEqual({
+    artifact: "spec",
+    quote: STATEMENT_QUOTE,
+    row: "spec#b-r1",
+  });
   expect(writeField().value).toBe("Agreed");
   await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
@@ -1360,6 +1372,68 @@ test("a refused comment on a statement keeps its words and its statement, throug
     body: "Agreed",
   });
   await waitFor(() => expect(again.writer().statement).toBeUndefined());
+  expect(again.writer().landing).toEqual({
+    to: "newest",
+    under: { id: "spec#b-r1", kind: "statement" },
+  });
+});
+
+// The reviewer's finding 5942007779: a comment on a statement sent from a box that mounted again
+// over its refused send - as a reload brings one back - lands as every send from the box lands
+// (R4). The held send keeps the statement's row beside its words, so once the read draws the
+// reader's new comment under the statement, the outline unfolds it, brings its row on screen and
+// gives it the focus, rather than giving the focus back to where the reader came from.
+test("a comment on a statement sent again from a box mounted over its refused send lands on its new row", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment")
+      .mockRejectedValueOnce(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The comment was refused." })
+      )
+      .mockResolvedValue(commentRecord("comment-9", ALICE, "Agreed"))
+  );
+  const first = renderPage();
+  await first.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The comment was refused.")
+  );
+
+  // The box mounted again over the send it refused, as a reload brings it back.
+  first.view.unmount();
+  const again = renderPage({}, outline(), first.client);
+  await waitFor(() =>
+    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`)
+  );
+  expect(writeField().value).toBe("Agreed");
+
+  // The new comment's row is drawn below the screen, so landing on it has to scroll to it.
+  const scrolled = stub(spyOn(window, "scrollBy").mockImplementation(() => {}));
+  stub(
+    spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement
+    ) {
+      return this.dataset.nodeId === "comment-9" ? new DOMRect(0, 2000, 800, 24) : new DOMRect();
+    })
+  );
+  await user.click(within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send }));
+  await waitFor(() => expect(again.writer().statement).toBeUndefined());
+
+  // The read the send makes draws the reader's comment under the statement.
+  const drawn = outline();
+  again.redrawOutline({
+    ...drawn,
+    children: drawn.children.map((child) =>
+      child.id === "spec#b-r1"
+        ? { ...child, children: [commentNode("comment-9", ALICE, "Agreed")], held: 1 }
+        : child
+    ),
+  });
+  await waitFor(() => expect(focusedRowId()).toBe("comment-9"));
+  // Scrolled until the row's bottom clears the box at the foot (`bringOnScreen`).
+  const floor = window.innerHeight - (Number.parseFloat(footHeight()) || 0);
+  expect(scrolled).toHaveBeenCalledWith({ top: 2024 - floor + 8 });
   expect(again.writer().landing).toBeUndefined();
 });
 
@@ -1619,6 +1693,7 @@ test("the issue's own Reply keeps the box on a refused comment on a statement", 
   expect(heldSends(page.client).get(["issue-composer", KEY])?.request.statement).toEqual({
     artifact: "spec",
     quote: STATEMENT_QUOTE,
+    row: "spec#b-r1",
   });
 });
 

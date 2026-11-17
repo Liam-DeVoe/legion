@@ -132,7 +132,7 @@ test("a comment on a statement is sent with its quote and no occurrence", async 
     const quote = "The box stays at the foot of the screen while the outline scrolls.";
     const sent = issueComment({
       draft: { body: "Even on a phone?", replacement: "" },
-      statement: { artifact: "core-1-spec", quote },
+      statement: { artifact: "core-1-spec", quote, row: "core-1-spec#b-r1" },
     });
     const bounds = { key: sent.sendKey };
     await sending.sendAttempt(sent)(bounds);

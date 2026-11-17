@@ -66,17 +66,17 @@ export interface OutlineWriter {
   /** The statement the line comments on (`StatementTarget`), where a Reply on a statement's row,
    *  its control or `r`, aimed it at one (`replyTo`); or, where the line mounted over a send held
    *  under its name that was aimed at one (`SentRequest.statement`) - after the reader left the
-   *  issue and came back, or a reload - that send's document and words alone, which are all a
-   *  held send keeps of it; undefined otherwise. It never stands beside a reply, an answer or an
-   *  edit: setting it ends them, and setting any of them, or `clear`, ends it. One rule holds the
-   *  line on what a refused send was aimed at: a send of the line's own that Dispatch refused,
-   *  held under its name, holds the line on its target - its reply or its statement - and every
-   *  other aim puts the line back there instead (`keptOnReply`, `keptOnStatement`), until the
-   *  reader ends that target in the line - the target line's control or Escape, which reach
-   *  `clear` - which takes the target off the held send (`HeldSends.readdress`), its refusal and
-   *  its words kept. Every aim then takes effect again, and a line that mounts again over that
-   *  send writes on the issue. */
-  readonly statement: StatementTarget | StatementAnchor | undefined;
+   *  issue and came back, or a reload - that send's document, words and row, which are all a held
+   *  send keeps of it, so a send from the line lands on that row either way; undefined otherwise.
+   *  It never stands beside a reply, an answer or an edit: setting it ends them, and setting any
+   *  of them, or `clear`, ends it. One rule holds the line on what a refused send was aimed at: a
+   *  send of the line's own that Dispatch refused, held under its name, holds the line on its
+   *  target - its reply or its statement - and every other aim puts the line back there instead
+   *  (`keptOnReply`, `keptOnStatement`), until the reader ends that target in the line - the
+   *  target line's control or Escape, which reach `clear` - which takes the target off the held
+   *  send (`HeldSends.readdress`), its refusal and its words kept. Every aim then takes effect
+   *  again, and a line that mounts again over that send writes on the issue. */
+  readonly statement: StatementTarget | undefined;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
   // A send of the line's own that Dispatch refused holds the line on its target through the
@@ -184,9 +184,9 @@ export function OutlineWriterProvider({
   // The statement the line comments on, if it does: set by a Reply on a statement's row, and
   // taken up from the send held under the line's name, as the reply is (`useHeldReplyTo`), so a
   // line that mounts again over a refused comment on a statement names the statement it was
-  // written to and sends it there. Ended by every other target the line takes and by `clear`,
-  // so no path holds it beside a reply, an answer or an edit.
-  const [statement, setStatement] = useState<StatementTarget | StatementAnchor | undefined>(
+  // written to, sends it there and lands on its row. Ended by every other target the line takes
+  // and by `clear`, so no path holds it beside a reply, an answer or an edit.
+  const [statement, setStatement] = useState<StatementTarget | undefined>(
     () => store.get(sendKey)?.request.statement
   );
   const agentText = useAgentText();
@@ -233,8 +233,10 @@ export function OutlineWriterProvider({
       // anchored to the statement's whole words, and holds no reply beside it.
       if (item.kind === "statement") {
         const target: StatementTarget = {
-          ...item,
+          artifact: item.artifact,
+          item,
           quote: item.tree === undefined ? item.text : wordsOf(item.tree),
+          row: item.id,
         };
         // A reply Dispatch refused is never sent as a comment on the statement instead.
         if (keptOnTarget(store.get(sendKey)?.request, line, target)) return;
@@ -422,11 +424,7 @@ interface HeldLine {
   readonly setEditing: (editing: undefined) => void;
   readonly setReply: (reply: ReplyTarget | null) => void;
   readonly setStatement: (
-    next:
-      | undefined
-      | ((
-          current: StatementTarget | StatementAnchor | undefined
-        ) => StatementTarget | StatementAnchor)
+    next: undefined | ((current: StatementTarget | undefined) => StatementTarget)
   ) => void;
 }
 
@@ -525,14 +523,21 @@ export interface StatementItem extends Pick<TreeNode, "source" | "text" | "tree"
 }
 
 /**
- * The statement the line comments on (`OutlineWriter.statement`): the item a Reply aimed it at,
- * and the anchor its comment carries, a `StatementAnchor` - the document and the statement's
- * whole words, with no occurrence, so words the document holds twice are refused by the server
- * (`ErrTargetAmbiguous`) rather than anchored to the wrong block. The box hands its composer
- * (`MentionComposer`'s `outline.anchor`) a narrowed `{artifact, quote}` built from it, so a held
- * send stores those two fields alone and never the statement's tree.
+ * The statement the line comments on (`OutlineWriter.statement`): the anchor its comment carries,
+ * a `StatementAnchor` - the document and the statement's whole words, with no occurrence, so
+ * words the document holds twice are refused by the server (`ErrTargetAmbiguous`) rather than
+ * anchored to the wrong block, and the statement's row, which the comment lands under - and the
+ * item a Reply on that row aimed the line at, where one did. The box hands its composer
+ * (`MentionComposer`'s `outline.anchor`) the anchor alone, so a held send stores those three
+ * fields and never the statement's tree, and a line that mounts again over the send takes the
+ * statement up with no item and still lands on its row.
  */
-export interface StatementTarget extends StatementAnchor, StatementItem {
+export interface StatementTarget extends StatementAnchor {
+  /** The statement's row as a Reply on it handed it (`replyTo`): the words the row draws, the
+   *  reading they were drawn from and their record, which the target line names the statement
+   *  by. Absent where the line took the statement up from a held send, which names it by its
+   *  quote instead. */
+  readonly item?: StatementItem;
   /** The statement's whole words as the server matches a quote against them: `wordsOf` its
    *  reading (`refs/tree-fragment.ts`), else its stored text where its read sent no reading. */
   readonly quote: string;

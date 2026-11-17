@@ -318,9 +318,10 @@ export interface OutlineKind {
  * target's reply wrote there, where the reader left them as written.
  */
 export interface OutlineLook {
-  /** A statement of the issue's own documents the line comments on, by the document and the
-   *  statement's whole words (`StatementAnchor`), which the send carries as the comment's anchor
-   *  (`SentRequest.statement`). The line's control and Escape end it, as they end a reply. */
+  /** A statement of the issue's spec the line comments on, by the document, the statement's
+   *  whole words and its row in the outline (`StatementAnchor`). The send carries the document
+   *  and the words as the comment's anchor (`SentRequest.statement`), and the row stays the
+   *  page's, for landing the new comment under it. The line's `end` ends it, as it ends a reply. */
   readonly anchor?: StatementAnchor;
   /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;

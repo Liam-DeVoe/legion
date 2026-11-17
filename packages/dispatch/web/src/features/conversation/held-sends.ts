@@ -267,6 +267,12 @@ const keptComposerSend = shape.record({
       })
     ),
     sendKey: shape.string,
+    // The statement the issue page's box aimed a comment at, with the row the comment lands
+    // under once it is sent (`StatementAnchor.row`), so a box that mounts again over the send
+    // after a reload lands on that row; a record whose statement is not one is dropped.
+    statement: shape.optional(
+      shape.record({ artifact: shape.string, quote: shape.string, row: shape.string })
+    ),
   }),
 }) satisfies Shape<KeptComposerSend>;
 

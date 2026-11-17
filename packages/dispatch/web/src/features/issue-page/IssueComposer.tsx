@@ -287,11 +287,10 @@ interface LinePlace {
 /**
  * Ends the line's target and puts the reader back: on the outline, on the row `landing` names
  * once its read draws it (R4); under a view, where no outline is drawn to consume a landing and
- * one would act on the outline the next time it mounts, and where the line names no row to land
- * on - a statement it took up from a held send - where the reader came to the box from.
+ * one would act on the outline the next time it mounts, where the reader came to the box from.
  */
-function finish(writer: OutlineWriter, place: LinePlace, landing: Landing | undefined): void {
-  if (place.outlineDrawn && landing !== undefined) {
+function finish(writer: OutlineWriter, place: LinePlace, landing: Landing): void {
+  if (place.outlineDrawn) {
     writer.land(landing);
     writer.clear();
     return;
@@ -314,31 +313,28 @@ function WriteLine({
   writer: OutlineWriter;
 }): ReactNode {
   const { reply, statement } = writer;
-  // A statement's comment carries the statement's document and its whole words alone, never the
-  // target whole, so a send held over a refusal or a reload stores those two fields.
+  // A statement's comment carries the statement's document, its whole words and its row alone,
+  // never the item a Reply aimed the line with, so a send held over a refusal or a reload stores
+  // those three fields and never the statement's tree.
   const anchor = useMemo(
     () =>
       statement === undefined
         ? undefined
-        : { artifact: statement.artifact, quote: statement.quote },
+        : { artifact: statement.artifact, quote: statement.quote, row: statement.row },
     [statement]
   );
   const owner = useMemo(() => ({ issueKey, kind: "issue" as const }), [issueKey]);
-  // The statement's row, where the line names one: a statement the line took up from a held send
-  // is its document and its words alone (`OutlineWriter.statement`), which name no row.
-  const statementRow = statement !== undefined && "id" in statement ? statement : undefined;
   // Whether the line is aimed at something: the entry a reply answers, or the statement a comment
   // is on; not for a write on the issue itself.
   const aimed = reply !== null || statement !== undefined;
-  // What a landing names: that entry, or that statement's row; nothing for a write on the issue.
+  // What a landing names: that entry, or that statement's row, which a statement the line took
+  // up from a held send names as well (`StatementAnchor.row`); nothing for a write on the issue.
   const under: Landing["under"] =
     reply !== null
       ? { id: reply.id, kind: reply.parentKind }
-      : statementRow === undefined
+      : statement === undefined
         ? undefined
-        : { id: statementRow.id, kind: "statement" };
-  // A write to a statement whose row the line cannot name lands on none (`finish`).
-  const lands = !aimed || under !== undefined;
+        : { id: statement.row, kind: "statement" };
   // A reply and a statement's comment are comments under the row they are aimed at, so the kinds
   // are drawn only while the line writes on the issue. A closed issue takes a comment and no
   // question, so the line writes a comment there whatever chip was pressed while it was open,
@@ -360,7 +356,7 @@ function WriteLine({
       writer.focus();
       return;
     }
-    finish(writer, place, lands ? { to: "self", under } : undefined);
+    finish(writer, place, { to: "self", under });
   };
   return (
     <MentionComposer
@@ -376,7 +372,7 @@ function WriteLine({
       // The reader is taken to what they wrote - their newest node under the row the line was
       // aimed at, or under the issue - and the line writes on the issue again. Neither is refused
       // here: the write store drops the send before it calls this, so no send is out by then.
-      onSent={() => finish(writer, place, lands ? { to: "newest", under } : undefined)}
+      onSent={() => finish(writer, place, { to: "newest", under })}
       outline={{
         anchor,
         cancelReply: CONTROL_LABELS.write_on_issue,
@@ -398,14 +394,15 @@ function WriteLine({
           ) : statement === undefined ? undefined : (
             <>
               <span {...pageChrome}>{CONTROL_LABELS.replying_to}</span>{" "}
-              {/* A statement taken up from a held send is its words alone, named in plain
-                  words as a row's statement is. A row's text is the coverage read's words, which
-                  leave every reference out, so its tree's references are named whole. */}
+              {/* A statement a Reply aimed the line at is named by its row's words; a row's
+                  text is the coverage read's words, which leave every reference out, so its
+                  tree's references are named whole. One taken up from a held send is its quote
+                  alone, named in plain words as a row's statement is. */}
               <TargetWords
-                markdown={statementRow?.text ?? statement.quote}
-                namesAll={statementRow !== undefined}
-                source={statementRow?.source}
-                tree={statementRow?.tree}
+                markdown={statement.item?.text ?? statement.quote}
+                namesAll={statement.item !== undefined}
+                source={statement.item?.source}
+                tree={statement.item?.tree}
               />
             </>
           ),

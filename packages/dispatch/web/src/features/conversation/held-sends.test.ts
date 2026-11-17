@@ -379,6 +379,55 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
+// A comment on a statement keeps the statement's row beside its document and its words across a
+// reload, so the issue page's box that mounts again over the send lands the comment on that row.
+// A record whose statement is no statement - a document that is no string, or no row - is
+// dropped as every malformed record is, rather than restored and sent again with an anchor the
+// server cannot read, or held on a statement the page cannot land on.
+test("a held statement keeps its row across a reload, and a record with a malformed statement is dropped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const statement = {
+    artifact: "core-1-spec",
+    quote: "The box stays at the foot of the screen.",
+    row: "core-1-spec#b-r1",
+  };
+  // The statement each malformed record holds, by its send's key, written over what was kept.
+  const malformed: Record<string, object> = {
+    "send-number": { artifact: 1 },
+    "send-rowless": { artifact: statement.artifact, quote: statement.quote },
+  };
+  const sendKeys = ["send-whole", ...Object.keys(malformed)];
+  const keyOf = (sendKey: string): MutationKey => ["issue-composer", sendKey];
+  try {
+    const before = heldOf(tab).held;
+    for (const sendKey of sendKeys) before.send(keyOf(sendKey), { ...request, sendKey, statement });
+    await settle();
+    for (const [sendKey, held] of Object.entries(malformed)) {
+      const kept = tab.kept(sendKey) as { detail: { request: object } };
+      const detail = { ...kept.detail, request: { ...kept.detail.request, statement: held } };
+      tab.storage.setItem(`dispatch.write:${sendKey}`, JSON.stringify({ ...kept, detail }));
+    }
+    for (const sendKey of sendKeys) pressedLongAgo(tab, sendKey);
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    expect(after.get(keyOf("send-whole"))?.request.statement).toEqual(statement);
+    for (const sendKey of Object.keys(malformed)) {
+      expect(after.get(keyOf(sendKey)), sendKey).toBeUndefined();
+      expect(tab.kept(sendKey), sendKey).toBeUndefined();
+    }
+    // Each press went out once, and no dropped record went out again.
+    expect(createComment).toHaveBeenCalledTimes(3);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A record the build before this one wrote keeps a `mentions` array beside a body holding only
 // the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
 // written back into the body as the party link naming it: the draft reads as who it addresses
