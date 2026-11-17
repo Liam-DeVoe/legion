@@ -895,6 +895,64 @@ test("at 390 px a focus that enters the view row leaves a scrolled page where it
   });
 });
 
+/** How many rows the cost row draws beside the view row: as many as a long outline holds. */
+const MANY_ROWS = 5000;
+
+/** The most elements whose style one added row may recalculate: the row and its neighbours. */
+const RECALCULATED_FOR_ONE_ROW = 100;
+
+// A change the new page makes recalculates the style of what it changed, not of the whole page
+// (decision 176 of INFRA-1196's parts): adding one row to a page of `MANY_ROWS` rows recalculates
+// the style of that row alone. The view row's scroll margin once read `html:has([data-issue-page])
+// [data-filter-row] *`. A selector whose subject is universal under an `html:has()` ancestor made
+// each element added with an attribute recalculate every element, so part G's rows drew four
+// times slower. The reading is Chrome's own count of the elements a style recalculation visits
+// (`UpdateLayoutTree`'s `elementCount`), not a time. On a reduced page of 5000 rows in Chrome 158,
+// one added row recalculated 10012 elements with that rule, and 3 (1440 px) or 5 (390 px)
+// without it. So with it this row fails on "adding one row recalculated the style of".
+test("adding one row to a page of many rows recalculates the style of that row alone, not of the whole page", async ({
+  browser,
+}) => {
+  await phase(browser, seedFrame, async (page, { key }) => {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize(viewportAt(width));
+      await gotoIssue(page, `/issues/${key}`);
+      const elements = await issuePage(page).evaluate((root, many) => {
+        const list = document.createElement("ol");
+        list.id = "e2e-many-rows";
+        for (let at = 0; at < many; at += 1) {
+          const row = document.createElement("li");
+          row.textContent = `row ${at}`;
+          list.append(row);
+        }
+        root.append(list);
+        getComputedStyle(list.lastElementChild ?? list).color;
+        return document.getElementsByTagName("*").length;
+      }, MANY_ROWS);
+      await browser.startTracing(page, { categories: ["devtools.timeline"] });
+      await page.evaluate(() => {
+        const row = document.createElement("li");
+        row.setAttribute("data-added", "");
+        document.getElementById("e2e-many-rows")?.append(row);
+        getComputedStyle(row).color;
+      });
+      const trace = JSON.parse((await browser.stopTracing()).toString()) as {
+        traceEvents: { args?: { elementCount?: number }; name: string }[];
+      };
+      const recalculations = trace.traceEvents.filter((event) => event.name === "UpdateLayoutTree");
+      expect(recalculations.length, "the trace read no style recalculation").toBeGreaterThan(0);
+      const recalculated = recalculations.reduce(
+        (sum, event) => sum + (event.args?.elementCount ?? 0),
+        0
+      );
+      expect(
+        recalculated,
+        `adding one row recalculated the style of ${recalculated} elements of the page's ${elements} at ${width} px`
+      ).toBeLessThan(RECALCULATED_FOR_ONE_ROW);
+    }
+  });
+});
+
 // From an address that names a node (`#b-`), a pointer press on Spec, then on Decisions, then on
 // Verification's count moves to each view's address, one history entry each, and leaves the
 // focus where it was (decision 93 of INFRA-1196's parts). There, a press whose mousedown took the
