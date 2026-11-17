@@ -124,8 +124,9 @@ var storeWriteCallSites = []string{
 	"graphcensus/backfill.go#writeRoleBatch",
 	"graphcensus/backfill.go#writeSessionBatch",
 	// The backfill's passes over the project of every node: the nodes of the issues, documents,
-	// asks and messages that no live node marks, in one WriteUncaused and Caused at the sentinel
-	// per batch, after the owner rows a document's removal takes (lockObjectOwners) and under
+	// asks and messages that no live node marks, in WriteUncaused and Caused over each run of the
+	// batch's nodes of one cause (a row's own create event, or the sentinel), after the owner rows
+	// a document's removal takes (lockObjectOwners) and under
 	// them, and the project of the comment and block nodes written before a node named one
 	// (graphstore.FillScopes), the block batch under the revision fence (lockBlockDocuments).
 	// graphcensus' TestTheBackfillGivesEveryRowItsNodeAndProject runs both.

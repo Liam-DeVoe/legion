@@ -684,7 +684,10 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		if err != nil {
 			return err
 		}
-		var write, taken []graphstore.Node
+		var write []graphstore.Node
+		// taken holds, by id, the gone statement of each node a live writer left live for an
+		// earlier row, which goes in before that node's live one, under the same cause.
+		taken := map[string]graphstore.Node{}
 		for _, node := range nodes {
 			if created, stands := standing[node.ID]; !stands || !created.Equal(node.MadeAt) {
 				continue
@@ -703,7 +706,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			if found && stored.live {
 				gone := node
 				gone.State, gone.MadeBy = graphstore.StateGone, backfillActor
-				taken = append(taken, gone)
+				taken[node.ID] = gone
 			}
 			write = append(write, node)
 		}
@@ -713,11 +716,28 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 			for end < len(write) && write[end].SourceEvent == write[start].SourceEvent {
 				end++
 			}
-			stated, err := writeCausedRun(ctx, tx, taken, write[start:end])
+			run := write[start:end]
+			var gone []graphstore.Node
+			for _, node := range run {
+				if statement, ok := taken[node.ID]; ok {
+					gone = append(gone, statement)
+				}
+			}
+			var stated graphstore.Uncaused
+			if len(gone) > 0 {
+				if stated, err = graphstore.WriteUncaused(ctx, tx, gone, nil); err != nil {
+					return err
+				}
+			}
+			made, err := graphstore.WriteUncaused(ctx, tx, run, nil)
 			if err != nil {
 				return err
 			}
-			written.Tuples += stated
+			made.Tuples = append(stated.Tuples, made.Tuples...)
+			written.Tuples += int64(len(made.Tuples))
+			if err := graphstore.Caused(ctx, tx, made, run[0].SourceEvent); err != nil {
+				return err
+			}
 			start = end
 		}
 		return nil
@@ -725,33 +745,6 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		return KindBackfill{}, fmt.Errorf("write a batch of %s nodes: %w", kind.kind, err)
 	}
 	return written, nil
-}
-
-// writeCausedRun writes one run of a batch's nodes, all of one cause: first, for each a live
-// writer left live for an earlier row, the gone statement taken holds of it, and then the run's
-// nodes live, all under that cause (graphstore.Caused), and answers how many tuples it stated.
-func writeCausedRun(ctx context.Context, tx pgx.Tx, taken, run []graphstore.Node) (int64, error) {
-	var gone []graphstore.Node
-	for _, node := range run {
-		for _, held := range taken {
-			if held.ID == node.ID {
-				gone = append(gone, held)
-			}
-		}
-	}
-	var stated graphstore.Uncaused
-	if len(gone) > 0 {
-		var err error
-		if stated, err = graphstore.WriteUncaused(ctx, tx, gone, nil); err != nil {
-			return 0, err
-		}
-	}
-	made, err := graphstore.WriteUncaused(ctx, tx, run, nil)
-	if err != nil {
-		return 0, err
-	}
-	made.Tuples = append(stated.Tuples, made.Tuples...)
-	return int64(len(made.Tuples)), graphstore.Caused(ctx, tx, made, run[0].SourceEvent)
 }
 
 // storedNode is what the store holds of one node of a batch: whether it is live, whether its live
