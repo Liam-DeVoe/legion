@@ -22,6 +22,7 @@ package daemon
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -132,12 +133,12 @@ func (l *planRatingsLive) ratingRequired() {
 
 	c := l.worker(claim.RoleImplementer)
 	c.take()
-	status, body := l.unratedRetroRefused(c)
+	body := l.unratedRetroRefused(c)
 	if got := string(l.d.state().Issues[l.key].Phase); got != string(phase.Retro) {
 		t.Fatalf("after the refused completion %s is in %s, want retro", l.key, got)
 	}
 	l.note("the retro's completion with no rating, from the implementer at plugin contract %d: %d %s; %s still in retro",
-		l.d.claim(c.token).PluginContract, status, strings.TrimSpace(body), l.key)
+		l.d.claim(c.token).PluginContract, http.StatusBadRequest, strings.TrimSpace(body), l.key)
 
 	l.finish(c, "", l.retroCompletion(&intake.PlanRating{Score: 4, Reason: "The plan fit the work once its retro was asked for a rating."}), phase.Merging)
 	l.note("control: the same completion with planRating 4 and a reason: 200; %s in merging", l.key)

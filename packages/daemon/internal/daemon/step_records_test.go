@@ -659,10 +659,10 @@ func (r *stepRecordsRig) walkToRetro() {
 }
 
 // unratedRetroRefused is c's completion of the retro with no rating, refused 400
-// PLAN_RATING_REQUIRED, and answers that status and body. It fails first when c's claim records a
+// PLAN_RATING_REQUIRED, and answers the refusal's body. It fails first when c's claim records a
 // plugin contract below api.PlanRatingContract, whose retro the daemon takes unrated, so a pass
 // says the refusal is the contract's.
-func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) (int, string) {
+func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) string {
 	t := r.t
 	t.Helper()
 	contract := r.d.claim(c.token).PluginContract
@@ -674,7 +674,7 @@ func (r *stepRecordsRig) unratedRetroRefused(c *stepClaimant) (int, string) {
 		t.Fatalf("the retro's completion of %s with no rating from the %s at plugin contract %d = %d %s, want 400 PLAN_RATING_REQUIRED",
 			r.key, c.role, contract, status, body)
 	}
-	return status, body
+	return body
 }
 
 // work is one role's turn of the walk: it takes the task, its agent's model answering (c.model),
