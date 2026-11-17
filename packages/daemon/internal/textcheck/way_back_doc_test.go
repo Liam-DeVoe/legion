@@ -207,25 +207,26 @@ func TestTheWayBackReaderTakesTheOneBlockOfItsSection(t *testing.T) {
 	}
 }
 
-// wayBackBlockDifference renders the lines the two copies disagree on, each with its number
-// inside the block, so a failing run names the edit to make rather than two blocks to compare by
-// eye. internal/daemon keeps a rendering of the same shape for the header and the copy; this file
-// may not import that package (see wayBackMark above).
-func wayBackBlockDifference(extract, guide string) string {
-	extractLines, guideLines := strings.Split(extract, "\n"), strings.Split(guide, "\n")
+// wayBackBlockDifference renders the lines a copy of a way back and the guide's block disagree
+// on, each with its number inside the block, so a failing run names the edit to make rather than
+// two blocks to compare by eye. The copy is a committed extract or a migration's header, which the
+// caller's message names. internal/daemon keeps a rendering of the same shape for the header and
+// the copy; this file may not import that package (see wayBackMark above).
+func wayBackBlockDifference(copied, guide string) string {
+	copiedLines, guideLines := strings.Split(copied, "\n"), strings.Split(guide, "\n")
 	var difference strings.Builder
-	for i := range max(len(extractLines), len(guideLines)) {
-		copied, held := "", ""
-		if i < len(extractLines) {
-			copied = extractLines[i]
+	for i := range max(len(copiedLines), len(guideLines)) {
+		line, held := "", ""
+		if i < len(copiedLines) {
+			line = copiedLines[i]
 		}
 		if i < len(guideLines) {
 			held = guideLines[i]
 		}
-		if copied == held {
+		if line == held {
 			continue
 		}
-		fmt.Fprintf(&difference, "line %d:\n\tthe extract: %q\n\tthe guide:   %q\n", i+1, copied, held)
+		fmt.Fprintf(&difference, "line %d:\n\tthe copy:  %q\n\tthe guide: %q\n", i+1, line, held)
 	}
 	return difference.String()
 }

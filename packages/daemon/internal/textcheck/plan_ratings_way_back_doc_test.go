@@ -42,11 +42,12 @@ func TestThePlanRatingsWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	header := planRatingsWayBackOfTheHeader(t)
 	guide := wayBackBlockOfTheGuide(t, planRatingsWayBackSection, planRatingsWayBackMark,
 		"the header of "+planRatingsMigration)
-	if header != guide {
-		t.Errorf("the way back of the release that rates each plan differs between %s and the header of %s:\n"+
-			"the guide:\n%s\nthe header:\n%s\nthe header's block is the one internal/store runs, so the guide "+
-			"answers for it only while the two are equal; change them in one commit", wayBackGuide, planRatingsMigration, guide, header)
+	if header == guide {
+		return
 	}
+	t.Errorf("the header of %s and %s's way back disagree:\n%s"+
+		"internal/store's test runs the header's block and an operator the guide's; change them in one commit",
+		planRatingsMigration, wayBackGuide, wayBackBlockDifference(header, guide))
 }
 
 // planRatingsWayBackOfTheHeader is the way back's block the header of planRatingsMigration
