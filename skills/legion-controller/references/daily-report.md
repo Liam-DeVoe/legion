@@ -83,7 +83,9 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   group what ends the hold, from the table in
   `skill://legion-controller/references/admission.md`, so a reader sees whose act the work waits
   on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its
-  `status`: the daemon could give it no word, and a person reads it.
+  `status`: the daemon could give it no word, and a person reads it. An issue whose `reason` is
+  `task_stopped` goes in the report with its `heldFrom`: nothing starts its task again but a
+  later version of its plan from its architect or, on a root, a person's `todo`.
 - **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
   claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
   That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
