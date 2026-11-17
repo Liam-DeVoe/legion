@@ -460,7 +460,9 @@ func (s *server) personEventHead(ctx context.Context, person string) (int64, err
 	}
 	reader, err := s.readerFor(ctx, model.BrowserActor(person))
 	if err != nil {
-		return 0, fmt.Errorf("resolve what %s sees: %w", person, err)
+		// The error reaches /auth/whoami's log line, so it names no person
+		// (TestAFailedEventHeadReadNamesNoPerson).
+		return 0, fmt.Errorf("resolve what the signed-in person sees: %w", err)
 	}
 	return viewerEventHead(ctx, s.deps.Store.Pool, reader, through)
 }
