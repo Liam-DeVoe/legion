@@ -24,14 +24,15 @@ func writePromptFiles(t *testing.T, dir string, files ...[2]string) []string {
 
 // The one text every launch's agent reads from its prompt file: the role prompt files
 // concatenated, the addressing text as written (no shell reads it any more, so nothing in it is
-// escaped), the deployment instructions, then one instructions file per arm in declaration order,
-// joined by blank lines, each file's trailing newlines dropped. A launch in no experiment ends at
-// the deployment's own.
+// escaped), an owner's plan guidance, the deployment instructions, then one instructions file per
+// arm in declaration order, joined by blank lines, each file's trailing newlines dropped. A launch
+// in no experiment ends at the deployment's own, and a launch with no guidance has none between.
 func TestComposePrompt(t *testing.T) {
 	dir := t.TempDir()
 	roles := writePromptFiles(t, dir, [2]string{"common.md", "Common.\n"}, [2]string{"tester.md", "Tester.\n\n"})
 	extra := writePromptFiles(t, dir, [2]string{"deployment.md", "Deployment.\n"},
 		[2]string{"memory.md", "Memory.\n"}, [2]string{"long.md", "Long plans.\n"})
+	guidance := writePromptFiles(t, dir, [2]string{"plan-guidance.md", "Guidance.\n"})[0]
 	addressing := "Your topic is `notifications.role.legion-omp-LEGION-42-tester` \"$HOME\" \\"
 	for _, tc := range []struct {
 		name  string
@@ -45,6 +46,9 @@ func TestComposePrompt(t *testing.T) {
 		{name: "every fragment, one variant instructions file per arm, in declaration order",
 			parts: PromptParts{RolePromptPaths: roles, Addressing: addressing, DeploymentInstructionsPath: extra[0], VariantInstructionsPaths: extra[1:]},
 			want:  "Common.\nTester.\n\n" + addressing + "\n\nDeployment.\n\nMemory.\n\nLong plans."},
+		{name: "an owner's plan guidance between the addressing and the deployment's instructions",
+			parts: PromptParts{RolePromptPaths: roles, Addressing: addressing, PlanGuidancePath: guidance, DeploymentInstructionsPath: extra[0], VariantInstructionsPaths: extra[1:]},
+			want:  "Common.\nTester.\n\n" + addressing + "\n\nGuidance.\n\nDeployment.\n\nMemory.\n\nLong plans."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := ComposePrompt(tc.parts)

@@ -236,6 +236,28 @@ func TestRunWritesThePlanGuidanceCopy(t *testing.T) {
 	}
 }
 
+// An owner's launch reads the copy boot wrote of the plan guidance, and a phase worker's launch of
+// the same daemon reads none.
+func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
+	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
+		t.Fatalf("write the plan guidance: %v", err)
+	}
+	rt := fake.NewRuntime()
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+
+	owner := lastLaunch(t, rt, d.spawn(architect()))
+	worker := lastLaunch(t, rt, d.spawn(api.SpawnRequest{Tree: "LEGION-1", Issue: "LEGION-2", Role: claim.RoleImplementer, Prompt: "Wait."}))
+
+	if want := filepath.Join(cfg.StateDir, "plan-guidance.md"); owner.Prompt.PlanGuidancePath != want {
+		t.Errorf("the architect's launch reads the plan guidance from %q, want boot's copy %q", owner.Prompt.PlanGuidancePath, want)
+	}
+	if worker.Prompt.PlanGuidancePath != "" {
+		t.Errorf("the implementer's launch reads the plan guidance from %q, want none", worker.Prompt.PlanGuidancePath)
+	}
+}
+
 // Every launch, a root's and a worker's alike, carries the NATS nkey seed the daemon resolved as the
 // NATS_NKEY_SEED secret — from nats_nkey_seed_file, else NATS_NKEY_SEED_FILE, else NATS_NKEY_SEED —
 // which each runtime hands the agent behind a NATS_NKEY_SEED_FILE pointer, never as a value; and a
