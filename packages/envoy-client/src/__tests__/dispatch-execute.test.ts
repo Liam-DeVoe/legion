@@ -38,6 +38,7 @@ import {
   resolveIssueDocumentId,
 } from "../dispatch-execute";
 import {
+  DISPATCH_ANSWER_LOST,
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchWriteLandedError,
@@ -46,6 +47,7 @@ import {
 import { followedAsk } from "../dispatch-subscribe";
 import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
+import { routeAnswer } from "./dispatch-route-answers";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
@@ -619,7 +621,14 @@ describe("executeDispatchTool", () => {
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const body = JSON.parse(String(init?.body));
       requests.push(body);
-      return response({ id: "ask-1", issue_key: "DSP-41", question: body.question });
+      return response(
+        routeAnswer("POST /api/v1/issues/{key}/asks", {
+          id: "ask-1",
+          issue_key: "DSP-41",
+          question: body.question,
+          urgency: "med",
+        })
+      );
     };
 
     await executeAsk({ issue: "DSP-41", question, ref }, fetchImpl as typeof fetch);
@@ -1047,17 +1056,38 @@ describe("executeDispatchTool", () => {
         }
         if (/^\/api\/v1\/projects\/[^/]+\/artifacts$/.test(target.pathname)) return response([]);
         if (target.pathname === "/api/v1/issues/DSP-41/artifacts" && init?.method === "POST") {
-          return response({ artifact: { slug: "shot-png" }, version: { number: 1 } });
+          return response(
+            routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+              artifact: {
+                id: "artifact-shot",
+                issue_key: "DSP-41",
+                slug: "shot-png",
+                name: "shot.png",
+              },
+              version: { number: 1 },
+            })
+          );
         }
         if (target.pathname.endsWith("/asks")) {
           const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
           request = { body, path: target.pathname };
-          return response({
-            artifact_id: target.pathname.startsWith("/api/v1/artifacts/") ? "artifact-1" : null,
-            id: "ask-1",
-            issue_key: target.pathname.startsWith("/api/v1/issues/") ? "DSP-41" : null,
-            question: body.question,
-          });
+          const [route, owner] = target.pathname.startsWith("/api/v1/artifacts/")
+            ? ([
+                "POST /api/v1/artifacts/{id}/asks",
+                { artifact_id: "artifact-1", issue_key: null },
+              ] as const)
+            : ([
+                "POST /api/v1/issues/{key}/asks",
+                { artifact_id: null, issue_key: "DSP-41" },
+              ] as const);
+          return response(
+            routeAnswer(route, {
+              ...owner,
+              id: "ask-1",
+              question: body.question,
+              urgency: body.urgency ?? "med",
+            })
+          );
         }
         throw new Error(`unexpected request for ${field}: ${target.pathname}`);
       };
@@ -5719,6 +5749,44 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // On the branch that wrote components the command reads the answer's `components` with no
+  // guard of its own, so a 2xx without them is a landing whose answer was lost, never a TypeError.
+  test("dispatch_issue_update writing components reads a 2xx without them as a landing", async () => {
+    const issue = {
+      key: "ACME-175",
+      title: "Issue update tool",
+      status: "done",
+      labels: [],
+      route: null,
+      parent: null,
+      external_links: [],
+    };
+    // The read and the PATCH both answer the issue without its components.
+    const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+      response(issue);
+    for (const components of [
+      { mode: "explicit", ids: ["web"] },
+      { mode: "none", reason: "hiring, not code" },
+    ]) {
+      const failure = await executeDispatchTool({
+        tool: "dispatch_issue_update",
+        args: { issue: "ACME-175", components },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      }).then(
+        () => undefined,
+        (caught: unknown) => caught
+      );
+      expect(failure).toBeInstanceOf(DispatchWriteLandedError);
+      expect(failure).toEqual(expect.objectContaining({ code: DISPATCH_ANSWER_LOST }));
+    }
+  });
+
   test("dispatch_issue_update maps an empty parent to null and reports the clear", async () => {
     const patches: unknown[] = [];
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -8367,17 +8435,21 @@ describe("executeDispatchTool", () => {
         const body = JSON.parse(String(init?.body)) as { summary: string };
         posts.push({ path: target.pathname, body });
         return response(
-          {
-            ask: {
-              id: "ask-9",
-              issue_key: "DSP-42",
-              artifact_id: null,
-              kind: "approval",
-              question: `Approve spec.md (version 3)? ${body.summary}`,
+          routeAnswer(
+            "POST /api/v1/artifacts/{id}/approval-requests",
+            {
+              ask: {
+                id: "ask-9",
+                issue_key: "DSP-42",
+                artifact_id: null,
+                kind: "approval",
+                question: `Approve spec.md (version 3)? ${body.summary}`,
+              },
+              artifact_id: "artifact-42",
+              version: 3,
             },
-            artifact_id: "artifact-42",
-            version: 3,
-          },
+            201
+          ),
           201
         );
       }
@@ -8438,19 +8510,23 @@ describe("executeDispatchTool", () => {
         }
         if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
           return response(
-            {
-              ask: {
-                id: "ask-9",
-                issue_key: "DSP-42",
-                artifact_id: null,
-                kind: "approval",
-                question: "Approve spec.md (version 3)?",
+            routeAnswer(
+              "POST /api/v1/artifacts/{id}/approval-requests",
+              {
+                ask: {
+                  id: "ask-9",
+                  issue_key: "DSP-42",
+                  artifact_id: null,
+                  kind: "approval",
+                  question: "Approve spec.md (version 3)?",
+                },
+                artifact_id: "artifact-42",
+                version: 3,
+                coverage,
+                ...(unread ? { coverage_unread: true } : {}),
               },
-              artifact_id: "artifact-42",
-              version: 3,
-              coverage,
-              ...(unread ? { coverage_unread: true } : {}),
-            },
+              201
+            ),
             201
           );
         }
@@ -8515,17 +8591,23 @@ describe("executeDispatchTool", () => {
         return response([]);
       }
       if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
-        return response({
-          ask: {
-            id: "ask-8",
-            issue_key: "DSP-42",
-            artifact_id: null,
-            kind: "approval",
-            question: "Approve spec.md (version 3)? Proposes a nightly export to the archive.",
-          },
-          artifact_id: "artifact-42",
-          version: 3,
-        });
+        return response(
+          routeAnswer(
+            "POST /api/v1/artifacts/{id}/approval-requests",
+            {
+              ask: {
+                id: "ask-8",
+                issue_key: "DSP-42",
+                artifact_id: null,
+                kind: "approval",
+                question: "Approve spec.md (version 3)? Proposes a nightly export to the archive.",
+              },
+              artifact_id: "artifact-42",
+              version: 3,
+            },
+            200
+          )
+        );
       }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
@@ -8648,11 +8730,20 @@ describe("executeDispatchTool", () => {
         if (target.pathname === "/api/v1/artifacts/artifact-42/approval-requests") {
           posts.push(target.pathname);
           return response(
-            {
-              ask: { id: "ask-9", kind: "approval", question: "Approve spec.md (version 4)? X." },
-              artifact_id: "artifact-42",
-              version: 4,
-            },
+            routeAnswer(
+              "POST /api/v1/artifacts/{id}/approval-requests",
+              {
+                ask: {
+                  id: "ask-9",
+                  issue_key: "DSP-42",
+                  kind: "approval",
+                  question: "Approve spec.md (version 4)? X.",
+                },
+                artifact_id: "artifact-42",
+                version: 4,
+              },
+              201
+            ),
             201
           );
         }
@@ -10703,12 +10794,15 @@ describe("executeDispatchTool", () => {
         return response({ outgoing: [], referenced_by: [] });
       if (request.pathname.endsWith("/asks")) {
         return init?.method === "POST"
-          ? response({
-              id: "ask-42",
-              issue_key: null,
-              artifact_id: artifact.id,
-              question: runbookQuestion,
-            })
+          ? response(
+              routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+                id: "ask-42",
+                issue_key: null,
+                artifact_id: artifact.id,
+                question: runbookQuestion,
+                urgency: "med",
+              })
+            )
           : response([]);
       }
       if (request.pathname.endsWith("/comments")) {
@@ -10784,7 +10878,15 @@ describe("executeDispatchTool", () => {
         return response({ markdown: "# Runbook", version: 1 });
       if (request.pathname.endsWith("/asks")) {
         return init?.method === "POST"
-          ? response({ id: "ask-42", issue_key: null, artifact_id: artifact.id })
+          ? response(
+              routeAnswer("POST /api/v1/artifacts/{id}/asks", {
+                id: "ask-42",
+                issue_key: null,
+                artifact_id: artifact.id,
+                question: runbookQuestion,
+                urgency: "med",
+              })
+            )
           : response([]);
       }
       if (request.pathname.endsWith("/comments")) {
@@ -10926,10 +11028,17 @@ describe("executeDispatchTool", () => {
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
       if (new URL(request.url).pathname === "/api/v1/issues/DSP-42/artifacts") {
-        return response({
-          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "artifact.txt" },
-          version: { number: 1 },
-        });
+        return response(
+          routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+            artifact: {
+              id: "artifact-42",
+              issue_key: "DSP-42",
+              name: "artifact.txt",
+              slug: "artifact-txt",
+            },
+            version: { number: 1 },
+          })
+        );
       }
       throw new Error(`unexpected request: ${new URL(request.url).pathname}`);
     };
@@ -10963,10 +11072,12 @@ describe("executeDispatchTool", () => {
       if (preflight !== undefined) return preflight;
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
-      return response({
-        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
-        version: { number: 1 },
-      });
+      return response(
+        routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md", slug: "spec-md" },
+          version: { number: 1 },
+        })
+      );
     };
 
     const result = await executeDispatchTool({
@@ -11786,6 +11897,41 @@ describe("executeDispatchTool", () => {
     expect(message).toContain(error);
     expect(message).toContain("Send the upload again once that call is answered.");
     // The upload never left: a check that did not run says nothing about what the store writes.
+    expect(posts).toEqual([]);
+  });
+
+  // A round trip whose 2xx gives no text stored nothing, so the refusal says so in one sentence
+  // with one period, and gives no advice to read back what it made.
+  test("refuses the upload when the round trip's 2xx gives no text, in words that fit a call that stored nothing", async () => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({});
+      posts.push(pathname);
+      return response({});
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure instanceof Error ? failure.message : String(failure)).toBe(
+      "Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip answered without the text it would store (ANSWER_LOST). Send the upload again once that call is answered."
+    );
     expect(posts).toEqual([]);
   });
 

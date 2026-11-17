@@ -21,6 +21,7 @@ import {
   KEYED_LAYER_MEMORY_MS,
   writeOutcomeUnknown,
 } from "../dispatch-http";
+import { routeAnswer } from "./dispatch-route-answers";
 
 // Every write the `dispatch` command makes (a POST or a PATCH) carries one `Idempotency-Key` for
 // that call, and asks Dispatch again under it while an attempt gets no definitive answer, so a
@@ -150,10 +151,15 @@ function hang(signal: AbortSignal | null | undefined): Promise<Response> {
 
 const actor = { kind: "session" as const, id: "session-1" };
 const comment = { body: "Shipped.", actor };
-/** What these tests read of a posted comment; the rest of the shape is left out. */
-const posted = {
-  comment: { id: "comment-1", body: "Shipped." },
-} as unknown as CommentWriteResponse;
+/** A posted comment as its route answers it: the route's least answer with the id and the body. */
+const posted = routeAnswer<CommentWriteResponse>("POST /api/v1/issues/{key}/comments", {
+  id: "comment-1",
+  body: "Shipped.",
+});
+/** An issue's upload as its route answers it. */
+const uploaded = routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+  artifact: { id: "artifact-1" },
+});
 
 function client(fetchImpl: typeof fetch, retry: DispatchWriteRetry, signal?: AbortSignal) {
   return new DispatchClient("http://dispatch.test", bearerCredential("secret"), fetchImpl, {
@@ -176,7 +182,24 @@ describe("DispatchClient's writes", () => {
   beforeEach(forgetKeyedLayerMemory);
 
   test("send one Idempotency-Key per write call and none on a read, PUT or DELETE", async () => {
-    const { fetchImpl, sent } = scripted(Array.from({ length: 8 }, () => json({})));
+    const { fetchImpl, sent } = scripted([
+      json(posted),
+      json(posted),
+      json(routeAnswer("PATCH /api/v1/issues/{key}", { key: "DSP-1", status: "testing" })),
+      json(
+        routeAnswer("POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync", {
+          project: "DSP",
+          repo: "acme/infra",
+        })
+      ),
+      json(
+        routeAnswer("POST /api/v1/issues/{key}/handoffs/{phase}", {
+          issue_key: "DSP-1",
+          phase: "implement",
+        })
+      ),
+      ...Array.from({ length: 3 }, () => json({})),
+    ]);
     const dispatch = client(fetchImpl, pacing().retry);
 
     await dispatch.comment("DSP-1", comment);
@@ -214,9 +237,9 @@ describe("DispatchClient's writes", () => {
     const { fetchImpl, sent } = scripted([
       new TypeError("fetch failed"),
       refusal(503, "UNAVAILABLE", "dispatch is restarting"),
-      json({ artifact: { id: "doc-1" } }),
-      json({ applied: 1 }),
-      json({}),
+      json(routeAnswer("POST /api/v1/projects/{key}/artifacts", { artifact: { id: "doc-1" } })),
+      json(routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: 1 })),
+      json(posted),
     ]);
     const dispatch = client(fetchImpl, pacing().retry);
     const create = "askgate-doc.3f7a91";
@@ -493,6 +516,56 @@ describe("DispatchClient's writes", () => {
     );
     await probing;
     const second = client(fetchImpl, pacing().retry)
+      .comment("DSP-1", comment)
+      .then(
+        () => "posted",
+        (error: Error) => `${error.name}: ${error.message}`
+      );
+    const { promise: turned, resolve: turn } = Promise.withResolvers<void>();
+    setImmediate(turn);
+    await turned;
+    cancel.abort();
+    await first;
+    release();
+    expect({ second: await second, posts }).toEqual({ second: "posted", posts: 3 });
+  });
+
+  // The probe's credential waits where a broker credential waits, on the trade its callers share,
+  // so it is given the probe's own bound and never a write's signal: the write that started the
+  // probe is cancelled while the probe's credential waits, and the write that joined the probe
+  // still reads its answer and asks again.
+  test("a write's own end never ends the shared /healthz probe's wait on its credential", async () => {
+    const { promise: trading, resolve: traded } = Promise.withResolvers<void>();
+    const { promise: held, resolve: release } = Promise.withResolvers<void>();
+    const credential: RequestCredential = {
+      ...bearerCredential("secret"),
+      headers: async (_method, url, _session, signal) => {
+        if (url.endsWith("/healthz")) {
+          traded();
+          const { promise: aborted, reject } = Promise.withResolvers<never>();
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          await Promise.race([held, aborted]);
+        }
+        return { Authorization: "Bearer secret" };
+      },
+    };
+    let posts = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/healthz")) return json({ status: "ok", idempotency_keys: true });
+      posts += 1;
+      if (posts <= 2) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      const key = (init?.headers as Record<string, string>)["Idempotency-Key"] ?? "";
+      return json(posted, 201, { "Idempotency-Key": key });
+    }) as typeof fetch;
+    const dispatch = (signal?: AbortSignal) =>
+      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+        signal,
+        writeRetry: pacing().retry,
+      });
+    const cancel = new AbortController();
+    const first = failure(dispatch(cancel.signal).comment("DSP-1", comment));
+    await trading;
+    const second = dispatch()
       .comment("DSP-1", comment)
       .then(
         () => "posted",
@@ -1013,10 +1086,7 @@ describe("DispatchClient's writes", () => {
   });
 
   test("a retried upload sends the bytes and boundary its first attempt sent", async () => {
-    const { fetchImpl, sent } = scripted([
-      page(502, "Bad Gateway"),
-      json({ artifact: { id: "artifact-1" } }, 201),
-    ]);
+    const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(uploaded, 201)]);
 
     await client(fetchImpl, pacing().retry).artifact("DSP-1", {
       name: "spec.md",
@@ -1169,7 +1239,7 @@ async function socketDispatch(intakes: readonly Intake[]) {
         return;
       }
       if (taken.received >= taken.length) {
-        answerOn(socket, 201, { artifact: { id: "artifact-1" } }, taken.key);
+        answerOn(socket, 201, uploaded, taken.key);
       } else if (typeof intake === "object") {
         // A step of the body, not a rate: what must stay under the write's silence bound is the
         // length of one wait, and a fixed number of waits is a fixed number of chances to pass it.

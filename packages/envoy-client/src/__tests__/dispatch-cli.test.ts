@@ -2271,6 +2271,121 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }, 30_000);
   }
 
+  /** A stand-in Dispatch on a raw socket that answers every POST with `status`, `type` and the
+   *  whole of `body`, counting the posts. */
+  function answeringWhole(status: string, type: string, body: string) {
+    const seen = { posts: 0 };
+    const server = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: {
+        data(socket, request) {
+          if (!request.subarray(0, 5).toString("latin1").startsWith("POST ")) return;
+          seen.posts += 1;
+          socket.write(
+            `HTTP/1.1 ${status}\r\nContent-Type: ${type}\r\n` +
+              `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`
+          );
+          socket.end();
+        },
+      },
+    });
+    return { seen, server };
+  }
+
+  // A 201 whose body comes whole and still gives no stored result - a body that is no JSON under
+  // another type, an empty body, JSON of another shape (D-1 of the acceptance of 8ae6f5bcb4) and
+  // JSON null - is the same landing: the client reads a write's 2xx into the row its callers read
+  // (`dispatch-write-rows.ts`), and an answer that is not that row is ANSWER_LOST, which the
+  // reporter reads as stored. It printed `Cannot destructure property 'predicate' …` and exited 1.
+  for (const [name, type, body] of [
+    ["is no JSON, typed text/html", "text/html", "<html><body>not json</body></html>"],
+    ["is empty, typed JSON", "application/json", ""],
+    ["is the JSON {}", "application/json", "{}"],
+    ["is JSON null", "application/json", "null"],
+  ] as const) {
+    test(`a 201 whose whole body ${name} prints landed_without_answer and exits 0`, async () => {
+      const { seen, server } = answeringWhole("201 Created", type, body);
+      try {
+        const ran = await timedJob(
+          record,
+          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
+          shortBound(1_000, 200)
+        );
+        expect({
+          code: ran.code,
+          stdout: ran.stdout,
+          stderr: ran.stderr,
+          posts: seen.posts,
+        }).toEqual({
+          code: 0,
+          stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+          stderr: "",
+          posts: 1,
+        });
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
+
+  // The controls of the rows above: the true stored result, on the same raw socket, is printed
+  // whole with its id; and a refusal, whatever its body, stays a refusal that stored nothing.
+  test("a 201 whose whole body is the stored result prints it with its id and exits 0", async () => {
+    const { seen, server } = answeringWhole(
+      "201 Created",
+      "application/json",
+      JSON.stringify(stored)
+    );
+    try {
+      const ran = await timedJob(
+        record,
+        { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
+        shortBound(1_000, 200)
+      );
+      expect({ code: ran.code, stderr: ran.stderr, posts: seen.posts }).toEqual({
+        code: 0,
+        stderr: "",
+        posts: 1,
+      });
+      expect(JSON.parse(ran.stdout)).toEqual(stored);
+      expect(JSON.parse(ran.stdout).id).toBe(stored.id);
+    } finally {
+      server.stop(true);
+    }
+  }, 30_000);
+
+  for (const [name, type, body] of [
+    [
+      "Dispatch's own refusal",
+      "application/json",
+      '{"code":"CHECK_NOT_IN_FILES","error":"no such check"}',
+    ],
+    ["a page that is no JSON", "text/html", "<html><body>refused</body></html>"],
+    ["an empty body", "application/json", ""],
+    ["the JSON {}", "application/json", "{}"],
+  ] as const) {
+    test(`a 409 whose body is ${name} stays a refusal, exit 1, and no landing`, async () => {
+      const { server } = answeringWhole("409 Conflict", type, body);
+      try {
+        const ran = await timedJob(
+          record,
+          { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${server.port}` },
+          shortBound(1_000, 200)
+        );
+        expect({ code: ran.code, landed: ran.stdout.includes("landed_without_answer") }).toEqual({
+          code: 1,
+          landed: false,
+        });
+        if (name === "Dispatch's own refusal") {
+          expect(ran.stdout).toBe("CHECK_NOT_IN_FILES: no such check\n");
+        }
+      } finally {
+        server.stop(true);
+      }
+    }, 30_000);
+  }
+
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
   // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
   // result is stored once. Each wait is a real second.

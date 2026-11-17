@@ -12,6 +12,7 @@ import { runDispatchCli } from "../dispatch-cli";
 import { commandFlags } from "../dispatch-command";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { routeAnswer } from "./dispatch-route-answers";
 
 // Who an open ask waits on, from the command line and from the texts an agent reads. A person
 // hands an ask on through the web app or `PUT /api/v1/asks/{id}/asked-of`, both person-scoped, so
@@ -47,7 +48,7 @@ const ISSUE = {
   route: null,
   parent: null,
   blocked_by: [],
-  components: [],
+  components: { mode: "inherit", ids: null, unknown: null, reason: null, inherited_from: null },
   repo: null,
   resolved_repo: null,
   closed_at: null,
@@ -67,7 +68,9 @@ const server = Bun.serve({
     }
     if (pathname === "/api/v1/issues/DSP-1" && request.method === "PATCH") {
       const sent = (body ?? {}) as { assignee?: string | null };
-      return Response.json({ ...ISSUE, assignee: sent.assignee ?? null });
+      return Response.json(
+        routeAnswer("PATCH /api/v1/issues/{key}", { ...ISSUE, assignee: sent.assignee ?? null })
+      );
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
   },

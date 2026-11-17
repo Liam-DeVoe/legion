@@ -669,9 +669,11 @@ made whose answer is gone is a `DispatchWriteLandedError` (`code`, a `DispatchLa
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer larger than Dispatch keeps (`answerNotKept`, shared with the page), or a write's 2xx whose
-body could not be read after its status line (cut, stalled past the deadline, or not the JSON it
-says it is), the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
-write's 2xx only after the write committed. It is no refusal and no
+body gives no row, the client's own `ANSWER_LOST` (`DISPATCH_ANSWER_LOST`), since Dispatch answers a
+write's 2xx only after the write committed. Every `POST` and `PATCH` of the client reads its 2xx into
+the row its callers read (`dispatch-write-rows.ts`: those members, in the forms the route answers
+them), so a body cut or stalled past the deadline, one that is no JSON whatever its type says, an
+empty one and JSON that is not that row are each this landing. It is no refusal and no
 `DispatchServiceError`, and it is never asked again. Its message is the one line the session
 reads: the method and URL were made, why the answer is gone, and to read what it made back with
 `dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
@@ -743,6 +745,18 @@ Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 in a job granted `id-token: write`. A job with no endpoint reads the run's token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`.
 An identity with one of its variables missing is an error that names the variable.
+
+A pod writes under a session name only once its deployment has registered that name for the pod,
+and its trade can reach the broker first. The broker refuses that trade with a description
+beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
+in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
+the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
+meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
+deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session and says the trade is being retried; the
+next call takes the token once the registration lands. The client logs the wait through
+`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
+token is in hand goes on with that token. Every other refusal fails the call as before.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
 no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is

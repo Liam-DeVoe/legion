@@ -95,9 +95,11 @@ import {
   sleep,
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
+import type { ZodType } from "zod";
 
 import { textHead } from "./ask-answer";
 import type { RequestCredential } from "./bearer";
+import { WRITE_ROWS } from "./dispatch-write-rows";
 import { withoutUserinfo } from "./errors";
 
 export type {
@@ -111,6 +113,26 @@ export type {
 export interface ArtifactFileVersion {
   readonly mime: string;
   readonly bytes: Uint8Array;
+}
+
+/** The methods of a read, and of a write sent once with no key (`PUT`, `DELETE`). */
+type ReadMethod = "GET" | "PUT" | "DELETE";
+
+/** The methods of a write under a key (`WriteCall`), whose 2xx is read into its row. */
+type WriteMethod = "POST" | "PATCH";
+
+/** The members a write's callers read of its 2xx, in the forms its route answers
+ *  (`dispatch-write-rows.ts`). An answer that is not this row is a landing (`#writtenRow`). */
+type WriteRow = ZodType;
+
+/** A write's options. Each admits `undefined` as well as absence, since a caller passes on an
+ *  option it may not have, and a package compiled with `exactOptionalPropertyTypes`
+ *  (`packages/claude-envoy`) tells the two apart. */
+interface WriteOptions {
+  /** The write's query, such as `follow_up`. */
+  readonly query?: object | undefined;
+  /** The caller's own `Idempotency-Key`, where it has one intent across calls and processes. */
+  readonly key?: string | undefined;
 }
 
 export class DispatchServiceError extends Error {
@@ -223,9 +245,10 @@ export class DispatchWriteUnsettledError extends Error {
 }
 
 /**
- * The client's code of a write whose 2xx came and whose body was then lost on the way back (cut,
- * stalled past the call's deadline, or not the JSON it said it was): Dispatch answers a 2xx only
- * after the write committed, so the write landed, and its answer is what was lost.
+ * The client's code of a write whose 2xx came and whose body gives no row its callers read (cut,
+ * stalled past the call's deadline, no JSON, empty, or JSON that is not the row: `#writtenRow`):
+ * Dispatch answers a 2xx only after the write committed, so the write landed, and its answer is
+ * what was lost.
  */
 export const DISPATCH_ANSWER_LOST = "ANSWER_LOST";
 
@@ -238,7 +261,7 @@ export type DispatchLandedCode = IdempotencyLandedCode | typeof DISPATCH_ANSWER_
  * under its key answered `409 IDEMPOTENCY_KEY_COMMITTED` (the write landed before its answer was
  * lost, and Dispatch will not run it again), a replayed 2xx reading
  * `IDEMPOTENCY_ANSWER_NOT_KEPT` (its first answer was larger than Dispatch keeps), or a 2xx whose
- * body was lost after its status line (`DISPATCH_ANSWER_LOST`). The write took effect, so this is
+ * body gives no row (`DISPATCH_ANSWER_LOST`). The write took effect, so this is
  * no refusal and deliberately no `DispatchServiceError`; it is never asked again. Its message is
  * the one line a session reads: what was made, that its answer was lost, and to read it back.
  */
@@ -1057,7 +1080,12 @@ export class DispatchClient {
    * means Dispatch already holds the issue `external` names and answered with that issue.
    */
   async issue(input: CreateIssueInput): Promise<Advised<Issue> & { created: boolean }> {
-    const answer = await this.#jsonAnswer<Advised<Issue>>("POST", ["api", "v1", "issues"], input);
+    const answer = await this.#writeAnswer<Advised<Issue>>(
+      "POST",
+      ["api", "v1", "issues"],
+      WRITE_ROWS.issue,
+      input
+    );
     return { ...answer.payload, created: answer.status === 201 };
   }
 
@@ -1117,9 +1145,10 @@ export class DispatchClient {
    *  a caller compares the answer with the text it holds and refuses a text the store would
    *  change. */
   async markdownRoundTrip(markdown: string): Promise<string> {
-    const answer: MarkdownRoundTripResponse = await this.#json(
+    const answer: MarkdownRoundTripResponse = await this.#write(
       "POST",
       ["api", "v1", "markdown", "round-trip"],
+      WRITE_ROWS.markdownRoundTrip,
       { markdown }
     );
     return answer.markdown;
@@ -1145,7 +1174,12 @@ export class DispatchClient {
     input: CreateArtifactInput,
     key?: string
   ): Promise<DocumentAdvised<ArtifactUploadResponse>> {
-    return this.#upload(["api", "v1", "projects", project, "artifacts"], input, key);
+    return this.#upload(
+      ["api", "v1", "projects", project, "artifacts"],
+      input,
+      WRITE_ROWS.projectArtifact,
+      key
+    );
   }
 
   async getProjectArtifact(project: string, slug: string): Promise<Artifact> {
@@ -1159,7 +1193,11 @@ export class DispatchClient {
     sessionId: string,
     input: CreateArtifactInput
   ): Promise<Advised<ArtifactUploadResponse>> {
-    return this.#upload(["api", "v1", "agents", sessionId, "artifacts"], input);
+    return this.#upload(
+      ["api", "v1", "agents", sessionId, "artifacts"],
+      input,
+      WRITE_ROWS.agentArtifact
+    );
   }
 
   async getAgentArtifact(sessionId: string, slug: string): Promise<Artifact> {
@@ -1191,16 +1229,27 @@ export class DispatchClient {
   /** `POST /api/v1/projects/{key}/related`: the related-item check over a title and a text,
    *  writing nothing. A blank title and text answer `outcome: "not_made"` with the reason. */
   async related(project: string, input: RelatedCheckInput): Promise<Suggestions> {
-    return this.#json("POST", ["api", "v1", "projects", project, "related"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "projects", project, "related"],
+      WRITE_ROWS.related,
+      input
+    );
   }
 
   async getIssue(issue: string): Promise<IssueDetails> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue)]);
   }
 
-  /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. */
+  /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. A call that
+   *  writes `components` reads them back, so its answer is held to the row that requires them. */
   async updateIssue(issue: string, input: UpdateIssueInput): Promise<Advised<Issue>> {
-    return this.#json("PATCH", ["api", "v1", "issues", await this.#resolveIssue(issue)], input);
+    return this.#write(
+      "PATCH",
+      ["api", "v1", "issues", await this.#resolveIssue(issue)],
+      input.components === undefined ? WRITE_ROWS.updateIssue : WRITE_ROWS.updateIssueComponents,
+      input
+    );
   }
 
   /** `POST /api/v1/issues/{key}/claim`: this session takes the issue. 409 ISSUE_CLAIMED when a
@@ -1210,9 +1259,10 @@ export class DispatchClient {
    *  `legion` label in any case or sits under one that does, where a status anyone else writes
    *  is undone. */
   async claimIssue(issue: string, input: { readonly actor?: Actor } = {}): Promise<ClaimedIssue> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "claim"],
+      WRITE_ROWS.claimIssue,
       input
     );
   }
@@ -1279,9 +1329,10 @@ export class DispatchClient {
   }
 
   async ask(issue: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "asks"],
+      WRITE_ROWS.ask,
       input
     );
   }
@@ -1379,7 +1430,7 @@ export class DispatchClient {
    *  the create stored, which the project list leaves out. A key that already exists is 409
    *  PROJECT_EXISTS, and a key that is not a project key or an empty name 400 INVALID_PROJECT. */
   async createProject(input: CreateProjectInput): Promise<CreatedProject> {
-    return this.#json("POST", ["api", "v1", "projects"], input);
+    return this.#write("POST", ["api", "v1", "projects"], WRITE_ROWS.createProject, input);
   }
 
   /** `GET /api/v1/projects`: every project, ordered by key. */
@@ -1437,25 +1488,19 @@ export class DispatchClient {
    *  an error. */
   async syncArchitectureSources(project: string): Promise<ArchitectureSource[]> {
     try {
-      return await this.#json("POST", [
-        "api",
-        "v1",
-        "projects",
-        project,
-        "architecture-sources",
-        "sync",
-      ]);
+      return await this.#write(
+        "POST",
+        ["api", "v1", "projects", project, "architecture-sources", "sync"],
+        WRITE_ROWS.syncArchitectureSources
+      );
     } catch (error) {
       if (!(error instanceof DispatchNoRouteError)) throw error;
     }
-    const source: ArchitectureSource = await this.#json("POST", [
-      "api",
-      "v1",
-      "projects",
-      project,
-      "architecture-source",
-      "sync",
-    ]);
+    const source: ArchitectureSource = await this.#write(
+      "POST",
+      ["api", "v1", "projects", project, "architecture-source", "sync"],
+      WRITE_ROWS.syncArchitectureSource
+    );
     return [source];
   }
 
@@ -1468,20 +1513,15 @@ export class DispatchClient {
     if (!owner || !name || rest.length > 0) {
       throw new Error(`repository must be owner/name, got ${JSON.stringify(repo)}`);
     }
-    return this.#json("POST", [
-      "api",
-      "v1",
-      "projects",
-      project,
-      "architecture-sources",
-      owner,
-      name,
-      "sync",
-    ]);
+    return this.#write(
+      "POST",
+      ["api", "v1", "projects", project, "architecture-sources", owner, name, "sync"],
+      WRITE_ROWS.syncArchitectureSource
+    );
   }
 
   async resolveAsk(id: string, input: ResolveAskInput): Promise<AskWithTrees> {
-    return this.#json("POST", ["api", "v1", "asks", id, "resolve"], input);
+    return this.#write("POST", ["api", "v1", "asks", id, "resolve"], WRITE_ROWS.resolveAsk, input);
   }
 
   /**
@@ -1496,9 +1536,10 @@ export class DispatchClient {
     artifactID: string,
     input: { actor: Actor; summary: string; include_verification?: boolean }
   ): Promise<ApprovalRequestResponse & { recorded: boolean }> {
-    const answer = await this.#jsonAnswer<ApprovalRequestResponse>(
+    const answer = await this.#writeAnswer<ApprovalRequestResponse>(
       "POST",
       ["api", "v1", "artifacts", artifactID, "approval-requests"],
+      WRITE_ROWS.requestApproval,
       input
     );
     return { ...answer.payload, recorded: answer.status === 201 };
@@ -1513,7 +1554,12 @@ export class DispatchClient {
     artifactID: string,
     input: { actor: Actor; version: number }
   ): Promise<ArtifactReview> {
-    return this.#json("POST", ["api", "v1", "artifacts", artifactID, "plan-reviews"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "artifacts", artifactID, "plan-reviews"],
+      WRITE_ROWS.planApprove,
+      input
+    );
   }
 
   /**
@@ -1549,7 +1595,7 @@ export class DispatchClient {
     // reach the wire; JSON leaves out a reason that is undefined.
     const body = { state: input.state, reason: input.reason };
     try {
-      return await this.#json("POST", path, body);
+      return await this.#write("POST", path, WRITE_ROWS.reviewArtifact, body);
     } catch (error) {
       if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
       const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
@@ -1563,9 +1609,10 @@ export class DispatchClient {
    * check may be one of an issue above it, and the result is recorded against that issue.
    */
   async recordResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultRecorded> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "results"],
+      WRITE_ROWS.recordResult,
       input
     );
   }
@@ -1595,7 +1642,12 @@ export class DispatchClient {
     resultID: string,
     input: CheckResultRetractionInput
   ): Promise<CheckResultRetraction> {
-    return this.#json("POST", ["api", "v1", "results", resultID, "retract"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "results", resultID, "retract"],
+      WRITE_ROWS.retractResult,
+      input
+    );
   }
 
   /**
@@ -1610,7 +1662,12 @@ export class DispatchClient {
   ): Promise<SpecCheckResult> {
     const { commit, check, verdict, observed } = input;
     const body = { commit, check, verdict, observed };
-    return this.#json("POST", ["api", "v1", "projects", project, "results"], body);
+    return this.#write(
+      "POST",
+      ["api", "v1", "projects", project, "results"],
+      WRITE_ROWS.recordSpecCheckResult,
+      body
+    );
   }
 
   /** Every result CI jobs stored for checks of `project`'s spec files at `commit`, of `check`
@@ -1627,13 +1684,14 @@ export class DispatchClient {
   }
 
   async editAsk(id: string, input: EditAskInput): Promise<AskWithTrees> {
-    return this.#json("PATCH", ["api", "v1", "asks", id], input);
+    return this.#write("PATCH", ["api", "v1", "asks", id], WRITE_ROWS.editAsk, input);
   }
 
   async comment(issue: string, input: CreateCommentInput): Promise<Advised<CommentWriteResponse>> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
+      WRITE_ROWS.comment,
       input
     );
   }
@@ -1658,7 +1716,12 @@ export class DispatchClient {
   }
 
   async artifactAsk(id: string, input: CreateAskInput): Promise<Advised<AskWithTrees>> {
-    return this.#json("POST", ["api", "v1", "artifacts", id, "asks"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "artifacts", id, "asks"],
+      WRITE_ROWS.artifactAsk,
+      input
+    );
   }
 
   async suggest(
@@ -1669,9 +1732,10 @@ export class DispatchClient {
     }
   ): Promise<Advised<Comment>> {
     const { replace_with, ...comment } = input;
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "comments"],
+      WRITE_ROWS.suggest,
       {
         ...comment,
         suggestion: { replace_with },
@@ -1687,7 +1751,12 @@ export class DispatchClient {
     id: string,
     input: CreateCommentInput
   ): Promise<Advised<CommentWriteResponse>> {
-    return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "artifacts", id, "comments"],
+      WRITE_ROWS.artifactComment,
+      input
+    );
   }
 
   async artifactSuggest(
@@ -1698,16 +1767,22 @@ export class DispatchClient {
     }
   ): Promise<Advised<Comment>> {
     const { replace_with, ...comment } = input;
-    return this.#json("POST", ["api", "v1", "artifacts", id, "comments"], {
-      ...comment,
-      suggestion: { replace_with },
-    });
+    return this.#write(
+      "POST",
+      ["api", "v1", "artifacts", id, "comments"],
+      WRITE_ROWS.artifactSuggest,
+      {
+        ...comment,
+        suggestion: { replace_with },
+      }
+    );
   }
 
   async message(issue: string, input: CreateMessageInput): Promise<Advised<Message>> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"],
+      WRITE_ROWS.message,
       input
     );
   }
@@ -1719,7 +1794,12 @@ export class DispatchClient {
    * attempt on the message.
    */
   async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
-    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "agents", sessionId, "messages"],
+      WRITE_ROWS.agentMessage,
+      input
+    );
   }
 
   /**
@@ -1735,11 +1815,12 @@ export class DispatchClient {
     input: MessageReplyInput,
     options: { readonly followUp?: boolean } = {}
   ): Promise<MessageReplyResult> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "messages", id, "reply"],
+      WRITE_ROWS.messageReply,
       input,
-      options.followUp === true ? { follow_up: "true" } : undefined
+      { query: options.followUp === true ? { follow_up: "true" } : undefined }
     );
   }
 
@@ -1757,11 +1838,12 @@ export class DispatchClient {
     options: { readonly followUp?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json(
+    await this.#write(
       "POST",
       ["api", "v1", collection, id, "reply"],
+      WRITE_ROWS.deliveryReply,
       input,
-      options.followUp === true ? { follow_up: "true" } : undefined
+      { query: options.followUp === true ? { follow_up: "true" } : undefined }
     );
   }
 
@@ -1795,9 +1877,10 @@ export class DispatchClient {
     attempt: number,
     input: { readonly actor: Actor }
   ): Promise<AcceptedMessageDelivery> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "messages", id, "deliveries", String(attempt), "accept"],
+      WRITE_ROWS.acceptMessageDelivery,
       input
     );
   }
@@ -1812,7 +1895,8 @@ export class DispatchClient {
   > {
     return this.#upload(
       ["api", "v1", "issues", await this.#resolveIssue(issue), "artifacts"],
-      input
+      input,
+      WRITE_ROWS.artifact
     );
   }
 
@@ -1901,18 +1985,18 @@ export class DispatchClient {
     input: EditArtifactInput,
     key?: string
   ): Promise<Advised<EditArtifactResponse>> {
-    return this.#json(
-      "POST",
-      ["api", "v1", "artifacts", id, "edits"],
-      input,
-      undefined,
-      undefined,
-      key
-    );
+    return this.#write("POST", ["api", "v1", "artifacts", id, "edits"], WRITE_ROWS.docEdit, input, {
+      key,
+    });
   }
 
   async nameArtifactVersion(id: string, input: CreateVersionInput): Promise<Version> {
-    return this.#json("POST", ["api", "v1", "artifacts", id, "versions"], input);
+    return this.#write(
+      "POST",
+      ["api", "v1", "artifacts", id, "versions"],
+      WRITE_ROWS.nameArtifactVersion,
+      input
+    );
   }
 
   async getArtifactEvents(id: string, after = 0, limit = 200): Promise<DispatchEvent[]> {
@@ -1942,7 +2026,14 @@ export class DispatchClient {
 
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
   async resolveComment(id: string, actor: Actor): Promise<Comment> {
-    return this.#json("POST", ["api", "v1", "comments", id, "resolve"], { actor });
+    return this.#write(
+      "POST",
+      ["api", "v1", "comments", id, "resolve"],
+      WRITE_ROWS.resolveComment,
+      {
+        actor,
+      }
+    );
   }
 
   async getComments(issue: string): Promise<Comment[]> {
@@ -1957,9 +2048,10 @@ export class DispatchClient {
     phase: string,
     input: { readonly actor: Actor; readonly body: string }
   ): Promise<HandoffSummary> {
-    return this.#json(
+    return this.#write(
       "POST",
       ["api", "v1", "issues", await this.#resolveIssue(issue), "handoffs", phase],
+      WRITE_ROWS.writeHandoff,
       input
     );
   }
@@ -2023,27 +2115,53 @@ export class DispatchClient {
       throw error;
     }
   }
+  /** A read, or a write sent once with no key (`PUT`, `DELETE`): its payload. `signal` aborts it
+   *  beside the client's own signal (`#send`). */
   async #json<T>(
-    method: string,
+    method: ReadMethod,
     path: readonly string[],
     body?: unknown,
     query?: object,
-    signal?: AbortSignal,
-    key?: string
+    signal?: AbortSignal
   ): Promise<T> {
-    return (await this.#jsonAnswer<T>(method, path, body, query, signal, key)).payload;
+    return (await this.#call<T>({ method }, path, body, query, signal)).payload;
   }
 
-  /** `#json` with the status Dispatch answered, for a route whose status says what it did.
-   *  `signal` aborts a read beside the client's own signal (`#send`). */
-  async #jsonAnswer<T>(
-    method: string,
+  /** A write under a key (`POST` or `PATCH`, `WriteCall`): its 2xx read into `row`, the members
+   *  the method's callers read (`#writtenRow`). A keyed write that names no row does not compile.
+   *  `options.key` is the caller's own `Idempotency-Key`, where it has one intent across calls. */
+  async #write<T>(
+    method: WriteMethod,
     path: readonly string[],
+    row: WriteRow,
     body?: unknown,
-    query?: object,
-    signal?: AbortSignal,
+    options: WriteOptions = {}
+  ): Promise<T> {
+    return (await this.#writeAnswer<T>(method, path, row, body, options)).payload;
+  }
+
+  /** `#write` with the status Dispatch answered, for a route whose status says what it did. */
+  async #writeAnswer<T>(
+    method: WriteMethod,
+    path: readonly string[],
+    row: WriteRow,
+    body?: unknown,
+    options: WriteOptions = {}
+  ): Promise<{ readonly status: number; readonly payload: T }> {
+    return this.#call<T>({ method, row }, path, body, options.query, undefined, options.key);
+  }
+
+  async #call<T>(
+    request:
+      | { readonly method: ReadMethod; readonly row?: undefined }
+      | { readonly method: WriteMethod; readonly row: WriteRow },
+    path: readonly string[],
+    body: unknown,
+    query: object | undefined,
+    signal: AbortSignal | undefined,
     key?: string
   ): Promise<{ readonly status: number; readonly payload: T }> {
+    const { method, row } = request;
     const url = this.#url(path, query);
     const call = writeCall(method, key);
     const encoded =
@@ -2051,7 +2169,10 @@ export class DispatchClient {
     return this.#settle(call, () =>
       this.#noRoute(async () => {
         const response = await this.#send(method, url, encoded, undefined, signal, call);
-        return { status: response.status, payload: await this.#response<T>(method, url, response) };
+        return {
+          status: response.status,
+          payload: await this.#response<T>(method, url, response, row),
+        };
       }, signal)
     );
   }
@@ -2116,16 +2237,21 @@ export class DispatchClient {
 
   /** An upload to an owner's artifact route: a file as multipart, and everything else as JSON -
    *  inline content, and a name alone, which makes an empty document. */
-  async #upload<T>(path: readonly string[], input: CreateArtifactInput, key?: string): Promise<T> {
+  async #upload<T>(
+    path: readonly string[],
+    input: CreateArtifactInput,
+    row: WriteRow,
+    key?: string
+  ): Promise<T> {
     if (input.file === undefined) {
-      return this.#json("POST", path, input, undefined, undefined, key);
+      return this.#write("POST", path, row, input, { key });
     }
     const form = new FormData();
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
     form.set("file", input.file, input.name);
-    return this.#form("POST", path, form, key);
+    return this.#form("POST", path, form, row, key);
   }
 
   /**
@@ -2135,9 +2261,10 @@ export class DispatchClient {
    * (`422 KEY_REUSED`), and every attempt of the call carries its one key.
    */
   async #form<T>(
-    method: string,
+    method: WriteMethod,
     path: readonly string[],
     form: FormData,
+    row: WriteRow,
     key?: string
   ): Promise<T> {
     const url = this.#url(path);
@@ -2155,7 +2282,7 @@ export class DispatchClient {
           undefined,
           call
         );
-        return this.#response<T>(method, url, response);
+        return this.#response<T>(method, url, response, row);
       })
     );
   }
@@ -2231,7 +2358,9 @@ export class DispatchClient {
     // failed attempt.
     const headers: Record<string, string> = { Accept: accept };
     // The credential awaits what it must for a request (a broker credential's trade, and the
-    // identity it reads for it) under the same signal as the request itself.
+    // identity it reads for it) under the same signal as the request itself: the call's own
+    // deadline and the client's. A broker credential waiting on a pod's missing registration
+    // stops at it, naming the session.
     const bounded = signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]);
     if (call !== undefined) call.verdict = false;
     let presented = await this.#credential.headers(method, url, undefined, bounded);
@@ -2481,8 +2610,8 @@ export class DispatchClient {
   }
 
   /**
-   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`, and its credential at the
-   * credential's own bound. Its status is not read: Dispatch answers 503 whenever its database or
+   * `GET /healthz`'s `idempotency_keys`, bounded at `KEY_LAYER_PROBE_MS`, its credential included.
+   * Its status is not read: Dispatch answers 503 whenever its database or
    * NATS is down, the outage a failed write most likely met, and still says
    * `idempotency_keys: true`, a fact of its binary. A probe that fails, times out, answers no JSON
    * or leaves the field out is false: the write is reported as it stands rather than resent, since
@@ -2491,11 +2620,15 @@ export class DispatchClient {
   async #probeKeyedLayer(): Promise<boolean> {
     try {
       const probe = `${this.#baseUrl}/healthz`;
-      const headers = await this.#credential.headers("GET", probe);
+      // The probe is shared by the writes that fail together, so it runs under its own bound and
+      // under no write's signal. Its credential is given that bound too: a broker credential
+      // waiting on a pod's missing registration stops at it, and the trade goes on.
+      const bound = AbortSignal.timeout(KEY_LAYER_PROBE_MS);
+      const headers = await this.#credential.headers("GET", probe, undefined, bound);
       const response = await this.fetchImpl(probe, {
         method: "GET",
         headers: { Accept: "application/json", ...headers },
-        signal: AbortSignal.timeout(KEY_LAYER_PROBE_MS),
+        signal: bound,
       });
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
@@ -2561,7 +2694,8 @@ export class DispatchClient {
   }
 
   /**
-   * The answer's payload, or the refusal it carries. Dispatch's own refusal is JSON with a string
+   * The answer's payload, or the refusal it carries. A write's 2xx is read into its row
+   * (`#writtenRow`). Dispatch's own refusal is JSON with a string
    * `error` (`writeError` in the server), and it renders as that text with its `code`. Any other
    * non-2xx body — a gateway's HTML page, an empty body, JSON of another shape — did not come
    * from Dispatch, so it is a `DispatchGatewayError` naming the request (method, URL and query;
@@ -2570,33 +2704,17 @@ export class DispatchClient {
    * what the excerpt reads is text, the body's size), and what asking again can do for that
    * method and status. A write Dispatch made whose answer is gone —
    * `409 IDEMPOTENCY_KEY_COMMITTED`, a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`
-   * (`answerNotKept`), or a write's 2xx whose body could not be read (`DISPATCH_ANSWER_LOST`) —
+   * (`answerNotKept`), or a write's 2xx whose body gives no row (`DISPATCH_ANSWER_LOST`) —
    * is a `DispatchWriteLandedError`, neither a refusal nor a payload.
    */
-  async #response<T>(method: string, url: string, response: Response): Promise<T> {
-    // Dispatch answers a write's 2xx only after the write committed, so a body lost after that
-    // status line (cut, stalled past the deadline, or not the JSON it says it is) is a landing
-    // whose answer was lost, and never a failure of the call.
-    const landed = response.ok && (method === "POST" || method === "PATCH");
-    let text: string;
-    try {
-      text = await response.text();
-    } catch (error) {
-      if (!landed) throw error;
-      throw new DispatchWriteLandedError(DISPATCH_ANSWER_LOST, response.status, method, url, {
-        cause: error,
-      });
-    }
+  async #response<T>(method: string, url: string, response: Response, row?: WriteRow): Promise<T> {
+    if (response.ok && row !== undefined) return this.#writtenRow<T>(method, url, response, row);
+    const text = await response.text();
     let payload: unknown = text;
     if (text && isJson(response)) {
       try {
         payload = JSON.parse(text);
-      } catch (error) {
-        if (landed) {
-          throw new DispatchWriteLandedError(DISPATCH_ANSWER_LOST, response.status, method, url, {
-            cause: error,
-          });
-        }
+      } catch {
         payload = text;
       }
     }
@@ -2642,9 +2760,37 @@ export class DispatchClient {
         gatewayAdvice(method, response.status)
       );
     }
+    return payload as T;
+  }
+
+  /**
+   * A write's 2xx read into the row its callers read, by one rule: Dispatch answers a write's
+   * 2xx only after the write committed, so an answer that does not give the row is a landing
+   * whose answer was lost (`DISPATCH_ANSWER_LOST`), and never a failure of the call. Its body
+   * cut or stalled past the deadline, a body that is no JSON whatever its type says, an empty
+   * body, and JSON that is not `row` (the members the method's callers read, in the forms the
+   * route answers: `dispatch-write-rows.ts`) are each that answer. A replay whose first answer
+   * Dispatch did not keep is a landing of its own (`answerNotKept`). The row is the answer as it
+   * came, so a caller reads every member Dispatch sent, the ones the check names among them.
+   */
+  async #writtenRow<T>(method: string, url: string, response: Response, row: WriteRow): Promise<T> {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await response.text());
+    } catch (cause) {
+      throw new DispatchWriteLandedError(DISPATCH_ANSWER_LOST, response.status, method, url, {
+        cause,
+      });
+    }
     const replayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER)?.trim() === "?1";
     if (answerNotKept(response.status, replayed, payload)) {
       throw new DispatchWriteLandedError(IDEMPOTENCY_ANSWER_NOT_KEPT, response.status, method, url);
+    }
+    const read = row.safeParse(payload);
+    if (!read.success) {
+      throw new DispatchWriteLandedError(DISPATCH_ANSWER_LOST, response.status, method, url, {
+        cause: read.error,
+      });
     }
     return payload as T;
   }
