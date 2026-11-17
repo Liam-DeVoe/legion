@@ -54,6 +54,21 @@ const (
 	stepRecordsWait = 2 * time.Minute
 )
 
+// stepRecordsTen is the walk's ten records, as a walk to done with one failed review leaves them:
+// each of the task default; the failed review returns the issue to step 2, implementing.
+var stepRecordsTen = []stepWant{
+	{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
+	{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
+	{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
+	{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
+	{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
+	{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
+	{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
+	{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
+}
+
 // v-records, the read by issue: one issue walks to done with one failed review, and the read of the
 // issue lists its ten steps, each with its role, type, agent, attempt, start, end and result, and
 // each record of kind step with the model that answered it. The control deletes the failed review's
@@ -71,20 +86,8 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 	r.accept()
 	r.retro()
 	r.merge()
-	want := []stepWant{
-		{kind: "step", step: 1, attempt: 1, role: "planner", typ: "planning", result: "passed"},
-		{kind: "step", step: 2, attempt: 1, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 2, attempt: 2, role: "implementer", typ: "implementation", result: "passed"},
-		{kind: "step", step: 3, attempt: 1, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 3, attempt: 2, role: "tester", typ: "testing", result: "passed"},
-		{kind: "step", step: 4, attempt: 1, role: "reviewer", typ: "review", result: "failed", returnedTo: new(2)},
-		{kind: "step", step: 4, attempt: 2, role: "reviewer", typ: "review", result: "passed"},
-		{kind: "step", step: 5, attempt: 1, role: "acceptance", typ: "review", result: "passed"},
-		{kind: "retro", step: 0, attempt: 1, role: "implementer", result: "passed"},
-		{kind: "merge", step: 0, attempt: 1, role: "merger", result: "passed"},
-	}
 	var read stepRecordsRead
-	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, want) })
+	r.waitSteps("the ten records of the walk", func(got stepRecordsRead) error { read = got; return stepsHold(got, stepRecordsTen) })
 	failed := read.find("step", 4, 1)
 
 	t.Run("control", func(t *testing.T) {
@@ -93,7 +96,7 @@ func TestTheReadOfAnIssueListsEachStepThatRan(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the issue's steps after the delete: %v", err)
 		}
-		err = stepsHold(read, want)
+		err = stepsHold(read, stepRecordsTen)
 		if err == nil || !strings.Contains(err.Error(), "step 4 attempt 1") {
 			t.Fatalf("the assertion over a read without the failed review's record = %v, want an error naming step 4 attempt 1", err)
 		}
