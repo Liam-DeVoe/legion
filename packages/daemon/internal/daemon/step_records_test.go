@@ -248,12 +248,28 @@ func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	}
 
 	// The earlier release: the implementer works that task and completes, which ends its turn,
-	// moves the issue to testing and raises the tester's entry, whose run it starts and counts
-	// nowhere.
+	// moves the issue to testing, clears the tester's last handoff and raises the tester's entry,
+	// whose run it starts and counts nowhere.
+	testerRow := r.phaseOf(claim.RoleTester)
+	if testerRow.CompletedAt.IsZero() || testerRow.HandoffRecord == "" {
+		t.Fatalf("at the rollback the tester's row is %+v, want its first round completed: a clear of nothing proves nothing", testerRow)
+	}
 	implementer.endTurnUnseen()
 	earlierStart := time.Now().UTC().Truncate(time.Millisecond)
 	r.exec(`update issues set phase = 'testing' where key = $1`, r.key)
-	r.exec(`update phases set entry = entry + 1, entry_raised_at = $2 where issue = $1 and role = 'tester'`, r.key, earlierStart)
+	r.exec(`update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, verdict = '', summary = '', decision = null,
+		completed_at = $3, entry = entry + 1, entry_raised_at = $2 where issue = $1 and role = 'tester'`, r.key, earlierStart, time.Time{})
+	// A transition into testing clears the handoff the tester reported for its last round
+	// (workflow's clearHandoff, which empties what its phaseHandoff lists) before it raises the
+	// tester's entry, so the new entry reads as not completed; the claim, the record the tester
+	// last named and the rounds stand.
+	if got := r.phaseOf(claim.RoleTester); got.HandoffCommit != "" || got.HandoffRecord != "" || got.HandoffVersion != 0 ||
+		got.Verdict != "" || got.Summary != "" || got.Decision != nil || !got.CompletedAt.IsZero() ||
+		got.Claim != testerRow.Claim || got.LastHandoff != testerRow.LastHandoff || got.Rounds != testerRow.Rounds || got.Pass != testerRow.Pass ||
+		got.Entry != testerRow.Entry+1 || !got.EntryRaisedAt.Equal(earlierStart) {
+		t.Fatalf("the tester's row the earlier release moved into testing is %+v, want its last round's handoff cleared and its entry raised at %s, the rest of %+v kept",
+			got, earlierStart, testerRow)
+	}
 	r.dispatch.start()
 	rebindHeldPorts(t, &r.cfg)
 	r.boot()
@@ -334,6 +350,27 @@ func (r *stepRecordsRig) exec(statement string, args ...any) {
 	if _, err := r.st.Pool().Exec(context.Background(), statement, args...); err != nil {
 		r.t.Fatalf("%s: %v", statement, err)
 	}
+}
+
+// phaseOf is the phases row of role on the walk's issue, as the store holds it.
+func (r *stepRecordsRig) phaseOf(role claim.Role) record.PhaseRow {
+	r.t.Helper()
+	ctx := context.Background()
+	var rows []record.PhaseRow
+	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		rows, err = r.records.Phases(ctx, tx, r.key)
+		return err
+	}); err != nil {
+		r.t.Fatalf("read the phases of %s: %v", r.key, err)
+	}
+	for _, row := range rows {
+		if row.Role == role {
+			return row
+		}
+	}
+	r.t.Fatalf("%s has no phases row of %s", r.key, role)
+	return record.PhaseRow{}
 }
 
 // databaseNow is the store's clock, which the way back stamps the rollback's moment with.
