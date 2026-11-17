@@ -12,7 +12,7 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
-import { getIssue, patchIssue, putRepoProject } from "./api";
+import { createPriority, getIssue, patchIssue, putRepoProject } from "./api";
 import { nextFrames } from "./frames";
 import {
   closeDetails,
@@ -1136,5 +1136,407 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "a closed issue's labels can be edited"
     ).toBeDisabled();
     await expect(addControl(page), "a closed issue draws the add control").toHaveCount(0);
+  });
+});
+
+/** The priority's line in Details: the Advances row while the issue advances a priority, and
+ *  the control that adds one, beside Add, while it advances none. Both places carry the one test
+ *  id, and Details draws one of them at a time. */
+function priorityLine(page: Page): Locator {
+  return marginSlot(page).getByTestId("issue-advances");
+}
+
+/** A priority the rows below create for themselves, beside the seed's own: the second one an
+ *  issue advances, or the one its parent advances and it inherits. */
+const SECOND_PRIORITY_TITLE = "Details hold a second priority";
+
+/** What a row holds of the page's writes of one issue and of its reads of that issue after. */
+interface HeldIssue {
+  /** Resolves once the first write's answer has been handed to the page. */
+  readonly landed: Promise<void>;
+  /** How many reads of the issue are held. */
+  readonly readsHeld: () => number;
+  /** Lets every held read go, and resolves once one of them has answered the page. */
+  readonly releaseReads: () => Promise<void>;
+  /** Lets the held write go. */
+  readonly releaseWrite: () => void;
+  /** Resolves once the first write has left the page. */
+  readonly writeOut: Promise<void>;
+  /** How many writes of the issue the page has sent: one for each key a write goes under, so a
+   *  write the page sends again under its own key, as it does after a long silence, is one. */
+  readonly writes: () => number;
+}
+
+/**
+ * Counts every write of the issue `key` the page sends (`PATCH /api/v1/issues/<key>`), holds
+ * the first until `releaseWrite` where `holdWrite` is set, and holds every read of the issue the
+ * page asks for once a write has gone on to Dispatch, until `releaseReads`: so a row sees the page
+ * while the write is out, and between the write landing and the new read being drawn.
+ */
+async function holdIssue(page: Page, key: string, holdWrite: boolean): Promise<HeldIssue> {
+  const path = `/api/v1/issues/${key}`;
+  const writeKeys = new Set<string>();
+  let readsHeld = 0;
+  let holdingReads = false;
+  const writeOut = Promise.withResolvers<void>();
+  const writeGoes = Promise.withResolvers<void>();
+  const landed = Promise.withResolvers<void>();
+  const readsGo = Promise.withResolvers<void>();
+  if (!holdWrite) writeGoes.resolve();
+  await page.route(
+    (url) => url.pathname === path,
+    async (route) => {
+      const request = route.request();
+      if (request.method() === "PATCH") {
+        writeKeys.add(request.headers()["idempotency-key"] ?? `unkeyed ${writeKeys.size}`);
+        writeOut.resolve();
+        await writeGoes.promise;
+        // Held from before Dispatch takes the write: the issue's own event may ask for the read
+        // before the write's answer reaches the page.
+        holdingReads = true;
+        await route.fulfill({ response: await route.fetch() });
+        landed.resolve();
+        return;
+      }
+      if (request.method() !== "GET" || !holdingReads) return route.fallback();
+      readsHeld += 1;
+      await readsGo.promise;
+      // A read the page dropped meanwhile, as a later refresh of the same issue drops the one
+      // before it, has nothing left to answer.
+      await route.fallback().catch(() => undefined);
+    }
+  );
+  return {
+    landed: landed.promise,
+    readsHeld: () => readsHeld,
+    releaseReads: async () => {
+      const answered = page.waitForResponse(
+        (response) =>
+          response.request().method() === "GET" && new URL(response.url()).pathname === path
+      );
+      readsGo.resolve();
+      await answered;
+    },
+    releaseWrite: () => writeGoes.resolve(),
+    writeOut: writeOut.promise,
+    writes: () => writeKeys.size,
+  };
+}
+
+/** Waits until the page has asked for a read of the issue after its write, and that read is
+ *  held, then for the frames in which the page draws what it holds by then. */
+async function readHeld(page: Page, issue: HeldIssue): Promise<void> {
+  await expect
+    .poll(() => issue.readsHeld(), { message: "the page read the issue no more after its write" })
+    .toBeGreaterThan(0);
+  await nextFrames(page);
+}
+
+/** The rule every row below holds at `moment`: one write of the issue sent, and the focus on
+ *  the control or inside `region`, never on the page's body. */
+async function expectFocusKept(
+  page: Page,
+  region: Locator,
+  issue: HeldIssue,
+  moment: string
+): Promise<void> {
+  await nextFrames(page);
+  const focus = await region.evaluateAll((elements) => {
+    const active = document.activeElement;
+    if (active === null || active === document.body) return "the page's body";
+    return elements.some((element) => element.contains(active))
+      ? "kept"
+      : active.outerHTML.slice(0, 160);
+  });
+  expect(
+    { focus, writes: issue.writes() },
+    `${moment}: the focus left the control's place, or other than one write went out`
+  ).toEqual({ focus: "kept", writes: 1 });
+}
+
+// A control of Details shared with the rest of the page keeps the focus where the reader pressed
+// it while its write is out and until the new read is drawn, and a second press meanwhile sends
+// nothing. Each row presses its control by keyboard and holds the write, presses Enter again
+// while it is out, lets it land and holds the issue's read that follows, presses Enter again
+// while that read is held, and lets it go: at each of the three it reads where the focus is and
+// how many writes went out. The priority's rows act on ONE's Advances row, which stays drawn
+// through the write, so what they read is the shared line's alone.
+test.describe("the shared controls of Details keep the focus while their write lands", () => {
+  test("Details' priority Remove keeps the focus in the priority's line while the removal lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.fail(
+      true,
+      "the shared priority Remove is disabled while its write is out, which drops the focus to the page's body; owed until that control is fixed"
+    );
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { one, parent } = seeded.keys;
+      // ONE's parent advances a second priority, which ONE inherits, so the Advances row is
+      // still drawn once ONE's own priority is removed.
+      const inherited = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await patchIssue(parent, { advances: [inherited.id] });
+      await gotoIssue(page, `/issues/${one}`);
+      await openDetails(page);
+      const advances = detailsRow(page, PROPERTY_LABELS.advances);
+      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      const remove = advances.getByRole("button", { name: /^Remove / });
+      await expect(remove).toHaveCount(1);
+      const issue = await holdIssue(page, one, true);
+      await remove.focus();
+      await expect(remove).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter while it is out"
+      );
+      issue.releaseWrite();
+      await issue.landed;
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter between the removal landing and the new read"
+      );
+      await issue.releaseReads();
+      await expect(advances.getByRole("button", { name: /^Remove / })).toHaveCount(0);
+      await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
+      await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
+    });
+  });
+
+  test("Details' Add a priority keeps the focus in the priority's line while the added priority lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.fail(
+      true,
+      "the shared priority line closes its form and disables its add control while its write is out, which drops the focus to the page's body; owed until that control is fixed"
+    );
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { one } = seeded.keys;
+      const second = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
+      await gotoIssue(page, `/issues/${one}`);
+      await openDetails(page);
+      const advances = detailsRow(page, PROPERTY_LABELS.advances);
+      const addPriority = advances.getByRole("button", {
+        name: `${CONTROL_LABELS.add_priority} to ${one}`,
+      });
+      await addPriority.focus();
+      await expect(addPriority).toBeFocused();
+      await page.keyboard.press("Enter");
+      const picker = advances.getByRole("combobox", { name: CONTROL_LABELS.priority_to_advance });
+      await expect(picker).toBeFocused();
+      await expect(picker.locator("option", { hasText: SECOND_PRIORITY_TITLE })).toHaveCount(1);
+      // The one priority ONE does not advance yet, the first after the picker's empty choice.
+      await page.keyboard.press("ArrowDown");
+      await expect(picker).toHaveValue(second.id);
+      const issue = await holdIssue(page, one, true);
+      await page.keyboard.press("Tab");
+      const add = picker
+        .locator("xpath=ancestor::form[1]")
+        .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+      await expect(add).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter while it is out"
+      );
+      issue.releaseWrite();
+      await issue.landed;
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        priorityLine(page),
+        issue,
+        "after a second Enter between the added priority landing and the new read"
+      );
+      await issue.releaseReads();
+      await expect(advances.getByRole("link")).toHaveCount(2);
+      await expectFocusKept(page, priorityLine(page), issue, "once the new read is drawn");
+    });
+  });
+
+  test("Details' Blocked by Save keeps the focus in its row while the save is out and lands, and sends one write", async ({
+    browser,
+  }) => {
+    test.fail(
+      true,
+      "the shared Save of the field forms is disabled while its save is out, which drops the focus to the page's body; owed until that control is fixed"
+    );
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { three, two } = seeded.keys;
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      await open.focus();
+      await page.keyboard.press("Enter");
+      await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
+      await page.keyboard.type(three);
+      const issue = await holdIssue(page, two, true);
+      const save = row.getByRole("button", { exact: true, name: CONTROL_LABELS.save_blocked_by });
+      await save.focus();
+      await expect(save).toBeFocused();
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(page, row, issue, "after a second Enter while the save is out");
+      issue.releaseWrite();
+      await issue.landed;
+      // The save's answer is drawn as it lands: TWO waits on THREE.
+      await expect(row.getByRole("link", { exact: true, name: three })).toBeVisible();
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        row,
+        issue,
+        "after a second Enter between the save landing and the new read"
+      );
+      await issue.releaseReads();
+      await expectFocusKept(page, row, issue, "once the new read is drawn");
+    });
+  });
+
+  test("Details' Blocked by Cancel keeps the focus in its row while the save is out, and the save sends one write", async ({
+    browser,
+  }) => {
+    test.fail(
+      true,
+      "the shared Cancel of the field forms is disabled while its save is out, so it cannot take the focus; owed until that control is fixed"
+    );
+    test.setTimeout(120_000);
+    await phase(browser, seedDetailsIssue, async (page, seeded) => {
+      const { three, two } = seeded.keys;
+      await gotoIssue(page, `/issues/${two}`);
+      await openDetails(page);
+      const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
+      const open = row.getByRole("button", { name: `Add issues ${two} waits on` });
+      await open.focus();
+      await page.keyboard.press("Enter");
+      await expect(row.getByLabel(`Issues ${two} waits on`, { exact: true })).toBeFocused();
+      await page.keyboard.type(three);
+      const issue = await holdIssue(page, two, true);
+      // The box's Enter sends the list, so Save never held the focus as the save went out.
+      await page.keyboard.press("Enter");
+      await issue.writeOut;
+      await nextFrames(page);
+      const cancel = row.getByRole("button", { exact: true, name: CONTROL_LABELS.cancel });
+      await cancel.focus();
+      await expect(cancel, "Cancel does not take the focus while the save is out").toBeFocused();
+      await page.keyboard.press("Enter");
+      await expectFocusKept(page, row, issue, "after Cancel's Enter while the save is out");
+      issue.releaseWrite();
+      await issue.landed;
+      // The save's answer is drawn as it lands: TWO waits on THREE.
+      await expect(row.getByRole("link", { exact: true, name: three })).toBeVisible();
+      await readHeld(page, issue);
+      await page.keyboard.press("Enter");
+      await expectFocusKept(
+        page,
+        row,
+        issue,
+        "after a second Enter between the save landing and the new read"
+      );
+      await issue.releaseReads();
+      await expectFocusKept(page, row, issue, "once the new read is drawn");
+    });
+  });
+});
+
+// Details draws the priority's line in one of two places: beside Add while the issue advances
+// none, and in the Advances row once it advances one. The first priority added and the last one
+// removed move the line from one place to the other, and the focus the line held moves with it,
+// to a control of the line or to Add, rather than fall to the page's body with the line it left.
+// These two rows read only where the focus is once the new read is drawn, and the writes sent.
+test("Details' Add a priority on an issue that advances none keeps the focus in Details' priority place once the line moves into the Advances row, and sends one write", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { three } = seeded.keys;
+    await gotoIssue(page, `/issues/${three}`);
+    await openDetails(page);
+    const addPriority = priorityLine(page).getByRole("button", {
+      name: `${CONTROL_LABELS.add_priority} to ${three}`,
+    });
+    await addPriority.focus();
+    await expect(addPriority).toBeFocused();
+    await page.keyboard.press("Enter");
+    const picker = priorityLine(page).getByRole("combobox", {
+      name: CONTROL_LABELS.priority_to_advance,
+    });
+    await expect(picker).toBeFocused();
+    await expect(picker.locator("option", { hasText: PRIORITY_TITLE })).toHaveCount(1);
+    // The first priority after the picker's empty choice, by its arrow key.
+    await page.keyboard.press("ArrowDown");
+    await expect(picker).toHaveValue(seeded.priorityId);
+    const issue = await holdIssue(page, three, false);
+    await page.keyboard.press("Tab");
+    const add = picker
+      .locator("xpath=ancestor::form[1]")
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.add });
+    await expect(add).toBeFocused();
+    await page.keyboard.press("Enter");
+    await issue.landed;
+    await readHeld(page, issue);
+    await issue.releaseReads();
+    // THREE advances the priority now, so its line is the Advances row.
+    await expect(detailsRow(page, PROPERTY_LABELS.advances).getByRole("link")).toHaveCount(1);
+    await expectFocusKept(
+      page,
+      priorityLine(page).or(addControl(page)),
+      issue,
+      "once the new read moved the line into the Advances row"
+    );
+  });
+});
+
+test("Details' priority Remove of an issue's last priority keeps the focus in Details' priority place once the line moves back beside Add, and sends one write", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedDetailsIssue, async (page, seeded) => {
+    const { one } = seeded.keys;
+    await gotoIssue(page, `/issues/${one}`);
+    await openDetails(page);
+    const remove = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
+      name: /^Remove /,
+    });
+    await expect(remove).toHaveCount(1);
+    const issue = await holdIssue(page, one, false);
+    await remove.focus();
+    await expect(remove).toBeFocused();
+    await page.keyboard.press("Enter");
+    await issue.landed;
+    await readHeld(page, issue);
+    await issue.releaseReads();
+    // ONE advances nothing now, so its line is the control beside Add.
+    await expect(detailsRow(page, PROPERTY_LABELS.advances)).toHaveCount(0);
+    await expect(
+      priorityLine(page).getByRole("button", { name: `${CONTROL_LABELS.add_priority} to ${one}` })
+    ).toBeVisible();
+    await expectFocusKept(
+      page,
+      priorityLine(page).or(addControl(page)),
+      issue,
+      "once the new read moved the line back beside Add"
+    );
   });
 });
