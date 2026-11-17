@@ -333,7 +333,59 @@ root=$(written shell)
 replace "$root/.github/workflows/release.yaml" $'        id: version\n' $'        id: version\n        shell: python\n'
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the shell" "$(contains "$out" "runs under \`python\`, not bash")"
+check "names the shell" "$(contains "$out" "its own shell: is \`python\`, where legion_build's step \`version\` must run under \`bash\` itself")"
+
+# A file of shell a shell sources before the run:, and a shell line other than `bash` itself, can
+# each set the variables in place of the workflow's: version-startup.sh below is the file each case
+# names, and it empties the block.
+startup='LEGION_GO_INPUTS='
+echo "case: the workflow's env: sets BASH_ENV"
+root=$(written bashenv)
+printf '%s\n' "$startup" > "$root/version-startup.sh"
+replace "$root/.github/workflows/release.yaml" $'env:\n  LEGION_VERSION_ARGS' $'env:\n  BASH_ENV: ./version-startup.sh\n  LEGION_VERSION_ARGS'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the scope and the variable" \
+  "$(contains "$out" "the workflow's env: sets BASH_ENV, which names a file of shell a shell sources before legion_build's step \`version\`'s run:")"
+
+echo "case: the job's env: sets ENV"
+root=$(written jobenv-env)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    env:\n      ENV: ./version-startup.sh\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "its job's env: sets ENV")"
+
+echo "case: the listener's confirm step's own env: sets BASH_ENV"
+root=$(written stepenv-bashenv)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'          VERSION: ${{ needs.release_build.outputs.version }}\n' \
+  $'          VERSION: ${{ needs.release_build.outputs.version }}\n          BASH_ENV: ./version-startup.sh\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it and the step" "$(contains "$out" "its own env: sets BASH_ENV, which names a file of shell a shell sources before release_publish's step \`confirm\`")"
+
+echo "case: the job's defaults.run.shell is a bash that sources a file first"
+root=$(written rcfile)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' \
+  $'    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        shell: bash --noprofile --rcfile ./version-startup.sh -i {0}\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the shell line" \
+  "$(contains "$out" "its job's defaults.run shell: is \`bash --noprofile --rcfile ./version-startup.sh -i {0}\`")"
+
+echo "case: the workflow's defaults.run.shell is sh"
+root=$(written workflow-shell)
+replace "$root/.github/workflows/release.yaml" $'jobs:\n' $'defaults:\n  run:\n    shell: sh -e {0}\njobs:\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "the workflow's defaults.run shell: is \`sh -e {0}\`")"
+
+echo "case: an earlier step of the job writes \$GITHUB_PATH"
+root=$(written githubpath)
+replace "$root/.github/workflows/release.yaml" $'    steps:\n' $'    steps:\n      - run: echo "$PWD/fake-bin" >> "$GITHUB_PATH"\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the earlier step's write" \
+  "$(contains "$out" "a step of legion_build before legion_build's step \`version\` writes \$GITHUB_PATH, which can put another bash first")"
 
 echo "case: the listener's confirm step sets its paths' variable"
 root=$(written confirmenv)
