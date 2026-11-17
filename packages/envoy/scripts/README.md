@@ -326,7 +326,11 @@ nats-server's own words (`Permissions Violation for Subscription to "..."`); a c
 with no credential is refused; a token neither broker issued is refused (a stand-in token
 endpoint plays the other broker); the hub lists the listener's connection authorized as
 `listener/<its machine id>`; and with one broker killed, three new sessions are each
-admitted within 2 s. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
+admitted within 2 s, the first counted from the kill. A session opened before the hub has
+read the killed broker's close can be routed to the dead replica and refused at the hub's
+authorization timeout, so the check opens the first session once the hub's connection list
+no longer names that broker's `envoy-broker-callout` connection, and says how long the drop
+took. The last line is `all 6 assertions passed` (exit 0) or `<k> of 6
 assertions failed` (exit 1); a probe that reports nothing reads `UNKNOWN` and fails.
 
 ```bash
@@ -342,7 +346,9 @@ outlives. Each probe is `natsprobe` (`cmd/natsprobe`), which tries any one subje
 hand too: as a session it trades the stack's pod token for a broker token, as a service
 it presents `--service-token-file`, and `--no-credential` presents nothing.
 `callout-check.test.sh` holds the verdicts to fakes, including the negative control:
-`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2.
+`CALLOUT_CHECK_GRANT_ALL=1`, a service granting every session's channel, fails line 2, and
+a hub that never drops the killed broker's connection fails line 6.
+
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
