@@ -78,6 +78,40 @@ function renderLiveTab(read: () => IssueSteps | Promise<IssueSteps>, shown = tru
   };
 }
 
+// An event of the issue that comes with a phase moving redraws the tab with no reload: the
+// refresh is the event feed's own, so the read it reaches must be the very query the tab renders,
+// however that query names its key. The rows are read at 1.5 s: the event's read waits out the
+// second after the tab's first read, and the catch-up of the tab being shown reads again only at
+// 2 s, so only the event's read can have redrawn them.
+test("an event of the issue redraws the Steps tab's rows with what the records now hold", async () => {
+  await onFakeClock(async () => {
+    let answer: IssueSteps = {
+      issue: "CORE-1",
+      tasks: [
+        { steps: [stepRecord({ ended_at: null, id: "implement-1", result: "" })], task: "default" },
+      ],
+    };
+    const tab = renderLiveTab(() => answer);
+    try {
+      await tick(0);
+      expect(screen.getByRole("table", { name: "Steps of task default" })).toBeDefined();
+      expect(screen.getByRole("cell", { name: "running" })).toBeDefined();
+
+      answer = {
+        issue: "CORE-1",
+        tasks: [{ steps: [stepRecord({ id: "implement-1" })], task: "default" }],
+      };
+      tab.deliver();
+      await tick(1_500);
+      expect(screen.getByRole("cell", { name: "passed" })).toBeDefined();
+      expect(screen.queryByRole("cell", { name: "running" })).toBeNull();
+      expect(tab.listSteps).toHaveBeenCalledTimes(2);
+    } finally {
+      tab.restore();
+    }
+  });
+});
+
 test("a record written 30 seconds after its event shows with no other event and no reload", async () => {
   await onFakeClock(async () => {
     let answer = NO_STEPS;
