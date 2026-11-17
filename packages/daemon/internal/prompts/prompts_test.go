@@ -709,13 +709,17 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // function that writes it into the task, and whose review sets it: the session the daemon recorded
 // on the claim it started the reviewer under, in the first round as in every later one, in a review
 // whose Legion footer names the entry on the reviewer's row (` Review entry: <n>.`, the task's last
-// sentence, record.PhaseRow.Entry) while that row holds the entry's task. No time is compared, so
-// the sentence that named the moment of the entry (PhaseRow.EntryRaisedAt) is gone. It says to
-// read the difference from that commit and each thread, gives the thermonuclear pair that same
-// diff, keeps every defect seen outside it a finding, and names the three cases that read the
-// whole change again. The pair's old sentence, which ran it over the whole change in every round,
-// is gone, and so is the citation of reviewedPart, which picks the commit and writes nothing. This
-// shows the text is loaded, never that a reviewer follows it.
+// sentence, record.PhaseRow.Entry, which the task of a wake ends with too) while that row holds the
+// entry's task. No time is compared, so the sentence that named the moment of the entry
+// (PhaseRow.EntryRaisedAt) is gone. The core part names the commit in the daemon part's words, the
+// head the Legion footer of the reviewer's own newest deciding review named, since a deciding review
+// whose footer names no entry or another one moves no commit, and its sentence that named the
+// commit the reviewer's own last approval or request for changes read is gone. It says to read the
+// difference from that commit and each thread, gives the thermonuclear pair that same diff, keeps
+// every defect seen outside it a finding, and names the three cases that read the whole change
+// again. The pair's old sentence, which ran it over the whole change in every round, is gone, and so
+// is the citation of reviewedPart, which picks the commit and writes nothing. This shows the text is
+// loaded, never that a reviewer follows it.
 func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -729,6 +733,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
 		"Your task names the entry of your round as its last sentence, `Review entry: <n>.`: the number of your entry into the round, which the daemon keeps on your phase row (`PhaseRow.Entry` in `packages/daemon/internal/record/record.go`) and raises at each new entry.",
+		"The task a wake gives you once your pod was released and brought back ends with it too, as each task of the round does.",
+		"When the task of a round names `Last reviewed commit: <commit>`, the head the Legion footer of your own newest deciding review named (the daemon part below says which review that is), read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App whose footer names the entry your row holds, and which the daemon took as its round's decision while your row held that entry's task, which a new generation's clear empties until the daemon enters you again.",
 		"A `COMMENT`, a review the daemon set aside, a person's review and a review whose footer names no entry or another than your row's, such as one of a round before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
 		"the head read by the newest of your own deciding reviews whose footer named the entry of its round; the daemon part below gives the whole rule and where the commit comes from.",
@@ -752,6 +758,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"after the daemon last entered you into that round",
 		"a review submitted before that entry",
 		"the newest of your own deciding reviews that the daemon recorded",
+		"your own last approval or request for changes read",
 	} {
 		if strings.Contains(text, retired) {
 			t.Errorf("the composed reviewer prompt still says %q", retired)

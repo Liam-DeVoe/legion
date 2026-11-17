@@ -587,10 +587,11 @@ test("a later review round reads from the commit its task names, and the pair re
 // hand-over's promotion entered the reviewer again, names another. A review with no entry still
 // decides its round, so the skill says so rather than leaving the entry to read as a condition of
 // the decision. A comment and another role's review carry none, since no other role's task names
-// one. The entry is a JSON string, so that a placeholder left in it cannot make the footer invalid
-// JSON, which would lose its session and its head too; each file says why, and neither shows the
-// unquoted footer. The daemon's prompts carry the same footer, and their daemon part gives the
-// rule whole; prompts_test.go pins the composed reviewer prompt.
+// one. A wake's task ends with the round's entry as each task of the round does, so the skill's
+// item on a released pod says so. The entry is a JSON string, so that a placeholder left in it
+// cannot make the footer invalid JSON, which would lose its session and its head too; each file
+// says why, and neither shows the unquoted footer. The daemon's prompts carry the same footer, and
+// their daemon part gives the rule whole; prompts_test.go pins the composed reviewer prompt.
 test("the reviewer's review footer names the entry of its round", () => {
   const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
   const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
@@ -601,6 +602,7 @@ test("the reviewer's review footer names the entry of its round", () => {
       withEntry,
       "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that a task or a wake of its session gave it, in quotes, because a footer that is not valid JSON loses its session and its head too and is set aside.",
       "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
+      "The task a wake gives you says which wake brought the pod back, and the reviewer's, in a review round, ends with the round's entry too, `Review entry: <n>.`, as each of its tasks there does.",
       "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
       "a review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
     ]
