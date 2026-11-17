@@ -55,7 +55,7 @@ The rule holds for every later phase too. No phase of an issue whose phases star
 ## 4. Integration verification
 
 - Prove every criterion of your issue in its own pull request, never in a child: a child that proves its parent defers the tree's own verification. A parent's head carries the merges of every child its checks need: `skill://legion-architect/references/acceptance.md`, "A parent's head".
-- Read the issue's own tester evidence, not a child pull request's check status. A failed check goes back to its implementer by the daemon's table; for an issue with children, a code defect goes into an open child's pull request or a new child, as decomposition.md says; a fix that belongs in other work follows section 1's sizing reasons and red-team check. Never downgrade a parent criterion or carry the failure forward.
+- Read the issue's own tester evidence, not a child pull request's check status. A failed check goes back to its implementer by the daemon's table; a fix that belongs in other work follows section 1's sizing reasons and red-team check. Never downgrade a parent criterion or carry the failure forward.
 - While the work is built, a role runs the application from the issue's branch and uses it as its user would: a passing check does not show that a person can do their job with it. Where the work is a page or a tool a person uses, offer the person it is for a running build before the review, because a change they ask for then costs less than one after it. The deployment's instructions say how a pod runs one.
 
 ## 5. Retro
@@ -82,7 +82,7 @@ A tree often brings its own shortfall written up; that is no permission: your jo
 Post it as a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 
 - `sign_off` works only in `accepting` (`SIGNOFF_OUTSIDE_ACCEPTING`, and `WAITING_ON_CHILDREN` in `awaiting_children`, section 3), and the daemon refuses it while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), so a parent is accepted after its children, on a head that carries the merges of every child its checks need (section 4).
-- When no pass stands for a check at that head, or a result contradicts what you read: `request_backward_move` with `issue`, `to` (`implementing` or `testing`) and a `reason` naming the check by its block id. It counts a review round. A `ci_check` run still going, or GitHub unread, is waited for and moves nothing back. A name no run answers is yours to correct in the check's words.
+- When no pass stands for a check at that head, or a result contradicts what you read: `request_backward_move` with `issue`, `to` (`implementing` or `testing`) and a `reason` naming the check by its block id; for an issue with children, a code defect goes into an open child's pull request or a new child, as decomposition.md says. It counts a review round. A `ci_check` run still going, or GitHub unread, is waited for and moves nothing back. A name no run answers is yours to correct in the check's words.
 - On every end-game wake (`phase-finished`, `catch-up`, `checks-red`, `review-stuck`), read `gh pr view <n> --json mergeable,mergeStateStatus`, because a `CONFLICTING` pull request gets no CI and no wake. Then, and after acceptance, follow `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close

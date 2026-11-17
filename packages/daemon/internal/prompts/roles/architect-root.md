@@ -149,7 +149,7 @@ It can also conflict with the default branch.
 Many small pull requests each cost a workspace, an admission wait, review, CI, a queue wait and a deploy.
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
-A child is never a place for a to-do, a fix found in review, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a review fix of the issue's own code, a proof of the root's acceptance or a part of your own work (`skill://legion-architect`, section 1).
 A repeated change is one child, never one per instance.
 A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
@@ -183,7 +183,8 @@ requirement of its spec, the plan, the body and the diff; `wait` for its report,
 each `unmet` finding there.
 Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
-`implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
+`implementing` or `testing`, `reason`); a parent's code fix goes to a child.
+Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A result a child recorded against one of the root's
