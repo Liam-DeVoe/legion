@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -129,6 +130,31 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The architect ends no phase: phase.Of names none for it outside admitted and accepting, and the
+// route falls back to the issue's phase only to read the handoff record. So an architect's
+// completion while its issue stands in retro is not the retro's, though the phase it falls back to
+// is: one carrying a rating is refused PLAN_RATING_UNEXPECTED before the workflow reads it, and one
+// carrying none is not asked for a rating and reaches the workflow, which refuses an architect's
+// completion of its own accord (ACCEPTANCE_IS_SIGN_OFF). The issue stays in retro either way.
+func TestAnArchitectsCompletionInTheRetroIsNotTheRetros(t *testing.T) {
+	if of := phase.Of(claim.RoleArchitect, phase.Retro); of != "" {
+		t.Fatalf("the architect's completion at retro is of %q, want none: this case proves nothing", of)
+	}
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Retro)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	if got := pluginContractOf(t, h, architect.token); got < PlanRatingContract {
+		t.Fatalf("the architect's plugin declared contract %d, below PlanRatingContract %d: this case proves nothing", got, PlanRatingContract)
+	}
+
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee",
+		PlanRating: new(3), PlanReason: new("The plan fit the work.")}), http.StatusBadRequest, "PLAN_RATING_UNEXPECTED")
+	assertIssuePhase(t, h, phase.Retro)
+	refused(t, h.complete(HandoffCompleteRequest{GrantID: architect.grant(t), Summary: "accepted", Commit: "c0ffee"}),
+		http.StatusConflict, "ACCEPTANCE_IS_SIGN_OFF")
+	assertIssuePhase(t, h, phase.Retro)
 }
 
 // A rating is a whole number from 1 to 5 and its reason says why, in one to planReasonMax
