@@ -31,6 +31,10 @@ const (
 	runCommentWord       = "brindlecove"
 )
 
+// trailingFindingText is the project finding alice writes under the project lens after her hidden
+// one, so that her block stands between two project blocks of the same lens.
+const trailingFindingText = "The rollback script was never rehearsed."
+
 // findingAddressForm is the address of a finding of a lens, `dispatch://lens/<uuid>#b-<id>`, with
 // the lens's uuid and the block id as its two groups.
 var findingAddressForm = regexp.MustCompile(`^dispatch://lens/([0-9a-f-]{36})#b-([0-9a-f-]{36})$`)
@@ -45,7 +49,27 @@ type credentialReads struct {
 	name    string
 	// login is the cookie's person, and token the personal token's plaintext; one of them is set.
 	login, token string
-	bodies       []string
+	// actor is what the server resolves the credential to (resolvedBy), which every backlink
+	// count of this test is read as.
+	actor  model.Actor
+	bodies []string
+}
+
+// resolvedBy is the actor resolver resolves the credential to, as every route resolves the caller
+// of a request (server.optionalActor): a request carrying the credential as get sends it.
+func (c *credentialReads) resolvedBy(resolver *server) model.Actor {
+	c.t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/references", nil)
+	if c.token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.token)
+	} else {
+		request.Header.Set("X-Dispatch-User", c.login)
+	}
+	actor, _, err := resolver.optionalActor(request)
+	if err != nil {
+		c.t.Fatalf("%s: resolve the credential: %v", c.name, err)
+	}
+	return actor
 }
 
 // get reads target with the credential.
@@ -117,6 +141,33 @@ type keptPage struct {
 	specLines, projectLensLines []string
 	references                  map[string][]string
 	counts                      map[string]int
+}
+
+// requireSamePage fails on each read of got that answers otherwise than the same read of want,
+// what naming the two pages.
+func requireSamePage(t *testing.T, what string, got, want keptPage) {
+	t.Helper()
+	if !slices.Equal(got.constraints, want.constraints) {
+		t.Errorf("%s: the constraint list is %v, against %v", what, got.constraints, want.constraints)
+	}
+	for name, lines := range map[string][2][]string{
+		"the spec":         {got.specLines, want.specLines},
+		"the project lens": {got.projectLensLines, want.projectLensLines},
+	} {
+		if !slices.Equal(lines[0], lines[1]) {
+			t.Errorf("%s: the lens read of %s answers\n%s\nagainst\n%s", what, name, strings.Join(lines[0], "\n"), strings.Join(lines[1], "\n"))
+		}
+	}
+	for target, ends := range want.references {
+		if !slices.Equal(got.references[target], ends) {
+			t.Errorf("%s: %s answers the edges %v, against %v", what, target, got.references[target], ends)
+		}
+	}
+	for name, count := range want.counts {
+		if got.counts[name] != count {
+			t.Errorf("%s: %d backlinks of %s, against %d", what, got.counts[name], name, count)
+		}
+	}
 }
 
 // lensReadLines names everything a lens read answers that a reader could count or tell one node
@@ -220,36 +271,62 @@ func requireOnlyTheFiveKindsTakeAuthor(t *testing.T) {
 // interaction - is answered to its author and to nobody else, and no other kind takes author.
 //
 // Two people each read and write with a cookie of their own, and each holds a personal token with
-// the person scope. Alice's cookie writes the project nodes: a pre-mortem on the spec holding one
-// finding, a risk under it, a constraint, and the requirement's constrained_by to that constraint.
-// Each person's reads of them are kept: the constraint list, the lens read of the spec and of the
-// project lens, the references of the spec, the requirement and the project lens in both
-// directions, and the backlink count of each of those nodes and of the project finding, risk and
-// constraint. Alice's cookie then writes, each reserved for her and each carrying one word no other
-// node carries, a pre-mortem on the spec triggered by the project lens, a risk under it, a
-// constraint, and a finding under the project lens; points the requirement at her constraint;
-// records a run of the command bar; and writes a comment on the issue under the run's header.
+// the person scope; every backlink count is read as the actor the server resolves the credential
+// to (server.optionalActor). Alice's cookie writes the project nodes: a pre-mortem on the spec
+// holding one finding, a risk under it, a second lens on the spec triggered by the pre-mortem, so
+// the two make a chain, a constraint, and the requirement's constrained_by to that constraint.
+// What each of the four credentials reads of them is kept, and is the same: the constraint list,
+// the lens read of the spec and of the project lens, the references of the spec, the requirement
+// and the project lens in both directions, and the backlink count of each of those nodes and of
+// the project finding, risk and constraint. Alice's cookie then writes, each reserved for her and
+// each carrying one word no other node carries, a pre-mortem on the spec triggered by the project
+// lens, a risk under it, a constraint, and a finding under the project lens; points the
+// requirement at her constraint; records a run of the command bar; and writes a comment on the
+// issue under the run's header.
 //
-// Alice reads each of her nodes in its list beside the project node and at its own address with
-// visibility author, and her backlink count of the spec is one higher, her lens's part_of. Bob's
-// repeat of every kept read answers what it answered, each of her five nodes at its address
-// answers what an address of its kind nobody holds answers, byte for byte, and no answer he read
-// holds the text of any of them, beside the same text found in hers. Search answers no hit for any
-// of the five words, to both, beside the comment's word found. Alice's personal token reads her
-// four nodes of the kinds that compare the person, bob's reads none. Last, a comment asked for
-// author is refused naming its kind, and the comment list holds no new comment.
+// Alice reads each of her nodes in its list beside the project node, her lens in the chain of the
+// two project lenses, and each at its own address with visibility author. Her backlink count of
+// the spec is one higher, her lens's part_of; her ?to= of the project lens holds her finding's
+// part_of and her lens's triggered_by, and its count is two higher; her personal token reads all
+// of it as her cookie does. Each of bob's credentials repeats every kept read and is answered what
+// it was, the project lens and its chain of the two project lenses among it, so the same reads
+// that move for alice stand still for him. Each of her five nodes at its address answers him what
+// an address of its kind nobody holds answers, byte for byte, and no answer he read holds the text
+// of any of them, beside the same text found in hers. A second project finding written after her
+// hidden one reads, to him, at the rank alice reads of it, the store's key of its part_of, so no
+// gap is left where hers stands. Search answers no hit for any of the five words, to both, beside
+// the comment's word found. Alice's personal token reads her four nodes of the kinds that compare
+// the person, bob's reads none. Last, a comment asked for author is refused naming its kind, and
+// the comment list holds no new comment.
 func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	requireOnlyTheFiveKindsTakeAuthor(t)
 
 	rig := newReasoningRig(t)
 	ctx := context.Background()
 	const alice, bob = "alice", "bob"
+	// What the rig's server resolves the credential of a request to (server.optionalActor): its
+	// store, its people and its shared token, as newRegisteredTestServer boots it.
+	resolver := directServer(Deps{Store: rig.database, Identity: headerIdentity(rig.database), AgentTokens: sharedAgentTokens(t, "agent-token")})
 	reader := func(name, login, token string) *credentialReads {
-		return &credentialReads{t: t, handler: rig.handler, name: name, login: login, token: token}
+		t.Helper()
+		reads := &credentialReads{t: t, handler: rig.handler, name: name, login: login, token: token}
+		reads.actor = reads.resolvedBy(resolver)
+		return reads
 	}
 	aliceCookie, bobCookie := reader("alice's cookie", alice, ""), reader("bob's cookie", bob, "")
 	aliceToken := reader("alice's personal token", "", personalTokenOwnedBy(t, rig.database, alice, model.ScopePerson))
 	bobToken := reader("bob's personal token", "", personalTokenOwnedBy(t, rig.database, bob, model.ScopePerson))
+	for _, resolved := range []struct {
+		reads  *credentialReads
+		person string
+	}{{aliceCookie, alice}, {aliceToken, alice}, {bobCookie, bob}, {bobToken, bob}} {
+		actor, cookie := resolved.reads.actor, resolved.reads.token == ""
+		if cookie && (actor.Kind != "user" || actor.ID != resolved.person) ||
+			!cookie && (actor.Owner == nil || *actor.Owner != resolved.person || actor.Credential == nil) {
+			t.Fatalf("%s resolves as %+v, want a credential that proves %s", resolved.reads.name, actor, resolved.person)
+		}
+	}
+	readers := []*credentialReads{aliceCookie, aliceToken, bobCookie, bobToken}
 	created := func(name string, response *httptest.ResponseRecorder, status int) *httptest.ResponseRecorder {
 		t.Helper()
 		t.Logf("alice's cookie writes %s: status=%d body=%s", name, response.Code, response.Body.String())
@@ -271,6 +348,13 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		"lens": project.Address, "heading": "The migration locks the table.", "early_warning": "Writes queue.",
 		"prevention": "Build the index concurrently.",
 	}, alice), http.StatusCreated))
+	// The second project lens, triggered by the first, so the two make a chain every reader reads.
+	chained := rig.invoke(rig.spec, "trade-off", alice, map[string]any{
+		"verdict": "The index build fits in the maintenance window.", "triggered_by": project.Address,
+	})
+	if chained.Visibility != graphstore.VisibilityProject || chained.TriggeredBy == nil || *chained.TriggeredBy != project.Address {
+		t.Fatalf("the second project lens answers %+v, want a project lens triggered by %s", chained, project.Address)
+	}
 	projectConstraint := decodeBody[constraintRead](t, created("the project constraint", rig.post("/constraints",
 		map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"}, alice), http.StatusCreated))
 	created("the requirement's constrained_by to the project constraint", rig.post(nodePath(rig.requirementNode, "pointers"), map[string]any{
@@ -299,7 +383,7 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 			}
 		}
 		for _, node := range counted {
-			counts, err := refs.BacklinkCounts(ctx, rig.database.Pool, model.Actor{Kind: "user", ID: reads.login}, node.kind, []string{node.id}, nil)
+			counts, err := refs.BacklinkCounts(ctx, rig.database.Pool, reads.actor, node.kind, []string{node.id}, nil)
 			if err != nil {
 				t.Fatalf("%s: count the backlinks of %s: %v", reads.name, node.name, err)
 			}
@@ -308,7 +392,15 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		t.Logf("%s: the constraint list %v; the backlink counts %v", reads.name, page.constraints, page.counts)
 		return page
 	}
-	kept := map[string]keptPage{alice: read(aliceCookie), bob: read(bobCookie)}
+	kept := map[*credentialReads]keptPage{}
+	for _, reads := range readers {
+		kept[reads] = read(reads)
+	}
+	// Before alice's writes every node is the project's, so each credential reads what her cookie
+	// reads, the counts as each credential resolves among it.
+	for _, reads := range readers[1:] {
+		requireSamePage(t, reads.name+" before alice's writes, against alice's cookie", kept[reads], kept[aliceCookie])
+	}
 
 	// Alice's five author-only nodes, each written by her cookie, which proves her, and each
 	// accepted.
@@ -388,14 +480,16 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		}
 	}
 
-	// Alice: each of her nodes is in the list of its kind beside the project node.
+	// Alice: each of her nodes is in the list of its kind beside the project node, and her personal
+	// token reads every kept read as her cookie does, the counts as it resolves among them.
 	alicePage := read(aliceCookie)
+	requireSamePage(t, aliceToken.name+" after alice's writes, against her cookie", read(aliceToken), alicePage)
 	if want := []string{projectConstraint.Address, hiddenConstraint.Address}; !slices.Equal(alicePage.constraints, want) {
 		t.Errorf("alice's constraint list is %v, want the project constraint and then hers, %v", alicePage.constraints, want)
 	}
 	aliceSpec := aliceCookie.lenses(rig.spec)
-	if got, want := readAddresses(aliceSpec.Lenses), []string{project.Address, hiddenLens.Address}; !slices.Equal(got, want) {
-		t.Errorf("alice's lens read of the spec holds the lenses %v, want hers beside the project lens, %v", got, want)
+	if got, want := readAddresses(aliceSpec.Lenses), []string{project.Address, chained.Address, hiddenLens.Address}; !slices.Equal(got, want) {
+		t.Errorf("alice's lens read of the spec holds the lenses %v, want hers after the two project lenses, %v", got, want)
 	}
 	if her := lensNamed(t, aliceSpec.Lenses, hiddenLens.Address); her.Visibility != graphstore.VisibilityAuthor ||
 		her.Verdict == nil || *her.Verdict != hiddenLensVerdict || !slices.Equal(her.TriggeredBy, []string{project.Address}) {
@@ -405,9 +499,10 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		t.Errorf("alice's lens read of the spec holds the risks %v, want hers beside the project risk, %v", got, want)
 	}
 	aliceProject := lensNamed(t, aliceSpec.Lenses, project.Address)
-	if len(aliceSpec.Chains) != 1 || !slices.Equal(readAddresses(aliceSpec.Chains[0].Lenses), []string{project.Address, hiddenLens.Address}) ||
-		!slices.Equal(aliceProject.Triggered, []string{hiddenLens.Address}) {
-		t.Errorf("alice's lens read answers the chains %+v and the project lens triggering %v, want the one chain of the project lens and hers",
+	if len(aliceSpec.Chains) != 1 || aliceSpec.Chains[0].StoppedAt != nil ||
+		!slices.Equal(readAddresses(aliceSpec.Chains[0].Lenses), []string{project.Address, chained.Address, hiddenLens.Address}) ||
+		!slices.Equal(aliceProject.Triggered, []string{chained.Address, hiddenLens.Address}) {
+		t.Errorf("alice's lens read answers the chains %+v and the project lens triggering %v, want the one chain of the two project lenses and hers, whole",
 			aliceSpec.Chains, aliceProject.Triggered)
 	}
 	aliceFindings := aliceCookie.lenses(project.Address).Lens
@@ -449,9 +544,9 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 	if from := aliceCookie.edges("from", commentAddress); !slices.Contains(from, "out "+graphstore.TupleChangedByRun+" "+interaction) {
 		t.Errorf("alice's references of the comment are %v, want its changed_by_run to %s", from, interaction)
 	}
-	if kept[alice].counts["the spec"] != kept[bob].counts["the spec"] || alicePage.counts["the spec"] != kept[bob].counts["the spec"]+1 {
-		t.Errorf("alice counts %d backlinks of the spec, and both counted %d and %d before her writes: want hers one higher, her lens's part_of",
-			alicePage.counts["the spec"], kept[alice].counts["the spec"], kept[bob].counts["the spec"])
+	if alicePage.counts["the spec"] != kept[aliceCookie].counts["the spec"]+1 {
+		t.Errorf("alice counts %d backlinks of the spec, and %d before her writes: want one more, her lens's part_of",
+			alicePage.counts["the spec"], kept[aliceCookie].counts["the spec"])
 	}
 	// A document's ?to= lists its part_of edges only when asked for by kind (parseReferencesQuery),
 	// so the list behind that count is read so: hers holds her lens's part_of beside the project
@@ -467,74 +562,117 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 			t.Errorf("%s reads the part_of edges into the spec %v, want the project lens's, and alice's lens's for alice alone", reads.name, ends)
 		}
 	}
+	// The same reads move for their author: alice's ?to= of the project lens holds her finding's
+	// part_of and her lens's triggered_by, which no read held before her writes, and her count of
+	// the project lens is two higher. Bob's of both stand still below.
+	hiddenInto := []string{"in " + graphstore.TuplePartOf + " " + hiddenFinding.Address, "in " + graphstore.TupleTriggeredBy + " " + hiddenLens.Address}
+	for _, end := range hiddenInto {
+		if into := alicePage.references["?to="+project.Address]; !slices.Contains(into, end) ||
+			slices.Contains(kept[aliceCookie].references["?to="+project.Address], end) {
+			t.Errorf("alice's ?to=%s answers the edges %v, and answered %v before her writes: want %q in it now and not then",
+				project.Address, into, kept[aliceCookie].references["?to="+project.Address], end)
+		}
+	}
+	if alicePage.counts["the project lens"] != kept[aliceCookie].counts["the project lens"]+len(hiddenInto) {
+		t.Errorf("alice counts %d backlinks of the project lens, and %d before her writes: want %d more, her finding's part_of and her lens's triggered_by",
+			alicePage.counts["the project lens"], kept[aliceCookie].counts["the project lens"], len(hiddenInto))
+	}
 
-	// Bob: every read he kept answers what it answered, so no list holds an author-only node and
-	// no count moved.
-	bobPage := read(bobCookie)
-	if !slices.Equal(bobPage.constraints, kept[bob].constraints) {
-		t.Errorf("bob's constraint list is %v, and was %v", bobPage.constraints, kept[bob].constraints)
-	}
-	for name, lines := range map[string][2][]string{
-		"the spec":         {bobPage.specLines, kept[bob].specLines},
-		"the project lens": {bobPage.projectLensLines, kept[bob].projectLensLines},
-	} {
-		if !slices.Equal(lines[0], lines[1]) {
-			t.Errorf("bob's lens read of %s answers\n%s\nand answered\n%s", name, strings.Join(lines[0], "\n"), strings.Join(lines[1], "\n"))
+	// Bob: every read either of his credentials kept answers what it answered, so no list holds an
+	// author-only node and no count moved, the reads alice's two tuples into the project lens
+	// moved for her among them. His lenses read of the spec holds the project lens and its chain,
+	// the two project lenses, whole, and not her lens.
+	var bobPage keptPage
+	for _, reads := range []*credentialReads{bobCookie, bobToken} {
+		page := read(reads)
+		if reads == bobCookie {
+			bobPage = page
 		}
-	}
-	for target, ends := range kept[bob].references {
-		if !slices.Equal(bobPage.references[target], ends) {
-			t.Errorf("bob's %s answers the edges %v, and answered %v", target, bobPage.references[target], ends)
-		}
-	}
-	for name, count := range kept[bob].counts {
-		if bobPage.counts[name] != count {
-			t.Errorf("bob counts %d backlinks of %s, and counted %d", bobPage.counts[name], name, count)
-		}
-	}
-	bobSpec := bobCookie.lenses(rig.spec)
-	if got := readAddresses(bobSpec.Lenses); !slices.Equal(got, []string{project.Address}) || len(bobSpec.Chains) != 0 {
-		t.Errorf("bob's lens read of the spec holds the lenses %v and the chains %+v, want the project lens and no chain without hers", got, bobSpec.Chains)
-	}
-	bobProject := lensNamed(t, bobSpec.Lenses, project.Address)
-	if len(bobProject.Triggered) != 0 || !slices.Equal(riskAddresses(bobSpec.Lenses), []string{projectRisk.Address}) {
-		t.Errorf("bob's lens read answers the project lens triggering %v and the risks %v, want none and the project risk alone",
-			bobProject.Triggered, riskAddresses(bobSpec.Lenses))
-	}
-	bobFindings := bobCookie.lenses(project.Address).Lens
-	if bobFindings == nil {
-		t.Fatalf("bob's lens read of the project lens answers no lens")
-	}
-	var placed int64
-	if err := rig.database.Pool.QueryRow(ctx, `
-		select max(seq) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
-	`, refs.BlockNodeKind, projectFinding.ID, graphstore.TuplePartOf, graphstore.KindLens, project.ID).Scan(&placed); err != nil {
-		t.Fatalf("read the seq of the project finding's part_of: %v", err)
-	}
-	for name, findings := range map[string][]lensFindingRead{
-		"of the spec": bobProject.Findings, "of the project lens": bobFindings.Findings,
-	} {
-		if got := findingAddresses(findings); !slices.Equal(got, []string{projectFinding.Address}) {
-			t.Errorf("bob's lens read %s holds the project lens's findings %v, want the project block alone, %s", name, got, projectFinding.Address)
-			continue
-		}
-		// No gap a count could read: the one rank he reads is the store's own key of the block's
-		// part_of, the rank alice reads of it, and the block's id is a random one.
-		aliceRank := int64(-1)
-		for _, finding := range aliceProject.Findings {
-			if finding.Address == projectFinding.Address {
-				aliceRank = finding.Rank
+		requireSamePage(t, reads.name+" after alice's writes, against what it kept", page, kept[reads])
+		for _, end := range hiddenInto {
+			if into := page.references["?to="+project.Address]; slices.Contains(into, end) {
+				t.Errorf("%s's ?to=%s answers the edges %v, holding %q of alice's", reads.name, project.Address, into, end)
 			}
 		}
-		if findings[0].Rank != placed || findings[0].Rank != aliceRank {
-			t.Errorf("bob's lens read %s ranks the project block %d, alice's %d and the store keys its part_of %d, want one key",
-				name, findings[0].Rank, aliceRank, placed)
+		spec := reads.lenses(rig.spec)
+		if got, want := readAddresses(spec.Lenses), []string{project.Address, chained.Address}; !slices.Equal(got, want) {
+			t.Errorf("%s's lens read of the spec holds the lenses %v, want the two project lenses, %v", reads.name, got, want)
 		}
-		match := findingAddressForm.FindStringSubmatch(findings[0].Address)
-		if match == nil {
-			t.Errorf("bob's lens read %s answers the project block at %q, no finding's address", name, findings[0].Address)
-		} else if id, err := uuid.Parse(match[2]); err != nil || id.Version() != 4 {
-			t.Errorf("bob's lens read %s answers the project block's id %q, no random block id (%v)", name, match[2], err)
+		if len(spec.Chains) != 1 || spec.Chains[0].StoppedAt != nil ||
+			!slices.Equal(readAddresses(spec.Chains[0].Lenses), []string{project.Address, chained.Address}) {
+			t.Errorf("%s's lens read of the spec answers the chains %+v, want the one chain of the two project lenses, whole, without hers",
+				reads.name, spec.Chains)
+		}
+		held := lensNamed(t, spec.Lenses, project.Address)
+		if !slices.Equal(held.Triggered, []string{chained.Address}) || !slices.Equal(riskAddresses(spec.Lenses), []string{projectRisk.Address}) {
+			t.Errorf("%s's lens read answers the project lens triggering %v and the risks %v, want the second project lens alone and the project risk alone",
+				reads.name, held.Triggered, riskAddresses(spec.Lenses))
+		}
+	}
+
+	// No gap a count could read. Alice's cookie writes a second project finding under the project
+	// lens after her hidden one, so her block stands between two project blocks. Each of bob's
+	// reads of the project lens's findings holds the two project blocks alone, each at the rank
+	// alice reads of it, which is the store's own key of that block's part_of: a rank counted over
+	// every finding would leave him a gap where hers stands, and one counted over his alone would
+	// read otherwise than hers. Each block's id is a random one.
+	trailing := decodeBody[lensFinding](t, created("a second project finding, after hers", rig.post(nodePath(graphstore.KindLens+"/"+project.ID, "findings"),
+		map[string]any{"text": trailingFindingText}, alice), http.StatusCreated))
+	if trailing.Visibility != graphstore.VisibilityProject {
+		t.Fatalf("the second project finding answers %+v, want it project-visible", trailing)
+	}
+	keyed := map[string]int64{}
+	for _, finding := range []lensFinding{projectFinding, hiddenFinding, trailing} {
+		var key int64
+		if err := rig.database.Pool.QueryRow(ctx, `
+			select max(seq) from graph_tuples where from_kind = $1 and from_id = $2 and kind = $3 and to_kind = $4 and to_id = $5
+		`, refs.BlockNodeKind, finding.ID, graphstore.TuplePartOf, graphstore.KindLens, project.ID).Scan(&key); err != nil {
+			t.Fatalf("read the seq of the part_of of %s: %v", finding.Address, err)
+		}
+		keyed[finding.Address] = key
+	}
+	findingsOf := func(reads *credentialReads) map[string][]lensFindingRead {
+		t.Helper()
+		onLens := reads.lenses(project.Address).Lens
+		if onLens == nil {
+			t.Fatalf("%s's lens read of the project lens answers no lens", reads.name)
+		}
+		return map[string][]lensFindingRead{
+			"of the spec":         lensNamed(t, reads.lenses(rig.spec).Lenses, project.Address).Findings,
+			"of the project lens": onLens.Findings,
+		}
+	}
+	aliceRanks := map[string]int64{}
+	for name, findings := range findingsOf(aliceCookie) {
+		if got, want := findingAddresses(findings), []string{projectFinding.Address, hiddenFinding.Address, trailing.Address}; !slices.Equal(got, want) {
+			t.Errorf("alice's lens read %s holds the project lens's findings %v, want her hidden block between the two project blocks, %v", name, got, want)
+			continue
+		}
+		for _, finding := range findings {
+			if finding.Rank != keyed[finding.Address] {
+				t.Errorf("alice's lens read %s ranks %s %d, and the store keys its part_of %d", name, finding.Address, finding.Rank, keyed[finding.Address])
+			}
+			aliceRanks[finding.Address] = finding.Rank
+		}
+	}
+	for _, reads := range []*credentialReads{bobCookie, bobToken} {
+		for name, findings := range findingsOf(reads) {
+			if got, want := findingAddresses(findings), []string{projectFinding.Address, trailing.Address}; !slices.Equal(got, want) {
+				t.Errorf("%s's lens read %s holds the project lens's findings %v, want the two project blocks and not the hidden one, %v", reads.name, name, got, want)
+				continue
+			}
+			for _, finding := range findings {
+				if finding.Rank != keyed[finding.Address] || finding.Rank != aliceRanks[finding.Address] {
+					t.Errorf("%s's lens read %s ranks %s %d, alice's ranks it %d and the store keys its part_of %d: want the one key, which leaves no gap where her block stands",
+						reads.name, name, finding.Address, finding.Rank, aliceRanks[finding.Address], keyed[finding.Address])
+				}
+				match := findingAddressForm.FindStringSubmatch(finding.Address)
+				if match == nil {
+					t.Errorf("%s's lens read %s answers a project block at %q, no finding's address", reads.name, name, finding.Address)
+				} else if id, err := uuid.Parse(match[2]); err != nil || id.Version() != 4 {
+					t.Errorf("%s's lens read %s answers the project block's id %q, no random block id (%v)", reads.name, name, match[2], err)
+				}
+			}
 		}
 	}
 	if from := bobPage.references["?from="+rig.requirement]; slices.Contains(from, "out constrained_by "+hiddenConstraint.Address) {
@@ -552,10 +690,11 @@ func TestAnAuthorOnlyNodeIsAnsweredToItsAuthorAndToNobodyElse(t *testing.T) {
 		}
 	}
 
-	// Every project node is in both people's answers, at its own address and project-visible.
-	for _, reads := range []*credentialReads{aliceCookie, bobCookie} {
+	// Every project node is in each credential's answers, at its own address and project-visible.
+	for _, reads := range readers {
 		for _, node := range []struct{ name, address string }{
-			{"the project lens", project.Address}, {"the project finding", projectFinding.Address},
+			{"the project lens", project.Address}, {"the second project lens", chained.Address},
+			{"the project finding", projectFinding.Address}, {"the second project finding", trailing.Address},
 			{"the project risk", projectRisk.Address}, {"the project constraint", projectConstraint.Address},
 		} {
 			if answered := reads.node(node.address); answered.Ref != node.address || answered.Visibility != graphstore.VisibilityProject {

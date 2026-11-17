@@ -32,7 +32,7 @@ import (
 
 // interactionCredential is one credential a run is written or read with: how a failure names it,
 // a bearer's plaintext (a person's personal token, or the deployment's shared token) or the login
-// a cookie proves, and the actor the server resolves it to.
+// a cookie proves, and the actor the server resolves it to (server.optionalActor).
 type interactionCredential struct {
 	name  string
 	token string
@@ -40,9 +40,9 @@ type interactionCredential struct {
 	actor model.Actor
 }
 
-// request carries one request under the credential, naming run in contracts.GoingRunHeader where
+// newRequest is one request under the credential, naming run in contracts.GoingRunHeader where
 // run is not empty, as a write made for that run sends it (GoingCaller.Do).
-func (c interactionCredential) request(t *testing.T, handler http.Handler, method, target string, body any, run string) *httptest.ResponseRecorder {
+func (c interactionCredential) newRequest(t *testing.T, method, target string, body any, run string) *http.Request {
 	t.Helper()
 	var reader io.Reader = http.NoBody
 	if body != nil {
@@ -64,8 +64,14 @@ func (c interactionCredential) request(t *testing.T, handler http.Handler, metho
 	if run != "" {
 		request.Header.Set(contracts.GoingRunHeader, run)
 	}
+	return request
+}
+
+// request carries one request under the credential (newRequest) through handler.
+func (c interactionCredential) request(t *testing.T, handler http.Handler, method, target string, body any, run string) *httptest.ResponseRecorder {
+	t.Helper()
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
+	handler.ServeHTTP(response, c.newRequest(t, method, target, body, run))
 	return response
 }
 
@@ -87,10 +93,11 @@ func (c interactionCredential) references(t *testing.T, handler http.Handler, di
 //   - A run alice's personal token records, and a comment it writes under that run, are read by
 //     bob's personal token as what an address nobody holds answers, with no changed_by_run and
 //     an unmoved count on alice's person node, although SameAs calls the two tokens one writer.
-//     Bob's comment under alice's run is refused as the stream refuses a run nobody holds, and
-//     stores nothing; a second write of alice's comment under the run appends no second tuple;
-//     alice's cookie reads nothing of the run her token recorded; a run of model.Actor{} is read
-//     by nobody.
+//     The run's going_requests.author is its node's made_by. Bob's comment under alice's run is
+//     refused as the stream refuses a run nobody holds, and stores nothing; a second write of
+//     alice's comment under the run appends no second tuple; alice's cookie reads nothing of the
+//     run her token recorded, at its address, in the comment's references or in the count of her
+//     own person node; a run of model.Actor{} is read by nobody.
 //   - The node, its authored_by and each frame value are written before either projected row, in
 //     the one transaction of their writer: triggers in the test's own database fail the write
 //     before the projected row and after it and find neither side afterwards, record the
@@ -141,25 +148,29 @@ func requireInteractionDeclared(t *testing.T, database *store.Store) {
 // requireARunIsReadByTheCredentialThatRecordedIt records a run with alice's personal token through
 // the going POST and writes one comment on an issue under it with the same token, naming the run in
 // the request header, and reads both as each credential, keeping alice's token's reads beside the
-// others so each absence stands beside the same read finding the run. It answers the run's id and
-// the comment's.
+// others so each absence stands beside the same read finding the run. Each credential is the actor
+// the server resolves it to. It answers the run's id and the comment's.
 func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.Handler, server *server, database *store.Store) (string, string) {
 	ctx := context.Background()
 	pool := database.Pool
 	const words = "Which credential reads the run that wrote this comment?"
 	issue := createTestIssue(t, handler, "ICR", "The issue a token's run writes on")
-	resolved := func(name, token string) interactionCredential {
+	resolved := func(credential interactionCredential) interactionCredential {
 		t.Helper()
-		actor, err := server.personalTokenActor(ctx, token)
+		actor, _, err := server.optionalActor(credential.newRequest(t, http.MethodGet, "/api/v1/references", nil, ""))
 		if err != nil {
-			t.Fatalf("resolve %s: %v", name, err)
+			t.Fatalf("resolve %s: %v", credential.name, err)
 		}
-		return interactionCredential{name: name, token: token, actor: actor}
+		credential.actor = actor
+		return credential
 	}
-	alice := resolved("alice's personal token", personalTokenOwnedBy(t, database, "alice", model.ScopePerson))
-	bob := resolved("bob's personal token", personalTokenOwnedBy(t, database, "bob", model.ScopePerson))
-	cookie := interactionCredential{name: "alice's cookie", login: "alice", actor: model.Actor{Kind: "user", ID: "alice"}}
-	shared := interactionCredential{name: "the shared bearer", token: "agent-token", actor: model.Actor{}}
+	alice := resolved(interactionCredential{name: "alice's personal token", token: personalTokenOwnedBy(t, database, "alice", model.ScopePerson)})
+	bob := resolved(interactionCredential{name: "bob's personal token", token: personalTokenOwnedBy(t, database, "bob", model.ScopePerson)})
+	cookie := resolved(interactionCredential{name: "alice's cookie", login: "alice"})
+	shared := resolved(interactionCredential{name: "the shared bearer", token: "agent-token"})
+	if cookie.actor.Kind != "user" || cookie.actor.ID != "alice" || shared.actor.Kind != "" || shared.actor.ID != "" || shared.actor.Owner != nil {
+		t.Fatalf("alice's cookie resolves as %+v and the shared bearer as %+v: want alice, and nobody", cookie.actor, shared.actor)
+	}
 	// The premise: SameAs, which compares kind and id alone, calls the two tokens one writer, and
 	// only the whole credential tells them apart.
 	if !alice.actor.SameAs(bob.actor) || alice.actor.SameCredential(bob.actor) {
@@ -182,8 +193,10 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 		t.Logf("%s reads alice's person node: count %d, tuples %v", who.name, counts["alice"], edgeEnds(edges))
 		return counts["alice"], edgeEnds(edges)
 	}
-	aliceCountBefore, _ := personNode(alice)
-	bobCountBefore, _ := personNode(bob)
+	countBefore := map[string]int{}
+	for _, who := range []interactionCredential{alice, bob, cookie} {
+		countBefore[who.name], _ = personNode(who)
+	}
 
 	asked := alice.request(t, handler, http.MethodPost, "/api/v1/going/requests", map[string]any{"words": words}, "")
 	if asked.Code != http.StatusCreated {
@@ -192,6 +205,7 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 	run := decodeBody[askedRun](t, asked).ID
 	goingRoutesRig{handler: handler, server: server, database: database}.awaitTerminal(t, run)
 	runWindowAhead(t, database, run)
+	requireTheRowProjectsTheNode(t, database, "the run alice's token recorded", run, alice.actor)
 	// A personal token proves no session, so a bearer's write names the one it acts for in its body
 	// (bearerSessionActor); the run is read off the header by the whole credential all the same.
 	written := alice.request(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
@@ -231,13 +245,17 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 		t.Fatalf("%s reads the comment's run edges %+v, want its one changed_by_run to %s with the run's words", alice.name, aliceEdges, interactionRef)
 	}
 
-	// Bob's token reads the run at its address as an address nobody holds, in both directions,
-	// and the comment with no changed_by_run; the words of the run are in nothing he read.
-	bobEdges, bobComment := byRun(bob)
-	if len(bobEdges) != 0 {
-		t.Errorf("%s reads the comment's run edges %+v, want no changed_by_run and no interaction", bob.name, bobEdges)
+	// Bob's token, and alice's cookie, read the run at its address as an address nobody holds, in
+	// both directions, and the comment with no changed_by_run; the words of the run are in nothing
+	// either read.
+	var bodies []string
+	for _, reader := range []interactionCredential{bob, cookie} {
+		edges, body := byRun(reader)
+		if len(edges) != 0 {
+			t.Errorf("%s reads the comment's run edges %+v, want no changed_by_run and no interaction", reader.name, edges)
+		}
+		bodies = append(bodies, body)
 	}
-	bodies := []string{bobComment}
 	nobodysID := uuid.NewString()
 	nobodys := "dispatch://" + graphstore.KindInteraction + "/" + nobodysID
 	for _, reader := range []interactionCredential{bob, cookie} {
@@ -286,20 +304,22 @@ func requireARunIsReadByTheCredentialThatRecordedIt(t *testing.T, handler http.H
 	}
 
 	// The run's authored_by raises the count of alice's person node for the credential that
-	// recorded it, and for bob's token the count is unmoved and is the tuples he is given.
-	aliceCount, aliceTuples := personNode(alice)
-	bobCount, bobTuples := personNode(bob)
-	if aliceCount != aliceCountBefore+1 || aliceCount != len(aliceTuples) {
+	// recorded it, and for bob's token and alice's own cookie the count is unmoved and is the
+	// tuples each is given.
+	if count, tuples := personNode(alice); count != countBefore[alice.name]+1 || count != len(tuples) {
 		t.Errorf("%s reads a backlink count of %d on alice's person node, %d before the run, over the tuples %v: want one more, the run's authored_by",
-			alice.name, aliceCount, aliceCountBefore, aliceTuples)
+			alice.name, count, countBefore[alice.name], tuples)
 	}
-	if bobCount != len(bobTuples) {
-		t.Errorf("%s reads a backlink count of %d on alice's person node, %d higher than the %d tuples into it the same credential is given (%v)",
-			bob.name, bobCount, bobCount-len(bobTuples), len(bobTuples), bobTuples)
-	}
-	if bobCount != bobCountBefore {
-		t.Errorf("%s reads a backlink count of %d on alice's person node, %d before alice's token recorded its run: want it unmoved",
-			bob.name, bobCount, bobCountBefore)
+	for _, reader := range []interactionCredential{bob, cookie} {
+		count, tuples := personNode(reader)
+		if count != len(tuples) {
+			t.Errorf("%s reads a backlink count of %d on alice's person node, %d higher than the %d tuples into it the same credential is given (%v)",
+				reader.name, count, count-len(tuples), len(tuples), tuples)
+		}
+		if count != countBefore[reader.name] {
+			t.Errorf("%s reads a backlink count of %d on alice's person node, %d before alice's token recorded its run: want it unmoved",
+				reader.name, count, countBefore[reader.name])
+		}
 	}
 
 	// Bob's comment under alice's run is answered what the stream answers for a run nobody holds,
@@ -370,6 +390,7 @@ func requireARunOfNobodyIsReadByNobody(t *testing.T, handler http.Handler, serve
 	} else {
 		t.Logf("the store holds the run of model.Actor{} as %s/%s at %s", node.Kind, node.ID, node.Visibility)
 	}
+	requireTheRowProjectsTheNode(t, database, "the run of model.Actor{}", nobodys.ID, model.Actor{})
 	address := "dispatch://" + graphstore.KindInteraction + "/" + nobodys.ID
 	nobodysID := uuid.NewString()
 	for _, reader := range readers {
@@ -378,6 +399,31 @@ func requireARunOfNobodyIsReadByNobody(t *testing.T, handler http.Handler, serve
 		}
 		requireNobodysAnswer(t, reader.name+"'s ?from= of the run of model.Actor{}", reader.references(t, handler, "from", address),
 			reader.references(t, handler, "from", "dispatch://"+graphstore.KindInteraction+"/"+nobodysID), nobodys.ID, nobodysID)
+	}
+}
+
+// requireTheRowProjectsTheNode holds a run's going_requests row to its interaction node: the
+// row's author is the node's made_by, compared as jsonb in the one select that reads both, so
+// the column is a projection of the node and not a second record of the asker; and that made_by
+// is the credential that recorded the run, compared as model.Actor.SameCredential compares one.
+func requireTheRowProjectsTheNode(t *testing.T, database *store.Store, name, run string, recorder model.Actor) {
+	t.Helper()
+	var madeBy, author []byte
+	var same bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select held.made_by, projected.author, held.made_by = projected.author
+		from graph_nodes held join going_requests projected on projected.id::text = held.id
+		where held.kind = $1 and held.id = $2`, graphstore.KindInteraction, run).Scan(&madeBy, &author, &same); err != nil {
+		t.Fatalf("read the node and the going_requests row of %s: %v", name, err)
+	}
+	t.Logf("%s: its node's made_by %s, its going_requests.author %s", name, madeBy, author)
+	var recorded model.Actor
+	if err := json.Unmarshal(madeBy, &recorded); err != nil {
+		t.Fatalf("decode the made_by of %s: %v", name, err)
+	}
+	if !same || !recorded.SameCredential(recorder) {
+		t.Errorf("%s: going_requests.author is %s and its node's made_by %s, want the one recorded actor of the credential %+v, the row a projection of the node",
+			name, author, madeBy, recorder)
 	}
 }
 

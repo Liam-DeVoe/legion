@@ -14,16 +14,20 @@ package main
 // from.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -52,6 +56,10 @@ const (
 	// (api/coverage.go's requirementStates and servingBlockCounts). The coverage of a spec that
 	// marks none answers before either statement runs, so it would measure nothing this child did.
 	predicateCostRequirements = 20
+	// predicateCostChildren is how many child issues each shape's issue holds, so the issue tree,
+	// the list of an issue's children (GET /api/v1/issues?parent=), answers rows of every shape:
+	// the tree of an issue with no child answers an empty list, and would measure nothing.
+	predicateCostChildren = 20
 	// predicateCostRatio is the bound: a read whose p50 at this head is more than this many times
 	// its p50 at the base build, in the same run, fails the test.
 	predicateCostRatio = 1.25
@@ -63,14 +71,50 @@ const (
 	// predicateCostScaleTestEnv gates the run, as api/inbox_dismissed_scale_test.go's
 	// dismissedScaleEnv gates a14: building the base commit, writing about 70,000 blocks into
 	// each of two databases and taking about 12,000 timed readings costs tens of minutes, which
-	// no ordinary run should pay. CI shows the test as SKIP.
+	// no ordinary run should pay. No CI job builds the basebuild tag, so CI never runs it.
 	predicateCostScaleTestEnv = "LEGION_SCALE_TEST"
 	// predicateCostScaleEnv is the share of the check's sizes a run writes and reads: a fraction
 	// above 0 and at most 1, and 1 where it is unset, which is the check. Below 1 the run is a
-	// smoke of this test and no reading of the check, and every shape it states carries the size
-	// it was written at.
+	// smoke of this test and no reading of the check: every shape it states carries the size it
+	// was written at, and once it has measured and printed every reading it ends in SKIP, which
+	// the check's run string refuses.
 	predicateCostScaleEnv = "LEGION_READ_COST_SCALE"
+	// predicateCostControlEnv is the check's negative control, which this test reads and no
+	// server does. Set to predicateCostDropInbound, the run drops predicateCostInboundIndexes
+	// from this head's database once its corpus is written and analysed, and prints the plan of
+	// the tuples-into-a-node lookup before and after the drop. Unset, the run drops nothing. A
+	// run with it set is no reading of the check: one whose every read holds the bound ends in
+	// SKIP, a control that did not bite, which the check's run string refuses.
+	predicateCostControlEnv  = "LEGION_READ_COST_CONTROL"
+	predicateCostDropInbound = "drop-inbound-indexes"
 )
+
+// predicateCostInboundIndexes are the indexes the check's negative control drops. The check
+// names graph_tuples_inbound alone, but graph_tuples_as_of_in keys the same (to_kind, to_id,
+// kind) under the same partial predicate (migration 20261109013400_graph_store), so a run that
+// dropped the first would read the second and pay one sort more: the control drops both.
+var predicateCostInboundIndexes = []string{"graph_tuples_inbound", "graph_tuples_as_of_in"}
+
+// predicateCostInboundLookup is the lookup the tuples-into-a-node read makes of one block, $1 its
+// node id: the edges of graph_edges into it, newest first, as refs' readEdgeRows selects them,
+// less the predicate of each far end, which reads graph_nodes and no index of graph_tuples.
+const predicateCostInboundLookup = `
+	select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq
+	from graph_edges g where g.to_kind = 'block' and g.to_id = $1
+	order by g.created_at desc, g.kind, g.from_kind, g.from_id`
+
+// predicateCostControlOf reads LEGION_READ_COST_CONTROL: empty where it is unset, which is the
+// check, and predicateCostDropInbound where it names the check's negative control.
+func predicateCostControlOf(t *testing.T) string {
+	t.Helper()
+	switch control := strings.TrimSpace(os.Getenv(predicateCostControlEnv)); control {
+	case "", predicateCostDropInbound:
+		return control
+	default:
+		t.Fatalf("%s=%q: want %q, the check's negative control, or nothing", predicateCostControlEnv, control, predicateCostDropInbound)
+		return ""
+	}
+}
 
 // predicateCostKinds are the lens_kind ids of the catalogue the fourth shape's chain takes in turn.
 var predicateCostKinds = []string{"trade-off", "inversion", "botec", "second-order"}
@@ -177,9 +221,10 @@ func seedPredicateCost(t *testing.T, arm *costArm, sizes predicateCostSizes) []*
 
 // predicateCostIssue creates the issue one shape hangs under and answers its key and its spec's
 // artifact id. Its spec marks predicateCostRequirements requirements and carries phrase where the
-// shape's search reads the spec, and a Verification document and a plan hold one check and one
-// plan task serving each requirement. The spec is forced past the near-copy gate, as
-// createCostIssue's is: the four specs differ only in their titles.
+// shape's search reads the spec, a Verification document and a plan hold one check and one plan
+// task serving each requirement, and predicateCostChildren child issues stand under it, which the
+// issue tree lists. The spec and each child are forced past the near-copy gate, as
+// createCostIssue's spec is: the four specs differ only in their titles, and so do the children.
 func predicateCostIssue(t *testing.T, arm *costArm, title, phrase string) (string, string) {
 	t.Helper()
 	var spec strings.Builder
@@ -215,6 +260,16 @@ func predicateCostIssue(t *testing.T, arm *costArm, title, phrase string) (strin
 	}
 	costUploadDocument(t, arm, issue.Key, "verification.md", checks.String())
 	costUploadDocument(t, arm, issue.Key, "plan.md", tasks.String())
+	for index := range predicateCostChildren {
+		child, err := json.Marshal(map[string]any{
+			"project": predicateCostProject, "title": fmt.Sprintf("Child %d of %s", index+1, title),
+			"parent": issue.Key, "force": true,
+		})
+		if err != nil {
+			t.Fatalf("encode child %d of the issue %q: %v", index+1, title, err)
+		}
+		arm.server.call(t, http.MethodPost, "/api/v1/issues", string(child), http.StatusCreated)
+	}
 	return issue.Key, issue.PrimaryArtifactID
 }
 
@@ -487,7 +542,8 @@ func predicateCostLensesHold(t *testing.T, arm *costArm, shape *predicateCostSha
 
 // settlePredicateCost finishes each shape once its build has indexed it: it resolves the node the
 // tuples-out read starts from, which is the server's own answer and not a guess, holds the shape
-// to its statement and to the coverage it was written with, and prints what it holds.
+// to its statement, to the coverage and to the children it was written with, and prints what it
+// holds.
 func settlePredicateCost(t *testing.T, arm *costArm, shapes []*predicateCostShape) {
 	t.Helper()
 	for _, shape := range shapes {
@@ -500,7 +556,8 @@ func settlePredicateCost(t *testing.T, arm *costArm, shapes []*predicateCostShap
 			fmt.Sprintf("%d block reference(s)", arm.count(t,
 				`select count(*) from block_refs r join artifacts a on a.id = r.artifact_id where a.issue_key = $1`, shape.issue)),
 			fmt.Sprintf("%d comment(s)", arm.count(t, `select count(*) from comments where issue_key = $1`, shape.issue)),
-			predicateCostCoverageHolds(t, arm, shape))
+			predicateCostCoverageHolds(t, arm, shape),
+			predicateCostTreeHolds(t, arm, shape))
 		t.Logf("%s: the shape %q holds %s", arm.name, shape.name, strings.Join(shape.rows, ", "))
 	}
 }
@@ -534,6 +591,37 @@ func predicateCostCoverageHolds(t *testing.T, arm *costArm, shape *predicateCost
 	return fmt.Sprintf("%d requirement(s) of its spec, each served by a check and a plan task", served)
 }
 
+// predicateCostTreePath is the issue tree of the shape's issue, the list of its children: GET
+// /api/v1/issues with parent, which listIssues filters on the parent's key.
+func predicateCostTreePath(shape *predicateCostShape) string {
+	return "/api/v1/issues?parent=" + url.QueryEscape(shape.issue)
+}
+
+// predicateCostTreeHolds holds the shape's issue to the children it was written with, through the
+// issue tree the reads measure: the predicateCostChildren issues the seed wrote under it, each
+// naming it as its parent, so the tree measured answers rows of the shape.
+func predicateCostTreeHolds(t *testing.T, arm *costArm, shape *predicateCostShape) string {
+	t.Helper()
+	read := arm.server.call(t, http.MethodGet, predicateCostTreePath(shape), "", http.StatusOK)
+	var children []struct {
+		Key    string  `json:"key"`
+		Parent *string `json:"parent"`
+	}
+	if err := json.Unmarshal(read, &children); err != nil {
+		t.Fatalf("%s: read the issue tree of %s: %v: %s", arm.name, shape.issue, err, read)
+	}
+	for _, child := range children {
+		if child.Parent == nil || *child.Parent != shape.issue {
+			t.Fatalf("%s: the issue tree of %s lists %s, whose parent is not %s: %s", arm.name, shape.issue, child.Key, shape.issue, read)
+		}
+	}
+	if len(children) != predicateCostChildren {
+		t.Fatalf("%s: the issue tree of %s lists %d child issue(s), and the shape wrote %d under it: %s",
+			arm.name, shape.issue, len(children), predicateCostChildren, read)
+	}
+	return fmt.Sprintf("%d child issue(s), which the issue tree lists", len(children))
+}
+
 // requirePredicateCostAuthorNodes holds the first three shapes to holding no node reserved for its
 // author: no block of a document takes `author`, so every node of the store reserved for its
 // author is a lens of the fourth shape or a finding of one (a block whose id names its lens).
@@ -551,6 +639,74 @@ func requirePredicateCostAuthorNodes(t *testing.T, head *costArm) {
 		t.Fatalf("%s: the store holds %d node(s) reserved for its author outside the fourth shape's lenses and findings, and the first three shapes state none",
 			head.name, elsewhere)
 	}
+}
+
+// predicateCostStoreCounts is the node and tuple store's own row counts on the arm's database, as
+// the corpus line prints them, or the words saying the arm holds no such store. Whether it does is
+// read off the database, never off which arm it is: the base build holds the store wherever
+// BASELINE_SHA names a commit holding INFRA-1149's graph_nodes and graph_tuples.
+func predicateCostStoreCounts(t *testing.T, arm *costArm) string {
+	t.Helper()
+	if held := arm.count(t, `
+		select count(*) from (values (to_regclass('graph_nodes')), (to_regclass('graph_tuples'))) as stored (relation)
+		where relation is not null`); held != 2 {
+		return ", and no node and tuple store, which " + arm.name + " has not got"
+	}
+	return fmt.Sprintf(", %d node(s) and %d tuple(s)",
+		arm.count(t, `select count(*) from graph_nodes`),
+		arm.count(t, `select count(*) from graph_tuples`))
+}
+
+// dropPredicateCostInboundIndexes is the check's negative control on this head's database: it
+// drops predicateCostInboundIndexes, and prints the plan of the lookup the tuples-into-a-node read
+// makes of the node of shape before the drop and after it, so the run shows the read losing the
+// index rather than assuming it. A plan that read neither index before the drop would make the
+// drop no control of this read, and fails the run.
+func dropPredicateCostInboundIndexes(t *testing.T, head *costArm, shape *predicateCostShape) {
+	t.Helper()
+	var node string
+	if err := head.pool.QueryRow(context.Background(), `
+		select b.node_id from document_blocks b join artifacts a on a.id = b.artifact_id
+		where a.issue_key = $1 and b.block_id = $2`, shape.issue, readCostBlockID(shape.into)).Scan(&node); err != nil {
+		t.Fatalf("%s: read the node id of %s, the node of %q: %v", head.name, shape.into, shape.name, err)
+	}
+	reads := func(plan string) []string {
+		return slices.DeleteFunc(slices.Clone(predicateCostInboundIndexes), func(index string) bool { return !strings.Contains(plan, index) })
+	}
+	before := predicateCostInboundPlan(t, head, node)
+	t.Logf("%s=%s: %s's plan of the tuples into %s, the node of %q, before the drop (it reads %v):\n%s",
+		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, shape.name, reads(before), before)
+	if len(reads(before)) == 0 {
+		t.Fatalf("%s=%s: %s's plan of the tuples into %s reads neither of %v before the drop, so dropping them is no control of that read",
+			predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes)
+	}
+	for _, index := range predicateCostInboundIndexes {
+		if _, err := head.pool.Exec(context.Background(), "drop index "+index); err != nil {
+			t.Fatalf("%s=%s: drop %s from %s's database: %v", predicateCostControlEnv, predicateCostDropInbound, index, head.name, err)
+		}
+	}
+	after := predicateCostInboundPlan(t, head, node)
+	t.Logf("%s=%s: %s's plan of the tuples into %s after %v were dropped from its database:\n%s",
+		predicateCostControlEnv, predicateCostDropInbound, head.name, shape.into, predicateCostInboundIndexes, after)
+	if left := reads(after); len(left) != 0 {
+		t.Fatalf("%s=%s: %s's plan of the tuples into %s still reads %v after the drop", predicateCostControlEnv, predicateCostDropInbound,
+			head.name, shape.into, left)
+	}
+}
+
+// predicateCostInboundPlan is the plan Postgres makes on the arm's database of
+// predicateCostInboundLookup for node, the node id of one block, as EXPLAIN prints it.
+func predicateCostInboundPlan(t *testing.T, arm *costArm, node string) string {
+	t.Helper()
+	rows, err := arm.pool.Query(context.Background(), "explain "+predicateCostInboundLookup, node)
+	if err != nil {
+		t.Fatalf("%s: explain the tuples into %s: %v", arm.name, node, err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("%s: explain the tuples into %s: %v", arm.name, node, err)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ───── the nine reads ─────────────────────────────────────────────────────
@@ -582,9 +738,7 @@ func predicateCostReads() []predicateCostRead {
 		{name: "the backlink counts (GET /api/v1/issues/{key})", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue
 		}},
-		{name: "the issue tree (GET /api/v1/artifacts/{id}/blocks)", path: func(shape *predicateCostShape) string {
-			return "/api/v1/artifacts/" + shape.document + "/blocks"
-		}},
+		{name: "the issue tree (GET /api/v1/issues?parent=)", path: predicateCostTreePath},
 		{name: "GET /api/v1/lenses with its chains", headOnly: true, path: func(shape *predicateCostShape) string {
 			return "/api/v1/lenses?on=" + url.QueryEscape(shape.documentRef)
 		}},
@@ -654,8 +808,9 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // no block of a document takes `author`, and the run asserts that of this head's store.
 //
 // It measures nine reads over each shape: the list of a kind, search, the tuples out of a node, the
-// tuples into a node, the backlink counts, the issue tree, GET /api/v1/lenses with its chains, the
-// coverage read and the references panel read, each named with its route. The base build is the
+// tuples into a node, the backlink counts, the issue tree (the list of the shape's issue's
+// children, each shape's issue holding predicateCostChildren), GET /api/v1/lenses with its chains,
+// the coverage read and the references panel read, each named with its route. The base build is the
 // commit BASELINE_SHA names, or, where it is unset, `git merge-base origin/main HEAD` (baseBuild),
 // serving a database of its own (startCostArms). Both builds are read in one loop, one reading on
 // each in each turn, the build that goes first alternating, after one warm-up reading on each that
@@ -667,14 +822,19 @@ func predicateCostShapePhrase(shape string) string { return predicateCostPhrase 
 // p95 and the p99 bind nothing. GET /api/v1/lenses and the fourth shape have no reading at the
 // base build, so they are printed and bind nothing either.
 //
-// It runs only where LEGION_SCALE_TEST=1 is set, and CI shows it as SKIP. LEGION_READ_COST_SCALE
-// writes and reads a share of these sizes, for a smoke of the test that is no reading of the check.
+// It runs only where LEGION_SCALE_TEST=1 is set, under the basebuild tag, which no CI job builds.
+// LEGION_READ_COST_SCALE writes and reads a share of these sizes, for a smoke of the test that is
+// no reading of the check: such a run measures and prints every reading and then ends in SKIP.
+// LEGION_READ_COST_CONTROL set to drop-inbound-indexes runs the check's negative control
+// (predicateCostControlEnv), which fails the run, or ends it in SKIP where no read crossed the
+// bound, a control that did not bite.
 func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	if os.Getenv(predicateCostScaleTestEnv) != "1" {
 		t.Skipf("set %s=1 to run c-read-cost: it builds the base commit, writes about 70,000 blocks into each of two databases and takes about 12,000 timed readings",
 			predicateCostScaleTestEnv)
 	}
 	sizes := predicateCostSizesOf(t)
+	control := predicateCostControlOf(t)
 	t.Log(costGVisorNote)
 	t.Log("how each build is driven: both are server processes of their own build, each serving a " +
 		"database of its own which that build migrated at boot, and each is driven over its own HTTP " +
@@ -683,7 +843,12 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 		"reading of the store's own arm.")
 	if sizes.scale != 1 {
 		t.Logf("%s=%g: this run writes and reads that share of the check's sizes, so it is a smoke of this test and "+
-			"no reading of c-read-cost; every shape below states the size it was written at", predicateCostScaleEnv, sizes.scale)
+			"no reading of c-read-cost; every shape below states the size it was written at, and the run ends in SKIP "+
+			"once every reading is printed", predicateCostScaleEnv, sizes.scale)
+	}
+	if control != "" {
+		t.Logf("%s=%s: this run is the check's negative control, which drops %v from this head's database once its corpus "+
+			"is written and analysed, and is no reading of c-read-cost", predicateCostControlEnv, control, predicateCostInboundIndexes)
 	}
 	t.Logf("the shapes: %q, %q and %q, which both builds write; and %q, which this head alone writes. "+
 		"Each read takes %d reading(s) over each shape on each build that serves it, after %d warm-up reading(s) not counted",
@@ -692,7 +857,11 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 	listener := costEnvoy(t)
 	listener.Accept(true)
 	head, base := startCostArms(t, listener.URL)
-	t.Logf("in every line below, %q is this head and %q the base build", head.name, base.name)
+	// BASELINE_SHA may name a commit that already holds this child's bases, INFRA-1149's node and
+	// tuple store among them, which "the commit before this child" would misname.
+	started := base.name
+	base.name = "the base build"
+	t.Logf("startCostArms names the base build's arm %q; every line below calls it %q, and %q this head", started, base.name, head.name)
 	builds := []*costArm{head, base}
 	shapes := map[*costArm][]*predicateCostShape{}
 	for _, arm := range builds {
@@ -708,10 +877,17 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			arm.count(t, `select count(*) from document_blocks`),
 			arm.count(t, `select count(*) from block_refs`),
 			arm.count(t, `select count(*) from comments`),
-			costStoreCounts(t, arm))
+			predicateCostStoreCounts(t, arm))
 		settlePredicateCost(t, arm, shapes[arm])
 	}
 	requirePredicateCostAuthorNodes(t, head)
+	if control == predicateCostDropInbound {
+		inbound := slices.IndexFunc(shapes[head], func(shape *predicateCostShape) bool { return shape.name == sizes.inboundName() })
+		if inbound < 0 {
+			t.Fatalf("%s holds no shape %q for the control to read", head.name, sizes.inboundName())
+		}
+		dropPredicateCostInboundIndexes(t, head, shapes[head][inbound])
+	}
 
 	// No tick of either server's own runs inside a measured window.
 	for _, arm := range builds {
@@ -774,5 +950,14 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 					head.name, here.printed(), base.name, before.printed())
 			}
 		}
+	}
+	if control != "" && !t.Failed() {
+		t.Skipf("%s=%s: every read held the %.2f bound with %v dropped from %s's database, so the control did not bite; "+
+			"a run with it set is no reading of c-read-cost", predicateCostControlEnv, control, predicateCostRatio,
+			predicateCostInboundIndexes, head.name)
+	}
+	if sizes.scale != 1 {
+		t.Skipf("%s=%g: this run wrote and read that share of the check's sizes, a smoke of this test whose readings are printed above "+
+			"and no reading of c-read-cost", predicateCostScaleEnv, sizes.scale)
 	}
 }
