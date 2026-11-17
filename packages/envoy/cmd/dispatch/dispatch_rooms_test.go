@@ -6,28 +6,33 @@ import (
 	"net/http"
 	"regexp"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
+
+// pprofListening is the line Dispatch writes once the profiler listens (startPprof), with the
+// address it bound.
+var pprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(127\.0\.0\.1:[0-9]+)`)
 
 // What the document rooms hold - how many rooms are resident, how many browsers are connected,
 // what their appends cost - is invisible from outside the process unless it is exported. The
 // loopback profiler's /debug/vars serves it as the expvar variable dispatch_rooms, which an
 // operator reads through `kubectl port-forward` while people edit: after two editors join two
 // documents, it names two resident rooms and two connections.
+//
+// The profiler takes port 0, a port the kernel chooses at its bind, and the test reads the port
+// from the line naming it: a port the test picked and let go of is any process's to take before
+// Dispatch binds it, which refuses the boot.
 func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 	database := storetest.Open(t)
-	// Port 0: the profiler binds a port the kernel chooses, so no other program can take it first,
-	// and its listening line names that port.
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
 		Env: map[string]string{"DISPATCH_PPROF_PORT": "0"},
 	})
 	process.waitHealthy(t)
-	process.waitForLog(t, 30*time.Second, `msg="dispatch: pprof listening"`)
+	// The profiler binds before the server serves, so the line is in the output by now.
 	listening := pprofListening.FindStringSubmatch(process.Output.String())
 	if listening == nil {
-		t.Fatalf("the pprof listening line names no 127.0.0.1 address:\n%s", process.Output.String())
+		t.Fatalf("Dispatch logged no line naming the profiler's address:\n%s", process.Output.String())
 	}
 	process.call(t, http.MethodPost, "/api/v1/projects", `{"key":"ROOM","name":"Rooms"}`, http.StatusCreated)
 	for _, spec := range []string{"first", "second"} {
@@ -66,6 +71,3 @@ func TestDispatchRoomsReportsTheRoomsHeld(t *testing.T) {
 		t.Fatalf("dispatch_rooms = %s, want resident_rooms 2 and connections 2 with two editors in two documents", exported)
 	}
 }
-
-// pprofListening is the line startPprof logs once it has bound, naming the address it bound.
-var pprofListening = regexp.MustCompile(`msg="dispatch: pprof listening" addr=(127\.0\.0\.1:\d+)`)

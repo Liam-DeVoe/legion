@@ -700,9 +700,8 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if boot := resolveWith(t, nil); boot.PprofAddr != "" {
 				t.Errorf("unset: PprofAddr = %q, want none", boot.PprofAddr)
 			}
-			// 0 is the port the kernel chooses as the profiler binds it, not a refusal.
 			if boot := resolveWith(t, map[string]string{"DISPATCH_PPROF_PORT": "0"}); boot.PprofAddr != "127.0.0.1:0" {
-				t.Errorf("DISPATCH_PPROF_PORT=0: PprofAddr = %q, want 127.0.0.1:0", boot.PprofAddr)
+				t.Errorf("0: PprofAddr = %q, want 127.0.0.1:0, a port the kernel chooses", boot.PprofAddr)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_PPROF_PORT": "65536"}, "DISPATCH_PPROF_PORT")
 		},

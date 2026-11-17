@@ -1,3 +1,0 @@
-kind: Changed
-body: |-
-  `envoy-dispatch` takes `DISPATCH_PPROF_PORT=0`: the profiler binds a port the kernel chooses on `127.0.0.1`, and the `dispatch: pprof listening` line names it, so a test that starts the server reads the port back and no other program can take it first. `0` was refused before; a value that is neither `0` nor a port 1-65535 still refuses startup.
