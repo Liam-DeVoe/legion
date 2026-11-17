@@ -191,30 +191,31 @@ func TestAReadKeepsWritesAnotherWriterMadeInItsWindow(t *testing.T) {
 	}
 }
 
-// A read completes only once its consumer has delivered a record at or past its barrier with
-// nothing pending after it. A delivery of the barrier with a record still pending behind it - a
-// write that landed after the barrier, or one the consumer has yet to pass - does not complete it:
-// the record after it does, and the read keeps it.
-func TestAReadCompletesOnlyOnceNothingIsPendingPastItsBarrier(t *testing.T) {
+// The pending count a delivery carries is the server's cached count, and it can read 1 when nothing
+// is left to deliver: a removal the consumer's cursor had already skipped is not counted
+// (nats-server v2.15.1 consumer.go:5688-5689, 7020-7022). The window tests caught it under load,
+// on the real server: a reconnect's consumer delivered its window writes, then its barrier with a
+// pending count of 1, and nothing more, so a read that waited for a count of 0 waited out its
+// timeout and failed. The read stops waiting at its consumer's first delivery at or past the
+// barrier, whatever that delivery's count, and completes.
+func TestAReadStopsWaitingAtTheBarrierWhateverItsPendingCount(t *testing.T) {
 	const barrier = 100
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	armed := make(chan struct{})
-	updates := make(chan jetstream.KeyValueEntry, 4)
+	updates := make(chan jetstream.KeyValueEntry, 2)
 	updates <- nil
 	go func() {
 		// Once the read waits past its barrier (its bound is armed), the consumer delivers the
-		// barrier with one record pending behind it, then that record with nothing pending.
+		// barrier with a pending count of 1, and then nothing more.
 		<-armed
 		updates <- scriptedRecord{key: bus.BarrierKey, revision: barrier, delta: 1, op: jetstream.KeyValueDelete}
-		updates <- scriptedRecord{key: "behind-the-barrier", revision: barrier + 1, delta: 0, op: jetstream.KeyValuePut}
 	}()
 	main := scripted(kv, func(context.Context, jetstream.KeyValue) (jetstream.KeyWatcher, error) {
 		return &scriptedWatcher{updates: updates}, nil
 	})
-	// The copy the read's completion leaves is read before any later delivery reaches it.
-	into := newWindowCache(1)
-	t.Cleanup(into.letGo)
+	into := newSeen()
+	into.hold("held-by-the-copy")
 	timers := &pending{}
 	var once sync.Once
 	afterFunc := timers.afterFunc()
@@ -229,9 +230,9 @@ func TestAReadCompletesOnlyOnceNothingIsPendingPastItsBarrier(t *testing.T) {
 		}))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the read's completion", into.targetDone)
-	if !into.has("behind-the-barrier") {
-		t.Fatalf("the read completed with the copy holding %v: it did not wait for the record pending behind its barrier", into.keyList())
+	eventually(t, "the read's completion", func() bool { return len(into.completions()) == 1 })
+	if into.has("held-by-the-copy") {
+		t.Fatalf("the read completed with the copy holding %v, want the row the leader holds no record of removed", into.keyList())
 	}
 }
 

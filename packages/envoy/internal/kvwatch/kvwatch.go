@@ -573,8 +573,9 @@ func (w *Watcher) watch(kv bus.KeyValue, expect uint64) error {
 // consume feeds the cache what the watcher of generation delivers, as the read read, and reads it
 // until nats.go closes its updates, whether or not it is still current. The first nil ends the
 // read's scan, and a complete scan does not complete the read on its own: the read then waits past
-// a barrier (settle) and completes only once its own consumer has delivered a record at or past the
-// barrier's sequence with nothing pending after it (completeRead). Every record delivered until
+// a barrier (settle) until its own consumer has delivered a record at or past the barrier's
+// sequence, and completes once the stream's leader was asked about every row it has no evidence
+// of (finishSettle, completeRead). Every record delivered until
 // then is applied as the read's. A scan that delivers nothing for the idle timeout, counted from
 // since (when its idle wait was armed) and then from its last entry, ends as timed out instead
 // (idleExpired, signalled on idle by the scan's idle wait): the read completes nothing and is read
@@ -609,7 +610,7 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 				if w.confirmStream(generation) == streamReplaced {
 					w.settleReplaced(generation)
 				} else {
-					w.settleFailed(generation, read, settle.since, fmt.Errorf("%w: no record at or past the read barrier at %d with nothing pending after it within %s",
+					w.settleFailed(generation, read, settle.since, fmt.Errorf("%w: no record at or past the read barrier at %d within %s",
 						errSettleTimedOut, settle.barrier, w.scanIdle))
 				}
 				settle = nil
@@ -674,28 +675,29 @@ func (w *Watcher) consume(sub *subscription, generation uint64, read Read, start
 
 // settling is one read's wait past its barrier, which consume keeps while the read waits. The
 // barrier is the stream sequence its write was acknowledged at, 0 until the acknowledgement
-// arrives on acks; idle is the highest stream sequence the consumer has delivered with nothing
-// pending after it (a record whose Delta is 0). The read stops waiting once idle has reached the
-// barrier, and then reads from the stream's leader every row it has no evidence of before it
-// removes any (verifyUnmarked).
+// arrives on acks; passed is the highest stream sequence the consumer has delivered. The read stops
+// waiting once passed has reached the barrier, and then reads from the stream's leader every row
+// it has no evidence of before it removes any (verifyUnmarked).
 //
-// The pending count is no proof that the consumer has delivered every record its store holds, and
-// the read does not take it as one: it only says when to look. It is nats-server v2.15.1's cached
-// count, not a reading of the store. A stored message is acknowledged before its consumer signal
-// is queued (stream.go:7505-7526), the signal is counted later on another goroutine
-// (stream.go:8416-8449, consumer.go:7084-7102), the removal of an undelivered message the bucket
-// replaced is counted at once (consumer.go:7020-7026), and a count below zero is reported as zero
-// (consumer.go:5709-5713). So a delivery can carry 0 while a replacement it was counted against is
-// stored and undelivered. What a delivery at or past the barrier does prove is the consumer's
-// place: it walks the stream in sequence order, handing over every message it passes that the
-// store still holds (consumer.go:6400-6406, 5050-5074), so every key it has not delivered by then
-// either has no record or has one written after the consumer passed its old one, which the
-// leader's read finds.
+// What a delivery at or past the barrier proves is the consumer's place: it walks the stream in
+// sequence order, handing over every message it passes that the store still holds
+// (nats-server v2.15.1 consumer.go:6400-6406, 5050-5074), so every row the read has delivered
+// nothing for by then either has no record or has one written after the consumer passed its old
+// one, which the leader's read finds. The pending count a delivery carries (its Delta) is read for
+// nothing: it is the server's cached count, not a reading of the store, and it is wrong both
+// ways. A stored message is acknowledged before its consumer signal is queued
+// (stream.go:7505-7526), the signal is counted later on another goroutine (stream.go:8416-8449,
+// consumer.go:7084-7102), the removal of an undelivered message the bucket replaced is counted at
+// once (consumer.go:7020-7026), and a count below zero is reported as zero (consumer.go:5709-5713),
+// so a delivery can carry 0 while a replacement is stored and undelivered; and a removal the
+// cursor had already skipped is not counted at all (consumer.go:5688-5689, 7020-7022), so a
+// delivery can carry 1 with nothing left to deliver, and a read that waited for a 0 would wait out
+// its timeout.
 type settling struct {
 	since   time.Time
 	acks    chan barrierAck
 	barrier uint64
-	idle    uint64
+	passed  uint64
 }
 
 // barrierAck is the answer to a read's barrier write: the sequence it was committed at, or err.
@@ -714,18 +716,16 @@ func settleAcks(settle *settling) <-chan barrierAck {
 }
 
 // delivered records entry, a record the read's consumer delivered, and reports whether the read
-// may complete now.
+// may stop waiting now: the consumer has delivered a record at or past the barrier.
 func (s *settling) delivered(entry jetstream.KeyValueEntry) bool {
-	if entry.Delta() == 0 && entry.Revision() > s.idle {
-		s.idle = entry.Revision()
-	}
-	return s.barrier != 0 && s.idle >= s.barrier
+	s.passed = max(s.passed, entry.Revision())
+	return s.barrier != 0 && s.passed >= s.barrier
 }
 
-// caughtUp reports whether the consumer has already delivered, at or past barrier, a record with
-// nothing pending after it: the barrier's acknowledgement can arrive after its own delivery.
+// caughtUp reports whether the consumer has already delivered a record at or past barrier: the
+// barrier's acknowledgement can arrive after its own delivery.
 func (s *settling) caughtUp(barrier uint64) bool {
-	return s.idle >= barrier
+	return s.passed >= barrier
 }
 
 // errSettleTimedOut is what a read that did not read its consumer past its barrier within the idle
