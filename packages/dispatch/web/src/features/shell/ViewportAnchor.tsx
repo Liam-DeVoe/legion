@@ -189,10 +189,21 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
    *  for, so it must not be read as the reader looking somewhere new. */
   private pointerAt: { x: number; y: number } | null = null;
 
-  /** What the reader's last pointer press inside the root went down on, until the focus next
-   *  moves into the root. The focus a press gives the control it went down on is that press's
-   *  own (`focusMoved`), not a control to keep the place at. */
+  /** What the reader's last pointer press inside the root went down on, while that press lasts:
+   *  until the focus next moves into the root, or until the task queued as the press ended runs
+   *  (`pressEnds`). The focus a press gives the control it went down on is that press's own
+   *  (`focusMoved`), not a control to keep the place at. A press can give the root no focus: one
+   *  on words that take none, in a browser that does not focus a pressed button, or one whose
+   *  focus goes outside the root. Its mark kept for the next focus would take a much later one on
+   *  that control, the reader tabbing to it or code handing it the focus, for the press's own, and
+   *  let go the focused control kept with the place (`readerPressed`). */
   private pressedOn: Node | null = null;
+
+  /** The task that ends the mark of the reader's last press (`pressedOn`), queued as that press
+   *  ended inside the root and cancelled by the next press. It runs after the focus the press
+   *  gives: a mouse press gives it as it goes down, before it ends, and a touch press with the
+   *  click that follows its end in the same task. */
+  private pressEnds: number | undefined;
 
   /** The box the host named, while it holds one: what this anchor reads its offset from and
    *  what it moves. Null where the rows scroll in the document, which is the window's own
@@ -370,11 +381,18 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     // Capture, because `scroll` does not bubble: one listener catches the window's and the
     // named box's alike, and the handler reads a rect only for the box this anchor owns.
     window.addEventListener("scroll", this.viewScrolled, true);
+    // A press that went down in the root can end anywhere on the page, so its end is heard on
+    // the window (`pressEnded`).
+    window.addEventListener("pointerup", this.pressEnded, true);
+    window.addEventListener("pointercancel", this.pressEnded, true);
   }
 
   componentWillUnmount(): void {
     window.removeEventListener("scroll", this.viewScrolled, true);
+    window.removeEventListener("pointerup", this.pressEnded, true);
+    window.removeEventListener("pointercancel", this.pressEnded, true);
     this.endOwnScroll();
+    window.clearTimeout(this.pressEnds);
     this.contentSize?.disconnect();
     this.contentSize = null;
   }
@@ -416,8 +434,9 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   // The focus moving into the root is the place from then on, whoever moved it: the reader
   // tabbing to a control, or a host handing the focus on by code with no scroll, which raises
   // nothing else this anchor hears, so a later change of the row's height would take the
-  // control with it. The focus a pointer press gives the control it went down on is the press's
-  // own, the reader acting on the row (`readerPressed`), and the row's top is what holds then.
+  // control with it. The focus a pointer press gives the control it went down on, while that
+  // press lasts (`pressedOn`), is the press's own, the reader acting on the row
+  // (`readerPressed`), and the row's top is what holds then.
   private readonly focusMoved = (event: FocusEvent): void => {
     const pressed = this.pressedOn;
     this.pressedOn = null;
@@ -439,7 +458,21 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
 
   private readonly pointerPressed = (event: PointerEvent): void => {
     this.readerPressed();
+    window.clearTimeout(this.pressEnds);
+    this.pressEnds = undefined;
     this.pressedOn = event.target instanceof Node ? event.target : null;
+  };
+
+  // A press ends at its pointerup, or at its pointercancel where the browser takes the pointer
+  // for itself, wherever on the page the pointer is then, and its mark goes in a task queued then
+  // (`pressEnds`). Heard as the event goes down to its target, as the press itself is.
+  private readonly pressEnded = (): void => {
+    if (this.pressedOn === null) return;
+    window.clearTimeout(this.pressEnds);
+    this.pressEnds = window.setTimeout(() => {
+      this.pressEnds = undefined;
+      this.pressedOn = null;
+    }, 0);
   };
 
   private readonly setRoot = (node: HTMLElement | null): void => {

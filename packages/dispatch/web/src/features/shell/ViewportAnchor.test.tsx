@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-// fireEvent also sends a box's own scroll event, which user-event has no form for.
+// fireEvent also sends a box's own scroll event, which user-event has no form for, and a pointer
+// press that gives no focus, where user-event's press focuses what it goes down on.
 // biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set.
 import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -847,6 +848,48 @@ test("a pointer pressed on a control in a long row lets the row open below its h
     box.settle();
     expect(viewportTop("r3")).toBe(100);
     expect(controlTop("r3")).toBe(1280);
+  } finally {
+    box.unmount();
+  }
+});
+
+// A pointer press that gives the root no focus, as a press in a browser that does not focus a
+// pressed button does, is over once it has ended. A focus the control it went down on gets
+// later, the reader tabbing to it or code handing it the focus, is not that press's own, and the
+// control is the reader's place from then on. A press kept until the next focus took that focus
+// for its own and let the control go, and a cut of the row's own content above the control then
+// moved it.
+test("a control focused after a press that gave it no focus keeps its place when its row's own content above it shrinks", async () => {
+  heights = { r3: 1000 };
+  const box = drawInBox(ids(40));
+  try {
+    const control = document.querySelector<HTMLElement>('[data-row="r3"] button');
+    if (control === null) throw new Error("r3 button missing");
+    // The reader scrolls to the control: r3 runs from 200 to 1,200 px down the content, and its
+    // control stands at its foot.
+    box.scroller.scrollTop = 1000;
+    box.settle();
+    expect(viewportTop("r3")).toBe(-800);
+    expect(controlTop("r3")).toBe(180);
+
+    // A press on the control that gives it no focus, and the task queued as the press ended.
+    fireEvent.pointerDown(control);
+    fireEvent.pointerUp(control);
+    expect(document.activeElement).not.toBe(control);
+    const taskRan = Promise.withResolvers<void>();
+    window.setTimeout(taskRan.resolve, 0);
+    await taskRan.promise;
+
+    // Code hands the control the focus.
+    control.focus();
+    expect(document.activeElement).toBe(control);
+    const held = controlTop("r3");
+    expect(held).toBe(180);
+
+    // r3 is cut to 200 px in a commit of its own, which raises its control by 800 px.
+    heights = { r3: 200 };
+    box.settle();
+    expect(controlTop("r3")).toBe(held);
   } finally {
     box.unmount();
   }
