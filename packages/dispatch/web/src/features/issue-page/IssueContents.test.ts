@@ -16,6 +16,9 @@ import type { NodeType } from "./page-words";
  * itself is no entry: the header is the issue (the architect's ruling 5).
  */
 
+/** One node of a hand-built tree. A requirement here is one of the issue's own spec, which part
+ *  F's model marks a statement (`isStatement`, decision 152 of dispatch://INFRA-1196), so the list
+ *  counts it as the filter row does. */
 function node(
   id: string,
   type: NodeType,
@@ -36,6 +39,7 @@ function node(
     transcluded: false,
     type,
     waiting: false,
+    ...(type === "requirement" ? { statement: true as const } : {}),
     ...extra,
   };
 }

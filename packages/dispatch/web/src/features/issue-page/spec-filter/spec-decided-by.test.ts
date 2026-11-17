@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
 import type { CheckBlock, Decision } from "../../../api/types";
+import { wordsOf } from "../../refs/tree-fragment";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT, chipWords } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
@@ -40,8 +41,10 @@ import {
  * own (`treeContext`), so a `shaped` tie is resolved here exactly as the tree resolves one.
  */
 
-/** How this issue addresses a node, which is how a tie finds the statement it names. */
-const { nodeIdOf } = treeContext({ issue: issueDetails() });
+/** How this issue addresses a node, which is how a tie finds the statement it names. Only the
+ *  context's addresses are read here and no chip's name, so the line it names a block by is the
+ *  whole reading's words (`wordsOf`), which nothing below reads. */
+const { nodeIdOf } = treeContext({ issue: issueDetails() }, wordsOf);
 
 /** A page that names no reference, so `referenceStandIns` names one by its issue's key where it
  *  is an issue, and else by its short form (`shortForm`, decision 140 of dispatch://INFRA-1196). */
@@ -451,11 +454,12 @@ test("a person's decision whose question the tree does not hold is drawn as the 
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
 });
 
-// R17: the mark is how the statement stands at the commit the page names, in the Verification
-// filter's own reading, so one statement reads the same in both views: Met where every check of
-// it passed there, Not met where one failed there, Unknown otherwise, and no check where none
-// serves it. A pass recorded at another commit is no Met.
-test("a statement's mark is how it stands at the commit the page names", () => {
+// R17: the mark is how the statement stands in the Verification filter's own reading, so one
+// statement reads the same in both views: Met where every check of it passed, Not met where one
+// failed, Unknown otherwise, and no check where none serves it. Each check is read at the commit
+// the server names for it (decision 152 of dispatch://INFRA-1196), so a pass the server reads at
+// another commit (`other_commit`, with no pass standing) is no Met.
+test("a statement's mark is how its checks stand at the commit the server names for each", () => {
   const passed = check({ block_id: "c1", results: [result({ id: "p1" })] });
   const failed = check({
     block_id: "c2",
@@ -464,7 +468,15 @@ test("a statement's mark is how it stands at the commit the page names", () => {
   });
   const elsewhere = check({
     block_id: "c3",
-    results: [result({ commit_sha: OTHER_COMMIT, created_at: "2026-11-13T00:00:00Z", id: "o1" })],
+    pass_stands: { answer: "no" },
+    results: [
+      result({
+        commit_sha: OTHER_COMMIT,
+        commit_stands: { answer: "other_commit" },
+        created_at: "2026-11-13T00:00:00Z",
+        id: "o1",
+      }),
+    ],
   });
   const unrun = check({ block_id: "c4", pass_stands: { answer: "no" }, results: [] });
   const groups = bodyOf(

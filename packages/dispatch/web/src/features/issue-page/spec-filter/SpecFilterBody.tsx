@@ -38,6 +38,7 @@ import {
   type DispatchReferenceRoute,
   parseNodeReference,
 } from "../../refs/routes";
+import { wordsOf } from "../../refs/tree-fragment";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
@@ -184,14 +185,14 @@ export function SpecFilterBody({
   const statementsRead =
     coverageRead.data !== undefined && (spec === undefined || specBlocksRead.data !== undefined);
   const statementsFailed = failedWithNothing(coverageRead) || failedWithNothing(specBlocksRead);
-  // Each statement's mark is how it stands at the commit the page names, as the Verification
-  // filter reads it (`statement-state.ts`), from three reads under the keys the tree reads them
-  // with (no request of their own): the issue's results, the coverage, and the blocks of its
-  // Verification document, which put each check under the statement it serves, the document
-  // found as the tree finds it (`useIssueTree.ts`'s `treeDocumentIds`). Before all three hold an
-  // answer a mark would say Unknown or no check of a statement that is Met, so none is drawn
-  // until they do; a failed read of the results or of those blocks is one line, since either
-  // leaves every statement unmarked.
+  // Each statement's mark is how its checks stand, each at the commit the server names for it
+  // (decision 152), as the Verification filter reads it (`statement-state.ts`), from three reads
+  // under the keys the tree reads them with (no request of their own): the issue's results, the
+  // coverage, and the blocks of its Verification document, which put each check under the
+  // statement it serves, the document found as the tree finds it (`useIssueTree.ts`'s
+  // `treeDocumentIds`). Before all three hold an answer a mark would say Unknown or no check of a
+  // statement that is Met, so none is drawn until they do; a failed read of the results or of
+  // those blocks is one line, since either leaves every statement unmarked.
   const resultsRead = useQuery(issueResultsQuery(issue.key));
   const results = resultsRead.data;
   const verification = roleDocument(issue, "verification");
@@ -205,8 +206,10 @@ export function SpecFilterBody({
     (verification === undefined || checksRead.data !== undefined);
   const resultsFailed = failedWithNothing(resultsRead) || failedWithNothing(checksRead);
   // How this issue addresses a node, which is the one rule the tree was built with, so a
-  // `shaped` tie resolves to the node it names (`tree-drafts.ts`).
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  // `shaped` tie resolves to the node it names (`tree-drafts.ts`). Only the context's addresses
+  // are read here and no chip's name, so the line it names a block by is the whole reading's
+  // words (`wordsOf`), which nothing here reads.
+  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`).
   const nameOf = useReferenceNames(root, nodeIdOf);

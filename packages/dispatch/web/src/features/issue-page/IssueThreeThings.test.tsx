@@ -9,6 +9,7 @@ import type { Artifact, ArtifactBlock, Decision, IssueDetails } from "../../api/
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildDispatchReference } from "../refs/routes";
+import { wordsOf } from "../refs/tree-fragment";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { IssueThreeThings } from "./IssueThreeThings";
@@ -37,7 +38,9 @@ beforeAll(async () => {
 
 const KEY = "CORE-1";
 
-/** A node of the tree with nothing on it but its kind, and `fields`. */
+/** A node of the tree with nothing on it but its kind, and `fields`. A requirement here is one
+ *  of the issue's own spec, which part F's model marks a statement (`isStatement`, decision 152
+ *  of dispatch://INFRA-1196). */
 function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): TreeNode {
   return {
     alsoUnder: [],
@@ -53,6 +56,7 @@ function treeNode(id: string, type: NodeType, fields: Partial<TreeNode> = {}): T
     transcluded: false,
     type,
     waiting: false,
+    ...(type === "requirement" ? { statement: true as const } : {}),
     ...fields,
   };
 }
@@ -80,7 +84,9 @@ function Head({
   root: TreeNode;
   summary: TreeNode | undefined;
 }): ReactNode {
-  const nodeIdOf = useMemo(() => treeContext({ issue: issueDetails() }).nodeIdOf, []);
+  // Only the context's addresses are read here and no chip's name, so the line it names a block
+  // by is the whole reading's words (`wordsOf`), which nothing here reads.
+  const nodeIdOf = useMemo(() => treeContext({ issue: issueDetails() }, wordsOf).nodeIdOf, []);
   const nameOf = useReferenceNames(root, nodeIdOf);
   return <IssueThreeThings look={look} nameOf={nameOf} reading={reading} summary={summary} />;
 }

@@ -22,7 +22,14 @@ import {
 } from "../../theme/classes";
 import { isViewer } from "../refs/actor";
 import { useFocusedNode } from "./focused-node";
-import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "./issue-tree";
+import {
+  drawnLine,
+  firstLineOf,
+  isCheck,
+  isStatement,
+  lineWordsRaw,
+  type TreeNode,
+} from "./issue-tree";
 import { NodeGlyph } from "./NodeGlyph";
 import { oneLineCut, referenceStandIns, useOneLineBox } from "./one-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -55,7 +62,9 @@ export interface ContentsEntry {
  * Each entry's marks count its own branch: every node under it that sits under no entry nearer
  * to it, so a node counts once, on the entry whose branch it is read in (the prototype's
  * `branchCounts`): its statements, its decisions waiting for the reader's review, its child
- * issues, and its statements a check under them failed. What sits under the issue and under no
+ * issues, and its statements a check under them failed. A statement and a check are what the
+ * filter row counts as one (`isStatement`, `isCheck`, decision 152): a `requirement` or `check`
+ * block of any other document is counted as neither. What sits under the issue and under no
  * entry is counted on none, since the issue has no entry; the filter row's signals count it.
  */
 export function contentsOf(root: TreeNode, viewer: string | undefined): ContentsEntry[] {
@@ -67,9 +76,9 @@ export function contentsOf(root: TreeNode, viewer: string | undefined): Contents
     statements: 0,
   });
   const count = (node: TreeNode, marks: Record<ContentsMark, number>): void => {
-    if (node.type === "requirement") {
+    if (isStatement(node)) {
       marks.statements += 1;
-      if (node.children.some((child) => child.type === "check" && child.state === "failed")) {
+      if (node.children.some((child) => isCheck(child) && child.state === "failed")) {
         marks.failing += 1;
       }
     }

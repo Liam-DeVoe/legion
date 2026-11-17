@@ -1,7 +1,7 @@
 import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from "../../../api/types";
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
-import { drawnLine, firstLineOf, lineWordsRaw, type TreeNode } from "../issue-tree";
+import { drawnLine, firstLineOf, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
 import { referenceStandIns } from "../one-line";
 import {
   isReader,
@@ -70,8 +70,9 @@ import { statementStandings } from "../verification-filter/statement-state";
  *  another person's, or an agent's. */
 export type SpecSaid = "agent" | "person" | "you";
 
-/** The mark at the right of a statement's row: how it stands at the commit the page names, in
- *  the Verification filter's own reading, or that no check serves it (R10, R17). */
+/** The mark at the right of a statement's row: how its checks stand, each at the commit the
+ *  server names for it (decision 152), in the Verification filter's own reading, or that no check
+ *  serves it (R10, R17). */
 export type SpecMark = StatementState | "no_check";
 
 /** The decision that shaped a run of statements, as the left column draws it (R5). */
@@ -206,8 +207,9 @@ export function specDecidedBy({
     runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
   }[] = [];
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
+  // A statement is a requirement of the issue's own spec (`isStatement`, decision 152).
   const rows = nodesInOrder(view).slice(1);
-  for (const node of rows.filter((row) => row.type === "requirement")) {
+  for (const node of rows.filter(isStatement)) {
     const parent = parentOf(node, nodes, nameOf);
     const under = answerUnder(parent, nodes, reader, nameOf);
     // The answered question the statement hangs under first, then each tie, each decision once.
@@ -243,7 +245,7 @@ export function specDecidedBy({
     }
     run.statements.push(statement);
   }
-  return { groups, others: rows.filter((row) => row.type !== "requirement") };
+  return { groups, others: rows.filter((row) => !isStatement(row)) };
 }
 
 /**

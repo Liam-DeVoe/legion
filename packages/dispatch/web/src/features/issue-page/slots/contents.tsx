@@ -2,6 +2,7 @@ import { type ReactNode, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import { wordsOf } from "../../refs/tree-fragment";
 import { useContentsChosen } from "../contents-chosen";
 import { ContentsList } from "../IssueContents";
 import { IssueThreeThings } from "../IssueThreeThings";
@@ -39,8 +40,9 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
     [address.filter, memo, root]
   );
   // How a reference the sentences and the entries cite is named, read once over the whole tree
-  // (`referenceStandIns`).
-  const nodeIdOf = useMemo(() => treeContext({ issue }).nodeIdOf, [issue]);
+  // (`referenceStandIns`). Only the context's addresses are read here and no chip's name, so the
+  // line it names a block by is the whole reading's words (`wordsOf`), which nothing here reads.
+  const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
   const nameOf = useReferenceNames(root, nodeIdOf);
   const ask = useAskOutline();
   const [focusBranch, setFocusBranch] = useFocusBranch();

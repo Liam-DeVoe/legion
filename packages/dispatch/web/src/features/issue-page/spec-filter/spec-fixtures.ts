@@ -174,12 +174,14 @@ export function issueTree(children: readonly TreeNode[]): TreeNode {
 }
 
 /** One statement of the spec, by its block id, with its number in its own words as the spec
- *  writes one. */
+ *  writes one: a requirement of the issue's own spec, which part F's model marks a statement
+ *  (`isStatement`, decision 152). */
 export function statement(block: string, partial: Partial<TreeNode> = {}): TreeNode {
   return node({
     counts: { checks: 1, planTasks: 1 },
     id: `spec#b-${block}`,
     reference: statementRef(block),
+    statement: true,
     text: `**${block.toUpperCase()}.** The page draws ${block}.`,
     type: "requirement",
     ...partial,
