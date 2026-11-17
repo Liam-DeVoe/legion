@@ -61,6 +61,12 @@ func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 			want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "the check has a tie at c1 only", change: code(func(c *checkCase) { delete(c.Ties["c2"], c.check) }),
 			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		// A caller that knows no tie, or has no history, says so with an empty value, which the entry
+		// takes (TestTheDerivationRefusesAnInputThatIsNotWhole), and no result carries with it.
+		{name: "an empty map of ties: no tie is known", change: code(func(c *checkCase) { c.Ties = CommitTies{} }),
+			want: CheckState{State: "unknown", Reason: "subject_moved"}},
+		{name: "a FixtureHistory of no commit: the history holds neither commit", change: code(func(c *checkCase) { c.History = FixtureHistory{} }),
+			want: CheckState{State: "unknown", Reason: "subject_moved"}},
 		{name: "(a), a failing example: c2 runs the test again and deletes a file that only the tie at c1, where the test caught the fault, covers",
 			change: code(func(c *checkCase) {
 				delete(c.files2(), deleted)

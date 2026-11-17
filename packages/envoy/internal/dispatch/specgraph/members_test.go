@@ -585,9 +585,10 @@ func edit(v reflect.Value, path []step, change func(reflect.Value)) {
 // marked nonzero, beside a value that sets it (for a result, the failing run of C beside its pass)
 // and alone in its list or map, Derive and CheckStates (WaitCycle for a unit) give an error, where
 // the same input with the member set gives none or another one; for a map marked nonzero, also with
-// one value of it at its zero value, at each depth of a map of maps (memberMark); for a member of a
-// one of mark, also with both members set. To a caller of the library, a zero value of a member
-// marked present or zero is the value that its reason states, and no file is read.
+// one value of it at its zero value, at each depth of a map of maps, down to a value of a struct
+// type, which the marks of its own members read (memberMark); for a member of a one of mark, also
+// with both members set. To a caller of the library, a zero value of a member marked present or
+// zero is the value that its reason states, and no file is read.
 func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 	t.Parallel()
 	refusal := func(t *testing.T, in Input, units []Unit, root reflect.Type) string {
@@ -720,9 +721,10 @@ func TestAMemberLeftZeroAtTheEntryIsReadByItsMark(t *testing.T) {
 
 // zeroValueAt sets the first value, by its key, of the map m to its zero value at depth 1, and at a
 // greater depth the first value of that value, a map too, at the depth below; it is false when there
-// is no such value.
+// is no such value, or when it is of a struct type, whose zero the marks of its own members read, as
+// a Tie{} is a tie that is not known (R18).
 func zeroValueAt(m reflect.Value, depth int) bool {
-	if m.Kind() != reflect.Map || m.Len() == 0 {
+	if m.Kind() != reflect.Map || m.Len() == 0 || m.Type().Elem().Kind() == reflect.Struct {
 		return false
 	}
 	keys := m.MapKeys()

@@ -100,12 +100,16 @@ func Derive(in Input) (State, error) {
 //   - each result (Result.fault), with the current text of its check when it carries that text's
 //     digest, so it is judged by what the judge reads of it, and no two results of one check at one
 //     At and one Seq (sameRecordFault);
-//   - a FixtureHistory, as ReadFixtureHistory refuses it (FixtureHistory.check), a GitHistory with
-//     no Dir, and a nil value of any type that implements History (historyFault): a commit with no
-//     files, or a tree with no path, would be an empty tree, and two of them one tree, a content
-//     label "" would be one content at each commit that has it, and a nil history would panic where
-//     a result carries. No History is no history, with which no result carries;
-//   - each known tie, as NewTie refuses it: a known tie with no path covers no change;
+//   - History set, a FixtureHistory of no commit for none: with no history no result carries, so a
+//     failure at another commit counts nowhere, and a caller that gives none is not one that states
+//     that it has none; a FixtureHistory as ReadFixtureHistory refuses it (FixtureHistory.check), a
+//     GitHistory with no Dir, and a nil value of any type that implements History (historyFault): a
+//     commit with no files, or a tree with no path, would be an empty tree, and two of them one tree,
+//     a content label "" would be one content at each commit that has it, and a nil history would
+//     panic where a result carries;
+//   - Ties set, an empty map for none, and the map of each commit that it names set, for the same
+//     reason (a commit where no tie is known has {} or no key); and each known tie as NewTie
+//     refuses it: a known tie with no path covers no change;
 //   - JobRuns and Uncited, which only lower a state, set, empty for none: with no job run a leg that
 //     ended with no result would be hidden (R9), and with no map of the checks that CI refused, a
 //     refused check would be judged (R48); and each map of a commit of Uncited set and each of its
@@ -149,7 +153,13 @@ func (in Input) check(current Tree) error {
 	if err := historyFault(in.History); err != nil {
 		return err
 	}
+	if in.Ties == nil {
+		return errors.New("specgraph: it sets no Ties; an Input that knows no tie sets an empty map")
+	}
 	for _, commit := range slices.Sorted(maps.Keys(in.Ties)) {
+		if in.Ties[commit] == nil {
+			return fmt.Errorf("specgraph: ties: commit %s: it sets no map of the ties there, and a commit where no tie is known has an empty map or no key", quoted(commit))
+		}
 		for _, check := range slices.Sorted(maps.Keys(in.Ties[commit])) {
 			if tie := in.Ties[commit][check]; tie.Known {
 				if err := tiePathsFault(tie.Paths); err != nil {
