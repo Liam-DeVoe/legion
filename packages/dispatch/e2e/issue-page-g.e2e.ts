@@ -358,10 +358,18 @@ test("an agent message and an answered question are cut at six lines, and the wo
     await openIssue(page, seeded.key);
     await expectSeedDrawn(page, seeded);
     const agent = nodeRow(page, seeded.longMessage).first();
-    const cut = (await rowLayouts(page)).find((row) => row.id === seeded.longMessage);
-    expect(cut?.more ?? "", "the agent's long message draws no more").toMatch(
-      /^more · [\d,]+ words$/u
-    );
+    // The page measures a row's cut once the row stands within a screen of the viewport, in the
+    // frame after it comes there (decision 196), so each cut read here is of a row brought there.
+    const cutOf = async (id: string) => {
+      await nodeRow(page, id).first().scrollIntoViewIfNeeded();
+      await expect
+        .poll(async () => (await rowLayouts(page)).find((row) => row.id === id)?.more ?? "", {
+          message: `${id} draws no more`,
+        })
+        .toMatch(/^more · [\d,]+ words$/u);
+      return (await rowLayouts(page)).find((row) => row.id === id);
+    };
+    const cut = await cutOf(seeded.longMessage);
     expect(
       Number(/([\d,]+)/u.exec(cut?.more ?? "")?.[1]?.replace(",", "")),
       "the cut holds back 20 words or fewer"
@@ -403,7 +411,7 @@ test("an agent message and an answered question are cut at six lines, and the wo
       more: null,
       wordsHidden: 0,
     });
-    expect(layouts.find((row) => row.id === seeded.answeredLong)?.more ?? "").toMatch(/^more · /u);
+    expect((await cutOf(seeded.answeredLong))?.more ?? "").toMatch(/^more · /u);
 
     // Focused, the answered question is whole, with no more, on the focused card.
     const answered = await focusRow(page, seeded.answeredLong);
