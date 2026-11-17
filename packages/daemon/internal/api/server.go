@@ -1155,7 +1155,7 @@ const assignmentsContract = 141
 const entryTimesContract = 146
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 147,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 158,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1175,7 +1175,7 @@ const entryTimesContract = 146
 // keys whatever the issue's phase, and withoutGateBasis reads no key it takes, so a caller at 146
 // is served both times and `architectStalls` and none of this contract's, and a caller below 146
 // neither.
-const gateBasisContract = 147
+const gateBasisContract = 158
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

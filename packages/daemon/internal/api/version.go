@@ -2066,7 +2066,51 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 147: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
+// `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
+// `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
+// issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
+// `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`,
+// a `shimwire.MemoryKillCause`): empty for the gVisor guard's own kill, as 144 sends it; `kernel`
+// for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
+// of the processes that run a role's session (its agent, shim, role-init or a helper) that the
+// kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
+// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
+// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// state's settings block carries the new `runtime.kubernetes.sandbox` key as
+// `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
+// alone would bump nothing.
+//
+// The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
+// daemon of this release must never render the microVM flags into a pod whose image predates
+// them: the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`),
+// as it did for 39, 48 and 144, which is why the flags carry one. A gVisor pod's command line is
+// unchanged. An older daemon sends no `kernelKills`, and a microVM pod's launcher then sends no
+// kill report, since it sends one only on a connection whose answer carried `kernelKills`
+// (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
+// in the guard's words, and the launcher's own line in the pod's log keeps what it would have
+// said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
+// `cause`. `kernelKills` is set on every issue pod's acknowledgement, a gVisor pod's included, so
+// only the controller pod's acknowledgement is the bytes 144 writes, where the member is left
+// out; the guard's report is those bytes too, since `cause` is left out when empty.
+//
+// An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
+// takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in
+// microVMs").
+// (This change took 151, the lowest number above main's 144 that no open pull request declared,
+// read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
+// 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. It keeps 151 at the forward merge
+// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's INFRA-2614 at 146, the
+// entry right above and the number the base now carries: 151 is still above it, and a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made between
+// 2026-11-16T19:30:30Z and 19:35:10Z, gave 151 to this change alone (147 #4017, 148 #3519, 149
+// #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line.)
+//
+// 158: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2105,7 +2149,7 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 147 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 158 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 146 is served the issues without both entry times and `architectStalls`, the entry of 146
 // above (withoutEntryTimes), a caller below 141 every issue without `assignments`, the entry of
@@ -2117,7 +2161,7 @@ package api
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 147
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 158
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -2129,7 +2173,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 147 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 158 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2167,7 +2211,12 @@ package api
 // (INFRA-2566), and 147 stayed above every open head. At the forward merge of 2026-11-15 that
 // brought main in at b2e427423163, main carried #4021's 144 (INFRA-3557), and 147 stayed above
 // every open head. At the forward merge of 2026-11-16 that brought main in at a97cd5939748, main
-// carried #3711's 146 (INFRA-2614, the entry above), and 147 stayed above it. Read the base's own
+// carried #3711's 146 (INFRA-2614, the entry above), and 147 stayed above it. At the forward merge
+// of 2026-11-17 that brought main in at a2b379d13f42, main carried #4106's 151 (INFRA-3729, the
+// entry above), and the open heads held 152 (#3730), 153 (#4115), 154 (#3659), 155 (#4273), 156
+// (#4065) and 157 (#4049, #3993, #3519 and #2230), read with a REST raw read of each open head's
+// file between 2026-11-17T14:01:15Z and 14:08:12Z, so this change moved 147 → 158, the lowest
+// number above main's and above every number another open head declares. Read the base's own
 // number and every open head again, by a REST raw read of each head's file, at the next forward
 // merge rather than from this line.)
-const DaemonAPIVersion = 147
+const DaemonAPIVersion = 158

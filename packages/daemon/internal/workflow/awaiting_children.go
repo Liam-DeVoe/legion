@@ -110,7 +110,7 @@ func (e *Engine) awaitChildren(ctx context.Context, tx pgx.Tx, issue record.Issu
 	from, now := issue.Phase, e.now()
 	reason := childrenWaitReason(issue.Key, hold)
 	status := PhaseStatus(phase.AwaitingChildren)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return err
 	}
 	issue.Phase, issue.Hold, issue.Status = phase.AwaitingChildren, nil, status
@@ -474,7 +474,7 @@ func (e *Engine) ReturnFromChildren(ctx context.Context, tx pgx.Tx, issue record
 		work = withForwardMerge(work, back)
 	}
 	status := PhaseStatus(back.Phase)
-	if err := e.status(ctx, tx, issue, status); err != nil {
+	if err := e.status(ctx, tx, issue, status, ""); err != nil {
 		return err
 	}
 	if status != "" {

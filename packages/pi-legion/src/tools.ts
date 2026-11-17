@@ -166,7 +166,7 @@ function stateSummary(state: LegionState): string {
     if (issue.designGate !== undefined) {
       const gate = issue.designGate;
       // A spec step open on an ancestor's approval holds in `approvedVersion` the version its root
-      // registered, which no person approved (contract 147), so a step on a basis reads its entry
+      // registered, which no person approved (contract 158), so a step on a basis reads its entry
       // in `gatedSteps`: the status word, and the ancestor and version it opened on or waits on.
       const spec = issue.gatedSteps?.find((step) => step.step === "spec");
       lines.push(
