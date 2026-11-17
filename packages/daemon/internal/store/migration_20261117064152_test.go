@@ -531,6 +531,39 @@ func TestTheRollForwardEndsTheMergeALingersCloseRetired(t *testing.T) {
 	check("after a second rollback and roll forward")
 }
 
+// A rollback to a release before 20261111225552_phase_entry drops the phase entries
+// (docs/kubernetes.md, the contract 146 block), and that migration numbers them again at the roll
+// forward, from 1, so an entry then is no count of the starts the earlier release made. The roll
+// forward reads no such entry: a running step of an issue the earlier release did not move stands
+// open, and where the issue or its root moved, every place of it reads as one that release may
+// have started again, as it reads where no entry says otherwise.
+func TestTheRollForwardReadsNoEntryARollbackPastTheEntriesNumberedAgain(t *testing.T) {
+	s := newRollBackStore(t)
+	s.issue("LEGION-361", "LEGION-361", "testing", "", 1)
+	s.entry("LEGION-361", "tester")
+	s.entry("LEGION-361", "tester")
+	s.row("LEGION-361", "step", 3, "open")
+	s.issue("LEGION-362", "LEGION-362", "accepting", "", 1)
+	s.entry("LEGION-362", "reviewer")
+	s.entry("LEGION-362", "reviewer")
+	s.row("LEGION-362", "step", 4, "ended")
+	s.wayBack()
+	// The earlier release, before the entries: the rollback's block drops them, and LEGION-362
+	// moves on to the retro. The roll forward's 20261111225552 adds them again, numbering every
+	// role handed work 1.
+	s.exec(`update issues set phase = 'retro' where key = 'LEGION-362'`)
+	s.exec(`update phases set entry = 1 where entry > 0`)
+	s.exec(`update schema_version set applied_at = now() + interval '1 minute' where version = 20261111225552`)
+	s.rollForward()
+	starts, ends := s.starts(), s.ends()
+	if got := starts["LEGION-361 step 3"]; got.run != "open" || len(ends["LEGION-361"]) != 0 {
+		t.Errorf("after the roll forward LEGION-361 step 3 = %+v with ends %+v, want its run open: the earlier release did not move it", got, ends["LEGION-361"])
+	}
+	if got := starts["LEGION-362 step 4"]; got.run != "uncounted" {
+		t.Errorf("after the roll forward LEGION-362 step 4 = %+v, want uncounted: no entry says the earlier release ran no review", got)
+	}
+}
+
 // The way back an operator runs keeps what the roll forward needs and touches nothing else: every
 // pending row of the outbox — the step records' own, which fill their records at the roll forward,
 // and the issue's other work — and every row of step_starts stand as they stood, and the one

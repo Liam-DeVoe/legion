@@ -38,6 +38,12 @@
 -- as the one the row counted and ends under its own id. The kept witnesses go, so a later
 -- rollback keeps its own.
 --
+-- An entry is a count of starts only while every release keeps it. A rollback to a release before
+-- 20261111225552_phase_entry drops the entries, and that migration, applied again at the roll
+-- forward after the rollback's moment, numbers them from 1 again; then the roll forward reads no
+-- entry, and a place of a worker reads as raised where the issue moved or its root was
+-- re-admitted, which is all that is left to tell.
+--
 -- On a database no rollback touched step_starts_rollback is empty and this changes nothing. The
 -- way back below is what makes it run again: it keeps the witnesses and deletes this migration's
 -- row, so the roll forward's Migrate applies this file again (store.apply decides each migration
@@ -59,38 +65,45 @@ with witnessed as (
     case s.kind when 'merge' then 'merger' when 'retro' then 'implementer'
       else (array['planner', 'implementer', 'tester', 'reviewer'])[s.place] end as worker,
     -- The phase of a place whose start may raise no entry.
-    case when s.kind = 'merge' then 'merging' when s.kind = 'step' and s.place = 5 then 'accepting' end as entryless
+    case when s.kind = 'merge' then 'merging' when s.kind = 'step' and s.place = 5 then 'accepting' end as entryless,
+    not exists (select 1 from schema_version v where v.version = 20261111225552 and v.applied_at > r.taken_at) as entries_kept
   from step_starts s join step_starts_rollback r on r.issue = s.issue
-), judged as (
-  select w.*, w.run = 'open' and (
-      w.was->'at' is distinct from w.now->'at' or w.was->'generation' is distinct from w.now->'generation'
-      or w.was->'pass' is distinct from w.now->'pass'
-      or w.was->'entries'->w.worker is distinct from w.now->'entries'->w.worker
-      or w.kind <> 'merge' and (w.was->'root_generation' is distinct from w.now->'root_generation'
-        or w.was->'lingers' is distinct from w.now->'lingers')
-      or w.kind = 'merge' and exists (
-          select 1 from generate_series((w.was->>'root_generation')::bigint, (w.now->>'root_generation')::bigint) g
-          join processed_events p on p.source = 'outbox' and p.event_id = 'linger:' || w.tree || ':' || g
-          where not exists (select 1 from handovers h where h.issue = w.issue and h.tree = w.tree and h.linger_generation = g))
-        and not exists (select 1 from pull_requests pr where pr.issue = w.issue and pr.state = 'open')) as ended
+), compared as (
+  select w.*,
+    w.was->'at' is distinct from w.now->'at' or w.was->'pass' is distinct from w.now->'pass' as moved,
+    w.was->'generation' is distinct from w.now->'generation' as rerun,
+    w.was->'root_generation' is distinct from w.now->'root_generation' as root_rerun,
+    w.was->'lingers' is distinct from w.now->'lingers' as lingered,
+    w.was->'entries'->w.worker is distinct from w.now->'entries'->w.worker as entry_raised,
+    exists (
+        select 1 from generate_series((w.was->>'root_generation')::bigint, (w.now->>'root_generation')::bigint) g
+        join processed_events p on p.source = 'outbox' and p.event_id = 'linger:' || w.tree || ':' || g
+        where not exists (select 1 from handovers h where h.issue = w.issue and h.tree = w.tree and h.linger_generation = g))
+      and not exists (select 1 from pull_requests pr where pr.issue = w.issue and pr.state = 'open') as retired
   from witnessed w
-), counted as (
-  select j.*, (j.run <> 'open' or j.ended) and (
-      j.was->'generation' is distinct from j.now->'generation'
-      or j.was->'root_generation' is distinct from j.now->'root_generation'
-      or j.was->'entries'->j.worker is distinct from j.now->'entries'->j.worker
-      or j.entryless is not null
-        and (j.was->'at' is distinct from j.now->'at' or j.was->'pass' is distinct from j.now->'pass')
-        and not (j.was->>'at' is not distinct from j.entryless and j.was->'pass' is not distinct from j.now->'pass')) as uncounted
-  from judged j
+), raised as (
+  -- entered: the role that works the place had its entry raised, as far as the entries can tell.
+  select c.*, case when c.entries_kept then c.entry_raised else c.worker is not null and (c.moved or c.root_rerun) end as entered
+  from compared c
+), judged as (
+  -- over: what ends the run of the place in this release, where one was open; restarted: what may
+  -- have started one there.
+  select e.*,
+    e.moved or e.rerun or e.entered or case when e.kind = 'merge' then e.retired else e.root_rerun or e.lingered end as over,
+    e.rerun or e.root_rerun or e.entered
+      or e.entryless is not null and e.moved
+        and not (e.was->>'at' is not distinct from e.entryless and e.was->'pass' is not distinct from e.now->'pass') as restarted
+  from raised e
+), decided as (
+  select j.*, j.run = 'open' and j.over as ended, (j.run <> 'open' or j.over) and j.restarted as uncounted from judged j
 ), ends as (
   insert into outbox (kind, issue, payload, attempts, next_at, last_error)
   select 'step_record', issue, record || jsonb_build_object('ended_at', taken_at, 'result', 'stopped'), 0, now(), ''
-  from counted where ended and record is not null
+  from decided where ended and record is not null
 )
-update step_starts s set run = case when c.uncounted then 'uncounted' else 'ended' end
-from counted c
-where s.issue = c.issue and s.task = c.task and s.kind = c.kind and s.place = c.place
-  and s.run <> 'uncounted' and (c.uncounted or c.ended);
+update step_starts s set run = case when d.uncounted then 'uncounted' else 'ended' end
+from decided d
+where s.issue = d.issue and s.task = d.task and s.kind = d.kind and s.place = d.place
+  and s.run <> 'uncounted' and (d.uncounted or d.ended);
 
 delete from step_starts_rollback;
