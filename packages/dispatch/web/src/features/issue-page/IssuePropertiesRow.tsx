@@ -76,12 +76,15 @@ export function IssuePropertiesRow({
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  // A status picked while another write of the issue is in flight - the title saved by the blur
-  // that the press on this control caused - is held by the header's writes (`pickStatus`: a
-  // keyed write in the issue's line, sent after the write in flight), so the press lands on the
-  // control as it does with nothing edited, and the header and Details read one status, the one
-  // held (decision 47 of dispatch://INFRA-1196/artifact/part-decisions-md). Only a status's own
-  // write, held or being saved, holds the control.
+  // A status picked while a write of the issue is in flight - the title saved by the blur that
+  // the press on this control caused, or an earlier pick of the status still being saved - is
+  // held by the header's writes (`pickStatus`: a keyed write in the issue's line, sent after the
+  // write in flight), so the press lands on the control as it does with nothing edited, and the
+  // header and Details read one status, the newest one held (decision 47 of
+  // dispatch://INFRA-1196/artifact/part-decisions-md). No write disables the select, not even its
+  // own: only a closed issue does. The browser moves the focus off a control that turns disabled,
+  // so disabling the select while its pick saves would leave a keyboard pick's focus on the
+  // page's body (decision 132).
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
@@ -189,7 +192,7 @@ export function IssuePropertiesRow({
         <select
           aria-label={PROPERTY_LABELS.status}
           className={`min-w-0 cursor-pointer appearance-none font-inherit outline-none [field-sizing:content] disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${focusVisibleRing}`}
-          disabled={isClosed || writes.statusSaving}
+          disabled={isClosed}
           onChange={(event) => writes.pickStatus(event.target.value)}
           value={status}
         >
@@ -201,8 +204,8 @@ export function IssuePropertiesRow({
         </select>
       </label>
       {/* The priority and the assignee stay enabled while another write is in flight and queue a
-          pick behind it, as their own controls say: a press straight out of the title's editor
-          lands on them. */}
+          pick behind it, as the status does and as their own controls say: a press straight out
+          of the title's editor lands on them. */}
       <PriorityEditor
         disabled={isClosed}
         issueKey={issue.key}

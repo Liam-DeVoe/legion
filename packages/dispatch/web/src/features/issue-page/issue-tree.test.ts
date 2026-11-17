@@ -29,15 +29,30 @@ import {
   buildIssueTree,
   drawnLine,
   FIRST_LINE_LIMIT,
+  firstBlockWordsRaw,
   firstLineOf,
   lineWords,
+  lineWordsRaw,
   nodeWords,
   type TreeNode,
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { addressesAsShortForms, blockNodeId, plainWords } from "./tree-drafts";
+import { filterSignals, presetView } from "./presets";
+import {
+  addressesAsShortForms,
+  blockNodeId,
+  checkStanding,
+  plainWords,
+  plainWordsRaw,
+} from "./tree-drafts";
+import { treeRows } from "./tree-fold";
 import { nodesInOrder } from "./tree-keys";
+import {
+  statementCounts,
+  statementStandings,
+  verificationReading,
+} from "./verification-filter/statement-state";
 
 /**
  * The tree model, read as the page reads it: one call with the page's reads in and the issue's
@@ -511,6 +526,38 @@ test("a `from` and a `shaped` that disagree place by `from` and draw the gap", (
   ]);
 });
 
+// R4: the gap is the two edges disagreeing, and today a decision's links stand for its `shaped`
+// edge. The page drew the gap wherever a requirement had a `from` and any decision linked to it,
+// so a requirement that came from a decision and is linked by that decision drew "Sources
+// disagree" over two edges that agree. It draws the gap only where another decision links to it.
+test("a requirement linked by the decision its `from` names draws no gap; another decision does", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const treeOf = (shapers: readonly Decision[]): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([requirement("r1", "The requirement the first decision made.")]),
+      decisions: decisions(shapers),
+      documents: [
+        {
+          artifactId: spec.id,
+          blocks: [
+            block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
+          ],
+        },
+        { artifactId: made.id, blocks: [block("d1", "decision"), block("d2", "decision")] },
+      ],
+      issue: issueDetails([spec, made]),
+    });
+  const origin = decision("d1", "Makes the requirement.", ["r1"]);
+  const statement = blockNodeId(SPEC, "r1");
+
+  expect(nodeOf(treeOf([origin]), statement)?.gaps).toEqual([]);
+  const other = decision("d2", "Says it shaped the requirement too.", ["r1"]);
+  expect(nodeOf(treeOf([origin, other]), statement)?.gaps).toEqual(["shaped_disagreement"]);
+  // A decision is never a requirement's parent: the `from` naming one places nothing.
+  expect(placementsOf(treeOf([origin]), statement).map((one) => one.parent)).toEqual([KEY]);
+});
+
 // R4: every edge that is not the spine is a chip naming its target; a target nothing answers to
 // now is drawn as gone, with no name, rather than dropped.
 test("a pointer whose target is gone is drawn as a chip that says so", () => {
@@ -801,6 +848,64 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
   ]);
 });
 
+// Decision 143: one needs chip per task needed. The server accepts a task needed by a pinned and
+// an unpinned pointer at once, and both need the one task, so it is one chip: its unpinned
+// pointer's, which names the block's current words. A task only pinned pointers name is one chip,
+// the first one's, and two tasks stay two chips, in the order their pointers first name them.
+test("a task needed by a pinned and an unpinned pointer is one needs chip", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = (id: string): string => `dispatch://${KEY}/artifact/plan-md#b-${id}`;
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [
+          block("a1", "plan_task"),
+          block("a2", "plan_task"),
+          block("t1", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}` }),
+          block("t2", "plan_task", { needs: `${task("a1")}@v1 ${task("a1")}@v2` }),
+          block("t3", "plan_task", {
+            needs: `${task("a2")} ${task("a1")}@v1 ${task("a2")}@v3 ${task("a1")}`,
+          }),
+        ],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the routes.\n:::",
+        ref: task("a1"),
+        text_tree: readingOf("Add the routes."),
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: ":::plan_task{#a1}\nAdd the old routes.\n:::",
+        ref: `${task("a1")}@v1`,
+        text_tree: readingOf("Add the old routes."),
+      },
+    ],
+  });
+  const needs = (id: string) =>
+    nodeOf(root, blockNodeId("plan-md", id))?.chips.map(({ label, name, ref }) => ({
+      label,
+      name,
+      ref,
+    }));
+
+  expect(needs("t1")).toEqual([{ label: "needs", name: "Add the routes.", ref: task("a1") }]);
+  expect(needs("t2")).toEqual([
+    { label: "needs", name: "Add the old routes.", ref: `${task("a1")}@v1` },
+  ]);
+  expect(needs("t3")).toEqual([
+    { label: "needs", name: "", ref: task("a2") },
+    { label: "needs", name: "Add the routes.", ref: task("a1") },
+  ]);
+});
+
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
 // which is the chip's by one rule (`targetNames`) - draws its plain words and no `**`, backtick
@@ -1030,21 +1135,60 @@ test("a stored text read to plain words drops the markers of a quote and of a li
   }
 });
 
+// R21: an author's own private-use character - an icon font's, a pasted terminal glyph - is a
+// word of the text and no stand-in. The stand-ins what markdown reads literally is held as are
+// chosen for each text from the private-use code points it does not hold, so U+E02A and U+E05F,
+// which once stood in for an escaped `*` and `_`, read as written outside code, inside a code
+// span and beside an escape, and a text holding one still reads its escapes and code spans as
+// it did. One holding the first code points a stand-in would take reads past them.
+test("a stored text read to plain words keeps the author's private-use characters as written", () => {
+  const star = "\ue02a";
+  const low = "\ue05f";
+  for (const [stored, words] of [
+    [`an icon ${star} and ${low} here`, `an icon ${star} and ${low} here`],
+    [`Run \`a${star}b${low}c\` now`, `Run a${star}b${low}c now`],
+    [`\\*${star} and ${low}\\_`, `*${star} and ${low}_`],
+    [`${star} \\*not emphasis\\* and \`a*b\``, `${star} *not emphasis* and a*b`],
+    ["\ue000\\! and `\ue020!`", "\ue000! and \ue020!"],
+  ] as const) {
+    expect(plainWords(stored), stored).toBe(words);
+    expect(plainWordsRaw(stored), stored).toBe(words);
+  }
+});
+
 // Ruling 1 and row 20 of the differences: a line that is a whole sentence ends on its own mark,
 // so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
 // that ended inside a sentence draws one.
 test("a first line draws its ellipsis only where the cut ended inside a sentence", () => {
-  expect(drawnLine({ cut: true, line: "Thread 1 opens here." })).toBe("Thread 1 opens here.");
+  expect(drawnLine({ cut: true, line: "Thread 1 opens here.", sentence: true })).toBe(
+    "Thread 1 opens here."
+  );
   expect(drawnLine(firstLineOf("Thread 1 opens here. Thread 2 follows."))).toBe(
     "Thread 1 opens here."
   );
   const inside = firstLineOf(`${"word ".repeat(30)}and the end.`);
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
-  expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+  expect(drawnLine({ cut: false, line: "No mark at its end", sentence: false })).toBe(
+    "No mark at its end"
+  );
   // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
   // line draws the ellipsis all the same.
   expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
+});
+
+// Ruling 1: a line cut just after an ellipsis of the author's own draws no second one, since
+// `wait……` reads as six dots. The ellipsis is no sentence end, since it often stands inside one,
+// so a cut that ended inside a sentence on any other character still draws one.
+test("a first line cut after the author's own ellipsis draws no second one", () => {
+  const words = `${"word ".repeat(19)}wait…`;
+  const trailing = firstLineOf(`${words} and then more words follow here.`);
+  expect(trailing).toEqual({ cut: true, line: words, sentence: false });
+  expect(drawnLine(trailing)).toBe(words);
+  expect(drawnLine({ cut: true, line: "Hold on, wait…", sentence: false })).toBe("Hold on, wait…");
+  const plain = firstLineOf(`${"word ".repeat(30)}and the end.`);
+  expect(plain.sentence).toBe(false);
+  expect(drawnLine(plain)).toBe(`${plain.line}…`);
 });
 
 // A decision's reading opens with its own `##` heading, and the words of the whole reading join
@@ -1469,6 +1613,42 @@ test("a block whose text cites a document carries a chip that opens it", () => {
     { name: PRESET_NAMES.spec, ref: `dispatch://${KEY}/artifact/${SPEC}` },
   ]);
   expect(chipsOf("r3")).toEqual([]);
+});
+
+// Decision 152 (b): which document plays which part is the id the issue read names for it, or
+// nothing, as the tree reads each part's blocks (`primarySpec`, `roleDocument`). An issue read
+// that names no decisions document at all - a Dispatch older than the part, which sends no
+// `decisions_artifact_id` - and one that names no spec (`""`) leave a document's own `role` and
+// its `primary` flag no say: a chip naming such a document draws the page's word for any
+// document, never "Decisions" or "Spec" for a document whose blocks the tree never reads. The
+// document the issue does name for a part is named by that part's word.
+test("a document chip names a part only where the issue read names that document for it", () => {
+  const flagged = artifact("artifact-old-spec", "old-spec-md", "old-spec.md", true);
+  const made = {
+    ...artifact("artifact-decisions", "decisions-md", "decisions.md"),
+    role: "decisions",
+  };
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const cited = ["old-spec-md", "decisions-md", "plan-md"].map(
+    (slug) => `dispatch://${KEY}/artifact/${slug}`
+  );
+  const root = buildIssueTree({
+    comments: [
+      { ...comment("c1", "2026-11-04T09:00:00Z"), body: `Read ${cited.join(", ")} first.` },
+    ],
+    issue: {
+      ...issueDetails([flagged, made, plan]),
+      decisions_artifact_id: undefined as unknown as string,
+      plan_artifact_id: plan.id,
+      primary_artifact_id: "",
+    },
+  });
+
+  expect(nodeOf(root, "c1")?.chips.map(({ name, ref }) => ({ name, ref }))).toEqual([
+    { name: NODE_TYPE_NAMES.document, ref: cited[0] },
+    { name: NODE_TYPE_NAMES.document, ref: cited[1] },
+    { name: PRESET_NAMES.plan, ref: cited[2] },
+  ]);
 });
 
 // R4: a decision sits under the ask it answers - the asks its blocks mention - edited under the
@@ -2423,6 +2603,141 @@ test("a check whose latest result records no negative control draws no gap", () 
   expect(nodesInOrder(root).flatMap((node) => node.gaps)).toEqual([]);
 });
 
+// Decision 152 (a): a statement is a `requirement` block of the issue's own spec. One of the plan
+// keeps its type and is a block and nothing more: no row of the Spec filter and none of its
+// count, no statement of the Verification body, and nothing placed under it - a check whose
+// `serves` names it keeps its place under the issue and draws the gap that says it serves no
+// statement. The spec's own requirement blocks are statements before the coverage read answers
+// as after it.
+test("a requirement block outside the spec is no statement, and the spec's are, before coverage and after", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const planned = blockNodeId("plan-md", "r9");
+  const treeOf = (covered: boolean): TreeNode =>
+    buildIssueTree({
+      ...(covered ? { coverage: coverage([requirement("r1", "The spec's own.")]) } : {}),
+      documents: [
+        { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+        { artifactId: plan.id, blocks: [block("r9", "requirement")] },
+        {
+          artifactId: checks.id,
+          blocks: [
+            block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+            block("c9", "check", { serves: `dispatch://${KEY}/artifact/plan-md#b-r9` }),
+          ],
+        },
+      ],
+      issue: {
+        ...issueDetails([spec, plan, checks]),
+        plan_artifact_id: plan.id,
+        verification_artifact_id: checks.id,
+      },
+    });
+
+  for (const covered of [false, true]) {
+    const read = covered ? "after the coverage read" : "before the coverage read";
+    const root = treeOf(covered);
+    expect(nodeOf(root, statement)?.statement, read).toBe(true);
+    expect(nodeOf(root, planned)?.type, read).toBe("requirement");
+    expect(nodeOf(root, planned)?.statement, read).toBeUndefined();
+    // The Spec filter draws and counts the spec's statement alone.
+    expect(
+      presetView(root, "spec", "").root.children.map((row) => row.id),
+      read
+    ).toEqual([statement]);
+    expect(filterSignals(root, "").spec, read).toEqual({ count: 1 });
+    // The Verification body reads the spec's statement alone.
+    const body = verificationReading({
+      checks: [],
+      view: presetView(root, "verification", "").root,
+    });
+    expect(
+      body.statements.map((held) => held.node.id),
+      read
+    ).toEqual([statement]);
+    expect(statementCounts(body.statements), read).toEqual({ met: 0, not_met: 0, unknown: 1 });
+    // A check serving the spec's statement sits under it; one serving the plan's block does not.
+    expect(
+      placementsOf(root, blockNodeId(VERIFICATION, "c1")).map((one) => one.parent),
+      read
+    ).toEqual([statement]);
+    expect(
+      placementsOf(root, blockNodeId(VERIFICATION, "c9")).map((one) => one.parent),
+      read
+    ).toEqual([KEY]);
+    expect(nodeOf(root, planned)?.children, read).toEqual([]);
+    expect(nodeOf(root, blockNodeId(VERIFICATION, "c9"))?.gaps, read).toEqual([
+      "serves_not_requirement",
+    ]);
+  }
+});
+
+// Decision 152 (d): a `check` block of a document other than the issue's Verification document
+// is a block and nothing more. The results read never answers for it, so it draws no state word
+// - "No result" would be drawn on it for ever - and it is no check of the Verification filter's
+// rows or count, of the statement it serves, or of the fold's frontier. The Verification
+// document's own check reads No result until the results read answers, and then as it stands.
+test("a check block outside the Verification document draws no state and is counted nowhere", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const statement = blockNodeId(SPEC, "r1");
+  const verified = blockNodeId(VERIFICATION, "c1");
+  const planned = blockNodeId("plan-md", "c9");
+  const serves = { serves: `dispatch://${KEY}/spec#b-r1` };
+  const results = checkedResults([
+    { blockId: "c1", results: [recorded("result-pass", "Break it and it fails.")] },
+  ]);
+  const treeOf = (answered: boolean): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([{ ...requirement("r1", "The spec's own."), checks: 1 }]),
+      documents: [
+        { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+        { artifactId: plan.id, blocks: [block("c9", "check", serves)] },
+        { artifactId: checks.id, blocks: [block("c1", "check", serves)] },
+      ],
+      issue: {
+        ...issueDetails([spec, plan, checks]),
+        plan_artifact_id: plan.id,
+        verification_artifact_id: checks.id,
+      },
+      ...(answered ? { results } : {}),
+    });
+
+  const unread = treeOf(false);
+  expect(nodeOf(unread, verified)?.state).toBe("no-result");
+  expect(nodeOf(unread, planned)?.type).toBe("check");
+  expect(nodeOf(unread, planned)?.state).toBeUndefined();
+
+  const root = treeOf(true);
+  expect(nodeOf(root, verified)?.state).toBe("passed");
+  expect(nodeOf(root, planned)?.state).toBeUndefined();
+  // The Verification filter draws and counts the Verification document's check alone.
+  const view = presetView(root, "verification", "");
+  expect(view.root.children.map((row) => row.children.map((child) => child.id))).toEqual([
+    [verified],
+  ]);
+  expect(filterSignals(root, "").verification).toEqual({ count: 1 });
+  // The statement is read from its one check, which passed.
+  const answered = results.checks ?? [];
+  expect(
+    verificationReading({ checks: answered, view: view.root }).statements.map((held) =>
+      held.checks.map((one) => one.node.id)
+    )
+  ).toEqual([[verified]]);
+  expect(statementStandings(root, answered).get(statement)).toEqual({
+    covered: true,
+    state: "met",
+  });
+  // Nothing under the statement is open, so the fold leaves it folded.
+  expect(treeRows(root).some((row) => row.kind === "node" && row.node.id === planned)).toBe(false);
+  expect(
+    treeRows(root).find((row) => row.kind === "node" && row.node.id === statement)
+  ).toMatchObject({ expanded: false });
+});
+
 /** The state the page reads for the one check of a Verification document: what `payload`
  *  changes about the check the server sends, over the results recorded against it. */
 function stateOfOneCheck(
@@ -2513,6 +2828,65 @@ test("a retracted pass over an older fail that stands is drawn as failed", () =>
       recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
     ])
   ).toBe("failed");
+});
+
+// The results read answers newest first, and `checkState` took the first result a retraction
+// left standing as the newest, while `checkStanding` and the Verification filter's body sort them
+// by the time each was recorded. Sent oldest first, a fail at the compared commit under a newer
+// pass at another commit read Failed, where read newest first it read Out of date. Every reading
+// sorts by time now, so the order the read sends changes no state. The state it reads is the
+// latest evidence at the check's basis (dispatch://INFRA-1196 decision 152): the fail there,
+// which the newer pass at another commit says nothing about, so it reads Failed in both orders,
+// and the order still changes nothing.
+test("a check reads one state whatever order the read sends its results in", () => {
+  const failed = recorded("result-failed", "Fix the fault and it passes.", {
+    created_at: "2026-11-05T00:00:00Z",
+    failed: 1,
+    verdict: "fail",
+  });
+  const elsewhere = recorded("result-elsewhere", "Keep the pass and it stands.", {
+    commit_sha: "d".repeat(40),
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-06T00:00:00Z",
+  });
+  for (const [order, results] of [
+    ["newest first", [elsewhere, failed]],
+    ["oldest first", [failed, elsewhere]],
+  ] as const) {
+    expect(
+      checkStanding({ pass_stands: { answer: "no" }, results: [...results] }),
+      order
+    ).toMatchObject({ stands: { id: "result-failed" }, state: "failed" });
+    expect(stateOfOneCheck({ pass_stands: { answer: "no" } }, results), order).toBe("failed");
+  }
+});
+
+// Decision 152: the latest evidence at the check's basis decides, and a newer result at another
+// commit says nothing about the basis. A check passed at its basis and then failed there is
+// Failed, though the server still counts the older pass as standing (`pass_stands` is yes) and
+// a newer fail at another commit is the newest result of all.
+test("a pass and then a fail at the basis read Failed under a newer fail elsewhere", () => {
+  const results = [
+    recorded("result-elsewhere", "Fix the fault and it passes.", {
+      commit_sha: "d".repeat(40),
+      commit_stands: { answer: "other_commit" },
+      created_at: "2026-11-07T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+    recorded("result-failed", "Fix the fault and it passes.", {
+      created_at: "2026-11-06T00:00:00Z",
+      failed: 1,
+      verdict: "fail",
+    }),
+    recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
+  ];
+
+  expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
+    stands: { id: "result-failed" },
+    state: "failed",
+  });
+  expect(stateOfOneCheck({ pass_stands: { answer: "yes" } }, results)).toBe("failed");
 });
 
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds
@@ -2762,5 +3136,58 @@ test("a string that only looks like an address stays as written in a node's line
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : lineWords(task), sent).toBe(line);
+  }
+});
+
+// Decision 140: a caller that names each reference itself, by the name the page publishes for
+// it, reads a node's words before any address in them is written short, or it finds no address
+// left to name. The first block of a reading (`firstBlockWordsRaw`) and a stored text read to
+// plain words (`plainWordsRaw`) keep each bare address and each autolink's URL as written, and
+// the marks still go; a node's line and `plainWords` read the same words short, as they did.
+test("the raw words of a reading and of a stored text keep each address as written", () => {
+  const reading = "Do it as dispatch://CORE-2 says.";
+  const task = nodeOf(planTasks([reading], true), blockNodeId("plan-md", "t1"));
+  expect(task?.tree === undefined ? "" : firstBlockWordsRaw(task.tree)).toBe(reading);
+  expect(task === undefined ? "" : lineWords(task)).toBe("Do it as CORE-2 says.");
+  const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
+  expect(plainWordsRaw(stored)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
+  expect(plainWords(stored)).toBe("Do it as CORE-2 says, see CORE-3.");
+});
+
+// Decision 140: a caller that names each reference itself cuts a node's line from words in which
+// no address is written short (`lineWordsRaw`), or it finds no address left to name. It walks a
+// node as `lineWords` does - the first block of its reading, and where it has none, the first
+// block of its stored text that holds words, a heading to its own line - and keeps each bare
+// address as written on both paths, where `lineWords` reads it short. A decision passes as its
+// read sends it, `{ text, tree: text_tree }`, with no node built for it.
+test("a node's raw line keeps each bare address as written, from a reading and from stored text", () => {
+  const words = "Do it as dispatch://CORE-2 says.";
+  const short = "Do it as CORE-2 says.";
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
+    expect(task?.tree === undefined, sent).toBe(!read);
+    expect(task === undefined ? "" : lineWordsRaw(task), sent).toBe(words);
+    expect(task === undefined ? "" : lineWords(task), sent).toBe(short);
+  }
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ruled = decision("d1", "---\n\nDo it as **dispatch://CORE-2** says.", []);
+  const headed = decision("d2", "## Title\n\nDo it as **dispatch://CORE-2** says.", []);
+  const root = buildIssueTree({
+    decisions: decisions([ruled, headed]),
+    issue: issueDetails([spec, made]),
+  });
+  for (const [row, raw, line] of [
+    [ruled, words, short],
+    [headed, "Title", "Title"],
+  ] as const) {
+    const node = nodeOf(root, blockNodeId("decisions-md", row.block_id));
+    expect(node?.tree, row.block_id).toBeUndefined();
+    expect(node === undefined ? "" : lineWordsRaw(node), row.block_id).toBe(raw);
+    expect(node === undefined ? "" : lineWords(node), row.block_id).toBe(line);
+    expect(lineWordsRaw({ text: row.text, tree: row.text_tree }), row.block_id).toBe(raw);
   }
 });
