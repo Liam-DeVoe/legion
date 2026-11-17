@@ -103,17 +103,23 @@ export const KNOWN_BROKER_REFUSALS: ReadonlySet<string> = new Set([
   "the proof's iat is outside the broker's skew window",
 ]);
 
-/** A person as the broker's sentences name one: an email address, which holds an `@` and a dotted
- *  domain, so no JWT or opaque token reads as one. */
-const PERSON_SLOT = "[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63})+";
+/** A person as the broker's sentences name one: an email address. Where the trade is a person's
+ *  sign-in it must be that person (`TokenSource.person`); a machine's trade has no person to
+ *  compare, and the slot is bounded. */
+const PERSON_SLOT =
+  "(?<person>[A-Za-z0-9._+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\\.[A-Za-z0-9-]{1,63}){1,3})";
 /** A project key as Dispatch writes one (`DSP`, `INFRA`). */
 const PROJECT_SLOT = "[A-Z][A-Z0-9]{1,15}";
+/** A session name, which must be the one this client traded under. */
+const SESSION_SLOT = "(?<session>[^'\\s]{1,128})";
 
 /**
- * The broker's refusal sentences that name a person or a project
- * (`packages/envoy/internal/broker/oauth/exchange.go`), as whole-text patterns whose slots take
- * only a person's email or a project key: these carry the remedy a person acts on (`Sign in again
- * with agent-secrets login`, `set AGENT_SECRETS_PROJECTS`), and no slot reads as a token.
+ * The broker's refusal sentences (`packages/envoy/internal/broker/oauth/exchange.go`'s hints),
+ * as whole-text patterns. Their slots take a person's email, which must be the signed-in person's
+ * where the trade is a sign-in, a project key, or a session name, which must be the one this
+ * client traded under. These carry the remedy a person acts on (`Sign in again with
+ * agent-secrets login`, `set AGENT_SECRETS_PROJECTS`, `Ask under a name of your own`).
+ * `refusal-descriptions.json` holds each as the broker's own library writes it.
  */
 const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `${PERSON_SLOT} revoked this machine's sign-in, so the key this proof was signed with trades nothing\\. Sign in again with \`agent-secrets login\`\\.`,
@@ -126,16 +132,59 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,
   `The subject token was refused: its entry names no project, and its person ${PERSON_SLOT} is a restricted member, who sees only the projects that name them\\.`,
   "Dispatch could not be asked whether the token's person sees the projects it names; try again\\.",
+  `The session name '${SESSION_SLOT}' belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last [0-9]{1,4} days\\. Ask under a name of your own\\.`,
+  `No registration says this pod may write under the session name '${SESSION_SLOT}'\\. A pod writes under a session name its deployment registered for it\\.`,
+  // The exchange policy's own refusal of the subject token (its audience, its issuer, its entry),
+  // whose words are the policy's: it prints under the scrub of the secrets this process holds
+  // (`@legion/contracts/held-secrets`), which takes out a token echoed in it. Last, so a sentence
+  // above whose slot holds what the trade did not send is withheld rather than read as this.
+  "The subject token was refused: [^\\n]{1,500}\\.",
 ].map((source) => new RegExp(`^${source}$`));
 
-/** Whether `text` is one of the broker's known refusals: one the corpus pins
- *  ({@link KNOWN_BROKER_REFUSALS}), or one of its sentences with only a person or a project in its
- *  slots. */
-export function isKnownBrokerRefusal(text: string): boolean {
-  return (
-    KNOWN_BROKER_REFUSALS.has(text) ||
-    KNOWN_BROKER_REFUSAL_PATTERNS.some((pattern) => pattern.test(text))
-  );
+/**
+ * The fixed sentence the broker's OAuth library (authelia.com/provider/oauth2, an RFC6749Error's
+ * description) writes ahead of each hint, by error code, and the `<CODE>: ` the broker's own
+ * refusals (`oauth.WriteRefusal`) write ahead of their message.
+ */
+const LIBRARY_DESCRIPTIONS: readonly string[] = [
+  "The provided authorization grant (e.g., authorization code, resource owner credentials) or refresh token is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client.",
+  "The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed.",
+  "The authorization server is currently unable to handle the request due to a temporary overloading or maintenance of the server.",
+  "The authorization server encountered an unexpected condition that prevented it from fulfilling the request.",
+];
+const REFUSAL_CODE_PREFIX = /^[A-Z][A-Z_]{1,63}: /;
+
+/** `text` with the library's fixed sentence, or the broker's refusal code, taken off its front. */
+function brokerHint(text: string): string {
+  for (const fixed of LIBRARY_DESCRIPTIONS) {
+    if (text.startsWith(`${fixed} `)) return text.slice(fixed.length + 1);
+  }
+  return text.replace(REFUSAL_CODE_PREFIX, "");
+}
+
+/** What a trade sent that a refusal's slots may name: the signed-in person, where the trade is a
+ *  sign-in, and the session name. */
+export interface RefusalContext {
+  readonly person?: string;
+  readonly session?: string;
+}
+
+/** Whether `text` is one of the broker's known refusals, as its library writes it: one the corpus
+ *  pins ({@link KNOWN_BROKER_REFUSALS}), or one of its sentences whose slots hold only what
+ *  `context` allows. The first sentence that matches decides. */
+export function isKnownBrokerRefusal(text: string, context: RefusalContext = {}): boolean {
+  const hint = brokerHint(text);
+  if (KNOWN_BROKER_REFUSALS.has(hint)) return true;
+  for (const pattern of KNOWN_BROKER_REFUSAL_PATTERNS) {
+    const matched = pattern.exec(hint);
+    if (matched === null) continue;
+    const { person, session } = matched.groups ?? {};
+    if (session !== undefined && session !== context.session) return false;
+    if (person !== undefined && context.person !== undefined)
+      return person.toLowerCase() === context.person.toLowerCase();
+    return true;
+  }
+  return false;
 }
 
 /** What stands in for a refusal text that is not one of {@link KNOWN_BROKER_REFUSALS}. */
@@ -159,18 +208,19 @@ export class BrokerRefusedError extends Error {
   readonly code: string;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it. */
+   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
   constructor(
     readonly status: number,
     code: string,
     description: string,
-    refused: string
+    refused: string,
+    context: RefusalContext = {}
   ) {
     const shownCode = OAUTH_ERROR_CODE.test(code) ? code : "";
     const said =
       description === ""
         ? ""
-        : isKnownBrokerRefusal(description)
+        : isKnownBrokerRefusal(description, context)
           ? description
           : REFUSAL_TEXT_WITHHELD;
     super(
@@ -517,7 +567,11 @@ export class BrokerTokenClient {
         error.status,
         error.error,
         error.error_description ?? "",
-        this.#subject.describe()
+        this.#subject.describe(),
+        {
+          ...(this.#subject.person === undefined ? {} : { person: this.#subject.person }),
+          ...(this.#session === "" ? {} : { session: this.#session }),
+        }
       );
     }
     const status = statusOf(error);

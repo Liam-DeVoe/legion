@@ -163,5 +163,6 @@ export function personIdentity(
       return { token: idToken, tokenType: SUBJECT_TOKEN_TYPE_PERSON };
     },
     describe: () => `${person}'s sign-in on this machine`,
+    person,
   };
 }
