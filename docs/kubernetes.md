@@ -2042,6 +2042,7 @@ What the way back costs is every plan given before the rollback, which its owner
 
 This release also writes one new supervise op, `step_stop`: the stop of the process of the step a stopped task ran, with its session kept.
 It is an op of the `supervise` kind, so the kind check needs no statement, but an earlier release does not know the op: its decode refuses the row (`unknown supervise operation`, `validSuperviseOp` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
+The same refusal fails every read of that role's run at that generation, because `RoleRuns` in `record/store.go` decodes the queued supervise rows of each run it reads, and the transaction that makes the read fails with it.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql
