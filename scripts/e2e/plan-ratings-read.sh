@@ -88,16 +88,13 @@ awk -v project="$project" -v issue="$issue" '
     line = $0
     if ($2 != "closed" || $4 != "plan" || !match(line, / time (-|[0-9]+h[0-9]+m) failed steps [0-9]+$/)) unknown("the line is no finished issue: " line)
     tail = substr(line, RSTART + 1)
-    middle = substr(line, length($1 " closed " $3 " plan ") + 1, RSTART - length($1 " closed " $3 " plan ") - 1)
-    if (substr(middle, 1, 13) == "none ratings ") {
-      plan = "none"
-      ratings = substr(middle, 14)
-    } else if (match(middle, /^(default|owner) \([0-9]+ tasks: [^)]*\) ratings /)) {
-      plan = substr(middle, 1, RLENGTH - 9)
-      ratings = substr(middle, RLENGTH + 1)
-    } else {
-      unknown("the line is no finished issue: " line)
-    }
+    lead = length($1 " closed " $3 " plan ")
+    middle = substr(line, lead + 1, RSTART - lead - 1)
+    # middle is `<plan> ratings <ratings>`: the plan is `none` or `<source> (<n> tasks: …)`, and
+    # ` ratings ` (9 characters) ends it.
+    if (!match(middle, /^(none|(default|owner) \([0-9]+ tasks: [^)]*\)) ratings /)) unknown("the line is no finished issue: " line)
+    plan = substr(middle, 1, RLENGTH - 9)
+    ratings = substr(middle, RLENGTH + 1)
     rated = ratingsOf(ratings)
     if (rated < 0) unknown("the line is no finished issue: " line)
     finished++
