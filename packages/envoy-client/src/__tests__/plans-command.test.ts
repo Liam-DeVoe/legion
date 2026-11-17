@@ -294,8 +294,8 @@ describe("dispatch plans on the command line", () => {
   const server = Bun.serve({
     port: 0,
     fetch(request) {
-      const { pathname } = new URL(request.url);
-      requests.push(`${request.method} ${pathname}`);
+      const { pathname, search } = new URL(request.url);
+      requests.push(`${request.method} ${pathname}${search}`);
       if (pathname === "/api/v1/projects/INFRA/plans" && request.method === "GET") {
         return Response.json({ project: "INFRA", issues: [ratedOnce, unrated] });
       }
@@ -358,6 +358,29 @@ describe("dispatch plans on the command line", () => {
           "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
         ].join("\n")
       );
+    }
+  });
+
+  // The bounds go through the parser `dispatch plans` runs, each to its own member of the query,
+  // and a bound left out is not sent. The two bounds differ, and neither is a whole minute.
+  test("--since and --until ride as the read's query, each alone or both, and neither when not given", async () => {
+    const since = "2026-11-01T08:15:30Z";
+    const until = "2026-11-17T06:30:45Z";
+    const cases: readonly [readonly string[], string][] = [
+      [[], ""],
+      [["--since", since], "?since=2026-11-01T08%3A15%3A30Z"],
+      [["--until", until], "?until=2026-11-17T06%3A30%3A45Z"],
+      [
+        ["--since", since, "--until", until],
+        "?since=2026-11-01T08%3A15%3A30Z&until=2026-11-17T06%3A30%3A45Z",
+      ],
+    ];
+    for (const [bounds, query] of cases) {
+      requests.length = 0;
+      const { code } = await run(["plans", "--project", "INFRA", ...bounds]);
+
+      expect(requests, bounds.join(" ")).toEqual([`GET /api/v1/projects/INFRA/plans${query}`]);
+      expect(code, bounds.join(" ")).toBe(0);
     }
   });
 
