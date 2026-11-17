@@ -14,12 +14,7 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
-import { dispatchAnswered } from "./failures";
-
-/** A document reference that names no document of its owner. Its message is the hint the Dispatch
- * tools give; `readDocumentBlocks` tells it apart from every other refusal, as the first upload of
- * a file. */
-class DocumentNotFoundError extends Error {}
+import { DocumentNotFoundError, DocumentReferenceError, dispatchAnswered } from "./failures";
 
 /** The document `artifactReference` names among `artifacts`. A bare reference is an id, a slug,
  * then a filename; a `canonical` one, the document part of a dispatch:// reference, is a slug by
@@ -42,7 +37,9 @@ function artifactByReference(
   if (bySlug !== undefined) return bySlug;
   const byName = artifacts.filter((candidate) => candidate.name === artifactReference);
   if (byName.length > 1) {
-    throw new Error(documentReferenceProblem(artifactReference, byName, owner, true));
+    throw new DocumentReferenceError(
+      documentReferenceProblem(artifactReference, byName, owner, true)
+    );
   }
   const [artifact] = byName;
   if (artifact === undefined) {
@@ -494,10 +491,7 @@ async function resolveExistingIssue(
 /**
  * How `refuseMissingOfRef` reads the owner a `dispatch://` reference names, on the failing path
  * of a read of its item: the issue by its key, or the project document through `readDocument`,
- * which the caller builds of the document it has already read or of its own read kept for the
- * whole command, so the document is read at most once (dispatch://INFRA-1523). A refusal of
- * either read that answers about the owner tells a reader that the owner, and not the item, is
- * what Dispatch does not hold; any other failure of it is named as a failure and claims nothing.
+ * which the caller passes (dispatch://INFRA-1523).
  */
 export function readRefOwner(
   client: DispatchClient,

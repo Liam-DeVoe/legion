@@ -18,7 +18,7 @@ import { renderAdvice } from "./advice";
 import { movedApprovalLine, resolveReplyToAsk } from "./asks";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 import { anchor, readRefOwner, resolveArtifact } from "./document-targets";
-import { refuseMissingOfRef, throughPostCorrections } from "./failures";
+import { refuseMissingOfRef, refuseMissingPost, throughPostCorrections } from "./failures";
 import {
   itemReplyTo,
   messageArgumentId,
@@ -58,6 +58,8 @@ export async function resolveCommentArgument(
       client.getComments(issueKey)
     );
   } else {
+    // The document is read once, here: the prefix match, the check that the comment read is on
+    // it, and the owner read of a failing comment read below all use this one read.
     const artifact = (await resolveArtifact(client, ref.owner, ref.artifact, { canonical: true }))
       .artifact;
     document = artifact;
@@ -116,13 +118,8 @@ export async function resolveMessageArgument(
   const read = await client
     .getMessageThread(id, session === "" ? undefined : session)
     .catch(async (error: unknown) => {
-      throw await refuseMissingOfRef(
-        error,
-        "message",
-        id,
-        ref.owner,
-        issueKey,
-        readRefOwner(client, ref.owner, async () => undefined)
+      throw await refuseMissingOfRef(error, "message", id, ref.owner, issueKey, () =>
+        client.getIssue(issueKey)
       );
     });
   await refuseItemOffRef(
@@ -149,7 +146,9 @@ export async function resolveCommentCommand(context: CommandContext): Promise<Di
   const { args, client, actor, input } = context;
   const reference = stringArg(args, "comment");
   const { id, document } = await resolveCommentArgument(input.tool, reference, client);
-  const comment = await client.resolveComment(id, actor);
+  const comment = await client.resolveComment(id, actor).catch((error: unknown) => {
+    throw refuseMissingPost(error, { kind: "comment", id });
+  });
   const { label, details } = await commentOwnerResult(client, comment, document);
   return { text: `Resolved comment ${comment.id} on ${label}.`, details };
 }

@@ -16658,109 +16658,150 @@ for (const [name, documents, named] of [
   });
 }
 
-// A refusal names only what it read (dispatch://INFRA-1523). Where the read of a reference's
-// owner fails, the refusal names that failed read and its failure, and says nothing of whether
-// the owner holds the item, since nothing was read of the owner. The document arm is reached by
-// `dispatch read` of a comment by its whole id: no listing resolves that id, so the read of the
-// document on this failing path is the command's first.
-for (const [name, ownerAnswer, failure] of [
-  ["a gateway", { status: 502, body: "<html>bad gateway</html>", text: true }, "answered 502"],
+// A refusal names only what it read (dispatch://INFRA-1523). When the read of a reference's
+// owner fails - a gateway page, Dispatch's own 500, a router's no-route answer, a transport
+// failure - the command has not learned whether the owner exists, so the refusal names that
+// failed read and its failure and must not say that the owner holds no such item: for an owner
+// that is not there, that sentence says it stands. The positive control drives the same fixture
+// with the owner read answered, where the claim is true and is made. The document arm is reached
+// by `dispatch read` of a comment by its whole id: no listing resolves that id, so the read of
+// the document on this failing path is the command's first.
+const ownerReadAnswers = {
+  gateway: (): Response =>
+    new Response("<html>bad gateway</html>", {
+      status: 502,
+      headers: { "content-type": "text/html" },
+    }),
+  "server error": (): Response => response({ code: "INTERNAL", error: "internal" }, 500),
+  "no route": (pathname: string): Response =>
+    response({ code: "NOT_FOUND", error: `no route for GET ${pathname}` }, 404),
+  "fetch failure": (): Response => {
+    throw new TypeError("fetch failed");
+  },
+} as const;
+const ownerReadFailures = [
+  ["gateway", "answered 502"],
+  ["server error", "INTERNAL: internal"],
+  ["no route", "a new release of Dispatch is in progress"],
+  ["fetch failure", "unreachable: fetch failed"],
+] as const;
+
+for (const [tool, args, ownerName, kind, ownerPath, standing] of [
   [
-    "a server error",
-    { status: 500, body: { code: "INTERNAL", error: "internal" }, text: false },
-    "INTERNAL: internal",
+    "dispatch_edit_comment",
+    { comment: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555", body: "x" },
+    "NOPE-9",
+    "comment",
+    /^\/api\/v1\/issues\/NOPE-9$/,
+    { issue: { key: "NOPE-9", title: "An issue", status: "todo" } },
+  ],
+  [
+    "dispatch_delete_message",
+    { message: "dispatch://NOPE-9/message/11111111-2222-4333-8444-555555555555" },
+    "NOPE-9",
+    "message",
+    /^\/api\/v1\/issues\/NOPE-9$/,
+    { issue: { key: "NOPE-9", title: "An issue", status: "todo" } },
+  ],
+  [
+    "dispatch_read",
+    { ref: "dispatch://NOPE-9/ask/11111111-2222-4333-8444-555555555555" },
+    "NOPE-9",
+    "ask",
+    /^\/api\/v1\/issues\/NOPE-9$/,
+    { issue: { key: "NOPE-9", title: "An issue", status: "todo" } },
+  ],
+  [
+    "dispatch_read",
+    { ref: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+    "CORE/runbook",
+    "comment",
+    /^\/api\/v1\/projects\/CORE\/artifacts(\/runbook)?$/,
+    { artifact: { id: "artifact-1", name: "Runbook", slug: "runbook" } },
   ],
 ] as const) {
-  for (const [tool, args, ownerName, ownerPath] of [
-    [
-      "dispatch_edit_comment",
-      {
-        comment: "dispatch://CORE-1/comment/11111111-2222-4333-8444-555555555555",
-        body: "corrected text",
-      },
-      "CORE-1",
-      /^\/api\/v1\/issues\/[^/]+$/,
-    ],
-    [
-      "dispatch_read",
-      { ref: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
-      "CORE/runbook",
-      /^\/api\/v1\/projects\/CORE\/artifacts(\/runbook)?$/,
-    ],
-  ] as const) {
-    test(`${tool} names the failed read of ${ownerName} when it meets ${name}`, async () => {
-      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
-        const { pathname } = new URL(String(url));
-        if (ownerPath.test(pathname)) {
-          return ownerAnswer.text
-            ? new Response(String(ownerAnswer.body), {
-                status: ownerAnswer.status,
-                headers: { "content-type": "text/html" },
-              })
-            : response(ownerAnswer.body, ownerAnswer.status);
-        }
-        return response({ code: "NOT_FOUND", error: "not found" }, 404);
-      };
-      const error = await runWithFixture(tool, args, fetchImpl);
+  const claim = `${ownerName} holds no ${kind} 11111111-2222-4333-8444-555555555555`;
+  const fixture =
+    (ownerRead: keyof typeof ownerReadAnswers | "stands") =>
+    async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (ownerPath.test(pathname)) {
+        return ownerRead === "stands" ? response(standing) : ownerReadAnswers[ownerRead](pathname);
+      }
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    };
+
+  for (const [failure, words] of ownerReadFailures) {
+    test(`${tool} on ${ownerName} claims nothing of an owner whose read met a ${failure}`, async () => {
+      const error = await runWithFixture(tool, args, fixture(failure));
 
       expect(error).toBeInstanceOf(Error);
       const message = (error as Error).message;
       expect(message).toContain(`the read of ${ownerName} failed`);
-      expect(message).toContain(failure);
-      expect(message).not.toContain(
-        `${ownerName} holds no comment 11111111-2222-4333-8444-555555555555`
-      );
-    });
-  }
-}
-
-// A refusal names only what it read (dispatch://INFRA-1523). When the read of a reference's
-// issue fails - a gateway page, or Dispatch's own 500 - the command has not learned whether the
-// issue exists, so it must not tell the reader that the issue holds no such post: for an issue
-// that is not there, that sentence says the issue stands. The positive control drives the same
-// fixture with the issue read answered, where the claim is true and is made.
-const issueReadFixture =
-  (issueRead: "gateway" | "server error" | "stands") =>
-  async (url: RequestInfo | URL): Promise<Response> => {
-    const { pathname } = new URL(String(url));
-    if (/^\/api\/v1\/issues\/[^/]+$/.test(pathname)) {
-      if (issueRead === "gateway") {
-        return new Response("<html>bad gateway</html>", {
-          status: 502,
-          headers: { "content-type": "text/html" },
-        });
-      }
-      if (issueRead === "server error") {
-        return response({ code: "INTERNAL", error: "internal" }, 500);
-      }
-      return response({ issue: { key: "NOPE-9", title: "An issue", status: "todo" } });
-    }
-    return response({ code: "NOT_FOUND", error: "not found" }, 404);
-  };
-
-for (const [tool, args, kind] of [
-  [
-    "dispatch_edit_comment",
-    { comment: "dispatch://NOPE-9/comment/11111111-2222-4333-8444-555555555555", body: "x" },
-    "comment",
-  ],
-  ["dispatch_read", { ref: "dispatch://NOPE-9/ask/11111111-2222-4333-8444-555555555555" }, "ask"],
-] as const) {
-  const claim = `NOPE-9 holds no ${kind} 11111111-2222-4333-8444-555555555555`;
-  for (const failure of ["gateway", "server error"] as const) {
-    test(`${tool} claims nothing of an issue whose read met a ${failure}`, async () => {
-      const error = await runWithFixture(tool, args, issueReadFixture(failure));
-
-      expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).not.toContain(claim);
+      expect(message).toContain(words);
+      expect(message).not.toContain(claim);
+      expect(message).not.toContain("holds no issue");
     });
   }
 
-  test(`${tool} names the post an issue it read holds none of`, async () => {
-    const error = await runWithFixture(tool, args, issueReadFixture("stands"));
+  test(`${tool} on ${ownerName} names the ${kind} an owner it read holds none of`, async () => {
+    const error = await runWithFixture(tool, args, fixture("stands"));
 
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain(claim);
+  });
+}
+
+// A reference naming a project document reads that document once for the whole command
+// (dispatch://INFRA-1523): the read that resolves the reference is the one the refusal of a
+// missing item stands on, so a document read that would fail a second time changes nothing.
+// The fixture answers the document's first read and refuses every later one with a gateway
+// page; a second read would turn the true answer into a failed read.
+for (const [tool, args, kind] of [
+  [
+    "dispatch_edit_comment",
+    {
+      comment: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555",
+      body: "x",
+    },
+    "comment",
+  ],
+  [
+    "dispatch_resolve_comment",
+    { comment: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+    "comment",
+  ],
+  [
+    "dispatch_delete_comment",
+    { comment: "dispatch://CORE/artifact/runbook/comment/11111111-2222-4333-8444-555555555555" },
+    "comment",
+  ],
+  [
+    "dispatch_read",
+    { ref: "dispatch://CORE/artifact/runbook/ask/11111111-2222-4333-8444-555555555555" },
+    "ask",
+  ],
+] as const) {
+  test(`${tool} reads the document of a reference once`, async () => {
+    let documentReads = 0;
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/projects/CORE/artifacts/runbook") {
+        documentReads += 1;
+        return documentReads === 1
+          ? response({ artifact: { id: "artifact-1", name: "Runbook", slug: "runbook" } })
+          : ownerReadAnswers.gateway();
+      }
+      if (pathname === "/api/v1/artifacts/artifact-1/asks") return response([]);
+      return response({ code: "NOT_FOUND", error: "not found" }, 404);
+    };
+    const error = await runWithFixture(tool, args, fetchImpl);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(
+      `CORE/runbook holds no ${kind} 11111111-2222-4333-8444-555555555555`
+    );
+    expect(documentReads).toBe(1);
   });
 }
 
@@ -16812,6 +16853,35 @@ for (const [tool, args, named] of [
     expect((error as Error).message).toContain("predates post corrections");
   });
 }
+
+// `dispatch resolve-comment` with a bare id answers Dispatch's own `not found` the way the
+// corrections do: it names the comment the call used (dispatch://INFRA-1523). The positive
+// control is the same call answered by a router with no route for it, which is no answer about
+// the comment and is not read as one.
+test("dispatch_resolve_comment names the comment Dispatch does not hold", async () => {
+  const error = await runWithFixture(
+    "dispatch_resolve_comment",
+    { comment: "11111111-2222-4333-8444-555555555555" },
+    async () => response({ code: "NOT_FOUND", error: "not found" }, 404)
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain(
+    "this Dispatch holds no comment 11111111-2222-4333-8444-555555555555"
+  );
+});
+
+test("dispatch_resolve_comment reads a router's no-route answer as no answer about the comment", async () => {
+  const error = await runWithFixture(
+    "dispatch_resolve_comment",
+    { comment: "11111111-2222-4333-8444-555555555555" },
+    noRouteFixture().fetchImpl
+  );
+
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).not.toContain("holds no comment");
+  expect((error as Error).message).toContain("a new release of Dispatch is in progress");
+});
 
 // A reference names the post's issue as well, and the same `not found` comes back for a post
 // that is gone and for an issue that was never there. So the refusal of a reference says which

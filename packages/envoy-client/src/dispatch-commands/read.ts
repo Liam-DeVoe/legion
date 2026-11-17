@@ -106,8 +106,9 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
       ...showImages(pictures),
     };
   }
-  // A project document's id, read once for an ask or comment its ref names: the prefix match
-  // and the check that the item read is on that document share it.
+  // A project document's id, read once for an ask or comment its ref names: the prefix match,
+  // the check that the item read is on that document, and the owner read of a failing item read
+  // (refuseMissingOfRef) share it.
   let refDocumentId: Promise<string> | undefined;
   const documentIdOf = (ref: ParsedDispatchRef) => {
     refDocumentId ??= resolveDocument(ref.owner, ref.artifact).then(
@@ -273,7 +274,7 @@ export async function readCommand(context: CommandContext): Promise<DispatchTool
           named.id,
           { kind: "issue", issue: messageIssue },
           messageIssue,
-          readRefOwner(client, { kind: "issue", issue: messageIssue }, async () => undefined)
+          () => client.getIssue(messageIssue)
         );
       });
     const messageRef = dispatchChildRef(

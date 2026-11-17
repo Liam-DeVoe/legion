@@ -426,15 +426,16 @@ func markPrefixPost(t *testing.T, tx pgx.Tx, table, id string, edited, deleted *
 
 // A candidate that is a comment or a message carries its post's marks as the post's own reads do:
 // the time an edit was made and the mark of a delete, so the list a person chooses from says
-// which match is corrected or withdrawn. A post that stands unedited carries neither, in the one
-// match and in a refusal's list alike.
+// which match is corrected or withdrawn. A post with no delete carries no delete mark: the edited
+// comment carries its edit alone in a refusal's list, and the untouched comment carries no mark
+// in the one match.
 //
-// The first line is a summary of the post's stored body, and this fixture clears that body
-// itself, so no product line of this package withholds it: this test is held to the marks, and
-// the first line of a deleted post is read where the delete route clears the body, in the api
-// package (dispatch://INFRA-1523). The reads before the marks are of the posts that stand, which
-// is the control for the marks being read from each candidate's own row: the deleted comment was
-// edited before its delete, at a time no other candidate carries.
+// Each mark is read from the candidate's own row: the deleted comment was edited before its
+// delete, at a time (withdrawnEditedAt) no other candidate carries. The first line is a summary
+// of the stored body, which this fixture clears itself, so this test holds the marks and not the
+// first line; the first line of a deleted post is read where the delete route clears the body, in
+// the api package (dispatch://INFRA-1523). The reads before the marks resolve the posts as they
+// stand and check no mark.
 func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
 	tx := prefixFixture(t)
 	const edited = "7a110000-0000-4000-8000-000000000001"
