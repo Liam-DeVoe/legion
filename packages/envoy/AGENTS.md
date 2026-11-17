@@ -3453,6 +3453,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `git rev-parse` names each of the two commits, with no replace ref and no variable `GIT_*` of the process, as `GitHistory` runs git, so another clone's commit is never named (`TestTheGitCallsOfTheBaseAreTheSameUnderEachSetting`).
   A submodule that moved to another commit gives one path, its gitlink, as git names it, and no path under it, whatever `.gitmodules` or the git configuration say, `ignore = all` included (`TestCitationsSeesAChangedSubmodule`; each other setting of git: `TestGitHistoryIsTheSameUnderEachSetting`).
   The base line and the paths are the data of a file and do not pass through `runnerlog.Say`, so a path that holds a line break, and a commit that git cannot read, are exit 2 with one line naming them.
+  Two commits that git reads but cannot diff, as when the clone lost a tree of one, are exit 2 with the fault of `GitHistory`, one line that names the two commits, the clone and git's reason.
   `TestChanged` runs the built binary over a scratch git repository.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
