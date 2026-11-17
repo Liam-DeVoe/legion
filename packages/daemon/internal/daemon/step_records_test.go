@@ -962,3 +962,52 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q},"base":{"ref":"main"},"updated_at":"2026-11-17T00:00:00Z"}`,
 		number, state, merged, "merge-"+stepRecordsHead, mergeable, branch, stepRecordsHead)
 }
+
+// A model whose name holds U+0000 is a name no store can hold: PostgreSQL's text and jsonb, the
+// daemon's outbox payload and Dispatch's record among them, refuse that character. The planner's
+// model answers with one and the planner completes: the completion moves the issue on, and the
+// record of planning reaches Dispatch ended, with the planner's session and no model, as for an
+// agent that named none.
+func TestAModelHoldingANulIsNotKept(t *testing.T) {
+	r := newStepRecordsRig(t)
+	planner := r.worker(claim.RolePlanner)
+	planner.takeAnswering("stand-in/mo\x00del")
+	r.finish(planner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
+	r.waitSteps("the end of planning", func(got stepRecordsRead) error {
+		switch found := got.find("step", 1, 1); {
+		case found.ID == "" || found.EndedAt == nil || found.Result != "passed":
+			return fmt.Errorf("planning reads %+v, want it ended passed", found)
+		case found.Session != planner.session || found.Model != "":
+			return fmt.Errorf("planning names session %q and model %q, want %q and no model", found.Session, found.Model, planner.session)
+		}
+		return nil
+	})
+}
+
+// takeAnswering is take with the agent's model answering as model, provider and model as Oh My
+// Pi's message_end names them.
+func (c *stepClaimant) takeAnswering(model string) {
+	c.r.t.Helper()
+	var prompt shimwire.Prompt
+	select {
+	case prompt = <-c.prompts:
+	case <-time.After(stepRecordsWait):
+		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
+	}
+	c.answerWith(model)
+	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
+	c.waitState(supervise.StateWorking)
+}
+
+// answerWith is the agent's model answering as model, `<provider>/<model>`, which Oh My Pi's
+// message_end names as message.provider and message.model.
+func (c *stepClaimant) answerWith(model string) {
+	t := c.r.t
+	t.Helper()
+	provider, name, _ := strings.Cut(model, "/")
+	frame, err := json.Marshal(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "provider": provider, "model": name}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.send(shimwire.Raw{Type: "message_end", JSON: frame})
+}
