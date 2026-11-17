@@ -23,6 +23,7 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  Priorities,
   ReferenceTargets,
   RepoProject,
   UserState,
@@ -1415,6 +1416,32 @@ const noLivePriorities = {
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
+/** One priority is live, which the picker of an issue that advances none offers. */
+const oneLivePriority: Priorities = {
+  empty: "",
+  priorities: [
+    {
+      description: "",
+      id: "evals-now",
+      made_at: "2026-11-01T00:00:00Z",
+      made_by: { id: "alice", kind: "user" },
+      owner: "CORE controller",
+      rank: "evals-now",
+      state: "live",
+      title: "Evals collecting data now",
+      work: {
+        by_status: {},
+        claimed: 0,
+        closed_last_7_days: 0,
+        newest_event_at: null,
+        open_asks: 0,
+      },
+    },
+  ],
+  priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+  work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+};
+
 // The add control lists what has no value yet, so where nothing can be added - a closed issue,
 // or one with a value for every property the menu lists - it is not drawn at all.
 test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
@@ -1604,30 +1631,7 @@ function addMenuControl(): Element | null {
 test("Add lists no entry whose control is disabled, and lists it again once it is enabled", async () => {
   const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
-    empty: "",
-    priorities: [
-      {
-        description: "",
-        id: "evals-now",
-        made_at: "2026-11-01T00:00:00Z",
-        made_by: { id: "alice", kind: "user" },
-        owner: "CORE controller",
-        rank: "evals-now",
-        state: "live",
-        title: "Evals collecting data now",
-        work: {
-          by_status: {},
-          claimed: 0,
-          closed_last_7_days: 0,
-          newest_event_at: null,
-          open_asks: 0,
-        },
-      },
-    ],
-    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
-    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
-  });
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
   getIssue.mockResolvedValue({
     ...issue,
     advances: [],
@@ -1815,6 +1819,114 @@ test.each(
         "Advances' control takes a press again, but Details draws no Add"
       ).not.toBeNull()
     );
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Details draws the priority's line in one of two places: beside Add while the issue advances
+// none, and in the Advances row once it advances one. The first priority added moves it, and the
+// focus its add control held as the add landed went with the place the line left, to the page's
+// body. It goes on to the add control of the line in the Advances row, named as the control it
+// was on, whose next press adds another.
+test("the first priority added hands the focus from the add control beside Add to the Advances row's add control", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue(advancesOnly);
+  const view = renderDetails();
+  try {
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    act(() => control.focus());
+    await user.keyboard("{Enter}");
+    const picker = await screen.findByRole("combobox", {
+      name: CONTROL_LABELS.priority_to_advance,
+    });
+    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
+    await user.selectOptions(picker, "evals-now");
+    const form = picker.closest("form");
+    if (form === null) throw new Error("the picker is in no form");
+    // The issue's read after the write is held, so the write lands, and the line gives the focus
+    // back to its add control beside Add, before the line moves.
+    const reread = Promise.withResolvers<IssueDetails>();
+    getIssue.mockImplementation(() => reread.promise);
+    await user.tab();
+    expect(document.activeElement, "Tab from the picker did not reach the form's Add").toBe(
+      within(form).getByRole("button", { name: CONTROL_LABELS.add })
+    );
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the add landed, and the line gave the focus back to no add control beside Add"
+      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+    );
+    await act(async () =>
+      reread.resolve({ ...advancesOnly, advances: [{ id: "evals-now", inherited: false }] })
+    );
+    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+    expect(
+      document.activeElement,
+      "the line moved into the Advances row, and the focus fell to the page rather than to the row's add control"
+    ).toBe(within(row).getByRole("button", { name: addPriorityControlName("CORE-1") }));
+    expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// The last priority removed moves the line back beside Add, and the focus its Remove held went
+// with the Advances row to the page's body. It goes on to the add control beside Add, the one
+// control the line draws there. happy-dom leaves the focus on a control that turns disabled, as
+// Remove is while its write is out, so this case holds the move between the two places alone.
+test("removing the last priority hands the focus from its Remove to the add control beside Add", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+  getIssue.mockResolvedValue({
+    ...advancesOnly,
+    advances: [{ id: "evals-now", inherited: false }],
+  });
+  const view = renderDetails();
+  try {
+    const remove = await waitFor(() =>
+      within(detailsRow(PROPERTY_LABELS.advances)).getByRole("button", { name: /^Remove / })
+    );
+    // The issue's read after the write is held, so the removal lands before the line moves.
+    const reread = Promise.withResolvers<IssueDetails>();
+    getIssue.mockImplementation(() => reread.promise);
+    const reads = getIssue.mock.calls.length;
+    act(() => remove.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(
+        getIssue.mock.calls.length,
+        "the removal landed, and the issue was not read again"
+      ).toBeGreaterThan(reads)
+    );
+    await waitFor(() =>
+      expect(remove, "Remove is still disabled once its write landed").toBeEnabled()
+    );
+    expect(document.activeElement, "Remove lost the focus before the line moved").toBe(remove);
+    await act(async () => reread.resolve(advancesOnly));
+    await waitFor(() =>
+      expect(
+        screen.queryByText(PROPERTY_LABELS.advances, {
+          exact: true,
+          selector: "[data-page-chrome]",
+        }),
+        "the issue advances nothing, and Details still draws the Advances row"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the line moved back beside Add, and the focus fell to the page rather than to its add control"
+    ).toBe(screen.getByRole("button", { name: addPriorityControlName("CORE-1") }));
+    expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     priorities.mockRestore();
