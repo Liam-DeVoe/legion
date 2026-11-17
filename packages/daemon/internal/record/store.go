@@ -1915,9 +1915,10 @@ func scanAssignment(row scanner) (string, Assignment, error) {
 // project's file says by now. Nothing here ever updates a row. It reports how many rows it wrote.
 //
 // The write is guarded by the issue's own record, which it selects from: a key the daemon holds no
-// record for — an operator's spawn, whose tree's root the daemon never recorded — writes no row
-// and raises nothing. Without the guard the row's foreign key would refuse such a write instead,
-// and an operator's tree would fail its admission rather than quietly run under no recorded arm.
+// record for writes no row and raises nothing, where the row's foreign key would otherwise refuse
+// the write. experiment.DrawAndRecord already draws nothing for such a key — an operator's spawn
+// of a tree whose root the daemon never recorded — so the guard holds the write to its record for
+// any other caller.
 func (s *Postgres) PutAssignments(ctx context.Context, tx pgx.Tx, issue string, rows []Assignment) (int, error) {
 	if len(rows) == 0 {
 		return 0, nil
