@@ -1331,6 +1331,8 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
 // question waiting the page still went to it, and with none it opened with the focus on `<main>`
 // and on no row, at 1440 by 900. The row above loads the page by its address, where the
 // dashboard moves no focus, so it never met this.
+// SLOW(>=2s): a whole seeded issue, then at two sizes a load from the Inbox and one from the
+// parent's outline, each waited on until the focus lands.
 test("an issue opened by a link opens with the focus on its question, or on its first row where none waits", async ({
   browser,
 }) => {
@@ -1396,6 +1398,8 @@ test("an issue opened by a link opens with the focus on its question, or on its 
 // 900 a picture that loaded during that scroll left the caret in its last statement 17,037 px
 // below the top of the window. The seeds' statements sit near their document's top and c-keys
 // (7) writes no new line, so no row met it.
+// SLOW(>=2s): a whole seeded issue and a long document of its own, a load waited on until the
+// statement takes the focus, then Enter and each line written waited on until the caret settles.
 test("the caret Enter puts in a statement deep in its document stays on screen while the reader writes", async ({
   browser,
 }) => {
@@ -1466,6 +1470,8 @@ test("the caret Enter puts in a statement deep in its document stays on screen w
 // with a scroll of its own, so the page around it stays where it was. At e3136741 Enter on R1 of
 // the real INFRA-1196 drew the whole spec in that row, 35,635 px high, and the rows under it
 // went down by as much.
+// SLOW(>=2s): a whole seeded issue and a long spec of its own, a load waited on until the
+// statement takes the focus, then Enter waited on until the editor opens and settles at the block.
 test("a row that edits a statement is no taller than the window, and the page around it stays put", async ({
   browser,
 }) => {
@@ -1987,7 +1993,23 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       await nodeBodies(page).count(),
       "the pinned body and the focused node's are not the two bodies drawn"
     ).toBe(2);
+    // A press on the pinned row's Let it close, with the focus on the row the reader moved to,
+    // closes that body and leaves the focus where it was (decision 141).
+    const movedTo = await focusedNodeId(page);
+    await pinnedBodies(page)
+      .getByRole("button", { exact: true, name: CONTROL_LABELS.let_close })
+      .click();
+    await expect
+      .poll(() => pinnedBodies(page).count(), { message: "Let it close left the body pinned" })
+      .toBe(0);
+    expect(
+      await focusedNodeId(page),
+      "a press on Let it close moved the focus off the row the reader moved to"
+    ).toBe(movedTo);
+    // From the keyboard, `o` pins the row again and a second `o` lets it close.
     await page.keyboard.press("k");
+    await page.keyboard.press("o");
+    expect(await pinnedBodies(page).count(), "o pinned no body open again").toBe(1);
     await page.keyboard.press("o");
     expect(await pinnedBodies(page).count(), "o did not close the pinned body").toBe(0);
 
@@ -2509,7 +2531,8 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     // The gaps the page draws are those that tell a node apart and name work somebody owes: each
     // requirement no check serves, and the plan task that serves no requirement - and no other
     // node draws any. The check whose latest result records no negative control is one of those
-    // others: dispatch://INFRA-1253 R3 refuses such a result, so the page names nothing it lacks.
+    // others: dispatch://INFRA-1253 R3 asks a negative control of a before-merge pass alone, and
+    // this check runs after the merge, so the page names nothing it lacks.
     const coverage = await getIssueCoverage(seeded.key);
     const wanted = new Map<string, string[]>();
     for (const requirement of coverage.requirements ?? []) {
