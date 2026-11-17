@@ -166,7 +166,11 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // the plan does not hold is none either (TaskNotFound, which lists the plan's tasks only where it
 // has some): an issue with no plan rows changes nothing (R20). A stop of a task already stopped
 // changes nothing and is no refusal, so a retry of a stop already applied finds it stopped. A
-// stop in a lingering tree changes nothing and says so.
+// task that is done, or left the workflow with its issue before it was done, has nothing left to
+// stop (TaskDone, TaskLeft): each is refused here, before the store's stop, which refuses both
+// states itself and would fail the whole fact, and before the linger a root's leave begins, since
+// the task's own state is the truer answer. A stop in a lingering tree changes nothing and says
+// so.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -186,6 +190,10 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		return intake.Result{Refusal: intake.TaskNotFound(issue.Key, fact.Task, []string{w.Task})}, nil
 	case w.State == record.TaskStopped:
 		return intake.Result{}, nil
+	case w.State == record.TaskDone:
+		return intake.Result{Refusal: intake.TaskDone(issue.Key, w.Task)}, nil
+	case w.State == record.TaskLeft:
+		return intake.Result{Refusal: intake.TaskLeft(issue.Key, w.Task)}, nil
 	}
 	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
 	if err != nil {

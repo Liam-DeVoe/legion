@@ -297,4 +297,55 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 			t.Fatalf("%s with no plan rows stands in %s (linger %v) after it left, want done and lingering, as today", bare.Key, issue.Phase, issue.LingerUntil)
 		}
 	})
+
+	// A task that is done, or that left the workflow with its issue before it was done, has
+	// nothing left to stop: each stop is refused with its own text before the store's stop, which
+	// refuses both states itself and would fail the whole fact, and changes nothing. A child's
+	// leave lingers no tree, so its stop would reach the store's stop; a root's leave lingers its
+	// tree, and the task's own state is still what the refusal says, not the linger.
+	t.Run("a task that is done and a task that left are refused and change nothing", func(t *testing.T) {
+		leave := func(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, status string) {
+			t.Helper()
+			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := engine.store.Issue(ctx, tx, key)
+				if err != nil {
+					return err
+				}
+				return engine.leave(ctx, tx, *issue, status)
+			})
+		}
+		const doneText = "is done, so nothing of it is left to stop. This stop changed nothing."
+		const leftText = "left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."
+		for _, tc := range []struct {
+			name, key, status, state, want string
+		}{
+			{name: "a child's task that is done", key: "LEGION-209", status: "done", state: record.TaskDone, want: "task a of LEGION-209 " + doneText},
+			{name: "a child's task that left the workflow with its issue", key: "LEGION-209", status: "backlog", state: record.TaskLeft, want: "task a of LEGION-209 " + leftText},
+			{name: "a root's task that left the workflow with its issue", key: "LEGION-208", status: "backlog", state: record.TaskLeft, want: "task a of LEGION-208 " + leftText},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				pool := migratedPool(t)
+				engine := returnEngine()
+				root := stepRoot(t, pool, phase.Admitted)
+				issue := root
+				if tc.key != root.Key {
+					issue = stepChild(t, pool, tc.key, phase.Admitted, nil)
+				}
+				seedStepsPlan(t, pool, issue.Key, issue.Generation, "implementer")
+				move(t, pool, engine, issue.Key, TriggerGateOpened, "", record.PhaseRow{})
+				leave(t, pool, engine, issue.Key, tc.status)
+				if task := taskOf(t, pool, engine, issue.Key); task.State != tc.state {
+					t.Fatalf("task a of %s is %s before the stop, want %s", issue.Key, task.State, tc.state)
+				}
+				before := standingOf(t, pool, engine, issue.Key, true)
+				result := applyFacts(t, pool, engine)("stop", ownersStop(t, issue.Key, "a"))
+				if result.Refusal == nil || result.Refusal.Status != 409 || result.Refusal.Code != "TASK_DONE" || result.Refusal.Message != tc.want {
+					t.Fatalf("the stop of %s = %+v, want 409 TASK_DONE %q", tc.name, result.Refusal, tc.want)
+				}
+				if after := standingOf(t, pool, engine, issue.Key, true); after.outbox != before.outbox || !reflect.DeepEqual(after.issue, before.issue) || !reflect.DeepEqual(after.task, before.task) {
+					t.Fatalf("the refused stop changed %s:\n before %+v\n after  %+v", issue.Key, before, after)
+				}
+			})
+		}
+	})
 }
