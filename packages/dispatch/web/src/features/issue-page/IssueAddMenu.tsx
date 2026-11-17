@@ -158,11 +158,13 @@ export function IssueAddMenu({
     // exports: neither side spells it, so renaming one renames both and the entry cannot go
     // missing on a word nobody meant to change. A control of the header - the assignee - is
     // reached with Details closed, since on a phone Details covers it; a control of Details is
-    // reached with Details open, since shut it takes neither a press nor the focus.
+    // reached with Details open, since shut it takes neither a press nor the focus. The control is
+    // scrolled into view first, since its popover is placed from the control's place on the screen.
     const atControl = (name: string) => ({
       open: () => {
         const control = pageControl(name);
         const reach = () => {
+          control?.scrollIntoView({ block: "nearest" });
           if (control instanceof HTMLSelectElement) control.focus();
           else control?.click();
         };
