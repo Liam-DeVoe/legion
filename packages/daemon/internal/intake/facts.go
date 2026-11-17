@@ -1424,8 +1424,9 @@ type Refusal struct {
 
 // PlanRefused is the 409 PLAN_REFUSED refusal of a plan the owner gave, with one reason for each
 // cause: register_plan answers it for a plan that plan.Supported or plan.Validate refuses, and
-// the workflow for a version that changes or removes a running task (RunningTaskChanged). The
-// message holds every reason in its order, so a reader of the sentence alone reads every cause.
+// the workflow for a version that changes or removes a running task (RunningTaskChanged), or one
+// whose agent this release cannot name (AgentUnnamed). The message holds every reason in its
+// order, so a reader of the sentence alone reads every cause.
 func PlanRefused(reasons []plan.Refusal) *Refusal {
 	texts := make([]string, len(reasons))
 	for i, reason := range reasons {

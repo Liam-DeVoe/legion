@@ -564,6 +564,9 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // for each, and so is a task that is done or left the workflow. A version taken is stored as the
 // version in force (givenRows): each task it leaves as it was keeps its steps and where it stands,
 // each task it changes takes the steps its block now names, and each task it removes is deleted.
+// Before anything is written, each step of the version is named from every row of the issue
+// (record.NameAgents), so a key keeps its name; a version in which a fresh agent would need the
+// name a key holds from an earlier version is refused as a plan (intake.AgentUnnamed).
 // Where it changes the stopped task of an issue held for that task, the task the plan now holds
 // starts again at its first step (restartTask), and its worker is told which version did it. A
 // version taken after the work started writes the run's plan node again, whole (planNode, C9): the
