@@ -145,8 +145,8 @@ func TestAFullTieWaitsForTheArchitect(t *testing.T) {
 func TestATopModelWithNoActionFitIsWrittenWithNoneChosen(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "decision_models.json")
 	err := conclude(io.Discard, unfitFirst(), "a test run", "", "", out)
-	if err == nil || !strings.Contains(err.Error(), "model-strong") || !strings.Contains(err.Error(), "R5") {
-		t.Fatalf("a run whose first model has no action fit concludes with %v, want an error naming model-strong and R5's repair", err)
+	if err == nil || !strings.Contains(err.Error(), "model-strong") || !strings.Contains(err.Error(), "R5") || strings.Contains(err.Error(), "--tie-break") {
+		t.Fatalf("a run whose first model has no action fit concludes with %v, want an error naming model-strong and R5's repair, with no tie-break offered", err)
 	}
 	if chosen := chosenIn(t, out); len(chosen) != 0 {
 		t.Errorf("the record is written with %+v chosen, want none", chosen)

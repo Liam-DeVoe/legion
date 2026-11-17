@@ -347,13 +347,18 @@ func Choose(records []Record) Choice {
 // says nothing, returning c as it was: a person names a model only among models the measurement
 // cannot tell apart and each could be named, and the record keeps why.
 func (c Choice) Break(model, reason string) (Choice, error) {
-	switch {
-	case c.Outcome == Named:
+	switch c.Outcome {
+	case Named:
 		return c, fmt.Errorf("R7's rule names %s (%s), and a person names a model only where the leading candidates are level on right choices and on the display fit", c.Model, c.By)
-	case c.Outcome == OwedRepair:
+	case OwedRepair:
 		return c, fmt.Errorf("a person names a model only on a full tie of models that each have an action fit, and here %s", c.Why)
-	case c.Outcome != FullTie:
+	case NoCandidate:
 		return c, errors.New("no model meets R7's floors, so there is no tie to break")
+	case FullTie:
+	default:
+		return c, fmt.Errorf("R7's rule came to %q, an outcome a person cannot break", c.Outcome)
+	}
+	switch {
 	case !slices.Contains(c.Level, model):
 		return c, fmt.Errorf("%q is not one of the level models, %s", model, strings.Join(c.Level, ", "))
 	case strings.TrimSpace(reason) == "":

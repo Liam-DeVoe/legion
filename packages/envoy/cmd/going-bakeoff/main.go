@@ -349,8 +349,10 @@ func conclude(w io.Writer, records []going.Record, source, tieBreak, tieReason, 
 		return nil
 	case going.OwedRepair:
 		return fmt.Errorf("wrote %s with no model chosen: %s", out, choice.Why)
-	default:
+	case going.FullTie:
 		return fmt.Errorf("wrote %s with no model chosen: %s: going-bakeoff --from-record %s --tie-break <model> --tie-reason <why>", out, choice.Why, out)
+	default:
+		return fmt.Errorf("wrote %s with no model chosen: R7's rule came to %q, an outcome this tool does not know", out, choice.Outcome)
 	}
 }
 

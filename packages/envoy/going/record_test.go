@@ -338,6 +338,30 @@ func TestATieBreakIsTakenOnlyOnAFullTie(t *testing.T) {
 	}
 }
 
+// Break refuses each outcome a person cannot break with that outcome's own reason, so a run whose
+// first model has no action fit says R5's repair is owed rather than that no model meets the floors.
+func TestABreakRefusalSaysWhatTheRuleCameTo(t *testing.T) {
+	noFit := func(r going.Record) going.Record { r.ActionThreshold = nil; return r }
+	for _, tc := range []struct {
+		name    string
+		choice  going.Choice
+		says    string
+		notSays string
+	}{
+		{"a run the rule decides", going.Choose([]going.Record{candidate("model-a", true, 102), candidate("model-b", true, 101)}), "R7's rule names model-a", "floors, so"},
+		{"a top model with no action fit", going.Choose([]going.Record{noFit(candidate("model-a", true, 102)), candidate("model-b", true, 101)}), "R5's repair", "floors, so"},
+		{"no model meeting the floors", going.Choose(nil), "no model meets R7's floors", "R5"},
+		{"an outcome Break does not know", going.Choice{Outcome: "made_up"}, `"made_up"`, "floors"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.choice.Break("model-b", "a reason")
+			if err == nil || !strings.Contains(err.Error(), tc.says) || strings.Contains(err.Error(), tc.notSays) {
+				t.Errorf("Break on %q refuses with %v, want it to say %q and not %q", tc.choice.Outcome, err, tc.says, tc.notSays)
+			}
+		})
+	}
+}
+
 // A record whose chosen model is not the one R7's rule names fails the check the committed
 // record is held to, however it says the model was chosen; a person's choice passes only where
 // the record itself shows the full tie on both keys and keeps a reason.
