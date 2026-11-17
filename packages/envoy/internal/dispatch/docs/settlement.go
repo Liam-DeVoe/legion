@@ -650,6 +650,9 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// What settlement writes of the answers it keeps in step while another build serves is weighed
+	// against the document as settlement read it, before any other repair is planned on it.
+	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}

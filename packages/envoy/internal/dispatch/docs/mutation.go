@@ -1884,9 +1884,12 @@ func editTree(current pmdoc.ValidDocument, read func() (*pmdoc.Node, error)) (*b
 // the ask's own block, in the transaction ctx joined, while another build serves
 // (anotherBuildServes), whose pages read an ask's state from its block: the attributes the roll
 // window keeps in step with the asks row (rollWindowAskAttributes), as the release before writes
-// them at once rather than at the document's next settlement. Once the fleet is one build it
-// writes nothing, and the answer changes no byte of the document (dispatch://INFRA-1150 R3). An
-// ask with no block, and a block the document no longer holds as an ask, are written nothing.
+// them at once rather than at the document's next settlement. An answer the document has no room
+// for, by what one upload may hold (answerHasRoom), is written without its words - the block says
+// who answered and when (rollWindowAskAttributesWithheld) - and the ask keeps it whole, as the
+// release before writes such a block. Once the fleet is one build it writes nothing, and the
+// answer changes no byte of the document (dispatch://INFRA-1150 R3). An ask with no block, and a
+// block the document no longer holds as an ask, are written nothing.
 func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error {
 	if ask.BlockID == nil {
 		return nil
@@ -1927,6 +1930,19 @@ func (s *Service) KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor m
 		kept := attributesOf(block)
 		if !keep(kept) {
 			return nil
+		}
+		if holdsAnswerWords(kept) {
+			room, err := answerHasRoom(tree, block, kept.Attrs)
+			if err != nil {
+				return err
+			}
+			if !room {
+				slog.Warn("dispatch: an answer is left out of its block", "room", *ask.BlockArtifactID, "block", *ask.BlockID, "ask", ask.ID)
+				kept = attributesOf(block)
+				if !rollWindowAskAttributesWithheld(ask, "")(kept) {
+					return nil
+				}
+			}
 		}
 		attributes := pmdoc.Attrs{}
 		for _, name := range storedAskAttributes() {

@@ -81,6 +81,20 @@ type settlementReconciliation struct {
 	// room's record and the durable one this settlement read (askBlockSources), which the typed
 	// nodes of the version it writes take their authors from (typedSources).
 	sources askBlockSources
+	// inStep are the ask blocks this settlement wrote an answer's words into while another build
+	// serves (rollWindowAskAttributes), in document order, which withholdAnswersWithoutRoom weighs.
+	inStep []answerInStep
+}
+
+// answerInStep is an ask block settlement wrote an answer's words into (repairAskInStep): the
+// block in the tree settlement reconciled, its attributes as settlement found them, the write with
+// the words and the one without them (askReadableWriteWithheld), and the indexes of the repair and
+// of the block.repaired the write made, -1 for none.
+type answerInStep struct {
+	node            *pmdoc.Node
+	found           pmdoc.Attrs
+	write, withheld func(*pmdoc.Node) bool
+	repair, event   int
 }
 
 // writeOpenedAskTies writes, in the settlement's transaction that opened them, the shaped ties of
@@ -425,6 +439,113 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, s
 	return true
 }
 
+// repairAskInStep is repairAsk with askReadableWrite, settlement's write to a block of ask, or
+// of a copy of ask on the document copied, that records the block when the write gave it an
+// answer's words while another build serves, for withholdAnswersWithoutRoom to weigh.
+func (r *settlementReconciliation) repairAskInStep(node *pmdoc.Node, blockID string, twoBuilds bool, ask model.Ask, copied string, event *model.Event) bool {
+	found := maps.Clone(node.Attrs)
+	repair, eventAt := len(r.repairs), len(r.events)
+	if event == nil {
+		eventAt = -1
+	}
+	write := askReadableWrite(twoBuilds, ask, copied)
+	if !r.repairAsk(node, blockID, write, event) {
+		return false
+	}
+	if twoBuilds && holdsAnswerWords(node) {
+		r.inStep = append(r.inStep, answerInStep{
+			node: node, found: found, write: write, withheld: askReadableWriteWithheld(ask, copied),
+			repair: repair, event: eventAt,
+		})
+	}
+	return true
+}
+
+// withholdAnswersWithoutRoom keeps out of the document each answer this settlement wrote into its
+// block while another build serves (inStep) that the document has no room for: one that would
+// leave it past what one upload may hold and bigger than before, the document's rendering as
+// settlement read it (weigh, which weighs a caller's write the same way). A block that leaves the
+// document and returns gets its answer from the ask, so a returning block is the answer's text
+// arriving without the answer route that weighs it (KeepAskBlockInStep): forty answers of 32,000
+// characters, each taken against a document their deleted blocks had left small, come back in one
+// edit. Where the answers do not all fit, every one is taken out of tree, and each is given back
+// in document order while the document still has room for it. A block whose answer stays out is
+// repaired without it (askReadableWriteWithheld), so it still says who answered and when, as the
+// release before wrote such a block, and the ask keeps the answer; a later settlement of a
+// document with room for it writes it back. A repair that then changes nothing is dropped with
+// its block.repaired. A document that does not render cannot be weighed, so its answers all stay
+// out, and the settlement that renders it next fails as it would have.
+func (r *settlementReconciliation) withholdAnswersWithoutRoom(artifactID string, tree *pmdoc.Node, before string) {
+	if len(r.inStep) == 0 {
+		return
+	}
+	after, err := renderTree(tree)
+	rendered := err == nil
+	if rendered {
+		if err = weighRendering(before, after); err == nil {
+			return
+		}
+	}
+	// changes says whether each block repaired without its answer still changes from what
+	// settlement found.
+	changes := make([]bool, len(r.inStep))
+	for index, answer := range r.inStep {
+		answer.node.Attrs = maps.Clone(answer.found)
+		changes[index] = answer.withheld(answer.node)
+	}
+	returned := make([]bool, len(r.inStep))
+	if rendered {
+		r.returnAnswersWithRoom(tree, before, returned)
+	}
+	withheld := 0
+	droppedRepairs, droppedEvents := map[int]bool{}, map[int]bool{}
+	for index, answer := range r.inStep {
+		switch {
+		case returned[index]:
+			continue
+		case changes[index]:
+			r.repairs[answer.repair].set = answer.withheld
+		default:
+			droppedRepairs[answer.repair] = true
+			if answer.event >= 0 {
+				droppedEvents[answer.event] = true
+			}
+		}
+		withheld++
+	}
+	slog.Warn("dispatch: settlement withholds restored answers from their blocks", "room", artifactID,
+		"withheld", withheld, "answers", len(r.inStep), "reason", err)
+	r.repairs = withoutIndexes(r.repairs, droppedRepairs)
+	r.events = withoutIndexes(r.events, droppedEvents)
+	r.inStep = nil
+}
+
+// returnAnswersWithRoom gives back, in document order, the answer of each block of inStep, all of
+// them left out of tree, while the document still has room for it, and marks in returned which it
+// gave back. The document is rendered once without them, and each answer is weighed by what it
+// adds to its block's own rendering (grownBy).
+func (r *settlementReconciliation) returnAnswersWithRoom(tree *pmdoc.Node, before string, returned []bool) {
+	left, err := renderTree(tree)
+	if err != nil {
+		return
+	}
+	document, was := renderingOf(left), renderingOf(before)
+	for index, answer := range r.inStep {
+		withheld := *answer.node
+		withheld.Attrs = maps.Clone(answer.node.Attrs)
+		answer.write(answer.node)
+		grown, err := grownBy(document, &withheld, answer.node)
+		if err == nil {
+			err = weigh(was, grown)
+		}
+		if err != nil {
+			answer.node.Attrs = withheld.Attrs
+			continue
+		}
+		document, returned[index] = grown, true
+	}
+}
+
 // changedTree reports whether settlement changed the tree it reconciled. Every change
 // reconcileAskBlocks and reconcileCICheckBlocks make in place is recorded in repairs - by repair,
 // which the deletion of a broken ci_check goes through too, by repairAsk, and by the write of a
@@ -705,7 +826,7 @@ func (s *Service) reconcileAskBlocks(
 			// A copy is read-only here: its source's state is written into the block, and
 			// nothing this settlement does writes the source's row.
 			if source, copied := sources[block.id]; copied {
-				if reconciled.repairAsk(block.node, block.id, askReadableWrite(twoBuilds, source.ask, source.document), nil) {
+				if reconciled.repairAskInStep(block.node, block.id, twoBuilds, source.ask, source.document, nil) {
 					reconciled.copied = append(reconciled.copied, copiedBlock{blockID: block.id, source: source})
 				}
 				continue
@@ -861,14 +982,13 @@ func (s *Service) reconcileAskBlocks(
 			actor,
 			model.BlockRepairedEventPayload{BlockID: block.id, DisturbedBy: actor},
 		)
-		write := askReadableWrite(twoBuilds, ask, "")
 		if reworded {
 			// One block.repaired names both repairs: the wording's, and the server attributes'
 			// when they changed too.
 			reconciled.events = append(reconciled.events, repaired)
-			reconciled.repairAsk(block.node, block.id, write, nil)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, ask, "", nil)
 		} else {
-			reconciled.repairAsk(block.node, block.id, write, &repaired)
+			reconciled.repairAskInStep(block.node, block.id, twoBuilds, ask, "", &repaired)
 		}
 	}
 	if err := recordAskAuthors(ctx, tx, artifactID, unindexed); err != nil {
