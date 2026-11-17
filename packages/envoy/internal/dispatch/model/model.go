@@ -3196,8 +3196,8 @@ type PlanRating struct {
 // /api/v1/projects/{key}/plans lists it: its plan (that of its newest run, null for an issue whose
 // work started before Legion wrote plans or that Legion never ran), the rating of each of its
 // retros in the order they ran, the earliest start and the latest end of its step records and the
-// whole seconds between them (each null where no record holds one), and its count of step records
-// of kind step that failed.
+// whole seconds between them (each null where no record holds one, and the seconds null too where
+// that end is before that start), and its count of step records of kind step that failed.
 type FinishedIssue struct {
 	Issue           string       `json:"issue"`
 	Title           string       `json:"title"`
