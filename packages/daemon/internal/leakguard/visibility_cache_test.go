@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -51,8 +52,14 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// The link's target is a private directory of this user holding a public entry, so the
+		// link alone makes the entry untrusted. A t.TempDir after the first is made 0777 less the
+		// umask, and one that others can read would be refused for its mode whatever the link.
 		"symlinked directory": func(t *testing.T, path, dir string) {
 			target := t.TempDir()
+			if err := os.Chmod(target, 0o700); err != nil {
+				t.Fatal(err)
+			}
 			writeEntry(t, filepath.Join(target, filepath.Base(path)), Public)
 			if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 				t.Fatal(err)
@@ -85,13 +92,43 @@ func TestKeptVisibilityRejectsUntrustedEntries(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		// A FIFO where the guard's state directory or its entry should be is no state: the read
+		// refuses it at once, where an open that waits for a writer would hang every push.
+		"fifo in place of the directory": func(t *testing.T, _, dir string) {
+			if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(dir, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"fifo in place of the entry": func(t *testing.T, path, dir string) {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(path, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			state := t.TempDir()
 			guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "XDG_STATE_HOME="+state)})
 			path := guard.visibilityCachePath(slug)
 			prepare(t, path, filepath.Dir(path))
-			if visibility, ok := guard.keptVisibility(slug); ok {
+			var visibility Visibility
+			var ok bool
+			read := make(chan struct{})
+			go func() {
+				defer close(read)
+				visibility, ok = guard.keptVisibility(slug)
+			}()
+			select {
+			case <-read:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the kept visibility read has not returned after 10 s: an open waits on what lies at the path")
+			}
+			if ok {
 				t.Errorf("kept visibility = %q, true; want cache miss", visibility)
 			}
 		})
