@@ -49,15 +49,15 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 
 // C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
-// stands in held and in one of the other two. The fixture carries one issue for each of the
-// thirteen words of the ladder — a member of a closed tree, a member of a parked tree, a root
-// whose label is off, a root whose Dispatch chain reaches another live root, a member of a tree
-// whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
-// link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
-// a parent held before its retro for the issue beneath it, a task stopped in its merge, an issue
-// past its review that nothing holds, which reads at_work (record.HeldAtWork), and an issue none
-// of the twelve is true of — and the rows are read from the projected state, which is where a
-// reader meets them.
+// stands in held and in one of the other two. The fixture carries one issue for each word of the
+// ladder (record.HeldReasons, which the test walks) — a member of a closed tree, a member of a
+// parked tree, a root whose label is off, a root whose Dispatch chain reaches another live root,
+// a member of a tree whose root waits on a person, a member under a shut design gate, a child an
+// unfinished Dispatch link holds, a parent whose own children are still open, an issue beneath an
+// accepted ancestor, a parent held before its retro for the issue beneath it, a task stopped in
+// its merge, an issue past its review that nothing holds, which reads at_work
+// (record.HeldAtWork), and an issue none of the others is true of — and the rows are read from
+// the projected state, which is where a reader meets them.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -194,6 +194,13 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	if !reflect.DeepEqual(got.Admission.Held, wantHeld) {
 		t.Fatalf("admission.held = %#v, want %#v", got.Admission.Held, wantHeld)
 	}
+	// The fixture carries each word of the ladder, so a word added to it with no issue here fails
+	// rather than leaving the claim above false.
+	for _, word := range record.HeldReasons {
+		if !slices.ContainsFunc(wantHeld, func(row api.HeldIssue) bool { return row.Reason == word }) {
+			t.Errorf("the fixture carries no issue that reads %s (record.HeldReasons)", word)
+		}
+	}
 
 	// LEGION-172, the accepted ancestor in merging, holds no slot row: its work is past its review
 	// (record.KeepsSlot), so it stands in held as at_work rather than in active.
@@ -294,11 +301,11 @@ func heldRow(t *testing.T, state api.State, key string) api.HeldIssue {
 	return api.HeldIssue{}
 }
 
-// The word one issue reads is the first of the thirteen that is true of it, and not whichever hold
-// a reader noticed first (C1 of dispatch://INFRA-3107). Each case below makes two of the words
-// true of one issue at once and requires the earlier one, so the order itself is what is proved
-// rather than the thirteen clauses one at a time; the last case is the control, an issue one word
-// only is true of, which must read that word whatever the order says.
+// The word one issue reads is the first word of the ladder that is true of it, and not whichever
+// hold a reader noticed first (C1 of dispatch://INFRA-3107). Each case below makes two of the
+// words true of one issue at once and requires the earlier one, so the order itself is what is
+// proved rather than each clause on its own; the last case is the control, an issue one word only
+// is true of, which must read that word whatever the order says.
 func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	lingering, expired := projectedAt.Add(time.Hour), projectedAt.Add(-time.Hour)
@@ -433,7 +440,7 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-1"}},
 		},
 		{
-			// C2: none of the twelve words is true of an issue at work in a running tree that holds
+			// C2: none of the other words is true of an issue at work in a running tree that holds
 			// no slot, and the pass names it nowhere. It takes a row all the same, so that a
 			// reader can see the gap is in the words and not in the list.
 			name: "an issue the pass names nowhere",

@@ -16,7 +16,7 @@ import (
 // whichever hold it noticed first.
 type HeldReason string
 
-// The thirteen words of C1. The order they are read in is the order of the ladder's own body and
+// The words of C1. The order they are read in is the order of the ladder's own body and
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
 	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
@@ -79,13 +79,13 @@ const (
 	// atWorkPastReview), so `why` serves this word's sentence only to a member past its review of
 	// a tree that runs nothing. This is the one statement of that; every other reader points here.
 	HeldAtWork HeldReason = "at_work"
-	// HeldUnclassified is an issue none of the twelve words above is true of (C2). The record holds
+	// HeldUnclassified is an issue none of the words above is true of (C2). The record holds
 	// it in the workflow and no rule here says what it waits for, which is a gap in the words
 	// and not in the list: the issue has a place, and a reader can see that it needs one.
 	HeldUnclassified HeldReason = "unclassified"
 )
 
-// HeldReasons is the thirteen words in the order HeldReasonOf reads them, named once for a reader
+// HeldReasons is every word in the order HeldReasonOf reads them, named once for a reader
 // that must print or walk them in that order rather than keep an order of its own. Two read it:
 // the operator's `admission.held` line (`legion state`), which counts each word and prints the
 // counts in this order, so two readings of one state print one line; and HeldBefore, which the
@@ -111,7 +111,7 @@ var HeldReasons = []HeldReason{
 }
 
 // HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
-// is false where either is not one of the thirteen words, so the zero row's empty word stands
+// is false where either is not a word of HeldReasons, so the zero row's empty word stands
 // before nothing. The test of `why`'s sentence table (the projection's heldSentences) requires
 // the table to serve under `blocked` exactly the words HeldBefore reads before dispatch_blocker;
 // the table states the rule that serves them.
@@ -216,7 +216,7 @@ func openBeneathIn(issue Issue, chain map[string]Issue) []string {
 	return nil
 }
 
-// HeldReasonOf is the ladder of C1: the thirteen words read in one order, the first that is true of
+// HeldReasonOf is the ladder of C1: the words read in one order, the first that is true of
 // the issue being its word, with the issues that clause names beside it and nothing where the
 // clause names none. The order is the whole of the rule — a member of a closed tree is
 // tree_closed and not design_gate, though its gate is shut too — and this body is the one
