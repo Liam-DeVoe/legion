@@ -2,20 +2,25 @@
 // in Go (R5 of dispatch://INFRA-4083). ajv reads the one schema of the repository and the one table
 // of its cases that the Go test TestSchemaCases reads; the yaml library reads the YAML nodes of
 // specgraph's testdata/nodes, each as the data of the .decoded.json file beside it, which a person
-// wrote and which the Go test TestNodesDecodeToTheirData holds yaml.v3 to.
+// wrote and which the Go test TestNodesDecodeToTheirData holds yaml.v3 to; and it reads each YAML
+// fixture of specgraph's testdata, each file that the printer wrote for the tests, as the data of
+// testdata/fixtures.decoded.json, which the Go test TestEachYAMLFixtureDecodesAsItsData holds
+// yaml.v3 and the Go schema validator to.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020";
 import { parseAllDocuments } from "yaml";
 
+/** The path of path under packages/envoy/internal/dispatch/specgraph. */
+function specgraphPath(path: string): string {
+  return fileURLToPath(new URL(`../../../envoy/internal/dispatch/specgraph/${path}`, import.meta.url));
+}
+
 /** The text of path under packages/envoy/internal/dispatch/specgraph. */
 function specgraph(path: string): string {
-  return readFileSync(
-    fileURLToPath(new URL(`../../../envoy/internal/dispatch/specgraph/${path}`, import.meta.url)),
-    "utf8"
-  );
+  return readFileSync(specgraphPath(path), "utf8");
 }
 
 interface SchemaCase {
@@ -61,6 +66,37 @@ describe("the YAML of the spec files", () => {
         const data: unknown = document.toJS();
         expect(data, `${name}.yaml, document ${i + 1}`).toEqual(want[i]);
         expect(validate(data), `${name}.yaml, document ${i + 1}`).toBe(true);
+      });
+    });
+  }
+});
+
+interface DecodedDocument {
+  data: unknown;
+  schema: boolean;
+}
+
+describe("each YAML fixture of specgraph", () => {
+  const decoded = JSON.parse(specgraph("testdata/fixtures.decoded.json")) as Record<string, DecodedDocument[]>;
+  const fixtures = readdirSync(specgraphPath("testdata"), { recursive: true, encoding: "utf8" })
+    .filter((name) => name.endsWith(".yaml"))
+    .sort();
+  test("fixtures.decoded.json names each YAML fixture", () => {
+    expect(fixtures.length).toBeGreaterThan(0);
+    expect(fixtures).toEqual(Object.keys(decoded).sort());
+  });
+  for (const name of fixtures) {
+    test(`${name} reads as yaml.v3 reads it, and the schema gives the verdict of Go`, () => {
+      const documents = parseAllDocuments(specgraph(`testdata/${name}`));
+      if ("empty" in documents) throw new Error(`${name} holds no document`);
+      const want = decoded[name] ?? [];
+      expect(documents.length, name).toBe(want.length);
+      documents.forEach((document, i) => {
+        expect(document.errors, `${name}, document ${i + 1}`).toEqual([]);
+        expect(document.warnings, `${name}, document ${i + 1}`).toEqual([]);
+        const data: unknown = document.toJS();
+        expect(data, `${name}, document ${i + 1}`).toEqual(want[i]?.data);
+        expect(validate(data), `${name}, document ${i + 1}`).toBe(want[i]?.schema);
       });
     });
   }

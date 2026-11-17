@@ -37,10 +37,13 @@ The command takes every rule from the package `packages/envoy/internal/dispatch/
 
   - `not-printed`: the file is not exactly the documents that `specgraph`'s `Print` writes for its nodes, at the first line that differs.
     A key in another order, a comment, an anchor or an alias, a tag, a flow list, a block scalar, another indentation, other quotes, a space at the end of a line, a carriage return and a byte order mark each give this rule, so one node has one form in git.
+    The line shows the text of that line in the file and the text that print writes there, each in Go's quotes, so an invisible change shows, and it names what differs, for example `not-printed: line 4 is "kind: behavior \n", and print writes "kind: behavior\n" there (a space at the end of the line); spec-check print writes each node in that form`.
+    The command counts lines as the YAML library does, so a carriage return, U+0085, U+2028 and U+2029 each end a line too.
 
   - `bad-time-limit`: a time limit that is not a positive Go duration.
 
   `spec-check print` writes the documents in the form that the command reads back.
+  The printer double-quotes each text that a YAML 1.1 or YAML 1.2 library reads, as a plain value, as another type than a string, such as `=`, `<<`, `yes`, `0x_` or `2026-11-16 10:00:00 Z`, so each standard library reads the same strings.
 
 - **Every rule of `specgraph.Validate`.**
   These rules include ids (one id on two nodes, or an id that has a word that states a position), a parent or a relation to a node that the files do not hold, a loop, a leaf statement that no check serves, a statement that other statements serve and that no check serves, a text with no letter or digit, a claim or a component purpose of more than one sentence, and a name of code in a text, a term's name included.
@@ -114,7 +117,8 @@ Each line that the command prints about the directory or an entry of it names th
 ## Warnings
 
 An entry of the directory that is not a spec file gives a warning line, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.
-Examples are `notes.txt`, a subdirectory and a symbolic link.
+For a file, such as `notes.txt` or a spec file of the old `*.md` form, the line also says what a spec file is: `spec-check: warning: <path>: not a spec file (file): a spec file is a *.yaml file, which spec-check print writes; the importer passes over it`.
+Other examples are a subdirectory and a symbolic link.
 A warning fails nothing.
 
 ## What the runner reads from the check's lines

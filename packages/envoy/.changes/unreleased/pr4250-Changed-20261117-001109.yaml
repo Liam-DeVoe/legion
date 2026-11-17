@@ -1,7 +1,8 @@
 kind: Changed
 body: |-
-    The spec files of .dispatch/spec are YAML files, one document for each node, that a JSON Schema in the repository checks.
-    spec-check print takes --dir, writes each node's document into the files at its place, and writes nothing when spec-check tree would refuse the result.
+    The spec files of .dispatch/spec are YAML files, one document for each node, that a JSON Schema in the repository checks. The printer double-quotes each text that a YAML 1.1 or YAML 1.2 reader would read as another type, such as `=`, `<<` or a date with a time, so each standard library reads the same strings.
+    spec-check print takes --dir and writes each node's document into the files at its place. It writes nothing when spec-check tree would refuse the result, when the result would lose or change a node that the run does not name, or when a file of the directory is one whose documents the reader cannot say for certain. It changes all of its files or none, and a second run on the same directory waits for the first.
+    A not-printed refusal of spec-check tree shows the line of the file and the line that print writes, and names what differs, such as a carriage return or a space at the end of a line. A warning for a file that is not a spec file says that a spec file is a *.yaml file, which spec-check print writes.
 time: 2026-11-17T00:11:09.111715342Z
 custom:
     Issue: pr4250
