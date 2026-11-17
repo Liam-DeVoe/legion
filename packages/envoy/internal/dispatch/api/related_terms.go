@@ -56,7 +56,8 @@ const searchTermStatsLease = "search-term-stats"
 // The check's two queries (relatedKeywordQuery, relatedMeaningQuery) open with it.
 const relatedQOpener = `
 with q as (select $1::tsquery as tsq, $4::text as term, '{}'::text[] as own_keys,
-                  ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since),
+                  ''::text as status_filter, ''::text as author_filter, null::timestamptz as updated_since,
+                  null::timestamptz as updated_to),
 `
 
 // searchTermItemsSQL selects the search vector of every searchable item of the project

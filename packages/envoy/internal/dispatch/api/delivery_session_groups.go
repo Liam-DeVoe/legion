@@ -33,6 +33,12 @@ func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.createDeliverySessionGroupFrom(w, r, input)
+}
+
+// createDeliverySessionGroupFrom creates the group input names, the write both versions of the
+// create route make once each has read its body.
+func (s *server) createDeliverySessionGroupFrom(w http.ResponseWriter, r *http.Request, input createDeliverySessionGroupInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -84,6 +90,12 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	s.updateDeliverySessionGroupFrom(w, r, input)
+}
+
+// updateDeliverySessionGroupFrom writes the edit input names to the path's group, the write both
+// versions of the edit route make once each has read its body.
+func (s *server) updateDeliverySessionGroupFrom(w http.ResponseWriter, r *http.Request, input updateDeliverySessionGroupInput) {
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
 		return
@@ -132,6 +144,12 @@ func (s *server) deleteDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	if !s.decodeOptionalJSON(w, r, &input) {
 		return
 	}
+	s.deleteDeliverySessionGroupAs(w, r, input)
+}
+
+// deleteDeliverySessionGroupAs deletes the path's group for the actor input names, the delete both
+// versions of the route make once each has read its body.
+func (s *server) deleteDeliverySessionGroupAs(w http.ResponseWriter, r *http.Request, input actorInput) {
 	if _, ok := s.requireActor(w, r, input.Actor); !ok {
 		return
 	}

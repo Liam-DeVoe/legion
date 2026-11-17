@@ -110,18 +110,28 @@ func (s *server) agentLastActivity(ctx context.Context, sessionIDs []string) (ma
 // dropping it: it is still working, still holds its claims, and is still a target a reader may
 // pick (dispatch://INFRA-392).
 func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	rows, ok := s.agentRows(w, r)
+	if !ok {
 		return
+	}
+	WriteJSON(w, http.StatusOK, rows)
+}
+
+// agentRows is the list both versions of the agents route answer (listAgents says how it is
+// read), newest heartbeat first, then by session id, or the refusal it writes and false.
+func (s *server) agentRows(w http.ResponseWriter, r *http.Request) ([]agentResponse, bool) {
+	if !s.requireAuthenticated(w, r) {
+		return nil, false
 	}
 	if s.deps.Envoy == nil {
 		writeError(w, r, apicode.EnvoyUnavailable, "ENVOY_URL is not configured")
-		return
+		return nil, false
 	}
 
 	roster, err := s.readRouteRoster(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return nil, false
 	}
 	if !roster.answered && s.lifetime.Err() != nil {
 		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
@@ -137,15 +147,14 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		// forbids (listIssues refuses a judged filter the same way).
 		if roster.reason == model.RouteReasonRefilling {
 			writeEnvoyRefilling(w, r, roster.retryAfter)
-			return
+			return nil, false
 		}
 		s.writeEnvoyError(w, r, roster.err)
-		return
+		return nil, false
 	}
 	if len(roster.sessions) == 0 {
 		// Nothing to look up: both aggregates would bind an empty id list and return no rows.
-		WriteJSON(w, http.StatusOK, []agentResponse{})
-		return
+		return []agentResponse{}, true
 	}
 	// The roster's list is every read's, so the sort orders a copy of it.
 	sessions := slices.Clone(roster.sessions)
@@ -162,12 +171,12 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return nil, false
 	}
 	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, r, err)
-		return
+		return nil, false
 	}
 
 	rows := make([]agentResponse, 0, len(sessions))
@@ -186,5 +195,5 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			LastActivity: lastActivity,
 		})
 	}
-	WriteJSON(w, http.StatusOK, rows)
+	return rows, true
 }

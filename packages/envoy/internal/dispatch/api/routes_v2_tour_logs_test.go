@@ -82,10 +82,14 @@ func logsTourSteps() []tourStep {
 	}
 }
 
-// document makes a project document in a project of its own, answering its id.
+// document makes a project document in a project of its own, answering its id once the document
+// owes no settlement: the settlement writes after the create answers, and a step's write that
+// lands between the two fingerprints of unknown-keys would read as the refused request's.
 func (tour *routeTour) document(t *testing.T) string {
 	t.Helper()
-	return createProjectDocument(t, tour.handler, tour.project(t), "tour-notes.md", "# Notes\n\nA passage the tour reads.").ID
+	id := createProjectDocument(t, tour.handler, tour.project(t), "tour-notes.md", "# Notes\n\nA passage the tour reads.").ID
+	awaitSettled(t, tour.database, id)
+	return id
 }
 
 // issueOfEvents makes an issue whose log holds exactly events events, seq 1 to events: the API's

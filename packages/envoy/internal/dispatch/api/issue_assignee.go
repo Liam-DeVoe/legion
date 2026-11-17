@@ -111,10 +111,20 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `select email from people order by email`)
+	users, err := s.signedInUsers(r.Context())
 	if err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("list people: %w", err))
+		s.writeHandlerError(w, r, err)
 		return
+	}
+	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+}
+
+// signedInUsers is everyone who has signed in, sorted by email, which both versions of the users
+// route answer.
+func (s *server) signedInUsers(ctx context.Context) ([]dispatchUser, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `select email from people order by email`)
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
 	}
 	users, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (dispatchUser, error) {
 		var user dispatchUser
@@ -122,10 +132,9 @@ func (s *server) listUsers(w http.ResponseWriter, r *http.Request) {
 		return user, err
 	})
 	if err != nil {
-		s.writeHandlerError(w, r, fmt.Errorf("list people: %w", err))
-		return
+		return nil, fmt.Errorf("list people: %w", err)
 	}
-	WriteJSON(w, http.StatusOK, listUsersResponse{Users: users})
+	return users, nil
 }
 
 // whoamiUser is the body GET /api/v1/whoami answers a person at a browser.

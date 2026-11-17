@@ -391,9 +391,11 @@ type server struct {
 	// holding a copy of its own. A server register did not build has none, and
 	// refuseReadOnlyToken wraps no route of one rather than answer an empty message.
 	readOnlyRefusal string
-	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
-	// write, held to the table this server mounts (going_catalogue.go).
+	// going is the action catalogue GET /api/v1/going/catalogue serves, and goingV2 the one GET
+	// /api/v2/going-actions serves: the dispatch tools that write, each held to the rows of its
+	// own version of the table this server mounts (going_catalogue.go).
 	going           GoingCatalogue
+	goingV2         GoingCatalogue
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -755,14 +757,20 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	// row is wrapped, since every row the list does not name answers it (refuseReadOnlyToken).
 	s.readOnlyRefusal = "this request's credential is a read-only token, which may call only the routes Dispatch's read list names (" +
 		strings.Join(readScopeRoutes, ", ") + "): nothing ran"
-	going, err := buildGoingCatalogue(routes)
-	if err != nil {
-		// A catalogue entry naming a row this table does not hold or does not class as a write,
-		// a placeholder no argument of the tool fills, or a relation named in neither edge
-		// family, is refused rather than mounted (going_catalogue.go).
-		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+	for _, version := range []apiVersion{apiV1, apiV2} {
+		going, err := buildGoingCatalogue(routes, version)
+		if err != nil {
+			// A catalogue entry naming a row this table does not hold at its version or does not
+			// class as a write, a placeholder no argument of the tool fills, or a relation named in
+			// neither edge family, is refused rather than mounted (going_catalogue.go).
+			panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
+		}
+		if version == apiV2 {
+			s.goingV2 = going
+		} else {
+			s.going = going
+		}
 	}
-	s.going = going
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than

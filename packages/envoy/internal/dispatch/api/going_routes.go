@@ -93,6 +93,21 @@ type goingCapability struct {
 // stream, where every other failure of a run is reported, rather than from a status of this
 // route's own.
 func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.goingAsker(w, r)
+	if !ok {
+		return
+	}
+	var input createGoingRequestInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, r, err)
+		return
+	}
+	s.createGoingRequestFrom(w, r, actor, input)
+}
+
+// goingAsker is who asks a question of either version of the route, recorded as a row holds an
+// actor, or false once it has written the refusal of a caller that may not ask.
+func (s *server) goingAsker(w http.ResponseWriter, r *http.Request) (model.Actor, bool) {
 	// The caller's own credential names the writer: this route takes no `actor`, so a question
 	// is recorded for whoever asked it - the person at the browser, the session a broker-issued
 	// token proved, or the person a personal token belongs to - and the stream compares the
@@ -100,7 +115,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, r, err)
-		return
+		return model.Actor{}, false
 	}
 	actor := caller.Recorded()
 	// A credential that names nobody asks nothing: see apicode.GoingAskerNamesNobody. Refused here,
@@ -109,13 +124,14 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	if !goingActorNamesSomebody(actor) {
 		writeError(w, r, apicode.GoingAskerNamesNobody,
 			"this credential names nobody, so the run it asked for would be nobody's to read: ask under a credential that names a session, a person or a workload")
-		return
+		return model.Actor{}, false
 	}
-	var input createGoingRequestInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, r, err)
-		return
-	}
+	return actor, true
+}
+
+// createGoingRequestFrom records the question input asks for actor and starts its answer, the
+// write both versions of the route make once each has read its body.
+func (s *server) createGoingRequestFrom(w http.ResponseWriter, r *http.Request, actor model.Actor, input createGoingRequestInput) {
 	words := strings.TrimSpace(input.Words)
 	if words == "" {
 		writeError(w, r, apicode.GoingInput, "words is required: the question to answer")

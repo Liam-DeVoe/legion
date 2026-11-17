@@ -75,14 +75,21 @@ func parseSessionAnswersSince(query url.Values, now time.Time) (time.Time, error
 	if err != nil {
 		return time.Time{}, errorf(apicode.InvalidQuery, "since must be an RFC3339 timestamp")
 	}
-	since = since.UTC()
-	if since.Before(now.Add(-sessionAnswersOldest)) {
-		return time.Time{}, errorf(apicode.InvalidQuery, "since must be no more than 7 days ago")
+	return sessionAnswersStart("since", since, now)
+}
+
+// sessionAnswersStart holds a window's start to the bounds both versions of the route read: no
+// older than sessionAnswersOldest and not after now. name is the parameter that named it, since
+// /api/v1 and /api/v2 call it since and from.
+func sessionAnswersStart(name string, start, now time.Time) (time.Time, error) {
+	start = start.UTC()
+	if start.Before(now.Add(-sessionAnswersOldest)) {
+		return time.Time{}, errorf(apicode.InvalidQuery, "%s must be no more than 7 days ago", name)
 	}
-	if since.After(now) {
-		return time.Time{}, errorf(apicode.InvalidQuery, "since must not be in the future")
+	if start.After(now) {
+		return time.Time{}, errorf(apicode.InvalidQuery, "%s must not be in the future", name)
 	}
-	return since, nil
+	return start, nil
 }
 
 // sessionAnswersWithin is items up to and including the one whose words take the running sum

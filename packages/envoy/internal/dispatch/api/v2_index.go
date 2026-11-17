@@ -20,6 +20,7 @@ func (s *server) v2IndexRows() []routeRow {
 		List:        listBounds{Whole: true},
 		Query:       routeIndexV2Query{},
 		Shape:       routeShape{Status: http.StatusOK, Response: routeIndexV2{}},
+		Refusals:    listRefusals(),
 	}}
 }
 

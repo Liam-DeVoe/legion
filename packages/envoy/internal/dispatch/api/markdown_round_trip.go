@@ -104,9 +104,16 @@ func (s *server) postMarkdownRoundTrip(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, r, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, markdownRoundTrip(input))
+}
+
+// markdownRoundTrip is the answer both versions of the route give for the text input holds:
+// what the store would hold for it, or the text itself where it is longer than a document may
+// hold.
+func markdownRoundTrip(input markdownRoundTripInput) markdownRoundTripResponse {
 	stored := input.Markdown
 	if len(stored) <= maxDocumentMarkdownBytes {
 		stored = storedMarkdown(stored)
 	}
-	WriteJSON(w, http.StatusOK, markdownRoundTripResponse{Markdown: stored})
+	return markdownRoundTripResponse{Markdown: stored}
 }

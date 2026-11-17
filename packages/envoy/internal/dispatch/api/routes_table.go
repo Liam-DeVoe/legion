@@ -662,7 +662,7 @@ func (s *server) routes() []apiRoute {
 		route.Successor = row.Successor
 		routes = append(routes, route)
 	}
-	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows(), s.v2MeRows(), s.v2CredentialRows()) {
+	for _, row := range slices.Concat(s.v2IndexRows(), s.v2Infra979Rows(), s.v2LogRows(), s.v2AskRows(), s.v2DocumentRows(), s.v2ThreadRows(), s.v2IssueRows(), s.v2RoleHolderRows(), s.v2ProjectRows(), s.v2MeRows(), s.v2CredentialRows(), s.v2MiscRows()) {
 		routes = append(routes, mountRow(row)...)
 	}
 	if s.deps.TestHooksEnabled {
