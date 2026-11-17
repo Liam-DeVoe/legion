@@ -67,15 +67,37 @@ describe("wordBuiltFixtureSecrets", () => {
     ["a quoted token key", `const config = { "${"token"}": "profile-file-token" };`],
     ["a camel-case secret key", `Response.json({ client${"Secret"}: "device-client-secret" })`],
     ["a token file Bun writes", 'await Bun.write(tokenFile, "projected-token-value");'],
+    [
+      "a token file whose path a call joins",
+      'writeFileSync(path.join(dir, "LEGION_BOOT_TOKEN"), "launch-boot-token");',
+    ],
+    ["a password key", `const login = { pass${"word"}: "operator-password" };`],
+    ["a capability key", `const held = { capa${"bility"}: "controller-capability" };`],
+    ["an API key", `const config = { api${"Key"}: "stand-in-api-key" };`],
   ])("finds %s", (_, source) => {
     expect(wordBuiltFixtureSecrets(packageWith(source))).toHaveLength(1);
   });
 
-  test("reads the helpers under a tests directory", () => {
+  test.each([
+    ["tests", "stand-in.ts"],
+    ["e2e", "rig.ts"],
+    ["scripts", "rig.mts"],
+    ["test", "stand-in.tsx"],
+    ["tests", "stand-in.js"],
+  ])("reads the helpers under %s/%s", (directory, file) => {
     const root = makeDirectory();
-    mkdirSync(path.join(root, "tests"));
-    writeFileSync(path.join(root, "tests", "stand-in.ts"), 'bearerCredential("listener-token")');
-    expect(wordBuiltFixtureSecrets(root)).toEqual(['tests/stand-in.ts:1: "listener-token"']);
+    mkdirSync(path.join(root, directory));
+    writeFileSync(path.join(root, directory, file), 'bearerCredential("listener-token")');
+    expect(wordBuiltFixtureSecrets(root)).toEqual([`${directory}/${file}:1: "listener-token"`]);
+  });
+
+  test("classifies a file by its path under the root, not by the root's own", () => {
+    // A package whose checkout sits under a directory named `tests` reads its tests alone.
+    const root = path.join(makeDirectory(), "tests", "package");
+    mkdirSync(path.join(root, "src"), { recursive: true });
+    writeFileSync(path.join(root, "src", "client.ts"), 'bearerCredential("production-token")');
+    writeFileSync(path.join(root, "src", "client.test.ts"), 'const ok = "short";');
+    expect(wordBuiltFixtureSecrets(root)).toEqual([]);
   });
 
   // The forms the scanner's own comment says it cannot see. A row here that starts finding one
@@ -121,6 +143,18 @@ describe("wordBuiltFixtureSecrets", () => {
     [
       "a value exempted on the line above",
       `// fixture-secret-next-line: a field's name, never held\nconst NAMES = { access${"Token"}: "field_name_here" };`,
+    ],
+    [
+      "a ternary's branch, which is no key",
+      `const shown = ok ? access${"Token"} : "no token in hand";`,
+    ],
+    [
+      "a list's cursor",
+      `const page = { page${"Token"}: "next-page-cursor", next${"Token"}: "the-next-cursor" };`,
+    ],
+    [
+      "a claim token in snake case",
+      `const claim = { claim_${"token"}: "legion-implementer-claim" };`,
     ],
   ])("leaves %s", (_, source) => {
     expect(wordBuiltFixtureSecrets(packageWith(source))).toEqual([]);

@@ -296,7 +296,7 @@ async function setUp(): Promise<{
       HOME: home as string,
       CLAUDE_CONFIG_DIR: config as string,
       ANTHROPIC_BASE_URL: standin.base,
-      ANTHROPIC_API_KEY: "sk-ant-placeholder",
+      ANTHROPIC_API_KEY: `sk-ant-${fixtureSecret("api")}`,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       DISPATCH_URL: standin.base,
       DISPATCH_TOKEN,

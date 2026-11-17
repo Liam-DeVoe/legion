@@ -42,15 +42,23 @@ const SHORTEST_HELD = 10;
 const EXEMPT = /\/\/ fixture-secret: \S/;
 const EXEMPT_NEXT = /^\s*\/\/ fixture-secret-next-line: \S/;
 
-/** An upper-case name that names a secret, as an environment variable or a constant does. A claim
- *  token names a role, not a credential, and is never held. */
-const SECRET_KEY = /^(?![A-Z_]*CLAIM_TOKEN$)[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CAPABILITY)$/;
-/** A camel-case name that names a secret. A claim token names a role, not a credential. */
+/** A name that ends like a secret's but names no credential, whatever its case: a claim token
+ *  names a role, and a page or continuation token is a list's cursor. None is ever held. */
+const NO_CREDENTIAL = /(?:^|_)claim_?token$|^(?:page|next|continuation)_?token$/i;
+/** An upper-case name that names a secret, as an environment variable or a constant does. */
+const SECRET_KEY = /^[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|CAPABILITY|API_KEY)$/;
+/** A camel-case name that names a secret. */
 const SECRET_NAME =
-  /^(?!claimToken$)(?:(?:token|secret|password|capability)$|.*(?:Token|Secret|Password|Capability)$)/;
+  /^(?:(?:token|secret|password|capability|apiKey)$|.*(?:Token|Secret|Password|Capability|ApiKey)$)/;
+/** A key, in any case, that names a secret (`access_token`, `clientSecret`, `"token"`). */
+const SECRET_FIELD = /(?:secret|token|password|capability|api_?key)$/i;
 
 /** A quoted or template literal, captured whole. */
 const LITERAL = String.raw`("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\`(?:[^\`\\]|\\.)*\`)`;
+
+/** A call's first argument up to its own comma: commas inside one level of parentheses, such as
+ *  `path.join(dir, "LEGION_BOOT_TOKEN")`'s, are its own. */
+const FIRST_ARGUMENT = String.raw`((?:[^,()]|\([^()]*\))*)`;
 
 /** The places a test hands the clients a secret: each pattern, and the test its first group (a
  *  name) must pass, where it has one. Its last group is the literal. */
@@ -63,11 +71,8 @@ const SINKS: readonly (readonly [RegExp, RegExp | undefined])[] = [
   // A token or secret file, written with any mode, by `writeFile` or `Bun.write`: the path names
   // it (`tokenFile`, `path.join(dir, "LEGION_BOOT_TOKEN")`, `secretFile`).
   [
-    new RegExp(
-      String.raw`(?:writeFile(?:Sync)?|Bun\.write)\(([^,]*(?:[Tt]oken|[Ss]ecret|[Cc]apability|TOKEN|SECRET)[^,]*),\s*${LITERAL}`,
-      "g"
-    ),
-    /./,
+    new RegExp(String.raw`(?:writeFile(?:Sync)?|Bun\.write)\(${FIRST_ARGUMENT},\s*${LITERAL}`, "g"),
+    /[Tt]oken|[Ss]ecret|[Cc]apability|[Pp]assword|TOKEN|SECRET|CAPABILITY|PASSWORD/,
   ],
   // An environment variable, an assignment or a constant whose name is upper case, written as a
   // key, a name or a bracketed name (`process.env["DISPATCH_TOKEN"] = …`).
@@ -84,14 +89,12 @@ const SINKS: readonly (readonly [RegExp, RegExp | undefined])[] = [
   [new RegExp(String.raw`bearerCredential\(\s*${LITERAL}`, "g"), undefined],
   // A daemon's registration secret or a boot token, as a stand-in answers or sends them, a
   // config's token (an `envoy.json`'s `token`, or a `!` command whose output is the token), and a
-  // stand-in's answer (`access_token`, `clientSecret`), each as a key, quoted or not. A claim
-  // token names a role, not a credential.
+  // stand-in's answer (`access_token`, `clientSecret`), each as a key, quoted or not, where a key
+  // stands: at the start of a line or after `{` or `,`, so a ternary's `ok ? accessToken : "…"`
+  // is no key.
   [
-    new RegExp(
-      String.raw`\b([A-Za-z0-9_]*(?:secret|Secret|token|Token))["']?\s*:\s*${LITERAL}`,
-      "g"
-    ),
-    /^(?!claimToken$)/,
+    new RegExp(String.raw`(?:^|[{,])\s*["']?([A-Za-z_][A-Za-z0-9_]*)["']?\s*:\s*${LITERAL}`, "g"),
+    SECRET_FIELD,
   ],
 ];
 
@@ -127,7 +130,8 @@ function commandOutput(command: string): string[] {
 function mayBeHeld(literal: string): boolean {
   const body = literal.slice(1, -1);
   if (body.startsWith("sha256:")) return false;
-  if (body.startsWith("!")) {
+  // A `!` command, and a script written for a command to run, are held as what they print.
+  if (body.startsWith("!") || body.startsWith("#!")) {
     return commandOutput(body).some(
       (output) => !output.startsWith("${") && output.length >= SHORTEST_HELD
     );
@@ -146,21 +150,29 @@ function mayBeHeld(literal: string): boolean {
   );
 }
 
-/** Every `.ts` file under `dir` that holds tests or their fixtures: a `.test.ts` file, or any file
- *  under a `test`, `tests`, `__tests__` or `scripts` directory, where the stand-ins and rigs live.
- *  It skips `node_modules`, `dist` and dot directories. */
-function testSources(dir: string): string[] {
+/** A source file the scanner reads: TypeScript or JavaScript, as a module of either kind. */
+const SOURCE = /\.[cm]?[jt]sx?$/;
+/** A test file, by its name. */
+const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
+/** A directory of stand-ins and rigs, by its own name under the package's root. */
+const RIG_DIRECTORY = /^(?:tests?|__tests__|scripts|e2e)$/;
+
+/** Every source file under `root` that holds tests or their fixtures: a test file, or any source
+ *  file under a `test`, `tests`, `__tests__`, `scripts` or `e2e` directory, where the stand-ins
+ *  and rigs live, classified by its path under `root`, so a root under such a directory reads no
+ *  production file. It skips `node_modules`, `dist` and dot directories. */
+function testSources(root: string, dir: string = root): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
     if (entry === "node_modules" || entry === "dist" || entry.startsWith(".")) continue;
     const at = path.join(dir, entry);
-    if (statSync(at).isDirectory()) out.push(...testSources(at));
-    else if (
-      /\.test\.ts$/.test(entry) ||
-      /[\\/](?:tests?|__tests__|scripts)[\\/].*\.ts$/.test(at)
-    ) {
-      out.push(at);
+    if (statSync(at).isDirectory()) {
+      out.push(...testSources(root, at));
+      continue;
     }
+    if (!SOURCE.test(entry)) continue;
+    const under = path.relative(root, path.dirname(at)).split(path.sep);
+    if (TEST_FILE.test(entry) || under.some((part) => RIG_DIRECTORY.test(part))) out.push(at);
   }
   return out;
 }
@@ -172,13 +184,13 @@ function testSources(dir: string): string[] {
  * in a `// fixture-secret: <reason>` comment on it. An empty list is the pass; a root that holds no
  * test source is an error, since a check that read nothing has not passed.
  *
- * It reads `.ts` sources one line at a time, at the sinks above, so five forms pass it unseen,
- * and its own rows hold each one unseen, so this list cannot drift from the code: a call whose
- * literal is on a line of its own (`bearerCredential(` on the line above); a secret handed through
- * a variable whose name says nothing of a secret (`const value = "…"`, then `token: value`); a
- * header written whole (`Authorization: "Bearer …"`); a file written to a path whose text names
- * no secret (`writeFileSync(file, "…")`); and a committed vector, which is no `.ts` file
- * (`testdata/*.json`). Such a fixture is the reviewer's to see.
+ * It reads source files one line at a time, at the sinks above, so a fixture can pass it unseen.
+ * At least these forms do, and its own rows hold each one unseen, so this list cannot shrink
+ * without the code: a call whose literal is on a line of its own (`bearerCredential(` on the line
+ * above); a secret handed through a variable whose name says nothing of a secret (`const value =
+ * "…"`, then `token: value`); a header written whole (`Authorization: "Bearer …"`); a file written
+ * to a path whose text names no secret (`writeFileSync(file, "…")`); and a committed vector, which
+ * is no source file (`testdata/*.json`). Such a fixture is the reviewer's to see.
  */
 export function wordBuiltFixtureSecrets(root: string): string[] {
   const files = testSources(root);
@@ -194,7 +206,8 @@ export function wordBuiltFixtureSecrets(root: string): string[] {
       for (const [sink, names] of SINKS) {
         for (const match of line.matchAll(sink)) {
           const literal = match[match.length - 1] ?? "";
-          if (names !== undefined && !names.test(match[1] ?? "")) continue;
+          const name = match[1] ?? "";
+          if (names !== undefined && (!names.test(name) || NO_CREDENTIAL.test(name))) continue;
           if (mayBeHeld(literal)) found.add(`${path.relative(root, file)}:${at + 1}: ${literal}`);
         }
       }

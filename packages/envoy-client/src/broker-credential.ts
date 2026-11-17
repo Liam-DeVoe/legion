@@ -266,19 +266,43 @@ export interface TradedToken {
 }
 
 /**
+ * `promise`, or `signal`'s reason the moment it ends: a caller's wait for the one client
+ * {@link clientFor} makes for a session, which reads the identity's source and makes its key.
+ */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<T>((resolve, reject) => {
+    const stop = () => reject(signal.reason);
+    signal.addEventListener("abort", stop, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", stop);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", stop);
+        reject(error);
+      }
+    );
+  });
+}
+
+/**
  * The token this process holds, or trades now, for a caller of `env` acting as the session
  * `own`, and the key the broker bound it to, out of the one client {@link clientFor} keeps for
- * that session. A caller whose `signal` ends stops waiting for a trade still waiting out a pod's
- * missing registration, which goes on (`BrokerTokenClient.token`). A person's sign-in refused for
- * good is remembered against that sign-in (`Held.refused`), so later calls fail with the same
- * words.
+ * that session. A caller whose `signal` ends stops waiting, for the client's making as for its
+ * trade; a trade still waiting out a pod's missing registration goes on, and the token client
+ * tells the caller so (`BrokerTokenClient.token`, `RegistrationPendingError`). A person's sign-in
+ * refused for good is remembered against that sign-in (`Held.refused`), so later calls fail with
+ * the same words.
  */
 async function tradedToken(
   env: BrokerEnvironment,
   own: string,
   signal?: AbortSignal
 ): Promise<TradedToken> {
-  const { entry, made } = await clientFor(env, own);
+  const { entry, made } = await untilAborted(clientFor(env, own), signal);
   const { client } = made;
   if (client === undefined) {
     throw new Error(

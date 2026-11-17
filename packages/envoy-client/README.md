@@ -764,14 +764,28 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
-the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
-meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
-deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
-`RegistrationPendingError`, which names the session and says the trade is being retried; the
-next call takes the token once the registration lands. The client logs the wait through
-`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
-token is in hand goes on with that token. Every other refusal fails the call as before.
+in `@legion/broker-client/token-client`).
+
+The client trades through one retry loop per session (`BrokerTokenClient.token`). Every caller
+waits on that loop within its own deadline, and no caller cuts its wait short, so the broker sees
+one trade per slot of the loop's schedule however many callers ask. This is gRPC's connection
+backoff with wait-for-ready callers (grpc/grpc, `doc/connection-backoff.md`): capped exponential
+backoff with jitter, each wait between half its length and all of it, around a per-trade timeout
+of 30 s. What a trade comes to decides the next one:
+
+| The trade | The loop |
+|---|---|
+| a token | answers every caller, and both schedules start over |
+| a pod session not registered yet | trades again 2 s later, doubling to 30 s, so a registration that lands is in hand within 30 s |
+| no answer within 30 s, no connection, a 5xx, the broker's 429 or a DPoP refusal, an answer that is not the grant's, an identity source that could not be read | trades again 15 s later, doubling to 5 minutes, the Go client's schedule |
+| a refusal no trade cures | ends; a call before the next slot is told the same refusal with no trade |
+
+The loop logs a line at each wait through `console.warn`, naming the session and when it trades
+again. Each Dispatch and Envoy call hands the credential its own deadline
+(`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session, or `TradeRetryingError`, which says what the
+last trade came to; both say the trade is being retried. Once a renewal has failed, a call made
+while the token in hand is live goes on with that token.
 
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
 no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is

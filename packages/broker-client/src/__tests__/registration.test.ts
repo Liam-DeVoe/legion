@@ -4,9 +4,10 @@
 // session name does: its daemon registers at the claim, a session's watch at the pod's creation,
 // and either registrar can be down for minutes. The broker refuses that trade `invalid_grant` with
 // an `error_description` beginning `pod_session_not_registered:`, and that one refusal is never
-// final: `token()` trades again, 15 s doubling to 5 minutes, for as long as its caller waits, and
-// says so once, naming the session, and again every 30 minutes while it lasts. Every other refusal
-// stays as final as it was. The Go half is `registration_test.go` in
+// final: the client's retry loop trades again, 2 s doubling to 30 s, for as long as the session
+// runs, says so at each wait, naming the session, and no caller arriving cuts a wait short.
+// Every other refusal stays as final as it was. The loop's whole table of answers is
+// `retry-loop.test.ts`; the Go half is `registration_test.go` in
 // `packages/envoy/internal/brokerclient`.
 
 import { expect, test } from "bun:test";
@@ -75,6 +76,8 @@ async function waitForRegistration(refusals: number): Promise<Waited> {
     subject: POD,
     session: SESSION,
     now: () => clock.now,
+    // Each wait its whole length, the jitter's longest.
+    random: () => 1,
     sleep: async (ms: number) => {
       waits.push(ms);
       clock.now += ms;
@@ -97,7 +100,7 @@ async function waitForRegistration(refusals: number): Promise<Waited> {
 }
 
 test("a pod trade waits for its registration however long it takes", async () => {
-  const refusals = 7;
+  const refusals = 14;
   const { trades, waits, logged, token, refusal } = await waitForRegistration(refusals);
   expect(refusal, `the pod's session ${SESSION} was refused for good: ${refusal}`).toBeUndefined();
   expect(token?.accessToken).toBe("token-once-registered");
@@ -108,37 +111,36 @@ test("a pod trade waits for its registration however long it takes", async () =>
     expect(trade.form.get("session")).toBe(SESSION);
     expect(trade.form.has("projects")).toBe(false);
   }
-  // 15 s doubling to a cap of 5 minutes, across more than the 5 minutes a client that gave up
-  // then would have lost.
-  expect(waits).toEqual([15_000, 30_000, 60_000, 120_000, 240_000, 300_000, 300_000]);
+  // 2 s doubling to a cap of 30 s, across more than the 5 minutes a client that gave up then
+  // would have lost.
+  expect(waits).toEqual([2_000, 4_000, 8_000, 16_000, ...Array<number>(10).fill(30_000)]);
   expect(waits.reduce((sum, wait) => sum + wait, 0)).toBeGreaterThan(5 * 60_000);
-  // Said once, naming the session, within the half hour.
-  expect(logged.length).toBe(1);
-  expect(logged[0]?.line).toContain(SESSION);
+  // Said at each wait, naming the session.
+  expect(logged.length).toBe(refusals);
+  for (const { line } of logged) expect(line).toContain(SESSION);
 });
 
-test("an unregistered session is logged once, and again every 30 minutes while it lasts", async () => {
-  // Seventeen refusals across 3765 s: logged at the first, at the first 30 minutes after that,
-  // and at the first 30 minutes after that again.
-  const { token, logged } = await waitForRegistration(17);
+test("an unregistered session is logged at each wait, naming the session and the next trade", async () => {
+  const { token, logged, waits } = await waitForRegistration(5);
   expect(token?.accessToken).toBe("token-once-registered");
-  expect(logged.length).toBe(3);
-  for (const [i, { line, at }] of logged.entries()) {
-    expect(line).toContain(SESSION);
-    if (i > 0) expect(at - (logged[i - 1]?.at as number)).toBeGreaterThanOrEqual(30 * 60_000);
+  expect(logged.length).toBe(5);
+  for (const [i, { line }] of logged.entries()) {
+    expect(line).toContain(`no registration for this pod's session ${SESSION} yet`);
+    expect(line).toContain(`trading again in ${Math.ceil((waits[i] as number) / 1000)} s`);
   }
 });
 
 /**
  * A pod's client against a broker that answers the session once `registered()` says so, whose
- * waits pass only when the client cuts them short: a call arriving, or `close()`. Nothing passes
- * on a timer, so what a test sees is what the client did, at the test's own pace.
+ * waits pass only when the test advances them, or at `close()`. Nothing passes on a timer and no
+ * call cuts a wait short, so what a test sees is what the client did, at the test's own pace.
  */
 async function heldClient(registered: () => boolean) {
   const broker = stubBroker(() =>
     registered() ? { body: accepted("token-once-registered", 600) } : unregistered()
   );
   const waits: number[] = [];
+  const held: (() => void)[] = [];
   const client = new BrokerTokenClient({
     brokerUrl: broker.url,
     key: await newDpopKey(),
@@ -147,13 +149,17 @@ async function heldClient(registered: () => boolean) {
     sleep: (ms: number, signal?: AbortSignal) => {
       waits.push(ms);
       const { promise, resolve } = Promise.withResolvers<void>();
+      held.push(resolve);
       if (signal?.aborted) resolve();
       signal?.addEventListener("abort", () => resolve(), { once: true });
       return promise;
     },
     log: () => {},
   });
-  return { broker, client, waits };
+  /** Lets the client's oldest held wait pass, as its slot coming would: the loop trades at once
+   *  after it. */
+  const advance = (): void => held.shift()?.();
+  return { broker, client, waits, advance };
 }
 
 /** Turns of the event loop until `ready()` holds: no timer, so the test runs at the client's pace. */
@@ -176,7 +182,7 @@ async function outcome(call: Promise<BrokerToken>): Promise<unknown> {
 
 test("a call past its deadline is told its session's registration is pending, and the next call takes the token once it lands", async () => {
   let registered = false;
-  const { broker, client, waits } = await heldClient(() => registered);
+  const { broker, client, waits, advance } = await heldClient(() => registered);
   try {
     const deadline = new AbortController();
     const call = client.token(deadline.signal);
@@ -191,8 +197,12 @@ test("a call past its deadline is told its session's registration is pending, an
     // The trade goes on: the client is still waiting, and asked nothing more.
     expect(broker.trades.length).toBe(1);
     registered = true;
-    const next = await client.token(new AbortController().signal);
-    expect(next.accessToken).toBe("token-once-registered");
+    // The next call waits for the schedule's slot, not for itself: it trades nothing on arriving.
+    const next = client.token(new AbortController().signal);
+    expect(await outcome(next)).toBe("pending");
+    expect(broker.trades.length).toBe(1);
+    advance();
+    expect((await next).accessToken).toBe("token-once-registered");
     expect(broker.trades.length).toBe(2);
   } finally {
     client.close();
@@ -200,24 +210,28 @@ test("a call past its deadline is told its session's registration is pending, an
   }
 });
 
-test("a call that joins a wait under way stops it with its own signal, and a call with no deadline does not return", async () => {
+test("a call that joins a wait under way stops with its own signal and cuts no wait short, and a call with no deadline does not return", async () => {
   let registered = false;
-  const { broker, client, waits } = await heldClient(() => registered);
+  const { broker, client, waits, advance } = await heldClient(() => registered);
   try {
     const waiting = client.token();
     await until(() => waits.length === 1);
     const deadline = new AbortController();
     const joined = client.token(deadline.signal);
-    // Joining cuts the wait short: the client asks again at once, is refused, and waits again.
-    await until(() => waits.length === 2);
+    // Joining cuts no wait short: the client asks nothing more until its slot.
+    expect(await outcome(joined)).toBe("pending");
+    expect(waits.length).toBe(1);
+    expect(broker.trades.length).toBe(1);
     deadline.abort();
     expect(await outcome(joined)).toBeInstanceOf(RegistrationPendingError);
     // The control: the call that passed no deadline is still waiting.
     expect(await outcome(waiting)).toBe("pending");
     registered = true;
-    expect((await client.token()).accessToken).toBe("token-once-registered");
+    const again = client.token();
+    advance();
+    expect((await again).accessToken).toBe("token-once-registered");
     expect((await waiting).accessToken).toBe("token-once-registered");
-    expect(broker.trades.length).toBe(3);
+    expect(broker.trades.length).toBe(2);
   } finally {
     client.close();
     broker.stop();
@@ -251,9 +265,7 @@ test("calls past their deadline are not kept by the trade they stopped waiting f
     // live frame's registers conservatively, so one left running would hold its last answer.
     const stopCall = async (call: number): Promise<void> => {
       const deadline = new AbortController();
-      const before = waits.length;
       const joined = client.token(deadline.signal);
-      await until(() => waits.length === before + 1);
       deadline.abort();
       const refusal = await joined.catch((error: unknown) => error);
       if (!(refusal instanceof RegistrationPendingError)) {
