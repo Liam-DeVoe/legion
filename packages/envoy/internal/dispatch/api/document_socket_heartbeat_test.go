@@ -282,11 +282,11 @@ func TestALogoutClosesTheDocumentSocketAtItsNextHeartbeat(t *testing.T) {
 
 // A document socket's heartbeat check reads the request pool, for the caller's session, so it
 // takes a place of the pool's share outside admission first (signInStillResolves), and while every
-// place is held the check is skipped and reads nothing: a sign-in that ended meanwhile is not found
-// out, and fewer skips than the heartbeat's ceiling close nothing. The first heartbeat once a place
-// is free checks again, finds the sign-in gone and closes the socket at once. The share is held for
-// a heartbeat and a half, so one or two checks are skipped; three would close the socket at the
-// ceiling (TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird).
+// place is held the check waits for one, reading nothing: a sign-in that ended meanwhile is not
+// found out yet, and the socket stays open. A place given back while the check waits is that
+// check's, which then finds the sign-in gone and closes the socket at once. A check no place comes
+// free for is skipped, and counts toward the heartbeat's ceiling
+// (TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird).
 func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *testing.T) {
 	const heartbeat = 250 * time.Millisecond
 	rig := newDocumentSocketTokenRig(t, heartbeat)
@@ -298,11 +298,12 @@ func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *te
 	release := holdTheShareOutsideAdmission(t, outside)
 	defer release()
 	checked := rig.checks.asked.Load()
-	skipped := outside.Stats().Refused[admission.HeartbeatCheck]
 	if err := rig.sessions.RevokeSessions(context.Background(), documentSocketPerson); err != nil {
 		t.Fatalf("sign out: %v", err)
 	}
-	time.Sleep(heartbeat + heartbeat/2)
+	pollUntil(t, 2*heartbeat+time.Second, "a heartbeat check waiting for a place", func() bool {
+		return outside.Stats().Queued == 1
+	})
 	select {
 	case <-peer.connection().Ended:
 		t.Fatal("the document socket closed while every place of the share outside admission was held: its heartbeat read the request pool beside them")
@@ -311,18 +312,19 @@ func TestADocumentSocketsHeartbeatWaitsForAPlaceOfTheShareOutsideAdmission(t *te
 	if checks := rig.checks.asked.Load() - checked; checks != 0 {
 		t.Fatalf("the heartbeat checked the caller %d times while every place was held, want none", checks)
 	}
-	if skips := outside.Stats().Refused[admission.HeartbeatCheck] - skipped; skips < 1 {
-		t.Fatalf("%d heartbeat checks skipped in a heartbeat and a half with every place held, want at least 1", skips)
-	}
 
-	checked = rig.checks.asked.Load()
 	release()
 	select {
 	case <-peer.connection().Ended:
 	case <-time.After(2*heartbeat + 2*time.Second):
-		t.Fatal("the document socket stayed open once a place was free and its sign-in had ended")
+		t.Fatal("the document socket stayed open once a place was given to its waiting check and its sign-in had ended")
 	}
-	if checks := rig.checks.asked.Load() - checked; checks != 1 {
-		t.Fatalf("the document socket closed after %d checks once a place was free, want the first", checks)
+	// The waiting check's, unless the heartbeat's bound ended it as it took the place, when the
+	// next heartbeat's check closes the socket instead.
+	if checks := rig.checks.asked.Load() - checked; checks < 1 || checks > 2 {
+		t.Fatalf("the document socket closed after %d checks of its caller once a place was given back, want the waiting check's", checks)
+	}
+	if refused := outside.Stats().Refused[admission.HeartbeatCheck]; refused != (admission.OutsideRefusals{}) {
+		t.Fatalf("heartbeat checks refused a place %+v, want none: the waiting one was given the place given back", refused)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -95,12 +96,16 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 		t.Run(run.name, func(t *testing.T) {
 			scripted := &scriptedCheckIdentity{steps: run.steps}
 			served := directServer(Deps{Identity: scripted, StreamHeartbeat: heartbeat})
-			served.outside = admission.New(admission.DefaultLimits()).Outside()
+			// A wait for a place well inside the check's bound of a heartbeat, as production's
+			// second is inside its fifteen, so a check no place comes free for is skipped.
+			served.outside = admission.New(admission.Limits{OutsideWait: heartbeat / 5}).Outside()
 			var beats atomic.Int32
 			check := func(r *http.Request) error {
 				if slices.Contains(run.heldFull, int(beats.Add(1))) {
 					for range admission.OutsideLimit {
-						served.outside.Take(admission.DPoPDecision)
+						if err := served.outside.Take(context.Background(), admission.DPoPDecision); err != nil {
+							t.Errorf("hold a place outside admission: %v", err)
+						}
 					}
 					defer func() {
 						for range admission.OutsideLimit {
@@ -131,8 +136,8 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 				t.Fatalf("the socket closed with %v, want %v wrapping %v", cause, errCallerNoLongerResolves, run.cause)
 			}
 			stats := served.outside.Stats()
-			if skipped := stats.Refused[admission.HeartbeatCheck]; skipped != uint64(len(run.heldFull)) || stats.InUse != 0 {
-				t.Errorf("%d checks skipped and %d places held, want %d skipped and none held", skipped, stats.InUse, len(run.heldFull))
+			if skipped := stats.Refused[admission.HeartbeatCheck]; skipped != (admission.OutsideRefusals{WaitExceeded: uint64(len(run.heldFull))}) || stats.InUse != 0 {
+				t.Errorf("%+v checks skipped and %d places held, want %d whose wait ran out and none held", skipped, stats.InUse, len(run.heldFull))
 			}
 			if got := HeartbeatTransientFailures() - transientBefore; got < run.transient {
 				t.Errorf("%d transient failures counted, want %d", got, run.transient)
@@ -150,10 +155,12 @@ func TestAHeartbeatOutlivesTwoTransientFailuresAndClosesOnTheThird(t *testing.T)
 
 // A live socket opened by a broker-issued token is checked at every heartbeat by the broker's
 // answer alone, which reads nothing of the request pool and so takes no place of the pool's share
-// outside admission (callerStillResolves). With every connection of the request pool held and
-// every place of that share held, a token the broker stops holding live still closes the socket
-// with 1008 at the first heartbeat that asks the broker again. The verifier's clock is moved past
-// the live answer it remembers, so that heartbeat is the next one.
+// outside admission (callerStillResolves), and waits for none. With every connection of the
+// request pool held and every place of that share held, a token the broker stops holding live
+// still closes the socket with 1008 at the first heartbeat that asks the broker again, within a
+// heartbeat and a half of the revocation, where a check waiting its second for a place and failing
+// for it would close the socket at the third such heartbeat. The verifier's clock is moved past the
+// live answer it remembers, so that heartbeat is the next one.
 func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *testing.T) {
 	const heartbeat = time.Second
 	limiter := admission.New(admission.DefaultLimits())
@@ -178,28 +185,31 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 	rig.broker.Says(token, brokertoken.Introspection{Active: false})
 	ahead.Store(int64(brokertoken.AffirmativeCacheTTL + time.Second))
 	revoked := time.Now()
-	if closed := client.closeError(t, 2*heartbeat+time.Second); closed.Code != gws.ClosePolicyViolation {
+	if closed := client.closeError(t, heartbeat+heartbeat/2); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
 	}
 	t.Logf("the live socket closed %s after its token was revoked (heartbeat %s)", time.Since(revoked).Round(time.Millisecond), heartbeat)
-	if skipped := limiter.Outside().Stats().Refused[admission.HeartbeatCheck]; skipped != 0 {
-		t.Errorf("%d of the broker token's checks were skipped for the share outside admission, want none", skipped)
+	if stats := limiter.Outside().Stats(); stats.MaxQueued != 0 || stats.Refused[admission.HeartbeatCheck] != (admission.OutsideRefusals{}) {
+		t.Errorf("the broker token's checks waited for a place (the longest queue %d) and were refused %+v, want none of either", stats.MaxQueued, stats.Refused[admission.HeartbeatCheck])
 	}
 }
 
-// A burst of DPoP presentations, more at once than the request pool's share outside admission,
-// takes no more of the request pool before admission than that share, 8 of its 48: each decision
-// takes a place before it writes its proof's row (decideBrokerToken), and every presentation past
-// the share is answered at once with admission's own refusal for a full queue - its status, every
-// header and every byte of its body are those admission answers a read it has no room for - and
-// its proof is not spent, so the same request sent again is served. Every connection of the
-// request pool is held while the burst arrives, so a decision that reaches the pool waits there
-// holding its place, and the pool's own count of the acquires waiting on it is the burst's hold on
-// the pool before admission. The share is read from the two numbers it is made of rather than from
-// the limit, so a limit taken out is a burst this test still holds to them.
+// A burst of DPoP presentations, more at once than the request pool's share outside admission and
+// its queue hold, takes no more of the request pool before admission than that share, 8 of its 48:
+// each decision takes a place before it writes its proof's row (decideBrokerToken), the next
+// sixteen wait for one, and every presentation past those is answered at once with admission's own
+// refusal for a full queue - its status, every header and every byte of its body are those
+// admission answers a read it has no room for - and its proof is not spent, so the same request
+// sent again is served. Every connection of the request pool is held while the burst arrives, so a
+// decision that reaches the pool waits there holding its place, and the pool's own count of the
+// acquires waiting on it is the burst's hold on the pool before admission. Once the pool is free,
+// inside the second the waiting presentations wait, every presentation the queue held is served.
+// The share and its queue are read from the numbers they are made of rather than from the limit,
+// so a limit taken out is a burst this test still holds to them.
 func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves(t *testing.T) {
 	share := store.SharedPoolSize - admission.MaxAdmittedUnits
-	burst := 3 * share
+	queue := 2 * share
+	burst := share + queue + share
 	// Room for every decision the share lets through once the pool is free, and a read queue that
 	// waits long enough for the refusal it is compared with to be had.
 	limiter := admission.New(admission.Limits{Read: share, Write: share, ReadWait: time.Minute, WriteWait: time.Minute})
@@ -232,16 +242,20 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 			}
 		}
 		waiting := int(requestPoolStats(t, rig.database.Pool).Acquire.Waiting)
+		queued := limiter.Outside().Stats().Queued
 		peak = max(peak, waiting)
-		if answered+waiting == burst {
+		if answered+waiting+queued == burst {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after 20 s %d of the %d presentations are answered and %d wait on the request pool", answered, burst, waiting)
+			t.Fatalf("after 20 s %d of the %d presentations are answered, %d wait on the request pool and %d for a place", answered, burst, waiting, queued)
 		}
 	}
 	if peak > share {
 		t.Fatalf("the burst of %d presentations had %d acquires of the request pool waiting at once before admission, want at most the %d admission leaves", burst, peak, share)
+	}
+	if refusedAtOnce := answered; refusedAtOnce != burst-share-queue {
+		t.Fatalf("%d of the %d presentations answered while the pool was held, want the %d past the share and its queue of %d", refusedAtOnce, burst, burst-share-queue, queue)
 	}
 	release()
 	for ; answered < burst; answered++ {
@@ -267,11 +281,11 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 			t.Errorf("presentation %d was answered %d %s, want 200 or admission's 429", i, answer.Code, answer.Body.String())
 		}
 	}
-	if len(refused) != burst-share {
-		t.Fatalf("%d of the %d presentations refused, want the %d past the share", len(refused), burst, burst-share)
+	if len(refused) != burst-share-queue {
+		t.Fatalf("%d of the %d presentations refused, want the %d past the share and its queue: every one the queue held is served once the pool frees within its wait", len(refused), burst, burst-share-queue)
 	}
-	if got := limiter.Outside().Stats().Refused[admission.DPoPDecision]; got != uint64(burst-share) {
-		t.Errorf("%d DPoP decisions counted refused, want %d", got, burst-share)
+	if got := limiter.Outside().Stats(); got.Refused[admission.DPoPDecision] != (admission.OutsideRefusals{QueueFull: uint64(burst - share - queue)}) || got.MaxQueued != queue {
+		t.Errorf("DPoP decisions refused %+v with the longest queue %d, want %d for a full queue and a queue of %d", got.Refused[admission.DPoPDecision], got.MaxQueued, burst-share-queue, queue)
 	}
 
 	// A refused presentation decided nothing, so its proof is unspent: sent again, it is served.
@@ -290,8 +304,8 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 // verifier remembers, takes one and is served. The request pool is free throughout: a place held
 // here would be held for the broker's round trip alone. Once the broker answers, the presentations
 // that waited on it reach the share at once, twice as many as it holds, so each is served or
-// refused admission's 429 for a full share, and the share counts every refusal. The verifier's
-// clock stands still, so the remembered answer outlasts however long a loaded runner takes.
+// refused admission's 429, and the share counts every refusal. The verifier's clock stands still,
+// so the remembered answer outlasts however long a loaded runner takes.
 func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T) {
 	burst := 2 * admission.OutsideLimit
 	limiter := admission.New(admission.DefaultLimits())
@@ -331,7 +345,7 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 	pollUntil(t, 10*time.Second, "every presentation waiting on the broker or answered", func() bool {
 		return int(broker.entered.Load())+len(done) == burst
 	})
-	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.Refused != [len(stats.Refused)]uint64{} {
+	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.MaxQueued != 0 || stats.Refused != [len(stats.Refused)]admission.OutsideRefusals{} {
 		t.Fatalf("with %d presentations waiting on the broker, %d places of the share outside admission are held and %v refused, want none held and none refused",
 			broker.entered.Load(), stats.InUse, stats.Refused)
 	}
@@ -362,8 +376,8 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 			t.Errorf("presentation %d, which waited on the broker: status=%d body=%s, want 200 or admission's 429", i, response.Code, response.Body.String())
 		}
 	}
-	if counted := limiter.Outside().Stats().Refused[admission.DPoPDecision]; counted != uint64(refused) {
-		t.Errorf("%d presentations refused 429 once the broker answered, and the share counted %d DPoP decisions refused", refused, counted)
+	if counted := limiter.Outside().Stats().Refused[admission.DPoPDecision]; counted.QueueFull+counted.WaitExceeded != uint64(refused) {
+		t.Errorf("%d presentations refused 429 once the broker answered, and the share counted %+v DPoP decisions refused", refused, counted)
 	}
 }
 
@@ -424,18 +438,259 @@ func admissionsQueueFullRefusal(t *testing.T, rig *brokerTokenRig, limiter *admi
 }
 
 // holdTheShareOutsideAdmission takes every place of outside, the request pool's share admission
-// leaves, waiting out a check in flight that holds one, and answers the release that gives them
-// back.
+// leaves, waiting its turn behind a check in flight that holds one, and answers the release that
+// gives them back.
 func holdTheShareOutsideAdmission(t *testing.T, outside *admission.Outside) func() {
 	t.Helper()
 	for place := range admission.OutsideLimit {
-		pollUntil(t, 5*time.Second, fmt.Sprintf("place %d of the share outside admission", place+1), func() bool {
-			return outside.Take(admission.DPoPDecision)
-		})
+		if err := outside.Take(context.Background(), admission.DPoPDecision); err != nil {
+			t.Fatalf("place %d of the share outside admission: %v", place+1, err)
+		}
 	}
 	return sync.OnceFunc(func() {
 		for range admission.OutsideLimit {
 			outside.Release()
+		}
+	})
+}
+
+// outsideWorkArrival is the header a test's heartbeat check names its arrival in
+// (outsideWorkRig), so the identity it resolves through knows which work it is.
+const outsideWorkArrival = "X-Outside-Work-Arrival"
+
+// outsideWorkRig is a server whose request pool is two connections a test can hold, and the
+// request-pool work outside admission it starts against that server, in arrivals numbered from 0:
+// an even arrival is a document socket's heartbeat check (signInStillResolves, its read of the
+// caller resolving through the request pool), an odd one a document socket's admission reads as
+// docs.Service.ServeHTTP makes them, a place held (admission.Outside.Hold) over a read of the
+// request pool. Each work reports its arrival on took once it holds its place, and where gates
+// is set waits there at its own gate before it reads.
+type outsideWorkRig struct {
+	served   *server
+	database *store.Store
+	limiter  *admission.Limiter
+	took     chan int
+	gates    []chan struct{}
+}
+
+// outsideWorkAnswer is how one work of an outsideWorkRig ended, and when.
+type outsideWorkAnswer struct {
+	err error
+	at  time.Time
+}
+
+// newOutsideWorkRig builds the rig on a server of its own, with gates for gated arrivals.
+func newOutsideWorkRig(t *testing.T, gated int) *outsideWorkRig {
+	t.Helper()
+	rig := &outsideWorkRig{limiter: admission.New(admission.DefaultLimits()), took: make(chan int, 64)}
+	for range gated {
+		rig.gates = append(rig.gates, make(chan struct{}))
+	}
+	_, rig.database, _, rig.served = newRegisteredTestServer(t, testServerOptions{
+		requestPoolSize: 2, acquireBound: 30 * time.Second, admission: rig.limiter, identity: outsideWorkIdentity{rig},
+	})
+	t.Cleanup(func() {
+		for _, gate := range rig.gates {
+			select {
+			case <-gate:
+			default:
+				close(gate)
+			}
+		}
+	})
+	return rig
+}
+
+// tookPlace reports arrival on took and waits at its gate, where it has one.
+func (rig *outsideWorkRig) tookPlace(arrival int) {
+	rig.took <- arrival
+	if arrival < len(rig.gates) {
+		<-rig.gates[arrival]
+	}
+}
+
+// start starts arrival's work and answers how it ended.
+func (rig *outsideWorkRig) start(arrival int) <-chan outsideWorkAnswer {
+	answered := make(chan outsideWorkAnswer, 1)
+	if arrival%2 == 0 {
+		check := httptest.NewRequest(http.MethodGet, "/ws/doc/room", nil)
+		check.Header.Set("X-Dispatch-User", "alice")
+		check.Header.Set(outsideWorkArrival, strconv.Itoa(arrival))
+		go func() {
+			err := rig.served.signInStillResolves(check)
+			answered <- outsideWorkAnswer{err: err, at: time.Now()}
+		}()
+		return answered
+	}
+	go func() {
+		ctx := context.Background()
+		release, err := rig.limiter.Outside().Hold(ctx, admission.SocketAdmission)
+		if err == nil {
+			rig.tookPlace(arrival)
+			var one int
+			err = rig.database.Pool.QueryRow(ctx, "select 1").Scan(&one)
+			release()
+		}
+		answered <- outsideWorkAnswer{err: err, at: time.Now()}
+	}()
+	return answered
+}
+
+// arrive starts arrivals from up to to, one after another, each once the one before it holds its
+// place or waits in the queue for one, so they arrive in that order, and answers each's answer
+// and the moment it was seen holding or waiting.
+func (rig *outsideWorkRig) arrive(t *testing.T, from, to int) ([]<-chan outsideWorkAnswer, []time.Time) {
+	t.Helper()
+	answers := make([]<-chan outsideWorkAnswer, 0, to-from)
+	arrived := make([]time.Time, 0, to-from)
+	for arrival := from; arrival < to; arrival++ {
+		answers = append(answers, rig.start(arrival))
+		pollUntil(t, 5*time.Second, fmt.Sprintf("arrival %d holding or waiting for a place", arrival), func() bool {
+			stats := rig.limiter.Outside().Stats()
+			return stats.InUse+stats.Queued == arrival+1
+		})
+		arrived = append(arrived, time.Now())
+	}
+	return answers, arrived
+}
+
+// outsideWorkIdentity is the identity an outsideWorkRig's heartbeat checks resolve through: the
+// package's header identity on the rig's database, once the check, which holds its place by then,
+// has reported its arrival and passed its gate.
+type outsideWorkIdentity struct{ rig *outsideWorkRig }
+
+func (i outsideWorkIdentity) Login(r *http.Request) (string, error) {
+	if arrival, err := strconv.Atoi(r.Header.Get(outsideWorkArrival)); err == nil {
+		i.rig.tookPlace(arrival)
+	}
+	return headerIdentity(i.rig.database).Login(r)
+}
+
+// Work outside admission that finds every place held waits for one, and is given it in the order
+// it asked, for at most a second, in a queue of sixteen: heartbeat checks and document sockets'
+// admission reads, alternately, arrive one after another while eight of them hold every place.
+//
+//   - In the order it asked: the eight holding are held at gates of the test's, and twelve more
+//     wait; each place given back, one at a time, goes to the work that has waited longest.
+//   - On a held pool freed within the wait: every connection of the request pool is held, so the
+//     eight holding wait on it, and sixteen more wait for a place, the most the queue holds; four
+//     more are refused at once for the full queue, the checks skipped and the sockets refused. The
+//     pool's acquires waiting stay at the eight. Once the pool is freed, inside the second, all
+//     twenty-four are served.
+//   - On a held pool past the wait: the eight holding wait on the pool and twelve more for a
+//     place, and the pool is held past the second: each of the twelve is refused once its own
+//     second has run out, the checks skipped and the sockets refused, and the eight are served once
+//     the pool frees.
+func TestWorkOutsideAdmissionWaitsForAPlaceInOrderForAtMostASecond(t *testing.T) {
+	const queued = 12
+	t.Run("in the order it asked", func(t *testing.T) {
+		rig := newOutsideWorkRig(t, admission.OutsideLimit+queued)
+		answers, _ := rig.arrive(t, 0, admission.OutsideLimit+queued)
+		for range admission.OutsideLimit {
+			select {
+			case arrival := <-rig.took:
+				if arrival >= admission.OutsideLimit {
+					t.Fatalf("arrival %d took a place while the first %d held them all", arrival, admission.OutsideLimit)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the work holding the places never reported its place")
+			}
+		}
+		for next := range queued {
+			close(rig.gates[next])
+			select {
+			case arrival := <-rig.took:
+				if want := admission.OutsideLimit + next; arrival != want {
+					t.Fatalf("the place arrival %d gave back went to arrival %d, want arrival %d: the one that has waited longest", next, arrival, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("the place arrival %d gave back went to nobody; %d still waiting", next, rig.limiter.Outside().Stats().Queued)
+			}
+		}
+		for next := queued; next < len(rig.gates); next++ {
+			close(rig.gates[next])
+		}
+		for arrival, answer := range answers {
+			if got := <-answer; got.err != nil {
+				t.Errorf("arrival %d: %v, want it served", arrival, got.err)
+			}
+		}
+		if stats := rig.limiter.Outside().Stats(); stats.MaxQueued != queued || stats.Refused != [len(stats.Refused)]admission.OutsideRefusals{} {
+			t.Errorf("stats %+v, want a queue of %d at its longest and nothing refused", stats, queued)
+		}
+	})
+
+	t.Run("on a held pool freed within the wait", func(t *testing.T) {
+		rig := newOutsideWorkRig(t, 0)
+		release := holdEveryConnection(t, rig.database.Pool)
+		served := admission.OutsideLimit + admission.OutsideQueueLimit
+		answers, _ := rig.arrive(t, 0, served)
+		pollUntil(t, 5*time.Second, "the work holding the places waiting on the request pool", func() bool {
+			return requestPoolStats(t, rig.database.Pool).Acquire.Waiting == admission.OutsideLimit
+		})
+		for arrival := served; arrival < served+4; arrival++ {
+			select {
+			case got := <-rig.start(arrival):
+				var refusal *admission.OutsideRefusal
+				if !errors.As(got.err, &refusal) || refusal.Reason != admission.QueueFull || (arrival%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
+					t.Fatalf("arrival %d past a full queue: %v, want refused for the full queue (a check skipped)", arrival, got.err)
+				}
+			case <-time.After(500 * time.Millisecond):
+				t.Fatalf("arrival %d past a full queue of %d was not answered within 500 ms, want it refused at once", arrival, admission.OutsideQueueLimit)
+			}
+		}
+		if waiting := requestPoolStats(t, rig.database.Pool).Acquire.Waiting; waiting != admission.OutsideLimit {
+			t.Fatalf("%d acquires waiting on the request pool, want the %d holding a place", waiting, admission.OutsideLimit)
+		}
+		release()
+		for arrival, answer := range answers {
+			select {
+			case got := <-answer:
+				if got.err != nil {
+					t.Errorf("arrival %d: %v, want it served once the pool freed within its wait", arrival, got.err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("arrival %d was never answered once the pool freed", arrival)
+			}
+		}
+		stats := rig.limiter.Outside().Stats()
+		want := [len(stats.Refused)]admission.OutsideRefusals{}
+		want[admission.HeartbeatCheck], want[admission.SocketAdmission] = admission.OutsideRefusals{QueueFull: 2}, admission.OutsideRefusals{QueueFull: 2}
+		if stats.MaxQueued != admission.OutsideQueueLimit || stats.Refused != want || stats.InUse != 0 {
+			t.Errorf("stats %+v, want a queue of %d at its longest, the four past it refused for a full queue and no place held", stats, admission.OutsideQueueLimit)
+		}
+	})
+
+	t.Run("on a held pool past the wait", func(t *testing.T) {
+		const slack = 500 * time.Millisecond
+		rig := newOutsideWorkRig(t, 0)
+		release := holdEveryConnection(t, rig.database.Pool)
+		answers, arrived := rig.arrive(t, 0, admission.OutsideLimit+queued)
+		for i := admission.OutsideLimit; i < len(answers); i++ {
+			select {
+			case got := <-answers[i]:
+				var refusal *admission.OutsideRefusal
+				if !errors.As(got.err, &refusal) || refusal.Reason != admission.WaitExceeded || (i%2 == 0) != errors.Is(got.err, errHeartbeatCheckSkipped) {
+					t.Fatalf("arrival %d, no place free for it: %v, want refused for its wait (a check skipped)", i, got.err)
+				}
+				if waited := got.at.Sub(arrived[i]); waited < admission.DefaultReadWait-50*time.Millisecond || waited > admission.DefaultReadWait+slack {
+					t.Errorf("arrival %d refused %v after it was seen waiting, want after its %v wait and within %v of it", i, waited, admission.DefaultReadWait, slack)
+				}
+			case <-time.After(admission.DefaultReadWait + 5*time.Second):
+				t.Fatalf("arrival %d was still waiting %v after it asked, want it refused at its %v wait", i, time.Since(arrived[i]), admission.DefaultReadWait)
+			}
+		}
+		release()
+		for i := range admission.OutsideLimit {
+			if got := <-answers[i]; got.err != nil {
+				t.Errorf("arrival %d, which held its place: %v, want it served once the pool freed", i, got.err)
+			}
+		}
+		stats := rig.limiter.Outside().Stats()
+		want := [len(stats.Refused)]admission.OutsideRefusals{}
+		want[admission.HeartbeatCheck], want[admission.SocketAdmission] = admission.OutsideRefusals{WaitExceeded: queued / 2}, admission.OutsideRefusals{WaitExceeded: queued / 2}
+		if stats.Refused != want || stats.InUse != 0 || stats.Queued != 0 {
+			t.Errorf("stats %+v, want the %d waiting refused for their wait and no place held", stats, queued)
 		}
 	})
 }

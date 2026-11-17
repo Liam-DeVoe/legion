@@ -43,55 +43,63 @@ import (
 // The one refusal is for room. The decision is made outside admission, before it
 // (routeHandler, liveSocketHandler), and it writes the proof's single-use row on the request pool
 // (store.DPoPProofs), so it takes a place of the pool's share outside admission for that
-// (admission.Outside), and a presentation that finds every place held is answered at once with
-// admission's own refusal for a full queue of the request's class (admission.WriteRefused): the
-// same 429 OVERLOADED, Retry-After and body, so its client cannot tell the two apart and comes back
-// as it would from admission. Nothing of it was decided, so its proof is not spent and the same
-// request may be sent again. Without the place, every such request waited on the pool's acquire
-// queue before admission could refuse it, with nothing bounding how many did. The refusal is
-// written before the drain a write's body is read by (drainBeforeAnswer), which is inside this:
-// net/http reads what is left of a small body before it writes the answer, and closes the
-// connection after it where more is left.
+// (admission.Outside), waiting for one behind the work that asked before it for at most a second.
+// A presentation refused a place - the queue for one full, or its second run out - is answered
+// with admission's own refusal for the same reason in the request's class
+// (admission.WriteRefused): the same 429 OVERLOADED, Retry-After and body, so its client cannot
+// tell the two apart and comes back as it would from admission. Nothing of it was decided, so its
+// proof is not spent and the same request may be sent again. One whose client goes away while it
+// waits is answered nothing, as a client gone from admission's queue is (accesslog.ClientGone).
+// Without the place, every such request waited on the pool's acquire queue before admission could
+// refuse it, with nothing bounding how many did. The refusal is written before the drain a write's
+// body is read by (drainBeforeAnswer), which is inside this: net/http reads what is left of a small
+// body before it writes the answer, and closes the connection after it where more is left.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if _, presented := brokertoken.Presented(r); !presented {
 			handler(w, r)
 			return
 		}
-		decided, ok := s.decidedBrokerToken(r)
-		if !ok {
-			admission.WriteRefused(w, &admission.Refusal{Class: admission.ClassOf(r.Method), Reason: admission.QueueFull})
+		decided, err := s.decidedBrokerToken(r)
+		if err != nil {
+			var refusal *admission.OutsideRefusal
+			if errors.As(err, &refusal) {
+				admission.WriteRefused(w, &admission.Refusal{Class: admission.ClassOf(r.Method), Reason: refusal.Reason})
+				return
+			}
+			accesslog.ClientGone(r.Context())
 			return
 		}
 		handler(w, r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, decided)))
 	}
 }
 
-// decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor), or false, with nothing
-// decided, where every place of the request pool's share outside admission is held. The broker is
+// decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor), or, with nothing
+// decided, the refusal of a place of the request pool's share outside admission
+// (*admission.OutsideRefusal) or the request's own end while it waited for one. The broker is
 // asked first, whether the token is live (brokertoken.Verifier.Live), holding no place: that round
 // trip reads nothing of the request pool and can take the introspection's whole five seconds, and
 // a place held for it would let a broker slow to answer fill the share with no database work at
-// all, refusing every document socket and skipping every heartbeat check that reads the pool. A
-// token the broker does not hold live is refused there, as brokerTokenActor refuses it
+// all, keeping every document socket and every heartbeat check that reads the pool waiting for
+// one. A token the broker does not hold live is refused there, as brokerTokenActor refuses it
 // (brokerTokenRefusal). The place is taken then, for the decision's own reads of the pool, and
 // given back once it is made: brokerTokenActor's Verify finds the broker's answer remembered
 // (brokertoken.AffirmativeCacheTTL), so what it does under the place is check the proof against it
 // and write the proof's row. A deployment with no broker decides nothing that reads the pool
 // (errNoBrokerConfigured), so it takes no place.
-func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, bool) {
+func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, error) {
 	if s.deps.BrokerTokens == nil {
-		return resolvedCaller{err: errNoBrokerConfigured()}, true
+		return resolvedCaller{err: errNoBrokerConfigured()}, nil
 	}
 	if _, err := s.deps.BrokerTokens.Live(r.Context(), r); err != nil {
-		return resolvedCaller{err: s.brokerTokenRefusal(err)}, true
+		return resolvedCaller{err: s.brokerTokenRefusal(err)}, nil
 	}
-	if !s.outside.Take(admission.DPoPDecision) {
-		return resolvedCaller{}, false
+	if err := s.outside.Take(r.Context(), admission.DPoPDecision); err != nil {
+		return resolvedCaller{}, err
 	}
 	defer s.outside.Release()
 	actor, human, err := s.brokerTokenActor(r)
-	return resolvedCaller{actor: actor, human: human, err: err}, true
+	return resolvedCaller{actor: actor, human: human, err: err}, nil
 }
 
 // callerStillResolves answers whether the caller a live socket was admitted as still resolves,
@@ -109,7 +117,7 @@ func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, bool) {
 // heartbeat that asks.
 //
 // Every other resolution that reads the request pool (resolutionReadsRequestPool) takes a place of
-// that share first, and is skipped where none is free (errHeartbeatCheckSkipped).
+// that share first (takeHeartbeatPlace), and is skipped where it is refused one.
 func (s *server) callerStillResolves(r *http.Request) error {
 	if _, presented := brokertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
@@ -119,8 +127,8 @@ func (s *server) callerStillResolves(r *http.Request) error {
 		return err
 	}
 	if s.resolutionReadsRequestPool(r) {
-		if !s.outside.Take(admission.HeartbeatCheck) {
-			return errHeartbeatCheckSkipped
+		if err := s.takeHeartbeatPlace(r.Context()); err != nil {
+			return err
 		}
 		defer s.outside.Release()
 	}

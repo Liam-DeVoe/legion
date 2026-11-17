@@ -247,6 +247,10 @@ type Limits struct {
 	// MaxHeavyReadLane); zero and below are one. The lanes are the same width: each of them is
 	// one route's hold on the database, and the measurement that sized them sized them together.
 	HeavyReadLane int
+	// OutsideWait is how long the request-pool work outside admission waits for a place, counted
+	// from when it asks (Outside.Take); zero and below are DefaultReadWait, the one second a read
+	// waits for room, which every server runs with. A test sets a shorter one.
+	OutsideWait time.Duration
 }
 
 // DefaultLimits are the limits the server runs with: reads and writes by the CPUs the process may
@@ -298,6 +302,10 @@ func (l *Limiter) Outside() *Outside { return &l.outside }
 // the read limit and the total, which is all the reads could ever hold.
 func New(limits Limits) *Limiter {
 	l := &Limiter{}
+	l.outside.wait = limits.OutsideWait
+	if l.outside.wait <= 0 {
+		l.outside.wait = DefaultReadWait
+	}
 	waits := [classCount]time.Duration{Read: limits.ReadWait, Write: limits.WriteWait}
 	defaults := [classCount]time.Duration{Read: DefaultReadWait, Write: DefaultWriteWait}
 	for class, limit := range [classCount]int{Read: limits.Read, Write: limits.Write} {

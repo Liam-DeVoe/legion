@@ -651,11 +651,12 @@ func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(
 // server processes - hold one place of the request pool's work outside admission
 // (admission.Outside) for their whole length, and give it back once the last has run, before the
 // document's load, which reads the rooms pool and decodes and renders for as long as the document
-// takes. A socket that finds every place held is refused at once, 503 with Retry-After and a WARN
-// line, having read nothing of the request pool; a socket admitted holds its place while it reads,
-// none while its document loads - the admission's read and render of it, and its room's load - and
-// none once its socket is open. The places are the limiter's the API admits through, which
-// cmd/dispatch hands the service (Deps.Outside).
+// takes. A socket that finds every place held waits for one, and is admitted when one comes free
+// within its wait; one no place comes free for is refused once its second has run out, 503 with
+// Retry-After and a WARN line, having read nothing of the request pool. A socket admitted holds its
+// place while it reads, none while its document loads - the admission's read and render of it, and
+// its room's load - and none once its socket is open. The places are the limiter's the API admits
+// through, which cmd/dispatch hands the service (Deps.Outside).
 func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	logs := captureWarnings(t)
 	database := storetest.Open(t)
@@ -672,22 +673,24 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	server := newTestServer(t, service)
 	artifactID := createDocuments(t, database, 1)[0]
 	for range admission.OutsideLimit {
-		if !outside.Take(admission.HeartbeatCheck) {
-			t.Fatalf("take a place outside admission: the %d places are held already", admission.OutsideLimit)
+		if err := outside.Take(context.Background(), admission.HeartbeatCheck); err != nil {
+			t.Fatalf("take a place outside admission: %v", err)
 		}
 	}
 	before := poolAcquires(service, store.RequestsPool)
+	asked := time.Now()
 	answer := <-answerSocketAsync(server.URL, artifactID)
+	waited := answer.at.Sub(asked)
 	read := poolAcquires(service, store.RequestsPool) - before
-	for range admission.OutsideLimit {
-		outside.Release()
-	}
 	if answer.err != nil {
 		t.Fatal(answer.err)
 	}
-	t.Logf("with every place held the socket's handshake was answered %d %q after %d request-pool reads", answer.status, answer.body, read)
+	t.Logf("with every place held the socket's handshake was answered %d %q after %v and %d request-pool reads", answer.status, answer.body, waited, read)
 	if answer.status != http.StatusServiceUnavailable {
-		t.Fatalf("a socket that found every place outside admission held was answered %d %q, want 503", answer.status, answer.body)
+		t.Fatalf("a socket no place outside admission came free for was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if waited < admission.DefaultReadWait {
+		t.Errorf("the socket was refused %v after it asked, want it to wait its %v for a place first", waited, admission.DefaultReadWait)
 	}
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
@@ -695,17 +698,21 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	if read != 0 {
 		t.Errorf("the refused socket took %d request-pool connections, want none: it is refused before its first read", read)
 	}
-	if refused := outside.Stats().Refused[admission.SocketAdmission]; refused != 1 {
-		t.Errorf("the places outside admission counted %d refused socket admissions, want 1", refused)
+	if refused := outside.Stats().Refused[admission.SocketAdmission]; refused != (admission.OutsideRefusals{WaitExceeded: 1}) {
+		t.Errorf("the places outside admission counted %+v refused socket admissions, want one whose wait ran out", refused)
 	}
 	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
-	for _, want := range []string{"places outside admission are all held", "room=" + artifactID} {
+	for _, want := range []string{"places outside admission are all held", "room=" + artifactID, string(admission.WaitExceeded)} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the refused socket's line %q does not carry %q", line, want)
 		}
+	}
+
+	for range admission.OutsideLimit {
+		outside.Release()
 	}
 
 	// Each figure is the places held at one moment of the admitted socket's open, -1 until it
@@ -741,6 +748,32 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	}
 	if got := outside.Stats().InUse; got != 0 {
 		t.Errorf("the places held once the admitted socket was handed to ygo = %d, want 0: the socket's reads gave theirs back while it stays open", got)
+	}
+
+	// A place that comes free while a socket waits is that socket's, which it gives back once its
+	// reads have run.
+	for range admission.OutsideLimit {
+		if err := outside.Take(context.Background(), admission.HeartbeatCheck); err != nil {
+			t.Fatalf("take a place outside admission: %v", err)
+		}
+	}
+	waiting := answerSocketAsync(server.URL, artifactID)
+	deadline := time.Now().Add(admission.DefaultReadWait / 2)
+	for outside.Stats().Queued != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("no socket waited for a place within %v of asking", admission.DefaultReadWait/2)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	outside.Release()
+	if served := <-waiting; served.err != nil || served.status != http.StatusSwitchingProtocols {
+		t.Fatalf("a socket a place came free for while it waited was answered %d %q (%v), want it admitted", served.status, served.body, served.err)
+	}
+	for range admission.OutsideLimit - 1 {
+		outside.Release()
+	}
+	if got := outside.Stats().InUse; got != 0 {
+		t.Fatalf("%d places held once the test gave its own back, want none: the admitted socket kept its own", got)
 	}
 }
 

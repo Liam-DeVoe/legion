@@ -242,12 +242,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// so a restart's reconnect of every editor holds no more of the pool than admission leaves.
 	// The place goes back before the wait for a failed room's recovery and the document's load,
 	// neither of which reads the request pool; the release on the way out gives it back for a
-	// socket refused before that. A socket that finds every place held reads nothing and is
-	// refused as one the server cannot serve now.
-	releaseReads, placed := s.outside.Hold(admission.SocketAdmission)
+	// socket refused before that. A socket that finds every place held waits for one, behind the
+	// work that asked before it, for at most a second; one refused a place - the queue for one full,
+	// or its second run out - reads nothing and is refused as one the server cannot serve now, and
+	// one whose browser leaves while it waits is answered nothing (refuseAdmission).
+	releaseReads, err := s.outside.Hold(r.Context(), admission.SocketAdmission)
 	defer releaseReads()
-	if !placed {
-		refuseUnservedSocket(w, "dispatch: a document socket was refused: the request pool's places outside admission are all held", "room", room)
+	if err != nil {
+		refuseAdmission(w, r, "dispatch: a document socket was refused: the request pool's places outside admission are all held", room, store.RequestsPool, err)
 		return
 	}
 	actor, err := s.requestActor(r)

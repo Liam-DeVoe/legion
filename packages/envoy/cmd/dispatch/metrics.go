@@ -292,16 +292,25 @@ func newDispatchMetrics(sources metricsSources, lag *outboxLag) *metrics.Registr
 	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_limit", "Places of the request pool's share admission leaves: the pool's connections less admission's combined cap.", func() int64 {
 		return int64(sources.Admission.Outside().Stats().Limit)
 	})
-	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_refused_total", "Work outside admission that found every place of the request pool's share held, by user: a DPoP decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket's admission answered 503.", func() []metrics.Sample {
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued", "Work outside admission waiting now for a place of the request pool's share admission leaves, first in first out, at most twice the places.", func() int64 {
+		return int64(sources.Admission.Outside().Stats().Queued)
+	})
+	registry.NewGaugeFunc(metricPrefix+"http_outside_admission_queued_max", "The most work outside admission that has waited for a place at once since the process started.", func() int64 {
+		return int64(sources.Admission.Outside().Stats().MaxQueued)
+	})
+	registry.NewCounterVecFunc(metricPrefix+"http_outside_admission_refused_total", "Work outside admission refused a place of the request pool's share, by user and reason: a DPoP decision answered 429 OVERLOADED, a heartbeat check skipped, a document socket's admission answered 503; queue_full where the queue for a place was full, wait_exceeded where no place came free within the second it waited.", func() []metrics.Sample {
 		stats := sources.Admission.Outside().Stats()
 		users := admission.OutsideUsers()
-		samples := make([]metrics.Sample, 0, len(users))
+		samples := make([]metrics.Sample, 0, 2*len(users))
 		for _, user := range users {
-			samples = append(samples, metrics.Sample{Labels: [][2]string{{"user", user.String()}}, Value: float64(stats.Refused[user])})
+			samples = append(samples,
+				metrics.Sample{Labels: [][2]string{{"user", user.String()}, {"reason", string(admission.QueueFull)}}, Value: float64(stats.Refused[user].QueueFull)},
+				metrics.Sample{Labels: [][2]string{{"user", user.String()}, {"reason", string(admission.WaitExceeded)}}, Value: float64(stats.Refused[user].WaitExceeded)},
+			)
 		}
 		return samples
 	})
-	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or no place of the request pool's share outside admission, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
+	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_transient_failures_total", "Socket heartbeat checks that failed for a transient reason, a busy pool, the check's own bound or a place of the request pool's share outside admission refused it, the one that closed its socket at the ceiling included.", func() []metrics.Sample {
 		return []metrics.Sample{{Value: float64(api.HeartbeatTransientFailures())}}
 	})
 	registry.NewCounterVecFunc(metricPrefix+"socket_heartbeat_ceiling_closes_total", "Sockets closed because their heartbeat check failed for a transient reason three times in a row.", func() []metrics.Sample {

@@ -875,8 +875,8 @@ const defaultReadDeadline = 20 * time.Second
 // either way. A test hook is neither admitted nor bounded: it is a test's own; nor is a stream
 // (apiRoute.Streams), which its reader holds open for the run behind it. The broker token's
 // decision is outside admission too, and writes on the request pool, so it takes a place of that
-// pool's share admission leaves instead, and is refused admission's own 429 where none is free
-// (decideBrokerToken, admission.Outside).
+// pool's share admission leaves instead, waiting up to a second for one, and is refused
+// admission's own 429 where it is refused one (decideBrokerToken, admission.Outside).
 func (s *server) routeHandler(route apiRoute, limiter *admission.Limiter, deadline time.Duration) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
@@ -1184,8 +1184,8 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 //
 // A check that fails for a transient reason keeps the socket and is asked again at the next
 // heartbeat: the pool it read had no connection free within its bound (store.IsPoolBusy), the
-// check's own bound passed (checkCaller), or the request pool's share outside admission had no
-// place for it, so it was never made (errHeartbeatCheckSkipped). None of them says anything of the
+// check's own bound passed (checkCaller), or the request pool's share outside admission refused it
+// a place, so it was never made (errHeartbeatCheckSkipped). None of them says anything of the
 // caller. Only heartbeatTransientCeiling of them in a row close the socket, as a refusal does,
 // with the last of them as the cause, and only a check that resolves the caller ends the run.
 // Before, every failure closed the socket, so under load the pool's bounded acquire closed
@@ -1259,9 +1259,10 @@ func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, s
 // is busy a socket whose sign-in was revoked stays open for up to those 45 s, where a free pool
 // closes it at its next heartbeat, within 15 s: that is a cost to authorization, paid so that a
 // busy minute does not close every connected editor's socket and send them all to reconnect into
-// it. A check the request pool's share outside admission has no place for is not made either, so
-// it counts toward the ceiling as a failure does (errHeartbeatCheckSkipped): were it to leave the
-// count as it stands, a socket would stay open for as long as that share stayed held, unbounded.
+// it. A check the request pool's share outside admission refuses a place - its queue full, or no
+// place free within the second it waits - is not made either, so it counts toward the ceiling as
+// a failure does (errHeartbeatCheckSkipped): were it to leave the count as it stands, a socket
+// would stay open for as long as that share stayed held, unbounded.
 const heartbeatTransientCeiling = 3
 
 // checkCaller asks stillResolves of check once, bounded at a heartbeat, so a check whose pool or
@@ -1280,7 +1281,7 @@ func (s *server) checkCaller(check *http.Request, stillResolves func(*http.Reque
 
 // transientCheckFailure reports whether err, a heartbeat check's failure, says nothing of the
 // caller: the pool it read had no connection free within its bound (store.IsPoolBusy), the check's
-// own bound passed (errHeartbeatCheckBound), or the check was never made for want of a place
+// own bound passed (errHeartbeatCheckBound), or the check was never made, refused a place
 // (errHeartbeatCheckSkipped). Every other failure is a refusal - a logout, a revoked or expired
 // token, a membership the sign-in issuer no longer confirms, or any other error - and closes the
 // socket at once.
@@ -1297,10 +1298,26 @@ var errCallerNoLongerResolves = errors.New("the connection's caller did not reso
 // heartbeat, passes (checkCaller), and what that check's failure wraps.
 var errHeartbeatCheckBound = errors.New("the heartbeat's check of its caller ran out its bound")
 
-// errHeartbeatCheckSkipped is a heartbeat check that found every place of the request pool's
-// share outside admission held (admission.Outside) and so read nothing: it was not made, which
-// says nothing of the caller and counts toward the ceiling as a transient failure does.
-var errHeartbeatCheckSkipped = errors.New("the heartbeat's check found the request pool's share outside admission held, and was not made")
+// errHeartbeatCheckSkipped is a heartbeat check refused a place of the request pool's share
+// outside admission (admission.Outside: the queue for one full, or its second's wait run out) and
+// so read nothing: it was not made, which says nothing of the caller and counts toward the ceiling
+// as a transient failure does. It wraps the refusal.
+var errHeartbeatCheckSkipped = errors.New("the heartbeat's check was refused a place of the request pool's share outside admission, and was not made")
+
+// takeHeartbeatPlace takes a place of the request pool's share outside admission for a heartbeat
+// check that reads the pool, waiting for one as admission.Outside.Take does, for at most a second,
+// well inside the check's own bound of a heartbeat (checkCaller). A check refused one is skipped
+// (errHeartbeatCheckSkipped, wrapping the refusal), and one whose context ends while it waits
+// answers that context's error, which checkCaller reads as its bound where the bound ended it.
+// The caller gives a place it took back with s.outside.Release.
+func (s *server) takeHeartbeatPlace(ctx context.Context) error {
+	err := s.outside.Take(ctx, admission.HeartbeatCheck)
+	var refusal *admission.OutsideRefusal
+	if errors.As(err, &refusal) {
+		return fmt.Errorf("%w: %w", errHeartbeatCheckSkipped, err)
+	}
+	return err
+}
 
 // heartbeatTransientFailures counts the heartbeat checks that failed for a transient reason, a
 // skipped one and the one that closes its socket at the ceiling included, and
@@ -1330,14 +1347,14 @@ func HeartbeatClosesAtCeiling() uint64 { return heartbeatClosesAtCeiling.Load() 
 // no document at all (readScopeRoutes).
 //
 // The cookie's session is a row the request pool reads outside admission, so the check takes a
-// place of that pool's share outside admission first, and is skipped where none is free
-// (errHeartbeatCheckSkipped), which counts toward the heartbeat's ceiling.
+// place of that pool's share outside admission first (takeHeartbeatPlace), and is skipped where it
+// is refused one, which counts toward the heartbeat's ceiling.
 func (s *server) signInStillResolves(r *http.Request) error {
 	if s.deps.Identity == nil {
 		return errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
-	if !s.outside.Take(admission.HeartbeatCheck) {
-		return errHeartbeatCheckSkipped
+	if err := s.takeHeartbeatPlace(r.Context()); err != nil {
+		return err
 	}
 	defer s.outside.Release()
 	_, err := s.deps.Identity.Login(r)
