@@ -184,8 +184,9 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // readyWorkerTask), the start of a phase worker (startOrOwe, which every start Engine.started
 // builds comes through) and a root architect's start that claims the decisions it names
 // (EnqueueNaming). It is where a task takes what every task of its worker must name: the entry
-// of the reviewer's round (namingTheReviewEntry), which the reviewer copies from its newest task
-// into the footer of its review, so a kind of task added later cannot be queued without it.
+// of the reviewer's round (namingTheReviewEntry), which the reviewer copies into the footer of
+// its review from the newest sentence naming an entry that its session was given, so a kind of
+// task added later cannot be queued without it.
 //
 // Only a start of the reviewer can name an entry (reviewEntryOf), so no other row reads the
 // record for it. A reviewer's start reads the phase its issue stands in and the reviewer's row as
