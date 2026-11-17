@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useCallback } from "react";
 
+import { settle } from "../__tests__/fake-clock";
 import {
   installResizeObserver,
   layOutScrollBox,
@@ -115,9 +116,34 @@ test("a box that narrows, and content that arrives, are measured with no render 
   }
 });
 
-test("an unmounted strip leaves no observer behind", () => {
+// A strip that is gone keeps no part of the hook alive: its size observer is let go, and neither
+// a scroll of the detached strip nor a child added to it is measured. Each measure reads the
+// strip's scroll width, so the reads are counted; the same two events, while it is mounted, show
+// the count does see them.
+test("an unmounted strip leaves no observer or listener behind", async () => {
   const view = render(<Strip box={{ client: 300, scroll: 420 }} />);
+  const strip = screen.getByTestId("strip");
+  let measures = 0;
+  Object.defineProperty(strip, "scrollWidth", {
+    configurable: true,
+    get: () => {
+      measures += 1;
+      return 420;
+    },
+  });
+  // The reader's scroll is the strip's own scroll event, which user-event has no form for.
+  fireEvent.scroll(strip);
+  strip.append(document.createElement("span"));
+  await settle();
+  expect(measures).toBe(2);
   expect(sizes.live()).toBe(1);
+
   view.unmount();
+  measures = 0;
+  // A scroll the detached strip still receives: its own scroll event, no user-event form.
+  fireEvent.scroll(strip);
+  strip.append(document.createElement("span"));
+  await settle();
+  expect(measures).toBe(0);
   expect(sizes.live()).toBe(0);
 });
