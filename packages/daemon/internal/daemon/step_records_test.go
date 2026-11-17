@@ -205,13 +205,14 @@ func TestTheDaemonRestartsInTheMiddleOfAStep(t *testing.T) {
 // run is open and the outbox holds the issue's step records and its other writes unsent, beside a
 // count of starts of each step that ran. With the daemon stopped, the operator's way back runs as
 // the roll forward's header carries it (internal/textcheck holds it to docs/kubernetes.md), and
-// every outbox row and every count stands after it as it stood before. The earlier release then
-// moves the issue as its own transitions leave the store, to testing with the tester's entry
-// raised again, and the newer image boots, its Migrate applying the roll forward. The walk ends at
-// done, and the read holds the implementer's run that the earlier release ended stopped at the
-// moment of the rollback under the id its start wrote, the tester's run that release started as a
-// record of its own at the next count, started when its entry was raised, and the tester's run this
-// release counted under its own id.
+// every outbox row and every count stands after it as it stood before. The earlier release's move
+// is then written as the rows this release reads of it: the issue in testing, and the tester's
+// entry raised again with its last handoff cleared; none of that release's deliveries stands in
+// the store. The newer image boots, its Migrate applying the roll forward. The walk ends at done,
+// and the read holds the implementer's run that the earlier release ended stopped at the moment
+// the way back kept, under the id its start wrote, the tester's run that release started as a
+// record of its own at the next count, started when its entry was raised, and the tester's run
+// this release counted under its own id.
 func TestARollbackAndItsRollForwardKeepEveryRecordOfTheWalk(t *testing.T) {
 	r := newStepRecordsRig(t)
 	r.plan()
