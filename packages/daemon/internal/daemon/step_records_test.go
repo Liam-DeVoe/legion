@@ -565,40 +565,53 @@ func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCom
 	r.waitPhase(next)
 }
 
-// review is the reviewer taking its task and answering, and then a person with write access
-// submitting state on the pull request's head, as Envoy relays GitHub's review; the issue then
-// reaches next.
+// review is the reviewer taking its task and answering, and then a person submitting state on the
+// walk's pull request (publishReview); the issue then reaches next.
 func (r *stepRecordsRig) review(state string, next phase.Phase) {
-	t := r.t
-	t.Helper()
+	r.t.Helper()
 	c := r.worker(claim.RoleReviewer)
 	c.take()
 	c.endTurn()
+	r.publishReview(r.number, state)
+	r.waitPhase(next)
+}
+
+// publishReview is a person with write access submitting state on pull request number at
+// stepRecordsHead, as Envoy relays GitHub's review.
+func (r *stepRecordsRig) publishReview(number int, state string) {
+	t := r.t
+	t.Helper()
 	r.reviews++
 	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(r.number), "state": state,
+		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
 		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "round " + strconv.Itoa(r.reviews),
-		"review_id": strconv.Itoa(r.number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
+		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", r.number, r.reviews), string(payload))
-	r.waitPhase(next)
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
+	r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
 }
 
-// accept is the tree architect answering and signing off through its own route.
+// accept is the tree architect answering and signing off the walk's issue (signOff).
 func (r *stepRecordsRig) accept() {
+	r.t.Helper()
+	r.signOff(r.key)
+}
+
+// signOff is the tree architect answering in a turn of its own and signing off issue, a member of
+// its tree, through its own route; issue then reaches its retro.
+func (r *stepRecordsRig) signOff(issue string) {
 	t := r.t
 	t.Helper()
 	c := r.worker(claim.RoleArchitect)
 	c.ownTurn()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": r.key}, false)
+	status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": c.grant(), "issue": issue}, false)
 	if status != http.StatusOK {
-		t.Fatalf("the architect's sign-off = %d %s, want 200", status, body)
+		t.Fatalf("the architect's sign-off of %s = %d %s, want 200", issue, status, body)
 	}
-	r.waitPhase(phase.Retro)
+	r.waitPhaseOf(issue, phase.Retro)
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request, which ends
@@ -640,10 +653,16 @@ func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
 	}
 }
 
-// token is the claim token of role on the issue, as the daemon spells it.
+// token is the claim token of role on the walk's issue, as the daemon spells it.
 func (r *stepRecordsRig) token(role claim.Role) claim.Token {
 	r.t.Helper()
-	token, err := claim.NewToken(r.project, r.key, role)
+	return r.tokenOf(r.key, role)
+}
+
+// tokenOf is the claim token of role on issue, as the daemon spells it.
+func (r *stepRecordsRig) tokenOf(issue string, role claim.Role) claim.Token {
+	r.t.Helper()
+	token, err := claim.NewToken(r.project, issue, role)
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -761,12 +780,18 @@ func (r *stepRecordsRig) readStepsOf(issue string) (stepRecordsRead, error) {
 	return read, nil
 }
 
-// waitSteps waits for the issue's read to satisfy hold, and fails with hold's last answer.
+// waitSteps waits for the walk's issue's read to satisfy hold, and fails with hold's last answer.
 func (r *stepRecordsRig) waitSteps(what string, hold func(stepRecordsRead) error) {
+	r.t.Helper()
+	r.waitStepsOf(r.key, what, hold)
+}
+
+// waitStepsOf waits for issue's read to satisfy hold, and fails with hold's last answer.
+func (r *stepRecordsRig) waitStepsOf(issue, what string, hold func(stepRecordsRead) error) {
 	r.t.Helper()
 	var last error
 	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readSteps()
+		read, err := r.readStepsOf(issue)
 		if err != nil {
 			last = err
 			return false
@@ -1215,52 +1240,25 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
 	r := newStepRecordsRig(t)
 	child, number := r.seedChildInReviewing()
-	r.reviews++
-	payload, err := json.Marshal(map[string]string{
-		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": "APPROVED",
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": stepRecordsPerson, "body": "the child's round",
-		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.publish(fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number), "github", fmt.Sprintf("review-%d-%d", number, r.reviews), string(payload))
+	r.publishReview(number, "APPROVED")
 	r.waitPhaseOf(child, phase.Accepting)
+	r.signOff(child)
 	architect := r.worker(claim.RoleArchitect)
-	architect.ownTurn()
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(), "issue": child}, false); status != http.StatusOK {
-		t.Fatalf("the tree architect's sign-off of %s = %d %s, want 200", child, status, body)
-	}
-	r.waitPhaseOf(child, phase.Retro)
-	own, err := claim.NewToken(r.project, child, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tree := r.token(claim.RoleArchitect)
-	var last error
-	if !testwait.Holds(stepRecordsWait, time.Second, func() bool {
-		read, err := r.readStepsOf(child)
-		if err != nil {
-			last = err
-			return false
-		}
+	own, tree := r.tokenOf(child, claim.RoleArchitect), r.token(claim.RoleArchitect)
+	r.waitStepsOf(child, "the child's acceptance as the tree architect's", func(read stepRecordsRead) error {
 		got := read.find("step", 5, 1)
 		switch {
 		case got.ID == "":
-			last = fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
+			return fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
 		case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
-			last = fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
+			return fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
 		case got.Agent != string(tree) || got.Agent == string(own):
-			last = fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
+			return fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
 		case got.Session != architect.session || got.Model != stepRecordsModel:
-			last = fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
-		default:
-			last = nil
+			return fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
 		}
-		return last == nil
-	}) {
-		t.Fatalf("the child's acceptance never reached Dispatch as the tree architect's: %v", last)
-	}
+		return nil
+	})
 }
 
 // seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
