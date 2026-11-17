@@ -55,21 +55,24 @@ accounts for are one plan, kept here.
                                WORKFLOW_ENV_KEYS closes the variables'.
   DECISION_READERS             the if:s, job and step, of the two release workflows that read a
                                checked version step's decision, in job order. A reader is an if:
-                               that names, as a dotted reference in any case, its job's version or
-                               skip output through needs.<job>.outputs, the step's own outputs
-                               within its job, or an earlier reader step's outcome or outputs in
-                               the same job (the publish chains read steps.<id>.outcome one after
-                               another). The four decision jobs' own if: (position 0) and pair,
-                               whose output legion_pair reads, are listed with them. Each entry is
-                               the if: exactly, for the step by its id:, else its name:, else its
-                               position; the check refuses an entry's if: changed or gone, entries
-                               out of this order, an unlisted step an entry's if: reads, a reader
-                               no entry names, continue-on-error: on an entry's step, and two steps
-                               of one name in an entry's job. An if: of the two workflows that
-                               reaches the needs or steps context other than by dotted names is
-                               refused, so the reader rule sees each reference in it. It does not
-                               see the decision passed on through the env context or through
-                               another step's output, env: or run:.
+                               that names, as a dotted reference in any case and with any
+                               whitespace around a `.`, one of JOB_OUTPUTS' outputs through
+                               needs.<job>.outputs, the version step's own outputs within its job,
+                               or an earlier reader step's outcome or outputs in the same job (the
+                               publish chains read steps.<id>.outcome one after another). Listed
+                               with them are the own if: (position 0) of the four decision jobs,
+                               of every job JOB_NEEDS names and of worker_image_release, and pair,
+                               whose output legion_pair reads. Each entry is the if: exactly, for
+                               the step by its id:, else its name:, else its position; the check
+                               refuses an entry's if: changed or gone, entries out of this order,
+                               an unlisted step an entry's if: reads, a reader no entry names,
+                               continue-on-error: on an entry's step, and two steps of one name
+                               in an entry's job. An if: of the two workflows that reaches the
+                               needs or steps context other than by dotted names, or that reads a
+                               JOB_OUTPUTS job's or checked step's outputs whole rather than one
+                               output by name, is refused, so the reader rule sees each reference
+                               in it. It does not see the decision passed on through the env
+                               context or through another step's output, env: or run:.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.

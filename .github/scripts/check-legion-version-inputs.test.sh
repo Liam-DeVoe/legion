@@ -551,6 +551,47 @@ run_check "$root"
 check "exits 1 on an object filter" "$(is "$status" 1)"
 check "names it" "$(contains "$out" "which uses an object filter")"
 
+# GitHub's expression lexer skips whitespace before every token, so a reference broken after a
+# dot still reads the decision; and outputs read whole name no output the reader rule can match.
+echo "case: a new reader with a newline or a space after a dot, or with outputs read whole (N7c, N7d, N7e)"
+root=$(written spelled-newline)
+printf '      - name: Extra\n        if: %s\n        run: echo extra\n' '"needs.legion_build.\noutputs.skip == '"'true'"'"' \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on a newline after a dot (N7c)" "$(is "$status" 1)"
+check "reads it as a reader the list does not name" \
+  "$(contains "$out" "the step \`Extra\` of publish has the if: \`needs.legion_build. outputs.skip == 'true'\`, which reads a checked version step's decision")"
+root=$(written spelled-space)
+printf "      - name: Extra\n        if: needs.legion_build. outputs.skip == 'true'\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on a space after a dot (N7d)" "$(is "$status" 1)"
+check "reads it as a reader the list does not name" \
+  "$(contains "$out" "the step \`Extra\` of publish has the if: \`needs.legion_build. outputs.skip == 'true'\`, which reads a checked version step's decision")"
+root=$(written spelled-whole)
+printf "      - name: Extra\n        if: fromJSON(toJSON(needs.legion_build.outputs)).skip == 'true'\n        run: echo extra\n" \
+  >> "$root/.github/workflows/release.yaml"
+run_check "$root"
+check "exits 1 on outputs read whole (N7e)" "$(is "$status" 1)"
+check "names what it reads whole" \
+  "$(contains "$out" "the step \`Extra\` of publish has the if: \`fromJSON(toJSON(needs.legion_build.outputs)).skip == 'true'\`, which reads needs.legion_build.outputs whole")"
+root=$(written spelled-whole-step)
+printf "      - name: Extra\n        if: toJSON(steps.version.outputs) != '{}'\n        run: echo extra\n" > "$work/extra-step"
+python3 - "$root/.github/workflows/release.yaml" "$work/extra-step" <<'PY'
+import sys
+from pathlib import Path
+
+path, extra = Path(sys.argv[1]), Path(sys.argv[2]).read_text()
+text = path.read_text()
+anchor = "\n  pi_envoy_build:\n"
+if text.count(anchor) != 1:
+    sys.exit("  FAIL: no single pi_envoy_build job to insert before")
+path.write_text(text.replace(anchor, "\n" + extra.rstrip("\n") + anchor, 1))
+PY
+run_check "$root"
+check "exits 1 on a checked step's outputs read whole in its own job" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "of legion_build has the if: \`toJSON(steps.version.outputs) != '{}'\`, which reads steps.version.outputs whole")"
+
 echo "case: a decoy of a named reader carries its if: while the reader skips"
 root=$(written reader-decoy)
 named_reader=$'      - name: "legion: Write the changelog into the release body"\n        if: "${{ !cancelled() && steps.legion_notes.outcome == \'success\' }}"\n'

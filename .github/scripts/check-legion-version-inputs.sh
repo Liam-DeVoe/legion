@@ -51,13 +51,15 @@
 #      false`, a continue-on-error: or a timeout-minutes: can end it with its decision thrown
 #      away); its job's version and skip outputs as the module names them, since the publish steps
 #      read the decision there (a `skip: "true"` skips the release the step chose); the if:s that
-#      read the decision - dotted references, in any case, to those outputs, to the step's own, or
-#      to an earlier reader step's outcome - each the one DECISION_READERS names, by the step's
-#      id:, name: or position, in its order, with the four decision jobs' own if: and the steps
-#      a listed if: reads, no continue-on-error: on a listed step, no two steps of one name in a
-#      listed job, and no reader it does not name (an `if: false` on a publish step skips the
-#      release as surely); every if: of the two workflows reaching the needs or steps context by
-#      dotted names alone, no `[` and no `.*`; every step
+#      read the decision - dotted references, in any case and with any whitespace around a `.`,
+#      to those outputs, to the step's own, or to an earlier reader step's outcome - each the one
+#      DECISION_READERS names, by the step's id:, name: or position, in its order, with the four
+#      decision jobs' own if: and the steps a listed if: reads, no continue-on-error: on a listed
+#      step, no two steps of one name in a listed job, and no reader it does not name (an `if:
+#      false` on a publish step skips the release as surely); every if: of the two workflows
+#      reaching the needs or steps context by dotted names alone, no `[` and no `.*`, and naming
+#      the output it reads of a JOB_OUTPUTS job or a checked step rather than its outputs whole
+#      (`fromJSON(toJSON(needs.legion_build.outputs)).skip` is refused); every step
 #      before it one of STEPS_BEFORE_VERSION_STEPS on every key but name, id, if, timeout-minutes
 #      and continue-on-error; the workflow's env: a literal mapping of WORKFLOW_ENV_KEYS' variables
 #      alone, so a BASH_ENV, PATH, LD_PRELOAD, GIT_DIR or GH_REPO is refused as one more unlisted
@@ -542,9 +544,17 @@ def described(selector):
 
 
 # A reference to the needs or steps context in the one form the reader rule reads: a dotted name
-# after it. Matched without regard to case, as GitHub reads the contexts' names.
+# after it. Matched without regard to case, as GitHub reads the contexts' names, and on an if:
+# with the whitespace around each `.` taken out, since GitHub's expression lexer skips whitespace
+# before every token (`needs.legion_build. outputs.skip` and the same across a newline read the
+# decision as `needs.legion_build.outputs.skip` does).
 CONTEXT = re.compile(r"\b(needs|steps)\b", re.IGNORECASE)
 DOTTED = re.compile(r"(?:needs|steps)\.[A-Za-z_][A-Za-z0-9_-]*\.", re.IGNORECASE)
+
+
+def joined(cond):
+    """`cond` with the whitespace around each `.` taken out, as the reader rule matches it."""
+    return re.sub(r"\s*\.\s*", ".", cond)
 
 
 def spelled(path, job_name, selector, cond):
@@ -553,13 +563,24 @@ def spelled(path, job_name, selector, cond):
     reader rule, which reads dotted references alone, sees each reader there is."""
     if not isinstance(cond, str):
         return
-    odd = (["index syntax `[`"] if "[" in cond else []) + (["an object filter `.*`"] if ".*" in cond else []) + (
+    text = joined(cond)
+    odd = (["index syntax `[`"] if "[" in text else []) + (["an object filter `.*`"] if ".*" in text else []) + (
         ["a needs or steps reference that is not `needs.<name>.` or `steps.<name>.`"]
-        if any(not DOTTED.match(cond, m.start()) for m in CONTEXT.finditer(cond)) else [])
+        if any(not DOTTED.match(text, m.start()) for m in CONTEXT.finditer(text)) else [])
     if odd:
-        problem(f"{described(selector)} of {job_name} has the if: `{cond}`, which uses {' and '.join(odd)}: an if: of "
-                f"this workflow reads the needs and steps contexts by dotted names alone, the one form the check "
-                f"reads a decision reader by", path)
+        problem(f"{described(selector)} of {job_name} has the if: {rendered(cond)}, which uses {' and '.join(odd)}: an "
+                f"if: of this workflow reads the needs and steps contexts by dotted names alone, the one form the "
+                f"check reads a decision reader by", path)
+
+
+def whole_read(path, job_name, selector, cond, patterns):
+    """Rule 3's whole-outputs bound: an if: that reads one of `patterns`' outputs, a decision job's
+    or checked step's, whole rather than one output by name."""
+    for name, pattern in patterns:
+        if isinstance(cond, str) and pattern.search(joined(cond)):
+            problem(f"{described(selector)} of {job_name} has the if: {rendered(cond)}, which reads {name} whole "
+                    f"rather than one output by name: the check reads a decision reader by the output it names, so "
+                    f"an if: names the output it reads", path)
 
 
 def decision_readers(path, doc):
@@ -574,6 +595,11 @@ def decision_readers(path, doc):
     outputs = {job: wanted for (workflow, job), wanted in plan.JOB_OUTPUTS.items() if workflow == path}
     anywhere = [re.compile(rf"\bneeds\.{re.escape(job)}\.outputs\.(?:{'|'.join(map(re.escape, wanted))})\b",
                            re.IGNORECASE) for job, wanted in outputs.items()]
+    # A job's or checked step's outputs read whole, with no output named after them
+    # (`fromJSON(toJSON(needs.legion_build.outputs)).skip`): the reader rule cannot say which
+    # output such an if: reads, so it is refused.
+    whole = [(f"needs.{job}.outputs", re.compile(rf"\bneeds\.{re.escape(job)}\.outputs\b(?!\.[A-Za-z_])", re.IGNORECASE))
+             for job in outputs]
     held = {}    # (job, selector) -> the if: it holds, for the job itself and each of its steps
     index = {}   # (job, selector) -> the step's 1-based place in its job, 0 for the job itself
     keys = {}    # (job, selector) -> the step's keys, for each step
@@ -583,12 +609,18 @@ def decision_readers(path, doc):
             continue
         own = [re.compile(rf"\bsteps\.{re.escape(s.step_id)}\.outputs\.", re.IGNORECASE)
                for s in specs if s.job == job_name]
+        own_whole = [(f"steps.{s.step_id}.outputs",
+                      re.compile(rf"\bsteps\.{re.escape(s.step_id)}\.outputs\b(?!\.[A-Za-z_])", re.IGNORECASE))
+                     for s in specs if s.job == job_name]
         checked = {s.step_id for s in specs if s.job == job_name}
+        patterns = whole + own_whole
+
         cond = job.get("if")
         held[(job_name, ("job",))] = cond
         index[(job_name, ("job",))] = 0
         spelled(path, job_name, ("job",), cond)
-        if isinstance(cond, str) and any(r.search(cond) for r in anywhere):
+        whole_read(path, job_name, ("job",), cond, patterns)
+        if isinstance(cond, str) and any(r.search(joined(cond)) for r in anywhere):
             found[(job_name, ("job",))] = cond
         ids = set()
         for n, step in enumerate(job.get("steps") if isinstance(job.get("steps"), list) else [], 1):
@@ -599,15 +631,16 @@ def decision_readers(path, doc):
             index[(job_name, step_selector(step, n))] = n
             keys[(job_name, step_selector(step, n))] = set(step)
             spelled(path, job_name, step_selector(step, n), cond)
+            whole_read(path, job_name, step_selector(step, n), cond, patterns)
             if step.get("id") in checked:
                 continue  # a checked version step's if: is version_step's to hold
-            text = cond if isinstance(cond, str) else ""
+            text = joined(cond) if isinstance(cond, str) else ""
             if not (any(r.search(text) for r in anywhere + own)
                     or any(re.search(rf"\bsteps\.{re.escape(i)}\.", text, re.IGNORECASE) for i in ids)):
                 continue
             if isinstance(step.get("id"), str):
                 ids.add(step["id"])
-            found[(job_name, step_selector(step, n))] = text
+            found[(job_name, step_selector(step, n))] = cond
     listed = {(job, reader_selector(reader)): reader.if_ for (workflow, job), readers in plan.DECISION_READERS.items()
               if workflow == path for reader in readers}
 
@@ -628,9 +661,10 @@ def decision_readers(path, doc):
                     f"with no failure anywhere", path)
     for (job_name, selector), have in sorted(found.items()):
         if (job_name, selector) not in listed:
-            problem(f"{described(selector)} of {job_name} has the if: `{have}`, which reads a checked version step's "
-                    f"decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that reads the "
-                    f"decision is an entry there, so that no edit of its if: can throw the decision away unseen", path)
+            problem(f"{described(selector)} of {job_name} has the if: {rendered(have)}, which reads a checked version "
+                    f"step's decision, and {PLAN}'s DECISION_READERS names no such reader: a new step or job that "
+                    f"reads the decision is an entry there, so that no edit of its if: can throw the decision away "
+                    f"unseen", path)
     # What each job that carries a checked decision needs, order aside.
     for (workflow, job_name), want in sorted(plan.JOB_NEEDS.items()):
         if workflow != path:
