@@ -55,8 +55,12 @@ const (
 	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
 	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
-	// record of that step (StepRecord).
+	// record of that step, or the rating a retro gave the plan onto the retro's record
+	// (StepRecord).
 	OutboxKindStepRecord OutboxKind = "step_record"
+	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
+	// (PlanRecord).
+	OutboxKindPlanRecord OutboxKind = "plan_record"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -85,10 +89,11 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
-// The record lane runs the writes of the issue's step records (step_record) on a lane of its own,
-// so a Dispatch that is slow to take a record, or one that backs a record off until it has the
-// route, delays no status write, notice or start of that issue: a record is history, and the work
-// it records never waits for it.
+// The record lane runs the writes of the records of the issue's work — each step's record and the
+// rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
+// their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
+// has the route, delays no status write, notice or start of that issue: a record is history, and
+// the work it records never waits for it.
 type OutboxLane string
 
 const (
@@ -106,7 +111,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneRecord:      {OutboxKindStepRecord},
+	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -1083,9 +1088,38 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
+	// Rating and RatingReason are the rating the retro gave the plan, from 1 to 5, and why: the
+	// one write that carries them is the retro's rating, which Dispatch takes on the record's
+	// rating route (dispatch.HTTPClient.PutStep), and every other write leaves both out.
+	Rating       *int    `json:"rating,omitempty"`
+	RatingReason *string `json:"rating_reason,omitempty"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
+
+// PlanRecord is the plan one run of an issue carries out, written onto Dispatch (PUT
+// /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
+// issue and its run, and the row's issue column is the issue. Each other field is a field of the
+// route's body under the same name: the run (record.Issue.Generation), where the plan came from
+// (default, the steps Legion runs when the owner gave none, or owner), the owner's document and its
+// version, which a plan of the source default leaves out, and each task with its steps in order.
+// Dispatch sets each field once, so a plan sent again changes nothing.
+type PlanRecord struct {
+	ID         string     `json:"id"`
+	Generation uint64     `json:"generation"`
+	Source     string     `json:"source"`
+	ArtifactID string     `json:"artifact_id,omitempty"`
+	Version    int        `json:"version,omitempty"`
+	Tasks      []PlanTask `json:"tasks"`
+}
+
+// PlanTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+type PlanTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1519,6 +1553,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindPlanRecord:
+		value := PlanRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindClaimRelease:
 		value := ClaimRelease{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1787,6 +1827,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
+		}
+	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
+	// same reason a step record's is.
+	case PlanRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
 		}
 	case MergeQueueRemoval:
 		if value.Number < 1 || value.Head == "" {

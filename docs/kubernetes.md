@@ -1972,10 +1972,10 @@ This release's one-time start of the mergers that the `awaiting_merge` cutover l
 
 #### Rolling back the release that records each step
 
-This release adds one outbox kind, `step_record`, and its migration `20261117000528_outbox_kinds_with_the_step_record` adds the name to the outbox's kind check (`outbox_kind_check`).
+This release adds one outbox kind, `step_record`, and one table, `step_starts`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the two merge-queue kinds among its kinds, and its version stands above `20261114031356_merge_queue_removal`, so it writes the list last on any database.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
-The migration changes no column.
+That migration changes no column.
 
 Run this with the daemon stopped, before the earlier image is pinned:
 
@@ -1987,6 +1987,35 @@ delete from outbox where kind = 'step_record';
 Each deleted row costs one write of one record: Dispatch shows that step without the start or the end the row carried, and nothing else of the issue changes.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
 It waits through the rollback and writes its record at the roll forward, when Dispatch keeps each field the record already holds and takes only the ones it lacks.
+
+The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
+
+The table `step_starts` (`20261117004117_step_starts`) stays in place, and the rollback needs no statement for it: an earlier release names it in no statement, so that release boots with the table and its rows there.
+It holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`).
+What a rollback and a roll forward cost is the record of each step that started under the earlier release, which writes no start and raises no count.
+At the roll forward, the end of such a step reads the count of its place's last run under this release: where that run had ended, the end writes nothing and the step has no record;
+where that run was still open at the rollback, the end ends that run's record, with the moment and the result of the later run.
+
+#### Rolling back the release that rates each plan
+
+This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
+That migration writes the whole list, `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so it writes the list last on any database.
+A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts.
+This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
+That migration changes no column.
+
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The writes of the runs' plans and of the retros' ratings onto Dispatch.
+delete from outbox where kind = 'plan_record';
+delete from outbox where kind = 'step_record' and payload->>'rating' is not null;
+```
+
+Each deleted `plan_record` row costs the plan of one run: Dispatch holds no plan for that run, and the read of the project's finished issues lists the issue with no plan.
+Each deleted rating row costs the rating of one retro: the retro's record holds no rating, and nothing else of the issue changes.
+An earlier release puts `plan_record` in no outbox lane (`laneKinds` in `record/outbox.go`), so a `plan_record` row left in place is never decoded or run, and it writes its plan at the roll forward.
+A rating row left in place is not harmless in the same way: the release that records each step decodes a `step_record` row strictly and knows no `rating`, so it fails that row's decode at every attempt, logs the failure each time and retries it on its backoff until the roll forward.
 
 The kind check keeps the name after the rollback, and the rollback needs no statement for it: an earlier release never writes the kind, so the check refuses nothing that release writes.
 
