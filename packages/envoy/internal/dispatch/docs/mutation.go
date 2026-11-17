@@ -1119,13 +1119,13 @@ func refuseLostAskBlocks(lost map[string]struct{}) error {
 	sort.Strings(blockIDs)
 	if len(blockIDs) == 1 {
 		return fmt.Errorf(
-			"this write removes the open decision block %s, whose question a person can still answer; "+
+			"this write removes the open ask block %s, whose question a person can still answer; "+
 				"answer or resolve its ask, or remove the block in the document editor, before this write",
 			blockIDs[0],
 		)
 	}
 	return fmt.Errorf(
-		"this write removes the open decision blocks %s, whose questions a person can still answer; "+
+		"this write removes the open ask blocks %s, whose questions a person can still answer; "+
 			"answer or resolve each ask, or remove the blocks in the document editor, before this write",
 		strings.Join(blockIDs, ", "),
 	)
@@ -1151,11 +1151,11 @@ func (e *ErrAnsweredAskKept) Error() string {
 	refusals := make([]string, len(e.Asks))
 	for index, ask := range e.Asks {
 		if ask.RetypedTo != "" {
-			refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot retype its decision block %s to %s",
+			refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot retype its ask block %s to %s",
 				ask.Ask, ask.Question, ask.Block, ask.RetypedTo)
 			continue
 		}
-		refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot remove its decision block %s from this document",
+		refusals[index] = fmt.Sprintf("ask %s, asking %q, is answered; an agent cannot remove its ask block %s from this document",
 			ask.Ask, ask.Question, ask.Block)
 	}
 	return strings.Join(refusals, ". ")
@@ -2584,9 +2584,9 @@ type renderedTree struct {
 
 // writeVersionTx is the only path that changes the durable version protocol:
 // version writes index references and blocks, move open approval asks to the new version, carry a
-// human's approval to the version by carryApproval's rules (his answer to a decision block is the
+// human's approval to the version by carryApproval's rules (his answer to an ask block is the
 // whole change since the version he approved, the version holds the text he approved with its
-// decision blocks as their rows have them, or it holds that text with the questions the close
+// ask blocks as their rows have them, or it holds that text with the questions the close
 // withdrew and the reopen opened again), refresh anchors, and retain their author capture until
 // the enclosing transaction commits. A nil write records no version but keeps a transactional
 // tree mutation's anchors in the same path. A settlement's version of a closed issue's document
@@ -2654,7 +2654,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 			collectEvent(ctx, event)
 		}
 		// A human's approval carries to the version this writes by carryApproval's rules: his
-		// answer to a decision block is the whole change since the version he approved, the
+		// answer to an ask block is the whole change since the version he approved, the
 		// version holds the approved text again, its blocks as their rows have them, or it holds
 		// that text with the questions the close withdrew and the reopen opened again. It runs
 		// after the move, so an open request already names this version when the carry answers

@@ -35,7 +35,7 @@ function askOpeners(lines: readonly string[], blockId: string): string[] {
 }
 
 /**
- * Refuses an approval request while the document holds an open decision block. A request asks
+ * Refuses an approval request while the document holds an open ask block. A request asks
  * the human to agree to every point of the latest version, and an open block is a question they
  * have not decided yet. Their answer is held on the ask, not in the text, so it writes no version
  * and moves no request. The live document's `ask` blocks are judged against the latest version,
@@ -148,7 +148,7 @@ export async function refuseOpenDecisionBlocks(
     if (line !== undefined) open.push(line);
   }
   if (open.length === 0) return;
-  const count = open.length === 1 ? "1 open decision block" : `${open.length} open decision blocks`;
+  const count = open.length === 1 ? "1 open ask block" : `${open.length} open ask blocks`;
   throw new Error(
     [
       `dispatch ${commandName(tool)} was not called: ${artifact.name} (version ${latest}) has ${count}. Approving the document means agreeing to every point in it, and an open block is a question the human has not decided yet.`,
@@ -159,7 +159,7 @@ export async function refuseOpenDecisionBlocks(
 }
 
 /**
- * Refuses a document edit that would take a decision block out of the document while its ask is
+ * Refuses a document edit that would take an ask block out of the document while its ask is
  * open: a `delete` of the block or of a block holding it, or a `retype` of it into another type.
  * The edit writes its version at once; about two seconds later settlement retracts the ask in the
  * system's name and writes no version, so the human's question leaves the Inbox unanswered and an
@@ -207,15 +207,15 @@ export async function refuseRemovingOpenDecisionBlocks(
   if (open.length === 0) return;
   const [what, question] =
     open.length === 1
-      ? ["a decision block whose ask is", "question"]
-      : [`${open.length} decision blocks whose asks are`, "questions"];
+      ? ["an ask block whose ask is", "question"]
+      : [`${open.length} ask blocks whose asks are`, "questions"];
   throw new Error(
     [
       `dispatch ${commandName(tool)} was not called: it would remove ${what} still open, and the human's ${question} would leave their Inbox unanswered.`,
       ...open.map(
         (ask) => `- ${JSON.stringify(ask.question)} (block ${ask.block_id}, ask ${ask.id})`
       ),
-      "A decision block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
+      "An ask block leaves the document once its ask is answered or resolved. Until then, reword it with replace, relocate it with move, or change its question, options, urgency or multiple with dispatch edit-ask if you asked it; each keeps it.",
     ].join("\n")
   );
 }

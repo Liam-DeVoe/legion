@@ -26,12 +26,12 @@ import (
 // which renders each ask's state from the store (dispatch://INFRA-1150 R3). Reopening the issue
 // opens exactly those asks again.
 
-// closeDecision is the decision block the closing tests' spec holds, and a copy of it a second
+// closeDecision is the ask block the closing tests' spec holds, and a copy of it a second
 // document of the issue holds.
 const closeDecision = "Context\n\n:::ask{#close-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
 // closeAsksFixture is an issue holding one open ask of every kind - a plain ask waiting on a
-// person, a plain ask waiting on its agent, a decision block in the spec with a copy of it in a
+// person, a plain ask waiting on its agent, an ask block in the spec with a copy of it in a
 // second document, an approval request on the spec - beside an answered and a retracted ask.
 type closeAsksFixture struct {
 	handler   http.Handler
@@ -40,7 +40,7 @@ type closeAsksFixture struct {
 	issue     string
 	spec      string
 	copy      string
-	// open are the open asks: the person's, the agent's, the decision block's, the approval's.
+	// open are the open asks: the person's, the agent's, the ask block's, the approval's.
 	personAsk, agentAsk, blockAsk, approvalAsk string
 	answeredAsk, retractedAsk                  string
 }
@@ -352,7 +352,7 @@ func (failingSettlement) SettleIssueDocuments(context.Context, string) error {
 	return errors.New("settlement failed")
 }
 
-// A decision block written a moment before the close, which its settlement (an hour away) has not
+// An ask block written a moment before the close, which its settlement (an hour away) has not
 // indexed, is still withdrawn by the close: the close settles the issue's documents first, so the
 // block is an ask, credited to whoever wrote it. When that settlement fails, the block is no ask
 // to withdraw, and the text an agent reads, which the decision card reads a block with no ask
@@ -392,10 +392,10 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 				}},
 			})
 			if edited.Code != http.StatusOK {
-				t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
+				t.Fatalf("write the ask block: status=%d body=%s", edited.Code, edited.Body.String())
 			}
 			if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision"); id != "" {
-				t.Fatalf("the decision block is ask %s before any settlement", id)
+				t.Fatalf("the ask block is ask %s before any settlement", id)
 			}
 			closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
 			if closed.Code != http.StatusOK {
@@ -405,7 +405,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 			id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 			if !settlementFails {
 				if id == "" {
-					t.Fatal("the close's settlement never indexed the decision block")
+					t.Fatal("the close's settlement never indexed the ask block")
 				}
 				ask := readBlockAsk(t, handler, id)
 				if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
@@ -415,7 +415,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 				return
 			}
 			if id != "" {
-				t.Fatalf("the decision block is ask %s although its settlement failed", id)
+				t.Fatalf("the ask block is ask %s although its settlement failed", id)
 			}
 			if line := askDirective(t, liveTree(t, documentService, issue.PrimaryArtifactID), "late-decision"); !test.twoBuilds && strings.Contains(line, "state=") {
 				t.Fatalf("on a fleet of one build the closed issue's unindexed block holds %.300s, want no state in the document", line)
@@ -428,7 +428,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 			}
 			id = findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 			if id == "" {
-				t.Fatal("the reopen's settlement never indexed the decision block")
+				t.Fatal("the reopen's settlement never indexed the ask block")
 			}
 			ask := readBlockAsk(t, handler, id)
 			if ask.State != "open" || ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
@@ -521,11 +521,11 @@ func TestClosingAnIssueWritesAnAnsweredAsksCopiesWithoutItsWordsWhileAnotherBuil
 	}
 }
 
-// pastedCloseDecision is the spec's decision block as a browser's paste copies it, with the id
+// pastedCloseDecision is the spec's ask block as a browser's paste copies it, with the id
 // and the state the block it copies carries.
 const pastedCloseDecision = ":::ask{#close-decision urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
-// A decision block a browser pasted a moment before the close repeats the id of the block it
+// An ask block a browser pasted a moment before the close repeats the id of the block it
 // copies, so it is no ask until a settlement stamps it an id of its own. The close settles the
 // issue's documents first, so the pasted block is an ask under a new id, withdrawn with the block
 // it copies, each with a record naming the closer. When that settlement fails, the pasted block is
@@ -638,7 +638,7 @@ func documentBlockAsks(t *testing.T, handler http.Handler, issue, document strin
 }
 
 // pastedBlockAsk is the one ask of document indexed for a block other than close-decision: the
-// pasted copy of the spec's decision block, under the id a settlement stamped it.
+// pasted copy of the spec's ask block, under the id a settlement stamped it.
 func pastedBlockAsk(t *testing.T, handler http.Handler, issue, document string) model.Ask {
 	t.Helper()
 	var found []model.Ask
@@ -678,7 +678,7 @@ func otherProcessHandler(t *testing.T, database *store.Store) http.Handler {
 	return mux
 }
 
-// A decision block written a moment before the close is withdrawn by it, with a record naming the
+// An ask block written a moment before the close is withdrawn by it, with a record naming the
 // closer, even when the agent's next edit landed on another envoy-dispatch process and left this
 // process's room behind the document's durable head (no room sync runs here, so the room hears of
 // nothing). A read is never older than the stored head all the same, and the close's settlement
@@ -710,7 +710,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(
 		t.Fatalf("this process's read of the document is older than the other process's stored edit:\n%s", live)
 	}
 	if id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision"); id != "" {
-		t.Fatalf("the decision block is ask %s before any settlement", id)
+		t.Fatalf("the ask block is ask %s before any settlement", id)
 	}
 
 	closed := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
@@ -719,7 +719,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(
 	}
 	id := findBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID, "late-decision")
 	if id == "" {
-		t.Fatal("the close's settlement never indexed the decision block")
+		t.Fatal("the close's settlement never indexed the ask block")
 	}
 	ask := readBlockAsk(t, handler, id)
 	if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
@@ -749,7 +749,7 @@ func (d *peerInsertDocs) WriteIssueAskStates(ctx context.Context, issueKey strin
 	return written, err
 }
 
-// A browser writing a decision block into a document after the close's transaction forked it and
+// A browser writing an ask block into a document after the close's transaction forked it and
 // before it committed leaves the block in the room, where it gets no ask on the closed issue: the
 // close's sweep, once the rooms are closed, leaves it reading resolved, and the settlement that
 // then runs on the closed issue saves it so, still with no ask (reconcileAskBlocks). The sweep
@@ -789,7 +789,7 @@ func TestABrowsersDecisionBlockWrittenDuringTheCloseReadsResolved(t *testing.T) 
 		`#close-decision urgency="med" multiple="false" state="resolved"`,
 		`#peer-decision urgency="low" multiple="false" state="resolved"`,
 	)(version) {
-		t.Fatalf("the closed issue's settlement left the newest version reading:\n%s\nwant both decision blocks resolved", version)
+		t.Fatalf("the closed issue's settlement left the newest version reading:\n%s\nwant both ask blocks resolved", version)
 	}
 }
 

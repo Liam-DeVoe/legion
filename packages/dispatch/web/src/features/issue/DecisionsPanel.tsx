@@ -36,8 +36,8 @@ import {
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
-/** The word that opens the paragraph the server reads as a decision's doubt
- *  (`api/decisions.go`'s `unsurePrefix`). */
+/** The word that opens a paragraph a decision's words give as its doubt, which the card draws
+ *  with the unsure accent. */
 const UNSURE_PREFIX = "Unsure:";
 
 /** One block of a decision's text below its heading, as a view draws one: the block's own text,
@@ -92,8 +92,8 @@ function wordsOf(node: DisplayTree): string {
   return words;
 }
 
-/** Whether a block is the decision's doubt, as the server marks one: a paragraph whose markdown
- *  starts `Unsure:` and nothing else (`api/decisions.go`'s `decisionSections`). In the reading
+/** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
+ *  nothing else. In the reading
  *  of such a paragraph the word stands in a first child that is plain text, since a mark over
  *  it - strong, a code span, a link - would have written its own characters first. */
 function isUnsureBlock(node: DisplayTree): boolean {
@@ -159,7 +159,7 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
 type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 /** A decision's text reads as its one `decision` block; what a card draws is that block's own
- *  content, the blocks a decision section of `decisions.md` held. */
+ *  content. */
 const DECISION_OPENING = /^:{3,}decision(\{[^\n]*\})?\n/;
 const DECISION_CLOSING = /\n:{3,}\n*$/;
 
@@ -313,7 +313,7 @@ function ChangeComposer({
   const send = useKeyedWrite({
     inline: true,
     label: () => `Change to ${decision.heading}`,
-    // The decisions document belongs to an issue, and a comment on an issue's document is the
+    // The decision's document belongs to an issue, and a comment on an issue's document is the
     // issue's own write: the artifact route refuses it, naming the issue route (`send-request.ts`
     // follows the same rule for a thread's replies).
     write: (input: { body: string; quote: string }, bounds) =>

@@ -424,7 +424,7 @@ func corpusFiles(t *testing.T, dir string) []string {
 // X's own corpus: a document created on X and settled answers /text on Y and takes an append edit
 // there, and X then renders it as its first render with the appended paragraph after it; on Y, a
 // document socket opened with X's page parameters is admitted writable and stays open. A version X
-// wrote holding every typed block of X's manifest is approved, the answer to its decision block
+// wrote holding every typed block of X's manifest is approved, the answer to its ask block
 // makes Y write the next version, and the approval is carried to it. A body holding every
 // reference form of X's text/testdata keeps its refs rows after Y rewrites it, but for the edges a
 // Y from before the unknown-kind guard drops, which it logs (requireRefsKept).
@@ -539,7 +539,7 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 func typedBlockID(name string) string { return "tb-" + name }
 
 // typedBlocksMarkdown is a document holding one block of every typed block both manifests
-// declare, each with its id and every attribute a writer sets at its default. A decision block
+// declare, each with its id and every attribute a writer sets at its default. An ask block
 // (the ask type) is given two choices, First and Second. A type only the writer's manifest
 // declares is left out: the reader could not read such a document at all, which is the point of
 // the manifest's own staging tests and not of this row, which is about what both builds read.
@@ -598,7 +598,7 @@ type servedReview struct {
 
 func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSide, project string) {
 	if !slices.ContainsFunc(writer.manifest.Types, func(typed manifestType) bool { return typed.Name == "ask" }) {
-		t.Fatalf("the %s's manifest declares no ask block, the decision block an approval is carried by", writer.name)
+		t.Fatalf("the %s's manifest declares no ask block, the block an approval is carried by", writer.name)
 	}
 	issueKey, artifactID := createDocument(t, writer.process, project, "Every typed block", typedBlocksMarkdown(t, writer.manifest, reader.manifest))
 	askID := waitForBlockAsk(t, writer.process, issueKey, typedBlockID("ask"))
@@ -621,14 +621,14 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
+			t.Fatalf("the answer on the %s to the ask block of a version the %s wrote and %s approved (version %d) carried no approval within 30s; reviews: %+v\n%s:\n%s",
 				reader.name, writer.name, dispatchTestLogin, approval.Version, reviews, reader.name, reader.process.Output.String())
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-// waitForBlockAsk waits for the ask settlement indexed from the decision block blockID of the
+// waitForBlockAsk waits for the ask settlement indexed from the ask block blockID of the
 // issue's documents, and returns its id.
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()

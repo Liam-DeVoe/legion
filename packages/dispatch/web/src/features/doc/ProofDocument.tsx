@@ -487,8 +487,9 @@ export function ProofDocument({
     setIsNameDialogOpen(true);
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
-  // versions) refresh once it lands, since the server writes the outcome into the block, and a
-  // host that selected the question hears of its answer too.
+  // versions) refresh once it lands, since the server's ask node now holds the outcome the block
+  // shows, though the answer writes no version, and a host that selected the question hears of
+  // its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });

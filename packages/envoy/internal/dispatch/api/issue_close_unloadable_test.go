@@ -69,7 +69,7 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 }
 
 // A document the close of its issue left as it was, because its stored history does not load, is
-// rebuilt from its latest version, saved while the issue was open and showing its decision block
+// rebuilt from its latest version, saved while the issue was open and showing its ask block
 // open. The rebuild writes the close's states into the rebuilt document in its own transaction,
 // so once it commits the block reads resolved, as the withdrawn ask's row does, rather than open
 // on a closed issue until a reopen. The reopen then opens the block again with its ask. A block
@@ -109,10 +109,10 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 	}
 	live := liveTree(t, f.documents, notes)
 	if !strings.Contains(live, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`) {
-		t.Fatalf("the rebuilt notes' live tree:\n%s\nwant the withdrawn decision block resolved", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nwant the withdrawn ask block resolved", live)
 	}
 	if strings.Contains(live, open) {
-		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn decision block open on a closed issue", live)
+		t.Fatalf("the rebuilt notes' live tree:\n%s\nshows the withdrawn ask block open on a closed issue", live)
 	}
 	requireLiveText(t, f.handler, notes, `#rebuilt-decision urgency="med" multiple="false" state="resolved"`)
 	requireWithdrawn(t, f.handler, issue.Key, blockAsk, model.Actor{Kind: "user", ID: "alice"})
@@ -129,7 +129,7 @@ func TestRebuildingAClosedIssuesUnloadableDocumentShowsItsWithdrawnDecisionBlock
 
 // Rebuilding a closed issue's document writes the close's final sweep into the rebuilt document as
 // the fleet stands, as the close itself writes it (docs' readIssueAskStateWrites). The document
-// holds a decision block of its own, which the close withdrew, and a copy of the spec's decision,
+// holds an ask block of its own, which the close withdrew, and a copy of the spec's decision,
 // which alice answered. While another build serves, each block of the rebuilt document carries
 // the attributes that build's pages read an ask's state from, each value as the asks row holds it:
 // the withdrawn block its resolved state, and the copy who answered and when, and the ask and

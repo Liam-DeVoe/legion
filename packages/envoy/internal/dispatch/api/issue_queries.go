@@ -1035,7 +1035,7 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedDecisionsRole + `), ''),
+		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
@@ -1191,11 +1191,14 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // issue's key and $2 the steps in the order a gate runs them, which is the order the read
 // answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
 // (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// the text, so model.GatedStepsKnown stays the one place that order is written. A row of a step
+// outside it, the retired `decisions` step a daemon of the release before wrote, is left out
+// (dispatch://INFRA-1150 R11). A key no issue carries returns no row, which is what the issue
+// read's first batch requires of every statement beside the issue row's.
+//
+// kept for one release: design-gate-rows
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id from design_gates where issue = $1 and step = any($2::text[])
 		order by array_position($2::text[], step)
 	`
 

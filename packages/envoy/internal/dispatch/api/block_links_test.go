@@ -74,8 +74,8 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 	}
 }
 
-// A4: decisions.md has two blocks citing blocks of the spec, written in two versions, and the
-// spec has one block citing decisions.md's first block. The links from decisions.md to the spec
+// A4: rollout.md has two blocks citing blocks of the spec, written in two versions, and the
+// spec has one block citing rollout.md's first block. The links from rollout.md to the spec
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
 // exactly the spec's one.
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
@@ -87,7 +87,7 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	specKey := issue.Key + "/spec"
 
 	shipParagraph := "Ship per " + specRef + "#b-ship%5Fit."
-	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md",
+	decisions := uploadIssueDocument(t, handler, issue.Key, "rollout.md",
 		":::callout{#first_call kind=\"note\" title=\"\"}\nDecided.\n:::\n\n"+shipParagraph+"\n")
 	decisionsRef := "dispatch://" + issue.Key + "/artifact/" + decisions.Slug
 	decisionsKey := decisions.RefKey
@@ -96,7 +96,7 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	editIssueDocument(t, handler, issue.Key, decisions.Slug, []map[string]any{{"op": "insert", "after": "end", "markdown": holdParagraph}})
 	decisionsV2 := latestVersion(t, database, decisions.ID)
 	if decisionsV1.Number != 1 || decisionsV2.Number != 2 {
-		t.Fatalf("decisions.md versions = %d, %d, want 1, 2", decisionsV1.Number, decisionsV2.Number)
+		t.Fatalf("rollout.md versions = %d, %d, want 1, 2", decisionsV1.Number, decisionsV2.Number)
 	}
 
 	citeParagraph := "Spec cites " + decisionsRef + "#b-first%5Fcall."
@@ -113,9 +113,9 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	forward := readBlockLinks(t, handler, decisionsRef, specRef)
 	if forward.From.Kind != "artifact" || forward.From.ID != decisions.ID || forward.From.Ref != decisionsRef ||
 		forward.To.Kind != "artifact" || forward.To.ID != issue.PrimaryArtifactID || forward.To.Ref != specRef {
-		t.Fatalf("documents = %#v, %#v, want decisions.md then the spec", forward.From, forward.To)
+		t.Fatalf("documents = %#v, %#v, want rollout.md then the spec", forward.From, forward.To)
 	}
-	compareBlockLinks(t, "decisions.md to the spec", forward.Links, []blockLink{
+	compareBlockLinks(t, "rollout.md to the spec", forward.Links, []blockLink{
 		{
 			Kind:         "mentions",
 			FromDocument: decisionsRef, FromID: decisionsKey + "#" + holdFrom, FromKind: "block", FromBlockID: holdFrom,
@@ -132,9 +132,9 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 
 	backward := readBlockLinks(t, handler, specRef, decisionsRef)
 	if backward.From.ID != issue.PrimaryArtifactID || backward.To.ID != decisions.ID {
-		t.Fatalf("documents = %#v, %#v, want the spec then decisions.md", backward.From, backward.To)
+		t.Fatalf("documents = %#v, %#v, want the spec then rollout.md", backward.From, backward.To)
 	}
-	compareBlockLinks(t, "the spec to decisions.md", backward.Links, []blockLink{{
+	compareBlockLinks(t, "the spec to rollout.md", backward.Links, []blockLink{{
 		Kind:         "mentions",
 		FromDocument: specRef, FromID: specKey + "#" + citeFrom, FromKind: "block", FromBlockID: citeFrom,
 		ToDocument: decisionsRef, ToID: decisionsKey + "#first_call", ToKind: "block", ToBlockID: "first_call",
