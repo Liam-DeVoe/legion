@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut and
@@ -673,9 +674,10 @@ func seededRegionDocumentGated(t *testing.T, settle time.Duration, gate FormGate
 	}
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, regionSpec)
-	// Settlement indexes the block as an ask of this document, the row the carry reads.
+	// Settlement indexes the block as an ask of this document, the row the carry reads. The wait
+	// lasts until the test binary's deadline, as seededActDocument's does.
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index the block", func() bool {
+	testwait.Eventually(t, "settlement to index the block", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'region'`, artifactID).Scan(&rows); err != nil {
 			t.Fatal(err)
