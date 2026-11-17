@@ -28,26 +28,26 @@ const taskNumbersVersion = 20261113175649
 // operator reads it at a rollback. The two paths are what a failure names, so a failing run names
 // the file to open. taskNumbersHeredoc opens the block in both and taskNumbersTerminator closes
 // it; taskNumbersWayBackStatements is how many statements stand between its begin and its commit,
-// which the header and the guide both call the seventeen.
+// which the header and the guide both call the eighteen.
 const (
 	taskNumbersFile              = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 	taskNumbersGuide             = "docs/kubernetes.md"
 	taskNumbersHeredoc           = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	taskNumbersTerminator        = "SQL"
-	taskNumbersWayBackStatements = 17
+	taskNumbersWayBackStatements = 18
 )
 
 // taskNumbersReadMarks are the push path's three marks on a pending task, which the migration
 // drops and its way back puts back.
 var taskNumbersReadMarks = []string{"delivered_at", "marked_by", "prompted"}
 
-// taskNumbersColumns are the twelve columns the migration adds, which its way back drops.
+// taskNumbersColumns are the thirteen columns the migration adds, which its way back drops.
 var taskNumbersColumns = []struct{ table, column string }{
 	{"claims", "task_written"}, {"claims", "task_taken"}, {"claims", "task_finished"},
 	{"claims", "task_finished_session"}, {"claims", "task_seen_epoch"}, {"claims", "task_seen_revision"},
 	{"claims", "task_take_state"}, {"claims", "task_written_epoch"}, {"claims", "task_written_revision"},
 	{"pending_task_deliveries", "number"}, {"pending_task_deliveries", "origin"},
-	{"pending_task_deliveries", "taken_text"},
+	{"pending_task_deliveries", "taken_text"}, {"pending_task_deliveries", "turn_started"},
 }
 
 // columnStands is whether table has column in the store's schema.
@@ -186,17 +186,24 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 			t.Errorf("%s after the migration reads %s, want %s: %s", want.token, got, want.line, want.why)
 		}
 	}
-	for _, token := range []string{"legion-LEGION-301-implementer", "legion-LEGION-302-implementer"} {
+	for _, want := range []struct {
+		token   string
+		started bool
+	}{
+		{"legion-LEGION-301-implementer", false},
+		{"legion-LEGION-302-implementer", true},
+	} {
 		var number int64
 		var origin string
 		var taken string
-		if err := store.pool.QueryRow(ctx, `select number, origin, taken_text from pending_task_deliveries
-			where claim_token = $1`, token).Scan(&number, &origin, &taken); err != nil {
-			t.Fatalf("read the pending task of %s after the migration: %v", token, err)
+		var started bool
+		if err := store.pool.QueryRow(ctx, `select number, origin, taken_text, turn_started from pending_task_deliveries
+			where claim_token = $1`, want.token).Scan(&number, &origin, &taken, &started); err != nil {
+			t.Fatalf("read the pending task of %s after the migration: %v", want.token, err)
 		}
-		if number != 1 || origin != "" || taken != "" {
-			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q; want task 1 of no recorded origin, which no take was ever answered for",
-				token, number, origin, taken)
+		if number != 1 || origin != "" || taken != "" || started != want.started {
+			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q, turn started %v; want task 1 of no recorded origin, which no take was ever answered for, its turn started %v: a confirmed row's turn started",
+				want.token, number, origin, taken, started, want.started)
 		}
 	}
 
@@ -218,11 +225,12 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 
 // Every task column round-trips through the store across a restart: a new pool and a new store
 // over the same database, with nothing of the first one carried in memory (reopenStore). The claim
-// carries every one of its nine task fields and its pending task its number, its origin and the
-// text its accepted take was answered with, which is what lets a take sent again after a lost
-// answer, or after a daemon restart, be answered the same text without being taken a second time.
-// The text is stored empty while no take has been accepted, and two numbers no bigint holds are
-// refused before anything is written.
+// carries every one of its nine task fields and its pending task its number, its origin, the
+// text its accepted take was answered with and whether that take's turn started, which is what
+// lets a take sent again after a lost answer, or after a daemon restart, be answered the same
+// text without being taken a second time, before the take's turn starts and after. The text is
+// stored empty while no take has been accepted, and two numbers no bigint holds are refused
+// before anything is written.
 func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -235,7 +243,8 @@ func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 		ID: "outbox:71", Task: "Implement the change. Issue: LEGION-209. Phase: implementing.",
 		Phase: phase.Implementing, Generation: 4, Entry: 3, QueuedAt: at(1), ConfirmedAt: at(2),
 		Number: 7, Origin: supervise.OriginPhaseStart,
-		TakenText: "Your last turn was interrupted.\n\nImplement the change. Issue: LEGION-209. Phase: implementing.",
+		TakenText:   "Your last turn was interrupted.\n\nImplement the change. Issue: LEGION-209. Phase: implementing.",
+		TurnStarted: true,
 	}
 	if err := store.PutClaimAndDelivery(ctx, want, *want.Pending); err != nil {
 		t.Fatalf("put the claim and its taken task: %v", err)
@@ -247,7 +256,7 @@ func TestTaskNumberSurvivesAStoreRestartWithEveryColumn(t *testing.T) {
 		// confirmed it, and no take of it has been answered.
 		queued := *want.Pending
 		queued.ID, queued.Number, queued.Origin, queued.TakenText = "outbox:72", 8, supervise.OriginWake, ""
-		queued.ConfirmedAt = time.Time{}
+		queued.ConfirmedAt, queued.TurnStarted = time.Time{}, false
 		if err := store.PutDelivery(ctx, want.Token, queued); err != nil {
 			t.Fatalf("put the queued task: %v", err)
 		}
@@ -334,7 +343,7 @@ func taskNumbersWayBackOfTheHeader(t *testing.T) string {
 
 // taskNumbersWayBack is the transaction of that block, what psql reads on its standard input. Its
 // statements are counted, so a block that lost one or grew one while the header and the guide
-// still call them the seventeen stops the test; the count splits on the semicolon, which no
+// still call them the eighteen stops the test; the count splits on the semicolon, which no
 // statement of this block carries inside a literal.
 func taskNumbersWayBack(t *testing.T, block string) string {
 	t.Helper()
@@ -355,7 +364,7 @@ func taskNumbersWayBack(t *testing.T, block string) string {
 			taskNumbersFile, recovery)
 	}
 	if held := len(statements) - 2; held != taskNumbersWayBackStatements {
-		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the seventeen:\n%s",
+		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file and %s call the eighteen:\n%s",
 			taskNumbersFile, held, taskNumbersWayBackStatements, taskNumbersGuide, recovery)
 	}
 	return recovery
@@ -428,11 +437,11 @@ func TestMigrationTaskNumbersWayBackIsOneTextInTheHeaderAndTheGuide(t *testing.T
 // write its deliveries again — the three read marks stand, at the defaults that read as a task it
 // has queued and not yet sent — and decode every supervise row of its outbox, the start this
 // release wrote having lost its `origin`, a key that release's strict decoder refuses, and kept
-// every other key; none of the twelve columns stands, nor this migration's version row, while
+// every other key; none of the thirteen columns stands, nor this migration's version row, while
 // every other row stays recorded. The roll-forward then runs the migration again, and its second
 // fill numbers what it finds as the first fill numbered what an earlier release left: the task the
-// claim held under number 7 is task 1 again, and the claim that had finished task 4 has finished
-// task 1, in the session it holds.
+// claim held under number 7 is task 1 again, its turn started since a take confirmed it, and the
+// claim that had finished task 4 has finished task 1, in the session it holds.
 func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -536,11 +545,13 @@ func TestMigrationTaskNumbersWayBackLetsTheReleaseBeforeReadAndReArmsTheFill(t *
 	var number int64
 	var origin string
 	var takenText string
-	if err := store.pool.QueryRow(ctx, "select number, origin, taken_text from pending_task_deliveries where claim_token = $1",
-		string(taken.Token)).Scan(&number, &origin, &takenText); err != nil {
+	var turnStarted bool
+	if err := store.pool.QueryRow(ctx, "select number, origin, taken_text, turn_started from pending_task_deliveries where claim_token = $1",
+		string(taken.Token)).Scan(&number, &origin, &takenText, &turnStarted); err != nil {
 		t.Fatalf("read the pending task after the roll-forward: %v", err)
 	}
-	if number != 1 || origin != "" || takenText != "" {
-		t.Errorf("the pending task after the roll-forward = number %d, origin %q, taken text %q; want task 1 as the second fill writes it", number, origin, takenText)
+	if number != 1 || origin != "" || takenText != "" || !turnStarted {
+		t.Errorf("the pending task after the roll-forward = number %d, origin %q, taken text %q, turn started %v; want task 1 as the second fill writes it, its turn started",
+			number, origin, takenText, turnStarted)
 	}
 }

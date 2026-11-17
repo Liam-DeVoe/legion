@@ -674,3 +674,165 @@ func TestTakeWhoseDecisionFailedIsWrittenAgainForTheWorkerToAsk(t *testing.T) {
 	}
 	h.wantCharges()
 }
+
+// A take of a relaunched process that meets its predecessor's take still in flight — in the
+// adoption of the working copy it made with the machine's lock let go — is not that take sent
+// again, though it names the same number at the same revision (nothing is written at a
+// relaunch): it comes from another launch. It waits for the old take and is decided afresh, so
+// what the new process asked is recorded and answered, rather than handed the old take's answer,
+// which is the refusal of a launch the claim has left.
+//
+// The negative control is the in-flight take joined on number, epoch and revision alone
+// (sameTake before this change): the new process is answered the old take's answer, and no
+// adoption is made for it.
+func TestTakeOfARelaunchedProcessIsDecidedAfreshWhileItsPredecessorsTakeAdopts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		h := newHarness(t)
+		gate := newGatedAdopt(h.rt)
+		h.deps.Runtime = gate
+		h.deps.Identity = adoptingIdentity
+		h.restart()
+		h.manualTakes()
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7})
+		value := h.seen()
+		old := RequestTake{Claim: testToken, Generation: h.generation(), Session: session,
+			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}
+
+		var wg sync.WaitGroup
+		var oldAnswer, newAnswer TakeAnswer
+		var oldErr, newErr error
+		wg.Go(func() { oldAnswer, oldErr = h.m.Take(h.ctx, old) })
+		synctest.Wait()
+		if started := len(gate.entered); started != 1 {
+			t.Fatalf("%d adoptions started, want the old process's take in its adoption", started)
+		}
+
+		h.observe(runtime.Gone)
+		h.relaunched()
+		if now, _ := h.values.value(testToken); now != value {
+			t.Fatalf("the bucket holds %+v after the relaunch, want the same value %+v: nothing is written at a relaunch", now, value)
+		}
+		next := old
+		next.Generation = h.generation()
+		wg.Go(func() { newAnswer, newErr = h.m.Take(h.ctx, next) })
+		synctest.Wait()
+		gate.release <- struct{}{}
+		synctest.Wait()
+		gate.release <- struct{}{}
+		wg.Wait()
+		h.m.Wait()
+
+		t.Logf("the old process's take was answered %+v, %v", oldAnswer, oldErr)
+		if newErr != nil || newAnswer.Outcome != TakeOutcomeAccepted || newAnswer.Text != "implement the plan" {
+			t.Fatalf("the relaunched process's take = %+v, %v, want it decided afresh and accepted with the task's text", newAnswer, newErr)
+		}
+		if p := h.pending(); !p.awaitsTurn() {
+			t.Fatalf("pending %+v, want the new process's take accepted and its turn to come", p)
+		}
+		h.wantCalls("AdoptWorkingCopy", 2)
+	})
+}
+
+// A delete of the claim's value the bucket refuses is made again at the claim's next chance
+// while the record owes the claim no task, the sweep's observation among them, so a finished
+// task's value does not outlive it until the claim's next task or the daemon's next boot (R1).
+// A task queued meanwhile has its own value in the bucket, which that chance must not delete.
+//
+// The negative controls are the delete made again nowhere (offerPending with no deleteAgain):
+// the finished task's value stands after the next chance; and the delete made again whatever
+// the record owes (deleteAgain before offerPending's check of the pending task): the new task's
+// value is deleted.
+func TestTaskValueDeleteTheBucketRefusedIsMadeAgainAtTheNextChance(t *testing.T) {
+	t.Run("the delete is made again at the next chance", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateWorking)
+		number := h.pending().Number
+		h.values.fail("Delete", errBoom)
+		h.must(StreamTurnEnd{Claim: h.token})
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the turn was reported, want task %d finished", p, number)
+		}
+		if _, held := h.values.value(h.token); !held {
+			t.Fatal("the bucket holds no value after a delete it refused")
+		}
+
+		h.values.fail("Delete", nil)
+		h.observe(runtime.Alive)
+
+		if value, held := h.values.value(h.token); held {
+			t.Fatalf("the bucket still holds %+v after the next chance, want the finished task's value deleted", value)
+		}
+		deleted := h.records.of(deletedLine)
+		if len(deleted) != 1 {
+			t.Fatalf("%q was logged %d times, want once", deletedLine, len(deleted))
+		}
+		wantAttr(t, deleted[0], "cause", valueDeletedFinished)
+	})
+	t.Run("a task written meanwhile is not deleted", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateWorking)
+		h.values.fail("Delete", errBoom)
+		h.must(StreamTurnEnd{Claim: h.token})
+		h.values.fail("Delete", nil)
+		h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+		next := h.pending().Number
+
+		h.observe(runtime.Alive)
+
+		if value, held := h.values.value(h.token); !held || value.Number != next {
+			t.Fatalf("the bucket holds %+v (held %v), want task %d's value", value, held, next)
+		}
+		if deleted := h.values.deleted(); len(deleted) != 0 {
+			t.Fatalf("values deleted %v, want none: the record owes task %d", deleted, next)
+		}
+	})
+}
+
+// A take whose accept the store refused is refused at its revision and its value written again
+// once the task is free to take (undecided), but not while the claim still owes the write the
+// store did not take: the store is away, a take at the new revision would fail in turn, and a
+// task whose take reads nothing of the store — one of no phase — would go round a write, a take
+// and a failed answer at every sweep for as long as the store is away. The value is written once
+// the owed write lands, and the take at that revision is accepted.
+//
+// The negative control is the rewrite made whatever the claim owes (offerPending with no check
+// of the owed write): the first sweep of the outage writes the value again.
+func TestTakeFailedOnTheStoreIsWrittenAgainOnlyOnceTheOwedWriteLands(t *testing.T) {
+	h := newHarness(t)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: "the operator's task"})
+	asked := h.seen()
+	h.store.fail("PutClaim", errBoom)
+	h.store.fail("PutDelivery", errBoom)
+	if answer, err := h.takeValue(asked); answer.Outcome != "" || err == nil {
+		t.Fatalf("the take while the store refuses writes = %+v, %v; want no answer and the write's failure", answer, err)
+	}
+	written := len(h.values.written())
+
+	for sweep := 1; sweep <= 3; sweep++ {
+		_ = h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Alive, At: h.clock.Now()}})
+		if got := h.values.written(); len(got) != written {
+			t.Fatalf("sweep %d of the outage wrote the value again: %+v", sweep, got[written:])
+		}
+	}
+
+	h.store.fail("PutClaim", nil)
+	h.store.fail("PutDelivery", nil)
+	h.observe(runtime.Alive)
+
+	rewritten := h.values.written()
+	if len(rewritten) != written+1 {
+		t.Fatalf("the values written once the store answered are %+v, want one more than the %d before", rewritten, written)
+	}
+	value := rewritten[len(rewritten)-1]
+	if value.Number != asked.Number || value.Revision <= asked.Revision {
+		t.Fatalf("the store's return wrote %+v, want task %d again at a revision past %d", value, asked.Number, asked.Revision)
+	}
+	lines := h.records.of(writtenLine)
+	wantAttr(t, lines[len(lines)-1], "cause", TaskValueTakeFailed)
+	if answer, err := h.takeValue(value); answer.Outcome != TakeOutcomeAccepted {
+		t.Fatalf("the take at the newer revision = %+v, %v; want it accepted", answer, err)
+	}
+}

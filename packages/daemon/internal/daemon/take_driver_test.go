@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -45,7 +46,13 @@ type takeDriver struct {
 	// values, when set, is the value the plugin was last handed, nil for none, read in place of
 	// claims/task: the newest of the registration's answer and the task frames the Envoy listener
 	// relayed to the session (task_take_live_test.go's taskWorker).
-	values     func() (*claim.TaskValue, error)
+	values func() (*claim.TaskValue, error)
+	// started, when set, reads whether the daemon has seen the turn the driver began last start
+	// (turnSeen): its claim is working, or the take that turn ran no longer stands. A driver given
+	// none — the idle rig's role process, which holds no operator token and reads nothing of the
+	// daemon between a turn's start and its end — does not wait, since the daemon reads a report
+	// that comes ahead of its turn's start as that turn's (supervise's startedUnseen).
+	started    func() (bool, error)
 	caller     claim.AgentCaller
 	generation uint64
 
@@ -75,10 +82,50 @@ func newTakeDriver(post func(path string, body, answer any) error, send func(shi
 }
 
 // takeDriver is the plugin of the session that registered as session with secret on token's claim
-// at generation, posting to d's routes and writing on sh.
+// at generation, posting to d's routes and writing on sh, which reads the turn starts d saw
+// (turnRead).
 func (d *daemon) takeDriver(sh *shim, token claim.Token, session, secret string, generation uint64) *takeDriver {
-	return newTakeDriver(d.post, sh.writer.WriteFrame,
+	driver := newTakeDriver(d.post, sh.writer.WriteFrame,
 		claim.AgentCaller{ClaimToken: token, SessionID: session, Secret: secret}, generation)
+	driver.started = d.turnRead(token)
+	return driver
+}
+
+// turnRead is takeDriver.started for token's claim on d: the operator's listing of the claims,
+// which a machine answers from memory as its last decision left it (api's list), reads the claim
+// working once its machine has read the turn's start, and holding no accepted take once that take
+// is taken back, finished or dropped. It reports a failure rather than failing the test, so a
+// driver may read it from a goroutine of its own.
+func (d *daemon) turnRead(token claim.Token) func() (bool, error) {
+	return func() (bool, error) {
+		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, d.base+"/legion/v1/operator/claims", nil)
+		if err != nil {
+			return false, err
+		}
+		request.Header.Set("Authorization", "Bearer "+testOperatorToken)
+		response, err := d.client.Do(request)
+		if err != nil {
+			return false, err
+		}
+		defer response.Body.Close()
+		read, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+		if err != nil {
+			return false, err
+		}
+		if response.StatusCode != http.StatusOK {
+			return false, fmt.Errorf("GET /legion/v1/operator/claims = %d %s", response.StatusCode, bytes.TrimSpace(read))
+		}
+		var list api.OperatorClaims
+		if err := json.Unmarshal(read, &list); err != nil {
+			return false, fmt.Errorf("decode the claims: %w", err)
+		}
+		for _, c := range list.Claims {
+			if c.Token == token {
+				return c.State == string(supervise.StateWorking) || c.Pending == nil || c.Pending.ConfirmedAt == nil, nil
+			}
+		}
+		return false, fmt.Errorf("the daemon lists no claim %s", token)
+	}
 }
 
 // post sends body to the route at path and decodes a 2xx answer into answer (nil reads none). It
@@ -207,32 +254,34 @@ func (w *takeDriver) takeWithin(within time.Duration) (takenTask, error) {
 func (w *takeDriver) startTurn() error {
 	w.mu.Lock()
 	w.inTurn, w.running, w.accepted = true, w.accepted, 0
-	running, asked := w.running, w.asked
+	running := w.running
 	w.mu.Unlock()
 	if err := w.send(shimwire.AgentStart{}); err != nil || running == 0 {
 		return err
 	}
-	return w.turnSeen(asked)
+	return w.turnSeen(running)
 }
 
-// turnSeen waits until the daemon has read the start of the turn of the take accepted at value.
-// It asks the take again, which is the take a worker sends when its answer was lost and which
-// the record answers alone, applying nothing (supervise's answeredFromRecord): accepted again
-// while that take awaits its turn, refused in-turn once its turn has started. Any other answer
-// says the task is no longer that take's — taken back, finished or dropped — and ends the wait.
-func (w *takeDriver) turnSeen(value claim.TaskValue) error {
+// turnSeen waits until the daemon has read the start of the turn of the take of task number, as
+// the claim reads it (started): working, or the take no longer standing — taken back, finished
+// or dropped — which ends the wait too. A take sent again cannot say it: the record answers a
+// take of a number it holds accepted the same text whether or not the take's turn started
+// (supervise's answeredFromRecord).
+func (w *takeDriver) turnSeen(number uint64) error {
+	if w.started == nil {
+		return nil
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var answer claim.TakeResponse
-		if err := w.post("/legion/v1/claims/take", claim.TakeRequest{AgentCaller: w.caller, Generation: w.generation,
-			Number: value.Number, Epoch: value.Epoch, Revision: value.Revision}, &answer); err != nil {
-			return fmt.Errorf("ask whether the turn of task %d started: %w", value.Number, err)
+		read, err := w.started()
+		if err != nil {
+			return fmt.Errorf("ask whether the turn of task %d started: %w", number, err)
 		}
-		if answer.Outcome != string(supervise.TakeOutcomeAccepted) {
+		if read {
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("the daemon read no start of the turn of task %d within 10s", value.Number)
+			return fmt.Errorf("the daemon read no start of the turn of task %d within 10s", number)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

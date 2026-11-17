@@ -871,8 +871,10 @@ func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 		SessionID: held.Session, Secret: registered.Secret, Generation: registered.Generation}, false); status != http.StatusNoContent {
 		t.Fatalf("ready %s's merger = %d; body %s", issue.key, status, body)
 	}
-	agent.takes(t, newTakeDriver(r.daemon.post, agent.write,
-		claim.AgentCaller{ClaimToken: issue.merger, SessionID: held.Session, Secret: registered.Secret}, registered.Generation))
+	driver := newTakeDriver(r.daemon.post, agent.write,
+		claim.AgentCaller{ClaimToken: issue.merger, SessionID: held.Session, Secret: registered.Secret}, registered.Generation)
+	driver.started = r.daemon.turnRead(issue.merger)
+	agent.takes(t, driver)
 }
 
 // settled waits until issue's merger has been told something and nothing more is coming for it:

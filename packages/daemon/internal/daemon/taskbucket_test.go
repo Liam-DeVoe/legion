@@ -349,11 +349,13 @@ func (w *bucketWorker) ready() {
 }
 
 // reattach is the worker's process reaching the daemon that started after a restart: its shim
-// reconnects, and its plugin, with all it remembers, posts to the new daemon.
+// reconnects, and its plugin, with all it remembers, posts to the new daemon and reads its turns
+// there.
 func (w *bucketWorker) reattach() {
 	w.rig.t.Helper()
 	w.connect()
 	w.driver.post, w.driver.send = w.rig.d.post, w.sh.writer.WriteFrame
+	w.driver.started = w.rig.d.turnRead(w.token)
 }
 
 // The daemon watches the whole task bucket, which every project's daemon shares, and repairs and

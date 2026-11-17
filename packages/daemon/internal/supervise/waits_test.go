@@ -688,3 +688,83 @@ func TestChargeNoneAtTheFirstExpiryForASeenReportReadFromTheStore(t *testing.T) 
 		h.wantBudgets(Budgets{})
 	})
 }
+
+// The registration of a new process clears the seen report and the take the record kept: they
+// are the process before it's, and the new one has seen and asked nothing. A relaunched process
+// whose registration read no value — its read of the bucket failed — and which the listener hands
+// none, since neither its session nor the revision moved, reports nothing seen; its value is one
+// nobody reported seeing, so the first bound charges nobody and writes the value again once,
+// under its number, and lists the claim as unseen (R5).
+//
+// The negative control is the seen report kept across the registration (register before this
+// change): the first bound reads the old process's report as the new one's, and charges the new
+// process for a value it was never handed.
+func TestSilentRegistrationOfANewProcessClearsTheSeenAndTakeState(t *testing.T) {
+	h := waitsHarness(t)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	seen := h.seen()
+	h.store.fail("PutDelivery", errBoom)
+	_, _ = h.takeValue(seen)
+	h.store.fail("PutDelivery", nil)
+	if c := h.claim(); c.TaskSeenRevision != seen.Revision || c.TaskTakeState != TakeRefused {
+		t.Fatalf("the old process left seen revision %d and take %q, want revision %d seen and its take refused", c.TaskSeenRevision, c.TaskTakeState, seen.Revision)
+	}
+	written := len(h.values.written())
+
+	h.observe(runtime.Gone)
+	h.relaunched()
+
+	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
+		if c.TaskSeenEpoch != "" || c.TaskSeenRevision != 0 || c.TaskTakeState != "" {
+			t.Fatalf("%s holds seen %q/%d and take %q after the new process registered, want none", where, c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState)
+		}
+	}
+	h.advance(takeBound)
+
+	h.wantCharges()
+	rewritten := h.values.written()
+	if len(rewritten) != written+1 {
+		t.Fatalf("the values written after the first bound are %+v, want one more than the %d before it", rewritten, written)
+	}
+	if last := rewritten[len(rewritten)-1]; last.Number != seen.Number || last.Revision <= seen.Revision {
+		t.Fatalf("the first bound wrote %+v, want task %d again at a revision past %d", last, seen.Number, seen.Revision)
+	}
+	if listed := h.m.UnseenTaskValue(); listed == nil || listed.Task != seen.Number {
+		t.Fatalf("the claim is listed %+v, want it unseen with task %d", listed, seen.Number)
+	}
+}
+
+// The shim's reconnect hello after a daemon start is the same process coming back, not a new
+// one: it clears neither the seen report nor the take the record holds, so a take the worker made
+// before the restart still stands at its revision, and the worker, which asks once per revision,
+// is not left owing a take it already made.
+//
+// The negative control is the reconnect hello clearing them as a registration does (reconnected
+// given register's clearing).
+func TestSilentReconnectHelloAfterADaemonRestartClearsNothing(t *testing.T) {
+	h := waitsHarness(t)
+	h.manualTakes()
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.mustTake()
+	before := h.claim()
+	if before.TaskTakeState != TakeAccepted || before.TaskSeenRevision == 0 {
+		t.Fatalf("before the restart the claim holds seen %q/%d and take %q, want the accepted take at its revision",
+			before.TaskSeenEpoch, before.TaskSeenRevision, before.TaskTakeState)
+	}
+
+	h.outage(time.Minute)
+	h.connect()
+
+	for where, c := range map[string]Claim{"the machine": h.claim(), "the store": h.store.load(testToken)} {
+		if c.TaskSeenEpoch != before.TaskSeenEpoch || c.TaskSeenRevision != before.TaskSeenRevision || c.TaskTakeState != before.TaskTakeState {
+			t.Fatalf("%s holds seen %q/%d and take %q after the reconnect hello, want %q/%d and %q as before the restart",
+				where, c.TaskSeenEpoch, c.TaskSeenRevision, c.TaskTakeState, before.TaskSeenEpoch, before.TaskSeenRevision, before.TaskTakeState)
+		}
+	}
+	if p := h.pending(); !p.awaitsTurn() {
+		t.Fatalf("pending %+v after the reconnect hello, want the accepted take still awaiting its turn", p)
+	}
+}

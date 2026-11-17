@@ -183,6 +183,51 @@ func TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure(t *testing.T) {
 	}
 }
 
+// A refused turn that carries a provider error and reaches no provider-error ladder — its report
+// names no task, or a number no take of the claim holds, as a reminder's, a card's or a background
+// result's turn does — is counted by nothing else, so it counts toward the refused run, and the
+// launch failure limit fails the claim out of it (dispatch://INFRA-714). Both producers name a
+// provider error beside every refused turn, so this is the only way such a run is counted at all;
+// a provider error on the turn of the task the claim's take holds stays the ladder's
+// (TestTurnOutcomeAProviderErrorTurnIsNoLaunchFailure).
+//
+// The negative control is every provider error left uncounted (turnOutcome's refused before this
+// change): the run stays at zero and the claim never fails.
+func TestTurnOutcomeAProviderErrorRefusalThatReachesNoLadderCountsTowardTheRefusedRun(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		task func(h *harness) uint64
+	}{
+		{"naming no task", func(*harness) uint64 { return 0 }},
+		{"naming a task no take holds", func(h *harness) uint64 { return h.claim().TaskFinished }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			limit := testLimits().LaunchFailures
+			pe := ProviderError{Message: "overloaded_error", Status: 529}
+
+			for turn := 1; turn <= limit; turn++ {
+				h.worker.sequence++
+				if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(), Sequence: h.worker.sequence,
+					Task: tc.task(h), Refused: true, Message: "a card's turn the provider refused", ProviderError: &pe}); err != nil {
+					t.Fatalf("turn %d: report the refused turn: %v", turn, err)
+				}
+				h.m.Wait()
+				if turn < limit {
+					h.wantRefusedRun(turn)
+					h.wantState(StateIdle)
+				}
+			}
+
+			h.wantState(StateFailed)
+			if want := "the provider refused 3 turns in a row: a card's turn the provider refused"; h.claim().Failure != want {
+				t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+			}
+		})
+	}
+}
+
 // A turn no report arrived for — the process died before it could send one — counts neither way:
 // the run is of the reports the daemon holds, so the turns around a missing one are a run of two,
 // not three, and the claim goes on.

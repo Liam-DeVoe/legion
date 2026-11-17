@@ -187,20 +187,28 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 
 // replaceNow is the replacement itself, whose end replaceProcess reads off the claim it leaves.
 //
-// Its first step can end the replacement where it stands: a take-back the store refuses returns
-// here with the claim's process kept, nothing relaunched and no wake raised (interrupted). A
-// stale-plugin relaunch that ends there is raised again by the next pass, which reads the claim
-// as stale as it left it (refreshStalePlugins in internal/daemon). A take-back that lands marks
-// the task as taken from that process's turn, which the let-go that follows records
-// (Machine.cutTurnOf), here or at the parked launch's turn.
+// The take-back of a task the process holds is made where the process is let go, and not
+// before. A launch that runs now takes the task back first and then lets the process go, so a
+// take-back the store refuses ends the replacement where it stands: the claim's process kept,
+// nothing relaunched and no wake raised (interrupted). A launch the wake pacing parks makes no
+// take-back here: the process it replaces runs on until the wake's turn, and a turn it starts in
+// the wait is the take's turn, which the take-back the wake's turn makes cuts off or finds over
+// (runWake). Taking the task back at the park would leave that process running a turn that is no
+// take's, and the process the launch starts taking the number again: two runs of one task. A
+// stale-plugin relaunch that ends at a refused take-back is raised again by the next pass, which
+// reads the claim as stale as it left it (refreshStalePlugins in internal/daemon). A take-back
+// that lands marks the task as taken from that process's turn, which the let-go that follows
+// records (Machine.cutTurnOf). A held suspension ends the process here, with no launch to park,
+// so its take-back is made first.
 func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool, ending string) error {
-	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
-		return err
-	}
+	takeBack := func(ctx context.Context) error { return m.interrupted(ctx, interruption, outOfMemory) }
 	if m.held != nil {
+		if err := takeBack(ctx); err != nil {
+			return err
+		}
 		return m.endHeld(ctx)
 	}
-	return m.launch(ctx, ending)
+	return m.launchReplacing(ctx, ending, takeBack)
 }
 
 // endReached is the end a replacement made, read from the claim it left beside found, the

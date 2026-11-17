@@ -749,61 +749,60 @@ func TestATaskDeliveredWhileALaunchWaitsItsTurnWaitsForTheProcessThatLaunchStart
 }
 
 // The other half of that race, for a task its worker had already taken: a take accepted before a
-// launch parks over the process is taken back where the launch is decided, before the park
-// (replaceProcess, interrupted), since the launch will let that process go at its turn and the
-// take's turn would be cut off with it. The task keeps its number and its id, and the process the
-// launch starts takes it again under that number. A turn the old process starts inside the wait
-// is no take's: a take is refused while the launch waits (launchWaits), so no turn there is the
-// task's.
+// launch parks over the process stays the take of that process until the wake's turn, which is
+// where the process is let go and so where the take-back is made (replaceNow, runWake). The
+// process runs on through the wait, so a turn it starts there is the take's turn: the worker is
+// the one that took the task. At the wake's turn the take is taken back, keeping its number and
+// its id, and the process the launch starts takes it again under that number, its text decided
+// afresh. The claim here is on a plugin that names its task's number (TaskTakeContract), whose
+// take only a report naming the number finishes.
 //
-// The negative control is that take-back reverted (replaceNow's interrupted): the task then stays
-// taken over the wait, and the relaunched worker's take of it is answered from the record rather
-// than decided again, which this test reads at the pending task after the park.
-func TestTakeBackByAStaleAddressKeepsTheNumberAcrossTheParkedLaunch(t *testing.T) {
+// The negative control is the take-back made at the park again (replaceNow's interrupted ahead
+// of the launch): the task is then taken back while the old process still runs, which this test
+// reads at the pending task after the park.
+func TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn(t *testing.T) {
 	const task = "implement the plan"
-	h := pacedHarness(t, wakeRate)
+	h := pacedHarness(t, wakeRate, currentPlugin)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 	first := h.wantPrompts(1)[0]
 
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
-	if p := h.pending(); p.taken() || p.ID != first.DeliveryID || p.Number != first.Number || p.Interrupted {
-		t.Fatalf("the task after the park is %+v, want task %d taken back under its id %s, not interrupted: no turn of it ran",
-			p, first.Number, first.DeliveryID)
+	if p := h.pending(); !p.awaitsTurn() || p.ID != first.DeliveryID || p.TakenText != task {
+		t.Fatalf("the task after the park is %+v, want task %d's take still standing: its process runs until the wake's turn", p, first.Number)
 	}
-	if stored, ok := h.store.delivery(h.token); !ok || stored.taken() {
-		t.Fatalf("the stored delivery is %+v (%v), want the task taken back: a restart must not read it as taken", stored, ok)
+	if stored, ok := h.store.delivery(h.token); !ok || !stored.awaitsTurn() {
+		t.Fatalf("the stored delivery is %+v (%v), want the take still standing", stored, ok)
 	}
-
-	// A turn the old process starts inside the wait is the agent's own.
-	h.must(StreamTurnStart{Claim: h.token})
-	if p := h.pending(); p.turnStarted() {
-		t.Fatalf("the task is %+v, want no turn of it: a take is refused while the launch waits", p)
-	}
-	h.mustQuiet(StreamTurnEnd{Claim: h.token})
-	// The session reports at that turn's end that nothing of its own runs, as Oh My Pi's does, so
-	// the let-go at the launch's turn ends no work and the task is taken again as it was given
-	// (recordEnd).
+	// The session reports that nothing of its own runs, as Oh My Pi's does, so the let-go at the
+	// wake's turn ends no work and the task is taken again as it was given (recordEnd).
 	h.reportActivity()
 
 	h.advance(waiting.At.Sub(h.clock.Now()))
 	h.wantState(StateLaunching)
+	if p := h.pending(); p.taken() || p.Number != first.Number || p.ID != first.DeliveryID {
+		t.Fatalf("the task after the wake's turn is %+v, want task %d taken back under its id", p, first.Number)
+	}
 	h.relaunched()
 
 	if again := h.wantPrompts(2)[1]; again.Number != first.Number || again.DeliveryID != first.DeliveryID || again.Message != task {
 		t.Fatalf("the take after the relaunch = %+v, want task %d again with its text", again, first.Number)
 	}
+	answered := h.records.of(answeredLine)
+	wantAttr(t, answered[len(answered)-1], "repeat", "false")
 }
 
-// A take-back the store refuses where the launch is decided leaves the claim exactly as it stood,
-// task included: the replacement returns with the claim's process kept, nothing relaunched and no
-// wake raised (replaceNow, interrupted), and the task is still taken under the id the store holds.
-// A claim that dropped the take in memory while the store kept it would answer the worker's next
-// take from a record nobody holds, and serve no run for the turn the worker is about to start.
+// A take-back the store refuses where a launch that runs now is decided leaves the claim exactly
+// as it stood, task included: the replacement returns with the claim's process kept, nothing
+// relaunched and no wake raised (replaceNow, launchReplacing, interrupted), and the task is still
+// taken under the id the store holds. A claim that dropped the take in memory while the store
+// kept it would answer the worker's next take from a record nobody holds, and serve no run for
+// the turn the worker is about to start. (A launch the pacing parks makes no take-back there:
+// TestParkedRelaunchKeepsTheTakeUntilTheWakesTurn.)
 func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
-	h := pacedHarness(t, wakeRate)
+	h := pacedHarness(t, 0)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: task, ID: "outbox:7", Row: 7, Generation: 7})
 	sent := h.pending()
@@ -859,7 +858,9 @@ func TestATakeBackTheStoreRefusesWhereTheLaunchIsDecidedLeavesNoMarkBehind(t *te
 	}
 	h.m.deps.PluginContract = 25
 	h.m.deps.PluginRelaunchable = true
-
+	// The limiter's token is back by now, so the relaunch runs where it is raised: a launch that
+	// runs now is the one whose take-back is made at its decision (replaceNow, launchReplacing).
+	h.advance(wakeInterval + wakePart)
 	h.store.fail("PutDelivery", errBoom)
 	if err := h.handle(StalePlugin{Claim: h.token, Trigger: "sweep"}); !errors.Is(err, errBoom) {
 		t.Fatalf("the relaunch whose take-back the store refused = %v, want the store's refusal", err)
@@ -1250,16 +1251,16 @@ func TestALaunchRefusedAtItsTurnLeavesItsBootingProcessWatched(t *testing.T) {
 	h.wantStarts(h.token, 2)
 }
 
-// The same refusal over a task the parked launch took back: a take accepted before the park is
-// taken back where the launch is decided (replaceProcess), and a refusal at the launch's turn
-// keeps the process that take was made on. That process asked at the value's latest revision,
-// and its plugin asks once per revision, so without a write the task would wait on it for ever.
-// The sweep after the refusal writes the value again under the same number (offerPending), and
-// the worker takes it.
+// The same refusal over a task the worker had taken before the launch parked: the park makes no
+// take-back, the process running on until the wake's turn (replaceNow), and a refusal at that
+// turn's lifecycle recheck comes before the take-back the turn would make (runWake), so the
+// process is kept with its take still standing. Its worker holds the task it took, so nothing
+// needs to be written or taken again: the sweep after the refusal leaves the take as it stands.
 //
-// The negative control is the write reverted (offerPending's asked term, for a take accepted and
-// taken back): the task then stays untaken past the sweep, which this test reads at the takes.
-func TestTakeBackByARefusedLaunchIsTakenAgainByTheProcessItKept(t *testing.T) {
+// The negative control is the take-back made at the park again (replaceNow's interrupted ahead
+// of the launch): the task is then untaken over the wait and after the refusal, which this test
+// reads at the pending task.
+func TestTakeOfAProcessARefusedLaunchKeptStandsWithIt(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateReady)
 	store := &unansweredCheckLaunchStore{memStore: h.store}
@@ -1270,8 +1271,8 @@ func TestTakeBackByARefusedLaunchIsTakenAgainByTheProcessItKept(t *testing.T) {
 
 	h.observe(runtime.StaleAddress)
 	waiting := h.wantWaitingWake(WakeLaunch)
-	if p := h.pending(); p.taken() || p.Number != first.Number {
-		t.Fatalf("the task after the park is %+v, want task %d taken back", p, first.Number)
+	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+		t.Fatalf("the task after the park is %+v, want task %d's take still standing", p, first.Number)
 	}
 
 	store.failing = true
@@ -1280,15 +1281,15 @@ func TestTakeBackByARefusedLaunchIsTakenAgainByTheProcessItKept(t *testing.T) {
 
 	h.wantState(StateReady)
 	h.wantStarts(h.token, 1)
-	h.wantPrompts(1)
+	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+		t.Fatalf("the task after the refused turn is %+v, want task %d's take still standing with the process it was made on", p, first.Number)
+	}
 
 	h.observe(runtime.Alive)
 
-	if again := h.wantPrompts(2)[1]; again.Number != first.Number {
-		t.Fatalf("the take after the sweep was of task %d, want task %d again", again.Number, first.Number)
-	}
-	if p := h.pending(); !p.awaitsTurn() {
-		t.Fatalf("the task is %+v, want it taken again", p)
+	h.wantPrompts(1)
+	if p := h.pending(); !p.awaitsTurn() || p.Number != first.Number {
+		t.Fatalf("the task after the sweep is %+v, want task %d's take still standing", p, first.Number)
 	}
 }
 

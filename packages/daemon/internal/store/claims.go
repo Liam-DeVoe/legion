@@ -56,7 +56,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.number, d.origin, d.taken_text,
+	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.number, d.origin, d.taken_text, d.turn_started,
 	d.check_look, d.check_opened_at, d.queued_at, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note
@@ -693,16 +693,16 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		}
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
-		phase, generation, entry, number, origin, taken_text, check_look, check_opened_at, queued_at,
+		phase, generation, entry, number, origin, taken_text, turn_started, check_look, check_opened_at, queued_at,
 		confirmed_at, interrupted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+		coalesce($20::jsonb, '{}'::jsonb), $21, $22)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, number = excluded.number, origin = excluded.origin,
-		taken_text = excluded.taken_text, check_look = excluded.check_look,
+		taken_text = excluded.taken_text, turn_started = excluded.turn_started, check_look = excluded.check_look,
 		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
 		confirmed_at = excluded.confirmed_at, interrupted = excluded.interrupted,
 		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
@@ -711,7 +711,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
-		int64(d.Number), d.Origin, d.TakenText,
+		int64(d.Number), d.Origin, d.TakenText, d.TurnStarted,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt,
 		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
@@ -814,6 +814,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		deliveryEntry               *int64
 		deliveryNumber              *int64
 		deliveryOrigin, takenText   *string
+		turnStartedTake             *bool
 		deliveryCheckLook           *int
 		deliveryCheckOpened         *time.Time
 		servingGeneration           int64
@@ -868,7 +869,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry,
-		&deliveryNumber, &deliveryOrigin, &takenText, &deliveryCheckLook, &deliveryCheckOpened,
+		&deliveryNumber, &deliveryOrigin, &takenText, &turnStartedTake, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &confirmed, &interrupted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -952,6 +953,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			Number:      uint64(orZeroInt(deliveryNumber)),
 			Origin:      *deliveryOrigin,
 			TakenText:   *takenText,
+			TurnStarted: orFalse(turnStartedTake),
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
 			QueuedAt:    *queuedAt,
 			ConfirmedAt: orZero(confirmed),

@@ -71,12 +71,14 @@ type UnseenTaskValue struct {
 }
 
 // actOf is whether ev is an act of the claim's worker: what a daemon start's waits wait for
-// before they are armed (Machine.awaitsAct). The shim's hello is one, the reconnect hello
-// included, so a worker that does nothing else after a daemon start is still charged one bound
-// after its reconnect; so are its registration, its ready, a seen report, a take and a turn frame.
+// before they are armed (Machine.awaitsAct), and the end-frame bound such a start left to the
+// worker (Machine.finishAtAct). The shim's hello is one, the reconnect hello included, so a worker
+// that does nothing else after a daemon start is still charged one bound after its reconnect; so
+// are its registration, its ready, a seen report, a take, a turn frame and a turn's report.
 func actOf(ev Event) bool {
 	switch ev.(type) {
-	case StreamHello, StreamTurnStart, StreamTurnEnd, RequestRegister, RequestReady, RequestTaskSeen, RequestTake:
+	case StreamHello, StreamTurnStart, StreamTurnEnd, RequestRegister, RequestReady, RequestTaskSeen, RequestTake,
+		RequestTurnOutcome:
 		return true
 	}
 	return false

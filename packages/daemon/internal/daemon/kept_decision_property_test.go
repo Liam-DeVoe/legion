@@ -2529,7 +2529,7 @@ func (r *keptRun) turnEnabled(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	if !pending.ConfirmedAt.IsZero() && pending.TakenText != "" {
+	if !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted {
 		return true
 	}
 	return held.State == supervise.StateWorking && !pending.ConfirmedAt.IsZero()
@@ -2561,7 +2561,7 @@ func (r *keptRun) turn(tree *keptTree) {
 func (r *keptRun) endTurn(tree *keptTree, machine *supervise.Machine) {
 	pending := machine.Claim().Pending
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText == "" {
+	if pending != nil && !pending.ConfirmedAt.IsZero() && (pending.TakenText == "" || pending.TurnStarted) {
 		r.handle(machine, supervise.RequestTurnOutcome{Claim: tree.token, Generation: machine.Claim().Generation,
 			Sequence: turnSequence.Add(1), Task: pending.Number})
 	}
@@ -2694,7 +2694,7 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 		return false
 	}
 	pending := held.Pending
-	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != ""
+	return pending != nil && !pending.ConfirmedAt.IsZero() && pending.TakenText != "" && !pending.TurnStarted
 }
 
 // takenBackOnce is whether the task this tree's architect holds is one the machine has already

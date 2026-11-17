@@ -1197,6 +1197,26 @@ type Machine struct {
 	// the claim's next chance whatever the worker last asked (offerPending). It is memory only: a
 	// restart compares the bucket with the record at boot, which repairs it.
 	valueUnwritten bool
+	// valueUndeleted is a delete of the claim's value the bucket refused (deleteValue): the number
+	// the value named and the delete's cause, the zero value for none. The delete is made again at
+	// the claim's next chance while the record owes the claim no task (offerPending, deleteAgain),
+	// and the next delete made, that one or a later task's, replaces it. It is memory only, as
+	// valueUnwritten is: a restart's boot read deletes a value the record owes nothing (valueRead).
+	valueUndeleted valueDelete
+	// takeTold is which of the claim's two records the accepted take of the pending task marked
+	// told (accept): the ones a give-back of that take untells (untell), and no give-back of a
+	// later take of the same delivery, since the delivery's id stands across its take-backs and a
+	// record an earlier take told names it too. It is memory only: a machine a daemon start built
+	// reads it from the record (NewMachine) as every record the pending delivery's id told, which
+	// errs, across a restart alone, towards telling a sentence twice rather than not at all.
+	takeTold sentences
+	// finishAtAct is a claim a daemon start restored ready or idle over a take whose turn started
+	// under the daemon before it, which nothing finished, on a plugin whose end frame finishes its
+	// task (NewMachine, endFrameFinishes): its end-frame bound (TimerFinish) is armed at the
+	// worker's first act after the start, not at the start itself (armFinishAtAct), so a report
+	// the worker is still sending again to the restarting daemon is not beaten by a bound that
+	// ran while no daemon served it.
+	finishAtAct bool
 	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
 	// before its first write: what the state route names as an unseen value's writtenAt. It is
 	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
@@ -1205,9 +1225,8 @@ type Machine struct {
 	// awaitsAct is a machine whose two waits wait for the worker's next act before they are
 	// armed: every machine NewMachine builds, since a daemon start serves nothing before it and
 	// the time the daemon was not serving counts toward neither bound (dispatch://INFRA-2811).
-	// The shim's hello, a registration, a ready, a seen report, a
-	// take and a turn frame are acts (actOf); the first of them clears it, and the waits are
-	// armed from there.
+	// The shim's hello, a registration, a ready, a seen report, a take, a turn frame and a turn's
+	// report are acts (actOf); the first of them clears it, and the waits are armed from there.
 	awaitsAct bool
 	// firstFor is what the armed first bound (TimerTake) waits on, the zero value while none is
 	// armed, and secondFor the accepted take the armed second bound (TimerTurnStart) waits on
@@ -1485,8 +1504,9 @@ type armed struct {
 // daemon read back at boot. A restored claim that was booting, or registered and not yet ready, is
 // watched again from now; one restored working asks its agent whether the turn an earlier daemon
 // saw start is over (askFirst); and one whose task's turn ran with nothing to finish it since
-// waits the end-frame bound again, as that turn's end would have (finishTask). ctx bounds the
-// machine's own work — its timers.
+// waits the end-frame bound again, as that turn's end would have (finishTask), from the worker's
+// first act after the start (finishAtAct, armFinishAtAct). ctx bounds the machine's own work —
+// its timers.
 //
 // A claim restored with its agent ready, idle or working is given the registration deadline's own
 // bound as a reconnect deadline (reconnectDeadline): its shim reconnects to the daemon that
@@ -1498,7 +1518,8 @@ type armed struct {
 // arms them at the worker's next act (awaitsAct, armWaits), so the time the daemon was not
 // serving counts toward neither bound. A seen report the claim was built holding is the store's,
 // not one this daemon received (seenFromStore), so the first wait's first bound over it writes
-// the value again rather than charging (takeBoundOver).
+// the value again rather than charging (takeBoundOver). Which records the pending take told is
+// read from the record too (Machine.takeTold).
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1525,14 +1546,25 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	case StateReady, StateIdle:
 		m.armRegistration()
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
-		// finished: its report may still come, and if none does the end of that turn finishes
-		// it, as it would have had this daemon never restarted.
-		if p := c.Pending; p != nil && p.turnStarted() {
-			m.arm(TimerFinish, deps.Timeouts.RPC, p.ID)
+		// finished: its report may still come, and for a plugin that names no number (whose end
+		// frame finishes its task, endFrameFinishes) where none does the end of that turn
+		// finishes it, as it would have had this daemon never restarted. The bound starts at the
+		// worker's first act, as R5's waits do: the report is the worker's to send again to this
+		// daemon, and the time no daemon served it is no time it had to do so
+		// (dispatch://INFRA-2811). A plugin that names its task's number has its task finished
+		// by that report alone.
+		if p := c.Pending; p != nil && p.turnStarted() && TakesNoTask(c.PluginContract) {
+			m.finishAtAct = true
 		}
 	case StateWorking:
 		m.armRegistration()
 		m.askFirst = true
+	}
+	if p := c.Pending; p != nil && p.taken() {
+		m.takeTold = sentences{
+			abandoned: c.Abandoned.Told && c.Abandoned.ToldBy == p.ID,
+			ended:     c.EndedWork.Told && c.EndedWork.ToldBy == p.ID,
+		}
 	}
 	m.publish()
 	return m, nil
@@ -2031,7 +2063,8 @@ func (m *Machine) stoppingProcess() func() {
 // its invariants — the credit this machine holds goes back unless a refresh wake of its own is
 // waiting, and nothing of a relaunch's intent outlives the decision that raised it
 // (endRefreshLane) — arms or disarms R5's two waits to match the claim the section left
-// (armWaits), publishes the claim, says the machine decides nothing, then releases mu.
+// (armWaits), and the end-frame bound a daemon start left to the worker's first act
+// (armFinishAtAct), publishes the claim, says the machine decides nothing, then releases mu.
 //
 // Every decision of a machine ends here, which is what makes it the place those are kept:
 // every locked section that can change the wake, the credit, the intent or what a wait waits on
@@ -2044,6 +2077,7 @@ func (m *Machine) stoppingProcess() func() {
 // than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
+	m.armFinishAtAct()
 	m.armWaits()
 	m.publish()
 	m.decide(nil)
@@ -2373,6 +2407,33 @@ func (m *Machine) launchAfter(ctx context.Context, charged, exempt bool, cause s
 	return m.reserveWake(ctx, exempt, func(ctx context.Context) error {
 		return m.launchNow(ctx, charged, exempt, cause)
 	}, again)
+}
+
+// launchReplacing is launch for a replacement of a process that may hold a task (replaceNow):
+// takeBack, that task's take-back, is made right before the process is let go when the launch
+// runs now, and a refusal of it ends the launch there with the process kept. A launch the wake
+// pacing parks makes none here: the wake's own turn makes the take-back of whatever the process
+// holds then (runWake), so the turn the process may start in the wait stays the take's. A retry
+// of this launch — one the lifecycle check could not answer — is a replacement too, and takes
+// the task back the same way.
+func (m *Machine) launchReplacing(ctx context.Context, cause string, takeBack func(context.Context) error) error {
+	again := func(ctx context.Context) error { return m.launchReplacing(ctx, cause, takeBack) }
+	if err := m.checkLaunch(ctx); err != nil {
+		return m.relaunchRefused(ctx, again, err)
+	}
+	now := true
+	err := m.reserveWake(ctx, false, func(ctx context.Context) error {
+		if now {
+			if err := takeBack(ctx); err != nil {
+				return err
+			}
+		}
+		return m.launchNow(ctx, false, false, cause)
+	}, again)
+	// A run of the launch after this return is the parked wake's turn, whose take-back runWake
+	// makes.
+	now = false
+	return err
 }
 
 // launchNow is launchAfter past its lifecycle check and its wake gate: the launch itself, and the

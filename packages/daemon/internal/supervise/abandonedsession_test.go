@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 const (
@@ -236,6 +237,44 @@ func TestAnAbandonedSessionsSentenceIsToldAtTheAcceptedTake(t *testing.T) {
 	if next := h.mustTake(); next != "the next task" {
 		t.Errorf("the task after the one whose take told the abandonment is %q, want the task alone", next)
 	}
+}
+
+// The give-back of a take's telling is keyed on the take, not on the delivery, whose id stands
+// across every take-back of its task. Take 1 carries the abandoned session's sentence; its turn
+// starts and its process dies in it, so that turn ran the text and the telling stands. Take 2,
+// made by the relaunched process, carries nothing of it, and is given back before its turn starts:
+// its own process dies first. Take 3 must not tell the session again, since take 2 told nothing
+// to give back (departure 11: told once).
+//
+// The negative control is the give-back keyed on the delivery's id alone (untell before this
+// change): take 2's give-back then untells what take 1 told, and take 3 carries the sentence a
+// second time.
+func TestAbandonedSessionToldByACutOffTurnIsNotToldAgainWhenALaterTakeIsGivenBack(t *testing.T) {
+	h := newHarness(t)
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+	h.abandonSession(refusal)
+	h.registerFresh()
+	h.manualTakes()
+	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+
+	first := h.mustTake()
+	wantSays(t, first, refusal)
+	id := h.pending().ID
+	h.wantAbandonedToldBy(id, "at take 1")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.observe(runtime.Gone)
+	h.wantAbandonedToldBy(id, "once take 1's turn was cut off")
+
+	h.registerFresh()
+	second := h.mustTake()
+	wantSaysNot(t, second, refusal)
+	h.observe(runtime.Gone)
+	h.wantAbandonedToldBy(id, "once take 2, which carried nothing of it, was given back before its turn")
+
+	h.registerFresh()
+	third := h.mustTake()
+	wantSaysNot(t, third, refusal)
+	h.wantAbandonedToldBy(id, "at take 3")
 }
 
 // handoffWordsClause is the list of phase words exactly as the prompt renders it, read from the

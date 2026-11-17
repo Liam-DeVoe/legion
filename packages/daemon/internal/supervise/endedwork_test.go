@@ -251,11 +251,11 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 		h.wantEndedLine(endStalePlugin)
 	})
 
-	// The repoint takes the task's take back where it parks the launch (replaceNow, interrupted),
-	// and a take is refused while that launch waits (claimHold's launchWaits), so a turn the old
-	// process begins in the wait is the agent's own and no task's: the turn's let-go records the
-	// turn it cut off and not the task's.
-	t.Run("a repoint whose process began a turn of its own in the wait", func(t *testing.T) {
+	// The repoint makes no take-back where it parks the launch: the process runs on until the
+	// wake's turn, which is where it is let go and where the take-back is made (replaceNow,
+	// runWake). So a turn the old process begins in the wait is the take's turn, and the turn's
+	// let-go records that it cut the task's turn off.
+	t.Run("a repoint whose process began the take's turn in the wait", func(t *testing.T) {
 		h := pacedHarness(t, wakeRate)
 		h.reach(StateReady)
 		h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
@@ -265,8 +265,8 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 			t.Fatalf("the park recorded %+v, want nothing before the turn lets the process go", got)
 		}
 		h.must(StreamTurnStart{Claim: h.token})
-		if p := h.pending(); p.taken() {
-			t.Fatalf("the task is %+v in the wait, want no take of it: a take is refused while the launch waits", p)
+		if p := h.pending(); !p.turnStarted() {
+			t.Fatalf("the task is %+v in the wait, want the turn the old process began given to its take", p)
 		}
 		h.reportActivity("async-job")
 		parked := h.generation()
@@ -274,7 +274,7 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 		h.advance(waiting.At.Sub(h.clock.Now()))
 
 		h.wantState(StateLaunching)
-		h.wantEnded(EndedWork{At: waiting.At, Cause: endRepointed, Generation: parked, Turn: true,
+		h.wantEnded(EndedWork{At: waiting.At, Cause: endRepointed, Generation: parked, Turn: true, TaskTurn: true,
 			Background: true, Kinds: []string{"async-job"}, Reported: true})
 		h.wantEndedLine(endRepointed)
 	})

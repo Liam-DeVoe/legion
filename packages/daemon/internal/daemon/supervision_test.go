@@ -1276,7 +1276,7 @@ func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("end the turn of %s: %v", token, err)
 	}
-	if pending == nil || pending.ConfirmedAt.IsZero() || pending.TakenText != "" {
+	if pending == nil || pending.ConfirmedAt.IsZero() || (pending.TakenText != "" && !pending.TurnStarted) {
 		return
 	}
 	report := supervise.RequestTurnOutcome{Claim: token, Generation: machine.Claim().Generation,

@@ -88,7 +88,8 @@ const (
 	TimerRegistration TimerKind = "registration"
 	// TimerFinish is the end-frame bound: a task's turn ended, and the turn-outcome report that
 	// names its number has that long to come (Timeouts.RPC) before the end of the turn finishes
-	// the task (finishTask).
+	// the task (finishTask). Only a claim whose plugin names no number is given it
+	// (endFrameFinishes), and any claim whose report's finish the store refused (finishTask).
 	TimerFinish TimerKind = "finish"
 	// TimerProbe is the re-probe of an uncertain process.
 	TimerProbe TimerKind = "probe"
@@ -1311,10 +1312,10 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 
 // turnStarted is a turn starting in a ready or idle claim. The first turn that starts after a
 // take of the pending task was accepted is that task's turn (Delivery.awaitsTurn): the worker
-// starts it on the take's answer. Its start clears the take's text, so a take sent again from
-// here on is not answered it (startTakesTurn); its line names the task's number. Any other turn
-// is a foreign one — an Envoy notice's, a person's steer, a background result's — and is no
-// task's. Either way the claim records when this turn began (Claim.LastTurnStart), which is
+// starts it on the take's answer. Its start records the take's turn started (startTakesTurn),
+// which a report naming no task can undo (notTheTakesTurn); its line names the task's number. Any
+// other turn is a foreign one — an Envoy notice's, a person's steer, a background result's — and
+// is no task's. Either way the claim records when this turn began (Claim.LastTurnStart), which is
 // persisted with it: the time is a reader's only handle on how long the agent has been in the
 // turn it is in.
 //
@@ -1330,9 +1331,9 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // One start is neither: the start of a turn whose turn-outcome report reached the daemon first and
 // already finished the take's task, or took it back for a provider error (Machine.reportedAhead,
 // startedUnseen). It is that take's turn, so its line names the task, and the turn's end names it
-// too; but the report already ran what the take's turn start does — the take's text gone and the
-// serving credit earned — so none of it runs again, and the start of the task's turn is counted
-// once.
+// too; but the report already ran what the take's turn start does — the take's turn recorded
+// started and the serving credit earned — so none of it runs again, and the start of the task's
+// turn is counted once.
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
@@ -1462,10 +1463,12 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 //
 // The end of a task's turn does not finish the task by itself. Oh My Pi's agent_end names no
 // task, and with background work on, a role's own background result starts turns no take
-// started: what finishes the task is the turn-outcome report that names its number, and where
-// none comes within the RPC timeout, the end of its turn (TimerFinish, finishTask), whose finish
-// runs what was held for the turn (afterTurn). A suspension held for the turn ends the process
-// before any report could come, so the task whose turn this was is finished first, by this end.
+// started: what finishes the task is the turn-outcome report that names its number, whose finish
+// runs what was held for the turn (afterTurn). Only for a claim whose plugin names no number in
+// its reports, one below TaskTakeContract, does the end of its turn finish it where no report
+// came within the RPC timeout (endFrameFinishes, TimerFinish, finishAtTurnsEnd). A suspension
+// held for the turn ends the process before any report could come, so the task whose turn this
+// was is finished first, by this end.
 //
 // A stale-plugin relaunch held for this turn (refreshPlugin) runs once the turn is over for its
 // task too (afterTurn): here for a turn that was no task's, and at the task's finish for a task's
@@ -1556,8 +1559,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 			m.claim.State = StateIdle
 			if finishes {
 				// The stop was refused and the process kept, so the claim is idle over a task
-				// whose turn just ended: the end-frame bound watches it as at any turn's end.
-				m.arm(TimerFinish, m.deps.Timeouts.RPC, p.ID)
+				// whose turn just ended: its report finishes it, or the end-frame bound of a
+				// plugin that names no number, as at any turn's end.
+				m.armEndFrameBound(p.ID)
 			}
 			return errors.Join(err, m.persist(ctx))
 		}
@@ -1568,9 +1572,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return err
 	}
 	if finishes {
-		// The task's turn is over and its report has the RPC timeout to come; what is held for
-		// the turn runs at its finish instead (finishTask, finishAtTurnsEnd).
-		m.arm(TimerFinish, m.deps.Timeouts.RPC, p.ID)
+		// The task's turn is over and its report is what finishes it, or the end-frame bound
+		// for a plugin that names no number; what is held for the turn runs at its finish
+		// instead (finishTask, reportedTask, finishAtTurnsEnd).
+		m.armEndFrameBound(p.ID)
 		return nil
 	}
 	return m.afterTurn(ctx)
@@ -1678,10 +1683,16 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // registration whose plugin still differs from the daemon's is relaunched at once and refused
 // (staleRegistration): the agent that just registered is not the one that relaunch starts.
 //
-// The process that registers reads its value afresh (CurrentTask) and has asked nothing at any
-// revision of it, so the take the record kept is the process before it's: it goes
-// (Claim.TaskTakeState), and the new process asks at the revision it reads. The registration is
-// logged (agentRegisteredLine), as the agent of a new process.
+// The process that registers reads its value afresh (CurrentTask) and has seen and asked nothing
+// at any revision of it, so the seen report and the take the record kept are the process before
+// it's: they go (Claim.TaskSeenEpoch, TaskSeenRevision, TaskTakeState), and the value reads as
+// one nobody reported seeing until the new process reports it seen. A registration whose read of
+// the bucket failed answers the process no value, and the listener hands it none either, since
+// neither its session nor the revision moved; kept, the old process's report would put that
+// process in R5's first wait as one that saw the value and took nothing, and charge it for a
+// value it was never handed. Cleared, the value charges nobody and is written again once per
+// first bound until the new process reports a revision seen (takeBoundOver). The registration
+// is logged (agentRegisteredLine), as the agent of a new process.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
@@ -1690,7 +1701,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	if r.PluginContract == m.deps.PluginContract {
 		m.claim.PluginRelaunchFor = 0
 	}
-	m.claim.TaskTakeState = ""
+	m.claim.TaskSeenEpoch, m.claim.TaskSeenRevision, m.claim.TaskTakeState = "", 0, ""
 	m.claim.State = StateRegistered
 	m.log.Info(agentRegisteredLine, "generation", m.claim.Generation, "session", r.Session)
 	m.disarm(TimerBoot)

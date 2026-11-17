@@ -522,8 +522,10 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
 		t.Fatalf("the claim is %s with locator %+v, want it left in its turn until the wake's turn comes", c.State, c.Locator)
 	}
-	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || c.Pending.taken() || c.Pending.Number != 1 {
-		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
+	// The park makes no take-back: the process runs on until the wake's turn, and so does the
+	// take's turn it was stalled in (replaceNow).
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.turnStarted() || c.Pending.Number != 1 {
+		t.Fatalf("the claim's task after the park = %+v, want its take's turn still standing until the wake's turn", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)
 	// The due time goes with the report: the owner's notice names the moment that launch's turn
@@ -539,6 +541,9 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	h.wantStarts(secondToken, 1)
 	if c := stalled.Claim(); c.State != StateLaunching {
 		t.Fatalf("the claim is %s after the wake's turn, want it launching on the replacement that turn made", c.State)
+	}
+	if c := stalled.Claim(); c.Pending == nil || !c.Pending.Interrupted || c.Pending.taken() || c.Pending.Number != 1 {
+		t.Fatalf("the claim's task after the wake's turn = %+v, want it taken back from the turn that turn cut off and owed", c.Pending)
 	}
 	if len(stops) != 1 {
 		t.Fatalf("the backstop reported %+v, want the one notice: the wake's turn carries out the end already told", stops)
