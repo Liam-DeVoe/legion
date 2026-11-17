@@ -295,12 +295,21 @@ func (l *stepRecordsLive) steps() (string, int) {
 func (l *stepRecordsLive) cli(args ...string) (string, int) {
 	l.t.Helper()
 	command := exec.Command("bun", append([]string{filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")}, args...)...)
-	command.Dir = l.cliHome
-	// A person's own shell running dispatch by hand: the host and a session of their own, the
-	// server and their personal token. Nothing else of the caller's environment reaches it but
-	// PATH, and its home, configuration file (absent) and session state are the run's own.
-	command.Env = []string{
-		"PATH=" + os.Getenv("PATH"),
+	command.Env = l.personsShell(os.Getenv("PATH"))
+	return l.run(command, "dispatch "+strings.Join(args, " "))
+}
+
+// personsShell is the environment of a person's own shell running dispatch by hand, on path: the
+// host and a session of their own, the server and their personal token. Nothing else of the
+// caller's environment reaches it, and its home, configuration file (absent) and session state
+// are the run's own.
+func (l *stepRecordsLive) personsShell(path string) []string {
+	l.t.Helper()
+	if err := os.MkdirAll(filepath.Join(l.cliHome, "home"), 0o700); err != nil {
+		l.t.Fatal(err)
+	}
+	return []string{
+		"PATH=" + path,
 		"HOME=" + filepath.Join(l.cliHome, "home"),
 		"TMPDIR=" + l.cliHome,
 		"XDG_CONFIG_HOME=" + filepath.Join(l.cliHome, "config"),
@@ -313,16 +322,20 @@ func (l *stepRecordsLive) cli(args ...string) (string, int) {
 		"DISPATCH_URL=" + l.dispatch.base,
 		"DISPATCH_TOKEN=" + l.reader,
 	}
-	if err := os.MkdirAll(filepath.Join(l.cliHome, "home"), 0o700); err != nil {
-		l.t.Fatal(err)
-	}
+}
+
+// run runs command, named what, in the person's directory and returns both streams and its exit
+// code.
+func (l *stepRecordsLive) run(command *exec.Cmd, what string) (string, int) {
+	l.t.Helper()
+	command.Dir = l.cliHome
 	var output bytes.Buffer
 	command.Stdout, command.Stderr = &output, &output
 	code := 0
 	if err := command.Run(); err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			l.t.Fatalf("run `dispatch %s` under bun: %v", strings.Join(args, " "), err)
+			l.t.Fatalf("run `%s`: %v", what, err)
 		}
 		code = exit.ExitCode()
 	}

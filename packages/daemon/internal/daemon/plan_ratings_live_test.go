@@ -24,6 +24,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -68,9 +71,12 @@ func TestPlanRatingsLive(t *testing.T) {
 // three issues walk to done, the first with one failed review, and their retros rate the plan 3, 4
 // and 5 with a reason. `dispatch plans --project <PROJECT>` run as a person of the project then
 // prints the three, newest close first, each with the default plan, its one rating with its
-// reason, its time and its count of failed steps, 1, 0 and 0. The control deletes the failed
-// review's record from Dispatch's own store, its node and every tuple that names it, and the same
-// parse of the same command must then report the first issue's failed steps 0 where 1 is wanted.
+// reason, its time and its count of failed steps, 1, 0 and 0. The read after the merge,
+// scripts/e2e/plan-ratings-read.sh, judges the same command's output for the first issue and
+// passes, naming its rating and reason; its control names the fourth issue, which is not
+// finished, and the script must fail on it. The control of the read deletes the failed review's
+// record from Dispatch's own store, its node and every tuple that names it, and the same parse of
+// the same command must then report the first issue's failed steps 0 where 1 is wanted.
 func (l *planRatingsLive) readByProject() {
 	t := l.t
 	want := l.walkThreeRated()
@@ -93,6 +99,23 @@ func (l *planRatingsLive) readByProject() {
 		l.note("  %s", line)
 	}
 
+	reason, err := json.Marshal(want[0].reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code = l.readScript(want[0].issue)
+	if passed := fmt.Sprintf("PASS: %s: plan default (", want[0].issue); code != 0 || !strings.Contains(out, passed) ||
+		!strings.Contains(out, fmt.Sprintf(", ratings %d/5 %s, time ", want[0].rating, reason)) {
+		t.Fatalf("scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 0 and a PASS line naming the rating %d/5 %s", l.cfg.Project, want[0].issue, code, out, want[0].rating, reason)
+	}
+	l.note("scripts/e2e/plan-ratings-read.sh %s %s, exit 0: %s", l.cfg.Project, want[0].issue, lastLine(out))
+	unfinished := l.issues[3].key
+	out, code = l.readScript(unfinished)
+	if failed := fmt.Sprintf("FAIL: the read lists 3 finished issues of %s and no line of %s", l.cfg.Project, unfinished); code != 1 || !strings.Contains(out, failed) {
+		t.Fatalf("control: scripts/e2e/plan-ratings-read.sh %s %s exited %d:\n%s\nwant exit 1 and %q", l.cfg.Project, unfinished, code, out, failed)
+	}
+	l.note("control: scripts/e2e/plan-ratings-read.sh %s %s, which is not finished, exit 1: %s", l.cfg.Project, unfinished, lastLine(out))
+
 	failed := want[0].steps.find("step", 4, 1).ID
 	if failed == "" {
 		t.Fatalf("the records of %s hold no record of step 4 attempt 1", want[0].issue)
@@ -103,7 +126,7 @@ func (l *planRatingsLive) readByProject() {
 	if code != 0 {
 		t.Fatalf("control: `dispatch plans --project %s` after the delete exited %d: %s", l.cfg.Project, code, out)
 	}
-	err := plansPrintedHold(l.cfg.Project, out, want)
+	err = plansPrintedHold(l.cfg.Project, out, want)
 	if err == nil {
 		t.Fatalf("control: the parse of `dispatch plans --project %s` passed with the failed review's record deleted:\n%s", l.cfg.Project, out)
 	}
@@ -152,6 +175,34 @@ func (l *planRatingsLive) ratingRequired() {
 func (l *planRatingsLive) plans() (string, int) {
 	l.t.Helper()
 	return l.cli("plans", "--project", l.cfg.Project)
+}
+
+// readScript runs scripts/e2e/plan-ratings-read.sh <PROJECT> issue in the person's shell, as the
+// operator runs it after the merge, and returns both streams and its exit code. The `dispatch` on
+// its PATH runs this checkout's CLI under bun, as the installed command does.
+func (l *planRatingsLive) readScript(issue string) (string, int) {
+	t := l.t
+	t.Helper()
+	cli := filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts")
+	if strings.Contains(cli, "'") {
+		t.Fatalf("the checkout's path %s holds a quotation mark the dispatch wrapper cannot quote", l.root)
+	}
+	bin := filepath.Join(l.cliHome, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
+		t.Fatalf("write the dispatch command of the person's shell: %v", err)
+	}
+	command := exec.Command("bash", filepath.Join(l.root, "scripts", "e2e", "plan-ratings-read.sh"), l.cfg.Project, issue)
+	command.Env = l.personsShell(bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+	return l.run(command, "scripts/e2e/plan-ratings-read.sh "+l.cfg.Project+" "+issue)
+}
+
+// lastLine is the last line of out.
+func lastLine(out string) string {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	return lines[len(lines)-1]
 }
 
 // planLine is one finished issue as `dispatch plans` prints it: `<ISSUE> closed <closed_at> plan
