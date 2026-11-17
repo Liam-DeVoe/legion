@@ -437,14 +437,14 @@ func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 	}{
 		{
 			name:    "the default plan",
-			plan:    PlanRecord{ID: planRecordID, Generation: 2, Source: "default", Tasks: []PlanTask{{ID: "default", Steps: steps}}},
+			plan:    PlanRecord{ID: planRecordID, Generation: 2, Source: "default", Tasks: []PlanRecordTask{{ID: "default", Steps: steps}}},
 			absent:  []string{"artifact_id", "version"},
 			present: map[string]string{"generation": "2", "source": `"default"`, "tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
 		},
 		{
 			name: "an owner's plan of two tasks",
 			plan: PlanRecord{ID: planRecordID, Generation: 1, Source: "owner", ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 3,
-				Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "ui", Steps: []string{"implementer:ui", "tester"}}}},
+				Tasks: []PlanRecordTask{{ID: "api", Steps: []string{"implementer", "reviewer"}}, {ID: "ui", Steps: []string{"implementer:ui", "tester"}}}},
 			present: map[string]string{"artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`, "version": "3"},
 		},
 	} {
@@ -498,7 +498,7 @@ func TestAPlanRecordKeepsItsTasksInOrderThroughTheOutbox(t *testing.T) {
 // queued: an empty id addresses the route's parent path, which Dispatch's router answers
 // NOT_FOUND, the one answer the row retries for ever.
 func TestAPlanRecordWithoutItsIDIsRefusedWhereItIsQueued(t *testing.T) {
-	whole := PlanRecord{ID: planRecordID, Generation: 1, Source: "default", Tasks: []PlanTask{{ID: "default", Steps: []string{"planner"}}}}
+	whole := PlanRecord{ID: planRecordID, Generation: 1, Source: "default", Tasks: []PlanRecordTask{{ID: "default", Steps: []string{"planner"}}}}
 	if _, err := NewOutboxRow("LEG-1", whole, time.Now()); err != nil {
 		t.Fatalf("the whole plan was refused: %v", err)
 	}
