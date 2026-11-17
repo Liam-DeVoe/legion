@@ -3,24 +3,23 @@
 -- dispatch://INFRA-1077: three readers of what Dispatch holds of a Legion daemon's state take the
 -- newest row of each issue and field of legion_observations (20261103170923): the sampler's write,
 -- which compares each read against them (legion's recordObservations); the Legion board, whose
--- cards they are (legion.NewestObservations); and the issues the daemon reports, which the board
--- and the metrics place an issue in a tree by (legion.ReportedIssues). legion_observations keeps
--- every row it was ever given, so taking the newest of each field from it read the project's whole
--- history: on the test Postgres, at 3,000 issues of 6 fields each and nothing moving, a pass's
--- write took 201 ms over 180,000 rows and 835 ms over 720,000, and the board's read 203 ms and
--- 869 ms, every minute and every board read, more each month the table grows. Read from this
--- table, the same write takes 43 ms and 32 ms and the board's reads 35 ms and 32 ms, whatever the
--- history holds. A first read of such a daemon, which writes all 18,000 rows, pays for it once:
--- 664 ms where it took 365 ms.
+-- cards they are; and the issues the daemon reports, which the board and the metrics place an
+-- issue in a tree by. The last two are one statement (legion.ReadCurrent). legion_observations
+-- keeps every row it was ever given, so taking the newest of each field from it read the project's
+-- whole history: on the test Postgres, at 3,000 issues of 6 fields each and nothing moving, a
+-- pass's write took 201 ms over 180,000 rows and 835 ms over 720,000, and the board's read 203 ms
+-- and 869 ms, every minute and every board read, more each month the table grows. Read from this
+-- table, the same write takes 43 ms and 32 ms, and the board's read, which takes its header and
+-- its cards in one snapshot, 39 ms and 44 ms (the median of 20 reads, measured 2026-11-17),
+-- whatever the history holds; it grows only with the issues the daemon has ever reported, a
+-- dropped issue's fields staying as `null` rows. A first read of such a daemon, which writes all
+-- 18,000 rows, pays for it once: 664 ms where it took 365 ms.
 --
 -- legion_current is one row per (project, issue_key, field) legion_observations holds a row of:
 -- that field's newest row, its value and when it was observed. A `null` row is kept like any other,
 -- since a field the newest good read no longer carries is written `null` (recordObservations) and
--- is the newest row all the same; the readers leave such a row out where they want a value. The
--- sampler writes no first `null` — nothing moved from nothing — so a field's first row holds a
--- value, and a row here says Dispatch observed a value of that field: a `phase` row is "Dispatch
--- observed a phase of it", one half of what makes an issue a Legion issue (legion/tree.go), and
--- reading it here reads no history.
+-- is the newest row all the same: the readers leave such a row out where they want a value, and
+-- legion.ReadCurrent says which issues the rows report.
 --
 -- - The primary key is the row's identity and the readers' one index: every read takes one
 --   project's rows.
@@ -42,8 +41,9 @@
 --
 -- A new table and a trigger on one 20261103170923 created in this same release, which no earlier
 -- release names: nothing existing is refused or rewritten, and the census answers 0. The foreign
--- key holds projects in SHARE ROW EXCLUSIVE while the table is created. The identifier is the UTC
--- moment this was written, as `migrationid` requires of every migration past the numbered series.
+-- key holds projects in SHARE ROW EXCLUSIVE until the migration commits, the fill included. The
+-- identifier is the UTC moment this was written, as `migrationid` requires of every migration past
+-- the numbered series.
 create table legion_current (
   project text not null references projects(key) on delete cascade,
   issue_key text not null,

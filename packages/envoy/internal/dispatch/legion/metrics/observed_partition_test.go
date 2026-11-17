@@ -74,6 +74,18 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 				observeString(legion.FieldPhase, hour(3), "awaiting_person").
 				observeString(legion.FieldPhase, hour(6), "implementing"),
 		},
+		{
+			// Review round 32's probe: `done` from the close at hour 3 through the reopen at
+			// hour 5 to hour 6, out of the workflow, and the queue after it.
+			name:  "merged, closed, then reopened and queued",
+			issue: mergedThenReopened("INFRA-6"),
+		},
+		{
+			// The daemon parks a child that leaves the workflow in `done`, and reports it
+			// again once it is back.
+			name:  "a child moved to triage and reported again",
+			issue: triagedAndObserved("INFRA-7").under("INFRA-1"),
+		},
 	}
 
 	for _, each := range cases {
@@ -85,8 +97,8 @@ func TestTheSevenBarsPartitionTheWorkTimeOnAnObservedTimeline(t *testing.T) {
 // timeline. dispatch://INFRA-979's corpus does hold it over all 289 finished issues, but the
 // corpus is one shape of history: every issue there runs forward through its phases once. These
 // are the shapes that bend — a handoff with no role event after it, a send-back, two parks, an
-// issue only one role ever touched — which the corpus happens not to carry in a form that would
-// break the sum.
+// issue only one role ever touched, a close a reopen undid, a stretch in `triage` — which the
+// corpus happens not to carry in a form that would break the sum.
 func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -130,6 +142,14 @@ func TestTheSevenBarsPartitionTheWorkTimeOnTheFallbackTimeline(t *testing.T) {
 		{
 			name:  "one role and nothing else",
 			issue: newIssue("INFRA-5").worked("implementer", hour(0)).closedAt(hour(4)),
+		},
+		{
+			name:  "closed, then reopened",
+			issue: reopened("INFRA-6", "todo"),
+		},
+		{
+			name:  "moved to triage and back",
+			issue: triaged("INFRA-7"),
 		},
 	}
 
@@ -232,6 +252,92 @@ func TestANullPhaseMarkEndsNoWaitOnAPerson(t *testing.T) {
 	if bar.Hours != 4 || bar.Segments.WaitingOnPerson != 4 {
 		t.Errorf("the no-role bar = %g hours, %+v, want all four waiting on a person: a null phase mark ends no wait",
 			bar.Hours, bar.Segments)
+	}
+}
+
+// TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue: the sampler writes a `null` slot
+// mark for two facts. A read that carries the issue observes its slot, `null` where it holds none
+// (legion.State's Observations), so a slot released is a `null` slot mark beside a phase that still
+// names one, and the rest of the admitted stretch is queue time: the spec's "Queue time, one
+// definition", "every observed stretch in which the issue's phase is `admitted` and it holds no
+// slot". A read that no longer carries the issue writes `null` for every field of it at one moment
+// (legion's recordObservations). That says the daemon stopped reporting the issue, not that it gave
+// up its slot, and nothing after it was observed, so the slot runs on through it as the phase does
+// (TestANullPhaseMarkEndsNoPhase). It runs to the next read that carries the issue again, which
+// writes a slot mark only where the issue holds a slot. Each root below is admitted holding slot 0
+// from hour 0, its architect speaks at hour 0, and it closes at hour 6.
+func TestANullSlotMarkIsAReleaseOnlyInAReadThatStillCarriesTheIssue(t *testing.T) {
+	admitted := func() *Issue {
+		return newIssue("INFRA-1").worked("architect", hour(0)).closedAt(hour(6)).
+			observeString(legion.FieldPhase, hour(0), "admitted").
+			observe(legion.FieldSlot, hour(0), "0")
+	}
+	cases := []struct {
+		name      string
+		issue     *Issue
+		timeline  []string
+		work      float64
+		queued    float64
+		architect float64
+	}{
+		{
+			// Every field `null` at hour 2: a drop. Read as a release, it would end the design at
+			// hour 2 and put hours 2 to 6 in the queue, off the work time and off the architect's bar.
+			name: "a drop while the root holds its slot",
+			issue: admitted().
+				observe(legion.FieldPhase, hour(2), "null").
+				observe(legion.FieldSlot, hour(2), "null"),
+			timeline: []string{"design 0-6"},
+			work:     6, queued: 0, architect: 6,
+		},
+		{
+			// The slot alone goes `null` at hour 2, in a read that still carries the root: a
+			// release, and the root waits in the queue from there.
+			name: "a release in a read that still carries the root",
+			issue: admitted().
+				observe(legion.FieldSlot, hour(2), "null"),
+			timeline: []string{"design 0-2", "queued 2-6"},
+			work:     2, queued: 4, architect: 2,
+		},
+		{
+			// The read at hour 4 carries the root again, holding no slot. It writes no slot mark,
+			// since the newest one is already the drop's `null`, and the slot ends there.
+			name: "a drop, then a read that carries the root holding no slot",
+			issue: admitted().
+				observe(legion.FieldPhase, hour(2), "null").
+				observe(legion.FieldSlot, hour(2), "null").
+				observeString(legion.FieldPhase, hour(4), "admitted"),
+			timeline: []string{"design 0-4", "queued 4-6"},
+			work:     4, queued: 2, architect: 4,
+		},
+		{
+			name: "a drop, then a read that carries the root holding its slot",
+			issue: admitted().
+				observe(legion.FieldPhase, hour(2), "null").
+				observe(legion.FieldSlot, hour(2), "null").
+				observeString(legion.FieldPhase, hour(4), "admitted").
+				observe(legion.FieldSlot, hour(4), "0"),
+			timeline: []string{"design 0-4", "design 4-6"},
+			work:     6, queued: 0, architect: 6,
+		},
+	}
+
+	for _, each := range cases {
+		t.Run(each.name, func(t *testing.T) {
+			partitionsItsWorkTime(t, each.issue)
+			population := fixture(hour(-24), hour(24), each.issue)
+			if got := timelineOf(population, each.issue); !reflect.DeepEqual(got, each.timeline) {
+				t.Errorf("the timeline is %v, want %v", got, each.timeline)
+			}
+			w := windowOf(population, ScopeAll)
+			if row := w.fact(t, each.issue.Key); row.WorkHours != each.work || row.QueuedHours != each.queued {
+				t.Errorf("work time = %g h with %g h queued, want %g h with %g h queued",
+					row.WorkHours, row.QueuedHours, each.work, each.queued)
+			}
+			if got := barOf(t, w, "architect").Hours; got != each.architect {
+				t.Errorf("the architect bar = %g h, want %g", got, each.architect)
+			}
+		})
 	}
 }
 

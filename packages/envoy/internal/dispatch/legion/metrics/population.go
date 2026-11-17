@@ -28,6 +28,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -129,15 +131,19 @@ type Population struct {
 	// creation order: the whole history's (ReadProject) or the named filed issues' (ReadIssues).
 	Filed []Filed
 
-	// reported is every issue of the project the daemon reports — in the newest good read, or
-	// one Dispatch observed a phase of (legion.ReportedIssues) — against the `tree` the newest
-	// good read names for it, empty where it names none (readReported). phaseWork is every issue
-	// that carries Legion phase work, over the whole log of every project (legion.PhaseWorkKeys).
-	// Neither half of the one rule that places an issue in a tree (legion.TreeNode) is read for
-	// the window's keys: the first is the project's whole and the second every project's, since
-	// an issue's tree is a fact of the project, not of the window.
+	// reported is legion.ReadCurrent's Reported (readReported), and phaseWork is every issue that
+	// carries Legion phase work, over the whole log of every project (legion.PhaseWorkKeys): the
+	// two halves of legion.TreeNode's rule, neither of them read for the window's keys.
 	reported  map[string]string
 	phaseWork map[string]struct{}
+
+	// Admission is the daemon's admission block as the newest good read recorded it, read in the
+	// one snapshot the reported set and the scope's observations are read in (readReported), so
+	// a reader that numbers the waiting line from it reads the block of the moment the issues'
+	// phases and slots are of (dispatch://INFRA-1077's b1d6bd0512, "one answer reads one
+	// snapshot"). It is nil where no read recorded one, where the newest good read no longer
+	// carried it (its newest row is `null`), and where the row holds a value of another shape.
+	Admission *legion.Admission
 
 	// askTurns is every ask turn the read gathered, before the tree rule picked the ones that
 	// count for the issue they were opened on. The rule reads each issue's tree, which the
@@ -188,6 +194,23 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time, f
 	if err := filed(ctx, population); err != nil {
 		return nil, err
 	}
+	// What the sampler writes — the project's reported set with its trees and the daemon's
+	// admission block, and the observations of the scope's issues — is read in one repeatable-read,
+	// read-only transaction, so the trees, the block and the timelines answer one moment: a sampler
+	// commit between two reads would give an issue a tree from a read its timeline does not hold,
+	// or a timeline past its tree. The transaction opens here, on a hold mark of its own
+	// (store.ForConcurrentRead), because the scope is chosen from its first read, and the read
+	// that takes the observations in the group below commits it (readSampled): it holds that one
+	// connection and waits on no other, so it is one of the reads side by side.
+	sampled, err := store.ForConcurrentRead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := pool.BeginTx(sampled, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin the read of %s's Legion observations: %w", project, err)
+	}
+	defer tx.Rollback(sampled)
 	// readReported runs here, before the scope is chosen, and not in the group below. It takes
 	// no keys — it reads what the daemon reports of every issue of the project — and the scope
 	// is chosen from its answer: the rule that places an issue in a tree reads the daemon's
@@ -195,7 +218,7 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time, f
 	// scope chosen before this read would hold a seed's parent chain and not the tree a `tree`
 	// observation names. fillReportedTrees follows it at once, because Issue.Tree is where the
 	// walk and the scope both read that answer.
-	if err := population.readReported(ctx, pool, project); err != nil {
+	if err := population.readReported(sampled, tx, project); err != nil {
 		return nil, err
 	}
 	population.fillReportedTrees()
@@ -210,7 +233,7 @@ func read(ctx context.Context, pool *store.Pool, project string, to time.Time, f
 		func(ctx context.Context) error { return population.readStatusMarks(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readAskTurns(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readHandoffs(ctx, pool, keys) },
-		func(ctx context.Context) error { return population.readObservations(ctx, pool, project, keys) },
+		func(ctx context.Context) error { return population.readSampled(ctx, tx, project, keys) },
 		func(ctx context.Context) error { return population.readMergeTimes(ctx, pool, keys) },
 		func(ctx context.Context) error { return population.readPhaseWork(ctx, pool) },
 	); err != nil {
@@ -414,10 +437,10 @@ func (p *Population) treeScopeKeys(seeds []string) []string {
 // project does not hold has no entry, so a walk that reaches it stops.
 //
 // It makes two reads, one for each fact the step reads: what the daemon reports of every issue
-// of the project (legion.ReportedIssues, the read the board and this package's own population
-// make), and the project's issues with the parent link Dispatch records.
+// of the project (legion.ReadCurrent's Reported, the read the board and this package's own
+// population make), and the project's issues with the parent link Dispatch records.
 func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[string]string, error) {
-	reported, err := legion.ReportedIssues(ctx, pool, project)
+	current, err := legion.ReadCurrent(ctx, pool, project)
 	if err != nil {
 		return nil, err
 	}
@@ -436,7 +459,7 @@ func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[strin
 		if err := rows.Scan(&key, &parent); err != nil {
 			return nil, fmt.Errorf("read a tree link of %s: %w", project, err)
 		}
-		above[key], _ = legion.TreeAbove(key, legion.TreeNode{Tree: reported[key], Parent: parent})
+		above[key], _ = legion.TreeAbove(key, legion.TreeNode{Tree: current.Reported[key], Parent: parent})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the tree links of %s: %w", project, err)
@@ -670,13 +693,26 @@ func (p *Population) readHandoffs(ctx context.Context, pool *store.Pool, keys []
 	return nil
 }
 
+// readSampled reads the scope's observations (readObservations) in the repeatable-read,
+// read-only transaction read opened for the project's reported set (readReported), and commits
+// it, so the timelines and the trees answer one moment. The reported set is read first and alone,
+// because the scope is chosen from it, and it is the short read — on the test Postgres at 3,000
+// issues of 6 fields, 26 ms beside the history's 531 ms over 180,000 rows (dispatch://INFRA-1077's
+// b1d6bd0512) — while the history runs beside read's other reads.
+func (p *Population) readSampled(ctx context.Context, tx pgx.Tx, project string, keys []string) error {
+	if err := p.readObservations(ctx, tx, project, keys); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 // readObservations reads every change the sampler recorded of the issues, whenever it recorded it:
 // an observation older than the window is what says what the issue's phase was when the window
 // opened. The field is kept as the sampler wrote it, so a field a later daemon adds (the `tree` of
 // dispatch://INFRA-980) is read the day the sampler records it and is absent, not wrong, until
 // then.
-func (p *Population) readObservations(ctx context.Context, pool *store.Pool, project string, keys []string) error {
-	rows, err := pool.Query(ctx, `
+func (p *Population) readObservations(ctx context.Context, tx pgx.Tx, project string, keys []string) error {
+	rows, err := tx.Query(ctx, `
 		select issue_key, field, value::text, observed_at
 		from legion_observations
 		where project = $1 and issue_key = any($2)
@@ -705,20 +741,29 @@ func (p *Population) readObservations(ctx context.Context, pool *store.Pool, pro
 }
 
 // readReported reads the issues of the project the daemon reports, against the `tree` it names
-// for each, by the read the Legion board makes too (legion.ReportedIssues): an issue in the newest
-// good read, or one Dispatch observed a phase of. An issue that left the daemon's state is still
-// one of them, with no tree, since its `tree` was written `null` when it left; a child of it
-// climbs through it as it did before (dispatch://INFRA-1077's spec, "The top issue of a tree").
-// It reads the whole project rather than the window's keys because both halves answer
-// legion.TreeNode, and an issue's tree is a fact of the project; it takes one row per issue and
-// not the rows themselves, which readObservations takes for the issues whose timelines the
-// metrics measure.
-func (p *Population) readReported(ctx context.Context, pool *store.Pool, project string) error {
-	reported, err := legion.ReportedIssues(ctx, pool, project)
+// for each: legion.ReadCurrent's Reported, the read the Legion board makes too, of the whole
+// project rather than the scope's keys (legion.TreeNode), in the transaction readSampled takes
+// the scope's observations in. Of the read's Newest, the board's cards, it keeps the daemon's
+// admission block alone (Admission), so a stored row's waiting line reads the block of the moment
+// its observations are of; the rest go unused here, which is the cost of one read answering the
+// rule for both readers.
+func (p *Population) readReported(ctx context.Context, tx pgx.Tx, project string) error {
+	current, err := legion.ReadCurrent(ctx, tx, project)
 	if err != nil {
 		return err
 	}
-	p.reported = reported
+	p.reported = current.Reported
+	for _, one := range current.Newest {
+		if one.IssueKey != legion.AdmissionKey || one.Field != legion.FieldAdmission {
+			continue
+		}
+		// A value of another shape leaves the block unread: the daemon owns the wire shape,
+		// and a reader of one names what it expects, as the board does (observeProject).
+		var admission legion.Admission
+		if err := json.Unmarshal(one.Value, &admission); err == nil {
+			p.Admission = &admission
+		}
+	}
 	return nil
 }
 
@@ -784,42 +829,30 @@ func (p *Population) linkTrees() {
 // stops, and why, is stated once in legion.TreeChain's doc.
 //
 // Both facts the walk reads are the project's and not the window's — Issue.Tree is the daemon's
-// newest `tree` for every issue of the project (fillReportedTrees), and isLegionIssue reads the
-// project's reported set — so this population answers what the Legion board answers. It holds
-// every issue of the project, Legion's and the rest.
+// newest `tree` for every issue of the project (fillReportedTrees), and legion.IsLegionIssue reads
+// the project's reported set (readReported) and every project's phase work (readPhaseWork) — so
+// this population answers what the Legion board answers. It holds every issue of the project,
+// Legion's and the rest. A fixture states the rule by filling the two sets, as a read does.
 func (p *Population) TreeRoot(key string) string {
 	return legion.TreeRoot(key, p.TreeNode)
 }
 
 // TreeNode is what the tree walk reads of one issue of this population (legion.TreeNode): the
 // `tree` the daemon named for it, the parent Dispatch records, and whether the issue is Legion's
-// (isLegionIssue). It is false for a key this population does not hold. A reader that must place
-// something on the nearest issue above another walks the chain itself (legion.TreeChain), as the
-// waiting line does for an unstarted child, and it climbs this read.
+// (legion.IsLegionIssue, over the population's reported set and its phase work). It is false for
+// a key this population does not hold. A reader that must place something on the nearest issue
+// above another walks the chain itself (legion.TreeChain), as the waiting line does for an
+// unstarted child, and it climbs this read.
 func (p *Population) TreeNode(key string) (legion.TreeNode, bool) {
 	issue := p.Issues[key]
 	if issue == nil {
 		return legion.TreeNode{}, false
 	}
-	return legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent, Legion: p.isLegionIssue(issue)}, true
-}
-
-// isLegionIssue answers legion.TreeNode's Legion for this population, which states the rule: the
-// daemon reports the issue — it is in the project's reported set (readReported) — or it carries
-// Legion phase work (readPhaseWork). Neither set is read for the window, the first being the
-// project's whole and the second every project's, so the answer does not move with the window
-// being computed, which is what makes it the board's. The Legion board asks the same two facts
-// its own way (api/legion_board.go's treeNode), reading phase work only for the issues its walk
-// can climb onto (its readPhaseWork). A fixture states the rule by filling the two sets, as a
-// read does.
-func (p *Population) isLegionIssue(issue *Issue) bool {
-	_, reported := p.reported[issue.Key]
-	_, worked := p.phaseWork[issue.Key]
-	return reported || worked
+	return legion.TreeNode{Tree: issue.Tree, Parent: issue.Parent, Legion: legion.IsLegionIssue(key, p.reported, p.phaseWork)}, true
 }
 
 // readPhaseWork reads the issues that carry Legion phase work, over the whole log of every project
-// (legion.PhaseWorkKeys); isLegionIssue looks up only this project's issues in it. It places an
+// (legion.PhaseWorkKeys); TreeRoot looks up only this project's issues in it. It places an
 // issue in a tree and nothing else: what a metric counts reads the window's own role events and
 // handoffs (hasPhaseWork).
 func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error {
@@ -833,7 +866,7 @@ func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error 
 
 // hasPhaseWork is whether this read carried Legion phase work of the issue: an event of a
 // session titled `Legion <role> · <its key>`, or a handoff, among the window's scope. The rule
-// that picks which finished issues a measure counts reads this and not isLegionIssue
+// that picks which finished issues a measure counts reads this and not legion.IsLegionIssue
 // (ProjectFacts, whose issues closed in a window are the ones it finished): an issue the daemon
 // reports and no role ever worked finished nothing, however its tree reads.
 func (p *Population) hasPhaseWork(issue *Issue) bool {

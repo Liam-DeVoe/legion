@@ -17,11 +17,8 @@ const (
 	titlesIssueBand = 3000
 )
 
-// seedTitlesIssue writes titlesIssue in deliveryProject and clears its events and the stored
-// titles of sessions, so a run against the database an earlier run left reads only what this test
-// writes: deleting an event takes no title away, since the title is stored where the event was
-// written (migration 20261117100015's trigger).
-func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool, sessions ...string) {
+// seedTitlesIssue writes titlesIssue in deliveryProject.
+func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)
 	if _, err := pool.Exec(ctx, `
@@ -29,12 +26,6 @@ func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool, sessio
 		values ($1, $2, $3, $1, 'todo', '{"kind":"system","id":"delivery-test"}', $1)
 		on conflict do nothing`, titlesIssue, deliveryProject, titlesIssueBand+1); err != nil {
 		t.Fatalf("seed issue %s: %v", titlesIssue, err)
-	}
-	if _, err := pool.Exec(ctx, `delete from events where issue_key = $1`, titlesIssue); err != nil {
-		t.Fatalf("clear the events of %s: %v", titlesIssue, err)
-	}
-	if _, err := pool.Exec(ctx, `delete from session_titles where session_id = any($1)`, sessions); err != nil {
-		t.Fatalf("clear the titles of %v: %v", sessions, err)
 	}
 }
 
@@ -75,7 +66,7 @@ func TestASessionKeepsItsNameAfterAWriteThatCarriesNoTitle(t *testing.T) {
 		named    = "ses_release_sender"
 		nameless = "ses_never_titled"
 	)
-	seedTitlesIssue(t, ctx, pool, named, nameless)
+	seedTitlesIssue(t, ctx, pool)
 
 	at := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	writeSessionEvent(t, ctx, pool, at, actorJSON(t, model.Actor{

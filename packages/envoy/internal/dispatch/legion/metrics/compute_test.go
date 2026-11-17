@@ -36,7 +36,8 @@ func TestNoQueueOrParkedHourEntersTheWorkTime(t *testing.T) {
 	// spec's "Rule details — Queue time, one definition"), so this issue's is three hours: the
 	// two before it was ever given work and the one it went back for. Only the second is inside
 	// the work time, which is why the row above reports one.
-	if queued := totalOf(fixture(hour(-24), hour(24), issue).queuedSpans(issue)); queued.Hours() != 3 {
+	phases, _ := fixture(hour(-24), hour(24), issue).Phases(issue)
+	if queued := totalOf(queuedSpans(phases)); queued.Hours() != 3 {
 		t.Errorf("the queued spans total %v, want the three hours the issue was admitted holding no slot", queued)
 	}
 }

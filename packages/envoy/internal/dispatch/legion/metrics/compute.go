@@ -84,9 +84,8 @@ type FiledIssue struct {
 	// names it by (tablePhase): the eight words of the spec's "Phase words in tables" — `design`,
 	// `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro` and `merging` —,
 	// `queued` for the waiting line, `awaiting_person` and `held` for the "no role" bar, `done`
-	// for an issue the daemon has finished and Dispatch has not closed, and the empty string for
-	// a moment the issue's timeline does not cover, which is what every filing by the controller
-	// carries.
+	// for an hour out of the workflow before the close, and the empty string for a moment the
+	// issue's timeline does not cover, which is what every filing by the controller carries.
 	FilerPhase string `json:"filer_phase"`
 }
 
@@ -145,7 +144,10 @@ func (t phaseTimeline) statusesBefore(issue *Issue) []Mark {
 
 // workTimeRow is one memoised answer of workedOf: when the work time started (the first worker
 // event), its hours and the parked and queued hours taken out of the issue's life, the spans its
-// hours are the measure of, and whether the issue has a work time at all.
+// hours are the measure of, and whether the issue has a work time at all. The hours out of the
+// workflow it takes out too are no fact of the issue's (computeWorkTime): no Legion eval reads
+// them, as none reads the parked or the queued hours, and the work time and the bars already
+// leave them out.
 type workTimeRow struct {
 	started               time.Time
 	hours, parked, queued float64
@@ -287,9 +289,11 @@ func (c *computation) workedOf(issue *Issue) workTimeRow {
 	return held
 }
 
-// computeWorkTime is the work time itself: the issue's life, less the time it sat parked and the
-// time it sat back in the queue. The spans that are left are the answer's second half, because
-// they are what the issue's bars of phase time are shared out over.
+// computeWorkTime is the work time itself: the issue's life, less the time it sat parked, the
+// time it sat back in the queue and the time it was out of the workflow. The spans that are left
+// are the answer's second half, because they are what the issue's bars of phase time are shared
+// out over. The queue and the time out of the workflow are read off the issue's own timeline
+// (queuedSpans, outOfWorkflowSpans), the one the bars read, so the two cannot disagree on them.
 //
 // A closed issue's life ends at its close. A child still open has a work time too, which its
 // root's waiting-on-children rule reads: its life runs to the population's end, as every other
@@ -300,12 +304,14 @@ func (c *computation) computeWorkTime(issue *Issue) workTimeRow {
 		return workTimeRow{}
 	}
 	end := c.population.issueEnd(issue)
+	timeline := c.phasesOf(issue)
 	// A life of no length leaves no span to park, to queue or to put on a bar, which the span
 	// algebra below answers on its own.
 	life := []Span{{From: start, To: end}}
 	parked := intersect(c.population.parkedSpans(issue), life)
-	queued := intersect(c.population.queuedSpans(issue), life)
-	worked := subtract(subtract(life, parked), queued)
+	queued := intersect(queuedSpans(timeline), life)
+	out := intersect(outOfWorkflowSpans(timeline), life)
+	worked := subtract(subtract(subtract(life, parked), queued), out)
 	return workTimeRow{
 		started: start,
 		hours:   hours(totalOf(worked)),
@@ -350,10 +356,11 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 // The hours shared out are the issue's work time and nothing else (the spec's "Rule details —
 // Parked and pre-work hours in phase time": "An hour that work time to merge leaves out is on no
 // bar of phase time ... So the bars of an issue add up to its work time, and the two cards
-// agree"). Each bar takes the phases it holds and the queue is on none of them, so the seven are
-// a partition of the work time: the timeline leaves no hour between two phases (the spec's
-// "Phase boundaries before observations"), and every phase an issue can be in is on one of the
-// seven bars.
+// agree"). Each bar takes the phases it holds, so the seven are a partition of the work time: the
+// timeline leaves no hour between two phases (the spec's "Phase boundaries before observations"),
+// and every phase an issue can be in is on one of the seven bars but `queued` and `done`, the
+// queue and the time out of the workflow before the close, whose hours the work time leaves out
+// (queuedSpans, outOfWorkflowSpans).
 //
 // A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
 // is whether there are any, which is what a bar's issue count counts, kept apart from Hours
@@ -414,7 +421,8 @@ func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
 // observed phase is in R's bar ..., and R's newest observed claim state is not `working` (no claim
 // counts as not working)". Each of the six roles has an entry, zero where no hour qualifies.
 //
-// The worked spans are the ones the work time counts (workedSpansOf). The slot is the issue's own
+// The worked spans are the ones the work time counts (workedSpansOf), which leave out the hours
+// out of the workflow before the close as well (outOfWorkflowSpans). The slot is the issue's own
 // `slot` observations (slotSpans), never the daemon's admission block. R's bar is the bar phase
 // time draws for R (bars): the architect's is `design` and `accepting`, where `design` is the
 // daemon's `admitted` while the issue holds a slot of its own, which is how the timeline names
@@ -567,11 +575,11 @@ func phaseAt(timeline []PhaseSpan, at time.Time) string {
 // retro is on the implementer's bar and keeps its own word.
 //
 // The whole of what it answers, which a stored filing's filer_phase holds: those eight words; the
-// three words a timeline holds that are on no role's bar — `queued`, which is the waiting line,
-// and `awaiting_person` and `held`, which are the "no role" bar's; `done`, which an issue the
-// daemon has finished and Dispatch has not closed yet holds; and "" for a moment no span of the
-// timeline covers, which is what a filing by the controller carries, since the controller works
-// no issue.
+// four words a timeline holds that are on no role's bar — `queued` and `done`, which are on no
+// bar at all, being the waiting line and an hour out of the workflow before the close
+// (queuedSpans, outOfWorkflowSpans), with observations or before them, and `awaiting_person` and
+// `held`, which are the "no role" bar's; and "" for a moment no span of the timeline covers, which
+// is what a filing by the controller carries, since the controller works no issue.
 func tablePhase(phase string) string {
 	if slices.Contains(mergerPhases, phase) {
 		return legion.PhaseMerging

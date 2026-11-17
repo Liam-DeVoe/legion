@@ -38,6 +38,18 @@ const (
 	phaseQueued = "queued"
 )
 
+// phaseDone is the phase the daemon reports for an issue it has finished, and for one it holds
+// out of the workflow before Dispatch closes it: such an hour before the close is out of the
+// workflow (outOfWorkflow).
+const phaseDone = "done"
+
+// The two statuses a stretch out of the workflow starts at before observations: `triage`, and a
+// `done` some other status follows, which is a close a reopen undid (outOfWorkflow).
+const (
+	statusTriage = "triage"
+	statusDone   = "done"
+)
+
 // The fields the sampler records that these rules read.
 const (
 	fieldPhase       = "phase"
@@ -224,8 +236,10 @@ func (r *reading) valuesOf(key string) values {
 }
 
 // workedOf is the issue's work time: "Hours from the issue's first worker event to its close,
-// minus any time in `backlog` or `icebox` and any time back in the queue after it", and an
-// issue still open runs to the end of the window. An issue with no first worker event has none.
+// minus any time in `backlog` or `icebox` and any time back in the queue after it", and since
+// dispatch://INFRA-1077's 9f994275a7 minus any hour out of the workflow before the close too
+// (outOfWorkflow); an issue still open runs to the end of the window. An issue with no first
+// worker event has none.
 func (r *reading) workedOf(key string) []span {
 	if held, measured := r.worked[key]; measured {
 		return held
@@ -236,7 +250,8 @@ func (r *reading) workedOf(key string) []span {
 	if at, works := r.firstWork(key); works {
 		end := r.population.end(key)
 		life := []span{{from: at, to: end}}
-		worked = subtract(subtract(life, r.parked(key)), phaseStretches(r.timelineOf(key).spans, phaseQueued))
+		queued := phaseStretches(r.timelineOf(key).spans, phaseQueued)
+		worked = subtract(subtract(subtract(life, r.parked(key)), queued), r.outOfWorkflow(key))
 	}
 	r.worked[key] = worked
 	return worked
@@ -248,6 +263,42 @@ func (r *reading) parked(key string) []span {
 	return markStretches(r.population.issues[key].statusMarks, r.population.end(key), func(value string) bool {
 		return slices.Contains(parkedStatuses, value)
 	})
+}
+
+// outOfWorkflow is when the issue was out of the workflow before its close, which the work time
+// leaves out as it leaves out a park, so no bar holds it (dispatch://INFRA-1077's spec version 50,
+// "Out of the workflow before the close", 9f994275a7): "With observations, that is every stretch
+// whose observed phase is `done` before the close ... Before observations, it is the stretch from
+// an `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
+// write." The sampler's part of the timeline gives the first, and the statuses its event log's
+// part covers give the second. The close is the issue's last move to `done`, so the `done` its
+// status history ends with, and any snapshot of it after, is the close and no stretch. It is no
+// park: the parked hours are `backlog` and `icebox` alone (parked).
+func (r *reading) outOfWorkflow(key string) []span {
+	end := r.population.end(key)
+	drawn := r.timelineOf(key)
+	sampledFrom := end
+	if drawn.firstObserved < len(drawn.spans) {
+		sampledFrom = drawn.spans[drawn.firstObserved].stretch.from
+	}
+	out := phaseStretches(drawn.spans[drawn.firstObserved:], phaseDone)
+	statuses := r.population.issues[key].statusMarks
+	closing := len(statuses)
+	for closing > 0 && statuses[closing-1].value == statusDone {
+		closing--
+	}
+	var logged []span
+	for index, recorded := range statuses[:closing] {
+		if recorded.value != statusTriage && recorded.value != statusDone {
+			continue
+		}
+		stretch := span{from: recorded.at, to: end}
+		if index+1 < len(statuses) {
+			stretch.to = statuses[index+1].at
+		}
+		logged = append(logged, stretch)
+	}
+	return normalize(append(out, intersect(logged, []span{{to: sampledFrom}})...))
 }
 
 // firstWork is the issue's first worker event: the first event of a session titled for the issue's
@@ -351,7 +402,8 @@ func claimWorking(value string) bool {
 // childrenStretches is when the issue was waiting on its children: "the issue is a root with a
 // child in a phase from planning to awaiting merge", a child counting "only during its own work
 // time, as work time to merge defines it: not while it is parked, back in the queue, or before its
-// first worker event".
+// first worker event". The child's work time leaves out its hours out of the workflow as well, so a
+// root waits on a child through none of them (9f994275a7).
 func (r *reading) childrenStretches(key string) []span {
 	if r.rootOf(key) != key {
 		return nil
@@ -366,8 +418,10 @@ func (r *reading) childrenStretches(key string) []span {
 
 // idleByRole is D3's idle time by role: "for role R, the hours of the issue's worked spans (life −
 // parked − queued) in which the issue holds its own slot, its observed phase is in R's bar ..., and
-// R's newest observed claim state is not `working` (no claim counts as not working)". The phase is
-// the observed one alone, the sampler's own marks, and the slot is the issue's own.
+// R's newest observed claim state is not `working` (no claim counts as not working)". The worked
+// spans leave out the hours out of the workflow before the close as well, as the work time does
+// since dispatch://INFRA-1077's 9f994275a7 (workedOf). The phase is the observed one alone, the
+// sampler's own marks, and the slot is the issue's own.
 func (r *reading) idleByRole(key string, worked []span) map[string]float64 {
 	end := r.population.end(key)
 	holding := intersect(worked, r.slotStretches(key))
@@ -566,12 +620,68 @@ func phaseMarks(marks []mark) []mark {
 	return named
 }
 
-// slotStretches is when the issue held a slot of its own: a `slot` mark naming a slot holds until
-// the mark that names none.
+// slotStretches is when the issue held a slot of its own. A `slot` mark naming a slot holds it,
+// and a mark that names none releases it in a read that still carries the issue. A read that no
+// longer carries the issue writes `null` for every field of it at one moment, its phase among
+// them, so a `null` slot mark beside a `null` phase mark is the daemon dropping the issue, not the
+// issue giving its slot up: the slot is held on through it, to the first read that carries the
+// issue again, its next phase mark that names a phase, which releases the slot unless the same
+// read names one (dispatch://INFRA-1077's e2a409a4f5, "an issue the daemon drops keeps the slot it
+// held").
 func (r *reading) slotStretches(key string) []span {
-	return markStretches(r.population.issues[key].observed[fieldSlot], r.population.end(key), func(value string) bool {
-		return value != "" && value != "null"
-	})
+	held := r.population.issues[key]
+	// The slot mark and the phase mark one read wrote, by the moment the read wrote them at.
+	type read struct{ slot, phase *mark }
+	reads := map[int64]*read{}
+	var moments []time.Time
+	readAt := func(at time.Time) *read {
+		if found, seen := reads[at.UnixNano()]; seen {
+			return found
+		}
+		fresh := &read{}
+		reads[at.UnixNano()] = fresh
+		moments = append(moments, at)
+		return fresh
+	}
+	for index := range held.observed[fieldSlot] {
+		readAt(held.observed[fieldSlot][index].at).slot = &held.observed[fieldSlot][index]
+	}
+	for index := range held.observed[fieldPhase] {
+		readAt(held.observed[fieldPhase][index].at).phase = &held.observed[fieldPhase][index]
+	}
+	slices.SortFunc(moments, time.Time.Compare)
+	var stretches []span
+	var from time.Time
+	holding, gone := false, false
+	for _, at := range moments {
+		one := reads[at.UnixNano()]
+		drops := one.phase != nil && jsonString(one.phase.value) == ""
+		holds := holding
+		switch {
+		case one.slot != nil && one.slot.value != "" && one.slot.value != "null":
+			holds = true
+		case one.slot != nil && !drops:
+			holds = false
+		case one.slot == nil && one.phase != nil && !drops && gone:
+			// Carried again after a drop, with no slot mark: the issue's newest slot mark is
+			// still the drop's `null`, so this read names no slot, and it holds none.
+			holds = false
+		}
+		if one.phase != nil {
+			gone = drops
+		}
+		if holds && !holding {
+			from = at
+		}
+		if !holds && holding {
+			stretches = append(stretches, span{from: from, to: at})
+		}
+		holding = holds
+	}
+	if holding {
+		stretches = append(stretches, span{from: from, to: r.population.end(key)})
+	}
+	return normalize(stretches)
 }
 
 // The three things the event log says about an issue's phase, and the order two of them that fall

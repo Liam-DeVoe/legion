@@ -37,7 +37,9 @@ const (
 )
 
 // childWorkingPhases are the phases "from planning to awaiting merge": a root with a child in one
-// of them is waiting on its children (segment 4).
+// of them is waiting on its children (segment 4). `done` is none of them: a child in `done` before
+// its close is out of the workflow, whose hours are outside its own work time too (the spec's "Out
+// of the workflow before the close", outOfWorkflowSpans), so its root waits on it through none.
 var childWorkingPhases = []string{
 	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,
@@ -56,6 +58,13 @@ const (
 	statusTesting      = "testing"
 	statusNeedsReview  = "needs_review"
 	statusRetro        = "retro"
+)
+
+// The two statuses a stretch out of the workflow starts at before observations
+// (outOfWorkflowByStatus): `triage`, and a `done` a reopen follows.
+const (
+	statusTriage = "triage"
+	statusDone   = "done"
 )
 
 // sentBackStatuses are the statuses a send-back moves out of before observations exist:
@@ -123,6 +132,14 @@ type PhaseSpan struct {
 // sampler met before any mark of the event log is its observations' whole, and one it never met
 // is the event log's whole (appendStepSpans, the spec's "Phase boundaries before observations").
 //
+// Before observations, the event log's statuses also say where the issue was out of the workflow
+// (outOfWorkflowByStatus), and those stretches are laid over its steps as `done`, the phase the
+// daemon reports for such an hour, so the two timelines name it alike and the work time and the
+// bars read it off either one the same way (outOfWorkflowSpans). The steps run on beneath a
+// stretch, as they run on beneath a park: after it the phase is the reopen's own where its status
+// marks one ("the reopen's status sets the phase from then", the spec's "The close"), and where it
+// marks none, a `todo` or an admission's `in_progress`, the phase the issue had before the stretch.
+//
 // Where the observations take over is the answer's second half because the rules that read a
 // phase before observations — metric 3's review rounds, its send-backs and the first review its
 // hours are counted from — read the status history up to that moment. An issue whose only
@@ -158,8 +175,29 @@ func (p *Population) Phases(issue *Issue) ([]PhaseSpan, int) {
 		}
 	}
 	timeline := appendStepSpans(make([]PhaseSpan, 0, len(steps)+len(observed)), steps, until)
+	if out := p.outOfWorkflowByStatus(issue); len(out) > 0 {
+		timeline = layOutOfWorkflow(timeline, out)
+	}
 	firstObserved := len(timeline)
 	return append(timeline, observed...), firstObserved
+}
+
+// layOutOfWorkflow lays stretches out of the workflow over the event log's part of a timeline:
+// each step keeps its hours outside them, and its hours inside them are `done`. A stretch that
+// runs on past the event log's part is the observations' to name from there (Phases), so only
+// the steps it overlaps are cut. The answer keeps the room Phases made for the observed spans.
+func layOutOfWorkflow(timeline []PhaseSpan, out []Span) []PhaseSpan {
+	laid := make([]PhaseSpan, 0, cap(timeline)+2*len(out))
+	for _, step := range timeline {
+		for _, kept := range subtract([]Span{step.Span}, out) {
+			laid = append(laid, PhaseSpan{Phase: step.Phase, Span: kept})
+		}
+		for _, left := range intersect([]Span{step.Span}, out) {
+			laid = append(laid, PhaseSpan{Phase: legion.PhaseDone, Span: left})
+		}
+	}
+	slices.SortFunc(laid, func(a, b PhaseSpan) int { return a.Span.From.Compare(b.Span.From) })
+	return laid
 }
 
 // sampledPhases is the timeline the sampler's `phase` observations draw and nothing else: each
@@ -201,8 +239,11 @@ func (p *Population) sampledPhases(issue *Issue) []PhaseSpan {
 // next mark that carries a phase or to the issue's end where none follows, and its hours stay on
 // the bar of the phase the issue was last seen in, so the bars of the issue still add up to its
 // work time (the spec's "Parked and pre-work hours in phase time"). Both readers of an issue's
-// phase marks take them from here, the timeline (sampledPhases) and the root's recorded wait on a
-// person (waitingOnPersonSpans), so the two cannot read one mark two ways.
+// phase stretches take them from here, the timeline (sampledPhases) and the root's recorded wait
+// on a person (waitingOnPersonSpans), so the two cannot read one mark two ways. The one other
+// reader of the phase marks, slotSpans, takes from them only the moments a read dropped the issue
+// and the moments one carried it again, and it reads a mark that names no phase as this does: a
+// read that no longer carried the issue.
 func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 	return func(yield func(PhaseSpan) bool) {
 		var open PhaseSpan
@@ -229,10 +270,76 @@ func (p *Population) phaseStretches(issue *Issue) iter.Seq[PhaseSpan] {
 // slotSpans are the stretches the issue held an admission slot, from its own `slot` observations:
 // never from the daemon's `admission.active`, which dispatch://INFRA-980 widens to every issue
 // holding one, children included.
+//
+// A slot mark that holds an index starts a hold, and the hold ends where the daemon released the
+// slot: at a slot mark that holds none in a read that still carries the issue. The sampler writes
+// two facts as a `null` slot mark, and only the phase marks of the same moment tell them apart. A
+// read that carries the issue observes its slot, `null` where it holds none (legion.State's
+// Observations), and its phase, which is never `null`: so a `null` slot mark beside a phase mark
+// that names a phase, or beside none, is a release. A read that no longer carries the issue writes
+// `null` for every field of it at one moment (legion's recordObservations): so a `null` slot mark
+// at the moment the phase mark went `null` is that drop, and a drop is not a release. It says the
+// daemon stopped reporting the issue, not that the issue gave up its slot, just as it is no news
+// of a phase change (phaseStretches): the hold runs on through it, so an admitted issue last seen
+// holding a slot stays in design and its hours stay on the architect's bar, since no read observed
+// it in the queue.
+//
+// The hold the drop left open runs to the first read that carries the issue again, which is the
+// next phase mark that names a phase. The issue's newest slot row is then the drop's `null`, so
+// that read writes a slot mark only where the issue holds a slot, and a return with no slot mark
+// at its moment is a release. Where no read carries the issue again, the hold runs to end.
+//
+// This is the one reader of the slot marks. The timeline's split of an admitted stretch into
+// design and queue (sampledPhases), and so the queue time (queuedSpans) and every bar, take them
+// from here, as does the start of the design phase before observations (fallbackMarks).
 func (p *Population) slotSpans(issue *Issue, end time.Time) []Span {
-	return markSpans(issue.Observed[legion.FieldSlot], end, func(value string) bool {
-		return value != "" && value != "null"
-	})
+	phases, slots := issue.Observed[legion.FieldPhase], issue.Observed[legion.FieldSlot]
+	var spans []Span
+	var from time.Time
+	holding, gone := false, false
+	for len(phases) > 0 || len(slots) > 0 {
+		// The next moment either field has a mark at, and the mark each has there: both are one
+		// read's, since a read writes every row it writes at the one moment.
+		var moment time.Time
+		if len(slots) == 0 || len(phases) > 0 && phases[0].At.Before(slots[0].At) {
+			moment = phases[0].At
+		} else {
+			moment = slots[0].At
+		}
+		var phase, slot *Mark
+		if len(phases) > 0 && phases[0].At.Equal(moment) {
+			phase, phases = &phases[0], phases[1:]
+		}
+		if len(slots) > 0 && slots[0].At.Equal(moment) {
+			slot, slots = &slots[0], slots[1:]
+		}
+		dropped := phase != nil && legion.JSONString([]byte(phase.Value)) == ""
+		holds := holding
+		switch {
+		case slot != nil:
+			// A slot the read carried decides, except a drop's `null`, which ends nothing.
+			if held := slot.Value != "" && slot.Value != "null"; held || !dropped {
+				holds = held
+			}
+		case phase != nil && gone && !dropped:
+			// The issue is carried again, holding no slot.
+			holds = false
+		}
+		if phase != nil {
+			gone = dropped
+		}
+		switch {
+		case holds && !holding:
+			from = moment
+		case !holds && holding:
+			spans = append(spans, Span{From: from, To: moment})
+		}
+		holding = holds
+	}
+	if holding {
+		spans = append(spans, Span{From: from, To: end})
+	}
+	return normalize(spans)
 }
 
 // phaseMark is one moment the event log says the issue's phase changed, and what says so.
@@ -389,8 +496,13 @@ func phaseRank(phase string) int {
 // the one place the timeline decides a send-back, which phaseSteps reads off the mark.
 //
 // The statuses that name no phase of their own — `todo`, `triage`, `backlog`, `icebox` and
-// `done` — leave the phase as it was. The hours they stand for are the queue's and the parked
-// ones, which the work time drops whatever phase the issue was in.
+// `done` — leave the phase as it was. The work time leaves out the hours of all of them but
+// `todo`, whatever phase the issue was in: `backlog` and `icebox` are parked (parkedSpans), a
+// `triage`, or a `done` a reopen follows, is out of the workflow, which Phases lays over these
+// steps as `done` (outOfWorkflowByStatus), and the last `done` is the close, where the issue's
+// life ends. The phase beneath a park or a stretch out of the workflow runs on after it, unless
+// the status that ends it names one. The hours after a `todo` stay on the phase the issue had,
+// since before observations the queue is none (queuedSpans).
 //
 // Neither does the `in_progress` of admission: "A status write such as the `in_progress` of
 // admission starts no phase" and "Design runs once, to the first planner event: an issue parked
@@ -466,19 +578,64 @@ func (p *Population) parkedSpans(issue *Issue) []Span {
 	})
 }
 
-// queuedSpans is the issue's queue time, and there is one definition of it: "every observed
+// outOfWorkflowByStatus is the stretches in which the issue was out of the workflow before
+// observations, from the statuses its own events snapshotted: "the stretch from an
+// `issue.closed` that a reopen follows, or from a `triage` status write, to the next status
+// write" (the spec's "Out of the workflow before the close"). The close is the issue's last move
+// to `done` (the spec's "The close"), so the `done` that ends its status history, and any
+// snapshot of it Dispatch wrote after, starts no stretch: only a `done` some other status follows
+// does, which is a close a reopen undid. Phases reads them over the event log's part of the
+// timeline alone, since with observations the observed `done` says where the issue was out.
+func (p *Population) outOfWorkflowByStatus(issue *Issue) []Span {
+	marks := issue.StatusMarks
+	closing := len(marks)
+	for closing > 0 && marks[closing-1].Value == statusDone {
+		closing--
+	}
+	end := p.issueEnd(issue)
+	var spans []Span
+	for index, mark := range marks[:closing] {
+		if mark.Value != statusTriage && mark.Value != statusDone {
+			continue
+		}
+		span := Span{From: mark.At, To: end}
+		if index+1 < len(marks) {
+			span.To = marks[index+1].At
+		}
+		spans = append(spans, span)
+	}
+	return normalize(spans)
+}
+
+// outOfWorkflowSpans is the timeline's hours out of the workflow, and there is one definition of
+// them: "An hour in which the issue is out of the workflow, before its close, is outside the work
+// time and on no bar, as a park is" (the spec's "Out of the workflow before the close"). They are
+// the timeline's own `done` spans. With observations, that is "every stretch whose observed phase
+// is `done` before the close: a merge before Dispatch's status write, a reopened issue's done
+// stretch, and a child that left the workflow, such as one moved to `triage`", all of which the
+// daemon reports as `done`; before observations, the stretches the issue's statuses mark, which
+// Phases lays over the event log's steps as `done` (outOfWorkflowByStatus). So the work time and
+// the bars cannot read them two ways, and the work time reads them inside the issue's life alone,
+// which ends at the close.
+func outOfWorkflowSpans(timeline []PhaseSpan) []Span {
+	return phaseSpansOf(timeline, legion.PhaseDone)
+}
+
+// queuedSpans is the timeline's queue time, and there is one definition of it: "every observed
 // stretch in which the issue's phase is `admitted` and it holds no slot, whenever it falls. Work
 // time to merge and every bar of phase time subtract the same queue time. A root in `admitted`
 // that holds a slot is in design, not in the queue" (the spec's "Rule details — Queue time, one
 // definition"). It is the phase timeline's own `queued` spans, so the work time and the bars
 // cannot read it two ways and the seven bars of an issue add up to its work time on either
-// timeline.
+// timeline. Whether the issue holds a slot is slotSpans' answer, in which the daemon dropping the
+// issue from its state releases nothing: an issue keeps through a drop the phase and the slot it
+// was last seen with, so one that held a slot when it dropped is not in the queue until a read
+// carries it again holding none.
 //
 // Before observations it is none: the timeline the event log draws holds no queued phase, and
 // the parked subtraction already covers the daemon's own parking.
-func (p *Population) queuedSpans(issue *Issue) []Span {
-	phases, _ := p.Phases(issue)
-	return phaseSpansOf(phases, phaseQueued)
+func queuedSpans(timeline []PhaseSpan) []Span {
+	return phaseSpansOf(timeline, phaseQueued)
 }
 
 // markSpans is the stretches in which a field's recorded value satisfies holds, from the marks the

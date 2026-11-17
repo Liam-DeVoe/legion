@@ -21,8 +21,6 @@ package legionfacts
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -160,15 +158,14 @@ func ComputeProject(ctx context.Context, pool *store.Pool, project string, now t
 //
 // The waiting reason is the one card rule (legion.CardWaiting), read through the one waiting
 // line (legion.WaitingLine), which the board builds from its own cards. The daemon's admission
-// block is read once per computation, because it is one row of the project rather than a fact of
-// any issue, and the repositories are read once for every row kept (ReadRepos).
+// block is the population's (metrics.Population.Admission), read in the one snapshot its issues'
+// observations are read in, so a row's line numbers the issues by the block of the moment their
+// phases and slots are of (dispatch://INFRA-1077's b1d6bd0512, "one answer reads one snapshot"),
+// as the board reads its header and its cards. The repositories are read once for every row kept
+// (ReadRepos).
 func rowsOf(ctx context.Context, q Querier, population *metrics.Population, project string, wanted map[string]bool, now time.Time) ([]Row, error) {
-	admission, err := readAdmission(ctx, q, project)
-	if err != nil {
-		return nil, err
-	}
 	line := legion.NewWaitingLine(legion.WaitingLineInput{
-		Admission: admission,
+		Admission: population.Admission,
 		Issue:     func(key string) (legion.LineIssue, bool) { return lineIssue(population, key) },
 		Tree:      population.TreeNode,
 	})
@@ -353,7 +350,7 @@ func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
 // of whose fields holds a value at its newest observation is one the newest good read does not
 // carry — the sampler recorded nothing of it, or wrote each of its fields `null` when it left the
 // daemon's state — which is the rule the board's own line reads its issues by
-// (legion.NewestObservations, api/legion_board.go's issues map), and the line numbers it in no
+// (legion.ReadCurrent's Newest, api/legion_board.go's issues map), and the line numbers it in no
 // place and draws it no card.
 func lineIssue(population *metrics.Population, key string) (legion.LineIssue, bool) {
 	issue := population.Issues[key]
@@ -365,7 +362,7 @@ func lineIssue(population *metrics.Population, key string) (legion.LineIssue, bo
 }
 
 // carriedByTheNewestRead is whether one of the issue's fields holds a value at its newest
-// observation: the newest good read carries the issue (legion.NewestObservations' rule).
+// observation: the newest good read carries the issue (the rule of legion.ReadCurrent's Newest).
 func carriedByTheNewestRead(issue *metrics.Issue) bool {
 	for _, marks := range issue.Observed {
 		if len(marks) > 0 && marks[len(marks)-1].Value != "null" {
@@ -438,34 +435,4 @@ func newestWait(issue *metrics.Issue) *legion.Wait {
 	}
 	wait, _ := legion.ParseWait([]byte(marks[len(marks)-1].Value))
 	return wait
-}
-
-// readAdmission is the daemon's newest admission block, which the sampler writes as one row of
-// the project under legion.AdmissionKey. It is nil for a project whose daemon has never answered,
-// for one that sends no block, and for one whose newest good read no longer carried it (a `null`
-// newest row), and nil again where the row holds a value of another shape: the daemon owns the
-// wire shape, and a reader of one names what it expects.
-//
-// The newest row is legion_current's, the one row per field the base keeps for its readers
-// (migration 20261117022936, legion.NewestObservations), read by that table's primary key and
-// under the rule the board reads the block by: a `null` newest row holds nothing. So the card's
-// waiting line and the stored row's are read from one block.
-func readAdmission(ctx context.Context, q Querier, project string) (*legion.Admission, error) {
-	var value []byte
-	err := q.QueryRow(ctx, `
-		select value
-		from legion_current
-		where project = $1 and issue_key = $2 and field = $3 and value <> 'null'::jsonb
-	`, project, legion.AdmissionKey, legion.FieldAdmission).Scan(&value)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read the admission block of %s: %w", project, err)
-	}
-	var admission legion.Admission
-	if err := json.Unmarshal(value, &admission); err != nil {
-		return nil, nil
-	}
-	return &admission, nil
 }
