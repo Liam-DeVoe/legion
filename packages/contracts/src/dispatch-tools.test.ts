@@ -209,6 +209,18 @@ function schemaFor(name: keyof typeof validCalls) {
   return dispatchToolSchema(specFor(name), schemaApi);
 }
 
+/** `schema` refuses each of `inputs` once, naming the project-key rule and nothing else. */
+function expectNotAProjectKey(schema: z.ZodType, inputs: readonly Record<string, unknown>[]): void {
+  for (const input of inputs) {
+    const refused = schema.safeParse(input);
+    expect(refused.success, JSON.stringify(input)).toBe(false);
+    expect(
+      refused.error?.issues.map((issue) => issue.message),
+      JSON.stringify(input)
+    ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
+  }
+}
+
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
@@ -360,14 +372,10 @@ describe("dispatchToolSpecs", () => {
 
     expect(schema.safeParse({ project: "CORE", text: "a draft spec" }).success).toBe(true);
     expect(schema.safeParse({ title: "no project" }).success).toBe(false);
-    for (const project of ["core", ""]) {
-      const refused = schema.safeParse({ project, title: "Retry deliveries" });
-      expect(refused.success, JSON.stringify(project)).toBe(false);
-      expect(
-        refused.error?.issues.map((issue) => issue.message),
-        JSON.stringify(project)
-      ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
-    }
+    expectNotAProjectKey(schema, [
+      { project: "core", title: "Retry deliveries" },
+      { project: "", title: "Retry deliveries" },
+    ]);
   });
 
   test("dispatch_plans takes a project key, an optional since and until, and nothing else", () => {
@@ -385,14 +393,7 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", issue: "INFRA-1" }).success).toBe(false);
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
-    for (const project of ["infra", ""]) {
-      const refused = schema.safeParse({ project });
-      expect(refused.success, JSON.stringify(project)).toBe(false);
-      expect(
-        refused.error?.issues.map((issue) => issue.message),
-        JSON.stringify(project)
-      ).toEqual([`project is not a project key: ${PROJECT_KEY_RULE}`]);
-    }
+    expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
@@ -437,22 +438,20 @@ describe("dispatchToolSpecs", () => {
     for (const project of [undefined, "", "AB", "K8S", "LEGION", "LEGSMOKE", "ABCDEFGHIJ"]) {
       expect(schema.safeParse({ query: "ok", project }).success).toBe(true);
     }
-    for (const project of [
-      "A",
-      "ABCDEFGHIJK",
-      "1ABC",
-      "legion",
-      " LEGION",
-      "LEGION\n",
-      "LEGION\nX",
-      "LEGION-1",
-      "中".repeat(100),
-    ]) {
-      const refused = schema.safeParse({ query: "ok", project });
-      expect(refused.error?.issues.map((issue) => issue.message)).toEqual([
-        `project is not a project key: ${PROJECT_KEY_RULE}`,
-      ]);
-    }
+    expectNotAProjectKey(
+      schema,
+      [
+        "A",
+        "ABCDEFGHIJK",
+        "1ABC",
+        "legion",
+        " LEGION",
+        "LEGION\n",
+        "LEGION\nX",
+        "LEGION-1",
+        "中".repeat(100),
+      ].map((project) => ({ query: "ok", project }))
+    );
   });
 
   test("dispatch_project's description gives the project-key rule", () => {

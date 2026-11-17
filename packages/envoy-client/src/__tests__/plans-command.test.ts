@@ -1,13 +1,18 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   type FinishedIssue,
+  type PlanRating,
   type PlanRecord,
   PROJECT_KEY_RULE,
   type ProjectPlans,
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
-import type { Server } from "bun";
+import {
+  type FakeDispatchServer,
+  fakeDispatchFetch,
+  startFakeDispatch,
+} from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
@@ -17,13 +22,15 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // `GET /api/v1/projects/{key}/plans` answers them, one header line and one line per issue: its
 // plan, each rating its retros gave the plan with the reason, its time and its count of failed
 // steps. The Legion whole-daemon driver parses the line, so each case asserts it whole. The format
-// cases drive `executeDispatchTool` over a recording fetch, so each reads the text and the details
-// a host is handed; the last case drives the real CLI against a fake Dispatch server.
+// cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`) as a
+// fetch, so each reads the text and the details a host is handed; the command-line cases drive
+// the real CLI against that fake on a loopback port, and read its exit code and output.
 
-/** The plan node Legion writes for an issue it runs on its default steps. */
-function defaultPlan(issue: string): PlanRecord {
+/** The plan node `id` Legion writes for `issue` when it runs the issue on its default steps; each
+ *  issue's node is its own, under an id of its own. */
+function defaultPlan(issue: string, id: string): PlanRecord {
   return {
-    id: "6b1f0c3e-2d4a-5e8b-9c7d-1a2b3c4d5e6f",
+    id,
     issue,
     generation: 1,
     source: "default",
@@ -44,7 +51,7 @@ const ratedOnce: FinishedIssue = {
   issue: "INFRA-12",
   title: "Retry failed webhook deliveries",
   closed_at: "2026-11-16T12:00:00Z",
-  plan: defaultPlan("INFRA-12"),
+  plan: defaultPlan("INFRA-12", "6b1f0c3e-2d4a-5e8b-9c7d-1a2b3c4d5e6f"),
   ratings: [
     {
       rating: 4,
@@ -59,26 +66,29 @@ const ratedOnce: FinishedIssue = {
   failed_steps: 1,
 };
 
-/** A finished issue its owner planned in three tasks, which no retro rated. The plan's first task
- *  is neither the first nor the last by id, and each task has its own steps, so the line names the
- *  first task of the plan and no other. */
+/** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
+ *  by id, and each task has its own steps, so the line names the first task of the plan and no
+ *  other. */
+const ownerPlan: PlanRecord = {
+  id: "3c5e7a9b-4d6f-5a8c-8e0b-2d4f6a8c0e1b",
+  issue: "INFRA-11",
+  generation: 2,
+  source: "owner",
+  artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+  version: 3,
+  tasks: [
+    { id: "server", steps: ["implementer", "reviewer"] },
+    { id: "api", steps: ["implementer:api"] },
+    { id: "web", steps: ["implementer:web", "tester"] },
+  ],
+};
+
+/** A finished issue its owner planned in three tasks, which no retro rated. */
 const unrated: FinishedIssue = {
   issue: "INFRA-11",
   title: "Document the retry",
   closed_at: "2026-11-15T08:00:00Z",
-  plan: {
-    id: "3c5e7a9b-4d6f-5a8c-8e0b-2d4f6a8c0e1b",
-    issue: "INFRA-11",
-    generation: 2,
-    source: "owner",
-    artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
-    version: 3,
-    tasks: [
-      { id: "server", steps: ["implementer", "reviewer"] },
-      { id: "api", steps: ["implementer:api"] },
-      { id: "web", steps: ["implementer:web", "tester"] },
-    ],
-  },
+  plan: ownerPlan,
   ratings: [],
   started_at: "2026-11-15T06:55:00Z",
   ended_at: "2026-11-15T07:57:05Z",
@@ -88,11 +98,12 @@ const unrated: FinishedIssue = {
 
 /** Three retros, so three ratings, in the order the retros ran: neither by score (4, 2, 5) nor by
  *  step id (9e…, 1a…, 5c…), either way up, and the two sorts disagree, so a list sorted on either
- *  reads differently. One reason holds a quotation mark and a line break. */
+ *  reads differently. One reason holds a quotation mark and a line break. The issue's time runs
+ *  from its first start to the end of its last retro: five hours and eight minutes. */
 const ratedThrice: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-13",
-  plan: defaultPlan("INFRA-13"),
+  plan: defaultPlan("INFRA-13", "7c2a1d4f-3e5b-5f9c-8d1e-2b3c4d5e6f70"),
   closed_at: "2026-11-17T09:00:00Z",
   ratings: [
     {
@@ -114,6 +125,9 @@ const ratedThrice: FinishedIssue = {
       ended_at: "2026-11-17T08:55:00Z",
     },
   ],
+  started_at: "2026-11-17T03:47:00Z",
+  ended_at: "2026-11-17T08:55:00Z",
+  duration_seconds: 18480,
   failed_steps: 0,
 };
 
@@ -131,11 +145,11 @@ const neverRan: FinishedIssue = {
 };
 
 /** A finished issue whose first step started before Dispatch recorded starts: a plan and a
- *  rating, and no time. */
+ *  rating, an end, and no time. */
 const unknownStart: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-10",
-  plan: defaultPlan("INFRA-10"),
+  plan: defaultPlan("INFRA-10", "8d3b2e5a-4f6c-5a0d-9e2f-3c4d5e6f7a81"),
   closed_at: "2026-11-14T09:00:00Z",
   ratings: [
     {
@@ -146,8 +160,38 @@ const unknownStart: FinishedIssue = {
     },
   ],
   started_at: null,
+  ended_at: "2026-11-14T08:55:00Z",
   duration_seconds: null,
   failed_steps: 2,
+};
+
+/** A finished issue of a second project, ACME: its own key, plan, rating, time and count, so a
+ *  read of the wrong project prints none of it. */
+const otherProject: FinishedIssue = {
+  issue: "ACME-3",
+  title: "Rotate the signing key",
+  closed_at: "2026-11-13T17:00:00Z",
+  plan: {
+    id: "2b4d6f8a-0c1e-5a3b-9d5f-7a9b1c3d5e7f",
+    issue: "ACME-3",
+    generation: 1,
+    source: "owner",
+    artifact_id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
+    version: 1,
+    tasks: [{ id: "keys", steps: ["implementer", "tester"] }],
+  },
+  ratings: [
+    {
+      rating: 2,
+      reason: "The plan left out the rollback.",
+      step_id: "6c7d8e9f-0a1b-5c2d-8e3f-4a5b6c7d8e9f",
+      ended_at: "2026-11-13T16:40:00Z",
+    },
+  ],
+  started_at: "2026-11-13T14:05:00Z",
+  ended_at: "2026-11-13T16:40:00Z",
+  duration_seconds: 9300,
+  failed_steps: 3,
 };
 
 const config = {
@@ -157,19 +201,16 @@ const config = {
   error: null,
 };
 
-/** A fetch that records each request, its query included, and answers the plans read with
- *  `plans`. */
-function answering(requests: string[], plans: unknown): typeof fetch {
-  return (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const method = init?.method ?? "GET";
-    const { pathname, search } = new URL(String(url));
-    requests.push(`${method} ${pathname}${search}`);
-    return Response.json(plans);
-  }) as typeof fetch;
+/** The route of the plans read of `project`. */
+function plansPath(project: string): string {
+  return `/api/v1/projects/${project}/plans`;
 }
 
-function readPlans(args: Record<string, unknown>, fetchImpl: typeof fetch) {
-  return executeDispatchTool({
+/** `dispatch_plans` with `args` over a fake Dispatch whose plans route of INFRA answers `answer`:
+ *  the result, and each request the fake saw as `<method> <pathname><search>`. */
+async function readPlans(args: Record<string, unknown>, answer: ProjectPlans) {
+  const dispatch = fakeDispatchFetch({ routes: { [plansPath("INFRA")]: answer } });
+  const result = await executeDispatchTool({
     tool: "dispatch_plans",
     args,
     cwd: "/workspace",
@@ -180,16 +221,19 @@ function readPlans(args: Record<string, unknown>, fetchImpl: typeof fetch) {
     exec: async (file, argv) => {
       throw new Error(`unexpected command: ${file} ${argv.join(" ")}`);
     },
-    fetchImpl,
+    fetchImpl: dispatch.fetchImpl,
   });
+  return {
+    result,
+    requests: dispatch.calls.map((call) => `${call.method} ${call.url.pathname}${call.url.search}`),
+  };
 }
 
 describe("dispatch plans", () => {
   test("prints a header, then one line per finished issue, a rated one and an unrated one", async () => {
-    const requests: string[] = [];
     const answer: ProjectPlans = { project: "INFRA", issues: [ratedOnce, unrated] };
 
-    const result = await readPlans({ project: "INFRA" }, answering(requests, answer));
+    const { result, requests } = await readPlans({ project: "INFRA" }, answer);
 
     expect(requests).toEqual(["GET /api/v1/projects/INFRA/plans"]);
     expect(result.text).toBe(
@@ -205,40 +249,61 @@ describe("dispatch plans", () => {
   test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [ratedThrice] };
 
-    const result = await readPlans({ project: "INFRA" }, answering([], answer));
+    const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 1 finished issues",
-      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 1h30m failed steps 0',
+      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 5h8m failed steps 0',
     ]);
   });
 
   // JSON escapes each character below U+0020, so a line feed in a reason stays on the line. It
   // leaves U+0085, U+2028 and U+2029 as they are, and a reader that splits lines the Unicode way
-  // (Python's `str.splitlines`, for one) breaks the issue's line at each, so each prints escaped.
-  test("a reason holding U+0085, U+2028 or U+2029 prints it escaped, the same JSON string", async () => {
-    for (const [character, escaped] of [
-      ["\u0085", "\\u0085"],
-      ["\u2028", "\\u2028"],
-      ["\u2029", "\\u2029"],
+  // (Python's `str.splitlines`, for one) breaks the issue's line at each, so each prints escaped,
+  // every time it occurs: each of the first three reasons holds one of them twice, and the last
+  // holds each of the three twice, mixed, the second time all three side by side.
+  test("a reason holding U+0085, U+2028 or U+2029 prints each one escaped, the same JSON string", async () => {
+    for (const [reason, printed] of [
+      [
+        "The plan fit.\u0085The review did not.\u0085The merge did.",
+        '"The plan fit.\\u0085The review did not.\\u0085The merge did."',
+      ],
+      [
+        "The plan fit.\u2028The review did not.\u2028The merge did.",
+        '"The plan fit.\\u2028The review did not.\\u2028The merge did."',
+      ],
+      [
+        "The plan fit.\u2029The review did not.\u2029The merge did.",
+        '"The plan fit.\\u2029The review did not.\\u2029The merge did."',
+      ],
+      [
+        "Tasks.\u2028Steps.\u0085Roles.\u2029Agents.\u2028\u0085\u2029Done.",
+        '"Tasks.\\u2028Steps.\\u0085Roles.\\u2029Agents.\\u2028\\u0085\\u2029Done."',
+      ],
     ] as const) {
-      const reason = `The plan fit.${character}The review did not.`;
-      const rating = {
+      const rating: PlanRating = {
         rating: 3,
         reason,
-        step_id: "4d5e6f7a-8b9c-5d0e-8f1a-3b4c5d6e7f80",
+        step_id: "7e8f9a0b-1c2d-5e3f-8a4b-5c6d7e8f9a0b",
         ended_at: "2026-11-14T07:50:00Z",
       };
-      const answer = { project: "INFRA", issues: [{ ...neverRan, ratings: [rating] }] };
+      // A run that began before Legion wrote plans and before Dispatch recorded starts: no plan,
+      // no start, and its last record, the retro, ends the issue.
+      const answer: ProjectPlans = {
+        project: "INFRA",
+        issues: [{ ...neverRan, ended_at: "2026-11-14T07:50:00Z", ratings: [rating] }],
+      };
 
-      const result = await readPlans({ project: "INFRA" }, answering([], answer));
+      const { result } = await readPlans({ project: "INFRA" }, answer);
 
-      const printed = `"The plan fit.${escaped}The review did not."`;
-      expect(result.text.split("\n"), escaped).toEqual([
+      const lines = result.text.split("\n");
+      expect(lines, printed).toEqual([
         "INFRA: 1 finished issues",
         `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0`,
       ]);
-      expect(JSON.parse(printed), escaped).toBe(reason);
+      // The reason as the line prints it reads back as the reason Dispatch answered.
+      const shown = /^.* ratings 3\/5 (".*") time - failed steps 0$/.exec(lines[1] ?? "")?.[1];
+      expect(JSON.parse(shown ?? "null"), printed).toBe(reason);
     }
   });
 
@@ -254,7 +319,7 @@ describe("dispatch plans", () => {
       ],
     };
 
-    const result = await readPlans({ project: "INFRA" }, answering([], answer));
+    const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 3 finished issues",
@@ -267,7 +332,7 @@ describe("dispatch plans", () => {
   test("an issue with no time prints time -, and one Legion never ran prints plan none too", async () => {
     const answer: ProjectPlans = { project: "INFRA", issues: [unknownStart, neverRan] };
 
-    const result = await readPlans({ project: "INFRA" }, answering([], answer));
+    const { result } = await readPlans({ project: "INFRA" }, answer);
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 2 finished issues",
@@ -278,54 +343,58 @@ describe("dispatch plans", () => {
 
   // The generated shape lets each list be null; Dispatch writes `[]`, and null reads the same.
   test("a null list reads as an empty one: no issue, no rating, no task", async () => {
-    for (const answer of [
+    const empty: readonly ProjectPlans[] = [
       { project: "INFRA", issues: [] },
       { project: "INFRA", issues: null },
-    ]) {
-      const result = await readPlans({ project: "INFRA" }, answering([], answer));
+    ];
+    for (const answer of empty) {
+      const { result } = await readPlans({ project: "INFRA" }, answer);
 
       expect(result.text, JSON.stringify(answer)).toBe("INFRA: 0 finished issues");
       expect(result.details, JSON.stringify(answer)).toEqual({ project: "INFRA", issues: [] });
     }
-    const nulls = {
+    const nulls: ProjectPlans = {
       project: "INFRA",
-      issues: [{ ...neverRan, ratings: null, plan: { ...unrated.plan, tasks: null } }],
+      issues: [{ ...unrated, ratings: null, plan: { ...ownerPlan, tasks: null } }],
     };
 
-    const result = await readPlans({ project: "INFRA" }, answering([], nulls));
+    const { result } = await readPlans({ project: "INFRA" }, nulls);
 
     expect(result.text.split("\n")[1]).toBe(
-      "INFRA-9 closed 2026-11-14T08:00:00Z plan owner (0 tasks: -) ratings none time - failed steps 0"
+      "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (0 tasks: -) ratings none time 1h2m failed steps 0"
     );
   });
 
   test("since and until ride as the read's query, and are left out when not given", async () => {
-    const requests: string[] = [];
     const answer: ProjectPlans = { project: "INFRA", issues: [] };
 
-    await readPlans(
+    const both = await readPlans(
       { project: "INFRA", since: "2026-11-01T00:00:00Z", until: "2026-11-17T00:00:00Z" },
-      answering(requests, answer)
+      answer
     );
-    await readPlans(
-      { project: "INFRA", until: "2026-11-17T00:00:00Z" },
-      answering(requests, answer)
-    );
+    const untilAlone = await readPlans({ project: "INFRA", until: "2026-11-17T00:00:00Z" }, answer);
 
-    expect(requests).toEqual([
+    expect([both.requests, untilAlone.requests].flat()).toEqual([
       "GET /api/v1/projects/INFRA/plans?since=2026-11-01T00%3A00%3A00Z&until=2026-11-17T00%3A00%3A00Z",
       "GET /api/v1/projects/INFRA/plans?until=2026-11-17T00%3A00%3A00Z",
     ]);
   });
 
+  // Each time is the span of its own start and end, as Dispatch counts it.
   test("time counts whole hours and the minutes left, rounded down", async () => {
     const lines: string[] = [];
-    for (const seconds of [0, 59, 3599, 3600, 90061]) {
-      const answer = {
+    for (const [start, end, seconds] of [
+      ["2026-11-14T06:00:00Z", "2026-11-14T06:00:00Z", 0],
+      ["2026-11-14T06:00:00Z", "2026-11-14T06:00:59Z", 59],
+      ["2026-11-14T06:00:00Z", "2026-11-14T06:59:59Z", 3599],
+      ["2026-11-14T06:00:00Z", "2026-11-14T07:00:00Z", 3600],
+      ["2026-11-14T06:00:00Z", "2026-11-15T07:01:01Z", 90061],
+    ] as const) {
+      const answer: ProjectPlans = {
         project: "INFRA",
-        issues: [{ ...neverRan, duration_seconds: seconds }],
+        issues: [{ ...unrated, started_at: start, ended_at: end, duration_seconds: seconds }],
       };
-      const result = await readPlans({ project: "INFRA" }, answering([], answer));
+      const { result } = await readPlans({ project: "INFRA" }, answer);
       lines.push((result.text.split("\n")[1] ?? "").replace(/.* time (\S+) .*/, "$1"));
     }
 
@@ -334,37 +403,39 @@ describe("dispatch plans", () => {
 });
 
 describe("dispatch plans on the command line", () => {
-  const requests: string[] = [];
   const makeDirectory = temporaryDirectories("dispatch-plans");
-  // Started in the hook whose twin stops it: Bun evaluates this body under a filter that selects
-  // none of its rows and then runs neither hook, so a server started here would outlive the run.
-  let server: Server<undefined>;
-  beforeAll(() => {
-    server = Bun.serve({
-      port: 0,
-      fetch(request) {
-        const { pathname, search } = new URL(request.url);
-        requests.push(`${request.method} ${pathname}${search}`);
-        if (pathname === "/api/v1/projects/INFRA/plans" && request.method === "GET") {
-          return Response.json({ project: "INFRA", issues: [ratedOnce, unrated] });
-        }
-        return Response.json(
-          { error: `unexpected ${request.method} ${pathname}` },
-          { status: 500 }
-        );
-      },
-    });
+  // Each row starts the fake Dispatch it reads, and this hook stops it. A server started in this
+  // body would start under a filter that selects no row here, and no hook would stop it.
+  const servers: FakeDispatchServer<unknown>[] = [];
+  afterEach(() => {
+    for (const server of servers.splice(0)) server.stop();
   });
-  afterAll(() => server.stop(true));
 
   let stateDir = "";
   beforeEach(() => {
-    requests.length = 0;
     stateDir = makeDirectory();
     forgetKeyedLayerMemory();
   });
 
+  /** A fake Dispatch on a loopback port of its own whose plans reads of INFRA and of ACME each
+   *  answer that project's own issues, which the hook above stops when the row ends. */
+  function dispatchServing(): FakeDispatchServer<unknown> {
+    const infra: ProjectPlans = { project: "INFRA", issues: [ratedOnce, unrated] };
+    const acme: ProjectPlans = { project: "ACME", issues: [otherProject] };
+    const server = startFakeDispatch({
+      routes: { [plansPath("INFRA")]: infra, [plansPath("ACME")]: acme },
+    });
+    servers.push(server);
+    return server;
+  }
+
+  /** Each request `server` got from its `before`th on, as `<pathname><search>`. */
+  function readsSince(server: FakeDispatchServer<unknown>, before: number): string[] {
+    return server.reads.slice(before).map((url) => `${url.pathname}${url.search}`);
+  }
+
   async function run(
+    server: FakeDispatchServer<unknown>,
     argv: readonly string[],
     session: Readonly<Record<string, string>> = {}
   ): Promise<{ code: number; stdout: string }> {
@@ -375,7 +446,7 @@ describe("dispatch plans on the command line", () => {
         HOME: stateDir,
         DISPATCH_HOST: "omp",
         DISPATCH_SESSION_ID: "ses-1",
-        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_URL: server.url,
         DISPATCH_TOKEN: "test-token",
         DISPATCH_STATE_DIR: stateDir,
         ...session,
@@ -393,30 +464,46 @@ describe("dispatch plans on the command line", () => {
   }
 
   // The command names a project and never an issue, so a session whose LEGION_ISSUE names an issue
-  // of another project reads the project the call names, and reads no issue: the fake answers
-  // only that project's read, and records every request it gets.
+  // of a third project reads the project the call names, and reads no issue: the fake answers each
+  // of two projects with issues of its own, and records every request it gets.
   const sessions: readonly Readonly<Record<string, string>>[] = [{}, { LEGION_ISSUE: "CORE-8" }];
 
-  test("--project reads the project's finished issues and prints them, exit 0, whatever LEGION_ISSUE names", async () => {
-    for (const session of sessions) {
-      requests.length = 0;
-      const { code, stdout } = await run(["plans", "--project", "INFRA"], session);
-
-      expect(requests, JSON.stringify(session)).toEqual(["GET /api/v1/projects/INFRA/plans"]);
-      expect(code, JSON.stringify(session)).toBe(0);
-      expect(stdout, JSON.stringify(session)).toContain(
+  test("--project reads that project's finished issues and prints them, exit 0, whatever LEGION_ISSUE names", async () => {
+    const server = dispatchServing();
+    for (const [project, printed] of [
+      [
+        "INFRA",
         [
           "INFRA: 2 finished issues",
           'INFRA-12 closed 2026-11-16T12:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the work; the review sent it back once." time 1h30m failed steps 1',
           "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (3 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
-        ].join("\n")
-      );
+        ],
+      ],
+      [
+        "ACME",
+        [
+          "ACME: 1 finished issues",
+          'ACME-3 closed 2026-11-13T17:00:00Z plan owner (1 tasks: implementer tester) ratings 2/5 "The plan left out the rollback." time 2h35m failed steps 3',
+        ],
+      ],
+    ] as const) {
+      for (const session of sessions) {
+        const label = `${project} ${JSON.stringify(session)}`;
+        const before = server.reads.length;
+
+        const { code, stdout } = await run(server, ["plans", "--project", project], session);
+
+        expect(readsSince(server, before), label).toEqual([`/api/v1/projects/${project}/plans`]);
+        expect(code, label).toBe(0);
+        expect(stdout, label).toBe(`${printed.join("\n")}\n`);
+      }
     }
   });
 
   // The bounds go through the parser `dispatch plans` runs, each to its own member of the query,
   // and a bound left out is not sent. The two bounds differ, and neither is a whole minute.
   test("--since and --until ride as the read's query, each alone or both, and neither when not given", async () => {
+    const server = dispatchServing();
     const since = "2026-11-01T08:15:30Z";
     const until = "2026-11-17T06:30:45Z";
     const cases: readonly [readonly string[], string][] = [
@@ -429,10 +516,13 @@ describe("dispatch plans on the command line", () => {
       ],
     ];
     for (const [bounds, query] of cases) {
-      requests.length = 0;
-      const { code } = await run(["plans", "--project", "INFRA", ...bounds]);
+      const before = server.reads.length;
 
-      expect(requests, bounds.join(" ")).toEqual([`GET /api/v1/projects/INFRA/plans${query}`]);
+      const { code } = await run(server, ["plans", "--project", "INFRA", ...bounds]);
+
+      expect(readsSince(server, before), bounds.join(" ")).toEqual([
+        `/api/v1/projects/INFRA/plans${query}`,
+      ]);
       expect(code, bounds.join(" ")).toBe(0);
     }
   });
@@ -440,11 +530,13 @@ describe("dispatch plans on the command line", () => {
   // A key that is not one is refused once, naming its one problem, with nothing sent, whatever
   // issue LEGION_ISSUE names.
   test("a project that is not a key is refused once, sending nothing, exit 2", async () => {
+    const server = dispatchServing();
     for (const session of sessions) {
-      requests.length = 0;
-      const { code, stdout } = await run(["plans", "--project", "infra"], session);
+      const before = server.reads.length;
 
-      expect(requests, JSON.stringify(session)).toEqual([]);
+      const { code, stdout } = await run(server, ["plans", "--project", "infra"], session);
+
+      expect(readsSince(server, before), JSON.stringify(session)).toEqual([]);
       expect(code, JSON.stringify(session)).toBe(2);
       expect(stdout, JSON.stringify(session)).toContain(
         "dispatch plans was not called: 1 problem\n"
