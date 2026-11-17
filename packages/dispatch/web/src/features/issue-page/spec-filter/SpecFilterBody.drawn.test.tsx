@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type {
@@ -21,6 +22,7 @@ import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import { artifact, issueTree, KEY, node, READER } from "../decisions-filter/decisions-fixtures";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
 import type { OutlineRequest } from "../IssueTree";
@@ -1467,6 +1469,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
   const long = `**R2.** Read [the guide](https://example.com/guide) first. ${words}`;
   // 64 words over 400 lines of 24 px: six lines are drawn and the rest held back.
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   const { read, view } = drawBody(
     issueTree([statement("r1"), statement("r2", { text: long, tree: displayTree(long) })])
   );
@@ -1480,6 +1483,8 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
       if (found === null) throw new Error("the cut statement draws no link in its words");
       return found;
     });
+    // The page cuts only the words of rows near the viewport.
+    await measureNearWords(near);
     await waitFor(() => expect(pressed.querySelector("[data-node-more]")).not.toBeNull());
     // What is read is who holds the focus, not where the link leads.
     link.addEventListener("click", (event) => event.preventDefault());
@@ -1508,6 +1513,7 @@ test("a press on a link inside a cut statement leaves every statement as drawn u
     view.unmount();
     read.mockRestore();
     restore();
+    near.restore();
   }
 });
 

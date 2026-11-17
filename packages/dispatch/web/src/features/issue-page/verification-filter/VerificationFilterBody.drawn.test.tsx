@@ -13,12 +13,14 @@ import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../../__tests__/display-trees";
+import { installIntersectionObserver } from "../../../__tests__/intersection-observer";
 import { api } from "../../../api/client";
 import { issueCoverageQuery, issueResultsQuery } from "../../../api/queries";
 import type { CheckBlock, IssueCheckResults, IssueCoverage } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap } from "../../shell/keymap";
+import { measureNearWords } from "../clamp-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import {
@@ -2002,12 +2004,15 @@ test("each control of the view is a tab stop", async () => {
   // than the twenty a cut must hide, so the statement is cut and draws its "more" control.
   const long = Array.from({ length: 60 }, (_unused, at) => `word${at + 1}`).join(" ");
   const restore = layOut(9600);
+  const near = installIntersectionObserver();
   try {
     const view = drawBody(
       [statementNode("r1", long, [linkedCheckNode(linked), checkNode(plain)]), named],
       [linked, plain],
       { named: [named.id] }
     );
+    // The page cuts only the words of rows near the viewport.
+    await measureNearWords(near);
     try {
       // In document order the issue's row, the tree's one tab stop, comes before the chip All.
       expect(
@@ -2091,6 +2096,7 @@ test("each control of the view is a tab stop", async () => {
     }
   } finally {
     restore();
+    near.restore();
   }
 });
 
