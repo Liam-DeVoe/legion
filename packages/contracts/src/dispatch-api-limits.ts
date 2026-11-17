@@ -116,6 +116,15 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most projects one personal agent token lists (`projects` on `POST /api/v1/me/agent-tokens`
+ * and `PATCH /api/v1/me/agent-tokens/{id}`, and `agent_tokens.projects`' own check; `400
+ * TOKEN_PROJECTS_INPUT` over it). Generated into Go as `contracts.MaxTokenProjects`, which the
+ * server enforces, and the dashboard's project picker takes no project past it, so the two
+ * refusals are one number.
+ */
+export const MAX_TOKEN_PROJECTS = 16;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same

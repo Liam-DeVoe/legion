@@ -7,6 +7,7 @@ import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries"
 import type { DeliverySessionGroup } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
+import { Switch } from "../../components/Switch";
 import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-array-params";
 import {
   borderStrong,
@@ -14,9 +15,6 @@ import {
   linkText,
   surfaceBg,
   surfaceMutedBg,
-  switchOffBg,
-  switchOnBg,
-  switchThumbBg,
   textMutedOnCanvas,
   textPrimaryOnCanvas,
   textPrimaryOnSurface,
@@ -228,18 +226,9 @@ function LanesSwitch({
   onChange: (checked: boolean) => void;
 }): ReactNode {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: Switch is a button, which this label wraps and so names
     <label className="ml-4 flex cursor-pointer items-center gap-2">
-      <button
-        aria-checked={checked}
-        className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${checked ? switchOnBg : switchOffBg}`}
-        onClick={() => onChange(!checked)}
-        role="switch"
-        type="button"
-      >
-        <span
-          className={`block h-4 w-4 rounded-full shadow-lg transition-transform ${switchThumbBg} ${checked ? "translate-x-4.5" : "translate-x-0.5"}`}
-        />
-      </button>
+      <Switch checked={checked} onClick={() => onChange(!checked)} />
       <span className={textPrimaryOnCanvas}>Swimlanes</span>
     </label>
   );

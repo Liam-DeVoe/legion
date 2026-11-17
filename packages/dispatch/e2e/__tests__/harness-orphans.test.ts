@@ -2,13 +2,12 @@
  *
  *  Every listener the harness starts is the leader of a process group of its own
  *  (`Supervisor`, e2e/local-instance-support.ts), so a stop reaches it and what it starts in turn.
- *  A parent that is killed - SIGKILL, an out-of-memory kill, a crashed runner - runs no stop, and
- *  before this the fakes outlived it: fake-envoy, fake-github, fake-broker, the plain-HTTP proxy
- *  and the dev OIDC issuer were found running hours after the run that started them, holding
- *  memory on a shared machine. So was each stack's Postgres, a container or a cluster the run
- *  started outside any process group of its own. Each row starts the real thing in a parent
- *  process of its own, kills that parent with SIGKILL, and reads what it started: none of it may
- *  survive.
+ *  A parent that is killed - SIGKILL, an out-of-memory kill, a crashed runner - runs no stop, so
+ *  its reaper (`Reaper`) ends what it started: each listener - fake-envoy, fake-github,
+ *  fake-broker, the plain-HTTP proxy and the dev OIDC issuer - and each stack's Postgres, a
+ *  container or a cluster the run started outside any process group of its own. Each row starts
+ *  the real thing in a parent process of its own, kills that parent with SIGKILL, and reads what
+ *  it started: none of it may survive.
  *
  *  The listeners' harness is a deployed run's (`PLAYWRIGHT_BASE_URL`), which starts the fake Envoy
  *  and the plain-HTTP proxy and no Dispatch server, so the row needs no database and no Go build.
@@ -55,6 +54,14 @@ async function eventually(ready: () => boolean | Promise<boolean>, ms: number): 
     await Bun.sleep(50);
   }
   return ready();
+}
+
+/** The processes whose parent is `pid`, as `pgrep -P` lists them. */
+function childrenOf(pid: number): number[] {
+  const listed = Bun.spawnSync(["pgrep", "-P", String(pid)])
+    .stdout.toString()
+    .trim();
+  return listed === "" ? [] : listed.split("\n").map(Number);
 }
 
 /** Groups a failing row found alive, killed after it so the row leaks nothing itself. */
@@ -156,12 +163,94 @@ test(
     );
     try {
       expect(await eventually(async () => await Bun.file(ready).exists(), ROW_MS / 2)).toBe(true);
+      // The reaper is the parent's one child, the leader of a session and group of its own, and it
+      // exits only once every stop it makes has ended, by itself within a minute: its group's end
+      // is the moment every call it was going to make is in.
+      const reapers = childrenOf(parent.pid);
+      const [reaperGroup] = reapers;
+      if (reapers.length !== 1 || reaperGroup === undefined) {
+        throw new Error(`the parent should have one child, its reaper; it has ${reapers.length}`);
+      }
       parent.kill("SIGKILL");
       await parent.exited;
-      await eventually(async () => await Bun.file(calls).exists(), 15_000);
+      expect(await eventually(() => !groupAlive(reaperGroup), 15_000)).toBe(true);
       expect((await Bun.file(calls).text()).trim().split("\n")).toEqual([
         "-D /data/held -m immediate -w stop",
       ]);
+    } finally {
+      parent.kill("SIGKILL");
+    }
+  },
+  ROW_MS
+);
+
+// A foreground step (`Supervisor.run`: dev-postgres.sh, the web build) ends long before the run
+// does, and the id of its process group is then free for the system to give another process. So
+// the step is given back to the reaper as it ends, and a reaper whose starter is killed signals
+// no group of a step that already ended. A process left holding the step's group once the step's
+// leader has exited stands in for one the system gave that id to, and records any SIGTERM it is
+// sent; a process the supervisor still runs is the reaper's to end, so the row also sees the
+// reaper end what it holds.
+test(
+  "a reaper whose starter is killed signals no group of a foreground step that already ended",
+  async () => {
+    const dir = makeDirectory();
+    const stepGroup = join(dir, "step-group");
+    const signals = join(dir, "signals");
+    const kept = join(dir, "kept");
+    const standIn = join(dir, "stand-in");
+    await Bun.write(
+      standIn,
+      `#!/usr/bin/env bash\ntrap 'echo TERM >> "$1"; exit 0' TERM\nsleep 60 &\nwait\n`
+    );
+    await Bun.spawn(["chmod", "+x", standIn]).exited;
+    const step = `echo $$ > ${JSON.stringify(stepGroup)}; ${JSON.stringify(standIn)} ${JSON.stringify(signals)} &`;
+    const support = fileURLToPath(new URL("../local-instance-support.ts", import.meta.url));
+    const parent = Bun.spawn(
+      [
+        "bun",
+        "-e",
+        `import { writeFileSync } from "node:fs";
+         import { Supervisor } from ${JSON.stringify(support)};
+         const supervisor = new Supervisor();
+         await supervisor.run(["bash", "-c", ${JSON.stringify(step)}], "/");
+         const held = supervisor.start("held", ["sleep", "60"], "/");
+         writeFileSync(${JSON.stringify(kept)}, held.child.pid + "\\n");
+         setInterval(() => {}, 1 << 30);`,
+      ],
+      { stderr: "inherit", stdout: "ignore" }
+    );
+    try {
+      const written = await eventually(
+        async () =>
+          /\n$/u.test(
+            await Bun.file(kept)
+              .text()
+              .catch(() => "")
+          ),
+        ROW_MS / 2
+      );
+      if (!written) throw new Error("the parent ran no step: it wrote no pid of the held process");
+      const group = Number((await Bun.file(stepGroup).text()).trim());
+      const held = Number((await Bun.file(kept).text()).trim());
+      survivors.push(group, held);
+      expect(groupAlive(group)).toBe(true);
+      expect(groupAlive(held)).toBe(true);
+      // The parent's other child is its reaper, the leader of a session and group of its own,
+      // which exits only once it has signalled every group it holds and seen them end.
+      const reapers = childrenOf(parent.pid).filter((pid) => pid !== held);
+      const [reaperGroup] = reapers;
+      if (reapers.length !== 1 || reaperGroup === undefined) {
+        throw new Error(`the parent should have one child besides the held process: ${reapers}`);
+      }
+
+      parent.kill("SIGKILL");
+      await parent.exited;
+
+      expect(await eventually(() => !groupAlive(reaperGroup), 15_000)).toBe(true);
+      expect(groupAlive(held)).toBe(false);
+      expect(await Bun.file(signals).exists()).toBe(false);
+      expect(groupAlive(group)).toBe(true);
     } finally {
       parent.kill("SIGKILL");
     }

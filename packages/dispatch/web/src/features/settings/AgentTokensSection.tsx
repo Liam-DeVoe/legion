@@ -1,4 +1,4 @@
-import { DISPATCH_SCOPES } from "@legion/contracts";
+import { DISPATCH_SCOPES, MAX_TOKEN_PROJECTS } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
@@ -157,10 +157,6 @@ function TokenScopeChoices({
   );
 }
 
-/** The most projects Dispatch lets one token name (`agent_tokens.projects`, and 400
- *  TOKEN_PROJECTS_INPUT at the mint and the edit). */
-const MAX_TOKEN_PROJECTS = 16;
-
 /** The projects a token may use, for a token's row and for the mint form. A token that names no
  *  project uses the public projects only, and one that names projects uses those alone, private
  *  ones included. It offers the projects the reader sees (`projects`), and any the token names
@@ -287,7 +283,7 @@ export function AgentTokensSection(): ReactNode {
   /** The projects a token may name: those the reader sees. */
   const projects = useQuery(projectsQuery()).data ?? [];
   // The form shows a refused mint beside the name it was refused over. A mint that names no
-  // project sends none, as a mint did before tokens named projects.
+  // project sends no `projects`, so Dispatch gives the token the caller's own list.
   const createToken = useKeyedWrite({
     inline: true,
     label: (input: {
@@ -352,6 +348,9 @@ export function AgentTokensSection(): ReactNode {
         named === undefined ? { scopes } : { projects: named, scopes },
         bounds
       ),
+    // A landing whose answer was lost writes the row as the press did. An edit that names the
+    // projects names only ones the reader sees, so the row lists none they cannot see, as the
+    // server's own answer would say; a scope edit leaves the list, and what it hides, alone.
     onSuccess: (updated, input) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
@@ -359,7 +358,9 @@ export function AgentTokensSection(): ReactNode {
             ? (updated ?? {
                 ...token,
                 scopes: input.scopes,
-                projects: input.projects ?? token.projects,
+                ...(input.projects === undefined
+                  ? {}
+                  : { projects: input.projects, projects_hidden: false }),
               })
             : token
         )

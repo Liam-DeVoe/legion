@@ -510,6 +510,72 @@ test("a token listing projects its reader cannot see can drop them in one confir
   }
 });
 
+// An edit that landed with its answer lost (`409 KEY_COMMITTED`) writes the row as the press did,
+// and the page reads every query again (`Writes`); until the list answers, the row is the one the
+// press wrote. An edit that names the projects names only ones the reader sees, so that row lists
+// none they cannot see: it reads as the list it saved, and offers no drop. A scope edit leaves the
+// list alone, and so its note and its button. The re-read here never answers, so the row read is
+// the press's.
+test("a token edit whose answer was lost reads as the list it saved", async () => {
+  const user = userEvent.setup();
+  listProjects.mockResolvedValue([project("CORE", "Core")]);
+  const allHidden: AgentToken = { ...token, id: "hidden", name: "hidden", projects_hidden: true };
+  const partHidden: AgentToken = {
+    ...token,
+    id: "part",
+    name: "part",
+    projects: ["CORE"],
+    projects_hidden: true,
+  };
+  const listAgentTokens = spyOn(api, "listAgentTokens")
+    .mockResolvedValueOnce([allHidden, partHidden])
+    .mockImplementation(() => Promise.withResolvers<AgentToken[]>().promise);
+  const updateAgentToken = spyOn(api, "updateAgentToken").mockRejectedValue(
+    new ApiError(409, { code: "KEY_COMMITTED", error: "already made" })
+  );
+  const originalConfirm = window.confirm;
+  window.confirm = () => true;
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <AgentTokensSection />
+      </QueryClientProvider>
+    );
+
+    await screen.findAllByRole("cell", { name: "dsp_AbCdEf12…" });
+    await user.click(box("Approve and control credentials", "part"));
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenCalledWith("part", { scopes: ["person"] }, keyedAttempt)
+    );
+    await waitFor(() => expect(box("Approve and control credentials", "part").checked).toBe(false));
+    await waitFor(() => expect(listAgentTokens.mock.calls.length).toBeGreaterThan(1));
+    expect(projectsPicker("part").textContent).toBe("CORE, and projects you cannot see");
+    expect(dropHidden("part")).toBeDefined();
+
+    await user.click(dropHidden("hidden"));
+    await waitFor(() =>
+      expect(updateAgentToken).toHaveBeenLastCalledWith(
+        "hidden",
+        { projects: [], scopes: ["person", "approve"] },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(projectsPicker("hidden").textContent).toBe("Public projects only"));
+    expect(
+      screen.queryByRole("button", { name: "Drop the projects you cannot see (hidden)" })
+    ).toBeNull();
+    await waitFor(() => expect(listAgentTokens.mock.calls.length).toBeGreaterThan(2));
+  } finally {
+    cleanup();
+    queryClient.clear();
+    window.confirm = originalConfirm;
+    listAgentTokens.mockRestore();
+    updateAgentToken.mockRestore();
+  }
+});
+
 // Dispatch holds a token to at most 16 projects (400 TOKEN_PROJECTS_INPUT): the picker takes no
 // seventeenth, and says why.
 test("a token's picker takes at most 16 projects", async () => {

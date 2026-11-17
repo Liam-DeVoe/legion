@@ -248,11 +248,14 @@ export class Supervisor {
   }
 
   /** A foreground step. It throws on a non-zero exit, so a failed web build or dev-postgres.sh
-   *  reaches the command's one catch (and `stop`) like every other failure. */
+   *  reaches the command's one catch (and `stop`) like every other failure. A step that has ended
+   *  is given back to the reaper, as `stop` gives back every group it ends: its group's id is free
+   *  for the system to give to another process from then on. */
   async run(argv: readonly string[], cwd: string): Promise<void> {
     const step = this.start(argv.join(" "), argv, cwd);
     const code = await this.untilInterrupted(step.exited);
     this.#children.splice(this.#children.indexOf(step), 1);
+    if (step.child.pid !== undefined) this.#reaper.forget({ group: step.child.pid });
     if (code !== 0) throw new Error(`${step.name} exited ${code}`);
   }
 

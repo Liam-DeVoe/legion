@@ -9,10 +9,11 @@
  *  and that no page of his draws a refusal from it, is the real-stack rows' claim, in
  *  `restricted-member.e2e.ts`, which runs on the full lane.
  */
-import { expect, type Page } from "@playwright/test";
+import { expect } from "@playwright/test";
 
 import { baseUrl, createProject, userHeaders } from "./api";
 import { sql } from "./psql";
+import { railTargets } from "./rail";
 import { stubbed } from "./stub/stub-test";
 
 /** The restricted member: a person from outside the sign-in domain whom PRIV's access list
@@ -33,14 +34,6 @@ const test = stubbed(async () => {
   }
   return { project: "PRIV" };
 }, BOB);
-
-/** Where each link of the rail goes, in the order the rail draws them. */
-function railTargets(page: Page): Promise<(string | null)[]> {
-  return page
-    .getByRole("navigation", { name: "Navigation" })
-    .getByRole("link")
-    .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
-}
 
 test("a restricted member's rail draws Inbox, Agents, their projects and Settings, and the views over every project answer Page not found @pr", async ({
   page,

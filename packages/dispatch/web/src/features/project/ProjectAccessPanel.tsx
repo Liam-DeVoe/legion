@@ -13,6 +13,7 @@ import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/qu
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
+import { Switch } from "../../components/Switch";
 import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import {
   borderDefault,
@@ -20,9 +21,6 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
-  switchOffBg,
-  switchOnBg,
-  switchThumbBg,
   textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
@@ -404,25 +402,19 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           {/* The switch follows Dispatch's answer, not the press: it reads the stored visibility,
               and is busy while a change of it is out. A refusal, the reader's or Dispatch's,
               leaves it where it was. */}
-          <button
-            aria-checked={isPrivate}
+          <Switch
             aria-describedby={refusal === null ? undefined : noteId}
             aria-disabled={refusal === null ? undefined : true}
             aria-label="Private"
-            className={`inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50 ${isPrivate ? switchOnBg : switchOffBg}`}
+            checked={isPrivate}
+            className="disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
             disabled={pendingOf((change) => change.kind === "visibility")}
             onClick={() => {
               if (refusal !== null) return;
               write.save({ kind: "visibility", visibility: isPrivate ? "public" : "private" });
             }}
-            role="switch"
             title={refusal ?? undefined}
-            type="button"
-          >
-            <span
-              className={`block h-4 w-4 rounded-full shadow-lg transition-transform ${switchThumbBg} ${isPrivate ? "translate-x-4.5" : "translate-x-0.5"}`}
-            />
-          </button>
+          />
           <p
             className={`text-sm font-medium ${textPrimaryOnCanvas}`}
             data-testid="access-visibility"
@@ -601,11 +593,18 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
           </RefusableButton>
         </form>
         <p className={`mt-2 text-sm ${textMutedOnSurface}`}>
-          A group admits only its full members. Groups are made and edited in{" "}
-          <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
-            Settings → Groups
-          </Link>
-          .
+          A group admits only its full members.
+          {/* A restricted member's Settings draws no Groups, so they are sent to none. */}
+          {restricted ? null : (
+            <>
+              {" "}
+              Groups are made and edited in{" "}
+              <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings#groups">
+                Settings → Groups
+              </Link>
+              .
+            </>
+          )}
         </p>
         {groups.isError ? (
           <div className="mt-3">

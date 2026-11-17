@@ -37,7 +37,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { Interrupted, Reaper } from "./local-instance-support";
+import { Interrupted, type Reaped, Reaper } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
 const execFileAsync = promisify(execFile);
@@ -243,6 +243,12 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
   }
 }
 
+/** The reaper's handle on the cluster in `data`: the `pg_ctl` of `bin` and that data directory,
+ *  the same handle where it is given and where it is taken back. */
+function clusterOf(bin: string, data: string): Reaped {
+  return { cluster: { data, pgCtl: join(bin, "pg_ctl") } };
+}
+
 /** Starts the cluster in `data`, with its log and its unix socket in `dir`, and returns the port
  *  it serves on. Returns or throws with no postmaster of `data` left running. The cluster is
  *  handed to `reaper` before `pg_ctl` starts it, since its data directory is known first, so a
@@ -257,7 +263,7 @@ async function startCluster(
 ): Promise<number> {
   let last = "";
   const started = await serverSettings(env);
-  const reaped = { cluster: { data, pgCtl: join(bin, "pg_ctl") } };
+  const reaped = clusterOf(bin, data);
   reaper.watch(reaped);
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
@@ -303,7 +309,7 @@ async function stopCluster(
   reaper: Reaper
 ): Promise<void> {
   await execFileAsync(join(bin, "pg_ctl"), ["-D", data, "-m", mode, "-w", "stop"]);
-  reaper.forget({ cluster: { data, pgCtl: join(bin, "pg_ctl") } });
+  reaper.forget(clusterOf(bin, data));
 }
 
 function binariesProvider(

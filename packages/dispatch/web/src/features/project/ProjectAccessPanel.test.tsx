@@ -119,6 +119,31 @@ test("a restricted member's Access tab never reads the deployment's groups", asy
   }
 });
 
+// A restricted member's Settings draws no Groups (`SettingsPage`), so their Access tab sends them
+// to none: it says what a group admits, with no link to a section they do not have. A full member
+// who is not the owner is sent to it as always.
+test("a restricted member's Access tab links to no Groups section of Settings", async () => {
+  const restricted = renderPanel({ login: "bob@outside.example", memberKind: "restricted" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    expect(screen.getByText(/A group admits only its full members\./)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Settings → Groups" })).not.toBeInTheDocument();
+  } finally {
+    restricted.restore();
+  }
+
+  const full = renderPanel({ login: "carol@example.com" });
+  try {
+    expect(await screen.findByTestId("access-visibility")).toHaveTextContent("Public");
+    expect(screen.getByRole("link", { name: "Settings → Groups" })).toHaveAttribute(
+      "href",
+      "/settings#groups"
+    );
+  } finally {
+    full.restore();
+  }
+});
+
 /** What a list names, one entry per row: each row's first child is its name, and its Remove
  *  button repeats the name for a screen reader only. */
 function named(list: string): (string | null | undefined)[] {

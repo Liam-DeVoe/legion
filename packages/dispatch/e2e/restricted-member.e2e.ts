@@ -8,6 +8,7 @@
  *  those answers is the stubbed rows of `restricted-member.stub.e2e.ts`. */
 import { baseUrl, createIssue, createProject, userHeaders } from "./api";
 import { sql } from "./psql";
+import { railTargets } from "./rail";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -17,12 +18,17 @@ const BOB = "bob@outside.example";
 
 const PEEK = "Peek at the inbox without leaving this page";
 
-/** Where each link of the rail goes, in the order the rail draws them. */
-function railTargets(page: Page): Promise<(string | null)[]> {
-  return page
-    .getByRole("navigation", { name: "Navigation" })
-    .getByRole("link")
-    .evaluateAll((links) => links.map((link) => link.getAttribute("href")));
+/** Makes bob a restricted member whom PRIV's access list names: the people row outside sign-in
+ *  records for a person an access list names, written here because that sign-in is not what
+ *  these rows are about, and alice, who made PRIV and owns it, naming him on its access list, as
+ *  its Access tab does. */
+async function nameBobOnPriv(): Promise<void> {
+  await sql(`insert into people (email, member_kind) values ('${BOB}', 'restricted')`);
+  const named = await fetch(
+    new URL(`/api/v1/projects/PRIV/access/people/${encodeURIComponent(BOB)}`, baseUrl),
+    { headers: await userHeaders("alice"), method: "PUT" }
+  );
+  expect(named.status, await named.text()).toBe(200);
 }
 
 test("a restricted member's rail is Inbox, Agents, their projects and Settings, and the views over every project are not found", async ({
@@ -30,15 +36,7 @@ test("a restricted member's rail is Inbox, Agents, their projects and Settings, 
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   await createProject({ key: "PRIV", name: "Private work" });
-  // bob is a restricted member: the people row outside sign-in records for a person an access
-  // list names, written here because that sign-in is not what this row is about. alice, who made
-  // PRIV and owns it, names him on its access list, as its Access tab does.
-  await sql(`insert into people (email, member_kind) values ('${BOB}', 'restricted')`);
-  const named = await fetch(
-    new URL(`/api/v1/projects/PRIV/access/people/${encodeURIComponent(BOB)}`, baseUrl),
-    { headers: await userHeaders("alice"), method: "PUT" }
-  );
-  expect(named.status, await named.text()).toBe(200);
+  await nameBobOnPriv();
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, BOB);
@@ -82,31 +80,32 @@ test("a restricted member's rail is Inbox, Agents, their projects and Settings, 
   }
 });
 
-/** Every refusal the page has drawn from Dispatch so far: each answer of 403, by its method, its
- *  path and the code it carried. */
-function refusalsOf(page: Page): string[] {
-  const refused: string[] = [];
-  page.on("response", async (response) => {
+/** Every refusal the page draws from Dispatch: each answer of 403, by its method, its path and
+ *  the code it carried. An answer is recorded the moment it arrives and its code once its body is
+ *  read; `read` waits for every body still being read, so no refusal that has arrived is missed. */
+function refusalsOf(page: Page): { read: () => Promise<string[]> } {
+  const refused: Promise<string>[] = [];
+  page.on("response", (response) => {
     if (response.status() !== 403) return;
-    const { pathname } = new URL(response.url());
-    const body = (await response.json().catch(() => ({}))) as { code?: string };
-    refused.push(`${response.request().method()} ${pathname} ${body.code ?? ""}`.trim());
+    const call = `${response.request().method()} ${new URL(response.url()).pathname}`;
+    refused.push(
+      response.json().then(
+        (body: { code?: string }) => `${call} ${body.code ?? ""}`.trim(),
+        () => call
+      )
+    );
   });
-  return refused;
+  return { read: () => Promise.all(refused) };
 }
 
 // Dispatch refuses a restricted member every read of the deployment's own rows (403
 // DEPLOYMENT_READ_REFUSED, `readclass.Deployment` in api/read_classes.go). The server's own
 // refusal is the instrument, so a read of that class any page makes, today's or one added later,
-// shows here by name: bob opens each page of his and draws none.
+// shows here by name: bob opens each page of his and draws none. The row ends on one such read
+// made on purpose, which must show, so the instrument is seen to catch a refusal.
 test("a restricted member's pages draw no refusal from Dispatch", async ({ browser }) => {
   await createProject({ key: "PRIV", name: "Private work" });
-  await sql(`insert into people (email, member_kind) values ('${BOB}', 'restricted')`);
-  const named = await fetch(
-    new URL(`/api/v1/projects/PRIV/access/people/${encodeURIComponent(BOB)}`, baseUrl),
-    { headers: await userHeaders("alice"), method: "PUT" }
-  );
-  expect(named.status, await named.text()).toBe(200);
+  await nameBobOnPriv();
   const issue = await createIssue({ project: "PRIV", title: "Chart the private reef" });
 
   const bob = await asUser(browser, BOB);
@@ -161,7 +160,13 @@ test("a restricted member's pages draw no refusal from Dispatch", async ({ brows
       await page.goto(path);
       await expect.soft(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
     }
-    expect(refused).toEqual([]);
+    // The instrument's control, made last: a read of the deployment's rows from bob's page is
+    // refused and shows by name, and a read the pages above made, which answered before it, would
+    // show beside it.
+    const control = "GET /api/v1/priorities DEPLOYMENT_READ_REFUSED";
+    await page.evaluate(async () => (await fetch("/api/v1/priorities")).status);
+    await expect.poll(() => refused.read()).toContain(control);
+    expect(await refused.read()).toEqual([control]);
   } finally {
     await bob.close();
   }

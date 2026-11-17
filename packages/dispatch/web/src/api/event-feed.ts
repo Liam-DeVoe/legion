@@ -307,9 +307,10 @@ export function useEventFeed({
         if (!replayComplete) {
           refreshEverything();
         }
-        // The one query a refresh skips: a credential list held at `null` (no broker), which a
-        // server restarted since with a broker configured would now answer with a list. A
-        // restart replays nothing that says so.
+        // The queries a refresh may pass over: a credential list held at `null`, and a grants
+        // list held at 404 FEATURE_OFF that only a restricted member's Settings reads (no broker
+        // either way), which a server restarted since with a broker configured would now answer
+        // with a list. A restart replays nothing that says so.
         reaskHeldCredentialList(queryClient);
       },
       onEvent: (id, raw) => {
