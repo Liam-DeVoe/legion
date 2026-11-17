@@ -131,6 +131,9 @@ func growthBetween(first, later IssueFacts) Growth {
 //     `awaiting_person` (waitingOnPersonSpans), so a child reads the root's phase marks that open
 //     or close such a stretch, the root's close where the last of them leaves one open, and the
 //     root's recorded answer that cuts one of the child's own ask turns short (answeredWithin).
+//     A `null` phase mark opens and closes no stretch (phaseStretches), so it is skipped here as
+//     the timeline skips it, and the mark after it that carries a phase, or the root's close, is
+//     what ends the wait.
 //   - A root's time waiting on its children is its children's working phases over their work
 //     time (waitingOnChildrenSpans), so a root reads each child's role events, handoffs, statuses,
 //     `phase` and `slot` observations and close, which are the whole of what those spans are made
@@ -201,7 +204,11 @@ func (c *computation) newestInput(issue *Issue) time.Time {
 	} else {
 		awaiting := false
 		for _, mark := range root.Observed[legion.FieldPhase] {
-			now := legion.JSONString([]byte(mark.Value)) == legion.PhaseAwaitingPerson
+			phase := markedPhase(mark)
+			if phase == "" {
+				continue
+			}
+			now := phase == legion.PhaseAwaitingPerson
 			if now || awaiting {
 				read(mark.At)
 			}

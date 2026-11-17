@@ -28,7 +28,10 @@ const closingTolerance = 0.1
 //   - an open issue admitted with no slot of its own, waiting for one;
 //   - an open issue a person parked;
 //   - an open issue holding a slot of its own in its implementer's bar with the implementer out of
-//     a turn, so its idle hours by role run.
+//     a turn, so its idle hours by role run;
+//   - an open child whose root is recorded in `awaiting_person` and then read with no phase (the
+//     `null` mark a read that drops a field leaves) before its close, so the child's wait on a
+//     person runs on through that read to the root's close.
 //
 // Each is written before the stored rows are computed, at or before the history's end, and the
 // history writes nothing after them.
@@ -104,6 +107,26 @@ func seedClosingHistory(t *testing.T) closingHistory {
 	observe(idle, "claim.implementer", `"working"`, now.Add(-5*time.Hour))
 	observe(idle, "claim.implementer", `null`, now.Add(-4*time.Hour))
 	seeded.cases["a slot held with its role out of a turn"] = idle
+
+	// The last tree's root is recorded in `awaiting_person` five hours before its close, after its
+	// open child's own newest input, and read with no phase an hour later. A `null` mark ends no
+	// wait (the timeline's phaseStretches), so the child waits on a person until the root's `done`
+	// at its close, which falls more than an hour past the first UTC midnight after that read: a
+	// row closed at the read would grow the wait over the hour its rate is measured in and on past
+	// the close.
+	waitedOn, beneath := fixture.Roots[len(fixture.Roots)-1], fixture.Open[len(fixture.Open)-1]
+	var closedAt time.Time
+	if err := database.Pool.QueryRow(t.Context(), `select closed_at from issues where key = $1`, waitedOn).Scan(&closedAt); err != nil {
+		t.Fatalf("read the close of %s: %v", waitedOn, err)
+	}
+	awaiting, unread := closedAt.Add(-5*time.Hour), closedAt.Add(-4*time.Hour)
+	if midnight := measures.Midnight(unread).AddDate(0, 0, 1); !closedAt.After(midnight.Add(time.Hour)) {
+		t.Fatalf("%s closes at %s, within an hour of the midnight %s after its read with no phase at %s, so its child's rate is measured after the wait ends",
+			waitedOn, closedAt.UTC(), midnight, unread.UTC())
+	}
+	observe(waitedOn, "phase", `"awaiting_person"`, awaiting)
+	observe(waitedOn, "phase", `null`, unread)
+	seeded.cases["a child whose root waits on a person through a read with no phase"] = beneath
 	return seeded
 }
 

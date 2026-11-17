@@ -173,8 +173,12 @@ type process struct {
 //     title an event's actor carries, which decides whether the issue carries Legion phase work
 //     at all - so the pass takes the page's issues and recomputes them (readEventPage).
 //  2. The daemon's observations, woken by Deps.Observations: the phase, the slot and the wait
-//     the sampler recorded (readObservationPage).
-//  3. A pull request's merge time, woken by Deps.Deliveries (readChangePage).
+//     the sampler recorded of an issue, and the project's admission block, which every open
+//     row's waiting reason reads, so a move of the block recomputes those rows
+//     (readObservationPage).
+//  3. A pull request's merge time, woken by Deps.Deliveries: of the issue that holds the pull
+//     request now, and of the issue a move of it left with a merge no pull request backs
+//     (readChangePage).
 //
 // Two reads answer what no feed carries, both on the first page of a pass (unfed, passPage).
 // A project the running build has not read whole is read whole (legionProjects, R27): the rule
@@ -339,6 +343,9 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 				if touched.moved {
 					project.moved[touched.issue] = true
 				}
+				if touched.admission {
+					project.admission = true
+				}
 			}
 		}
 	}
@@ -429,17 +436,19 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 }
 
 // projectWork is what one page owes one project: the issues its feeds named and the rows another
-// build wrote (keys), those of the feeds' issues a row moved between trees (touch), the filings
-// its events moved that the project owes, the ones it joined and the ones it left (feed.filings),
-// whether the project is to be computed whole (a backfill), and whether its record names a newer
-// build this process yields to (projectStanding.yielded), which the write of its rows carries
-// (ProjectWrite.Yielded).
+// build wrote (keys), those of the feeds' issues a row moved between trees (touch), whether the
+// page read a move of the project's admission block, which owes every open row of the project
+// (openRows), the filings its events moved that the project owes, the ones it joined and the ones
+// it left (feed.filings), whether the project is to be computed whole (a backfill), and whether
+// its record names a newer build this process yields to (projectStanding.yielded), which the write
+// of its rows carries (ProjectWrite.Yielded).
 type projectWork struct {
-	keys     map[string]bool
-	moved    map[string]bool
-	filed    map[string]bool
-	backfill bool
-	yielded  bool
+	keys      map[string]bool
+	moved     map[string]bool
+	admission bool
+	filed     map[string]bool
+	backfill  bool
+	yielded   bool
 }
 
 // projectPass is what one page computed for one project: the write of its rows and the write of
@@ -472,7 +481,7 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 	if err != nil {
 		return projectPass{}, err
 	}
-	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
+	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, work.admission, above)
 	if err != nil {
 		return projectPass{}, err
 	}
