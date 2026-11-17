@@ -49,12 +49,12 @@ func TestTheComparisonFailsOnATextNeverApproved(t *testing.T) {
 		fixture string
 		want    Problem
 	}{
-		{"one-word", Problem{Position{"orders.md", 7}, "an-order-survives-a-restart", "unapproved-text", wantUnapprovedText}},
-		{"unapproved-statement", Problem{Position{"orders.md", 29}, "each-order-gets-one-bill", "unapproved-id", wantUnapprovedID}},
-		{"check-text", Problem{Position{"orders.md", 11}, "a-restart-keeps-each-order", "unapproved-text", wantUnapprovedText}},
-		{"component-purpose", Problem{Position{"components.md", 7}, "orders", "unapproved-text", wantUnapprovedText}},
-		{"interface-joins", Problem{Position{"components.md", 11}, "orders-to-billing", "unapproved-text", wantUnapprovedText}},
-		{"term-definition", Problem{Position{"components.md", 19}, "order", "unapproved-text", wantUnapprovedText}},
+		{"one-word", Problem{Pos: Position{"orders.md", 7}, Node: "an-order-survives-a-restart", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"unapproved-statement", Problem{Pos: Position{"orders.md", 29}, Node: "each-order-gets-one-bill", Rule: "unapproved-id", Detail: wantUnapprovedID}},
+		{"check-text", Problem{Pos: Position{"orders.md", 11}, Node: "a-restart-keeps-each-order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"component-purpose", Problem{Pos: Position{"components.md", 7}, Node: "orders", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"interface-joins", Problem{Pos: Position{"components.md", 11}, Node: "orders-to-billing", Rule: "unapproved-text", Detail: wantUnapprovedText}},
+		{"term-definition", Problem{Pos: Position{"components.md", 19}, Node: "order", Rule: "unapproved-text", Detail: wantUnapprovedText}},
 	} {
 		t.Run(row.fixture, func(t *testing.T) {
 			t.Parallel()
@@ -153,7 +153,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 				t.Fatal(err)
 			}
 			write(planted.ID, block)
-			want := []Problem{{Position{planted.ID + ".md", 1}, planted.ID, "unapproved-text", wantUnapprovedText}}
+			want := []Problem{{Pos: Position{planted.ID + ".md", 1}, Node: planted.ID, Rule: "unapproved-text", Detail: wantUnapprovedText}}
 			if got := Compare(parseDir(t, dir), approved); !reflect.DeepEqual(got.Problems, want) {
 				t.Errorf("Problems with one planted word:\n got %+v\nwant %+v", got.Problems, want)
 			}
@@ -167,7 +167,7 @@ func TestAPrintedTextPassesAndOneWordMoreFails(t *testing.T) {
 func TestARemovedIdThatComesBackIsRefused(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "removed-id-reused")
-	want := []Problem{{Position{"orders.md", 29}, "an-order-is-paid-once", "removed-id", wantRemovedID}}
+	want := []Problem{{Pos: Position{"orders.md", 29}, Node: "an-order-is-paid-once", Rule: "removed-id", Detail: wantRemovedID}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -227,7 +227,7 @@ func TestAChangeThatLeavesARemovedStatementPasses(t *testing.T) {
 func TestTheFirstFailingNodeIsNamedNotTheGate(t *testing.T) {
 	t.Parallel()
 	got := compareFixture(t, "one-of-four")
-	want := []Problem{{Position{"orders.md", 29}, "each-order-gets-one-bill", "unapproved-text", wantUnapprovedText}}
+	want := []Problem{{Pos: Position{"orders.md", 29}, Node: "each-order-gets-one-bill", Rule: "unapproved-text", Detail: wantUnapprovedText}}
 	if !reflect.DeepEqual(got.Problems, want) {
 		t.Errorf("Problems:\n got %+v\nwant %+v", got.Problems, want)
 	}
@@ -305,14 +305,43 @@ func TestReadApprovedRefusesAMalformedFixture(t *testing.T) {
 		{"removed in capitals", `{"nodes":[{"id":"a-page-shows-it","REMOVED":true,"versions":[` + good + `]}]}`, `member "/nodes/0/REMOVED" is not in the format`},
 		{"removed two times, true then false", `{"nodes":[{"id":"a-page-shows-it","removed":true,"removed":false,"versions":[` + good + `]}]}`,
 			`member "/nodes/0/removed" is in one object two times`},
-		{"a time that is not RFC 3339", `{"nodes":[{"id":"a-page-shows-it","versions":[` + version("1", "2026-11-10", block("a-page-shows-it", "The page shows it.")) + `]}]}`,
-			`"/nodes/0/versions/0/at"`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
 			a, err := ReadApproved(strings.NewReader(row.json))
 			if err == nil || !strings.Contains(err.Error(), row.want) {
 				t.Errorf("ReadApproved = %+v, %v; want an error holding %q", a, err, row.want)
+			}
+		})
+	}
+}
+
+// ReadApproved names a value of another type than approved.json's form needs by the form and the
+// place of the value, in the package's own words: no Go type and no verb of encoding/json/v2, which
+// picks "cannot" or "unable to" once in each process, reaches the person. A time that is not RFC
+// 3339 as the writer writes it, also one with a lower-case t and z, is of another type too.
+func TestReadApprovedNamesTheFormAndThePlaceOfAValueOfAnotherType(t *testing.T) {
+	t.Parallel()
+	const notInTheForm = `specgraph: approved spec: it is not in the form {"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time>","block":"<block>"}, …]}, …]}`
+	version := func(n, at, block string) string {
+		return `{"nodes":[{"id":"a-page-shows-it","versions":[{"version":` + n + `,"at":` + at + `,"block":` + block + `}]}]}`
+	}
+	for _, row := range []struct{ name, json, want string }{
+		{"a list in the place of the file", `[]`, notInTheForm},
+		{"an object in the place of the list of nodes", `{"nodes":{}}`, notInTheForm + `: the value at "/nodes" is of another type`},
+		{"a number in the place of an id", `{"nodes":[{"id":7}]}`, notInTheForm + `: the value at "/nodes/0/id" is of another type`},
+		{"a string in the place of removed", `{"nodes":[{"id":"a-page-shows-it","removed":"yes"}]}`, notInTheForm + `: the value at "/nodes/0/removed" is of another type`},
+		{"a string in the place of a version number", version(`"1"`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
+		{"a version number that is not whole", version(`1.5`, `"2026-11-10T00:00:00Z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/version" is of another type`},
+		{"a time that is not RFC 3339", version(`1`, `"2026-11-10"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
+		{"a time with a lower-case t and z", version(`1`, `"2026-11-10t00:00:00z"`, `""`), notInTheForm + `: the value at "/nodes/0/versions/0/at" is of another type`},
+		{"a list in the place of a block", version(`1`, `"2026-11-10T00:00:00Z"`, `["x"]`), notInTheForm + `: the value at "/nodes/0/versions/0/block" is of another type`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := ReadApproved(strings.NewReader(row.json))
+			if err == nil || err.Error() != row.want {
+				t.Errorf("ReadApproved = %+v, %v;\nwant the error %s", a, err, row.want)
 			}
 		})
 	}
@@ -371,7 +400,7 @@ func TestCurrentNamesABlockThatDoesNotParse(t *testing.T) {
 	if len(current.Statements) != 0 {
 		t.Errorf("Current holds %+v, want no statement", current.Statements)
 	}
-	want := []Problem{{Position{"approved a-page-shows-it version 1", 3}, "a-page-shows-it", "bad-block-line", "bad-block-line: the line opens no block"}}
+	want := []Problem{{Pos: Position{"approved a-page-shows-it version 1", 3}, Node: "a-page-shows-it", Rule: "bad-block-line", Detail: "bad-block-line: the line opens no block", Effect: LosesNode}}
 	if !reflect.DeepEqual(problems, want) {
 		t.Errorf("Current problems:\n got %+v\nwant %+v", problems, want)
 	}
