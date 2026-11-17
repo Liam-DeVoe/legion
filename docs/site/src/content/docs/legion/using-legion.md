@@ -113,8 +113,9 @@ template, and the later phases fill in their own lines:
 - **Proven by** and **Checks**: one line per check of the issue's Verification document, each the
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.
-- **Look at first** and **Not proven / risk**: written by Legion's reviewer, naming where a wrong
-  decision would hurt and every claim left unproven.
+- **Look at first** and **Not proven / risk**: written by Legion's reviewer, or by its implementer
+  on a task whose plan has no reviewer step, naming where a wrong decision would hurt and every
+  claim left unproven.
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then.

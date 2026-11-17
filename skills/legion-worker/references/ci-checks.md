@@ -91,12 +91,13 @@ When the head's checks have settled and no run of the named name answers, read t
 merge state first (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`): a head
 that conflicts with its base gets no `pull_request` run, and the forward merge cures it. A
 held-back job (above) is not absent without the label: it reads `skipped`, and the label cures it.
-Otherwise the words of the check are wrong. The tester and the reviewer each send this to the
-architect as a finding, each where the task has that step, with `envoy_publish` to its role topic.
-On a task with no tester step and no reviewer step, the implementer sends the architect, the owner
-of the task, the name that no run answers in the same way. The architect corrects the name or gives
-the check a command. No role fails the round or requests changes for it, because the change is not
-what is wrong.
+Otherwise the words of the check are wrong. Where the task has that step, the tester and the
+reviewer each send this to the architect as a finding, with `envoy_publish` to the architect's role
+topic. On a task with no tester step and no reviewer step, the implementer sends it to the
+architect, the owner of the task, at its retro, as on every task (`skill://legion-retro`, step 1):
+the retro waits for the head's runs to end, which the implementer never does while it implements.
+The architect corrects the name or gives the check a command. No role fails the round or requests
+changes for it, because the change is not what is wrong.
 
 ## What the evidence is
 

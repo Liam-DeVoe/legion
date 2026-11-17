@@ -268,25 +268,13 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 				}
 			}
 			if tc.reviewed != "" {
-				var row record.PhaseRow
-				inTx(t, pool, func(tx pgx.Tx) {
-					rows, err := record.NewStore().Phases(context.Background(), tx, child)
-					if err != nil {
-						t.Fatalf("read the phases rows of %s: %v", child, err)
-					}
-					row = record.PhaseRowOf(rows, claim.RoleReviewer)
-				})
+				row := phaseRow(t, pool, child, claim.RoleReviewer)
 				if row.ReviewedHead != tc.reviewed {
 					t.Errorf("the carried reviewer's row reads the reviewed commit %q, want %s: the carry keeps the phase rows", row.ReviewedHead, tc.reviewed)
 				}
-				var tasks []string
-				for _, effect := range effects(t, pool) {
-					if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == child && request.Op == "start" && request.Role == claim.RoleReviewer {
-						tasks = append(tasks, request.Task)
-					}
-				}
-				if want := " Last reviewed commit: " + tc.reviewed + "."; len(tasks) != 1 || !strings.Contains(tasks[0], want) {
-					t.Fatalf("the promoted reviewer's tasks = %q, want one naming %q", tasks, want)
+				starts := roleStarts(t, pool, child, claim.RoleReviewer)
+				if want := " " + workflow.ReviewedCommitLabel + ": " + tc.reviewed + "."; len(starts) != 1 || !strings.Contains(starts[0].Task, want) {
+					t.Fatalf("the promoted reviewer's starts = %+v, want one whose task names %q", starts, want)
 				}
 			}
 		})
@@ -481,7 +469,7 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 				// repository's rules, so no role compares a head with the one a review approved
 				// (dispatch://INFRA-714 R2). A carried root's merger is resumed into the phase it
 				// stood in, and the merge it makes is the head it reads for itself.
-				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Resume the existing phase work."
+				want := "Continue " + child + ". Issue: " + child + ". Phase: merging. Working copy: branch legion/" + child + ". Resume the existing phase work."
 				if len(mergerTasks) != 1 || mergerTasks[0] != want {
 					t.Fatalf("carried merger tasks = %q, want one resuming merging: %q", mergerTasks, want)
 				}
@@ -495,11 +483,24 @@ func TestACarriedRootResumesFromTheApprovedHeadAndTheHold(t *testing.T) {
 	}
 }
 
+// roleStarts is every start of role on issue the outbox holds, in order.
+func roleStarts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) []record.SuperviseRequest {
+	t.Helper()
+	var starts []record.SuperviseRequest
+	for _, effect := range effects(t, pool) {
+		if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == issue && request.Op == "start" && request.Role == role {
+			starts = append(starts, request)
+		}
+	}
+	return starts
+}
+
+// phaseStarts is how many starts of role on issue at phase at the outbox holds.
 func phaseStarts(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role, at phase.Phase) int {
 	t.Helper()
 	starts := 0
-	for _, effect := range effects(t, pool) {
-		if request, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == issue && request.Op == "start" && request.Role == role && request.Phase == at {
+	for _, start := range roleStarts(t, pool, issue, role) {
+		if start.Phase == at {
 			starts++
 		}
 	}

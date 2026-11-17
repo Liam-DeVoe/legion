@@ -70,6 +70,12 @@ Dispatch message (step 5) is for a finished retro only.
    check, or, where the task has a tester step, `to: testing` for the tester's result, its
    `reason` naming the check by its block id. When
    retro runs again, that gap is your first learning.
+   On a task whose `Steps:` line names no reviewer, the head's runs have ended by now, so answer
+   each bot thread still unresolved on the pull request, as
+   `skill://legion-worker/references/review-threads.md` says: resolve each one you decline, with
+   its reason in the reply, and name it in step 6's summary. A thread whose finding needs a fix
+   goes back with `request_backward_move` to `implementing`, its `reason` naming the thread, since
+   retro pushes nothing.
 2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
    First list, in your session, the constraints the issue did not state, choices between two
    working options, approaches you abandoned, and code another issue could reuse, so the second
@@ -115,7 +121,8 @@ Dispatch message (step 5) is for a finished retro only.
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the
    architect. It reports the commit your workspace stands on, which is the head you found: retro
    writes no handoff and makes no commit. In the workspace retro changes nothing; outside it, it
-   writes only step 4's `mktemp -d` directory, the PR body and the Dispatch comment and message.
+   writes only step 4's `mktemp -d` directory, the PR body, the Dispatch comment and message, and,
+   on a task with no reviewer step, step 1's thread replies and resolutions.
    It sets no GitHub or Dispatch label: Legion keeps phase state in the daemon, not in labels.
    In the same call, the agent that does the retro rates the plan the issue ran.
    The plan is the task's steps and the role that worked each, as your task's `Steps:` line names

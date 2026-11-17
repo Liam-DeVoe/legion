@@ -31,7 +31,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,12 +40,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
-
-// lastReviewed is the part of a task that names the commit the reviewer's last deciding review read
-// (workflow's reviewedPart), without the commit.
-const lastReviewed = "Last reviewed commit"
 
 // reviewRangeLive is one run of the proof: the handoff records rig booted over the real Dispatch,
 // the GitHub stand-in, the two issues the steps walk through two review rounds, and the counters
@@ -117,10 +114,10 @@ func (r *reviewRangeLive) newIssue(name, title string, number int) *reviewRangeI
 // the reviewer with names no reviewed commit.
 func (r *reviewRangeLive) roundOneNamesNoCommit() {
 	task := r.roundOne(r.walked)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the reviewer's task of round 1 = %q, want no %q in it: no review of this generation has read a commit yet", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the reviewer's task of round 1 = %q, want no %q in it: no review of this generation has read a commit yet", task, workflow.ReviewedCommitLabel)
 	}
-	r.note("the task names no %q", lastReviewed)
+	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
 // Check round-2-names-the-commit-of-round-1. The reviewer requests changes at the walked issue's
@@ -130,7 +127,7 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 	issue := r.walked
 	r.requestChanges(issue)
 	task := r.roundTwo(issue)
-	want := " " + lastReviewed + ": " + issue.first + "."
+	want := " " + workflow.ReviewedCommitLabel + ": " + issue.first + "."
 	if !strings.Contains(task, want) {
 		r.t.Fatalf("the reviewer's task of round 2 = %q, want it to hold %q, the head its review of round 1 read", task, want)
 	}
@@ -146,14 +143,14 @@ func (r *reviewRangeLive) roundTwoNamesTheCommitOfRoundOne() {
 func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	issue := r.control
 	task := r.roundOne(issue)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the control's reviewer task of round 1 = %q, want no %q in it", task, workflow.ReviewedCommitLabel)
 	}
 	r.requestChanges(issue)
 	if got := r.reviewedHead(issue.key); got != issue.first {
 		r.t.Fatalf("phases.reviewed_head of %s's reviewer before the clear = %q, want %s, the head its review of round 1 read", issue.key, got, issue.first)
 	}
-	tag, err := r.st.Pool().Exec(context.Background(), "update phases set reviewed_head = '' where issue = $1 and role = 'reviewer'", issue.key)
+	tag, err := r.st.Pool().Exec(context.Background(), "update phases set reviewed_head = '' where issue = $1 and role = $2", issue.key, string(claim.RoleReviewer))
 	if err != nil || tag.RowsAffected() != 1 {
 		r.t.Fatalf("clear phases.reviewed_head of %s's reviewer = %v rows, %v; want 1 row and no error", issue.key, tag.RowsAffected(), err)
 	}
@@ -162,10 +159,10 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 	}
 	r.note("cleared phases.reviewed_head of %s's reviewer; it now reads \"\"", issue.key)
 	task = r.roundTwo(issue)
-	if strings.Contains(task, lastReviewed) {
-		r.t.Fatalf("the control's reviewer task of round 2 = %q, want no %q in it: its record holds no reviewed commit", task, lastReviewed)
+	if strings.Contains(task, workflow.ReviewedCommitLabel) {
+		r.t.Fatalf("the control's reviewer task of round 2 = %q, want no %q in it: its record holds no reviewed commit", task, workflow.ReviewedCommitLabel)
 	}
-	r.note("the task names no %q", lastReviewed)
+	r.note("the task names no %q", workflow.ReviewedCommitLabel)
 }
 
 // roundOne walks issue's first review round: the seeded tester, which the boot relaunched, is
@@ -174,10 +171,10 @@ func (r *reviewRangeLive) controlNoRecordNoCommit() {
 // the reviewing task naming the tester's handoff of round 1.
 func (r *reviewRangeLive) roundOne(issue *reviewRangeIssue) string {
 	issue.tester = r.claimant(claim.RoleTester, issue.key, "ses_"+issue.name+"_tester")
-	r.awaitTask(issue.tester, "Phase: testing.", "Resume the existing phase work.")
+	issue.tester.awaitPrompt("Phase: testing.", "Resume the existing phase work.")
 	test := r.pass(issue, 1)
 	issue.reviewer = r.claimant(claim.RoleReviewer, issue.key, "ses_"+issue.name+"_reviewer")
-	task := r.awaitTask(issue.reviewer, "Phase: reviewing.", handoffLine(issue.key, "test", test.version))
+	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 1: the reviewer's shim was prompted: %q", task)
 	return task
 }
@@ -202,7 +199,7 @@ func (r *reviewRangeLive) requestChanges(issue *reviewRangeIssue) {
 func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	t := r.t
 	implementer := r.claimant(claim.RoleImplementer, issue.key, "ses_"+issue.name+"_implementer")
-	r.awaitTask(implementer, "Phase: implementing.")
+	implementer.awaitPrompt("Phase: implementing.")
 	r.pulls.head(issue.key, issue.second)
 	r.publishPushOf(issue.key, issue.first, issue.second)
 	r.publishSynchronizeOf(issue.number, issue.key, issue.second, "main", "the pull request of "+issue.key, time.Now())
@@ -218,9 +215,9 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	implementer.endTurn()
 	r.waitPhase(issue.key, phase.Testing)
 	r.note("the implementer completed at %s naming %s; read back: %s is in testing", issue.second, implement.line, issue.key)
-	r.awaitTask(issue.tester, "Phase: testing.", handoffLine(issue.key, "implement", implement.version))
+	issue.tester.awaitPrompt("Phase: testing.", handoffLine(issue.key, "implement", implement.version))
 	test := r.pass(issue, 2)
-	task := r.awaitTask(issue.reviewer, "Phase: reviewing.", handoffLine(issue.key, "test", test.version))
+	task := issue.reviewer.awaitPrompt("Phase: reviewing.", handoffLine(issue.key, "test", test.version)).Message
 	r.note("round 2: the reviewer's shim was prompted: %q", task)
 	return task
 }
@@ -242,47 +239,11 @@ func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritte
 	return test
 }
 
-// awaitTask waits for the prompt of c whose message holds each of want, which is the task of the
-// round a step reads, and returns it. A prompt before it that does not is noted and passed over,
-// so a check reads the task of its own round and no other message the daemon sent the claim.
-func (r *reviewRangeLive) awaitTask(c *handoffClaimant, want ...string) string {
-	r.t.Helper()
-	deadline := time.After(2 * time.Minute)
-	for {
-		select {
-		case prompt := <-c.prompts:
-			if holdsAll(prompt.Message, want) {
-				return prompt.Message
-			}
-			r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
-		case <-deadline:
-			r.t.Fatalf("%s was prompted with no task holding %q within 2m", c.token, want)
-			return ""
-		}
-	}
-}
-
-// holdsAll says whether text holds each of parts.
-func holdsAll(text string, parts []string) bool {
-	for _, part := range parts {
-		if !strings.Contains(text, part) {
-			return false
-		}
-	}
-	return true
-}
-
-// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
-// task).
-func handoffLine(key, word string, version int) string {
-	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
-}
-
 // reviewedHead is phases.reviewed_head of key's reviewer, read from the daemon's own database.
 func (r *reviewRangeLive) reviewedHead(key string) string {
 	r.t.Helper()
 	var head string
-	if err := r.st.Pool().QueryRow(context.Background(), "select reviewed_head from phases where issue = $1 and role = 'reviewer'", key).Scan(&head); err != nil {
+	if err := r.st.Pool().QueryRow(context.Background(), "select reviewed_head from phases where issue = $1 and role = $2", key, string(claim.RoleReviewer)).Scan(&head); err != nil {
 		r.t.Fatalf("read phases.reviewed_head of %s's reviewer: %v", key, err)
 	}
 	return head
@@ -322,9 +283,7 @@ func newReviewRangeGitHub(t *testing.T, issues ...*reviewRangeIssue) *reviewRang
 	for _, issue := range issues {
 		g.pulls[claim.IssueBranch(issue.key)] = &reviewRangePull{number: issue.number, head: issue.first}
 	}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 

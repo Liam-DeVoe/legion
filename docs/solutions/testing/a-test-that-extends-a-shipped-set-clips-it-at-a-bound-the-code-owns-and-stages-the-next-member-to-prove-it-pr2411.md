@@ -31,7 +31,7 @@ related_issues:
   Count the members the step removes by name too, which must be 0, as docs/solutions/envoy/a-migration-added-after-the-numbered-series-is-named-for-its-creation-instant-and-a-guard-compares-the-applied-set-pr2411.md says for a guard: compare the set of applied versions, never `max(version)`.
 - A sentence of a guide that counts or ranks the set is the same assertion, and it goes false at the next member on every branch that adds one.
   Name a migration by its file, and make no claim about how many migrations a release holds or how many stand above it.
-  Where a guide must give the version a store reports, say it holds only where no later migration has run.
+  Where a guide must give the version a store reports, say it holds only where no migration recorded above it is left standing.
 
 ## Evidence
 

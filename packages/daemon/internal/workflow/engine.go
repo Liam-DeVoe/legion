@@ -131,6 +131,13 @@ type Config struct {
 	// machine without waiting on a decision in flight. Nil reads nothing, so a record names no
 	// session and no model, which is the API-only daemon and every test that reads no agent.
 	StepAgent func(claim.Token) StepAgent
+	// WorkspaceDir is the directory the runtime starts an issue's role processes in, the issue's
+	// working copy, which every task the engine composes names (the working copy line of task and
+	// ResumePhaseTask). The daemon reads it from the runtime it runs (engineWorkspaceDir in
+	// internal/daemon), the one place each runtime puts that directory. Nil, or "" for an issue,
+	// names no directory, and the task names the branch alone: an API-only daemon and every test
+	// that runs no runtime.
+	WorkspaceDir func(record.Issue) string
 }
 
 // Engine interprets the table of each issue's walk (Walk: Table, or the table of its plan's line)
@@ -1363,7 +1370,11 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		}
 		reviewed = reviewedPart(claim.RoleReviewer, from, reviewer)
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reviewed, reason), freshSession)
+	at, err := e.standingPart(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, at, record.PhaseRow{}, pr, reviewed, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1643,7 +1654,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err != nil {
 			return err
 		}
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reviewed, reason), movedBack); err != nil {
+		at, err := e.standingPart(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		if err := e.start(ctx, tx, issue, starting, task(issue, at, handoff, pr, reviewed, reason), movedBack); err != nil {
 			return err
 		}
 	}

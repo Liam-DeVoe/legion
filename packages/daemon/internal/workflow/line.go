@@ -25,6 +25,9 @@ type Walk struct {
 	// Task is the id of the run's one task: the plan's, or defaultTask where the run has none,
 	// which is the task its steps are recorded under (StepID).
 	Task string
+	// Text is the text of the task's block (record.PlanTask.BlockText), which a step's worker is
+	// told (standingPart); "" where the run has no plan rows.
+	Text string
 	// Steps are the task's steps, by place from 1; nil where the run has no plan rows.
 	Steps []record.PlanStep
 	// Line is the phases the task walks: one for each step, then retro and merging.
@@ -60,7 +63,7 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
-	return Walk{Stored: true, Task: task.Task, Steps: steps, Line: line, State: task.State, Place: task.Place}, nil
+	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place}, nil
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
