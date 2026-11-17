@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -70,17 +72,19 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 	return mark, true
 }
 
-// narrowingState is the state golden with one more member of the waiting line, LEGION-213, a
-// started issue that gave its slot back to wait on another issue (waitingOnIssueContract): the
-// golden itself stands no member of that kind, so without it the row of that contract would
-// find nothing to narrow and write no line, and the rows below could not say that every row of
-// stateNarrowings writes its own.
+// narrowingState is the state golden with two more issues: LEGION-213, a member of the waiting
+// line that is a started issue that gave its slot back to wait on another issue
+// (waitingOnIssueContract), and LEGION-230, an issue held because its owner stopped its task
+// (OwnerPlanContract's `task-stopped`). The golden itself stands neither, so without them the
+// rows of those contracts would find nothing to narrow and write no line, and the rows below
+// could not say that every row of stateNarrowings writes its own.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := populatedState(t)
-	issues := make(map[string]Issue, len(state.Issues)+1)
+	issues := make(map[string]Issue, len(state.Issues)+2)
 	maps.Copy(issues, state.Issues)
 	issues["LEGION-213"] = waitingOnIssueMember()
+	issues[taskStoppedIssue] = heldFor(taskStoppedIssue, phase.Testing, record.HoldTaskStopped)
 	state.Issues = issues
 	return state
 }
@@ -239,7 +243,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
 	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+		body, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
 
 		if bytes.Contains(body, []byte(`"assignments"`)) {
 			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",

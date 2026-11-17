@@ -805,10 +805,13 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below OwnerPlanContract, the contract that added the hold reasons `task-stopped` and `children`,
+// is served every issue held for either with no `holdReason` (withoutNewHoldReasons), a value and
+// not a key.
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -937,6 +940,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{OwnerPlanContract, carriesNewHoldReasons, withoutNewHoldReasons, "the issues' holdReason task-stopped and children"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1072,10 +1076,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
-// this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
-// shape of the state).
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
+// OwnerPlanContract's, the last this daemon's own contract — so a caller from it up is served the
+// measure, and none of what a later row adds until it reaches that row's contract (123,
+// INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1445,6 +1449,42 @@ func withoutEntryTimes(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// newHoldReason is whether reason is one OwnerPlanContract added to the issues' `holdReason`:
+// `task-stopped` (record.HoldTaskStopped) and `children` (record.HoldForChildren). A caller below
+// it reads the key with the one value `escalated` and refuses the whole body for another.
+func newHoldReason(reason string) bool {
+	return reason == string(record.HoldTaskStopped) || reason == string(record.HoldForChildren)
+}
+
+// carriesNewHoldReasons is whether any issue of state is held for a reason OwnerPlanContract
+// added. Only a held issue carries a reason, and only a hold of one of the two carries it, so this
+// is asked of the state rather than answered true.
+func carriesNewHoldReasons(state State) bool {
+	for _, issue := range state.Issues {
+		if newHoldReason(issue.HoldReason) {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutNewHoldReasons is state with no issue carrying a `holdReason` OwnerPlanContract added: an
+// issue held for either is served as a hold of no reason is, with its `heldFrom` and nothing else
+// of the hold changed, and an escalated hold keeps its reason. Nothing else of that contract is on
+// the route but `settings` keys, which every plugin reads loosely. The issue map is copied, as
+// every sibling strip copies it, so the state the source answered is left as it was.
+func withoutNewHoldReasons(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		if newHoldReason(issue.HoldReason) {
+			issue.HoldReason = ""
+		}
 		issues[key] = issue
 	}
 	state.Issues = issues

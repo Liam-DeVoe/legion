@@ -528,8 +528,14 @@ type Issue struct {
 	Repo          string `json:"repo,omitempty"`
 	DefaultBranch string `json:"defaultBranch,omitempty"`
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
-	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
-	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
+	// sent it to the controller (record.HoldEscalated), `task-stopped` once its owner stopped the task
+	// it ran (record.HoldTaskStopped), and `children` while a parent whose plan has no acceptance
+	// step waits, before its retro, for the issues beneath it (record.HoldForChildren). A hold of
+	// either of the last two is no architect's to retry or escalate: a later version of the plan
+	// starts a stopped task again, and the last issue beneath a parent to leave starts its retro. A
+	// caller below OwnerPlanContract is served no reason for those two (withoutNewHoldReasons).
+	// Absent otherwise, and absent while the issue's tree lingers or is closed: the record keeps the
+	// reason, and the view shows it again once the tree is re-admitted.
 	HoldReason string `json:"holdReason,omitempty"`
 	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
 	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
