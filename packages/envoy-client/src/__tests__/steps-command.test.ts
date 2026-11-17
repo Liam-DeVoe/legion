@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { IssueSteps, StepRecord } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
+  type FakeDispatchFetch,
   type FakeDispatchOptions,
   type FakeDispatchServer,
   fakeDispatchFetch,
@@ -11,7 +12,7 @@ import {
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
 // `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
@@ -156,11 +157,10 @@ const config = {
 /** The one route the command reads. */
 const STEPS_PATH = "/api/v1/issues/LEG-1/steps";
 
-/** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
- *  result, and each request the fake saw as `<method> <pathname>`. */
-async function readSteps(answer: unknown) {
-  const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
-  const result = await executeDispatchTool({
+/** `dispatch steps --issue LEG-1` over `dispatch`, a fake Dispatch as a fetch; each wait before a
+ *  request Dispatch answered with no route is asked again returns at once. */
+function runSteps(dispatch: FakeDispatchFetch) {
+  return executeDispatchTool({
     tool: "dispatch_steps",
     args: { issue: "LEG-1" },
     cwd: "/workspace",
@@ -172,7 +172,15 @@ async function readSteps(answer: unknown) {
       throw new Error(`unexpected command: ${file} ${args.join(" ")}`);
     },
     fetchImpl: dispatch.fetchImpl,
+    sleep: async () => {},
   });
+}
+
+/** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
+ *  result, and each request the fake saw as `<method> <pathname>`. */
+async function readSteps(answer: unknown) {
+  const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
+  const result = await runSteps(dispatch);
   return {
     result,
     requests: dispatch.calls.map((call) => `${call.method} ${call.url.pathname}`),
@@ -284,6 +292,28 @@ describe("dispatch steps", () => {
       expect(result.text, JSON.stringify(answer)).toBe("LEG-1: 0 steps in 0 tasks");
       expect(result.details, JSON.stringify(answer)).toEqual({ issue: "LEG-1", tasks: [] });
     }
+  });
+
+  // A Dispatch older than the steps route answers it with its router's no-route 404. The client
+  // asks again after each wait and then throws, so the read fails: it never reads as an issue
+  // with no step, which only that route's 200 says.
+  test("a Dispatch with no steps route fails the read, and answers no steps", async () => {
+    const dispatch = fakeDispatchFetch({
+      handler: (call) =>
+        Response.json(
+          {
+            code: "NOT_FOUND",
+            error: `no route for ${call.method} ${call.url.pathname}`,
+            hint: "GET /api/v1 lists every route",
+          },
+          { status: 404 }
+        ),
+    });
+
+    await expect(runSteps(dispatch)).rejects.toBeInstanceOf(DispatchNoRouteError);
+    expect(new Set(dispatch.calls.map((call) => `${call.method} ${call.url.pathname}`))).toEqual(
+      new Set([`GET ${STEPS_PATH}`])
+    );
   });
 
   // The generated type lets one task's own list be null too, which reads as a task with no run.
@@ -405,6 +435,10 @@ describe("dispatch steps on the command line", () => {
     expect(stdout).toContain("LEG-1: 0 steps in 0 tasks");
   });
 
+  // The answers the steps GET refuses with: a credential Dispatch does not take (401), a fault of
+  // its own (500), and a page something in its place answered (502). No GET is project-scoped, and
+  // a key no issue carries reads as an issue with no step, so it answers no project's 403 and no
+  // issue's 404.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
     const refusals: readonly {
       readonly status: string;
@@ -412,19 +446,10 @@ describe("dispatch steps on the command line", () => {
       readonly printed: (url: string) => string;
     }[] = [
       {
-        status: "403",
+        status: "401",
         answer: () =>
-          Response.json(
-            { code: "PROJECT_SCOPE", error: "project is outside this credential's scope" },
-            { status: 403 }
-          ),
-        printed: () => "PROJECT_SCOPE: project is outside this credential's scope",
-      },
-      {
-        status: "404",
-        answer: () =>
-          Response.json({ code: "ISSUE_NOT_FOUND", error: "no issue LEG-1" }, { status: 404 }),
-        printed: () => "ISSUE_NOT_FOUND: no issue LEG-1",
+          Response.json({ code: "UNAUTHORIZED", error: "invalid bearer token" }, { status: 401 }),
+        printed: () => "UNAUTHORIZED: invalid bearer token",
       },
       {
         status: "500",
