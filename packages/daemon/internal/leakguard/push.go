@@ -2,10 +2,12 @@ package leakguard
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -286,18 +288,25 @@ func (g *Guard) holds(ctx context.Context, dir, sha string) (bool, error) {
 // kept, an annotated tag's peeled commit (<tag>^{}) too, where dir has it as a commit, which one
 // cat-file --batch-check of them all answers. A sha dir does not have holds nothing, since
 // rev-list cannot walk from it: where it is a commit ahead of dir's, the commits of dir's that it
-// reaches are read, which is the fail-closed direction. An empty answer, a repository with no
+// reaches are read, which is the fail-closed direction. The cat-file runs with
+// GIT_NO_LAZY_FETCH=1 (git 2.44 and later), so that in a partial clone, as an issue pod's fork
+// clones are (--filter=blob:none), a sha dir lacks is answered missing rather than fetched from
+// the promisor remote: the read of what url holds fetches nothing, and a sha dir lacks holds
+// nothing there as it does anywhere. That one call alone runs so, since a merge read in a partial
+// clone needs the blobs it lacks fetched (mergeFiles). An empty answer, a repository with no
 // branch and no tag, holds nothing. A git that cannot be run, or that exits other than 0, is an
-// error naming url, never a repository read as holding nothing.
+// error naming url, never a repository read as holding nothing, and the error carries no
+// credential: the URL it names and git's standard error it quotes are each written without the
+// user and password a URL can carry (withoutUserinfo).
 func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, error) {
-	read := "git ls-remote " + url
+	read := "git ls-remote " + withoutUserinfo(url)
 	var stderr strings.Builder
 	status, out, err := g.run(ctx, child{argv: gitArgv("ls-remote", "--heads", "--tags", "--", url), dir: dir, stderr: &stderr})
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", read, err)
 	}
 	if status != 0 {
-		return nil, fmt.Errorf("%s exited %d: %s", read, status, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("%s exited %d: %s", read, status, withoutUserinfo(strings.TrimSpace(stderr.String())))
 	}
 	// "<sha>\t<ref>" a line; a tag and its peeled commit are two lines, and two refs at one commit
 	// ask for it once.
@@ -315,9 +324,19 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	types, err := g.gitFed(ctx, dir, shas.String(), "cat-file", "--batch-check")
+	stderr.Reset()
+	status, types, err := g.run(ctx, child{
+		argv:   gitArgv("cat-file", "--batch-check"),
+		dir:    dir,
+		env:    []string{"GIT_NO_LAZY_FETCH=1"},
+		stdin:  strings.NewReader(shas.String()),
+		stderr: &stderr,
+	})
 	if err != nil {
 		return nil, err
+	}
+	if status != 0 {
+		return nil, fmt.Errorf("git cat-file exited %d: %s", status, strings.TrimSpace(stderr.String()))
 	}
 	var commits []string
 	for line := range strings.Lines(types) {
@@ -327,6 +346,20 @@ func (g *Guard) advertised(ctx context.Context, dir, url string) ([]string, erro
 		}
 	}
 	return commits, nil
+}
+
+// userinfo is the user and password a URL with a scheme can carry, the "user:token@" of
+// https://user:token@host/path: what follows "://" up to the last "@" before the first "/", "?",
+// "#", quote or space, which end the host.
+var userinfo = regexp.MustCompile(`://[^/?#\s'"]*@`)
+
+// withoutUserinfo is text with the user and password of each URL in it taken out, so that
+// https://user:token@host/path reads https://host/path. It is what a failure that names a URL, or
+// that quotes git's own account of one, prints: the URL git hands a pre-push hook, and an upstream
+// a registry names, can carry a token, and a failure is printed for whoever reads the log. A URL
+// in git's scp form (user@host:path) names a user and no password, and is left as it is.
+func withoutUserinfo(text string) string {
+	return userinfo.ReplaceAllLiteralString(text, "://")
 }
 
 // zeroSHA is whether sha is git's "this ref is not there": all zeros, of whatever length the
@@ -392,11 +425,18 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string) ([]Record
 // diffTree is a diff-tree of a commit of at most one parent: --root for a root commit, whose
 // diff is otherwise empty. A merge is read from its files instead (mergeFiles).
 //
+// Every file's patch is written as text, whatever an attribute says of the file: --text, since a
+// file .gitattributes marks -diff or binary, a .gitattributes the pushed commit adds itself
+// included, is otherwise "Binary files ... differ" and no line; --no-textconv, so that no diff
+// driver's textconv stands another text in for the file's own; and --no-ext-diff, so that no
+// external diff program writes the patch. Whether a file is binary is then its own content's to
+// say, as it is for a merge's (addedLines).
+//
 // A git that refuses the diff answers a non-zero status, which Guard.git makes an error of and
 // Guard.Push a setup failure: a diff that could not be read refuses the push, and is never a
 // commit read as clean.
 func diffTree(parents int, args ...string) []string {
-	argv := []string{"diff-tree", "-r", "-M", "--no-commit-id"}
+	argv := []string{"diff-tree", "-r", "-M", "--no-commit-id", "--text", "--no-textconv", "--no-ext-diff"}
 	if parents == 0 {
 		argv = append(argv, "--root")
 	}
@@ -438,20 +478,45 @@ func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int)
 // headed "@@ -a[,b] +c[,d] @@" is line c+n-1. The "+++ b/<path>" that names the file is read
 // only where a header stands, between a "diff --" line and the hunk that follows it, so a line
 // of content that reads like one is not mistaken for the name of a file.
+//
+// Every file's patch is text (diffTree), and a file is binary as a merge's is (mergeFiles): a
+// file whose blob in the commit holds a zero byte in its first 8000 bytes (binary) adds no line.
+// The header names that blob whole in its "index <old>..<new>" line (--full-index), and its mode
+// in that line, a "new file mode" line or a "new mode" line; a submodule's commit is no blob, and
+// its line is read. The blobs of the files that add a line are read after the diff, with one
+// cat-file --batch that keeps the first 8000 bytes of each and none of the rest (blobBatch). The
+// added text alone would not say it: a zero byte before the lines a commit adds to a file is in
+// no line the diff marks as added.
 func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int) ([]Record, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", commit)...)
+	out, err := g.git(ctx, dir, diffTree(parents, "--unified=0", "--no-color", "--full-index", commit)...)
 	if err != nil {
 		return nil, err
 	}
 	var records []Record
+	// blobs are the blobs of the files records were read from, by path, and "" for a file that is
+	// no blob.
+	blobs := map[string]string{}
 	path, header, next := "", false, 0
+	blob, mode := "", ""
 	for line := range strings.Lines(out) {
 		line = strings.TrimRight(line, "\r\n")
 		switch {
 		case strings.HasPrefix(line, "diff --"):
-			path, header = "", true
+			path, header, blob, mode = "", true, "", ""
 		case header && strings.HasPrefix(line, "+++ "):
 			path = diffPath(strings.TrimPrefix(line, "+++ "))
+		case header && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "new mode ")):
+			mode = line[strings.LastIndexByte(line, ' ')+1:]
+		case header && strings.HasPrefix(line, "index "):
+			// "index <old>..<new>", and " <mode>" after it where the commit keeps the file's mode.
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return nil, errors.New("git diff-tree wrote an index line of a shape it does not write")
+			}
+			_, blob, _ = strings.Cut(fields[1], "..")
+			if len(fields) > 2 {
+				mode = fields[2]
+			}
 		case strings.HasPrefix(line, "@@"):
 			header = false
 			if next, err = hunkStart(line); err != nil {
@@ -460,12 +525,36 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int)
 		case header || path == "":
 		case strings.HasPrefix(line, "+"):
 			if text := line[1:]; strings.TrimSpace(text) != "" {
+				if _, seen := blobs[path]; !seen {
+					file, err := isBlob(mode)
+					if err != nil {
+						return nil, err
+					}
+					blobs[path] = ""
+					if file {
+						blobs[path] = blob
+					}
+				}
 				records = append(records, Record{Label: path, Text: text, File: path, Line: next})
 			}
 			next++
 		}
 	}
-	return records, nil
+	var ids []string
+	for _, id := range blobs {
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return records, nil
+	}
+	slices.Sort(ids)
+	binaries, err := g.binaries(ctx, dir, slices.Compact(ids))
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(records, func(record Record) bool { return binaries[blobs[record.File]] }), nil
 }
 
 // hunkStart is c of a hunk header "@@ -a[,b] +c[,d] @@": the number of the line of the commit's
@@ -506,10 +595,22 @@ func diffPath(field string) string {
 // the merge's file. A path the merge adds is one at which no parent has anything, and it is read
 // as a path too.
 //
-// A file is text as git's own diff tells one where no attribute says otherwise: no zero byte in
-// its first 8000 bytes (xdiff-interface.c's buffer_is_binary). A binary file of the merge's adds
-// no line, as a binary diff adds none, and a parent's file that is binary, absent or a submodule
-// holds none.
+// A file is binary as git's own diff tells one where no attribute says otherwise: a zero byte in
+// its first 8000 bytes (xdiff-interface.c's buffer_is_binary). The files are read as blobs, with
+// cat-file --batch, which applies no attribute, so a file .gitattributes marks -diff or binary is
+// read here as a commit of one parent reads it (diffTree). A binary file of the merge's adds no
+// line, as a binary file adds none to a commit of one parent (addedLines), and a parent's file
+// that is binary, absent or a submodule holds none.
+//
+// The read is bounded, since an issue pod's roles share one memory limit. A text file it takes,
+// the merge's own or a parent's at a path the merge changes, is read only where it is at most
+// blobBound bytes, and one above that refuses the push as a setup failure naming the file and its
+// size. That is the one answer that publishes no line unread: a file passed over would pass every
+// line of it, and a file read in part would pass the rest. A binary file is read no further than
+// its first 8000 bytes, whatever its size. The blobs are read path by path as git writes them
+// (blobBatch), the merge's file first and then its parents' files there, so what the read holds
+// is one path's: the merge's file, its lines no parent's file read so far holds, and the
+// parent's file being read.
 //
 // A merge is not read from its combined diff (-c), which would be its resolution but for a
 // defect: combine-diff.c marks the parent a line was lost from as 1<<parent in an int, so from 33
@@ -524,55 +625,79 @@ func (g *Guard) mergeFiles(ctx context.Context, dir, merge string, parents []str
 	if err != nil {
 		return nil, nil, err
 	}
-	var ids []string
-	asked := map[string]bool{}
-	ask := func(id string) {
-		if !asked[id] {
-			asked[id] = true
-			ids = append(ids, id)
-		}
-	}
-	for _, change := range changes {
-		// A path the merge has no file at has no line to read, so its parents' files are not
-		// read either.
-		if change.blob != "" {
-			ask(change.blob)
-			for _, id := range change.held {
-				ask(id)
-			}
-		}
-	}
-	blobs, err := g.blobs(ctx, dir, ids)
-	if err != nil {
-		return nil, nil, err
-	}
-	var paths []string
-	var records []Record
+	var paths, ids []string
 	for _, change := range changes {
 		if change.added {
 			paths = append(paths, change.path)
 		}
-		file := blobs[change.blob]
-		if change.blob == "" || binary(file) {
+		// A path the merge has no file at has no line to read, so its parents' files are not
+		// read either.
+		if change.blob != "" {
+			ids = append(append(ids, change.blob), change.held...)
+		}
+	}
+	batch := g.readBlobs(ctx, dir, ids)
+	records, err := mergeLines(batch, merge, changes)
+	if err = batch.close(err); err != nil {
+		return nil, nil, err
+	}
+	return paths, records, nil
+}
+
+// mergeLines are the lines of merge's files at changes that no parent's file at the same path
+// holds, each with its number in the merge's file (mergeFiles), read from batch, which answers
+// for each change that has a file of the merge's that file and then its parents' files there.
+func mergeLines(batch *blobBatch, merge string, changes []mergeChange) ([]Record, error) {
+	ours, theirs := "merge "+short(merge)+"'s", "a parent of merge "+short(merge)+"'s"
+	var records []Record
+	for _, change := range changes {
+		if change.blob == "" {
 			continue
 		}
-		held := map[string]bool{}
-		for _, id := range change.held {
-			if of := blobs[id]; !binary(of) {
-				for line := range strings.SplitSeq(of, "\n") {
-					held[strings.TrimSuffix(line, "\r")] = true
+		file, ok, err := batch.text(change.path, ours)
+		if err != nil {
+			return nil, err
+		}
+		// own are the merge's lines that no parent's file read so far holds.
+		own := map[string]bool{}
+		if ok {
+			for line := range strings.SplitSeq(file, "\n") {
+				if line = strings.TrimSuffix(line, "\r"); strings.TrimSpace(line) != "" {
+					own[line] = true
 				}
 			}
+		}
+		for range change.held {
+			// A parent's file has nothing to take where no line is left, and is passed over.
+			if len(own) == 0 {
+				if _, err := batch.isBinary(); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			of, ok, err := batch.text(change.path, theirs)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				for line := range strings.SplitSeq(of, "\n") {
+					delete(own, strings.TrimSuffix(line, "\r"))
+				}
+			}
+		}
+		if len(own) == 0 {
+			continue
 		}
 		number := 0
 		for line := range strings.SplitSeq(file, "\n") {
 			number++
-			if text := strings.TrimSuffix(line, "\r"); strings.TrimSpace(text) != "" && !held[text] {
-				records = append(records, Record{Label: change.path, Text: text, File: change.path, Line: number})
+			// A record's text is a copy, so that the file it was read from is not held for it.
+			if text := strings.TrimSuffix(line, "\r"); own[text] {
+				records = append(records, Record{Label: change.path, Text: strings.Clone(text), File: change.path, Line: number})
 			}
 		}
 	}
-	return paths, records, nil
+	return records, nil
 }
 
 // mergeChange is one path at which a merge's tree differs from every parent's.
@@ -665,9 +790,9 @@ func (g *Guard) mergeChanges(ctx context.Context, dir, merge string, parents []s
 	return slices.DeleteFunc(changes, func(change mergeChange) bool { return listed[change.path] != diffs }), nil
 }
 
-// isBlob is whether a mode of diff-tree's raw format is a file git holds as a blob: a regular
-// file, or a symbolic link, whose target is its content. 000000 is no file and 160000 a
-// submodule's commit, of which this repository holds no lines.
+// isBlob is whether a mode diff-tree writes, in its raw format or in a patch's header, is a file
+// git holds as a blob: a regular file, or a symbolic link, whose target is its content. 000000 is
+// no file and 160000 a submodule's commit, of which this repository holds no lines.
 func isBlob(mode string) (bool, error) {
 	bits, err := strconv.ParseUint(mode, 8, 32)
 	if err != nil {
@@ -677,39 +802,201 @@ func isBlob(mode string) (bool, error) {
 	return kind == 0o100000 || kind == 0o120000, nil
 }
 
-// binary is whether a file is binary as git's diff tells one with no attribute to say: a zero
-// byte in its first 8000 bytes.
-func binary(content string) bool {
-	return strings.IndexByte(content[:min(len(content), 8000)], 0) >= 0
+// binaryHead is how much of a file git's diff reads to tell whether it is binary
+// (xdiff-interface.c's FIRST_FEW_BYTES), and so how much of a blob blobBatch.head reads first.
+const binaryHead = 8000
+
+// binary is whether a file is binary as git's diff tells one with no attribute to say, from head,
+// the file's first bytes: a zero byte in its first binaryHead bytes.
+func binary(head []byte) bool {
+	return bytes.IndexByte(head[:min(len(head), binaryHead)], 0) >= 0
 }
 
-// blobs are the contents of the blobs ids name, read with one cat-file --batch for all of them:
-// a merge of 52 parents can ask for hundreds, and a git apiece would be hundreds of processes. A
-// blob cat-file does not answer whole is an error, never a file read as empty.
-func (g *Guard) blobs(ctx context.Context, dir string, ids []string) (map[string]string, error) {
+// mergeFileBytes is the largest text file a merge's read takes (mergeFiles): 32 MiB. The read
+// holds at most two such files at once, the merge's and one parent's, and a set of the merge's
+// distinct lines, which is under 100 MiB at the bound for lines of ordinary length and some
+// hundreds of MiB for a file of nothing but short distinct lines: a small part of the 19 GiB an
+// issue pod's roles share at the default issue reservation (docs/kubernetes.md). It is over eight
+// times the largest text file this repository tracks, a test fixture of 3.7 MiB
+// (packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json, measured 2026-11-17), so that a
+// lock file or a fixture a merge resolves is far below it, and under the 50 MiB above which
+// GitHub warns of a file a push adds.
+const mergeFileBytes = 32 << 20
+
+// blobBound is mergeFileBytes, held in a variable so that a test can lower it.
+var blobBound int64 = mergeFileBytes
+
+// blobBatch is one git cat-file --batch over the blobs ids names, read a blob at a time as git
+// writes them, so that what is held is the blob being read and never the batch: one git answers a
+// merge's hundreds of blobs, where a git apiece would be hundreds of processes. The blobs are read
+// in the order of ids, each one's first binaryHead bytes first (head). A blob cat-file does not
+// answer whole is an error, never a file read as empty, and the batch ends with close, which
+// stops git where the reader stopped early.
+type blobBatch struct {
+	// ids are the blobs asked for, and read is how many of them have been read.
+	ids  []string
+	read int
+	// out is git's standard output, through pipe, whose reading end close shuts.
+	out  *bufio.Reader
+	pipe *io.PipeReader
+	// stop ends the context git runs under, and ran answers how git ended.
+	stop context.CancelFunc
+	ran  chan error
+}
+
+// readBlobs starts the batch of ids, read in dir. Where ids is empty it starts no git.
+func (g *Guard) readBlobs(ctx context.Context, dir string, ids []string) *blobBatch {
+	ctx, stop := context.WithCancel(ctx)
+	pipe, into := io.Pipe()
+	batch := &blobBatch{ids: ids, out: bufio.NewReader(pipe), pipe: pipe, stop: stop, ran: make(chan error, 1)}
 	if len(ids) == 0 {
-		return nil, nil
+		into.Close()
+		batch.ran <- nil
+		return batch
 	}
-	out, err := g.gitFed(ctx, dir, strings.Join(ids, "\n")+"\n", "cat-file", "--batch")
+	go func() {
+		var stderr strings.Builder
+		status, _, err := g.run(ctx, child{
+			argv:   gitArgv("cat-file", "--batch"),
+			dir:    dir,
+			stdin:  strings.NewReader(strings.Join(ids, "\n") + "\n"),
+			stdout: into,
+			stderr: &stderr,
+		})
+		if err == nil && status != 0 {
+			err = fmt.Errorf("git cat-file exited %d: %s", status, strings.TrimSpace(stderr.String()))
+		}
+		// A read past the last thing git wrote meets git's own failure, where it failed.
+		into.CloseWithError(err)
+		batch.ran <- err
+	}()
+	return batch
+}
+
+// head reads the header of the next blob and its first binaryHead bytes, or all of it where it is
+// shorter, which say whether it is binary (binary), and answers how many bytes of it are left.
+func (b *blobBatch) head() (rest int64, head []byte, err error) {
+	if b.read == len(b.ids) {
+		return 0, nil, errors.New("git cat-file was asked for fewer blobs than were read")
+	}
+	id := b.ids[b.read]
+	b.read++
+	// "<id> blob <size>", and "<id> missing" for no such object.
+	header, err := b.out.ReadSlice('\n')
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
+		return 0, nil, err
+	}
+	fields := strings.Fields(string(header))
+	if len(fields) != 3 || fields[0] != id || fields[1] != "blob" {
+		return 0, nil, fmt.Errorf("git cat-file read no blob %s", id)
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || size < 0 {
+		return 0, nil, fmt.Errorf("git cat-file read no blob %s", id)
+	}
+	head = make([]byte, min(size, binaryHead))
+	if _, err := io.ReadFull(b.out, head); err != nil {
+		return 0, nil, b.cut(err)
+	}
+	return size - int64(len(head)), head, nil
+}
+
+// isBinary reads the next blob as far as it takes to say whether it is binary, and passes over
+// the rest of it.
+func (b *blobBatch) isBinary() (bool, error) {
+	rest, head, err := b.head()
 	if err != nil {
+		return false, err
+	}
+	return binary(head), b.skip(rest)
+}
+
+// text reads the next blob, which is the file at path that whose names the owner of ("merge
+// 1a2b3c4's"), and answers its content and true where it is text; a binary one it passes over,
+// answering false. A text file above blobBound is an error that names it, its owner and its size,
+// and is not read (mergeFiles says why).
+func (b *blobBatch) text(path, whose string) (string, bool, error) {
+	rest, head, err := b.head()
+	if err != nil {
+		return "", false, err
+	}
+	if binary(head) {
+		return "", false, b.skip(rest)
+	}
+	if size := int64(len(head)) + rest; size > blobBound {
+		return "", false, fmt.Errorf("%s file %s is %d bytes, more than the %d bytes a merge's file is read up to", whose, maskPath(path), size, blobBound)
+	}
+	var content strings.Builder
+	content.Grow(len(head) + int(rest))
+	content.Write(head)
+	if _, err := io.CopyN(&content, b.out, rest); err != nil {
+		return "", false, b.cut(err)
+	}
+	return content.String(), true, b.end()
+}
+
+// skip passes over the rest of the blob head read, rest bytes of it, unread.
+func (b *blobBatch) skip(rest int64) error {
+	if _, err := io.CopyN(io.Discard, b.out, rest); err != nil {
+		return b.cut(err)
+	}
+	return b.end()
+}
+
+// end reads the newline git writes after each blob's content, which is where its size says the
+// content ends.
+func (b *blobBatch) end() error {
+	end, err := b.out.ReadByte()
+	if err == nil && end != '\n' {
+		err = io.ErrUnexpectedEOF
+	}
+	if err != nil {
+		return b.cut(err)
+	}
+	return nil
+}
+
+// cut is the error of a blob whose content git did not write whole: git's own failure where git
+// failed, and else the blob cut short.
+func (b *blobBatch) cut(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("git cat-file answered blob %s cut short", b.ids[b.read-1])
+	}
+	return err
+}
+
+// close ends the batch and answers how it ended: with failed, the error the reader stopped at,
+// where it stopped at one, after it stops git; and else with git's own failure, where git failed,
+// once what git wrote after the last blob read is passed over.
+func (b *blobBatch) close(failed error) error {
+	defer b.stop()
+	if failed == nil {
+		_, failed = io.Copy(io.Discard, b.out)
+	} else {
+		b.stop()
+		b.pipe.CloseWithError(failed)
+	}
+	if ran := <-b.ran; failed == nil {
+		return ran
+	}
+	return failed
+}
+
+// binaries are which of the blobs ids names are binary (binary), read with one cat-file --batch
+// that keeps the first binaryHead bytes of each and none of the rest, whatever its size.
+func (g *Guard) binaries(ctx context.Context, dir string, ids []string) (map[string]bool, error) {
+	batch := g.readBlobs(ctx, dir, ids)
+	binaries := make(map[string]bool, len(ids))
+	var err error
+	for _, id := range ids {
+		if binaries[id], err = batch.isBinary(); err != nil {
+			break
+		}
+	}
+	if err = batch.close(err); err != nil {
 		return nil, err
 	}
-	contents := make(map[string]string, len(ids))
-	for _, id := range ids {
-		// "<id> blob <size>", the content, and a newline; "<id> missing" for no such object.
-		header, rest, ok := strings.Cut(out, "\n")
-		fields := strings.Fields(header)
-		if !ok || len(fields) != 3 || fields[0] != id || fields[1] != "blob" {
-			return nil, fmt.Errorf("git cat-file read no blob %s", id)
-		}
-		size, err := strconv.Atoi(fields[2])
-		if err != nil || size < 0 || size >= len(rest) || rest[size] != '\n' {
-			return nil, fmt.Errorf("git cat-file answered blob %s cut short", id)
-		}
-		contents[id] = rest[:size]
-		out = rest[size+1:]
-	}
-	return contents, nil
+	return binaries, nil
 }
 
 // short is a commit as a report names it.
@@ -733,7 +1020,7 @@ func (g *Guard) git(ctx context.Context, dir string, args ...string) (string, er
 }
 
 // gitFed is git with input on its standard input, answering its standard output alone. What it
-// answers is read byte for byte, a blob's content or a diff split on zero bytes, so a warning
+// answers is read byte for byte, a diff split on zero bytes or a list of commits, so a warning
 // git writes to its standard error must not land in it; that error is what a failure carries.
 func (g *Guard) gitFed(ctx context.Context, dir, input string, args ...string) (string, error) {
 	var stderr strings.Builder

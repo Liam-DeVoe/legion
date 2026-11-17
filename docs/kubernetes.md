@@ -87,13 +87,18 @@ It carries:
   The refusal names the file, with any path component that holds a term written `<forbidden>`, the line and the term's number in its entry's list, and never the term.
   The second and third passes read a push alike:
 
+  - every file as text, whatever `.gitattributes` says of it, the pushed commit's own included, and no line of a file whose blob holds a zero byte in its first 8000 bytes, which is how git's own diff tells a binary file (`diffTree` and `addedLines`, `internal/leakguard/push.go`);
+
   - a merge from its files, not from git's combined diff, which is wrong from 33 parents and drops a line only the merge adds from 64:
-    a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`);
+    a merge's own lines are the lines of a file that differs from every parent's that no parent's file holds, and its own paths are those no parent has (`mergeFiles`, `internal/leakguard/push.go`).
+    The pod's roles share one memory limit, so the read holds one path's files at a time, and a text file above 32 MiB, the merge's own or a parent's at a path the merge changes, refuses the push as a setup error that names the file and its size (`mergeFileBytes`);
 
   - and no commit that a branch or a tag of the destination already reaches, as one `git ls-remote --heads --tags` of the URL git hands the hook reads them (`Guard.advertised`, `internal/leakguard/push.go`).
     Each push that adds a commit to a destination the guard scans costs that one read, which both passes share, and a read that fails refuses the push as a setup error that names the remote and the URL.
     The knives pass reads the upstream's refs the same way, with the same failure, naming the upstream's URL.
+    The URL such an error names, and git's own message it quotes, carry no user and no token (`withoutUserinfo`).
     A branch or a tag at a commit the clone does not have reaches nothing, so an upstream's line is read where the clone lacks the commit the upstream's ref is at.
+    The read of which of those commits the clone has runs with `GIT_NO_LAZY_FETCH=1`, so a partial clone fetches none it lacks from its promisor remote, and such a commit holds nothing there either.
     No ref of the clone's own counts: git moves a remote's `refs/remotes/<remote>/` for a push to whatever URL the remote pushes to at that time, a local bare one that a role points it at for one run (`git remote set-url --push origin <bare>`) included, and a ref can be written by hand.
     A remote whose push URL names no GitHub repository is matched by its URL as well, so the knives pass reads such a rehearsal as a push to the fork.
 

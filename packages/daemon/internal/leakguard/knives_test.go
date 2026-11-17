@@ -335,6 +335,20 @@ func TestAnAddedPathThatHoldsAKnivesTermIsRefusedMasked(t *testing.T) {
 	}
 }
 
+// A file .gitattributes marks -diff, the pushed commit's own .gitattributes saying so, is read
+// for knives terms as every file is (TestAFileIsBinaryByItsOwnContentAlone): git's own diff would
+// write "Binary files ... differ" for it, and no line of it would reach the pass.
+func TestAFileMarkedDashDiffIsReadForKnivesTerms(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{".gitattributes": "notes.lock -diff\n", "notes.lock": "the QUILLWORTHY build\n"})
+	path, listed, _ := servingKnives(t, theKnivesRow)
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
+	err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin))
+	want := []string{"notes.lock:1: forbidden term 2"}
+	if refused := knivesRefusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+}
+
 // A merge of 52 parents, as cybermonklabs/oh-my-pi's release merges are, is read from its files
 // for the knives pass as for the rules (TestAnOctopusMergeIsReadFromItsFiles, whose fixture,
 // octopusRepo, this is): a line of the merge's own resolution that holds a term is refused at its

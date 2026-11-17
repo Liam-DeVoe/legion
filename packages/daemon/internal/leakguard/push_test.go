@@ -287,6 +287,311 @@ func TestAMergesOwnResolutionIsRead(t *testing.T) {
 	}
 }
 
+// pushOf is a repository whose base the destination at theURL holds on its main, the base
+// writing the files held, and head, the commit the push adds, on that base, which writes the
+// files added, each path to its content. Where side is not nil, head is a merge, in the shape of
+// TestAMergesOwnResolutionIsRead: of main, at a commit of its own on the base, and of a branch
+// side, whose commit on the base writes the files side names, with the files added written by
+// the merge's resolution.
+func pushOf(t *testing.T, held, side, added map[string]string) (repo, base, head string) {
+	t.Helper()
+	home, root := t.TempDir(), t.TempDir()
+	repo = filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(files map[string]string) {
+		t.Helper()
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	commit := func(message string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	write(map[string]string{"README.md": "one\n"})
+	write(held)
+	base = commit("the commit the destination holds")
+	if side != nil {
+		fixture.Run(repo, "git", "checkout", "--quiet", "-b", "side")
+		write(map[string]string{"side.md": "a line of the side branch\n"})
+		write(side)
+		commit("the side commit")
+		fixture.Run(repo, "git", "checkout", "--quiet", "main")
+		write(map[string]string{"main.md": "a line of the main branch\n"})
+		commit("the main commit")
+		fixture.Run(repo, "git", "merge", "--quiet", "--no-ff", "--no-commit", "side")
+	}
+	write(added)
+	head = commit("the commit the push adds")
+	destinationAt(t, fixture, repo, theURL, base+":refs/heads/main")
+	return repo, base, head
+}
+
+// pushedTo is the push of head to main, where the destination holds base, from repo to origin at
+// theURL.
+func pushedTo(repo, base, head string) PushRequest {
+	return PushRequest{
+		Dir:     repo,
+		Remote:  "origin",
+		URL:     theURL,
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: head, RemoteRef: "refs/heads/main", RemoteSHA: base}},
+	}
+}
+
+// A file is binary by its own content alone, whatever an attribute says: a file .gitattributes
+// marks -diff or binary is read as text, the .gitattributes the pushed commit adds itself
+// included, where git's own diff would write "Binary files ... differ" for it and no line of it
+// would reach the rules. A merge reads its files as blobs, which no attribute touches, so a merge's
+// resolution is read alike. A file that holds a zero byte in its first 8000 bytes adds no line,
+// in a commit of one parent and in a merge's resolution alike (mergeFiles), and a commit that adds
+// a line to such a file adds none, although the zero byte is in no line it adds.
+func TestAFileIsBinaryByItsOwnContentAlone(t *testing.T) {
+	const named = "the runner answers at " + theHost + "\n"
+	refused := []string{"notes.lock: " + theClass}
+	for _, tc := range []struct {
+		name              string
+		held, side, added map[string]string
+		// want is the report, and nil where the push passes.
+		want []string
+	}{
+		{
+			name:  "a file the commit's .gitattributes marks -diff",
+			added: map[string]string{".gitattributes": "notes.lock -diff\n", "notes.lock": named},
+			want:  refused,
+		},
+		{
+			name:  "a file the commit's .gitattributes marks binary",
+			added: map[string]string{".gitattributes": "notes.lock binary\n", "notes.lock": named},
+			want:  refused,
+		},
+		{
+			name:  "a file a merge's resolution adds, its .gitattributes marking it -diff",
+			side:  map[string]string{},
+			added: map[string]string{".gitattributes": "notes.lock -diff\n", "notes.lock": named},
+			want:  refused,
+		},
+		{
+			name:  "a file with a zero byte, in a commit of one parent",
+			added: map[string]string{"notes.lock": "\x00\n" + named},
+		},
+		{
+			name:  "a file with a zero byte, in a merge's resolution",
+			side:  map[string]string{},
+			added: map[string]string{"notes.lock": "\x00\n" + named},
+		},
+		{
+			name:  "a line added to a file whose zero byte the commit does not add",
+			held:  map[string]string{"notes.lock": "\x00\n"},
+			added: map[string]string{"notes.lock": "\x00\n" + named},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, base, head := pushOf(t, tc.held, tc.side, tc.added)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), pushedTo(repo, base, head))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("a push whose one named line is in a binary file: %v", err)
+				}
+				return
+			}
+			if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+				t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+			}
+		})
+	}
+}
+
+// A merge's text file above blobBound refuses the push as a setup failure that names the file and
+// its size, whether it is the merge's own or a parent's at a path the merge changes: a file passed
+// over, or read in part, would pass its lines unread. A binary file above the bound is read no
+// further than its first 8000 bytes and adds no line, and a text file at the bound is read. The
+// bound here is 64 bytes.
+func TestAMergesFileAboveTheBoundRefusesThePush(t *testing.T) {
+	kept := blobBound
+	blobBound = 64
+	t.Cleanup(func() { blobBound = kept })
+	big := strings.Repeat("a line of ordinary prose\n", 4)
+	line := "at " + theHost
+	atBound := line + strings.Repeat(" ", 63-len(line)) + "\n"
+	const failed = "LEAK CHECK SETUP ERROR: the push to origin: the push's commits could not be read: "
+	for _, tc := range []struct {
+		name        string
+		side, added map[string]string
+		// failure is the setup failure for the merge, "" where there is none.
+		failure func(merge string) string
+		// want is the report, and nil where the push passes or fails.
+		want []string
+	}{
+		{
+			name:  "the merge's own file",
+			added: map[string]string{"big.md": big},
+			failure: func(merge string) string {
+				return failed + "merge " + short(merge) + "'s file big.md is 100 bytes, more than the 64 bytes a merge's file is read up to"
+			},
+		},
+		{
+			name:  "a parent's file at a path the merge changes",
+			side:  map[string]string{"big.md": big},
+			added: map[string]string{"big.md": "a line of the resolution\n"},
+			failure: func(merge string) string {
+				return failed + "a parent of merge " + short(merge) + "'s file big.md is 100 bytes, more than the 64 bytes a merge's file is read up to"
+			},
+		},
+		{
+			name:  "a binary file above the bound",
+			added: map[string]string{"big.bin": "\x00" + big + "the runner answers at " + theHost + "\n"},
+		},
+		{
+			name:  "a text file at the bound",
+			added: map[string]string{"edge.md": atBound},
+			want:  []string{"edge.md: " + theClass},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			side := tc.side
+			if side == nil {
+				side = map[string]string{}
+			}
+			repo, base, head := pushOf(t, nil, side, tc.added)
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+			err := guard.Push(bound(t), pushedTo(repo, base, head))
+			switch {
+			case tc.failure != nil:
+				setupFailure(t, err)
+				if want := tc.failure(head); err.Error() != want {
+					t.Errorf("the failure is\n  %s\nwant\n  %s", err, want)
+				}
+			case tc.want != nil:
+				if refused := refusal(t, err); !slices.Equal(refused.Lines, tc.want) {
+					t.Errorf("the report is %q, want %q", refused.Lines, tc.want)
+				}
+			case err != nil:
+				t.Fatalf("a merge whose one named line is in a binary file: %v", err)
+			}
+		})
+	}
+}
+
+// The read of what the destination holds fetches nothing. In a partial clone, as an issue pod's
+// fork clones are (--filter=blob:none), git fetches an object the clone lacks from the promisor
+// remote the moment anything asks for it, and the read of the destination's refs asks for every
+// commit they are at (Guard.advertised): a commit the clone lacks is answered missing instead, and
+// holds nothing. The promisor here has a commit the clone never fetched, which the destination
+// holds at a branch; once the push is read, the clone still lacks it, and the push's own commit
+// is read and refused.
+func TestTheReadOfWhatTheDestinationHoldsFetchesNothing(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	promisor, destination := filepath.Join(root, "promisor.git"), filepath.Join(root, "destination.git")
+	seed, repo := filepath.Join(root, "seed"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(promisor, "main")...)
+	fixture.Run(promisor, "git", "config", "uploadpack.allowFilter", "true")
+	fixture.Run(promisor, "git", "config", "uploadpack.allowAnySHA1InWant", "true")
+	fixture.Run(root, fixturegit.InitBare(destination, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(seed, "main")...)
+	commit := func(dir, name, content, message string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		fixture.Run(dir, "git", "add", "-A")
+		fixture.Run(dir, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(dir, "git", "rev-parse", "HEAD")
+	}
+	base := commit(seed, "README.md", "one\n", "the commit the destination holds")
+	fixture.Run(seed, "git", "push", "--quiet", promisor, "main")
+	fixture.Run(root, "git", "clone", "--quiet", "--filter=blob:none", "file://"+promisor, repo)
+	later := commit(seed, "README.md", "one\ntwo\n", "a commit the clone never fetched")
+	fixture.Run(seed, "git", "push", "--quiet", promisor, later+":refs/heads/later")
+	fixture.Run(seed, "git", "push", "--quiet", destination, base+":refs/heads/main", later+":refs/heads/later")
+	reach(t, fixture, repo, theURL, destination)
+	// lacks is whether the clone lacks the later commit, asked so that the asking fetches nothing.
+	lacks := func() bool {
+		_, err := fixture.With("GIT_NO_LAZY_FETCH=1").Try(repo, "git", "cat-file", "-e", later)
+		return err != nil
+	}
+	if !lacks() {
+		t.Fatalf("the clone has %s before the push is read, so this test proves nothing", short(later))
+	}
+	head := commit(repo, "notes.md", "the runner answers at "+theHost+"\n", "a message of no interest")
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	err := guard.Push(bound(t), pushedTo(repo, base, head))
+	want := []string{"notes.md: " + theClass}
+	if refused := refusal(t, err); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q", refused.Lines, want)
+	}
+	if !lacks() {
+		t.Errorf("the read of the destination's refs fetched %s, the commit its later branch is at, into the clone", short(later))
+	}
+}
+
+// A failure that names a URL carries no credential. The URL git hands a pre-push hook, and the
+// upstream a knives registry entry names, can hold a user and a token
+// (https://user:token@host/...), and a read of either that fails names the URL and quotes git,
+// which names it too: both are written without the user and the token. The stand-in git here
+// fails every call with a URL that holds a user, as a git that cannot reach the host does, and
+// runs the real git for every other call.
+func TestAFailedReadNamesItsURLWithoutItsCredential(t *testing.T) {
+	// The userinfo is built apart from the scheme, so no line of this file is a URL that carries
+	// one, which the shared check would refuse at the push.
+	const user, token = "invented-user", "invented-token"
+	userinfo := user + ":" + token + "@"
+	credentialed := func(url string) string { return strings.Replace(url, "https://", "https://"+userinfo, 1) }
+	bin := t.TempDir()
+	writeProgram(t, bin, "git", `for arg; do
+  case "$arg" in
+  *://*@*) echo "fatal: unable to access '$arg/': Could not resolve host: github.com" >&2; exit 128 ;;
+  esac
+done
+exec `+shQuote(fixturegit.CompiledGit(t))+` "$@"
+`)
+	unreachable := func(url string) string {
+		return " exited 128: fatal: unable to access '" + url + "/': Could not resolve host: github.com"
+	}
+	for _, tc := range []struct {
+		name string
+		// url is the URL git hands the hook, and upstream the one the registry entry names.
+		url, upstream string
+		want          string
+	}{
+		{
+			name:     "the destination",
+			url:      credentialed(knivesOrigin),
+			upstream: knivesUpstream,
+			want:     "LEAK CHECK SETUP ERROR: the push to origin: the destination's refs could not be read: git ls-remote " + knivesOrigin + unreachable(knivesOrigin),
+		},
+		{
+			name:     "the registry entry's upstream",
+			url:      knivesOrigin,
+			upstream: credentialed(knivesUpstream),
+			want:     "LEAK CHECK SETUP ERROR: the push to origin: the refs of the registry entry's upstream could not be read: git ls-remote " + knivesUpstream + unreachable(knivesUpstream),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
+			registry := theKnivesRow
+			registry.file = strings.ReplaceAll(theKnivesRegistry, knivesUpstream, tc.upstream)
+			path, listed, _ := servingKnives(t, registry)
+			path = "PATH=" + bin + string(os.PathListSeparator) + strings.TrimPrefix(path, "PATH=")
+			guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path, listed)
+			err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", tc.url))
+			setupFailure(t, err)
+			if err.Error() != tc.want {
+				t.Errorf("the failure is\n  %s\nwant\n  %s", err, tc.want)
+			}
+			if strings.Contains(err.Error(), user) || strings.Contains(err.Error(), token) {
+				t.Errorf("the failure carries the URL's credential: %v", err)
+			}
+		})
+	}
+}
+
 // octopusParents is how many parents the merges octopusRepo writes have: as many as
 // cybermonklabs/oh-my-pi's release merges have, which run from 51 to 53.
 const octopusParents = 52

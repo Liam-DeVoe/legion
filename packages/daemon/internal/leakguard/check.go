@@ -151,6 +151,10 @@ type child struct {
 	// output run answers, which the GraphQL visibility read needs to read gh's body alone
 	// (Guard.graphQLVisibility). Nil answers the two together.
 	stderr io.Writer
+	// stdout, where it is not nil, takes the child's standard output as the child writes it, and
+	// run answers what is left: the standard error, unless stderr takes that too. A reader that
+	// takes a blob at a time as git writes it holds one blob, not all of them (blobBatch).
+	stdout io.Writer
 }
 
 // program is where name is, read from the base environment's PATH rather than from this
@@ -169,9 +173,9 @@ func program(base []string, name string) string {
 }
 
 // run runs c under ctx and answers its exit status and everything it printed, out and err
-// together unless c.stderr takes err. The error is a child that could not be run at all: one that
-// did not start, or one the end of ctx stopped, which is a *stoppedError. A status is an answer,
-// and no status is not.
+// together unless c.stderr takes err or c.stdout takes out. The error is a child that could not
+// be run at all: one that did not start, or one the end of ctx stopped, which is a
+// *stoppedError. A status is an answer, and no status is not.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -189,6 +193,9 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	cmd.Stdout, cmd.Stderr = &printed, &printed
 	if c.stderr != nil {
 		cmd.Stderr = c.stderr
+	}
+	if c.stdout != nil {
+		cmd.Stdout = c.stdout
 	}
 	started := time.Now()
 	err := procgroup.Err(cmd.Run())
