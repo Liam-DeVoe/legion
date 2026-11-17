@@ -148,31 +148,46 @@ func TestTheOtherBuildsFilingsReadReadsTheWrittenBuildIndex(t *testing.T) {
 
 // TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone: Read, the Legion board's read of the facts,
 // answers the rows of the keys it is given, of every issue of the trees it is given and of every
-// open issue of the project, and no other row, and its statement (boardSelect and shownWhere)
-// reaches issue_facts through the primary key for the keys, through issue_facts_root (migration
-// 20261117100026) for the trees and through issue_facts_closed (migration 20261117100009) for the
-// open rows, each scan keyed by its own condition, never a scan of the table nor a read of the
-// project's whole range filtered after it. The store is five projects of 4,000 stored rows each,
-// in trees of ten, one in fifty open, analyzed; the board of FC names 34 cards, 24 of them in the
-// 12 trees it shows and 10 whose stored root is another, and a key no row holds. The plan is
-// taken twice: with the values, as the planner prices them, and as the generic plan pgx's cached
-// statement settles on, which knows no value of the lists, with sequential scans off so it names
-// only the indexes the statement can prove.
+// open issue of the project, and no other row, and every arm of its statement (boardSelect and
+// shownWhere) reaches issue_facts through an index keyed by its own condition: the primary key for
+// the keys, issue_facts_root (migration 20261117100026) for the trees and issue_facts_closed
+// (migration 20261117100009) for the open rows, under closed_at IS NULL; never a scan of the table
+// nor a read of the project's whole range filtered after it (dispatch://INFRA-2916, k23).
+//
+// The store has the shape at which the planner prices a scan of the whole table no dearer than the
+// open rows' index range: FC's 12,000 rows are most of it, beside four projects of 500, one row in
+// three of each is open, as 4,272 of INFRA's 13,103 were on the build farm, the rows stand in trees
+// of ten, and each row's bars has the shape a row Legion wrote holds, so a page holds four rows as
+// INFRA's pages hold four or five. It is analyzed. With sequential scans on, the open arm's plan
+// here is a Seq Scan of issue_facts with the values, whether the board names cards or none, so the
+// plans below hold Read's transaction (readByIndex) to what keeps that arm on its index. The board
+// of FC names 34 cards, 24 of them in the 12 trees it shows and 10 whose stored root is another,
+// and a key no row holds; a board that names no card answers the open rows alone.
+//
+// Every plan is taken in readByIndex's transaction, the one Read runs its statement in, and under
+// no setting of the test's own but the plan cache's mode: with the values, as the planner prices
+// them, for both boards; and as the generic plan pgx's cached statement settles on, which knows no
+// value of the lists.
 func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	ctx := t.Context()
 	pool := factsDatabase(t)
 	if _, err := pool.Exec(ctx, `
-		insert into issue_facts (project_key, issue_key, opened_at, closed_at, root_key, tree_depth)
+		insert into issue_facts (project_key, issue_key, opened_at, closed_at, root_key, tree_depth, bars)
 		select project, project || '-' || n, now() - make_interval(days => n % 365 + 1),
-		       case when n % 50 <> 0 then now() - make_interval(days => n % 365) end,
-		       project || '-' || ((n - 1) / 10 * 10 + 1), case when n % 10 = 1 then 0 else 1 end
-		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 4000) as n;
+		       case when n % 3 <> 0 then now() - make_interval(days => n % 365) end,
+		       project || '-' || ((n - 1) / 10 * 10 + 1), case when n % 10 = 1 then 0 else 1 end, shape.bars
+		from unnest(array['FA', 'FB', 'FC', 'FD', 'FE']) as project, generate_series(1, 12000) as n,
+		     (select jsonb_object_agg(role, jsonb_build_object('hours', 0, 'holds_hours', false, 'segments',
+		             jsonb_build_object('idle', 0, 'ci_wait', 0, 'in_a_turn', 0, 'waiting_on_person', 0, 'waiting_on_children', 0)))
+		      from unnest(array['architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger', 'controller', 'no_role']) as role) as shape (bars)
+		where n <= case when project = 'FC' then 12000 else 500 end
+		order by n, project;
 		analyze issue_facts;
 	`); err != nil {
 		t.Fatalf("seed the facts: %v", err)
 	}
 	var roots, keys []string
-	want := map[string]bool{}
+	want, open := map[string]bool{}, map[string]bool{}
 	for tree := range 12 {
 		root := 10*tree*3 + 1
 		roots = append(roots, fmt.Sprintf("FC-%d", root))
@@ -184,9 +199,9 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 	for n := 2001; n <= 2010; n++ {
 		keys, want[fmt.Sprintf("FC-%d", n)] = append(keys, fmt.Sprintf("FC-%d", n)), true
 	}
-	keys = append(keys, "FC-9999")
-	for n := 50; n <= 4000; n += 50 {
-		want[fmt.Sprintf("FC-%d", n)] = true
+	keys = append(keys, "FC-99999")
+	for n := 3; n <= 12000; n += 3 {
+		want[fmt.Sprintf("FC-%d", n)], open[fmt.Sprintf("FC-%d", n)] = true, true
 	}
 	at := time.Date(2026, 11, 16, 12, 0, 0, 0, time.UTC)
 	rows, err := Read(ctx, pool, "FC", keys, roots, at)
@@ -194,47 +209,94 @@ func TestTheBoardsReadReadsItsRowsByKeyAndByRootAlone(t *testing.T) {
 		t.Fatalf("Read: %v", err)
 	}
 	if got, wanted := slices.Sorted(maps.Keys(rows)), slices.Sorted(maps.Keys(want)); !slices.Equal(got, wanted) {
-		t.Errorf("Read answered the %d rows %v, want the %d of the keys, the trees and the open rows %v", len(got), got, len(wanted), wanted)
+		t.Errorf("Read answered %d rows, want the %d of the keys, the trees and the open rows; it answered %v and missed %v",
+			len(got), len(wanted), absent(got, want), absent(wanted, rows))
+	}
+	bare, err := Read(ctx, pool, "FC", nil, nil, at)
+	if err != nil {
+		t.Fatalf("Read with no card: %v", err)
+	}
+	if got, wanted := slices.Sorted(maps.Keys(bare)), slices.Sorted(maps.Keys(open)); !slices.Equal(got, wanted) {
+		t.Errorf("Read with no card answered %d rows, want the %d open rows; it answered %v and missed %v",
+			len(got), len(wanted), absent(got, open), absent(wanted, bare))
 	}
 
 	statement := boardSelect + shownWhere
+	keyedBy := []struct{ index, cond string }{{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}, {"issue_facts_closed", "closed_at IS NULL"}}
 	judge := func(how string, plan json.RawMessage) []explaintest.IndexScan {
 		t.Helper()
 		if explaintest.SeqScansRelation(t, plan, "issue_facts") {
 			t.Errorf("%s, the board's read scans issue_facts sequentially:\n%s", how, plan)
 		}
+		if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
+			t.Errorf("%s, the board's read reads %v under no index condition:\n%s", how, unkeyed, plan)
+		}
 		scans := explaintest.IndexScans(t, plan)
-		for _, index := range []struct{ name, column string }{{"issue_facts_pkey", "issue_key"}, {"issue_facts_root", "root_key"}, {"issue_facts_closed", "closed_at IS NULL"}} {
-			if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool {
-				return scan.Index == index.name && strings.Contains(scan.Cond, index.column)
+		for _, scan := range scans {
+			if !slices.ContainsFunc(keyedBy, func(keyed struct{ index, cond string }) bool {
+				return scan.Index == keyed.index && strings.Contains(scan.Cond, keyed.cond)
 			}) {
-				t.Errorf("%s, the board's read reads %v; want %s keyed by %s:\n%s", how, scans, index.name, index.column, plan)
+				t.Errorf("%s, the board's read reads %s under %q; want each arm through its own index under its own condition, %v:\n%s", how, scan, scan.Cond, keyedBy, plan)
+			}
+		}
+		for _, keyed := range keyedBy {
+			if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == keyed.index }) {
+				t.Errorf("%s, the board's read reads %v; want %s under %s:\n%s", how, scans, keyed.index, keyed.cond, plan)
 			}
 		}
 		return scans
 	}
-	var raw []byte
-	if err := pool.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", keys, roots).Scan(&raw); err != nil {
-		t.Fatalf("explain the board's read: %v", err)
+	var withCards, noCard, generic json.RawMessage
+	var lines []string
+	if err := readByIndex(ctx, pool, func(tx pgx.Tx) error {
+		var raw []byte
+		if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", keys, roots).Scan(&raw); err != nil {
+			return fmt.Errorf("explain the board's read: %w", err)
+		}
+		withCards = explaintest.OnePlan(t, raw)
+		if err := tx.QueryRow(ctx, "explain (analyze, format json) "+statement, "FC", []string{}, []string{}).Scan(&raw); err != nil {
+			return fmt.Errorf("explain the board's read with no card: %w", err)
+		}
+		noCard = explaintest.OnePlan(t, raw)
+		text, err := tx.Query(ctx, "explain (analyze, buffers) "+statement, "FC", []string{}, []string{})
+		if err != nil {
+			return fmt.Errorf("explain the board's read as text: %w", err)
+		}
+		if lines, err = pgx.CollectRows(text, pgx.RowTo[string]); err != nil {
+			return fmt.Errorf("explain the board's read as text: %w", err)
+		}
+		// The generic plan, as explaintest.GenericPlan takes it, but in this transaction: the mode is
+		// forced, since a test never executes the statement often enough to reach it.
+		for _, step := range []string{"set local plan_cache_mode = force_generic_plan", "prepare board_facts (text, text[], text[]) as " + statement} {
+			if _, err := tx.Exec(ctx, step); err != nil {
+				return fmt.Errorf("%s: %w", step, err)
+			}
+		}
+		if err := tx.QueryRow(ctx, "explain (format json) execute board_facts('FC', array['FC-1'], array['FC-1'])").Scan(&raw); err != nil {
+			return fmt.Errorf("explain the board's read's generic plan: %w", err)
+		}
+		generic = explaintest.OnePlan(t, raw)
+		_, err = tx.Exec(ctx, "deallocate board_facts")
+		return err
+	}); err != nil {
+		t.Fatalf("take the board's plans as Read runs it: %v", err)
 	}
-	custom := judge("with its values", explaintest.OnePlan(t, raw))
-	text, err := pool.Query(ctx, "explain (analyze, buffers) "+statement, "FC", keys, roots)
-	if err != nil {
-		t.Fatalf("explain the board's read as text: %v", err)
+	cards := judge("with the board's values", withCards)
+	none := judge("with no card", noCard)
+	cached := judge("under the generic plan", generic)
+	t.Logf("of 14,000 rows of five projects, 4,000 of FC's 12,000 open, Read answered %d of FC for %d keys and %d trees and %d for no card, through %v (with the cards), %v (with none) and %v (generic); the plan with no card:\n%s",
+		len(rows), len(keys), len(roots), len(bare), cards, none, cached, strings.Join(lines, "\n"))
+}
+
+// absent is the keys of keys that set does not hold, at most ten of them, for a failure to name.
+func absent[V any](keys []string, set map[string]V) []string {
+	var missing []string
+	for _, key := range keys {
+		if _, held := set[key]; !held && len(missing) < 10 {
+			missing = append(missing, key)
+		}
 	}
-	lines, err := pgx.CollectRows(text, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("explain the board's read as text: %v", err)
-	}
-	connection, err := pool.Acquire(ctx)
-	if err != nil {
-		t.Fatalf("acquire a connection for the plan: %v", err)
-	}
-	defer connection.Release()
-	generic := judge("under the generic plan", explaintest.GenericPlan(t, ctx, connection, "board_facts", statement,
-		[]string{"text", "text[]", "text[]"}, []string{"'FC'", "array['FC-1']", "array['FC-1']"}, "set local enable_seqscan = off"))
-	t.Logf("of 20,000 rows of five projects, Read answered %d of FC for %d keys and %d trees, through %v (with its values) and %v (generic); the plan with its values:\n%s",
-		len(rows), len(keys), len(roots), custom, generic, strings.Join(lines, "\n"))
+	return missing
 }
 
 // TestTheStoredFilingsReadKeepsItsIndexesUnderAGenericPlan: the read of a project's stored filings

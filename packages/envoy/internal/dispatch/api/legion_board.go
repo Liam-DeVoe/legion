@@ -360,7 +360,9 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	// The age of the consumer's oldest cursor, which says how recently it read its feeds, depends
 	// on nothing before it, so the two run side by side (store.ReadSideBySide), as the delivery
 	// population's independent reads do (delivery.go). The snapshot's transaction is the chain's
-	// own, and it commits before the chain reads anything else.
+	// own, and it commits before the chain reads anything else; the facts read at the chain's end
+	// opens a read-only transaction of its own (legionfacts.Read), once every earlier read of the
+	// chain has let its connection go.
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			if err := population.readSampled(ctx, pool); err != nil {

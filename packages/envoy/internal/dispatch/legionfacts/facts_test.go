@@ -333,8 +333,8 @@ func readWhole(ctx context.Context, q Querier, project string) (map[string]Row, 
 // readStored is the board's Read of every stored row of the project, each as of at: Read given
 // every key the project holds a row of, so a check of what a pass stored reads it through the
 // board's own statement and columns, whichever of the rows a board would show.
-func readStored(ctx context.Context, q Querier, project string, at time.Time) (map[string]Row, error) {
-	result, err := q.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
+func readStored(ctx context.Context, pool *store.Pool, project string, at time.Time) (map[string]Row, error) {
+	result, err := pool.Query(ctx, `select issue_key from issue_facts where project_key = $1`, project)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +342,7 @@ func readStored(ctx context.Context, q Querier, project string, at time.Time) (m
 	if err != nil {
 		return nil, err
 	}
-	return Read(ctx, q, project, keys, nil, at)
+	return Read(ctx, pool, project, keys, nil, at)
 }
 
 // sameRow is whether two rows hold the same facts, each field compared as its own type: the times

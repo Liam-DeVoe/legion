@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // ProjectWrite is one project's computed facts and the set the pass that computed them stated:
@@ -431,11 +433,23 @@ func storedMap[V any](values map[string]V) map[string]V {
 // project's Legion work ever covered. The read is three index reads, by key, by root and of the
 // open rows (shownWhere), never the project's rows filtered after they are read.
 //
+// The statement runs in a read-only transaction of its own with sequential scans off
+// (readByIndex), because the planner left to itself reads the open rows by scanning the whole
+// table once they are a large share of it. At INFRA's size (13,105 rows, 2,621 of them open, on
+// 2,880 pages, as evalfixture loads it), the plan with the values of a board that names no card
+// was a Seq Scan of issue_facts that read all 2,880 pages and dropped the 10,484 closed rows by its
+// filter, priced at 3,043.81 against 3,043.72 for the open rows' index range, a tie the planner may
+// break either way. With 4,272 of 13,103 rows open, on the build farm, it was a Seq Scan too, and a
+// partial index of the open rows did not move that plan (dispatch://INFRA-2916, k23, 2026-11-17).
+// With the setting, every arm reads through its index under the custom and the generic plan
+// alike, whatever the estimate: the open arm read the 2,621 open rows from 1,663 heap pages in 4.5
+// to 5.9 ms, where the scan took 6.3 to 10.0 ms.
+//
 // It is the board's read of the facts: rows, and no computation but the close of each open part
 // at the read's own clock, and of each row the columns the board shows (boardColumns), every other
 // field of the Row it answers left at its zero value (narrow). The evals read every column of the
 // rows of a window's closed issues instead (ReadClosedIn).
-func Read(ctx context.Context, q Querier, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
+func Read(ctx context.Context, pool *store.Pool, project string, keys, roots []string, at time.Time) (map[string]Row, error) {
 	// A nil list goes to Postgres as null, which `= any` answers null for, and `not (null)` would
 	// leave out every row of the trees and every open row; an empty array answers false.
 	if keys == nil {
@@ -444,8 +458,11 @@ func Read(ctx context.Context, q Querier, project string, keys, roots []string, 
 	if roots == nil {
 		roots = []string{}
 	}
-	read, err := readRows(ctx, q, project, false, shownWhere, project, keys, roots)
-	if err != nil {
+	var read []Row
+	if err := readByIndex(ctx, pool, func(tx pgx.Tx) (err error) {
+		read, err = readRows(ctx, tx, project, false, shownWhere, project, keys, roots)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	rows := make(map[string]Row, len(read))
@@ -455,14 +472,44 @@ func Read(ctx context.Context, q Querier, project string, keys, roots []string, 
 	return rows, nil
 }
 
+// readByIndex runs read in a read-only transaction of its own on pool whose first statement turns
+// the planner's sequential scans off for that transaction alone (`set local`), so nothing of it
+// is left on the pooled connection once the transaction ends. It is Read's transaction, and the
+// one its plan test takes the board's plans in, so the plans the test judges are the ones Read
+// runs. It takes one connection and holds no lock another read waits on, so it is one of the reads
+// the board runs side by side (store.ReadSideBySide), as the board's snapshot read is.
+func readByIndex(ctx context.Context, pool *store.Pool, read func(tx pgx.Tx) error) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("begin the board's read of the Legion facts: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
+		return fmt.Errorf("turn sequential scans off for the board's read of the Legion facts: %w", err)
+	}
+	if err := read(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit the board's read of the Legion facts: %w", err)
+	}
+	return nil
+}
+
 // shownWhere is Read's clause, which completes boardSelect, as three reads of the project's rows:
 // the rows of the keys given, each a probe of the primary key (project_key, issue_key); the rows
 // of the trees given, each root a range of issue_facts_root (project_key, root_key), migration
 // 20261117100026; and the open rows, the range of issue_facts_closed (project_key, closed_at
 // desc), migration 20261117100009, where closed_at is null, which a btree answers as an index
-// condition. Each later read leaves out what an earlier one answered rather than the three being
-// merged, so no row is answered twice and no answered row is compared with another; a card's row
-// the tree's range reaches again is dropped by its filter, a cost bounded by the board's cards.
+// condition: the plan's condition of that arm names closed_at IS NULL beside the project, so the
+// range holds the project's open rows alone and never the project's whole primary-key range. The
+// planner keeps that arm on the index only because Read runs the statement with sequential scans
+// off (readByIndex): priced by itself, a scan of the whole table ties with the range once the open
+// rows are a large share of the table, and at INFRA's size the plan with the values of a board of
+// no card was that scan. Each later read leaves out what an earlier one answered rather than the
+// three being merged, so no row is answered twice and no answered row is compared with another; a
+// card's row the tree's range reaches again is dropped by its filter, a cost bounded by the board's
+// cards.
 const shownWhere = `where project_key = $1 and issue_key = any($2)
 	union all ` + boardSelect + `where project_key = $1 and root_key = any($3) and not (issue_key = any($2))
 	union all ` + boardSelect + `where project_key = $1 and closed_at is null
