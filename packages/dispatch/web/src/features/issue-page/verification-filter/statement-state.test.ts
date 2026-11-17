@@ -523,19 +523,141 @@ test("a check reads one state on its row, in the fold, in the filter row and in 
 // recorded against words the check no longer has stands for nothing, as `checkState` and the
 // server's `standingCommit` read it, so it is no fail at the commit the page names either: the
 // check is Out of date and its statement Unknown, not Not met on evidence about words the check
-// no longer has.
+// no longer has. Such a result names no commit either, so another check's result names it here.
 test("a fail at the commit the page names whose check's words moved reads Out of date", () => {
   const moved = check({
     block_id: "c-one",
     pass_stands: { answer: "no" },
     results: [result({ check_words_moved: true, failed: 1, id: "fail-moved", verdict: "fail" })],
   });
-  const read = reading([statementNode("r1", "The page draws it.", [checkNode(moved)])], [moved]);
+  const blocks = [moved, passing("c-two")];
+  const statement = statementNode("r1", "The page draws it.", blocks.map(checkNode));
+  const read = reading([statement], blocks);
 
   expect(read.commit).toBe(COMMIT);
   expect(read.statements[0]?.checks[0]?.state).toBe("older");
   expect(NODE_STATE_WORDS.check.older).toBe("Out of date");
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
+});
+
+// The server's `standingCommit` gives a result recorded against words its check no longer has
+// no standing, and the page's own reading says it stands for nothing. The page still named its
+// commit where it was the newest result, and read every result over the check's words now
+// against a commit that only evidence about other words had run at.
+test("a result over words its check no longer has names no commit, however new it is", () => {
+  const reworded = check({
+    block_id: "c-one",
+    results: [
+      result({
+        check_words_moved: true,
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-15T09:00:00Z",
+        id: "pass-moved",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const movedOnly = check({
+    block_id: "c-one",
+    results: [result({ check_words_moved: true, id: "pass-moved" })],
+  });
+
+  expect(namedCommit([reworded])).toBe(COMMIT);
+  expect(namedCommit([movedOnly])).toBeUndefined();
+});
+
+// A fail recorded against words the check no longer has is no result at the commit the page
+// names, so an older pass over the check's words now at that commit is what the check reads.
+test("a fail over moved words at the named commit does not read Failed over a pass there", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({
+        check_words_moved: true,
+        created_at: "2026-11-15T09:00:00Z",
+        failed: 1,
+        id: "fail-moved",
+        verdict: "fail",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atNamedCommit: true,
+    standsOn: "pass-current",
+    state: "passed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
+});
+
+// The other side of the same rule: the result at the named commit was the newest that stands
+// there, whatever words it was recorded against, so a newer pass over words the check no longer
+// has hid a fail over its words now at that commit, and the check read Out of date where it
+// failed. The newest result there over the check's words now is the fail.
+test("a newer result over moved words at the named commit hides no fail over the words now", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "no" },
+    results: [
+      result({ check_words_moved: true, created_at: "2026-11-15T09:00:00Z", id: "pass-moved" }),
+      result({
+        created_at: "2026-11-14T09:00:00Z",
+        failed: 1,
+        id: "fail-current",
+        verdict: "fail",
+      }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atNamedCommit: true,
+    standsOn: "fail-current",
+    state: "failed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["not_met"]);
+});
+
+// A passed check stands on its newest pass, which the body draws as the evidence, and the page
+// took a newer pass over words the check no longer has for it: one at another commit read the
+// check Out of date, although a pass over its words now stands at the commit the page names.
+test("a passed check stands on its newest pass over the words it has now", () => {
+  const reworded = check({
+    block_id: "c-one",
+    pass_stands: { answer: "yes" },
+    results: [
+      result({
+        check_words_moved: true,
+        commit_sha: OTHER_COMMIT,
+        created_at: "2026-11-15T09:00:00Z",
+        id: "pass-moved",
+      }),
+      result({ created_at: "2026-11-14T09:00:00Z", id: "pass-current" }),
+    ],
+  });
+  const read = reading(
+    [statementNode("r1", "The page draws it.", [checkNode(reworded)])],
+    [reworded]
+  );
+
+  expect(read.commit).toBe(COMMIT);
+  expect(read.statements[0]?.checks[0]).toMatchObject({
+    atNamedCommit: true,
+    standsOn: "pass-current",
+    state: "passed",
+  });
+  expect(read.statements.map((held) => held.state)).toEqual(["met"]);
 });
 
 // Ruling 6: the body draws the newest result of each check and folds the rest, so the model

@@ -23,7 +23,6 @@ import {
   shortForm,
 } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { wordsOf } from "../refs/tree-fragment";
 import { agentsOnlyIds } from "./agents-only";
 import { checkFacts, resultFacts } from "./check-facts";
 import {
@@ -193,8 +192,8 @@ export interface TreeContext {
  * for a node draws, from the server's reading of the node's words: `buildIssueTree` and
  * `targetNames` give R1's rule over the words of the reading's first block (`chipLine`, which
  * is `drawnLine(firstLineOf(…))` of what `lineWords` reads), which this module cannot import,
- * since `issue-tree.ts` imports it, and a caller that reads no chip's name gives none, which
- * names a block by the whole reading's words (`wordsOf`).
+ * since `issue-tree.ts` imports it. Every caller hands one in, so no chip names a block by
+ * anything but the line its caller chose: a default would name it by its whole reading.
  *
  * A chip names its target by the words a reader reads it by, and never by markup:
  *
@@ -220,7 +219,7 @@ export interface TreeContext {
  */
 export function treeContext(
   reads: IssueTreeReads,
-  lineOf: (reading: DisplayTree) => string = wordsOf
+  lineOf: (reading: DisplayTree) => string
 ): TreeContext {
   const key = reads.issue.key;
   const artifacts = reads.issue.artifacts ?? [];
@@ -1052,8 +1051,10 @@ function addTurns(
  * so a decision that names no question of this issue sits under the issue, as any node whose
  * spine parent is absent does, and never inside `decisions.md`, which is no node at all. It
  * carries no gap for that: a lack every such decision shares tells none of them apart (R10). It
- * names every spec block it links as a chip, since a link places nothing (`shaped` is
- * dispatch://INFRA-1150's, `packages/contracts/src/dispatch-api.ts:2519-2534`).
+ * names every spec block it links as a chip, since a link places nothing. The read carries no
+ * `shaped` edge (dispatch://INFRA-1150's, `packages/contracts/src/dispatch-api.ts:2519-2534`), so
+ * today a decision's links stand for it: they are its chips here, and what `addRequirements`
+ * reads a `shaped_disagreement` from.
  */
 function addDecisions(
   drafts: Map<string, Draft>,
@@ -1137,22 +1138,32 @@ function decisionState(decision: Decision, changed: boolean): DecisionState | un
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05) - so each
  * sits under the issue, beside the two counts the coverage read holds for it and the gaps that
  * read already carries. An absent `from` is no gap of its own: every requirement lacks one, so it
- * tells none of them apart (R10). Where a decision claims to have shaped a requirement whose own
- * origin names another node, the requirement is placed by its `from` and the disagreement is
- * drawn as a gap, and a decision is never a requirement's parent (R4): a `from` that names one
- * places nothing, and the requirement sits under the issue.
+ * tells none of them apart (R10). A decision is never a requirement's parent (R4): a `from` that
+ * names one places nothing, and the requirement sits under the issue.
+ *
+ * The decisions read carries no `shaped` edge, so today a decision's links stand for it: they
+ * are the decision's chips (`addDecisions`) and what the disagreement is read from. Where a
+ * requirement has an origin and a decision that is not that origin links to it, the two edges
+ * disagree: the requirement is placed by its `from` and the disagreement is drawn as a gap. The
+ * decision its `from` names linking to it is the two edges agreeing, which draws none.
  */
 function addRequirements(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
   context: TreeContext
 ): void {
-  const shapedBy = new Set<string>();
+  // The node of every decision whose links name each requirement, by the requirement's node id.
+  // A decision the tree addresses no node for is one `addDecisions` draws nothing for either.
+  const shapers = new Map<string, Set<string>>();
   for (const decision of reads.decisions?.decisions ?? []) {
+    const shaper = context.nodeIdOf(decision.ref);
+    if (shaper === undefined) continue;
     for (const link of decision.links ?? []) {
       const shaped = link.to.ref === undefined ? undefined : context.nodeIdOf(link.to.ref);
       if (shaped === undefined) continue;
-      shapedBy.add(shaped);
+      const held = shapers.get(shaped);
+      if (held === undefined) shapers.set(shaped, new Set([shaper]));
+      else held.add(shaper);
     }
   }
   // The spec, which a statement's words are a block of and its references resolve against.
@@ -1166,7 +1177,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
-    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.has(id));
+    draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapers.get(id));
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
@@ -1181,18 +1192,21 @@ function addRequirements(
   });
 }
 
-/** The gaps on one requirement: the one the coverage read carries that the page draws, and a
- *  decision claiming to have shaped a requirement that came from elsewhere. */
+/** The gaps on one requirement: the one the coverage read carries that the page draws, and
+ *  `shaped_disagreement` where the requirement has an origin and a decision that links to it
+ *  (`shapers`, each by its node id) is not that origin. */
 function requirementGaps(
   coverage: readonly string[],
   origin: string | undefined,
-  shaped: boolean
+  shapers: ReadonlySet<string> | undefined
 ): GapKind[] {
   const gaps = coverage.flatMap((line): GapKind[] => {
     const kind = coverageGapKind(line);
     return kind === undefined ? [] : [kind];
   });
-  if (origin !== undefined && shaped) gaps.push("shaped_disagreement");
+  if (origin !== undefined && [...(shapers ?? [])].some((shaper) => shaper !== origin)) {
+    gaps.push("shaped_disagreement");
+  }
   return gaps;
 }
 
@@ -1265,7 +1279,9 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
  * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
  * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
- * whatever commit the withdrawn pass ran at.
+ * whatever commit the withdrawn pass ran at. The newest is read by the time each result was
+ * recorded (`newestFirst`) and never by the order the read sent them in, as `checkStanding` and
+ * the Verification filter's body read it, so the three name one result whatever that order is.
  *
  * It is how a check stands against the basis the check itself carries, and the page draws it as
  * `checkStanding` turns it over at the one commit the page names for the issue's results, so
@@ -1274,13 +1290,11 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * waits for the states the page draws rather than for a copy of this rule.
  */
 export function checkState(check: CheckStateReads): CheckState {
-  const results = check.results ?? [];
-  if (results.length === 0) return "no-result";
+  if ((check.results ?? []).length === 0) return "no-result";
   if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
   if (check.pass_stands.answer === "unknown") return "unmarked";
-  // The results arrive newest first, so this is the newest one a retraction left standing.
-  const standing = results.find((result) => result.retracted === undefined);
+  const standing = newestFirst(standingResults(check))[0];
   if (standing === undefined) return "retracted";
   if (standing.check_words_moved === true) return "older";
   return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
@@ -1296,9 +1310,11 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
 
 /**
  * The one commit the page names for the issue's results: the commit of the newest result
- * recorded against any check of the issue that still stands and names one. A result nobody
- * withdrew is the evidence the page reads, so a withdrawn result names no commit here, and a
- * result recorded with no commit at all names none either.
+ * recorded against any check of the issue that still stands, against the words its check has
+ * now, and names one. A result nobody withdrew is the evidence the page reads, so a withdrawn
+ * result names no commit here; nor does one recorded against words its check no longer has
+ * (`check_words_moved`), which the server's `standingCommit` (`results_comparison.go`) gives no
+ * standing; and a result recorded with no commit at all names none either.
  *
  * It is the Verification filter's commit (R17, `verification-filter/statement-state.ts`, which
  * exports it), read here because the tree reads every check's state at it (`checkStanding`),
@@ -1306,7 +1322,9 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
  */
 export function namedCommit(checks: readonly CheckBlock[]): string | undefined {
   const named = checks.flatMap((check) =>
-    standingResults(check).filter((result) => result.commit_sha !== "")
+    standingResults(check).filter(
+      (result) => result.commit_sha !== "" && result.check_words_moved !== true
+    )
   );
   return newestFirst(named)[0]?.commit_sha;
 }
@@ -1316,9 +1334,9 @@ export interface CheckStanding {
   /** How it stands, in the states `NODE_STATE_WORDS.check` names. */
   readonly state: CheckState;
   /** The result that state stands on: the fail at the named commit; else, for a check that
-   *  passed, the newest pass that still stands, since a pass recorded before a later fail is
-   *  what the server's `pass_stands` answered over; and for every other check the newest result
-   *  that stands at all. Absent where none stands. */
+   *  passed, the newest pass that still stands against the check's words now, since a pass
+   *  recorded before a later fail is what the server's `pass_stands` answered over; and for every
+   *  other check the newest result that stands at all. Absent where none stands. */
   readonly stands?: CheckResult;
 }
 
@@ -1334,31 +1352,36 @@ export interface CheckStanding {
  * against the one commit the page names and `checkState` compares a result with the basis its
  * own check carries:
  *
- * - **A fail at the named commit is a fail.** Where the newest result that stands and ran at
- *   that commit failed, the check reads Failed there, whatever older pass the server still
- *   counts as standing (`pass_stands` says yes for any pass at a basis, later fails or not), so
- *   its statement is Not met and not Unknown behind an "Out of date". A fail recorded against
- *   words the check no longer has turns nothing over: it stands for nothing, as `checkState`
- *   and the server's `standingCommit` (`results_comparison.go`) read it, since it is evidence
- *   about a check that no longer reads that way.
+ * - **A fail at the named commit is a fail.** Where the newest result that stands, ran at that
+ *   commit and was recorded against the check's words now failed, the check reads Failed there,
+ *   whatever older pass the server still counts as standing (`pass_stands` says yes for any pass
+ *   at a basis, later fails or not), so its statement is Not met and not Unknown behind an "Out
+ *   of date". A result recorded against words the check no longer has is no result at that
+ *   commit: it stands for nothing, as `checkState` and the server's `standingCommit`
+ *   (`results_comparison.go`) read it, since it is evidence about a check that no longer reads
+ *   that way. So a fail of it turns nothing over, a newer one of it hides no fail beneath it, and
+ *   no pass of it is what a passed check stands on.
  * - **A pass or a fail at another commit is out of date.** Otherwise a pass or a fail whose
  *   result was recorded against another commit reads "Out of date", because that result no
  *   longer speaks for the work the rest of the page is read against, and R17 says such a result
  *   makes its statement Unknown. A result that names no commit at all turns nothing over: the
  *   page has no ground to call it older, and it is no evidence at the named commit either.
  *
- * Where no commit is named - no result that stands names one - it is `checkState`'s answer.
+ * Where no commit is named - no result that stands against the check's words now names one -
+ * it is `checkState`'s answer.
  */
 export function checkStanding(check: CheckStateReads, commit: string | undefined): CheckStanding {
   const standing = newestFirst(standingResults(check));
+  // The results recorded against the check's words now, which alone speak at the named commit.
+  const current = standing.filter((result) => result.check_words_moved !== true);
   const here =
-    commit === undefined ? undefined : standing.find((result) => result.commit_sha === commit);
-  const failedHere = here?.verdict === "fail" && here.check_words_moved !== true;
+    commit === undefined ? undefined : current.find((result) => result.commit_sha === commit);
+  const failedHere = here?.verdict === "fail";
   const state = failedHere ? "failed" : checkState(check);
   const stands = failedHere
     ? here
     : state === "passed"
-      ? standing.find(({ verdict }) => verdict === "pass")
+      ? current.find(({ verdict }) => verdict === "pass")
       : standing[0];
   const elsewhere =
     commit !== undefined &&

@@ -38,7 +38,13 @@ import {
   targetNames,
 } from "./issue-tree";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
-import { addressesAsShortForms, blockNodeId, plainWords, plainWordsRaw } from "./tree-drafts";
+import {
+  addressesAsShortForms,
+  blockNodeId,
+  checkState,
+  plainWords,
+  plainWordsRaw,
+} from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
 
 /**
@@ -511,6 +517,38 @@ test("a `from` and a `shaped` that disagree place by `from` and draw the gap", (
   expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/spec#b-r-shaped`,
   ]);
+});
+
+// R4: the gap is the two edges disagreeing, and today a decision's links stand for its `shaped`
+// edge. The page drew the gap wherever a requirement had a `from` and any decision linked to it,
+// so a requirement that came from a decision and is linked by that decision drew "Sources
+// disagree" over two edges that agree. It draws the gap only where another decision links to it.
+test("a requirement linked by the decision its `from` names draws no gap; another decision does", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const treeOf = (shapers: readonly Decision[]): TreeNode =>
+    buildIssueTree({
+      coverage: coverage([requirement("r1", "The requirement the first decision made.")]),
+      decisions: decisions(shapers),
+      documents: [
+        {
+          artifactId: spec.id,
+          blocks: [
+            block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
+          ],
+        },
+        { artifactId: made.id, blocks: [block("d1", "decision"), block("d2", "decision")] },
+      ],
+      issue: issueDetails([spec, made]),
+    });
+  const origin = decision("d1", "Makes the requirement.", ["r1"]);
+  const statement = blockNodeId(SPEC, "r1");
+
+  expect(nodeOf(treeOf([origin]), statement)?.gaps).toEqual([]);
+  const other = decision("d2", "Says it shaped the requirement too.", ["r1"]);
+  expect(nodeOf(treeOf([origin, other]), statement)?.gaps).toEqual(["shaped_disagreement"]);
+  // A decision is never a requirement's parent: the `from` naming one places nothing.
+  expect(placementsOf(treeOf([origin]), statement).map((one) => one.parent)).toEqual([KEY]);
 });
 
 // R4: every edge that is not the spine is a chip naming its target; a target nothing answers to
@@ -1115,14 +1153,18 @@ test("a stored text read to plain words keeps the author's private-use character
 // so a cut after it draws no ellipsis - "Thread 1 opens here.…" reads as four dots - and a cut
 // that ended inside a sentence draws one.
 test("a first line draws its ellipsis only where the cut ended inside a sentence", () => {
-  expect(drawnLine({ cut: true, line: "Thread 1 opens here." })).toBe("Thread 1 opens here.");
+  expect(drawnLine({ cut: true, line: "Thread 1 opens here.", sentence: true })).toBe(
+    "Thread 1 opens here."
+  );
   expect(drawnLine(firstLineOf("Thread 1 opens here. Thread 2 follows."))).toBe(
     "Thread 1 opens here."
   );
   const inside = firstLineOf(`${"word ".repeat(30)}and the end.`);
   expect(inside.cut).toBe(true);
   expect(drawnLine(inside)).toBe(`${inside.line}…`);
-  expect(drawnLine({ cut: false, line: "No mark at its end" })).toBe("No mark at its end");
+  expect(drawnLine({ cut: false, line: "No mark at its end", sentence: false })).toBe(
+    "No mark at its end"
+  );
   // A token cut hard at the limit whose last kept character is a dot ends no sentence, so its
   // line draws the ellipsis all the same.
   expect(drawnLine(firstLineOf(`${"x".repeat(99)}.yyyy more words here`)).endsWith("…")).toBe(true);
@@ -1136,7 +1178,7 @@ test("a first line cut after the author's own ellipsis draws no second one", () 
   const trailing = firstLineOf(`${words} and then more words follow here.`);
   expect(trailing).toEqual({ cut: true, line: words, sentence: false });
   expect(drawnLine(trailing)).toBe(words);
-  expect(drawnLine({ cut: true, line: "Hold on, wait…" })).toBe("Hold on, wait…");
+  expect(drawnLine({ cut: true, line: "Hold on, wait…", sentence: false })).toBe("Hold on, wait…");
   const plain = firstLineOf(`${"word ".repeat(30)}and the end.`);
   expect(plain.sentence).toBe(false);
   expect(drawnLine(plain)).toBe(`${plain.line}…`);
@@ -2608,6 +2650,33 @@ test("a retracted pass over an older fail that stands is drawn as failed", () =>
       recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
     ])
   ).toBe("failed");
+});
+
+// The results read answers newest first, and `checkState` took the first result a retraction
+// left standing as the newest, while `checkStanding` and the Verification filter's body sort them
+// by the time each was recorded. Sent oldest first, a fail at the compared commit under a newer
+// pass at another commit read Failed, where read newest first it is Out of date. Every reading
+// sorts by time now, so the order the read sends changes no state.
+test("a check reads one state whatever order the read sends its results in", () => {
+  const failed = recorded("result-failed", "Fix the fault and it passes.", {
+    created_at: "2026-11-05T00:00:00Z",
+    failed: 1,
+    verdict: "fail",
+  });
+  const elsewhere = recorded("result-elsewhere", "Keep the pass and it stands.", {
+    commit_sha: "d".repeat(40),
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-06T00:00:00Z",
+  });
+  for (const [order, results] of [
+    ["newest first", [elsewhere, failed]],
+    ["oldest first", [failed, elsewhere]],
+  ] as const) {
+    expect(checkState({ pass_stands: { answer: "no" }, results: [...results] }), order).toBe(
+      "older"
+    );
+    expect(stateOfOneCheck({ pass_stands: { answer: "no" } }, results), order).toBe("older");
+  }
 });
 
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds

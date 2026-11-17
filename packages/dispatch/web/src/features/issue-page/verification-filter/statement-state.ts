@@ -13,11 +13,13 @@ import { checkStanding, namedCommit, newestFirst } from "../tree-drafts";
  *
  * - **One commit for the issue's results.** The page names it once, where the results are read,
  *   rather than on every result (`VerificationFilterBody.tsx`). It is the commit of the newest
- *   result recorded against any check of the issue that still stands: a withdrawn result is no
- *   evidence, as the server counts it (`results_comparison.go`'s `passStandsOf` skips it, and
- *   `tree-drafts.ts`'s `checkState` reads the newest result a retraction left standing), so a
- *   withdrawal may not move the commit every other result is read against and leave a page of
- *   results that each read "Out of date".
+ *   result recorded against any check of the issue that still stands, against the words its
+ *   check has now: a withdrawn result is no evidence, as the server counts it
+ *   (`results_comparison.go`'s `passStandsOf` skips it, and `tree-drafts.ts`'s `checkState`
+ *   reads the newest result a retraction left standing), so a withdrawal may not move the commit
+ *   every other result is read against and leave a page of results that each read "Out of date";
+ *   and a result recorded against words its check no longer has stands for nothing either (the
+ *   server's `standingCommit`), so it names no commit.
  * - **Met, Not met, Unknown.** A statement reads Met where every check of it passed at that
  *   commit, Not met where one failed there, and Unknown otherwise - no check at all, a result
  *   recorded against another commit, a withdrawn one, or a check Dispatch could not read. The
@@ -101,8 +103,9 @@ export function shortCommit(sha: string): string {
 }
 
 /** The one commit the page names for the issue's results (R17): the commit of the newest result
- *  that still stands and names one. The rule is `tree-drafts.ts`'s, beside `checkStanding`,
- *  since the tree reads every check's state at this commit too and cannot import this module. */
+ *  that still stands, against the words its check has now, and names one. The rule is
+ *  `tree-drafts.ts`'s, beside `checkStanding`, since the tree reads every check's state at this
+ *  commit too and cannot import this module. */
 export { namedCommit };
 
 /**
