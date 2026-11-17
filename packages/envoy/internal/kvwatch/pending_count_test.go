@@ -94,6 +94,13 @@ func TestAReadHoldsAWindowKeyOnlyAnotherWriterWrote(t *testing.T) {
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	_, other := bucket(t, uri)
+	readHoldsAWindowKeyOnlyAnotherWriterWrote(t, kv, other)
+}
+
+// readHoldsAWindowKeyOnlyAnotherWriterWrote runs TestAReadHoldsAWindowKeyOnlyAnotherWriterWrote's
+// order on the test bucket: kv is the handle the watcher reads, and other a handle on the same
+// bucket through another connection, which another listener writes through.
+func readHoldsAWindowKeyOnlyAnotherWriterWrote(t *testing.T, kv, other bus.KeyValue) {
 	paused := newPausedWatch(t, kv.Streams(), false)
 	barrier := &replacingBarrier{JetStream: kv.Streams(), other: other, replace: []string{"k"}, written: map[string]uint64{}}
 	cache := newWindowCache(1)
