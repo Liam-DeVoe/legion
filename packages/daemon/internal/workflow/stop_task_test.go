@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -35,7 +36,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
 // stopped at its merge closes the issue, which a hold from merging of an issue with no plan rows
-// does not. An issue with no plan rows has no task to stop (R20), and a stop in a lingering tree
+// does not. A stopped task whose issue then leaves the workflow is left, and keeps why it was
+// stopped. An issue with no plan rows has no task to stop (R20), and a stop in a lingering tree
 // changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 	t.Run("at testing", func(t *testing.T) {
@@ -252,6 +254,47 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 		if after := standingOf(t, pool, engine, root.Key, true); after.outbox != before.outbox || after.issue.Phase != before.issue.Phase || !reflect.DeepEqual(after.task, before.task) {
 			t.Fatalf("the refused stop changed %s:\n before %+v\n after  %+v", root.Key, before, after)
+		}
+	})
+
+	t.Run("a stopped task whose issue leaves the workflow is left and keeps why it was stopped", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester")
+		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
+		}
+		leave := func(pool *pgxpool.Pool, key string) {
+			t.Helper()
+			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				issue, err := engine.store.Issue(ctx, tx, key)
+				if err != nil {
+					return err
+				}
+				return engine.leave(ctx, tx, *issue, "backlog")
+			})
+		}
+		leave(pool, root.Key)
+		if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskLeft || task.StoppedReason != stopsBy ||
+			task.Place != (record.TaskPlace{Kind: record.PlaceStep, Position: 1}) {
+			t.Fatalf("task a after its issue left = %s (%q) at %+v, want left at step 1 with the reason %q", task.State, task.StoppedReason, task.Place, stopsBy)
+		}
+
+		// The R20 twin: an issue with no plan rows leaves as today, and has no task rows after it.
+		unplanned := migratedPool(t)
+		bare := stepRoot(t, unplanned, phase.Implementing)
+		leave(unplanned, bare.Key)
+		applyInTx(t, unplanned, func(ctx context.Context, tx pgx.Tx) error {
+			stored, err := engine.store.Plan(ctx, tx, bare.Key, bare.Generation)
+			if err == nil && stored != nil {
+				t.Errorf("the issue with no plan rows has the plan %+v after it left, want none", stored)
+			}
+			return err
+		})
+		if issue := issueOf(t, unplanned, engine, bare.Key); issue.Phase != phase.Done || issue.LingerUntil == nil {
+			t.Fatalf("%s with no plan rows stands in %s (linger %v) after it left, want done and lingering, as today", bare.Key, issue.Phase, issue.LingerUntil)
 		}
 	})
 }
