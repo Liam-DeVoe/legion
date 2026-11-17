@@ -12,17 +12,20 @@ import (
 // one transaction"). A check of production or of the graph has a state only at a Point that names a
 // Deploy, whatever its GraphTx. It is not named Subject, which is what a check reads.
 type Point struct {
-	Commit  string `json:"commit"`
-	Branch  string `json:"branch"`
-	Deploy  string `json:"deploy"`
-	GraphTx string `json:"graph_tx"`
+	Commit  string `json:"commit" input:"nonzero"`
+	Branch  string `json:"branch" input:"one of deploy: a subject is the head of a branch or the commit that production runs"`
+	Deploy  string `json:"deploy" input:"one of branch: a subject is the head of a branch or the commit that production runs"`
+	GraphTx string `json:"graph_tx" input:"zero: the subject reads no transaction, so a check of the graph reads unknown"`
 }
 
-// subjectFault is the first member of a subject, the point p and the time now that the states at
-// it are derived at, that it does not set, as a refusal names it, and "" when it sets each: its
-// commit, its now, and a branch or a deploy. With no now no time limit of a check would end, and
-// with neither a branch nor a deploy no check of production would be judged. The reader of
-// subjects.json and the entry of the derivation both refuse a subject by it.
+// subjectFault is the first fault of a subject, the point p and the time now that the states at it
+// are derived at, as a refusal names it, and "" when it has none: it sets no commit or no now, or it
+// does not set exactly one of a branch and a deploy, or it sets graph_tx with no deploy. With no now
+// no time limit of a check would end; with neither a branch nor a deploy no check of production
+// would be judged, and with both or with a transaction of the graph at the head of a branch the
+// subject would be none of the two that R10 names ("The subject is the head of the branch that the
+// files are read from, or the commit that production runs"). The reader of subjects.json and the
+// entry of the derivation both refuse a subject by it.
 func subjectFault(p Point, now time.Time) string {
 	switch {
 	case p.Commit == "":
@@ -31,24 +34,33 @@ func subjectFault(p Point, now time.Time) string {
 		return "it sets no now"
 	case p.Branch == "" && p.Deploy == "":
 		return "it sets neither branch nor deploy; a subject sets exactly one of them"
+	case p.Branch != "" && p.Deploy != "":
+		return "it sets both branch and deploy; a subject sets exactly one of them"
+	case p.GraphTx != "" && p.Deploy == "":
+		return "it sets graph_tx with no deploy; the commit that production runs reads the graph, and the head of a branch does not"
 	}
 	return ""
 }
 
 // Input is what the states at one subject are derived from: the spec files at Subject.Commit, the
 // approved spec, every stored result, the runs of CI jobs, the tie of each check at each commit, the
-// history of the repository, the time of the derivation, and the checks that CI refused at
-// Subject.Commit (R48), each with the rule that refused it.
+// history of the repository, the time of the derivation, and the checks that CI refused at each
+// commit (R48), by commit and then by check id, each with the rule that refused it. Its tag input
+// marks how each member reads when the caller does not set it (memberMark): a run of a job and a
+// refusal by CI only lower a state, so the caller gives JobRuns and Uncited, empty for none, and
+// Input.check refuses nil. A caller that gives no History gets no carry: a result counts only at its
+// own commit, so a failure at another commit then says nothing about this one (R8: "A check whose
+// tie to its code is unknown runs on each push to the branch"); the command always gives one.
 type Input struct {
-	Files    Tree
-	Approved Approved
-	Results  []Result
-	JobRuns  []JobRun
-	Ties     CommitTies
-	History  History
-	Subject  Point
-	Now      time.Time
-	Uncited  map[string]string
+	Files    Tree                         `input:"zero: no spec file, so each statement reads not built"`
+	Approved Approved                     `input:"zero: no approved node, so no state is derived"`
+	Results  []Result                     `input:"zero: no result, so each check reads unknown"`
+	JobRuns  []JobRun                     `input:"nonzero"`
+	Ties     CommitTies                   `input:"zero: no tie is known, so no result carries (R18)"`
+	History  History                      `input:"zero: no history, so no result carries"`
+	Subject  Point                        `input:"nonzero"`
+	Now      time.Time                    `input:"nonzero"`
+	Uncited  map[string]map[string]string `input:"nonzero"`
 }
 
 // CheckState is the state of one check at the subject (R7): State "true", "false" or "unknown",
@@ -111,7 +123,12 @@ const (
 //     builds the approved spec from the store, with no reader. A problem that Validate finds in
 //     the files and that refuses C (refusals): unknown, refused, Detail its rule, since the
 //     derivation gives no clean state for a tree that the rules refuse.
-//  2. CI refused C at S.Commit (R48): unknown, uncited, and no earlier result counts.
+//  2. CI refused C at S.Commit, or at a commit whose results of C count at S (R48): unknown,
+//     uncited, Detail its rule, and no earlier result counts. A commit whose results count at S is
+//     S.Commit, and one from which a candidate of step 3 counts at S by step 4's rule: the commit of
+//     a result of a code check, the TestCommit of a result of a program check of production or the
+//     graph. R48: "At that commit, such a check reads unknown, and no earlier result of it counts",
+//     so no result of that commit also counts at another (R8: "also counts").
 //  3. The candidates are C's results of kind run or failing_example that carry the digest of C's
 //     current text (R7: a result counts "only for the procedure that ran it"), a run of a program
 //     check only when the check's job reported it (R6: "only the reports of that job count"), and
@@ -125,16 +142,21 @@ const (
 //     commit, and with a tie that is not known at one of the two only runs at S.Commit. For a
 //     production check, the runs under S.Deploy; for a graph check, the runs at S.GraphTx, and none
 //     when S names no transaction (R7: "A result counts only for the procedure that ran it and for
-//     the subject that it read"). For a program check of production or the graph, only a run whose
-//     TestCommit counts at S.Commit by the same rule, as for its failing example (R7: "The
-//     procedure is the text of the check and the code that runs it, so a change to either ends the
-//     standing of earlier results"); Input.check refuses a result of such a check that names no
-//     TestCommit, as it refuses one that names no subject of its check's kind. No run counts:
-//     unknown, ci_fault when a run of C's job ended at S.Commit (R9), else subject_moved when C has
-//     a run, else no_result. A code check, or a program check of production or the graph, whose job
-//     ended at S.Commit in a leg with no run that counts: unknown, ci_fault (R7: "silence is not a
-//     pass"; R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
-//     another").
+//     the subject that it read"); a run of the graph names the transaction that it read or tried to
+//     read, and Input.check refuses one that names none. For a program check of production or the
+//     graph, only a run whose TestCommit counts at S.Commit by the same rule, as for its failing
+//     example (R7: "The procedure is the text of the check and the code that runs it, so a change to
+//     either ends the standing of earlier results"); Input.check refuses a result of such a check
+//     that names no TestCommit, as it refuses one that names no subject of its check's kind. A run of
+//     C's job counts at S at a commit whose results count at S by the same rule, S.Commit among
+//     them, since a fact of a commit counts wherever the results of that commit count. No run
+//     counts: unknown, ci_fault when a run of C's job that counts at S ended (R9), else
+//     subject_moved when C has a run, else no_result. A code check, or a program check of
+//     production or the graph, with a run of its job that counts at S in a leg with no run that
+//     counts: unknown, ci_fault, Detail the leg, when that run ended (R7: "silence is not a pass";
+//     R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
+//     another"), else unknown, no_result, Detail the leg, since a leg whose run has not ended is no
+//     silent leg and no pass.
 //  5. For a code check, at one commit, and for a graph check, at S.GraphTx (R13: a query "reads the
 //     graph at one transaction"): a pass and a failure that count, or a pass recorded after a
 //     failure that counts (both read the same code of C's tie): unknown, disagree (R7: "A
@@ -169,7 +191,10 @@ func CheckStates(in Input) ([]CheckState, error) {
 // approved text of each node the files hold, the checks and statements of the files that the tree
 // rules refuse, and the results of each check; or the first fault of in (Input.check).
 func newCheckJudge(in Input) (*checkJudge, error) {
-	current, _ := in.Approved.Current() // Input.check refuses each node whose document Current leaves out
+	// Current leaves out a node that the approved spec removed, and Input.check refuses each other
+	// node that it would leave out: one under another key than its id, one with no version, and one
+	// whose document is not its one document.
+	current, _ := in.Approved.Current()
 	if err := in.check(current); err != nil {
 		return nil, err
 	}
@@ -323,7 +348,7 @@ func (j *checkJudge) state(c Check) CheckState {
 	if rule, refused := j.refused[c.ID]; refused {
 		return unknownCheck(reasonRefused, rule)
 	}
-	if rule, refused := j.in.Uncited[c.ID]; refused {
+	if rule, refused := j.in.Uncited[j.in.Subject.Commit][c.ID]; refused {
 		return unknownCheck(reasonUncited, rule)
 	}
 
@@ -344,6 +369,9 @@ func (j *checkJudge) state(c Check) CheckState {
 			faults = append(faults, r)
 		}
 	}
+	if rule, refused := j.refusalWhereItCounts(c, runs, faults); refused {
+		return unknownCheck(reasonUncited, rule)
+	}
 	if suspect && len(runs) == 0 && len(faults) == 0 {
 		return unknownCheck(reasonStatementChanged, statement)
 	}
@@ -351,7 +379,7 @@ func (j *checkJudge) state(c Check) CheckState {
 	counting := j.countingRuns(c, runs)
 	if len(counting) == 0 {
 		switch {
-		case job != "" && j.jobEnded(job):
+		case job != "" && j.jobEnded(c, job):
 			return unknownCheck(reasonCIFault, "")
 		case len(runs) > 0:
 			return unknownCheck(reasonSubjectMoved, "")
@@ -363,8 +391,12 @@ func (j *checkJudge) state(c Check) CheckState {
 	newest := map[string]Result{latest.Leg: latest}
 	if c.Subject == SubjectCode || c.Procedure == ProcedureProgram { // the checks that a job's matrix runs
 		newest = newestOfEachLeg(counting)
-		if leg, silent := j.silentLeg(job, newest); job != "" && silent {
+		switch leg, ended, found := j.legWithNoResult(c, job, newest); {
+		case job == "" || !found:
+		case ended:
 			return unknownCheck(reasonCIFault, leg)
+		default:
+			return unknownCheck(reasonNoResult, leg)
 		}
 	}
 	if c.Subject != SubjectProduction && answersDisagree(c, counting) || legsDisagree(newest) {
@@ -491,26 +523,57 @@ func (j *checkJudge) carries(check, commit string) bool {
 	return changed.ok && !slices.ContainsFunc(changed.paths, func(path string) bool { return from.Covers(path) || to.Covers(path) })
 }
 
-// jobEnded is whether a run of job, in any leg, ended at the subject's commit.
-func (j *checkJudge) jobEnded(job string) bool {
-	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool {
-		return r.Job == job && r.Commit == j.in.Subject.Commit && r.Ended
-	})
-}
-
-// silentLeg is the first leg, by name, of a run of job that ended at the subject's commit with no
-// run of the check that counts.
-func (j *checkJudge) silentLeg(job string, newest map[string]Result) (string, bool) {
-	var silent []string
-	for _, r := range j.in.JobRuns {
-		if _, reported := newest[r.Leg]; r.Job == job && r.Commit == j.in.Subject.Commit && r.Ended && !reported {
-			silent = append(silent, r.Leg)
-		}
-	}
-	if len(silent) == 0 {
+// refusalWhereItCounts is the rule of the first refusal of c by CI at a commit whose results of c
+// count at the subject (step 2), of the commits of runs and faults, the candidates of c: the commit
+// of a result of a check of the code, the TestCommit of a result of a program check of production or
+// of the graph; and whether there is one.
+func (j *checkJudge) refusalWhereItCounts(c Check, runs, faults []Result) (string, bool) {
+	if readsProduction(c) && c.Procedure != ProcedureProgram {
 		return "", false
 	}
-	return slices.Min(silent), true
+	for _, results := range [2][]Result{runs, faults} {
+		for _, r := range results {
+			commit := r.Commit
+			if readsProduction(c) {
+				commit = r.TestCommit
+			}
+			if rule, refused := j.in.Uncited[commit][c.ID]; refused && j.carries(c.ID, commit) {
+				return rule, true
+			}
+		}
+	}
+	return "", false
+}
+
+// jobEnded is whether a run of job, in any leg, ended at a commit whose results of c count at the
+// subject, its commit among them.
+func (j *checkJudge) jobEnded(c Check, job string) bool {
+	return slices.ContainsFunc(j.in.JobRuns, func(r JobRun) bool { return r.Job == job && r.Ended && j.carries(c.ID, r.Commit) })
+}
+
+// legWithNoResult is the first leg, by name, of a run of job at a commit whose results of c count at
+// the subject, its commit among them, in which no run of c counts, newest being the newest run of
+// each leg that counts: of the runs that ended, else of the runs that have not ended; ended is
+// whether its run ended, and found whether there is one.
+func (j *checkJudge) legWithNoResult(c Check, job string, newest map[string]Result) (leg string, ended, found bool) {
+	var silent, running []string
+	for _, r := range j.in.JobRuns {
+		if _, reported := newest[r.Leg]; r.Job != job || reported || !j.carries(c.ID, r.Commit) {
+			continue
+		}
+		if r.Ended {
+			silent = append(silent, r.Leg)
+		} else {
+			running = append(running, r.Leg)
+		}
+	}
+	switch {
+	case len(silent) > 0:
+		return slices.Min(silent), true, true
+	case len(running) > 0:
+		return slices.Min(running), false, true
+	}
+	return "", false, false
 }
 
 // answersDisagree is whether the runs of c that count, which read subjects that cannot change

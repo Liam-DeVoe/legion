@@ -135,15 +135,18 @@
 // compare before \x20 or \x64.
 // The rule reads the file's bytes and runs no shell expansion, so it does not find a command that
 // an expansion, an escape or an alias builds, one with another word between the two, such as a
-// redirection, a here-document or an image, or a run: | block whose two line continuations need
-// the indentation after one kept and after the other removed. Before the name, only \n, \t and \r
-// of the escapes stand for white space; each other escape or expansion of one language that builds
-// the boundary is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's
-// %~dp0, $1), and so are \0 before the name, whose NUL byte Bash skips, and \t between the two
-// words. It is no defence against an author who hides the command: compare itself refuses to
-// run in a CI job. A step can run the comparison from a file it does not read, such as a package
-// script or a make target: compare's refusal covers that route when the step passes the runner's
-// environment on, and nothing covers it when the step does not.
+// redirection, a here-document or an image (docker run --entrypoint spec-check <image> compare),
+// or a run: | block whose two line continuations need the indentation after one kept and after the
+// other removed. Before the name, only \n, \t and \r of the escapes stand for white space; each
+// other escape or expansion of one language that builds the boundary is outside the claim (\x20,
+// \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and so are \0 right before the
+// name or right after compare, a NUL byte that Bash skips or stops at, \t between the two words,
+// and a letter, a digit or _ right after the quote that ends compare, which Bash reads as more of
+// the word and another language can read as its next token, such as Python's f or r prefix
+// ("compare"f" --dir"). It is no defence against an author who hides the command: compare itself
+// refuses to run in a CI job. A step can run the comparison from a file it does not read, such as a
+// package script or a make target: compare's refusal covers that route when the step passes the
+// runner's environment on, and nothing covers it when the step does not.
 // The guard follows no symbolic link at or under the four directories (the path to them, --root
 // and .github included, resolves as the system resolves it), and it reads each file whole, with
 // no bound on its size.

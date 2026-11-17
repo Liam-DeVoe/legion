@@ -14,9 +14,9 @@ import (
 // no tie could be derived, and Why says why (R18: "A tie that Dispatch cannot derive reads as
 // unknown, not as none").
 type Tie struct {
-	Paths []string
-	Known bool
-	Why   string
+	Paths []string `input:"zero: a tie that is not known has no path; Input.check refuses a known tie with none"`
+	Known bool     `input:"zero: a tie that is not known, which carries no result (R18)"`
+	Why   string   `input:"zero: no reason is given; no rule reads it"`
 }
 
 // NewTie is the known tie of paths, sorted and unique. It refuses an entry in any other form, naming

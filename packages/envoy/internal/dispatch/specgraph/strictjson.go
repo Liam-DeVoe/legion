@@ -29,6 +29,12 @@ import (
 //     "<JSON pointer>" is of another type", and "it is not in the form <form>" for the whole text.
 //     The words are the package's, since encoding/json/v2 names a Go type, and picks its verb,
 //     "cannot" or "unable to", once in each process;
+//   - a JSON null at any place, a member, a value of a map, an element of a list or the whole text,
+//     also one that v keeps as JSON text: "it is not in the form <form>: the value at "<JSON
+//     pointer>" is null", and "it is not in the form <form>: it is null" for the whole text. A null
+//     says nothing, and the decoder would read it as the zero value of its place, a real value of
+//     the form, such as the empty label of a file or no run of a job; no member of a format takes
+//     null;
 //   - in each of those lines, "<JSON pointer>" is the place as quoted prints it: whole up to 100
 //     bytes, else its first and its last 50 bytes with … between them, since a map of a format
 //     takes the names that its writer picks, and a long name would make the line as long;
@@ -62,7 +68,28 @@ func decodeJSON(data []byte, v any, form string) error {
 	if _, err := dec.ReadToken(); !errors.Is(err, io.EOF) {
 		return errors.New("text after the JSON value")
 	}
+	switch place, null := nullPlace(data); {
+	case null && place == "":
+		return fmt.Errorf("it is not in the form %s: it is null", form)
+	case null:
+		return fmt.Errorf("it is not in the form %s: the value at %s is null", form, quoted(place))
+	}
 	return nil
+}
+
+// nullPlace is the JSON pointer of the first null of data, a JSON text that decodeJSON read whole,
+// and whether data holds one.
+func nullPlace(data []byte) (string, bool) {
+	dec := jsontext.NewDecoder(bytes.NewReader(data))
+	for {
+		token, err := dec.ReadToken()
+		if err != nil {
+			return "", false
+		}
+		if token.Kind() == 'n' {
+			return string(dec.StackPointer()), true
+		}
+	}
 }
 
 // decodeJSONFrom reads all of r and decodes it with decodeJSON.

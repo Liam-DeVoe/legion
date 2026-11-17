@@ -3458,6 +3458,432 @@
       "schema": true
     }
   ],
+  "scenarios/refusal/files/c2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/c3/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/c4/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/refusal/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/silent-leg/files/c4/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
+  "scenarios/silent-leg/files/m2/spec.yaml": [
+    {
+      "data": {
+        "id": "delivery-is-fast",
+        "kind": "property",
+        "text": ["Envoy delivers a message to a connected session in less than one second."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "Each delivery of the last hour took less than one second.",
+        "failing_example": [
+          "A copy of the delivery records with one delivery that took two seconds."
+        ],
+        "id": "production-delivery-takes-under-a-second",
+        "procedure": "query",
+        "procedure_text": [
+          "The query reads the time of each delivery of the last hour.",
+          "It returns each delivery that took one second or more."
+        ],
+        "serves": "delivery-is-fast",
+        "subject": "production",
+        "type": "check"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "messages-reach-sessions",
+        "kind": "behavior",
+        "text": ["Envoy delivers each message to the session that it is for."],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "id": "a-stored-message-survives-a-restart",
+        "kind": "behavior",
+        "parent": "messages-reach-sessions",
+        "text": [
+          "Envoy delivers each stored message to its session after the listener starts again."
+        ],
+        "type": "requirement"
+      },
+      "schema": true
+    },
+    {
+      "data": {
+        "claim": "A message that the listener stores before a restart reaches its session after the restart.",
+        "failing_example": ["A listener that deletes its stored messages when it starts."],
+        "id": "a-restart-loses-no-message",
+        "procedure": "program",
+        "procedure_text": [
+          "The program stores one message, starts the listener again and reads the messages of the session.",
+          "It must find the message one time."
+        ],
+        "serves": "a-stored-message-survives-a-restart",
+        "subject": "code",
+        "test": {
+          "job": "go-checks",
+          "runner": "go",
+          "selector": "github.com/sjawhar/envoy/cmd/listener TestARestartLosesNoMessage"
+        },
+        "type": "check"
+      },
+      "schema": true
+    }
+  ],
   "scenarios/wait-cycle/files/m1/spec.yaml": [
     {
       "data": {
