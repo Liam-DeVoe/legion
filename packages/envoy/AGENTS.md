@@ -377,7 +377,8 @@ Each item below names a task and where its code is, then notes on it.
     Each field is set once, a value outside its form is `400 PLAN_INPUT`, the message naming the field, and an id whose plan is another issue's is `409 PLAN_OTHER_ISSUE`.
 
   - `GET /api/v1/projects/{key}/plans` lists each finished issue of the project, status `done` with `closed_at` set, newest close first, with `?since=` and `?until=` bounding the close to `[since, until)`
-    (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold).
+    (`400 INVALID_QUERY` for a bound that is not RFC 3339 or a since not before until, judged as the caller wrote them, `404 PROJECT_NOT_FOUND` for a project Dispatch does not hold);
+    each bound reaches the statement rounded up to the next microsecond (`microsecondCeiling`), as the issue listing's closed bounds do, so a finer bound keeps its meaning.
     Each issue carries its newest plan (the highest generation, null where it has none), every retro's rating in the order the retros ran, the earliest start and the latest end of its runs with their difference in whole seconds (each null where no run holds one, and the difference null too where that end is before that start, as when every start Dispatch holds came after the last end it holds), and its count of runs of kind `step` that failed.
     The read is one statement for the whole project, whatever the number of its issues, and a read-only token may call it (`readScopeRoutes`).
 

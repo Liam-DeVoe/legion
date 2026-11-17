@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -479,6 +480,53 @@ func TestTheReadOfPlansRefusesAnUnknownProjectAndABadWindow(t *testing.T) {
 	}
 	if read := readPlans(t, handler, "LEG", "?since=2026-11-01T00:00:00Z"); read.Issues == nil || len(read.Issues) != 0 {
 		t.Fatalf("the plans of a project with no finished issue are %+v, want an empty list", read)
+	}
+}
+
+// readPlanKeys is the keys of the finished issues the plans read of project lists with query, in
+// the read's order.
+func readPlanKeys(t *testing.T, handler http.Handler, project, query string) []string {
+	t.Helper()
+	keys := []string{}
+	for _, finished := range readPlans(t, handler, project, query).Issues {
+		keys = append(keys, finished.Issue)
+	}
+	return keys
+}
+
+// A window bound finer than the microsecond PostgreSQL stores keeps its meaning: an issue closed at
+// …00.123456 is before …00.123456001, so a since at that bound leaves it out and an until at it keeps
+// it. pgx encodes a timestamptz by truncating it to the microsecond, which would move each
+// comparison onto the close itself.
+func TestTheReadOfPlansKeepsASubMicrosecondBoundsMeaning(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := stepIssues(t, handler, "LEG", 1)[0]
+	closeIssue(t, handler, issue)
+	closed := time.Date(2026, time.November, 3, 0, 0, 0, 123456000, time.UTC)
+	if _, err := database.Pool.Exec(context.Background(), "update issues set closed_at = $2 where key = $1", issue, closed); err != nil {
+		t.Fatalf("close %s at %s: %v", issue, closed, err)
+	}
+	const (
+		stored = "2026-11-03T00:00:00.123456Z"
+		after  = "2026-11-03T00:00:00.123456001Z"
+		later  = "2026-11-03T00:00:00.123456999Z"
+		before = "2026-11-03T00:00:00.123455999Z"
+	)
+	for _, window := range []struct {
+		query string
+		want  []string
+	}{
+		{"since=" + stored, []string{issue}},
+		{"since=" + after, []string{}},
+		{"until=" + stored, []string{}},
+		{"until=" + after, []string{issue}},
+		{"since=" + before + "&until=" + after, []string{issue}},
+		{"since=" + after + "&until=" + later, []string{}},
+	} {
+		query := "?" + strings.ReplaceAll(window.query, ":", "%3A")
+		if got := readPlanKeys(t, handler, "LEG", query); !slices.Equal(got, window.want) {
+			t.Errorf("%s lists %v, want %v", query, got, window.want)
+		}
 	}
 }
 

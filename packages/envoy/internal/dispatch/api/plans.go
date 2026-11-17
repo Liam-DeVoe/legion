@@ -125,7 +125,9 @@ func (s *server) listProjectPlans(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, since, until)
+	// Each bound as the statement compares it: PostgreSQL holds a close to the microsecond, and pgx
+	// would truncate a finer bound onto it (microsecondCeiling).
+	finished, err := workflowstore.ProjectPlans(r.Context(), s.deps.Store.Pool, key, microsecondCeiling(since), microsecondCeiling(until))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
