@@ -192,14 +192,29 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
   };
 
   /** The kept top for `id`, while it is still the place the reader saw: the box the host named
-   *  has not moved since, and the row is still in the group it was saved in. Null otherwise,
-   *  and the caller measures the row. */
+   *  has not moved since, or moved only because the browser pulled it back to its end
+   *  (`pulledBack`), and the row is still in the group it was saved in. Null otherwise, and the
+   *  caller measures the row. */
   private heldTop(id: string, group: string | null): number | null {
     const held = this.held;
     const scroller = this.scrollerElement();
     if (held === null || scroller === null) return null;
-    const holds = held.id === id && held.group === group && held.scrollTop === scroller.scrollTop;
+    const unmoved =
+      held.scrollTop === scroller.scrollTop || this.pulledBack(held.scrollTop, scroller);
+    const holds = held.id === id && held.group === group && unmoved;
     return holds ? held.top : null;
+  }
+
+  /** True when `scroller` sits at its end at a lower offset than `savedAt`, the one it was at
+   *  when the place was kept: its content shrank by more than the room that was left below the
+   *  view, and the browser pulled the scroll back to the new end. The reader did not move the
+   *  view there, so their place is still the kept one. A scroll of their own never looks like
+   *  this: one up leaves the end, and one down raises the offset. */
+  private pulledBack(savedAt: number, scroller: HTMLElement): boolean {
+    const { clientHeight, scrollHeight, scrollTop } = scroller;
+    // A pixel of slack: `scrollHeight` and `clientHeight` are rounded to whole pixels, and
+    // `scrollTop` is not.
+    return scrollTop < savedAt && scrollTop >= scrollHeight - clientHeight - 1;
   }
 
   /** Called once a compensation has put `id` back at `top`: the row is at the kept place again,
@@ -239,6 +254,14 @@ export class ViewportAnchor extends Component<ViewportAnchorProps, object, Snaps
     if (!mine) return;
     if (this.selfScrolled) {
       this.selfScrolled = false;
+      return;
+    }
+    // The browser pulling the box back to its end after its content shrank is no scroll of the
+    // reader's. Keeping the row's place here would keep it where the shrink moved it, so it goes
+    // back where the reader last saw it, as on any other change of the content's height.
+    const held = this.held;
+    if (held !== null && scroller !== null && this.pulledBack(held.scrollTop, scroller)) {
+      this.contentResized();
       return;
     }
     this.rememberHeld();

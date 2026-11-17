@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
-// biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set.
+// biome-ignore lint/style/noRestrictedImports: this file sends the pointer's own clientX/clientY and a pointerout's relatedTarget, neither of which user-event's hover and unhover can set, and a box's own scroll event, which user-event has no form for.
 import { fireEvent, render } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, type RefObject } from "react";
@@ -413,6 +413,72 @@ test("a held row that changed group is not followed to the section it moved to",
     expect(viewportTop("r4")).toBe(LIST_TOP + 11 * ROW_HEIGHT - 100);
   } finally {
     view.unmount();
+  }
+});
+
+// A long entry above the reader is cut, in no commit of this anchor's, by more than the box
+// holds below the view. The browser pulls the box's scrollTop back to its new end and says so
+// with a scroll event. That is not the reader scrolling: keeping the row's place there would
+// leave the row as far out of place as the room that was below the view.
+test("a box the browser pulls back to its end after its content shrank keeps the held row in place", () => {
+  // happy-dom's ResizeObserver never calls back: this one is called back where the case says
+  // the content changed height.
+  const RealResizeObserver = globalThis.ResizeObserver;
+  const observers: ResizeObserverCallback[] = [];
+  globalThis.ResizeObserver = class {
+    constructor(callback: ResizeObserverCallback) {
+      observers.push(callback);
+    }
+    disconnect() {}
+    observe() {}
+    unobserve() {}
+  } as unknown as typeof ResizeObserver;
+  const resized = () => {
+    for (const callback of observers) callback([], undefined as unknown as ResizeObserver);
+  };
+  // The long entry, still whole, is the content above the rows.
+  listTop = 400;
+  const view = render(<List rows={ids(40)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (scroller === null) throw new Error("scroller missing");
+    // happy-dom lays nothing out: the box is the window's height, and its content runs from the
+    // box's top to the last row's foot.
+    Object.defineProperty(scroller, "clientHeight", {
+      configurable: true,
+      value: VIEWPORT_HEIGHT,
+    });
+    Object.defineProperty(scroller, "scrollHeight", {
+      configurable: true,
+      get: () => listTop + rows().length * ROW_HEIGHT,
+    });
+    const focused = document.querySelector<HTMLElement>('[data-row="r34"] button');
+    if (focused === null) throw new Error("r34 button missing");
+    focused.focus();
+    // The reader scrolls to 50 px short of the box's end (2,400 - 600 = 1,800).
+    scroller.scrollTop = 1750;
+    fireEvent.scroll(scroller);
+    const held = viewportTop("r34");
+    expect(held).toBe(300);
+
+    // The entry is cut by 300 px, six times the room below the view, and the browser pulls the
+    // box back to its new end. That frame's scroll event runs before its resize observations.
+    listTop -= 300;
+    scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
+    expect(scroller.scrollTop).toBe(1500);
+    fireEvent.scroll(scroller);
+    resized();
+    expect(viewportTop("r34")).toBe(held);
+    // The scroll event of the anchor's own put-back.
+    fireEvent.scroll(scroller);
+
+    // A later change of the content's height still holds the row there.
+    listTop -= ROW_HEIGHT;
+    resized();
+    expect(viewportTop("r34")).toBe(held);
+  } finally {
+    view.unmount();
+    globalThis.ResizeObserver = RealResizeObserver;
   }
 });
 
