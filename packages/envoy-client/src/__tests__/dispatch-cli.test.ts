@@ -20,6 +20,7 @@ import {
 } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
+import { routeAnswer } from "../../test/route-answers";
 import { forgetBrokerClients } from "../broker-credential";
 import {
   cliRefusals,
@@ -1869,7 +1870,16 @@ describe("dispatch result --project, as a CI job writes it", () => {
   let dispatchAnswer: () => Response | Promise<Response>;
   /** The `Idempotency-Key` of the request the stand-in Dispatch answers now, "" for none. */
   let answeringKey = "";
-  const stored = storedSpecResult(43, "pass", "", 1);
+  /** The result Dispatch stores for the job's write, as the route answers it. */
+  const result = storedSpecResult(43, "pass", "", 1);
+  const stored = routeAnswer<typeof result>("POST /api/v1/projects/{key}/results", result, 201);
+  /** The answer of `answeringKey`'s write in Dispatch's own form: the keyed layer names that key
+   *  back on every answer it gives a keyed write, as on `body`, the stored result by default. */
+  const storedAnswer = (body: unknown = stored) =>
+    Response.json(body, {
+      status: 201,
+      headers: answeringKey === "" ? {} : { [IDEMPOTENCY_KEY_HEADER]: answeringKey },
+    });
 
   const runner = Bun.serve({
     port: 0,
@@ -1935,7 +1945,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
           ["expires_in", 600],
         ])
       );
-    dispatchAnswer = () => Response.json(stored, { status: 201 });
+    dispatchAnswer = () => storedAnswer();
   });
 
   const dispatchUrl = `http://127.0.0.1:${dispatch.port}`;
@@ -2365,7 +2375,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
     dispatchAnswer = () => {
       if (written.at(-1)?.path === "/healthz") return Response.json({ idempotency_keys: true });
       return written.filter((seen) => seen.method === "POST").length === 1
-        ? Response.json(stored, { status: 201 })
+        ? storedAnswer()
         : keyCommitted();
     };
     try {
@@ -2817,15 +2827,13 @@ describe("dispatch result --project, as a CI job writes it", () => {
     [
       "Dispatch's 429 of its token check",
       (times) => {
-        dispatchAnswer = () =>
-          posts() <= times ? tokenNotChecked.limited() : Response.json(stored, { status: 201 });
+        dispatchAnswer = () => (posts() <= times ? tokenNotChecked.limited() : storedAnswer());
       },
     ],
     [
       "Dispatch's 503 for a broker that answered nothing",
       (times) => {
-        dispatchAnswer = () =>
-          posts() <= times ? tokenNotChecked.unavailable() : Response.json(stored, { status: 201 });
+        dispatchAnswer = () => (posts() <= times ? tokenNotChecked.unavailable() : storedAnswer());
       },
     ],
     [
@@ -3327,10 +3335,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         (value) => {
           const kept = { ...stored.attestation.predicate, observed: value };
           dispatchAnswer = () =>
-            Response.json(
-              { ...stored, attestation: { ...stored.attestation, predicate: kept } },
-              { status: 201 }
-            );
+            storedAnswer({ ...stored, attestation: { ...stored.attestation, predicate: kept } });
           return runJob(record, jobEnvironment());
         },
       ],

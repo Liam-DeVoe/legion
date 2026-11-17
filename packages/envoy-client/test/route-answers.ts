@@ -64,17 +64,24 @@ function stringOf(schema: Schema): string {
 }
 
 /** The least instance of `raw` (every optional member absent, every nullable member null, every
- *  list empty) or the most one (every member present, none null, every list holding one item). */
+ *  list empty) or the most one (every member present, none null, every list holding one item).
+ *  An instance is one answer, so it refuses a union of two branches that are not null: the
+ *  table would try one of them alone, and `answersOf` splits an answer's top into its branches. */
 export function instance(raw: Schema, extent: Extent, depth = 0): unknown {
   const schema = resolved(raw);
   if ("const" in schema) return schema.const;
   const branches = (schema.anyOf ?? schema.oneOf) as Schema[] | undefined;
   if (branches !== undefined) {
-    const isNull = (branch: Schema) => resolved(branch).type === "null";
-    if (extent === "least" && branches.some(isNull)) return null;
-    const first = branches.find((branch) => !isNull(branch));
-    if (first === undefined) return null;
-    return instance(first, extent, depth);
+    if (extent === "least" && branches.some((branch) => resolved(branch).type === "null")) {
+      return null;
+    }
+    const values = branchesOf(schema);
+    if (values.length > 1) {
+      throw new Error(
+        `a union of ${values.length} branches below an answer's top: an instance writes one of them, and answersOf splits only the top`
+      );
+    }
+    return values[0] === undefined ? null : instance(values[0], extent, depth);
   }
   if (Array.isArray(schema.allOf)) {
     return Object.assign(
@@ -213,33 +220,62 @@ export function answerErrors(route: string, status: number, body: unknown): stri
   return (validate.errors ?? []).map((error) => `${error.instancePath || "/"} ${error.message}`);
 }
 
-/** The object schemas `raw` stands for once null is set aside: its first branch that is not null,
- *  or each part of an `allOf`. A member is declared by one of them. */
-function objectParts(raw: Schema): Schema[] {
+/** The branches `raw` stands for once null is set aside: each branch of its union that is not
+ *  null (a union inside a branch read the same way), or `raw` itself. */
+function branchesOf(raw: Schema): Schema[] {
   const schema = resolved(raw);
   const branches = (schema.anyOf ?? schema.oneOf) as Schema[] | undefined;
-  if (branches !== undefined) {
-    const first = branches.find((branch) => resolved(branch).type !== "null");
-    return first === undefined ? [] : objectParts(first);
-  }
+  if (branches === undefined) return [schema];
+  return branches.filter((branch) => resolved(branch).type !== "null").flatMap(branchesOf);
+}
+
+/** The object schemas one branch stands for: the branch, or each part of its `allOf`. A member is
+ *  declared by one of them. */
+function objectParts(branch: Schema | undefined): Schema[] {
+  if (branch === undefined) return [];
+  const schema = resolved(branch);
   if (Array.isArray(schema.allOf)) return (schema.allOf as Schema[]).flatMap(objectParts);
   return [schema];
 }
 
+/** The schema one of `parts` declares the member `name` with, or undefined. */
+function declaredIn(parts: readonly Schema[], name: string): Schema | undefined {
+  return parts
+    .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
+    .find((declared) => declared !== undefined);
+}
+
+/** The branch of `raw` that `value` is read against, since an answer is one branch of a union and
+ *  not members of two: the first branch that declares each member `value` holds, else the one
+ *  that declares the most of its own members (the first of those), so a refusal names what the
+ *  nearest branch does not declare. */
+function branchFor(raw: Schema, value: unknown): Schema | undefined {
+  const branches = branchesOf(raw);
+  if (branches.length <= 1) return branches[0];
+  const fits = branches.find((branch) => undeclaredIn(branch, value, "") === undefined);
+  if (fits !== undefined) return fits;
+  const own =
+    typeof value === "object" && value !== null && !Array.isArray(value) ? Object.keys(value) : [];
+  const declared = branches.map((branch) => {
+    const parts = objectParts(branch);
+    return own.filter((name) => declaredIn(parts, name) !== undefined).length;
+  });
+  return branches[declared.indexOf(Math.max(...declared))];
+}
+
 /** The least instance of the object `raw` declares, with `members` laid over it: a member that
  *  is an object into the least instance of the object that member declares (also where the least
- *  answer holds null for it), any other value in its place. */
+ *  answer holds null for it), any other value in its place. Of a union, the branch `members` are
+ *  read against (`branchFor`). */
 function laidOver(raw: Schema, members: unknown): unknown {
   if (typeof members !== "object" || members === null || Array.isArray(members)) return members;
-  const parts = objectParts(raw);
+  const parts = objectParts(branchFor(raw, members));
   const out: Record<string, unknown> = Object.assign(
     {},
     ...parts.map((part) => instance({ ...part, type: "object" }, "least") as object)
   );
   for (const [name, value] of Object.entries(members)) {
-    const member = parts
-      .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
-      .find((declared) => declared !== undefined);
+    const member = declaredIn(parts, name);
     out[name] = member === undefined ? value : laidOver(member, value);
   }
   return out;
@@ -247,9 +283,16 @@ function laidOver(raw: Schema, members: unknown): unknown {
 
 /** The first member `value` holds, at any depth, that `raw` does not declare, as a dotted path; or
  *  undefined. An object schema that names no properties, or takes others (`additionalProperties`),
- *  declares every member, and each item of a list is read against the list's items. */
+ *  declares every member, and each item of a list is read against the list's items. Of a union,
+ *  `value` is read against one branch (`branchFor`), so a member that only another branch
+ *  declares is undeclared. */
 function undeclaredMember(raw: Schema, value: unknown, at: string): string | undefined {
-  const parts = objectParts(raw);
+  return undeclaredIn(branchFor(raw, value), value, at);
+}
+
+/** `undeclaredMember` within one branch. */
+function undeclaredIn(branch: Schema | undefined, value: unknown, at: string): string | undefined {
+  const parts = objectParts(branch);
   if (Array.isArray(value)) {
     const items = parts.find((part) => part.items !== undefined)?.items as Schema | undefined;
     if (items === undefined) return undefined;
@@ -268,9 +311,7 @@ function undeclaredMember(raw: Schema, value: unknown, at: string): string | und
   if (open) return undefined;
   for (const [name, member] of Object.entries(value)) {
     const path = at === "" ? name : `${at}.${name}`;
-    const declared = parts
-      .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
-      .find((schema) => schema !== undefined);
+    const declared = declaredIn(parts, name);
     if (declared === undefined) return path;
     const found = undeclaredMember(declared, member, path);
     if (found !== undefined) return found;

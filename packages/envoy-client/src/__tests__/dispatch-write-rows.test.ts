@@ -548,6 +548,44 @@ describe("a stub's answer names only members its route declares (routeAnswer)", 
       routeAnswer("POST /api/v1/issues/{key}/artifacts", { artifact: { id: "a", sha: "x" } })
     ).toThrow("names artifact.sha, which the route does not declare");
   });
+
+  // A reply route answers the reply it made or the delivery it settled (`oneOf`), so a member of
+  // either branch is the route's, and an answer is one branch: a member no branch declares, or
+  // members of two branches together, is no answer the route gives.
+  test("a member a union's second branch declares is the route's, and a member no branch declares is refused", () => {
+    const reply = "POST /api/v1/messages/{id}/reply";
+    const delivery = routeAnswer(reply, { message_id: "message-1", state: "accepted" }, 200);
+    expect(delivery).toMatchObject({ message_id: "message-1", state: "accepted" });
+    expect(answerErrors(reply, 200, delivery)).toEqual([]);
+    expect(() => routeAnswer(reply, { message_id: "message-1", sent_to: "x" }, 200)).toThrow(
+      "names sent_to, which the route does not declare"
+    );
+    expect(() => routeAnswer(reply, { message_id: "message-1", body: "Shipped." }, 200)).toThrow(
+      "which the route does not declare"
+    );
+  });
+});
+
+describe("the answers the table drives each write against (instance)", () => {
+  // The table drives each branch of an answer's union apart (`answersOf` splits the top), and
+  // `instance` writes one answer, so a union of two branches below the top would leave one branch
+  // untried by every row: it is refused, naming it, and a member that is a value or null is not.
+  test("a union of two branches below an answer's top is refused, and a nullable member is not", () => {
+    const answer = (target: Record<string, unknown>) => ({
+      type: "object",
+      required: ["target"],
+      properties: { target },
+    });
+    expect(() =>
+      instance(answer({ oneOf: [{ type: "string" }, { type: "integer" }] }), "least")
+    ).toThrow("a union of 2 branches below an answer's top");
+    expect(instance(answer({ anyOf: [{ type: "string" }, { type: "null" }] }), "most")).toEqual({
+      target: "x",
+    });
+    expect(instance(answer({ anyOf: [{ type: "string" }, { type: "null" }] }), "least")).toEqual({
+      target: null,
+    });
+  });
 });
 
 describe("a stub's answer to a keyed write is one its route declares (routeAnswer)", () => {
