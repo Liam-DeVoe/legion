@@ -653,12 +653,14 @@ test("a reading stands under what it reads and a child's check under the stateme
 // after one artifact read of it, each Enter opens at most one socket, and what is typed in all
 // three is in the tree read after a reload. A comment and an ask take no caret, and a check of the
 // child issue says it is edited on its own issue. At 1440 px.
+// c-editing's (4), an open editor that stays writable when the block schema changes, is not in
+// this row: its helpers (`applySupertagMigration`, `restoreStoreSchema`) are in INFRA-1253's
+// `e2e/block-schema.ts`, which is not under this branch. The round that brings that file adds the
+// step and the words "and an open editor survives a schema change" to this title.
 // SLOW(>=2s): the whole issue seeded with a decision, two readings, an approval and a child written
 // over it and waited on in the tree read, a criterion written and waited on too, then three
 // editors opened and typed in, a reload, and the tree read polled for the stored words.
-test("a node is edited where it lives and an open editor survives a schema change", async ({
-  browser,
-}) => {
+test("a node is edited where it lives", async ({ browser }) => {
   test.setTimeout(240_000);
   await phase(browser, seedModelRows, async (page, seeded) => {
     const criterion = await writeCriterionApi(

@@ -177,8 +177,8 @@ const PICKED_QUIET =
  *   (`createArtifactReview`); with none open, it rides the review's own event alone, on the
  *   document's issue (`docs.WriteReview`);
  * - a criterion is written into the issue's own text (an edit of the issue's tree artifact),
- *   which opens no delivery: a reply under the comment, question or message it stands under
- *   tells a picked agent or role;
+ *   which opens no delivery: a comment on the issue tells a picked agent or role, since a reply
+ *   under a message is a message reply, which tells nobody it names;
  * - a priority's write is published to nobody (`priorityEvent`), and a priority takes no
  *   comment.
  */
@@ -191,7 +191,7 @@ export const DISPATCH_WRITING_HINT_QUIET = {
   "ask-decline": `${DOORS} ${PICKED_QUIET} The note goes to whoever asked.`,
   broadcast: `${DOORS} ${PICKED_QUIET} The message goes to each agent you selected.`,
   "comment-edit": `${DOORS} ${PICKED_QUIET} A new comment, not an edit, tells a picked agent or role.`,
-  criterion: `${DOORS} ${PICKED_QUIET} The criterion goes under the comment, question or message it answers. A reply there tells a picked agent or role.`,
+  criterion: `${DOORS} ${PICKED_QUIET} The criterion goes under the comment, question or message it answers. A comment on the issue tells a picked agent or role.`,
   "document-text": `${DOORS} ${PICKED_QUIET} A comment on the document tells a picked agent or role.`,
   "issue-spec": `${DOORS} ${PICKED_QUIET} A comment on the new issue tells a picked agent or role.`,
   "message-reply": `${DOORS} ${PICKED_QUIET} Your reply goes to whoever the thread is with.`,
@@ -333,13 +333,17 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
   },
   // Its criterion line writes a criterion into the issue's own text, which tells nobody, and says
   // so in words of its own rather than the document editor's (INFRA-4066 R2, R8, decision 158).
+  // No row offers Write a criterion until part T's tree read names the issue's tree, so no
+  // control reaches the line yet (decisions 154 and 163).
   {
     box: "issue-page-composer",
-    covered: true,
+    covered: false,
     delivers: false,
     files: ["packages/dispatch/web/src/features/issue-page/IssueComposer.tsx"],
     issueRows: true,
     reach: "[data-issue-composer]",
+    reason:
+      "No control reaches it yet: Write a criterion is offered only once part T's tree read (INFRA-4062, on INFRA-1253's t16a) names the issue's tree, and whichever of parts Y and T merges second covers it.",
     write: "criterion",
   },
   // The Inbox's reading column: one reply box, under a comment thread or a message thread.
