@@ -1375,9 +1375,11 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
-	// heldNames is every name of a session the store answered as this claim's (holdRecorded): a
-	// hold never changes once made, so such a name is not asked again. Memory only: a restarted
-	// machine asks once more.
+	// heldNames is every name of the session the claim records that the store answered as this
+	// claim's (holdRecorded): such a name is not asked again while the claim records that session,
+	// since only an operator's release frees a hold, and it frees no name of the current session
+	// (ReleaseOldNamesStatement). forgetSession empties it. Memory only: a restarted machine asks
+	// once more.
 	heldNames map[Hold]bool
 	// stale is every stale event already logged, so a repeated one is dropped in silence.
 	stale map[string]bool
@@ -2912,6 +2914,11 @@ func (m *Machine) forgetSession(why string) {
 		}
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""
+	// The names the machine knows it holds are of the session it just let go, which an operator's
+	// release may free later (ReleaseOldNamesStatement) and another claim then take: kept, they would
+	// let this claim register that session again without asking the store. So the cache holds only
+	// the names of the session the claim records now (review F2 of #4220's round 4).
+	m.heldNames = nil
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
 }

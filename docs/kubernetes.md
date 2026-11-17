@@ -6312,19 +6312,24 @@ each issue's pod (every role of it alike) and the image probe's.
   A name two claims recorded is held for neither, and a name a rolled-back daemon let a claim take from another stays the first claim's: at each boot the daemon logs each at Error with the claims whose current session records it, suspends with the operator's suspend each of them it can, and names at Warn each it leaves as it was, being queued, launching uncertainly, failed or retired.
   A name only an abandoned session records suspends nothing, since nothing resumes or enrolls an abandoned session; the boot logs it at Warn.
 
-- An operator settles what the boot names.
-  For each claim the boot names that is not the rightful holder, an operator gives it a new session with `legion claims forget-session`, then starts it as its state asks: `legion claims resume` for a suspended claim, `legion claims retry` for a failed or retired one, and nothing for a queued one, which launches by itself; a claim still launching uncertainly is given its new session once its launch settles.
-  For each name held for no claim, whether the claims the line names were suspended or left as they were, an operator records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`), then starts that claim the same way.
+- An operator settles what the boot names; each `legion claims` command below also takes `--operator-token-file`.
+  For each claim in an Error line's `claims` that is not the rightful holder, the operator gives it a new session with `legion claims forget-session --claim <token> --session <session>`, as its state allows.
+  A suspended claim is then resumed with `legion claims resume --claim <token>`; a queued one launches by itself; a failed one is retried with `legion claims retry --claim <token>`, except a failed controller, which the controller keeper retries; and a retired one gets the forget alone, since it was stopped on purpose.
+  A claim working or launching under a held suspension takes no forget until the suspension lands, at its turn's end or its registration deadline, and a claim launching uncertainly takes none until its launch settles.
+  A claim named only in a line's `abandoned` needs nothing: its current session is its own, and nothing resumes or enrolls the abandoned one.
+  For each name held for no claim, whether the claims the line names were suspended or left as they were, the operator records the rightful holder with the statement the line gives (`update claim_sessions set claim = '<token>' where project = '<project>' and kind = '<kind>' and name = '<name>'`), then starts that claim as its state asks.
   A name held for another claim stays that claim's; the line gives no statement for it.
 
 - A session id, and a session file's name, are at most 255 bytes: a registration of a longer one is refused `400`, and the boot holds no name past that bound.
 
 - One claim holds at most 2,048 names, 10 times what the busiest claim in production could hold.
   A registration that would take a claim past it is refused `409` (`this claim holds the most session names one claim may (2048) …`), recording nothing.
-  The claim keeps its names, so a claim that records a session still resumes it; a claim that needs a new one, after a fresh start or because its agent began another, starts none until an operator frees the names of its older sessions.
-  The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 12 hours ago, the broker's carry window by default, except every name of the session the claim records and of the one it last abandoned, and only once the claim's last session switch is more than 12 hours ago.
-  The window counts from that switch, not from when a hold was written: a claim changes sessions only by forgetting the one it records, every session it ran before then had ended by then, and the broker keeps an ended session's grants for its carry window, so a claim that later takes a freed name takes none of them.
-  A deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its own interval in both places of the statement.
+  The claim keeps its names, so a claim that records a session still resumes it; a claim that needs a new one after a fresh start starts none until an operator frees the names of its older sessions.
+  The refusal's Warn line gives the statement that does so in its `release` field: it deletes the claim's holds recorded more than 13 hours ago, except every name of the session the claim records and of the one it last abandoned, and only once the claim's last session switch is more than 13 hours ago.
+  The hours count from that switch, not from when a hold was written: a claim changes sessions only by forgetting the one it records, and every session it ran before then had ended by then.
+  The broker keeps an ended session's grants for its carry window from when its enrollment went dormant, which a failed revoke puts up to the longest lease, an hour, after the process ended; 13 hours is the default window, 12 hours, plus that hour, so a claim that later takes a freed name takes no grant.
+  A deployment with a longer `BROKER_SESSION_CARRY_SECONDS` puts its window plus an hour in both places of the statement.
+  Run the release only while the boot names no claim for that claim's names: after a rollback, the next boot holds again any freed name another claim records (`HoldRecordedSessions`).
 
 - A project whose daemon moves to a new database starts with an empty table, so no session recorded in the old one is held; the broker's carry window, `BROKER_SESSION_CARRY_SECONDS` (12 hours by default), bounds what an old session's grants can still reach.
   Another project's daemon is not held to this project's names; the broker holds a pod's grants to the pair of its account and the daemon that enrolled it, so a pod of another project's daemon enrolled under the same session id takes nothing.

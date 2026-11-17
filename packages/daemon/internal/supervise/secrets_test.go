@@ -590,6 +590,47 @@ func TestAClaimAtTheCapOfHeldNamesIsRefusedANewSession(t *testing.T) {
 	})
 }
 
+// A machine keeps the names of the session its claim records that the store answered as the
+// claim's, and asks the store nothing more of them (holdRecorded). Once the claim forgets that
+// session, an operator's release may free those names and another claim take them
+// (ReleaseOldNamesStatement), so forgetSession empties the cache (review F2 of #4220's round 4): a
+// later registration of the forgotten session on the same machine asks the store again and is
+// refused, recording and enrolling nothing.
+//
+// The control (the pull request records the run): forgetSession keeping the cache; the
+// registration is admitted under the other claim's session.
+func TestAForgottenSessionIsAskedOfTheStoreAgain(t *testing.T) {
+	const taker = claim.Token("legion-legion-LEGION-209-tester")
+	h := newHarness(t)
+	broker := h.withSecrets()
+	h.launch()
+	h.helloWithIdentity()
+	h.register()
+	h.ready()
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.must(RequestForgetSession{Claim: h.token, Session: session})
+	// The operator's release freed the forgotten session's names, and another claim registered it.
+	for _, name := range RecordedHolds(session, sessionFile) {
+		h.store.setHold(name, taker)
+	}
+	enrolled := len(broker.enrolled())
+	h.must(RequestResume{Claim: h.token})
+	h.helloWithIdentity()
+
+	err := h.handle(RequestRegister{Claim: h.token, Generation: h.generation(), Session: session, SessionFile: sessionFile,
+		CapabilityHash: []byte("capability"), PluginContract: h.deps.PluginContract})
+	var refusal claim.Refusal
+	if !errors.As(err, &refusal) || refusal.Status != http.StatusConflict {
+		t.Fatalf("registering the forgotten session, which %s now holds, = %v, want a 409 refusal", taker, err)
+	}
+	if c := h.claim(); c.Session != "" || c.SessionFile != "" {
+		t.Fatalf("the refused registration left the claim recording %q and %q", c.Session, c.SessionFile)
+	}
+	if got := broker.enrolled(); len(got) != enrolled {
+		t.Fatalf("the refused registration enrolled %+v", got[enrolled:])
+	}
+}
+
 // A session id, and a session file's base name, are at most claim.MaxSessionNameBytes: past it a
 // name could not be held, since a btree row of claim_sessions' primary key holds at most 2,704
 // bytes and one such name would stop the boot that holds it (review N3 of #4220). A registration of

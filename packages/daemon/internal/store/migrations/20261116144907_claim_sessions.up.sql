@@ -47,10 +47,14 @@
 -- (internal/daemon's suspendSessionConflicts). An operator records the rightful holder by hand:
 --   update claim_sessions set claim = '<token>'
 --     where project = '<project>' and kind = '<kind>' and name = '<name>';
--- and gives every other claim the boot names a new session (`legion claims forget-session`, then
--- `legion claims resume` for a suspended one, `legion claims retry` for a failed or retired one; a
--- queued one launches by itself). A name only an abandoned session records suspends nothing:
--- nothing resumes or enrolls an abandoned session, so the boot logs it at Warn alone.
+-- and gives every other claim the line's `claims` names a new session with `legion claims
+-- forget-session`, as its state allows: a suspended one is then resumed (`legion claims resume`), a
+-- queued one launches by itself, a failed one is retried (`legion claims retry`) unless it is the
+-- controller, which the controller keeper retries, and a retired one gets the forget alone. A claim
+-- under a held suspension, or launching uncertainly, waits until that settles. A claim named only
+-- in the line's `abandoned` needs nothing: a name only an abandoned session records suspends
+-- nothing, since nothing resumes or enrolls an abandoned session, so the boot logs it at Warn alone.
+-- docs/kubernetes.md gives the steps whole.
 --
 -- A daemon rolled back to a release before this one runs on this table without writing it, so the
 -- claims it registers record names no row holds. This backfill runs once, so the daemon runs its

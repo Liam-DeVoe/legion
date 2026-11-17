@@ -42,34 +42,37 @@ var ErrHeldNamesCap = errors.New("the claim would hold more session names than o
 const heldNamesCapLine = "supervise: refused a session whose names would take the claim past the most one claim may hold; a session it records still resumes, and the statement frees the names of its older sessions for a new one"
 
 // ReleaseOldNamesStatement is the statement an operator runs to let a claim at MaxHeldNamesPerClaim
-// start a new session again: it frees the claim's holds recorded more than 12 hours ago, and only
-// once the claim's last session switch is more than 12 hours ago, except every name of the session
+// start a new session again: it frees the claim's holds recorded more than 13 hours ago, and only
+// once the claim's last session switch is more than 13 hours ago, except every name of the session
 // it records and of the one it last abandoned. A name of its current or abandoned session is its
 // id, a name that contains that id (each of its files' base names and ids does), or a part of its
 // file's path (RecordedHolds), so a hold of any of those stays, which keeps a few more names than
 // it must and frees none it must keep.
 //
-// The 12 hours count from the switch, not from the hold (review R4-1 of #4220): a hold is written
-// when its session is first registered, and the session may have run long after; the broker keeps a
-// dormant enrollment's grants for its carry window from when the enrollment ended. A claim changes
+// The hours count from the switch, not from the hold (review R4-1 of #4220): a hold is written
+// when its session is first registered, and the session may have run long after. A claim changes
 // sessions only by forgetting the one it records (forgetSession), which writes the switch's time
-// into the abandoned session's `at`; every session before the one it abandoned had ended by then,
-// so a switch older than the window means every session the statement frees ended longer ago than
-// the window, and the broker has swept their grants: a claim that later takes a freed name takes no
-// grant of it, and a transcript within the project is readable to its roles anyway. A claim that
-// has never switched, whose abandoned session is empty, frees by its holds' age alone.
+// into the abandoned session's `at`, and every session before the one it abandoned had ended by
+// then. The broker keeps an ended session's grants for its carry window, which counts from when its
+// enrollment went dormant: that is the daemon's revoke as it lets the process go, or, if that
+// revoke fails, the enrollment's lapse at its lease, at most BROKER_LEASE_SECONDS' maximum, an hour,
+// after the process ended. So 13 hours is the default carry window (BROKER_SESSION_CARRY_SECONDS,
+// 43200) plus the longest lease (review F1 of #4220's round 4): a switch older than that means
+// every session the statement frees went dormant longer ago than the window, and the broker has
+// swept their grants. A claim that later takes a freed name takes no grant of it, and a transcript
+// within the project is readable to its roles anyway. A claim that has never switched, whose
+// abandoned session is empty, frees by its holds' age alone.
 //
-// 12 hours is the broker's carry window by default (BROKER_SESSION_CARRY_SECONDS, 43200). The
-// daemon is not told the broker's setting: it is the broker's own (envoy's broker/config), read by
-// its sweeper and answered on no route the daemon calls, so the statement writes the default, and a
-// deployment with a longer window puts its own in both intervals. The project and token are
-// written as SQL literals, their quotes doubled.
+// The daemon is not told the broker's settings: they are the broker's own (envoy's broker/config),
+// read by its sweeper and answered on no route the daemon calls, so the statement writes the
+// defaults, and a deployment with a longer carry window puts that window plus an hour in both
+// intervals. The project and token are written as SQL literals, their quotes doubled.
 func ReleaseOldNamesStatement(project string, token claim.Token) string {
 	return "delete from claim_sessions h using claims c" +
 		" where c.project = h.project and c.token = h.claim" +
 		" and h.project = " + SQLLiteral(project) + " and h.claim = " + SQLLiteral(string(token)) +
-		" and h.recorded_at < now() - interval '12 hours'" +
-		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - interval '12 hours'" +
+		" and h.recorded_at < now() - interval '13 hours'" +
+		" and coalesce((c.abandoned_session ->> 'at')::timestamptz, '-infinity') < now() - interval '13 hours'" +
 		" and h.name <> c.session and h.name <> coalesce(c.abandoned_session ->> 'session', '')" +
 		" and (c.session = '' or strpos(h.name, c.session) = 0)" +
 		" and (coalesce(c.abandoned_session ->> 'session', '') = '' or strpos(h.name, c.abandoned_session ->> 'session') = 0)" +
@@ -175,8 +178,10 @@ func checkSessionNames(session, sessionFile string) error {
 // the holder. A name held for no claim (two claims recorded it before the hold) is refused to
 // every claim.
 //
-// A name the store answered as this claim's is kept and not asked again, since a claim's hold
-// never changes once made: the enrollment that follows a registration asks nothing more. A refusal
+// A name of the current session the store answered as this claim's is kept and not asked again
+// while the claim records that session, since only an operator's release frees a hold and it frees
+// no name of the current session: the enrollment that follows a registration asks nothing more,
+// and forgetSession empties the cache (Machine.heldNames). A refusal
 // is asked again every time, because an operator settles a name held for no claim by recording its
 // rightful holder, and that claim's next decision on this same machine must see it. A hold that
 // would take the claim past MaxHeldNamesPerClaim is refused with claim.HeldNamesCapRefusal and

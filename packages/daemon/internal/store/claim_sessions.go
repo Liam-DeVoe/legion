@@ -200,9 +200,12 @@ func (s *Store) HoldRecordedSessions(ctx context.Context, project string) (int, 
 // it into a join. As a join, the planner chose its plan by the table's statistics (review F2 of
 // #4220, measured on PostgreSQL 18.6 over 7,508 claims' 33,786 names): a hash join over a
 // sequential scan of the project's whole table at 533,786 rows (334.5 ms, every row read), and the
-// index at 15.4 million rows, the cap's ceiling (198.8 ms). As a lookup, at 533,786 rows, it read
-// 33,786 tuples, one index probe a recorded name. The planner may still scan a small table in
-// sequence, which costs what the table holds and no more; at scale the bound comes from the index.
+// index at 15.4 million rows, the cap's ceiling (198.8 ms). As a lookup, the plan was an index probe
+// a recorded name at every size measured: 33,782 rows (261 ms through a 1 ms proxy, against the
+// join's 42 ms), 533,786 rows (33,786 tuples read) and 15.4 million (266 ms). The plan is still the
+// planner's: a sequential scan inside the lateral subquery would cost the table's rows once per
+// name, which is why the subquery's only predicate is the primary key, and why the boot's test
+// bounds the tuples read rather than pinning the plan.
 const conflictHoldersQuery = `select r.kind, r.name, h.claim
 	from unnest($2::text[], $3::text[]) as r(kind, name)
 	cross join lateral (select claim from claim_sessions h
