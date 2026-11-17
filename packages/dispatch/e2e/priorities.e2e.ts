@@ -782,6 +782,46 @@ test("a priority's own page writes its title and description and lists only its 
   }
 });
 
+// SLOW(>=2s): the seed, two reloads, and two writes read back from the server.
+test("what a reader types into a priority survives a reload made before the typing rests", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await priorityPage(page);
+    await page.goto(`/priorities/${seed.ids[0]}`);
+    const stored = async () =>
+      (await listPriorities()).priorities?.find((one) => one.id === seed.ids[0]);
+
+    // The title, typed and the page reloaded at once: inside the half second a write waits for
+    // the typing to rest. Leaving by a reload or by closing the tab is leaving the field as much
+    // as a click elsewhere is, and what the reader typed is theirs.
+    const title = page.getByRole("textbox", { name: "Title" });
+    await expect(title).toHaveValue(seed.titles[0]);
+    await title.click();
+    await page.keyboard.press("End");
+    await page.keyboard.type(" now");
+    await page.reload();
+    await expect.poll(async () => (await stored())?.title).toBe(`${seed.titles[0]} now`);
+
+    // The description, the same way.
+    const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    await expect(editor).toContainText("nothing is waiting on one");
+    await editor.click();
+    await page.keyboard.press("ControlOrMeta+End");
+    await page.keyboard.type(" Typed before the reload.");
+    await page.reload();
+    await expect
+      .poll(async () => (await stored())?.description ?? "")
+      .toContain("Typed before the reload.");
+    await expect(editor).toContainText("Typed before the reload.");
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed and three issue pages.
 test("an issue's header names the priorities it advances and links to each", async ({
   browser,
