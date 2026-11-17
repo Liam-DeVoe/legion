@@ -16,12 +16,12 @@ import { ROW_LINK } from "./row-references";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
- * Where a message on this issue goes, and whether it reaches anyone, in its row of Details
- * (dispatch://INFRA-1196 R13): the route as the control that opens its editor - a `session:`
- * route named as `AgentName` names an agent, with the agent's own live link beside it, a role
- * route as its address, and no route as the page's `None`, as every empty row of Details draws
- * it - and its reach in words. The header keeps one marker of its own, where the route reaches
- * nobody; every other reading of the route is here.
+ * Where a message on this issue goes, and whether it reaches anyone, in its row of Details: the
+ * route as the control that opens its editor - a `session:` route named as `AgentName` names an
+ * agent, with the agent's own live link beside it, a role route as its address, and no route as
+ * the page's `None`, as every empty row of Details draws it - and its reach in words. The header
+ * keeps one marker of its own, where the route reaches nobody; every other reading of the route
+ * is here.
  *
  * The route is a value of Details, so it is drawn whole in the ink with the row's underline
  * (`ROW_LINK`), and never cut.

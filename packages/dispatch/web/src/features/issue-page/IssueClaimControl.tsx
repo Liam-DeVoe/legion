@@ -10,8 +10,8 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
 /**
  * Who holds the issue, since when, and the control that hands the claim back, in the claim's
- * row of Details (dispatch://INFRA-1196 R13), which carries the label "Claimed by"; `None`
- * while nobody holds it. A release that fails says so beside it, with a retry.
+ * row of Details, which carries the label "Claimed by"; `None` while nobody holds it. A release
+ * that fails says so beside it, with a retry.
  */
 export function IssueClaimControl({
   issue,

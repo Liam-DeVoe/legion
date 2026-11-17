@@ -64,12 +64,12 @@ import { type MarginSections, useMarginSections } from "./useMarginSections";
 import { waitingOnReader } from "./waiting";
 
 /** How many entries a list of unbounded length draws before it folds behind a count that opens
- *  the rest (dispatch://INFRA-1196 R13). */
+ *  the rest. */
 const FOLD_AFTER = 10;
 
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
- *  People holds the issue's collaborators, which part M draws there (`DetailsPeople`). */
+ *  People holds the issue's collaborators, whose place there is `DetailsPeople`. */
 const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
   development: ["labels", "parent", "route"],
   people: ["collaborators"],
@@ -77,9 +77,8 @@ const SECTION_ROWS: Readonly<Record<MarginSection, readonly DetailsRow[]>> = {
 };
 
 /**
- * The margin's own side of the issue page's panel (dispatch://INFRA-1196 R12): the margin's
- * cards, and - where the margin keeps a column for that panel - the host the panel is moved
- * into, under them.
+ * The margin's own side of the issue page's panel: the margin's cards, and - where the margin
+ * keeps a column for that panel - the host the panel is moved into, under them.
  *
  * The panel is drawn once, by the details slot, and appended to this host rather than drawn
  * afresh in it (`slots/details.tsx`): a reader who has typed a message, opened a blocked-by edit
@@ -115,11 +114,11 @@ export function IssueMarginCards({
         {/* The margin's own cards first, and the panel's own sections under them, because the
             page's panel is appended to this wrapper (`slots/details.tsx`'s `holdPanel`): the
             threads anchored in an open document and its composer, in the margin's words and the
-            authors' own, and not the page's declared vocabulary (dispatch://INFRA-1196 R21,
-            `page-structure.ts`). They are first because the margin places an anchored card at
-            a `top` it measures down from the top of its own content (`margin/ThreadList.tsx`'s
-            `regionOrigin`), so anything drawn over them moves that anchor and a card can no
-            longer reach the line its mark is on. */}
+            authors' own, and not the page's declared vocabulary (`page-structure.ts`). They are
+            first because the margin places an anchored card at a `top` it measures down from
+            the top of its own content (`margin/ThreadList.tsx`'s `regionOrigin`), so anything
+            drawn over them moves that anchor and a card can no longer reach the line its mark
+            is on. */}
         <div className="contents" {...authorText}>
           {conversation}
         </div>
@@ -129,18 +128,17 @@ export function IssueMarginCards({
 }
 
 /**
- * Details, the issue page's one panel of properties (dispatch://INFRA-1196 R13, R14, the
- * prototype's `#details` and the picture page-v3-details-1440): every property the header does
- * not hold, each a row of its own - a label column with a shape for the property and its name,
- * and the value beside it, `None` where the issue has none - with every control the page had
- * for it, and nothing read-only. A field with no value is reachable from the one add control,
- * and only a list of unbounded length folds, after its first ten entries, behind a count that
- * opens the rest. The rows sit in three named sections the reader can collapse, kept for the
- * next issue.
+ * Details, the issue page's one panel of properties (the prototype's `#details` and the
+ * picture page-v3-details-1440): every property the header does not hold, each a row of its
+ * own - a label column with a shape for the property and its name, and the value beside it,
+ * `None` where the issue has none - with every control the page had for it, and nothing
+ * read-only. A field with no value is reachable from the one add control, and only a list of
+ * unbounded length folds, after its first ten entries, behind a count that opens the rest. The
+ * rows sit in three named sections the reader can collapse, kept for the next issue.
  *
- * Under the properties, the reader's pins as links to their rows (R14). It holds no list of the
+ * Under the properties, the reader's pins as links to their rows. It holds no list of the
  * conversation: the outline is the conversation. The people, the facts of the focused row and
- * the history are part M's, in the three places `details-more.tsx` exports.
+ * the history each have one of the three places `details-more.tsx` exports.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. What it reads that the header does not -
@@ -167,7 +165,7 @@ export function IssueMarginPanel({
   isClosed: boolean;
   issue: IssueDetails;
   onEditingField: (field: IssueField | null) => void;
-  /** The reader's own state of every issue, whose pins the panel lists (R14). */
+  /** The reader's own state of every issue, whose pins the panel lists. */
   state: UserState | undefined;
   /** The details slot's set of the issue's writes (`useIssueHeaderWrites.ts`). */
   writes: IssueHeaderWrites;
@@ -176,6 +174,8 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const filesList = useRef<HTMLUListElement>(null);
+  // The panel's own element, under which Add watches the controls of Details it reaches.
+  const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
   // The blocked-by editor's state is the panel's and not its row's, because a closed section
   // unmounts its rows and the panel stays drawn for the life of the page (`slots/details.tsx`):
@@ -236,7 +236,7 @@ export function IssueMarginPanel({
   const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
   const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   // Approve and Request changes are here wherever no approval request waits on the reader,
-  // and in the header while one does (R31): the approvals are all this reads of the count, so it
+  // and in the header while one does: the approvals are all this reads of the count, so it
   // hands it no decisions.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const approvalWaits =
@@ -266,7 +266,7 @@ export function IssueMarginPanel({
   );
 
   return (
-    <div className="flex min-w-0 flex-col gap-3">
+    <div className="flex min-w-0 flex-col gap-3" ref={panel}>
       <PropertySection drawerBox={drawerBox} name="development" sections={sections}>
         <Row glyph="◐" label={PROPERTY_LABELS.status}>
           <span
@@ -300,9 +300,8 @@ export function IssueMarginPanel({
             </span>
           )}
         </Row>
-        {/* Every label, with the control that adds and removes one (the ruling of
-            dispatch://INFRA-1196/comment/63b73642-8fc5-4cc4-8f5d-a3d8989d3bf4): the header draws
-            those that fit, and its count opens this row. */}
+        {/* Every label, with the control that adds and removes one: the header draws those
+            that fit, and its count opens this row. */}
         <Row glyph="#" label={PROPERTY_LABELS.labels} row="labels">
           {labels.length === 0 ? none : null}
           <IssueLabels
@@ -316,9 +315,9 @@ export function IssueMarginPanel({
             variant="rail"
           />
         </Row>
-        {/* The priorities the issue advances, with the control that adds and removes one
-            (dispatch://INFRA-2947 R3, R16): an issue that advances none draws no such row, and
-            its control stands beside the add control below. */}
+        {/* The priorities the issue advances, with the control that adds and removes one: an
+            issue that advances none draws no such row, and its control stands beside the add
+            control below. */}
         {advances.length === 0 ? null : (
           <Row glyph="↗" label={PROPERTY_LABELS.advances} testId="issue-advances">
             <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
@@ -476,9 +475,14 @@ export function IssueMarginPanel({
         )}
         {/* The one add control, which lists every field this issue has no value for and opens
             its control; and, while the issue advances no priority, the control that adds one,
-            which is INFRA-2947's priority row with nothing in it yet. */}
+            which is the priority row (`IssuePriorityLine`) with nothing in it yet. */}
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2">
-          <IssueAddMenu isClosed={isClosed} issue={issue} onOpenField={onEditingField} />
+          <IssueAddMenu
+            isClosed={isClosed}
+            issue={issue}
+            onOpenField={onEditingField}
+            panel={panel}
+          />
           {advances.length === 0 ? (
             <div className="contents" data-testid="issue-advances">
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
@@ -500,7 +504,7 @@ export function IssueMarginPanel({
       </PropertySection>
       <PropertySection drawerBox={drawerBox} name="references" sections={sections}>
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
-            wherever no approval request waits on the reader (R13, R31). */}
+            wherever no approval request waits on the reader. */}
         <Row glyph="▤" label={PROPERTY_LABELS.approval}>
           <ApprovalSteps
             actions={!approvalWaits}
@@ -547,7 +551,7 @@ export function IssueMarginPanel({
           ) : null}
         </Row>
         {/* Every document and file of the issue, each opening its own address, folded after ten
-            behind a count that opens the rest (R13). */}
+            behind a count that opens the rest. */}
         <Row
           glyph="▤"
           label={
@@ -606,7 +610,7 @@ export function IssueMarginPanel({
 }
 
 /** The issues of a list of them, each its key as a link and its title beside it, folded after
- *  ten behind a count that opens the rest (R13). */
+ *  ten behind a count that opens the rest. */
 function IssueList({
   issues,
 }: {
@@ -632,10 +636,10 @@ function IssueList({
   );
 }
 
-/** The count a folded list is drawn behind, which opens the rest of it (R13). `className`
- *  places it in the list that draws it, and `list` is that list, each of its children one
- *  entry. The count goes with its press, so the focus goes on to the link of the first entry
- *  it opened, the list's entry `FOLD_AFTER`, rather than falling to the page. */
+/** The count a folded list is drawn behind, which opens the rest of it. `className` places it
+ *  in the list that draws it, and `list` is that list, each of its children one entry. The
+ *  count goes with its press, so the focus goes on to the link of the first entry it opened,
+ *  the list's entry `FOLD_AFTER`, rather than falling to the page. */
 function ShowAll({
   className,
   count,
@@ -682,10 +686,10 @@ function PropertySection({
 }): ReactNode {
   const open = sections.isOpen(name);
   // A control elsewhere on the page that opens Details at one of this section's rows asks the
-  // drawer for that row before it looks for it (`DETAILS_ROW_REQUEST_EVENT`, part D's
-  // `useOpenDetailsAt`). A closed section opens
-  // for it as its heading opens it, so the reader's kept choice follows, and in the same task,
-  // so the row is on the page when the control looks for it.
+  // drawer for that row before it looks for it (`useOpenDetailsAt` sends
+  // `DETAILS_ROW_REQUEST_EVENT`). A closed section opens for it as its heading opens it, so the
+  // reader's kept choice follows, and in the same task, so the row is on the page when the
+  // control looks for it.
   const latest = useRef(sections);
   latest.current = sections;
   useEffect(() => {

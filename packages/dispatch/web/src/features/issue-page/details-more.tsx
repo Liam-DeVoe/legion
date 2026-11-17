@@ -31,8 +31,8 @@ import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, issueStatusWord, STATE_LINES } from "./page-words";
 import { useIssueSubscribers } from "./useIssueSubscribers";
 
-/** What each of Details' three places for part M is handed: the issue as the details slot reads
- *  it, and the reader's own state of every issue. */
+/** What each of Details' three places below is handed: the issue as the details slot reads it,
+ *  and the reader's own state of every issue. */
 export interface DetailsMoreProps {
   readonly issue: IssueDetails;
   readonly state: UserState | undefined;

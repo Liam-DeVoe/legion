@@ -28,12 +28,11 @@ import {
 import { seedFakeGithub } from "./fake-github-helpers";
 
 /**
- * What part H's browser rows read of Details (dispatch://INFRA-3945, part H of
- * dispatch://INFRA-1196): the locators of its panel and the one seed its rows open.
+ * What the browser rows of `issue-page-h.e2e.ts` read of Details: the locators of its panel and
+ * the one seed its rows open. No other row reads this file.
  *
- * Part D's `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`,
- * `openDetails`, `closeDetails`); this file adds what reads the panel inside it, and no other part
- * changes it (decision 2 of the parts).
+ * `e2e/issue-page.ts` opens the new page and Details (`phase`, `gotoIssue`, `openDetails`,
+ * `closeDetails`); this file adds what reads the panel inside it.
  *
  * - **The panel** `[data-testid="issue-margin"]`, the host the details slot's panel is appended to
  *   inside the drawer (`IssueMargin.tsx`'s `IssueMarginCards`).
@@ -137,7 +136,8 @@ export interface DetailsSeed {
 }
 
 /**
- * The issues part H's rows read, as alice, written through Dispatch with `main`'s helpers.
+ * The issues the rows of `issue-page-h.e2e.ts` read, as alice, written through Dispatch with
+ * `main`'s helpers.
  *
  * - **ONE** has a parent, the twenty labels, a repository, a pull request and one other link, a
  *   component, the planner's claim, the route `role:architect`, an advanced priority, eleven

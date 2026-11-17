@@ -60,13 +60,13 @@ function ClaimRow({ issue }: { issue: IssueDetails }): ReactNode {
 }
 
 /**
- * The claim's row of Details around one issue (dispatch://INFRA-1196 R13). `liveness` is what
- * the issue read says of the claim's holder, which outranks the agent list.
+ * The claim's row of Details around one issue. `liveness` is what the issue read says of the
+ * claim's holder, which outranks the agent list.
  *
  * `tooltips` is the surface the chip is drawn on. The issue page raises no tooltip at all
- * (dispatch://INFRA-1196 R21, `components/tooltips.tsx`), which is this helper's default and
- * what decides whether each instant is drawn in words; the chip's other hosts, a List row and
- * a Board card, do raise one, and a row that reads the chip's `title` asks for that surface.
+ * (`components/tooltips.tsx`), which is this helper's default and what decides whether each
+ * instant is drawn in words; the chip's other hosts, a List row and a Board card, do raise one,
+ * and a row that reads the chip's `title` asks for that surface.
  */
 function claimRow(
   issue: Issue,
@@ -137,10 +137,10 @@ test("a claimed issue names its holder and releases the claim from Details", asy
   const view = claimRow({ ...base, claim });
   try {
     // The chip says who holds the issue and since when in words, not in a tooltip: the issue
-    // page draws none at all (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
+    // page draws none at all (`components/tooltips.tsx`).
     const claimed = await screen.findByTestId("issue-claim");
     // The row's own label says "Claimed by" (`IssueMargin.tsx`), so the chip opens with the
-    // holder (dispatch://INFRA-1196 R13).
+    // holder.
     expect(claimed.textContent).not.toContain("Claimed by");
     expect(claimed.textContent).toContain("Implementer");
     expect(claimed.querySelector("time")?.textContent ?? "").toMatch(/\(.+\)/);
@@ -292,10 +292,10 @@ test("an unclaimed issue reads None and offers nothing to release", async () => 
   }
 });
 
-// A holder that has missed its heartbeats has not ended: it is still working the issue, and the
-// chip that called it "not running" sent the next agent to take work that was being done
-// (dispatch://INFRA-392). The chip has to tell the two apart, say since when it has been quiet
-// (R5), and say how long the wait is.
+// A holder that has missed its heartbeats has not ended: it is still working the issue, and a
+// chip that called it "not running" once sent the next agent to take work that was being done.
+// The chip has to tell the two apart, say since when it has been quiet, and say how long the
+// wait is.
 test("a holder that missed its heartbeats reads as unresponsive since its last heartbeat, not gone, and names when the claim comes free", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   // Six minutes of silence: inside the claim's grace, so the server would still refuse a take.
@@ -464,7 +464,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
 
 // A registry that could not be read judges nothing, so the chip may not pass the claim off as
 // held and may not call it gone either. On the issue page no tooltip carries that refusal, so
-// the chip draws it (dispatch://INFRA-1196 R21).
+// the chip draws it.
 test("a claim whose registry could not be read says the running state is unknown", async () => {
   const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
   const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
