@@ -9,7 +9,7 @@
 import { expect, type Page } from "@playwright/test";
 
 import type { InboxRow } from "../web/src/api/types";
-import { COLUMN_LIMIT_MS } from "../web/src/features/doc/refocus-when-settled";
+import { COLUMN_LIMIT_MS } from "../web/src/features/inbox/column-limit";
 import {
   answerAsk,
   createArtifactComment,

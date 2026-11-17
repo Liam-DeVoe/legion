@@ -10,7 +10,7 @@
  * otherwise spend its bound waiting for the first block. The quiet is the document's own
  * re-run's (`QUIET_MS`, `features/doc/refocus-when-settled.ts`), so the two cannot drift apart;
  * the bound is the column's own, declared beside it and measured against the longest draw this
- * pane serves (`COLUMN_LIMIT_MS`).
+ * pane serves (`COLUMN_LIMIT_MS`, `column-limit.ts`).
  *
  * The reader's press, scroll, touch or key is read on the column and not on the window: the list
  * beside it moves the selection with `j` and `k`, and a window-wide reading would end the next
@@ -36,8 +36,9 @@
  * the section afterwards the heading moved 0.4 px at most, as it did with no key at all, because
  * the document's own keeper answers what the hold no longer does.
  */
-import { COLUMN_LIMIT_MS, QUIET_MS } from "../doc/refocus-when-settled";
+import { QUIET_MS } from "../doc/refocus-when-settled";
 import { mermaidDrawsWaiting } from "../refs/mermaid-diagrams";
+import { COLUMN_LIMIT_MS } from "./column-limit";
 
 /** What a reader does to move on from where the column put them. */
 const READER_ACTIONS = ["pointerdown", "wheel", "touchstart", "keydown"] as const;
