@@ -6,9 +6,6 @@
  * read it.
  */
 
-/** Maximum entries in an issue's blocked_by input, before duplicate keys are removed. */
-export const MAX_ISSUE_BLOCKERS = 20;
-
 /**
  * Maximum entries in an issue's `advances` input, before duplicate ids are removed: the most
  * priorities one issue states it advances. It counts the issue's own relations alone, never what
@@ -105,15 +102,6 @@ export const SETTLED_DELIVERY_STATES = [
 ] as const satisfies readonly DeliveryAttemptState[];
 
 export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
-
-/**
- * The most sessions one broadcast sends to (`POST /api/v1/broadcasts`'s `session_ids`, after the
- * duplicates are dropped). A runaway guard, not a product limit: selection is a human ticking
- * boxes, but select-all makes a large send one click. Generated into Go as
- * `contracts.MaxBroadcastRecipients`, which the server enforces, so the dashboard's refusal and
- * the server's are one number.
- */
-export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
  * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the

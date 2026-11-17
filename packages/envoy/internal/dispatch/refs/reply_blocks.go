@@ -17,9 +17,10 @@ import (
 // blocks are owed: its state row is missing (an older build wrote it before the state existed),
 // owed (owed_at set by an older build's write, or by rebuild-refs), or indexed from another text
 // than the stored one. It indexes as ReindexOwed does: the blocks and the mentions each
-// holds, and for a comment or an issue message its own refs, at the time its body was written; a
-// direct message writes no mention, and an ask's own refs are its question's, which the grammar
-// reconciliation owns (ReindexOwed). A reply that names a block of the item calls it first,
+// holds, and for a comment or an issue message its own refs, at the time its body was written,
+// after the blocks, so their settle of the forms queue comes after both deletes (replaceRefs); a
+// direct message writes no mention, and an ask's parts index reconciles its question's refs
+// itself (IndexAskParts). A reply that names a block of the item calls it first,
 // so the block it names is one the item holds now; the block-index reconciliation drains owed
 // items through it (IndexOwedItemBlocks). The caller holds the item's owner row (the
 // reconciliation holds none) and the item row; the index takes the state row after them. It
@@ -64,7 +65,7 @@ func IndexItemIfOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID, serv
 	if !mentions {
 		return true, nil
 	}
-	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), &writtenAt); err != nil {
+	if _, err := replaceRefs(ctx, tx, string(kind), itemID, text.Refs(located), &writtenAt, true); err != nil {
 		return false, fmt.Errorf("index %s %s: %w", kind, itemID, err)
 	}
 	return true, nil

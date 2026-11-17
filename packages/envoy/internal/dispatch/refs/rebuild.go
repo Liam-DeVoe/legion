@@ -58,11 +58,21 @@ type Rebuild struct {
 // and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it has
 // just re-read every comment, ask and issue message with this build's grammar itself.
 //
-// It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
-// own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
-// re-index of the sources around a document rather than one source, are deleted at the end for
-// every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
-// keeps its place: the rebuild may have read that source already.
+// It clears the whole grammar's queue (refs_grammar_owed) for every source it re-indexes: each
+// source's own row goes in that source's transaction (replaceRefs), and the `scope` rows, which
+// owe a re-index of the sources around a document rather than one source, are deleted at the end
+// for every row enqueued before the rebuild started. A row a write enqueues while the rebuild runs
+// keeps its place: the rebuild may have read that source already. It settles nothing of the forms
+// queue (refs_forms_owed, RefsFormsOwed) for a source it re-indexes: it reads a source's own
+// references alone and leaves its blocks to the block index it marks owed, which a process of an
+// older build may take during a roll and write without those forms, so each source stays owed
+// until this build's own block index of it settles the row after its whole text
+// (IndexOwedItemBlocks, docs.Service.indexOwedDocument), or the forms drain does.
+//
+// The orphan sweep deletes the edges of every source that is gone and, in the same transaction,
+// what refs_forms_owed holds for every source that is gone: the sweep's delete owes that queue
+// each source whose edges it deletes (migration 20261117025906's trigger), and a gone source owes
+// no text.
 func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, error) {
 	var report Rebuild
 	var started time.Time
@@ -100,22 +110,11 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	if _, err := pool.Exec(ctx, `delete from refs_grammar_owed where kind = 'scope' and enqueued_at <= $1`, started); err != nil {
 		return report, fmt.Errorf("clear the scopes owed an index with the whole grammar: %w", err)
 	}
-	orphans, err := pool.Exec(ctx, `
-		delete from refs r
-		where not exists (
-			select 1 from artifacts a where r.from_kind = 'artifact' and a.id::text = r.from_id
-			union all
-			select 1 from asks k where r.from_kind = 'ask' and k.id::text = r.from_id
-			union all
-			select 1 from comments c where r.from_kind = 'comment' and c.id::text = r.from_id
-			union all
-			select 1 from messages m where r.from_kind = 'message' and m.issue_key is not null and m.id::text = r.from_id
-		)
-	`)
+	orphans, err := sweepOrphans(ctx, pool)
 	if err != nil {
-		return report, fmt.Errorf("delete orphan references: %w", err)
+		return report, err
 	}
-	report.Orphans = int(orphans.RowsAffected())
+	report.Orphans = orphans
 	owed, err := pool.Exec(ctx, `
 		insert into document_block_versions (artifact_id) select id from artifacts where kind = 'doc'
 		on conflict (artifact_id) do update set version = null
@@ -158,6 +157,48 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
+// sweepOrphans deletes the edges of every source that is gone and, after that delete and in its
+// transaction, what refs_forms_owed holds for every source that is gone, which that delete has just
+// owed it (migration 20261117025906): a gone source owes no text, and one transaction leaves no
+// such row behind for a drain to list between the two. It reports how many edges it deleted.
+func sweepOrphans(ctx context.Context, pool Pool) (int, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	orphans, err := tx.Exec(ctx, `
+		delete from refs r
+		where not exists (
+			select 1 from artifacts a where r.from_kind = 'artifact' and a.id::text = r.from_id
+			union all
+			select 1 from asks k where r.from_kind = 'ask' and k.id::text = r.from_id
+			union all
+			select 1 from comments c where r.from_kind = 'comment' and c.id::text = r.from_id
+			union all
+			select 1 from messages m where r.from_kind = 'message' and m.issue_key is not null and m.id::text = r.from_id
+		)
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("delete orphan references: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from refs_forms_owed o
+		where not exists (
+			select 1 from artifacts a where o.kind = 'artifact' and a.id = o.id
+			union all
+			select 1 from asks k where o.kind = 'ask' and k.id = o.id
+			union all
+			select 1 from comments c where o.kind = 'comment' and c.id = o.id
+			union all
+			select 1 from messages m where o.kind = 'message' and m.issue_key is not null and m.id = o.id
+		)
+	`); err != nil {
+		return 0, fmt.Errorf("settle the index owed by the sources the orphan sweep found gone: %w", err)
+	}
+	return int(orphans.RowsAffected()), tx.Commit(ctx)
+}
+
 // replaceInTx reconciles one source's refs with its text in a transaction of its own, and
 // reports false for a source gone since it was listed, whose edges the orphan sweep deletes.
 //
@@ -171,6 +212,10 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // of that source's own transaction, so a rebuild still never holds the whole table: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // source's row for the length of the pass, which is minutes on a large database.
+//
+// It reads the source's own references alone, and its blocks wait for the block index RebuildAll
+// marks owed, so it settles the whole grammar's queue and leaves the forms queue owed
+// (replaceRefs).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
@@ -182,7 +227,7 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, err
 	}
 	located := NewReader(ctx, tx, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil); err != nil {
+	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil, false); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -266,8 +311,8 @@ func lockDocumentOwner(ctx context.Context, q Queryer, artifactID string) error 
 // OwedQueue is one queue of text owed a re-index: a table of (kind, id, enqueued_at) a trigger
 // upserts a row into for every source a write left indexed with a grammar older than the one
 // this build reads it with, which a drain lists oldest first (ListOwed), settles (SettleOwed)
-// and re-indexes (ReindexOwed). Dispatch holds the two below, and the table each names is the
-// whole of the difference between them: one drain, one order, for both.
+// and re-indexes (ReindexOwed). Dispatch holds the three below, and the table each names is the
+// whole of the difference between them: one drain, one order, for all three.
 type OwedQueue struct {
 	// table is the queue's table, which every statement of the drain names.
 	table string
@@ -282,15 +327,28 @@ var BlockGrammarOwed = OwedQueue{table: "block_grammar_owed"}
 // in the block grammar's: that migration says why.
 var RefsGrammarOwed = OwedQueue{table: "refs_grammar_owed"}
 
+// RefsFormsOwed is the queue of sources an older build indexed without the reference forms
+// migration 20261117025900 adds (an issue's tab addresses and a document's dashboard URLs,
+// refs_forms_owed), and the rule it keeps is one sentence: a row stays owed until a build that
+// reads those forms has indexed that text itself. A queue of its own rather than a row in the
+// whole grammar's, and drained in a duty of its own (docs.Service.RunRefsFormsReconciliation):
+// that migration says why. Every delete from refs and from each block table owes the source it
+// deletes the edges of (migrations 20261117025906-20261117025910), and this build settles a
+// source's row only in a transaction that indexed the source's whole text, its blocks too, after
+// every delete that index made (replaceRefs, IndexAskParts), so only an older build's re-index,
+// and a write of this build that left the blocks to its block index, leave the source owed.
+var RefsFormsOwed = OwedQueue{table: "refs_forms_owed"}
+
 // Owed is one source a queue owes an index, as of the write that last owed it (EnqueuedAt).
 //
-// Kind is the source's own kind - comment, ask or message - or, in the whole grammar's queue,
-// `artifact`, a document read at its latest version, or `scope`, whose id is a document whose
-// question blocks moved. Those last two name no text this re-indexes: what a `scope` row owes
-// is a re-index of every source whose text belongs to that document (ScopeSources) and what an
-// `artifact` row owes is a block index of that document, each the drain's own work
-// (docs.Service.reindexOwedText). ReindexOwed answers an error for either rather than reading
-// a row with no text of its own and settling it, so no caller can drain one by handing it here.
+// Kind is the source's own kind - comment, ask or message - or, in the whole grammar's queue and
+// the forms queue, `artifact`, a document read at its latest version, or, in the whole grammar's
+// queue alone, `scope`, whose id is a document whose question blocks moved. Those last two name no
+// text this re-indexes: what a `scope` row owes is a re-index of every source whose text belongs
+// to that document (ScopeSources) and what an `artifact` row owes is a block index of that
+// document, each the drain's own work (docs.Service.reindexOwedText, and for the forms queue
+// docs.Service.drainFormsDocument). ReindexOwed answers an error for either rather than reading a
+// row with no text of its own and settling it, so no caller can drain one by handing it here.
 type Owed struct {
 	Queue      OwedQueue
 	Kind       string
@@ -308,7 +366,10 @@ func (owed Owed) reindexable() bool {
 	return false
 }
 
-// listQuery is the statement a drain of this queue lists its oldest rows with.
+// listQuery is the statement a drain of this queue lists its oldest rows with, and listAfterQuery
+// the one it lists the rows past a row it listed with (ListOwedAfter): the row comparison is on
+// the three columns of the order, so it is a bound of the same index scan and the read starts at
+// the cursor rather than reading every row before it.
 //
 // The order columns are written qualified: unqualified, `id` would name the selected `id::text`
 // rather than the table's uuid, so every tick would sort the whole tie group the seed enqueues
@@ -324,9 +385,30 @@ func (queue OwedQueue) listQuery() string {
 	`
 }
 
+func (queue OwedQueue) listAfterQuery() string {
+	return `
+		select o.kind, o.id::text, o.enqueued_at from ` + queue.table + ` o
+		where (o.enqueued_at, o.kind, o.id) > ($2, $3, $4::uuid)
+		order by o.enqueued_at, o.kind, o.id limit $1
+	`
+}
+
 // ListOwed lists at most limit sources queue owes an index, oldest first, and locks nothing.
 func ListOwed(ctx context.Context, q Queryer, queue OwedQueue, limit int) ([]Owed, error) {
-	rows, err := q.Query(ctx, queue.listQuery(), limit)
+	return ListOwedAfter(ctx, q, queue, Owed{}, limit)
+}
+
+// ListOwedAfter is ListOwed from the row after after, a row an earlier call listed, in the
+// queue's order (enqueued_at, kind, id): the keyset cursor of a drain that walks the whole queue
+// one batch a pass, so a row it leaves owed is passed over until the walk comes round again
+// rather than listed first on every pass. A zero after lists from the start. A row a write owes
+// again meanwhile takes a later enqueued_at, which sorts past the cursor, so the walk reaches it.
+func ListOwedAfter(ctx context.Context, q Queryer, queue OwedQueue, after Owed, limit int) ([]Owed, error) {
+	query, args := queue.listQuery(), []any{limit}
+	if !after.EnqueuedAt.IsZero() {
+		query, args = queue.listAfterQuery(), []any{limit, after.EnqueuedAt, after.Kind, after.ID}
+	}
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list what %s owes an index: %w", queue.table, err)
 	}
@@ -343,6 +425,19 @@ func ListOwed(ctx context.Context, q Queryer, queue OwedQueue, limit int) ([]Owe
 		return nil, fmt.Errorf("list what %s owes an index: %w", queue.table, err)
 	}
 	return owed, nil
+}
+
+// Before reports whether owed sorts before other in a queue's order (enqueued_at, kind, id), the
+// order ListOwedAfter walks in. Both are rows of one queue, so each id is a uuid's canonical text,
+// whose order is the uuid's.
+func (owed Owed) Before(other Owed) bool {
+	if !owed.EnqueuedAt.Equal(other.EnqueuedAt) {
+		return owed.EnqueuedAt.Before(other.EnqueuedAt)
+	}
+	if owed.Kind != other.Kind {
+		return owed.Kind < other.Kind
+	}
+	return owed.ID < other.ID
 }
 
 // SettleOwed deletes source's row from its queue while it still holds the enqueued_at source
@@ -364,8 +459,11 @@ func SettleOwed(ctx context.Context, q Execer, source Owed) (bool, error) {
 // takes them in (the row's update, then its trigger's upsert), so the two never deadlock. The
 // owed row is settled only while it holds the enqueued_at source was listed with (SettleOwed),
 // and it is settled before the text is written: one a write moved meanwhile is left owed with
-// nothing written for it, and the next pass, which reads its newer text, writes it. It reports
-// whether it re-indexed the source.
+// nothing written for it, and the next pass, which reads its newer text, writes it. The text's
+// own write then settles every queue that source is in again, after every delete its index of the
+// text and its blocks made (reindexText), since each such delete owes refs_forms_owed the source
+// it rewrites (migrations 20261117025906-20261117025910). It reports whether it re-indexed the
+// source.
 //
 // A new edge takes the time the text was written (sourceText) and no source_seq, since no event
 // introduced it, as a rebuild's does; a re-index of text no one rewrote appends no event, as
@@ -399,38 +497,43 @@ func ReindexOwed(ctx context.Context, pool Pool, source Owed, serverURL string) 
 
 // reindexText reconciles one item's refs, and the blocks its text holds, with body as this build's
 // grammar reads it, in tx, which holds the item's row (sourceText, forUpdate). found is what
-// sourceText answered: an item whose source is gone has its edges deleted instead. A comment or
-// message has its blocks indexed too (IndexItem, which takes the item's block state row after the
-// source row), and an ask its parts (IndexAskParts, read from the same row sourceText locked), so
-// the mentions its blocks hold are read with the same grammar as its own.
+// sourceText answered: an item whose source is gone has its edges deleted instead, and settles
+// what it owes the re-index queues after that delete, which owes refs_forms_owed the source whose
+// edges it deletes (migration 20261117025906), as replaceRefs settles them after its own. A
+// comment or message has its blocks indexed first (IndexItem, which takes the item's block state
+// row after the source row) and its own refs after them, which settle every queue after both
+// deletes; an ask's parts are indexed with its question's refs (IndexAskParts, read from the same
+// row sourceText locked), which settles them after both. So the mentions its blocks hold are read
+// with the same grammar as its own, and its row is settled only for its whole text.
 func reindexText(ctx context.Context, tx pgx.Tx, kind, id, body, serverURL string, writtenAt time.Time, found bool) error {
 	if !found {
 		if _, err := tx.Exec(ctx, `delete from refs where from_kind = $1 and from_id = $2`, kind, id); err != nil {
 			return fmt.Errorf("delete the references of %s %s, which is gone: %w", kind, id, err)
 		}
-		return nil
+		return settleOwed(ctx, tx, kind, id, grammarQueue|formsQueue)
 	}
 	resolve := NewReader(ctx, tx, kind, id, serverURL)
-	located := resolve.Mentions(body)
-	switch itemKind := ItemKind(kind); itemKind {
-	case ItemComment, ItemMessage:
-		if _, err := IndexItem(ctx, tx, itemKind, id, body, serverURL, writtenAt, located, nil); err != nil {
-			return fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
-		}
-	case ItemAsk:
+	if ItemKind(kind) == ItemAsk {
 		// An ask's parts are its question, its options and its answer, where sourceText reads
-		// the question alone, which is what the ask's own refs are written from.
+		// the question alone, which is what the ask's own refs are written from. The row is
+		// the one sourceText locked, so it is there.
 		ask, _, found, err := askForParts(ctx, tx, id)
 		if err != nil {
 			return err
 		}
-		if found {
-			if _, err := IndexAskParts(ctx, tx, resolve, ask, writtenAt); err != nil {
-				return fmt.Errorf("index the parts of ask %s: %w", id, err)
-			}
+		if !found {
+			return fmt.Errorf("index the parts of ask %s: its row is gone though this transaction holds it", id)
 		}
+		if _, err := IndexAskParts(ctx, tx, resolve, ask, writtenAt); err != nil {
+			return fmt.Errorf("index the parts of ask %s: %w", id, err)
+		}
+		return nil
 	}
-	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), &writtenAt); err != nil {
+	located := resolve.Mentions(body)
+	if _, err := IndexItem(ctx, tx, ItemKind(kind), id, body, serverURL, writtenAt, located, nil); err != nil {
+		return fmt.Errorf("index the blocks of %s %s: %w", kind, id, err)
+	}
+	if _, err := replaceRefs(ctx, tx, kind, id, text.Refs(located), &writtenAt, true); err != nil {
 		return fmt.Errorf("index %s %s: %w", kind, id, err)
 	}
 	return nil

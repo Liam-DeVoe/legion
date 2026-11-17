@@ -25,7 +25,9 @@ export function ThreadTitle({
   href,
   thread,
 }: {
-  /** The classes the host's line gives the title; the unread weight is added to them. */
+  /** The classes the host's line gives the title; the unread weight is added to them. The host
+   *  cuts the line (`truncate`), as it did when it drew the subject as words, so the preview is
+   *  drawn as the host's inline text (`inline`), and the ellipsis falls where it did. */
   className: string;
   /** Where the title links, for the host that draws it as a link; plain text without one. */
   href?: string;
@@ -36,6 +38,7 @@ export function ThreadTitle({
   }`;
   const line = (
     <MarkdownPreview
+      className="inline"
       fullTitle
       lines={1}
       markdown={thread.subject}

@@ -3523,26 +3523,6 @@ test("Send says which of its reasons stops it, where that reason is shown, and t
     refusal: null,
     refusalOnNotice: false,
   });
-
-  // The limit outranks an empty message and the Excluded line alike.
-  const crowd = Array.from({ length: 101 }, (_, index) => ({
-    ...planner,
-    session_id: `crowd-${index}`,
-  }));
-  const limit = "At most 100 recipients per broadcast; this one would reach 101.";
-  expect(
-    state(
-      [...crowd.map((agent) => agent.session_id), reviewer.session_id],
-      [...crowd, reviewer],
-      "btw",
-      ""
-    )
-  ).toEqual({
-    label: "Send to 101",
-    notice: [limit],
-    refusal: [limit],
-    refusalOnNotice: true,
-  });
 });
 
 test("the header checkbox follows the filters and its count never hides a selected row the filter hides", async () => {

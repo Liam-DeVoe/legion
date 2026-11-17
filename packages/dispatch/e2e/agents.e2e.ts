@@ -1079,7 +1079,7 @@ test("on a narrow or short screen a refused send's row stays out of the sticky b
   }
 });
 
-const NOTICE = /^(At most \d+ recipients|Excluded:)/;
+const NOTICE = /^Excluded:/;
 const NOTICE_SIZES = [
   { height: 664, width: 390 },
   { height: 390, width: 844 },
@@ -1147,8 +1147,6 @@ async function openNoticeFixture(page: Page, sessions: FakeSession[]) {
     excludedChip: (title: string) =>
       composer.getByRole("button", { name: new RegExp(`^${title} · does not advertise BTW`) }),
     excludedLine: composer.getByText(/^Excluded:/),
-    limit: composer.getByText(/^At most 100 recipients per broadcast/),
-    notice: composer.getByText(NOTICE),
   };
 }
 
@@ -1199,66 +1197,19 @@ test("with half the recipients unable to take the mode, the compact composer kee
   }
 });
 
-test.describe("the composer's notices share one slot, highest first, within budget on compact screens", () => {
-  test("the limit alone: 120 recipients", async ({ browser }) => {
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      const fixture = await openNoticeFixture(page, planners(120, 120));
-      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-        await expect.soft(fixture.limit, at).toHaveCount(1);
-        await expect.soft(fixture.notice, at).toHaveCount(1);
-      });
-    } finally {
-      await alice.close();
-    }
-  });
-
-  test("the limit over exclusions: 120 selected, 110 recipients, each excluded chip still names its reason", async ({
-    browser,
-  }) => {
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      const fixture = await openNoticeFixture(page, planners(120, 110));
-      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-        await expect.soft(fixture.limit, at).toHaveCount(1);
-        await expect.soft(fixture.excludedLine, at).toHaveCount(0);
-        await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
-      });
-    } finally {
-      await alice.close();
-    }
-  });
-
-  // SLOW(>=2s): 111 recipient chips rendered for real at each of three compact sizes, twice over
-  // the boundary; the layout under measurement is what the row proves.
-  test("the boundary with exclusions: 101 recipients show the limit, exactly 100 the Excluded line", async ({
-    browser,
-  }) => {
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
-      const fixture = await openNoticeFixture(page, planners(111, 101));
-      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-        await expect.soft(fixture.limit, at).toHaveCount(1);
-        await expect.soft(fixture.excludedLine, at).toHaveCount(0);
-      });
-      await page.setViewportSize({ height: 664, width: 390 });
-      // One recipient off the selection, taken out at the chip the composer shows for it: the
-      // list is windowed, and the hundred-and-first row is not drawn at this scroll position.
-      await fixture.composer.getByTitle("Remove Planner 101 from this broadcast").click();
-      await expect(
-        fixture.composer.getByRole("heading", { name: "Broadcast to 100 of 110 selected" })
-      ).toBeVisible();
-      await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
-        await expect.soft(fixture.limit, at).toHaveCount(0);
-        await expect.soft(fixture.excludedLine, at).toHaveCount(1);
-      });
-    } finally {
-      await alice.close();
-    }
-  });
+test("with 120 selected and 110 recipients, the compact composer keeps its budget and each excluded chip names its reason", async ({
+  browser,
+}) => {
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const fixture = await openNoticeFixture(page, planners(120, 110));
+    await expectNoticeWithinBudget(page, fixture.composer, async (at) => {
+      await expect.soft(fixture.excludedChip("Planner 111"), at).toHaveCount(1);
+    });
+  } finally {
+    await alice.close();
+  }
 });
 
 test("a typed broadcast survives clearing the selection and picking again, and a refused send gives it back", async ({
@@ -1548,47 +1499,6 @@ test("a human-paced double click on one Retry sends that message once, and never
     await expect(row("Never retried.").getByRole("status")).toHaveText(
       /^Could not send to 2 agents: /
     );
-  } finally {
-    await alice.close();
-  }
-});
-
-test("a selection over the broadcast limit says so and never asks the server", async ({
-  browser,
-}) => {
-  await setLiveSessions(planners(101, 101));
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    const posts = postedBroadcasts(page);
-    await page.goto("/agents");
-    const agents = page.getByRole("region", { name: "Agents" });
-    const composer = page.getByRole("region", { name: "Broadcast" });
-    await agents.getByRole("checkbox", { name: "Select all matching agents" }).click();
-    await expect(
-      composer.getByRole("heading", { name: "Broadcast to 101 of 101 selected" })
-    ).toBeVisible();
-    await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Too many.");
-    const send = composer.getByRole("button", { name: "Send to 101" });
-    await expect(send).toBeDisabled();
-    await send.click({ force: true });
-    // A selection over the limit asks nothing of the server, and a request that never leaves
-    // marks nothing to wait on: `ABSENCE_MARGIN_MS` is the window a POST made in the forced
-    // click's own task would show in, taken in Node so the page's clock cannot skip it.
-    await sleep(ABSENCE_MARGIN_MS);
-    expect(posts).toEqual([]);
-    expect(await getSentMessages()).toEqual([]);
-    await expect(
-      composer.getByText("At most 100 recipients per broadcast; this one would reach 101.")
-    ).toBeVisible();
-
-    // One fewer is within the limit: the reason goes and Send comes back. The row itself is not
-    // drawn - the list is windowed and the hundred-and-first row is far below the window - so
-    // the recipient comes off at the chip the composer shows for it.
-    await composer.getByTitle("Remove Planner 101 from this broadcast").click();
-    await expect(composer.getByText(/^At most 100 recipients/)).toHaveCount(0);
-    await expect(composer.getByRole("button", { name: "Send to 100" })).toBeEnabled();
   } finally {
     await alice.close();
   }

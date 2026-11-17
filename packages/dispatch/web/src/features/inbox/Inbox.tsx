@@ -387,14 +387,21 @@ function AskShortRow({
       section={section}
       selected={selected}
       title={
-        <MarkdownPreview
-          className="min-w-0 grow text-sm"
-          lines={1}
-          markdown={ask.question}
-          source={textSourceOf("ask", ask.id, ask.issue_key)}
-          surface="inbox-ask-row"
-          tree={ask.question_tree}
-        />
+        // Main's title span, as main drew the question's words: its size, its place in the row
+        // and the line it cuts (`truncate`). The preview is that span's inline text (`inline`),
+        // so the ellipsis falls where main's did, and its type is the span's, since
+        // `.dispatch-markdown` takes its size and its line from the element around it
+        // (styles.css).
+        <span className="min-w-0 grow truncate text-sm">
+          <MarkdownPreview
+            className="inline"
+            lines={1}
+            markdown={ask.question}
+            source={textSourceOf("ask", ask.id, ask.issue_key)}
+            surface="inbox-ask-row"
+            tree={ask.question_tree}
+          />
+        </span>
       }
     />
   );

@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  Removed `MAX_BROADCAST_RECIPIENTS` and `MAX_ISSUE_BLOCKERS`, and with them their Go copies
+  `contracts.MaxBroadcastRecipients` and `contracts.MaxIssueBlockers`. The `blocked_by` argument of
+  `dispatch_issue` and `dispatch_issue_update` no longer takes at most 20 keys.
+time: 2026-11-17T09:20:04.000000000Z
+custom:
+    Issue: pr3125

@@ -128,7 +128,10 @@ test("an open backlink panel follows a mention added, replied to, and removed", 
 
   await createMessage(source.key, { body: `Blocked on dispatch://${target.key} today.` });
   await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-  await expect(references).toContainText("Blocked on dispatch://", live);
+  // The excerpt is the message's stored text, drawn by the renderer, so the bare address reads as
+  // the target's current name once the target's read lands (INFRA-1702 R8). Before that it shows
+  // the address as written, for a moment (76 ms measured in the pod), which is no claim to read.
+  await expect(references).toContainText(`Blocked on ${target.key} ${target.title} today.`, live);
 
   const reply = await createComment(source.key, {
     body: `Still blocked on dispatch://${target.key} after the rollback.`,

@@ -97,11 +97,16 @@ func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID strin
 	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
 }
 
-// offsetBlocks is the blocks a render's offsets name, as the block index takes them.
+// offsetBlocks is the blocks a render's offsets name, as the block index takes them, each with the
+// attributes its render found: a typed block that reached the index with none would read as one
+// that declares none, where GET …/blocks (renderedBlocks) answers the same block with them.
 func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
 	blocks := make([]model.ArtifactBlock, len(offsets))
 	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
+		blocks[index] = model.ArtifactBlock{
+			ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To,
+			Attributes: offset.Attributes,
+		}
 	}
 	return blocks
 }
