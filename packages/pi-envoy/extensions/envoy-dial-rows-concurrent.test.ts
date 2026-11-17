@@ -1,46 +1,101 @@
-// Red test of acceptance round 5 of PR #4236 (head c6b0c888d4), finding D1 of Acc5Class.
-// It belongs at packages/pi-envoy/extensions/envoy-dial-rows-concurrent.test.ts.
+// The two rows of extensions/envoy.test.ts that count what dials nats.js's default 127.0.0.1:4222
+// must count in each run, whatever else runs on the machine: two runs of that file at once (two
+// agents on a shared dev box, or a developer's watch run beside a full `bun run test`), and a run
+// beside another program that holds 127.0.0.1:4222 (a developer's local NATS). In neither case may
+// a row fail or skip.
 //
-// Two runs of one test file on one machine are an honest setup: two agents on a shared dev box, or a
-// developer's watch run beside a full `bun run test`. The two rows of extensions/envoy.test.ts that
-// count what dials nats.js's default 127.0.0.1:4222 must count in each run: no run's rows fail because
-// another program (the other run of the same file, a local NATS) holds 127.0.0.1:4222, and none skips.
-// At c6b0c888d4 the file binds 127.0.0.1:4222 while it collects its rows and holds it to afterAll, so
-// the second run's two rows fail ("127.0.0.1:4222 is held by ..."); before 7ca0c3ec64 they skipped.
+// No row here binds a fixed port. The second row's other program is a listener of its own on a
+// port the kernel chose, and the child run is started with test/nats-default-port-held.ts, which
+// in that process alone makes a bind of port 4222 fail with EADDRINUSE and sends each dial of port
+// 4222 to that listener. So the child sees 4222 held, and no other run on the machine sees it.
 //
-// On a shared machine, run this file in a private network namespace: the second row holds
-// 127.0.0.1:4222 for its own child run, which would make another user's run of envoy.test.ts fail.
+// How each row ended is read from the child's JUnit report, not its console: under an AI agent
+// (CLAUDECODE, AGENT and the like in the environment) `bun test` prints no line for a passed test.
 import { expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const packageDirectory = join(import.meta.dir, "..");
+const heldPreload = join(packageDirectory, "test", "nats-default-port-held.ts");
 const rows = "nothing dials nats.js's default 127.0.0.1:4222";
 const rowNames = [
-  `(pass) envoy OMP extension > with its NATS seed refused (envoy.natsUrls other than ENVOY_NATS_URL's), ${rows}`,
-  `(pass) envoy OMP extension > with no NATS server, ${rows}`,
+  `with its NATS seed refused (envoy.natsUrls other than ENVOY_NATS_URL's), ${rows}`,
+  `with no NATS server, ${rows}`,
 ];
 
-/** One run of the two dial rows, as a developer runs them, in a process of its own. */
-async function runDialRows(): Promise<{ readonly code: number; readonly output: string }> {
-  const child = Bun.spawn([process.execPath, "test", "extensions/envoy.test.ts", "-t", rows], {
-    cwd: packageDirectory,
-    env: process.env,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  return { code, output: stdout + stderr };
+type RowEnd = "passed" | "failed" | "skipped";
+
+interface DialRowsRun {
+  readonly code: number;
+  readonly output: string;
+  /** How each test of the child's JUnit report ended, by its name. */
+  readonly rows: ReadonlyMap<string, RowEnd>;
 }
 
-function expectBothRowsCounted(run: { readonly code: number; readonly output: string }): void {
-  for (const name of rowNames) expect(run.output).toContain(name);
-  expect(run.output).not.toMatch(
-    /\((fail|skip)\) envoy OMP extension > .*nothing dials nats\.js's default/
-  );
+const xmlEntities: Record<string, string> = { amp: "&", apos: "'", gt: ">", lt: "<", quot: '"' };
+
+/** Each `<testcase>` of a JUnit report, by its name, with how it ended. */
+function rowEnds(junit: string): Map<string, RowEnd> {
+  const ends = new Map<string, RowEnd>();
+  for (const [, name = "", body = ""] of junit.matchAll(
+    /<testcase name="([^"]*)"[^>]*?(?:\/>|>([\s\S]*?)<\/testcase>)/g
+  )) {
+    const end: RowEnd = /<(failure|error)\b/.test(body)
+      ? "failed"
+      : /<skipped\b/.test(body)
+        ? "skipped"
+        : "passed";
+    ends.set(
+      name.replace(/&(amp|apos|gt|lt|quot);/g, (_, entity: string) => xmlEntities[entity] ?? ""),
+      end
+    );
+  }
+  return ends;
+}
+
+/**
+ * One run of the two dial rows, as a developer runs them, in a process of its own; `args` go to
+ * `bun test` before the file, and `env` over this process's environment.
+ */
+async function runDialRows(
+  args: readonly string[] = [],
+  env: Record<string, string> = {}
+): Promise<DialRowsRun> {
+  const reportDirectory = mkdtempSync(join(tmpdir(), "dial-rows-"));
+  const report = join(reportDirectory, "rows.xml");
+  try {
+    const child = Bun.spawn(
+      [
+        process.execPath,
+        "test",
+        ...args,
+        "--reporter=junit",
+        `--reporter-outfile=${report}`,
+        "extensions/envoy.test.ts",
+        "-t",
+        rows,
+      ],
+      { cwd: packageDirectory, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" }
+    );
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    const junit = existsSync(report) ? readFileSync(report, "utf8") : "";
+    return { code, output: stdout + stderr, rows: rowEnds(junit) };
+  } finally {
+    rmSync(reportDirectory, { recursive: true, force: true });
+  }
+}
+
+function expectBothRowsCounted(run: DialRowsRun): void {
+  const ends = rowNames.map((name) => {
+    const end = run.rows.get(name);
+    return `${name}: ${end === "passed" ? end : `${end ?? "not run"}; the run printed ${run.output}`}`;
+  });
+  expect(ends).toEqual(rowNames.map((name) => `${name}: passed`));
   expect(run.code).toBe(0);
 }
 
@@ -51,16 +106,12 @@ test("two runs of the dial rows started at the same moment both count dials: nei
 }, 120_000);
 
 test("the dial rows count dials while another program holds 127.0.0.1:4222", async () => {
-  // The other program: a listener of this test's own, or whatever already holds the port.
-  let held: { stop(closeActiveConnections?: boolean): void } | undefined;
+  const rival = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
   try {
-    held = Bun.listen({ hostname: "127.0.0.1", port: 4222, socket: { data() {} } });
-  } catch (error) {
-    if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
-  }
-  try {
-    expectBothRowsCounted(await runDialRows());
+    expectBothRowsCounted(
+      await runDialRows(["--preload", heldPreload], { NATS_DEFAULT_PORT_RIVAL: String(rival.port) })
+    );
   } finally {
-    held?.stop(true);
+    rival.stop(true);
   }
 }, 120_000);
