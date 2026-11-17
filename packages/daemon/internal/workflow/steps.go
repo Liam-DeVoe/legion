@@ -124,7 +124,9 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 	if !ok || !recordsSteps(issue) {
 		return nil
 	}
-	now := e.now()
+	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
+	// and the end reads back, so the start and the end write one moment (endStep).
+	now := e.now().Truncate(time.Microsecond)
 	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, place, func(starts int64) record.StepRecord {
 		write := stepWrite(issue, place, role, typ, string(agent), starts)
 		write.StartedAt = new(now)

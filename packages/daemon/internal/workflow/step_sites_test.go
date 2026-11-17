@@ -158,6 +158,39 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 	})
 }
 
+// The end of a run writes again the moment its start wrote, so the record's start is one moment
+// whichever of the two writes reaches Dispatch first: the start is stamped to the microsecond,
+// the precision the count of starts keeps it at, and the end, written by another engine after a
+// restart, carries that moment and its own later one. The two engines' clocks differ and read
+// nanoseconds, so an end that wrote its own moment as the start, or a start finer than what its
+// end reads back, shows here.
+func TestAnEndWritesTheMomentItsStartWrote(t *testing.T) {
+	pool := migratedPool(t)
+	stepRoot(t, pool, phase.Implementing)
+	began := time.Date(2026, 11, 17, 1, 2, 3, 456789123, time.UTC)
+	ended := began.Add(90*time.Minute + 987654321*time.Nanosecond)
+	starting, ending := stepEngine(nil), stepEngine(nil)
+	starting.cfg.Clock = func() time.Time { return began }
+	ending.cfg.Clock = func() time.Time { return ended }
+	move(t, pool, starting, "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
+	move(t, pool, ending, "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
+	var start, end record.StepRecord
+	for _, w := range stepWrites(t, pool, "LEGION-208") {
+		if w.Kind == "step" && w.Step == 3 && isStart(w) {
+			start = w
+		}
+		if w.Kind == "step" && w.Step == 3 && isEnd(w) {
+			end = w
+		}
+	}
+	if want := began.Truncate(time.Microsecond); start.StartedAt == nil || !start.StartedAt.Equal(want) {
+		t.Fatalf("the start of testing began at %v, want %s, the moment its engine read to the microsecond", start.StartedAt, want)
+	}
+	if end.ID != start.ID || end.Agent != start.Agent || end.StartedAt == nil || !end.StartedAt.Equal(*start.StartedAt) || !end.EndedAt.Equal(ended) {
+		t.Fatalf("the end of testing = %+v, want the start's id %s, agent %s and moment %s, ended at %s", end, start.ID, start.Agent, start.StartedAt, ended)
+	}
+}
+
 // A review's request for changes ends the review failed, naming the implementation step it sends
 // the work back to, and starts the implementer again: a second start of step 2, which is another
 // record than the first.
