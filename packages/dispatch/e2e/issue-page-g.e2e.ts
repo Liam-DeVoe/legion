@@ -503,14 +503,8 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
 
 // c-writer: R7 and R10 at 1440 px.
 // SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
-// six rows focused, two presses waited out for the writer's frames, and a read of the API.
-// Owed (part U's seed commit, decision 128): the page draws a decision's Keep, Change and change
-// request from the decisions read, which answers a decision node only once INFRA-1150's T7 and
-// T8 are built, so until then the decision clauses at its end are skipped. Its `@owed` tag is
-// what a check's run leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
-test("a row's Reply and Answer set the page's writer, and a decision asked to change draws it @owed", async ({
-  browser,
-}) => {
+// four rows focused and two presses waited out for the writer's frames.
+test("a row's Reply and Answer set the page's writer", async ({ browser }) => {
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     await openIssue(page, seeded.key);
@@ -552,12 +546,32 @@ test("a row's Reply and Answer set the page's writer, and a decision asked to ch
       ),
       "a press on a row's act wrote something"
     ).toEqual([]);
+  });
+});
 
-    // The decision that shaped a statement waits for review: Keep and Change.
+// c-writer's decision clauses, owed (part U's seed commit, decisions 128, 135 and 141): the
+// decision that shaped a statement waits for review and draws Keep and Change, and the decision
+// a person asked to change says so, holds the change under it and draws neither (R10, F6). The
+// page draws a decision's Keep, Change and change request from the decisions read, which answers
+// a decision node only once INFRA-1150's T7 and T8 are built; until then that read answers no
+// decision, and this row is skipped on that dependency, so it runs once T7 and T8 are under the
+// head. Its `@owed` tag is what a check's run leaves out (`--grep-invert @owed`), since a pass
+// counts no skipped case.
+// SLOW(>=2s): a seeded issue of every kind of node, its rows and their names waited for, then
+// two reads of the API and two rows focused.
+test("a decision asked to change draws it, and a decision that waits draws Keep and Change @owed", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedRows, async (page, seeded) => {
+    await openIssue(page, seeded.key);
+    await expectSeedDrawn(page, seeded);
     test.skip(
       ((await getIssueDecisions(seeded.key)).decisions ?? []).length === 0,
-      "owed: a decision node's Keep and Change need INFRA-1150's T7 and T8 (part U's seed commit, decision 128)"
+      "owed: a decision node's Keep, Change and change request need INFRA-1150's T7 and T8 (part U's seed commit, decision 128)"
     );
+
+    // The decision that shaped a statement waits for review: Keep and Change.
     const shaping = await focusRow(page, seeded.shaping);
     await expect(shaping.locator("button[data-row-action]")).toHaveCount(2);
 

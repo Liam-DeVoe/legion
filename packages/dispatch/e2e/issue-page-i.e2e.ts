@@ -909,12 +909,7 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
 // comment sits under the issue as any node with no stored parent does.
 // SLOW(>=2s): three seeds, each loaded cold with its branches unfolded press by press, and the
 // first seed's parents read off the page one whole read at a time.
-// Owed (part U's seed commit, decision 128): the answered ask's `shaped` tie is drawn as a chip
-// once part T's outline, drawn from the tree read, is under the page; until the server serves
-// that read, the chip's count is not read and the row says so in an `owed` annotation. Its
-// `@owed` tag is what a check's run leaves out (`--grep-invert @owed`), since a pass counts no
-// clause it did not read.
-test("each node sits under the parent the model stores @owed", async ({ browser }) => {
+test("each node sits under the parent the model stores", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -995,7 +990,7 @@ test("each node sits under the parent the model stores @owed", async ({ browser 
     ).toBe(fromFirstParent);
 
     // Every edge that is not the spine is a chip naming its target, and the spine is none: the
-    // answered ask's `shaped` tie to a requirement is its chip, once, and the ask is not its own.
+    // answered ask is not its own chip; the `@owed` row after this one reads its `shaped` tie.
     // A folded branch draws one line and no chip (ruling 1 on R1), so the tree is read open.
     // A chip names its target by the target's stored words, cut as a title is (G's `Chip`), so
     // each is found by the words the seed stored.
@@ -1005,21 +1000,6 @@ test("each node sits under the parent the model stores @owed", async ({ browser 
       chipsNaming(chips, SPINE_ANSWERED_QUESTION),
       "the answered ask is drawn as its own chip"
     ).toEqual([]);
-    const treeRead = await fetch(`${baseUrl}/api/v1/issues/${seeded.key}/tree`, {
-      headers: await userHeaders("alice"),
-    });
-    if (treeRead.ok) {
-      expect(
-        chipsNaming(chips, seededBlockWords(SPINE_SPEC, SPINE_REQUIREMENTS.shapedElsewhere)).length,
-        `the answered ask's tie is not drawn once as a chip: ${JSON.stringify(chips)}`
-      ).toBe(1);
-    } else {
-      test.info().annotations.push({
-        description:
-          "owed: the answered ask's shaped tie is a chip once part T's outline reads the tree (part T, decision 128)",
-        type: "owed",
-      });
-    }
   });
 
   await phase(browser, seedWholeIssue, async (page, seeded) => {
@@ -1163,6 +1143,39 @@ test("each node sits under the parent the model stores @owed", async ({ browser 
       level: String(Number(opened[parent]?.level) + 1),
       more: null,
     });
+  });
+});
+
+// c-spine's chip, owed (part U's seed commit, decisions 128, 135 and 141): the answered ask's
+// `shaped` tie to a requirement is its chip, once, naming the requirement. That chip is drawn
+// once part T's outline, drawn from the tree read, is under the page; until the server serves
+// that read this row is skipped on that dependency, so it runs once the tree read is served. Its
+// `@owed` tag is what a check's run leaves out (`--grep-invert @owed`), since a pass counts no
+// skipped case.
+// SLOW(>=2s): a seed loaded cold with its branches unfolded press by press, then a read of the
+// API and its rows read whole.
+test("the answered ask's shaped tie is drawn once as a chip @owed", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedSpineCases, async (page, seeded) => {
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    // A folded branch draws one line and no chip (ruling 1 on R1), so the tree is read open. A
+    // chip names its target by the target's stored words, cut as a title is (G's `Chip`), so it
+    // is found by the words the seed stored.
+    await unfoldEveryBranch(page);
+    test.skip(
+      !(
+        await fetch(`${baseUrl}/api/v1/issues/${seeded.key}/tree`, {
+          headers: await userHeaders("alice"),
+        })
+      ).ok,
+      "owed: the answered ask's shaped tie is a chip once part T's outline reads the tree (part T, decision 128)"
+    );
+    const chips = (await drawnRows(page)).flatMap((row) => row.chips);
+    expect(
+      chipsNaming(chips, seededBlockWords(SPINE_SPEC, SPINE_REQUIREMENTS.shapedElsewhere)).length,
+      `the answered ask's tie is not drawn once as a chip: ${JSON.stringify(chips)}`
+    ).toBe(1);
   });
 });
 
@@ -2448,22 +2461,16 @@ test("the tree answers the WAI-ARIA tree pattern's roles and properties", async 
 
 // c-chain.
 // SLOW(>=2s): the whole issue seeded, loaded until its reads settle and unfolded press by press,
-// then its rows read whole five times or more and seven keys pressed.
-// Owed (part U's seed commit, decision 128): `w` reaches a decision the page reads from the
-// decisions read, which answers a decision node only once INFRA-1150's T8 reads the decisions
-// over nodes, so until then that last clause is skipped. Its `@owed` tag is what a check's run
-// leaves out (`--grep-invert @owed`), since a pass counts no skipped case.
-test("the chain is reachable and only gaps that tell a node apart are drawn @owed", async ({
+// then its rows read whole five times or more and six keys pressed.
+test("the chain is reachable and only gaps that tell a node apart are drawn", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
     const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
     const informed = blockNodeId(specSlug, requirementBlockId(1));
-    const decision = blockNodeId(decisionsSlug, seeded.decisions[0] ?? "");
     const check = blockNodeId(verificationSlug, seeded.checks.passed);
     const results = (await getIssueResults(seeded.key)).checks ?? [];
     const latest = results.find((one) => one.block_id === seeded.checks.passed)?.results?.[0];
@@ -2545,12 +2552,35 @@ test("the chain is reachable and only gaps that tell a node apart are drawn @owe
     for (const words of ["No source given", "Not confirmed in Dispatch", "No author in Dispatch"]) {
       expect(await issuePage(page).getByText(words).count(), `the page draws "${words}"`).toBe(0);
     }
+  });
+});
 
-    // From the check, `w` reaches back to the decision that informed its requirement.
+// c-chain's `w`, owed (part U's seed commit, decisions 128, 135 and 141): from the check, `w`
+// reaches back to the decision that informed its requirement. The page reads that decision from
+// the decisions read, which answers a decision node only once INFRA-1150's T8 reads the
+// decisions over nodes; until then this row is skipped on that dependency, so it runs once T8 is
+// under the head. Its `@owed` tag is what a check's run leaves out (`--grep-invert @owed`),
+// since a pass counts no skipped case.
+// SLOW(>=2s): the whole issue seeded, loaded until its reads settle and unfolded press by press,
+// then a read of the API and one key pressed.
+test("w on a check reaches the decision behind its requirement @owed", async ({ browser }) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const decision = blockNodeId(decisionsSlug, seeded.decisions[0] ?? "");
+    const check = blockNodeId(verificationSlug, seeded.checks.passed);
+
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
+    await unfoldEveryBranch(page);
     test.skip(
       ((await getIssueDecisions(seeded.key)).decisions ?? []).length === 0,
       "owed: w reaches a decision node once INFRA-1150's T8 reads the decisions over nodes (part U's seed commit, decision 128)"
     );
+
+    // From the check, `w` reaches back to the decision that informed its requirement.
     await nodeRow(page, check).first().focus();
     await page.keyboard.press("w");
     await expect
