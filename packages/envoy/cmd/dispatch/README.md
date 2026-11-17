@@ -238,7 +238,8 @@ A broker-issued token's list is the one project the broker scoped it to, and eve
 - A credential that names no person — the shared token, a Kubernetes service-account token, a broker-issued token that names a service — sees the public projects, within its list when it holds one.
 
 A caller is an open viewer when its person is not a restricted member and its credential lists nothing.
-An open viewer reads every person, every session and every row of the whole deployment.
+An open viewer reads every person and every row of the whole deployment, and every session but one that has acted in a project it does not see (`access.SessionClause`);
+while a project is private and `session_projects_filled` holds no row, it reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people and sessions of the projects it sees, its own, and the direct conversations its person or session is a party to (`access.PersonClause`, `access.SessionClause`, `access.PartyClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, Delivery and Pipeline, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`).
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
@@ -262,7 +263,7 @@ A credential that lists projects sees no project outside its list, so this is wh
 `TestNoWriteReachesAHiddenObject` calls every write row that names an object, and `TestNoBodyReachesAHiddenObject` every body field that does, on a private project's object and on one nobody holds.
 A person or a session a body names is read the same way for a viewer that is not open: an assignee, an `asked_of`, a default assignee or a new owner it may not see is refused as a login that has not signed in,
 a message's or a mention's `session:` target it may not see is recorded as `no live session <id>`, and a `role:` target whose holder it may not see as `no holder for role <role>`, the listener's words for a role nobody claims;
-an open viewer sees every person and session and is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
+an open viewer sees every person, and every session but one that has acted in a project it does not see, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential that lists projects and `403 RESTRICTED_MEMBER` to a restricted member, naming the route and the credential's list:
 what it writes belongs to no project such a viewer could be held to.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
@@ -2665,6 +2666,7 @@ Once it has read every event it writes the one `session_projects_filled` row, no
 It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
 
 Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
+Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
 Under `Recreate` the build before has stopped when the migration runs.
 A deployment that rolls keeps an old build recording pairs under the earlier rule while the new one starts, and a fill never takes a pair away, so its operator runs `envoy-dispatch backfill-session-projects --reset` once the last old pod is gone: it first runs the migration's two deletes, each in a statement of its own, and then fills.
 The migration's census answers `0`, because a census that counts refuses the deploy; the count it drops is `select count(*) from session_projects;` on the release still serving.
@@ -4096,7 +4098,7 @@ Each item below names a path with its method and identity, then its purpose.
   List live Envoy sessions (`session_id`, `title`, `dir`, `machine_id`, `roles`, `capabilities`, `last_seen`), newest first, from Dispatch's copy of the listener's session list, at most 5 s old;
   `503 ENVOY_REFILLING` with the listener's `Retry-After` (5 when it sends none) while the listener refuses its list as refilling (it cannot stand behind its copy of the sessions yet), and `503 ENVOY_UNAVAILABLE` when the listener cannot be reached, each for up to 5 s after that listener read without asking the listener again.
   Neither is an empty list: a client reads neither as "no agents".
-  Only the sessions the caller may see are listed (`access.SessionClause`): every one for an open viewer, and for any other caller its own and those that have acted in a project it sees.
+  Only the sessions the caller may see are listed (`access.SessionClause`): for an open viewer every one but those that have acted in a project it does not see, and for any other caller its own and those that have acted in a project it sees.
 
 - `/api/v1/agents/{session_id}/answers?since=&max_chars=` (GET; cookie, trusted header, or bearer)
 

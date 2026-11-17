@@ -3990,7 +3990,7 @@ a person at a browser sees every project they own, that lists them, that lists a
 a credential that lists projects (`model.Credential.Projects`: a personal token's `agent_tokens.projects`, and the one project a broker-issued token was scoped to) sees the part of its list its person sees;
 one that lists none sees the public part of what its person sees, and no private project even where its person sees one;
 and one that names no person (the shared token, a service-account token, a broker-issued token naming a service) sees the public projects, within its list when it holds one.
-A viewer is open when it is not a restricted member and holds no list (`model.Viewer.Open`), and an open viewer reads every person, every session and every row of the whole deployment.
+A viewer is open when it is not a restricted member and holds no list (`model.Viewer.Open`), and an open viewer reads every person and every row of the whole deployment, and every session but one that has acted in a project it does not see (`access.SessionClause`), or, while a project is private and `session_projects_filled` holds no row, no session but its own.
 Any other viewer reads, of what belongs to no project, only its own and the people and sessions of the projects it sees (`access.PersonClause`, `access.SessionClause`), and only the direct conversations it is a party to (`access.PartyClause`);
 `api.withinReadScope` refuses it every row of `readclass.Deployment`, `403 DEPLOYMENT_READ_REFUSED`.
 A project the caller does not see, and every object in it, answers exactly as one no row holds.
