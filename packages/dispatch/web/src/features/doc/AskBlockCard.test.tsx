@@ -30,7 +30,9 @@ const schema = new Schema({
         invalid: { default: undefined },
         multiple: { default: false },
         selected: { default: undefined },
-        state: { default: "open" },
+        // A server attribute has no default in the editor's schema: a block the server wrote no
+        // state into holds none.
+        state: { default: undefined },
         urgency: { default: "med" },
       },
       content: "paragraph+ bullet_list?",
@@ -479,9 +481,9 @@ test("a read-only block reads who answered, when and what from the server, whate
 });
 
 test("the frame stamps the state the server reads, so an answered block's source list stays folded under the caret", () => {
-  // The block records no answer, so its own `state` reads the schema's default, open, which is
-  // what the shell stamps; the document's styles show the source list in an open block the caret
-  // is in, so the card stamps the server's read over it.
+  // The block records no answer and no state, which the shell stamps as open; the document's
+  // styles show the source list in an open block the caret is in, so the card stamps the
+  // server's read over it.
   const card = renderCard({
     ask: answeredAsk,
     node: askNode({}),
@@ -498,6 +500,21 @@ test("without the server's read the frame stamps the state the block records", (
   const card = renderCard({ indexed: false, node: askNode({ state: "resolved" }), readOnly: true });
   try {
     expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("resolved");
+  } finally {
+    card.unmount();
+  }
+});
+
+test("a block that records no state reads as open where no server read is given", () => {
+  // Settlement takes the state off a live block once the answer is held on the ask's node alone,
+  // and the editor gives the attribute no default: a block with no ask row and no read of one
+  // shows the open decision it was written as.
+  const card = renderCard({ indexed: false, node: askNode({}), readOnly: true });
+  try {
+    expect(card.section.getAttribute("data-dispatch-ask-state")).toBe("open");
+    expect(card.header.queryByText("Closed")).not.toBeInTheDocument();
+    expect(card.header.queryByText("Resolved")).not.toBeInTheDocument();
+    expect(card.header.queryByText(/^Answered by/)).not.toBeInTheDocument();
   } finally {
     card.unmount();
   }

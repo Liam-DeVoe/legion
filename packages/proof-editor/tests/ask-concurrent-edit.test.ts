@@ -417,6 +417,31 @@ test("typing at a caret in a two-list ask inserts the text", async () => {
   );
 });
 
+// Settlement takes an ask's `state` off the live block once the fleet keeps the answer on the
+// ask's node alone (dispatch://INFRA-1150 R3). The editor's schema gives that server attribute no
+// default, so an edit inside the block - here a letter typed into its question - writes none back
+// into the shared document, although y-prosemirror writes every attribute the editor's node holds.
+test("an edit inside an ask block that holds no state leaves no state in Yjs", async () => {
+  await withMarksEditor(
+    ASK_DOC,
+    ({ view, ydoc }) => {
+      // The server's settlement, delivered as a collaborator's update: the block's state comes off.
+      const peer = peerOf(ydoc);
+      requireYAsk(peer).removeAttribute("state");
+      deliver(peer, ydoc);
+      expect(Object.keys(requireYAsk(ydoc).getAttributes())).not.toContain("state");
+      const questionEnd = textblockStart(view.state.doc, "Which one?") + "Which one?".length;
+      view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, questionEnd)));
+      typeText(view, "!");
+      expect(blocks(requireAsk(view.state.doc))[0]).toEqual(["paragraph", "Which one?!"]);
+      // The letter reached the shared document (wrapped in the authorship mark it carries).
+      expect(childElement(requireYAsk(ydoc), 0).toString()).toContain("!");
+      expect(Object.keys(requireYAsk(ydoc).getAttributes())).not.toContain("state");
+    },
+    { blockSchema }
+  );
+});
+
 test("cutting a selection from the question into an option of a two-list ask keeps every word", async () => {
   await withMarksEditor(
     ASK_DOC,

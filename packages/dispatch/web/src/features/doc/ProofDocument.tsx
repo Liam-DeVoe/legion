@@ -79,7 +79,12 @@ import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import { type AskBlockHost, servedAskOf } from "./typed-block-drawing";
+import {
+  type AskBlockHost,
+  renderedAskOf,
+  type ServedAsk,
+  servedAskOf,
+} from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -394,6 +399,16 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
+  // what the live text renders on the block from the store, which is the one read of a copy's
+  // source on a project document: the document's own asks hold no row of another document's.
+  const servedAsk = (blockId: string): ServedAsk | undefined =>
+    servedAskOf(
+      asksQuery.data ?? [],
+      artifact.id,
+      blockId,
+      owner.kind === "issue" ? undefined : owner.project
+    ) ?? renderedAskOf(liveTextQuery.data?.markdown, blockId);
   // The answer state the server reads of the ask each block shows, by block id, which the
   // editor's refusal of a reading in an open ask reads at each edit: a ref, so the editor made
   // once reads the latest asks read.
@@ -401,13 +416,10 @@ export function ProofDocument({
   askStates.current = new Map(
     askBlockHosts.flatMap((host) => {
       const blockId = String(host.node.attrs.blockId);
-      const served = servedAskOf(
-        asksQuery.data ?? [],
-        artifact.id,
-        blockId,
-        owner.kind === "issue" ? undefined : owner.project
-      );
-      return served === undefined ? [] : [[blockId, served.ask.state] as const];
+      const served = servedAsk(blockId);
+      return served === undefined
+        ? []
+        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const];
     })
   );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
@@ -1223,12 +1235,7 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
-              served={servedAskOf(
-                asksQuery.data ?? [],
-                artifact.id,
-                blockId,
-                owner.kind === "issue" ? undefined : owner.project
-              )}
+              served={servedAsk(blockId)}
             />
           );
         })}
@@ -1299,6 +1306,7 @@ export function ProofDocument({
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
             owner={owner.kind === "document" ? owner : undefined}
+            servedAsk={servedAsk}
             version={version}
           />
         </div>
