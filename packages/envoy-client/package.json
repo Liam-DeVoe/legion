@@ -162,6 +162,10 @@
       "types": "./test/fake-dispatch.ts",
       "bun": "./test/fake-dispatch.ts"
     },
+    "./test/nats-server": {
+      "types": "./test/nats-server.ts",
+      "bun": "./test/nats-server.ts"
+    },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"

@@ -11,7 +11,57 @@ const NATS_IMAGE =
 
 export interface NatsServer {
   readonly url: string;
+  /** The server's own log so far (nats-server writes it to stderr), where it names every publish
+   *  it refused: `Publish Violation`, then the subject. */
+  log(): Promise<string>;
   stop(): void;
+}
+
+/**
+ * The authorization of a server whose one requester may do anything, as the listener and Dispatch
+ * may, and whose session user holds the grant the NATS auth service gives one session
+ * (`natsgrant.Session` in packages/envoy/natsgrant): publish its replies under its own id alone,
+ * `_INBOX.*.<session id>.>` (`bus.SessionReplies`), and its agent stream frames; subscribe its
+ * relay subject and its agent stream control subject. Each user is the nkey whose public key is
+ * named. A row's requester asks the session on a reply subject {@link sessionReplySubject} makes,
+ * and the session answers on whatever reply subject it is handed.
+ */
+export function sessionGrantConfig(options: {
+  readonly sessionID: string;
+  readonly sessionKey: string;
+  readonly requesterKey: string;
+}): string {
+  const { sessionID, sessionKey, requesterKey } = options;
+  const list = (subjects: readonly string[]) => subjects.map((s) => JSON.stringify(s)).join(", ");
+  const publish = list([`_INBOX.*.${sessionID}.>`, `agentstream.${sessionID}.frames`]);
+  const subscribe = list([
+    `notifications.envoy.deliver.${sessionID}`,
+    `agentstream.${sessionID}.control`,
+  ]);
+  return `jetstream {}
+authorization {
+  users = [
+    { nkey: ${JSON.stringify(requesterKey)} }
+    { nkey: ${JSON.stringify(sessionKey)}, permissions: { publish: { allow: [${publish}] }, subscribe: { allow: [${subscribe}] } } }
+  ]
+}
+`;
+}
+
+/** The 32 letters and digits of Go's crypto/rand.Text, which the listener's and Dispatch's
+ *  reply tokens are written in. */
+const TOKEN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+
+/**
+ * A reply subject a listener or Dispatch asks session `sessionID` on: `inbox`, then the session's
+ * id, then 26 random characters, as `bus.SessionReplySubject` makes it.
+ */
+export function sessionReplySubject(inbox: string, sessionID: string): string {
+  const token = Array.from(
+    crypto.getRandomValues(new Uint8Array(26)),
+    (byte) => TOKEN_ALPHABET[byte % TOKEN_ALPHABET.length]
+  ).join("");
+  return `${inbox}.${sessionID}.${token}`;
 }
 
 /** Runs `docker args…` and returns its stdout and stderr, trimmed, throwing on a non-zero exit. */
@@ -109,7 +159,12 @@ export async function startNatsServerWithConfig(
       await Bun.sleep(100);
     }
     const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
-    return { url: `nats://${port}`, stop };
+    // `docker logs` splits the container's output into the two streams it was written to.
+    const log = async () => {
+      const { stdout, stderr } = await docker("logs", name);
+      return `${stdout}\n${stderr}`;
+    };
+    return { url: `nats://${port}`, log, stop };
   } catch (error) {
     stop();
     throw error;
