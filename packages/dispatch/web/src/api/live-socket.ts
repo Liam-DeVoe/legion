@@ -790,6 +790,13 @@ export function liveSocketFor(queryClient: QueryClient): LiveSocket {
   return live;
 }
 
+/** Whether `queryClient`'s live feed is up: its socket open. False where it has no socket, which
+ *  this makes none of, as `liveSocketFor` would: a reader asking how the feed stands - the issue
+ *  page's tree read on a window focus (`subscribeTreeFreshness`) - opens nothing. */
+export function liveFeedUp(queryClient: QueryClient): boolean {
+  return sockets.get(queryClient)?.state().state === "open";
+}
+
 /** The live socket's whole state, for the freshness row, which shows the last change time. */
 export function useLiveSocketState(): LiveSocketState {
   const live = liveSocketFor(useQueryClient());

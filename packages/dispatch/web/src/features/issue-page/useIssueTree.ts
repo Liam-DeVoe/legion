@@ -87,9 +87,9 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  * already names: a cited comment edited, a cited ask's question edited, a block of a document's
  * new version. No rule there names `["whoami"]`: the reader's login does not change while the
  * page is open. A gap in the feed refreshes every read the app holds (`refreshQueries`), these
- * among them, and window focus fetches again only a read in error (`refetchFailedOnFocus`). It
- * is the tree read's own rule (`REFRESHED_BY_EVENTS`), so the tree read, its views and these
- * reads are kept fresh alike.
+ * among them, and window focus fetches again only a read in error (`refetchFailedOnFocus`). The
+ * tree read and its views keep the same rule but for a focus, which reads them again only while
+ * the live feed is down (`TREE_FRESH`), since their events already reach them while it is up.
  */
 const EVENT_FRESH = REFRESHED_BY_EVENTS;
 
