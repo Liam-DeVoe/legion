@@ -35,11 +35,14 @@ var (
 	}
 	repoSpecific = []string{
 		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
-		// A deployment's own name for itself, for the repository it runs the daemon from, for the
-		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
-		// is case-sensitive, so the deployment's name stands here in both the forms a part could
-		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
-		"theorem", "Theorem", "deployment", "running-heavy-jobs", "gs://",
+		// A deployment's own name for itself, for the runbook it sends a heavy run to, and for the
+		// bucket it keeps one's output in. The match is case-sensitive, so the deployment's name
+		// stands here in both the forms a part could write it in, the slug and the prose one, as
+		// `Inspect` and `inspect_ai` already do. The repository the deployment runs the daemon from
+		// is not spelled here, since this public file cannot name it: .github/scripts/
+		// check-private-names.sh refuses it in these parts as in every file, with the deployment's
+		// own term list.
+		"theorem", "Theorem", "running-heavy-jobs", "gs://",
 	}
 )
 
