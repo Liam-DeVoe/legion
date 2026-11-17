@@ -631,6 +631,44 @@ reconciled() {
   done
 }
 
+# Each server pages its event log only up to its safe horizon (listEventLog, sinceHorizon), and a
+# server can answer a read before that horizon has passed what the seed wrote, so one server's log
+# would read short beside the other's. The walk compares the log as each unseeing caller, so each
+# server is read only once its log, as each caller that wrote in the seed as itself reads it, holds
+# that caller's own newest event, which a caller always reads: carol, who wrote last, and alice. A
+# token wrote nothing, and the shared token's writes name a session it does not prove and are in
+# PRIV, which it does not see. After carol's newest event the seed writes only bob's answers in
+# PRIV, which no unseeing caller reads.
+#
+# own_newest_event BUILD PERSON prints the id of the newest event of BUILD's database that PERSON
+# wrote as themself, or 0 when they wrote none.
+own_newest_event() {
+  local url_var=${1}_database_url
+  psql "${!url_var}" -X -tAc "select coalesce(max(id), 0) from events
+    where actor->>'kind' = 'user' and actor->>'id' = '$(email_of "$2")'"
+}
+
+# event_log_reaches BUILD CALLER ID: BUILD's event log, as CALLER reads it, holds an event at ID or
+# above.
+event_log_reaches() {
+  send "$1" "$2" GET "/api/v1/events/log?after=$(($3 - 1))&limit=1"
+  [ "$status" = 200 ] && jq -e --argjson id "$3" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
+}
+
+# logs_hold_own_writes waits, bounded, on each server until the log as carol and as alice holds
+# that caller's own newest event.
+logs_hold_own_writes() {
+  local server caller newest
+  for server in main twin; do
+    for caller in carol alice; do
+      newest=$(own_newest_event "$server" "$caller") || fail "$server: could not read $caller's newest event"
+      [ "$newest" -gt 0 ] || continue
+      until_true 120 "$server's event log, as $caller reads it, to hold $caller's newest event, $newest" \
+        event_log_reaches "$server" "$caller" "$newest"
+    done
+  done
+}
+
 # route_rows SELECT prints, in their order, the rows of the route index that the jq filter SELECT
 # keeps, each with what its Probe (RouteProbe, read once from probes.json) says of it, one line a
 # row and its fields joined by the unit separator (\x1f), a byte no compact JSON holds: the method;
@@ -903,6 +941,7 @@ walk_queries() {
 if [ "$priv_private" = 1 ]; then
   begin walk
   until_true 120 "both servers to reconcile delivery once" reconciled
+  logs_hold_own_writes
   # The route index this server serves, and the Probes of its own tables.
   send main carol GET /api/v1
   expect_status 200 "main: carol reads the route index"
