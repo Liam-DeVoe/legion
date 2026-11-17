@@ -97,7 +97,19 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     own - declare the pair they read themselves."""
     if not workflow:
         reads = list(reads) + CI_SELF + job_self(job)
-    return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
+    return gate_in(filter, job, runs, with_fixtures_manifest(reads), step, exact, workflow or job_file(job))
+
+
+def with_fixtures_manifest(reads):
+    """reads, and the shared test fixtures' manifest wherever they hold a file of the fixtures'
+    own: a module that imports @legion/test-fixtures/* is resolved through that manifest's
+    `exports`. The manifest is no read of bun_job (it says why), so which gates read it is
+    derived here from which gates read the fixtures, never kept by hand."""
+    reads = list(reads)
+    if any(r.glob.startswith(f"{TEST_FIXTURES}/") for r in reads):
+        reads.append(Read(TEST_FIXTURES_MANIFEST, f"a module importing @legion/test-fixtures/* (this gate reads "
+                                                  f"{TEST_FIXTURES}) resolves it through this manifest's exports"))
+    return reads
 
 
 def targets(path: str, key: str) -> list:
@@ -230,8 +242,12 @@ def bun_job(job, workflow=""):
         ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
+        # Every workspace manifest but the shared test fixtures': a frozen install fails on a manifest
+        # its lockfile does not match, and otherwise installs what bun.lock records, so a change to
+        # that manifest alone changes no job's install, and one the lockfile refuses fails the
+        # install of every job that reads the fixtures, which with_fixtures_manifest selects.
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
-          for w in WORKSPACES],
+          for w in WORKSPACES if w != TEST_FIXTURES],
     )
 
 
@@ -306,8 +322,10 @@ def at_browser(step, job=BROWSER_SHARD):
 CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/broker-client/**"
-# The shared test fixtures every other Bun package's tests import.
-TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
+# The shared test fixtures every other Bun package's tests import, and their manifest.
+TEST_FIXTURES = "packages/test-fixtures"
+TEST_FIXTURES_SRC = f"{TEST_FIXTURES}/src/**"
+TEST_FIXTURES_MANIFEST = f"{TEST_FIXTURES}/package.json"
 
 
 def envoy_client_dep(why):
