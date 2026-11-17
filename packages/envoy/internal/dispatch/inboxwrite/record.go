@@ -175,10 +175,11 @@ func (w Write) keptLogin() (string, bool) {
 //     last_reply_id, version + 1 and dismissed_at cleared, and, for each person of that set but A
 //     whose dismissed tuple into T stands, the retraction of that tuple (graphstore.FromPerson);
 //  5. A's own row, where A is a person and T's owner resolves to a project: its read mark moves to
-//     the write, and a row this write begins records marked_version 0 and marked_seq at the log
-//     position of this moment (migration 20261116160000); then, through graphstore.FromPerson,
-//     A's read_through to T at the moment that row's read mark stands at once the upsert ran, as
-//     every writer of a read mark states it (dispatch://INFRA-1152 R6).
+//     the write where it stood earlier, and a row this write begins records marked_version 0 and
+//     marked_seq at the log position of this moment (migration 20261116160000); then, where the
+//     upsert moved the mark, through graphstore.FromPerson, A's read_through to T at the moment
+//     that row's read mark stands at once the upsert ran, as every writer of a read mark states it
+//     (dispatch://INFRA-1152 R6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
 // dismissals: the root `for key share`, then the delete of every user_agent_thread_dismissed row
@@ -314,11 +315,14 @@ func Record(ctx context.Context, tx pgx.Tx, w Write, event int64) error {
 		}
 	}
 
-	// 5. A's own row, and the read mark it stands at.
+	// 5. A's own row, and the read mark it stands at where this write moved it.
 	if login, keeps := w.keptLogin(); keeps {
-		readThrough, err := keepRow(ctx, tx, thread, w, login)
+		readThrough, moved, err := keepRow(ctx, tx, thread, w, login)
 		if err != nil {
 			return err
+		}
+		if !moved {
+			return nil
 		}
 		if err := graphstore.FromPerson(ctx, tx, w.At, []graphstore.Tuple{{
 			FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleReadThrough,

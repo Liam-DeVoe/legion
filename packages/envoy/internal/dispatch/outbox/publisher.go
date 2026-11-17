@@ -774,16 +774,21 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until)
 // and a release are written only while the hold is holder's and has not lapsed, checked in the
 // same statement, so a process that lost the hold mid-batch schedules nothing beside the holder
-// that took it. Each row is guarded on published_at is null.
+// that took it. Each row is guarded on published_at is null, but for the destinations it reached:
+// an event the holder published first, while a process that lost the hold to it was still sending
+// the same event, still has every topic that process reached added to its published_destinations
+// when it records, and nothing else of its row moves - its publish state is the holder's.
 //
 // Beside the events' own rows it writes what the batch delivered into the node and tuple store
 // (deliveredGraph), as further arms of this one statement (graphstore.WriteArms): the nodes of
 // the roles and sessions it reached, the pages under them, each role's held_by tuple and the
 // delivered_to tuple of every delivery. Those arms are written whoever holds the publisher
-// hold, as the reached destinations are: a delivery that happened is no schedule to make. They
-// take no owner row - this statement runs on a pooled connection with no transaction of its own
-// - and each is repeat-safe under the store's two partial repeat keys, which is what a record
-// that is retried needs.
+// hold, as the reached destinations are: a delivery that happened is no schedule to make. So the
+// session and role topics of an event's published_destinations are the far ends of the
+// delivered_to tuples its records stated, whichever process recorded each. They take no owner
+// row - this statement runs on a pooled connection with no transaction of its own - and each is
+// repeat-safe under the store's two partial repeat keys, which is what a record that is retried
+// needs.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -857,14 +862,19 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 					where t.topic <> all(e.published_destinations)
 					order by t.position
 				),
-				published_at = case when o.state = 'published' then now() end,
+				published_at = coalesce(e.published_at, case when o.state = 'published' then now() end),
 				publish_error = case
+					when e.published_at is not null then e.publish_error
 					when o.state = 'published' then null
 					when o.state = 'backed_off' and h.mine then o.failure
 					else e.publish_error
 				end,
-				attempt_count = case when o.state = 'backed_off' and h.mine then o.attempts else e.attempt_count end,
+				attempt_count = case
+					when e.published_at is null and o.state = 'backed_off' and h.mine then o.attempts
+					else e.attempt_count
+				end,
 				next_attempt_at = case
+					when e.published_at is not null then e.next_attempt_at
 					when o.state = 'published' then null
 					when not h.mine then e.next_attempt_at
 					when o.state = 'backed_off' then now() + make_interval(secs => o.delay)
@@ -874,8 +884,9 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			from outcome o
 			cross join hold h
 			left join reached r on r.id = o.id
-			where e.id = o.id and e.published_at is null
-			  and (o.state = 'published' or h.mine or r.id is not null)
+			where e.id = o.id
+			  and ((e.published_at is null and (o.state = 'published' or h.mine or r.id is not null))
+			       or (e.published_at is not null and not r.topics <@ e.published_destinations))
 		)`+arms+`
 		select mine from hold
 	`, args...).Scan(&holds)

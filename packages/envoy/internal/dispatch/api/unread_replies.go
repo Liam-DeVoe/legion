@@ -98,11 +98,19 @@ var unreadDirectRepliesCTE = `
 	)`
 
 // directMarks reads the viewer's read mark and Clear of each session, as
-// `(session_id, read_through, cleared_before, at)`, at the later of the two: the read_through and
-// cleared tuples from the viewer's one person node ($1) into each session, the current one of each
-// (graphstore.CurrentTupleRead), whichever spelling of their login the route that wrote it read
-// (graphstore.FromPerson), which ends the two keys the two tables were read by - the canonical
-// login for user_agent_read, the raw actor id for user_agent_state.
+// `(session_id, read_through, cleared_before, at)`, at the later of the two: the newest
+// read_through and the newest cleared tuple from the viewer's one person node ($1) into each
+// session, whichever spelling of their login the route that wrote it read (graphstore.FromPerson),
+// which ends the two keys the two tables were read by - the canonical login for user_agent_read,
+// the raw actor id for user_agent_state.
+//
+// Each kind is read by a skip over graph_tuples_current (newestMarks): a recursive step reads the
+// least session past the one before off the index, and a lateral the newest tuple into that
+// session, so the read costs two index probes a session however many marks the person stated
+// there. A read mark is stated only where it moved and a Clear only where it was given, so a
+// person's history of either grows with every write, and a read of that history whole - the
+// `distinct on` of graphstore.CurrentTupleRead, which walks and fetches every tuple of the
+// relation to keep its newest - would grow with it.
 //
 // A row no tuple states is answered by the table as it was before the store, on the key it was
 // read by: a row of user_agent_read under $1 or of user_agent_state under $2 whose marker is null,
@@ -116,9 +124,11 @@ var unreadDirectRepliesCTE = `
 //
 // It is guarded by TestAViewersRepliesCountAndClearWhateverTheCasingOfTheirLogin
 // (api/direct_messages_test.go), which reads a read mark and a Clear written under different
-// spellings of one viewer's login meeting at that viewer, and by
+// spellings of one viewer's login meeting at that viewer, by
 // TestEveryReadStateWriteIsATupleFromThePerson (api/read_state_tuples_test.go), which reads both
-// marks from the one person node and an older build's row on the key it was written under.
+// marks from the one person node and an older build's row on the key it was written under, and by
+// TestTheDirectMarksReadTwoProbesASession (api/direct_marks_plan_test.go), which holds the read of
+// ten thousand marks on five sessions to the probes of five sessions.
 func directMarks(narrowed bool) string {
 	narrow := func(session string) string {
 		if !narrowed {
@@ -127,11 +137,6 @@ func directMarks(narrowed bool) string {
 		return `
 			  and ($3::text is null or ` + session + ` = $3::text)`
 	}
-	stated := func(kind string) string {
-		return graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.at, t.asserted`,
-			`t.from_kind = '`+graphstore.KindPerson+`' and t.from_id = $1 and t.kind = '`+kind+`'
-				and t.to_kind = '`+graphstore.KindSession+`'`+narrow("t.to_id"))
-	}
 	return `
 		select mark.session_id,
 		       max(mark.at) filter (where mark.kind = '` + graphstore.TupleReadThrough + `') as read_through,
@@ -139,14 +144,14 @@ func directMarks(narrowed bool) string {
 		       max(mark.at) as at
 		from (
 			select stated.to_id as session_id, '` + graphstore.TupleReadThrough + `' as kind, stated.at
-			from (` + stated(graphstore.TupleReadThrough) + `) stated
+			from (` + newestMarks(graphstore.TupleReadThrough, narrowed) + `) stated
 			where stated.asserted and not exists (
 				select 1 from user_agent_read old
 				where old.login = $1 and old.session_id = stated.to_id and old.tuples_stored_at is null
 			)
 			union all
 			select stated.to_id, '` + graphstore.TupleCleared + `', stated.at
-			from (` + stated(graphstore.TupleCleared) + `) stated
+			from (` + newestMarks(graphstore.TupleCleared, narrowed) + `) stated
 			where stated.asserted and not exists (
 				select 1 from user_agent_state old
 				where old.login = $2 and old.session_id = stated.to_id and old.tuples_stored_at is null
@@ -159,6 +164,45 @@ func directMarks(narrowed bool) string {
 			where login = $2 and tuples_stored_at is null` + narrow("session_id") + `
 		) mark
 		group by mark.session_id`
+}
+
+// newestMarks is directMarks' read of one kind of mark, read_through or cleared, from the person
+// node $1 into sessions: of each session it holds one into, the newest tuple, as
+// `(to_id, at, asserted)`, which a `where asserted` over it cuts to the marks that stand, as
+// graphstore.CurrentTupleRead's answer is cut. It reads by an index skip over
+// graph_tuples_current, whose columns lead (from_kind, from_id, kind, to_kind, to_id) and end in
+// seq descending: the recursive step reads the least session past the one before, one probe a
+// session, and the lateral the newest tuple into each, one probe more, however many tuples the
+// relation holds. narrowed reads $3, the one session to read or null for every session: the skip
+// starts at it, takes no step past it, and keeps no other session.
+func newestMarks(kind string, narrowed bool) string {
+	into := `t.from_kind = '` + graphstore.KindPerson + `' and t.from_id = $1 and t.kind = '` + kind + `'
+				  and t.to_kind = '` + graphstore.KindSession + `'`
+	start, step, keep := "", "", ""
+	if narrowed {
+		start = ` and t.to_id >= coalesce($3::text, '')`
+		step = ` and $3::text is null`
+		keep = ` and ($3::text is null or sessions.to_id = $3::text)`
+	}
+	return `
+			with recursive sessions (to_id) as (
+				select min(t.to_id) from graph_tuples t
+				where ` + into + start + `
+				union all
+				select (select min(t.to_id) from graph_tuples t
+				        where ` + into + ` and t.to_id > sessions.to_id)
+				from sessions
+				where sessions.to_id is not null` + step + `
+			)
+			select sessions.to_id, newest.at, newest.asserted
+			from sessions
+			cross join lateral (
+				select t.at, t.asserted from graph_tuples t
+				where ` + into + ` and t.to_id = sessions.to_id
+				order by t.seq desc
+				limit 1
+			) newest
+			where sessions.to_id is not null` + keep
 }
 
 // replyReadByID is the test that the viewer ($1) read the reply reply names by its id: the

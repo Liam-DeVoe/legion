@@ -985,6 +985,10 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	if err := st.reconciliation.recordThreads(ctx, tx, st.published); err != nil {
 		return settleDone, st.abandon(err)
 	}
+	// Each ask it restored open reaches the person it waits on now, under its ask.opened.
+	if err := st.reconciliation.moveRestored(ctx, tx, st.published); err != nil {
+		return settleDone, st.abandon(err)
+	}
 	// The copies among the document's ask blocks, once the version's blocks are nodes.
 	if err := st.reconciliation.claimCopies(ctx, tx, room, st.credit.actor, time.Now().UTC(), copiesCause); err != nil {
 		return settleDone, st.abandon(err)

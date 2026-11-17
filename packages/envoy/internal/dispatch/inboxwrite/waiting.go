@@ -20,9 +20,10 @@ import (
 // was handed to, else its issue's assignee, else its project's default assignee - and that person
 // takes part in its thread. The ask's create appends both tuples (Record, for an Opened write),
 // and each write that changes who an ask waits on moves them (MoveWaiting): patchIssue's
-// assignee, putAskAskedOf, putProjectDefaultAssignee and the restore of the asks an issue's close
-// withdrew. Neither raises a user_threads version (P13): the old triggers moved no row for either,
-// and the census counts only the deliveries a reply caused.
+// assignee, putAskAskedOf, putProjectDefaultAssignee, the restore of the asks an issue's close
+// withdrew and a settlement's restore of an ask it retracted. Neither raises a user_threads
+// version (P13): the old triggers moved no row for either, and the census counts only the
+// deliveries a reply caused.
 //
 // The list follows the assignment only if no two of those writes interleave, so each serialises
 // against the others on the rows the rule reads, in the lock order written on api/inbox_read.go's
@@ -67,12 +68,12 @@ func askerOf(author model.Actor) string {
 // through to `for share`, where it falls through to that project's default assignee: the owner is
 // a project document, or an issue nobody holds. A write that is about to read who such an ask
 // waits on, to deliver it - an ask's create, a change of an issue's assignee to nobody, the
-// restore of an issue's withdrawn asks - takes it after its owner row and before any asks row or
-// node it writes, so a move of the default (putProjectDefaultAssignee, which holds the row `for
-// no key update`) either commits before the write reads the default or waits for the write to
-// commit and then finds the ask it delivered. The caller holds the owner row, under which an
-// issue's assignee does not move; an owner that does not fall through is read and nothing is
-// locked, so its write takes no lock on projects.
+// restore of an issue's withdrawn asks, a settlement that may restore an ask it retracted - takes
+// it after its owner row and before any asks row or node it writes, so a move of the default
+// (putProjectDefaultAssignee, which holds the row `for no key update`) either commits before the
+// write reads the default or waits for the write to commit and then finds the ask it delivered.
+// The caller holds the owner row, under which an issue's assignee does not move; an owner that
+// does not fall through is read and nothing is locked, so its write takes no lock on projects.
 func HoldDefault(ctx context.Context, tx pgx.Tx, issueKey, artifactID *string) error {
 	var project string
 	if err := tx.QueryRow(ctx, `
@@ -183,9 +184,10 @@ func DefaultMoved(project string, event model.Event) Move {
 	}
 }
 
-// Restored is the restore of the asks an issue's close withdrew (api's restoreIssueAsksTx): each
-// ask of events, recorded under the ask.opened that records its restore. A closed issue moved
-// nothing of them, so each now reaches whoever it waits on as it is restored.
+// Restored is the restore of asks no move reached while they were closed, each now open again:
+// the asks an issue's close withdrew (api's restoreIssueAsksTx), and the asks a settlement
+// retracted whose blocks came back (docs' moveRestored). Each ask of events is recorded under the
+// ask.opened that records its restore, and now reaches whoever it waits on as it is restored.
 func Restored(events map[string]model.Event) Move {
 	ids := make([]string, 0, len(events))
 	for id := range events {

@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -88,6 +91,135 @@ func TestEveryReadStateWriteIsATupleFromThePerson(t *testing.T) {
 			fmt.Sprintf("@%d", stateEvent), fmt.Sprintf("@%d retracted", readEvent))
 		if got := unreadReplies(t, handler, "alice", "s1"); got.UnreadReplies != 0 || got.ReadThrough == nil || got.ClearedBefore == nil {
 			t.Errorf("alice reads %#v, want nothing unread, the read mark and the Clear", got)
+		}
+	})
+
+	t.Run("a read mark that moves nothing states nothing", func(t *testing.T) {
+		// A conversation's read mark sent again, and then short of the one its row holds, as a tab
+		// that read less a moment ago sends it: the first is the one tuple of the three, so the
+		// history directMarks reads grows with the marks that moved and no faster.
+		handler, database, root, reply, _ := directConversationFrom(t, "alice")
+		answer := decodeBody[model.Message](t, reply("On it."))
+		putAgentState(t, handler, "alice", "s1", map[string]any{"read_through": answer.CreatedAt})
+		readEvent := newestEventOf(t, database, "user_agent_state.updated", "alice")
+		putAgentState(t, handler, "alice", "s1", map[string]any{"read_through": answer.CreatedAt})
+		putAgentState(t, handler, "alice", "s1", map[string]any{"read_through": root.CreatedAt})
+		requireMarkHistory(t, database, graphstore.TupleReadThrough, "session:s1", fmt.Sprintf("@%d", readEvent))
+		requireMarkMatchesRow(t, database, graphstore.TupleReadThrough, "session:s1", readEvent,
+			storedMarks(t, database, `select read_through, tuples_stored_at from user_agent_read where login = 'alice' and session_id = 's1'`))
+
+		// A dismissal through a moment the thread's read mark has passed marks nothing read, so it
+		// states the dismissal alone; and a write of alice's own whose moment her read mark has
+		// passed leaves her row's mark, and its tuple, as they were (inboxwrite.Record's keepRow).
+		threads, threadsDatabase := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, threads, "RSNM", "Marks that move nothing", "A spec")
+		thread := createThreadComment(t, threads, issue.Key, map[string]any{"body": "Ship on Friday?"}, "alice")
+		node := graphstore.KindComment + ":" + thread.ID
+		written := writeEventOf(t, threadsDatabase, "comment.created", thread.ID)
+		bob := createThreadComment(t, threads, issue.Key, map[string]any{"body": "Friday works.", "reply_to": thread.ID}, "bob")
+		if read := markThreadRead(t, threads, "alice", thread.ID, time.Now().UTC()); read.Code != http.StatusNoContent {
+			t.Fatalf("read the thread: status=%d body=%s", read.Code, read.Body.String())
+		}
+		threadRead := newestEventOf(t, threadsDatabase, "user_thread_state.updated", "alice")
+		if dismissed := dismissThrough(t, threads, "alice", bob.CreatedAt, nil); dismissed != 1 {
+			t.Fatalf("dismissed = %d, want alice's thread, whose newest reply is bob's", dismissed)
+		}
+		dismissEvent := newestEventOf(t, threadsDatabase, "user_thread_state.updated", "alice")
+		requireMarkMatchesRow(t, threadsDatabase, graphstore.TupleDismissed, node, dismissEvent, threadRowMark(t, threadsDatabase, "dismissed_at", thread.ID))
+		requireMarkHistory(t, threadsDatabase, graphstore.TupleReadThrough, node, fmt.Sprintf("@%d", written), fmt.Sprintf("@%d", threadRead))
+
+		tx, err := threadsDatabase.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer tx.Rollback(ctx)
+		if err := inboxwrite.Record(ctx, tx, inboxwrite.Comment(thread.ID, alice, thread.CreatedAt, &issue.Key, nil, "RSNM"), graphstore.NoEvent); err != nil {
+			t.Fatalf("record alice's write at its own moment again: %v", err)
+		}
+		var stated int
+		if err := tx.QueryRow(ctx, `
+			select count(*) from graph_tuples
+			where from_kind = $1 and from_id = 'alice' and kind = $2 and to_kind = $3 and to_id = $4 and source_event = $5
+		`, graphstore.KindPerson, graphstore.TupleReadThrough, graphstore.KindComment, thread.ID, graphstore.NoEvent).Scan(&stated); err != nil {
+			t.Fatalf("count the read marks the write stated: %v", err)
+		}
+		if stated != 0 {
+			t.Errorf("a write at %s, before alice's read mark, stated %d read_through of hers, want none", thread.CreatedAt, stated)
+		}
+	})
+
+	t.Run("Mark all read and an Agent thread's dismissal read its replies by id", func(t *testing.T) {
+		// Both write the Agent threads' unread replies by id (markInboxReadAgentReplies), each row
+		// a reply_read tuple under the event of its session, marked at the moment of the reading.
+		handler, database, _, reply, _ := directConversationFrom(t, "alice")
+		first := decodeBody[model.Message](t, reply("On it."))
+		if marked := postInboxRead(t, handler, "alice", map[string]any{"read_through": time.Now().UTC().Format(time.RFC3339Nano)}); marked.Code != http.StatusOK || markedBy(t, marked) != 1 {
+			t.Fatalf("Mark all read: status=%d body=%s, want alice's one Agent thread marked", marked.Code, marked.Body.String())
+		}
+		requireMarkMatchesRow(t, database, graphstore.TupleReplyRead, graphstore.KindMessage+":"+first.ID,
+			newestEventOf(t, database, "user_agent_state.updated", "alice"),
+			storedMarks(t, database, `select tuples_stored_at, tuples_stored_at from user_agent_reply_read where login = 'alice' and reply_id = $1::uuid`, first.ID))
+
+		created := postAgentMessage(t, handler, "s1", map[string]any{"body": "And the build?", "delivery": "aside"}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("a second direct message: status=%d body=%s", created.Code, created.Body.String())
+		}
+		second := decodeBody[model.Message](t, created)
+		answered := replyTo(t, handler, second.ID, "Green.")
+		if answered.Code != http.StatusCreated {
+			t.Fatalf("s1's reply to the second message: status=%d body=%s", answered.Code, answered.Body.String())
+		}
+		answer := decodeBody[model.Message](t, answered)
+		if dismissed := dismissRows(t, handler, database, "alice", inboxDismissAgentPrefix+second.ID); dismissed != 1 {
+			t.Fatalf("dismissed = %d, want alice's second Agent thread", dismissed)
+		}
+		requireMarkMatchesRow(t, database, graphstore.TupleReplyRead, graphstore.KindMessage+":"+answer.ID,
+			newestEventOf(t, database, "user_agent_state.updated", "alice"),
+			storedMarks(t, database, `select tuples_stored_at, tuples_stored_at from user_agent_reply_read where login = 'alice' and reply_id = $1::uuid`, answer.ID))
+	})
+
+	t.Run("the removal of a document retracts the marks of the Inbox rows it deletes", func(t *testing.T) {
+		// Rows of the document's threads the untouched test lets through, as an older build or a
+		// thread whose writes went leaves them: alice's dismissed, bob's not.
+		handler, database := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "RSRM", "A removed document", "A spec")
+		document := emptyDocument(t, handler, issue.Key, "Notes made by mistake")
+		aliceThread, bobThread := uuid.NewString(), uuid.NewString()
+		if _, err := database.Pool.Exec(ctx, `
+			insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through, dismissed_at)
+			values ('alice', $1::uuid, 'comment', 'RSRM', $3, $4::uuid, now(), now()),
+			       ('bob', $2::uuid, 'comment', 'RSRM', $3, $4::uuid, now(), null)
+		`, aliceThread, bobThread, issue.Key, document.ID); err != nil {
+			t.Fatalf("seed the document's Inbox rows: %v", err)
+		}
+		removedDocument(t, handler, document.ID)
+		removed := latestEventOf(t, database, "artifact.removed")
+		if rows := threadRowLogins(t, database, aliceThread); len(rows) != 0 {
+			t.Fatalf("the removal left the rows %v of the document's thread", rows)
+		}
+		for kind, want := range map[string][]string{
+			graphstore.TupleReadThrough: {
+				fmt.Sprintf("person:alice > comment:%s @%d retracted", aliceThread, removed),
+				fmt.Sprintf("person:bob > comment:%s @%d retracted", bobThread, removed),
+			},
+			graphstore.TupleDismissed: {
+				fmt.Sprintf("person:alice > comment:%s @%d retracted", aliceThread, removed),
+			},
+		} {
+			got, err := readStrings(ctx, database.Pool, `
+				select from_kind || ':' || from_id || ' > ' || to_kind || ':' || to_id || ' @' || source_event::text
+				       || case when asserted then '' else ' retracted' end
+				from graph_tuples
+				where kind = $1 and to_kind = 'comment' and to_id = any($2)
+				order by 1
+			`, kind, []string{aliceThread, bobThread})
+			if err != nil {
+				t.Fatalf("read the %s tuples of the removed document's threads: %v", kind, err)
+			}
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("the %s tuples of the removed document's threads are %v, want %v", kind, got, want)
+			}
 		}
 	})
 

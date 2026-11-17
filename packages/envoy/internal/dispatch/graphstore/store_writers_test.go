@@ -238,12 +238,13 @@ var storeWriteCallSites = []string{
 	// paths to its user_threads step.
 	"inboxwrite/record.go#Record",
 	// The move of the person open asks wait on (dispatch://INFRA-1152 R2, inboxwrite.MoveWaiting),
-	// which patchIssue's assignee, putAskAskedOf, putProjectDefaultAssignee and the reopen's
-	// restore of withdrawn asks run after their event: the asks rows it moves locked `for no key
-	// update` in ascending id, after the owner row and the project row its caller took, then one
-	// read of those asks and of whom each one's delivery stands to, then one ToPerson call, which
-	// writes the person nodes `do nothing` before the tuples, in ascending (kind, id). api's
-	// TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder holds the three moves to those steps.
+	// which patchIssue's assignee, putAskAskedOf, putProjectDefaultAssignee, the reopen's restore
+	// of withdrawn asks and a settlement's restore of an ask it retracted run after their event:
+	// the asks rows it moves locked `for no key update` in ascending id, after the owner row and the
+	// project row its caller took, then one read of those asks and of whom each one's delivery
+	// stands to, then one ToPerson call, which writes the person nodes `do nothing` before the
+	// tuples, in ascending (kind, id). api's TestEveryMoveOfWhoAnAskWaitsOnTakesTheStoreLockOrder
+	// holds the three moves to those steps.
 	"inboxwrite/waiting.go#MoveWaiting",
 	// The writes of a person's read state (dispatch://INFRA-1152 R6): each route that writes one
 	// of the read-state tables appends, through FromPerson and under the event it appends after

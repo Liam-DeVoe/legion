@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
@@ -155,6 +158,79 @@ func TestAFallbackCopyThePassPublishedIsADelivery(t *testing.T) {
 	}
 	if repeated != 1 {
 		t.Fatalf("the copy recorded twice holds %d delivered_to tuple(s), want one", repeated)
+	}
+}
+
+// TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples holds recordBatch to the
+// projection deliveredGraph states - an event's published_destinations names, among its session
+// and role topics, exactly the far ends of the delivered_to tuples under it (R2's session half) -
+// when the publisher hold moves mid-batch. The holder publishes a comment's event to s2 and
+// records it; the process that lost the hold had sent the same event to s3 before it stopped, and
+// records its own batch after. Its tuple to s3 is a delivery that happened, and the array names
+// s3's topic beside s2's, while the row's publish state stays the holder's.
+func TestAnEventTwoProcessesRecordedKeepsItsArrayTheFarEndsOfItsTuples(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	deps := Deps{Store: database}
+	deps.lanes = newLanes(func() {})
+	seedIssue(t, database, "T-1", nil)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	comment := seedComment(t, database, "T-1", alice, "For whoever has the issue.", nil)
+	event := appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-1"), Type: "comment.created", Actor: alice, Payload: map[string]any{"id": comment},
+	})
+	const owner = "notifications.dispatch.issue.T-1.comment.created"
+	record := func(holder uuid.UUID, session string) {
+		t.Helper()
+		sent := &batchEvent{pendingEvent: pendingEvent{event: event}, outcome: outcome{
+			id: event.ID, state: published, reached: []string{owner, contracts.AgentSubject(session)},
+		}}
+		if _, err := recordBatch(ctx, deps, []outcome{sent.outcome}, holder, deliveredGraph([]*batchEvent{sent}, nil, time.Now())); err != nil {
+			t.Fatalf("record the batch that reached %s: %v", session, err)
+		}
+	}
+	read := func() ([]string, *time.Time) {
+		t.Helper()
+		var destinations []string
+		var publishedAt *time.Time
+		if err := database.Pool.QueryRow(ctx, `select published_destinations, published_at from events where id = $1`, event.ID).
+			Scan(&destinations, &publishedAt); err != nil {
+			t.Fatalf("read event %d: %v", event.ID, err)
+		}
+		return destinations, publishedAt
+	}
+	record(uuid.New(), "s2")
+	_, publishedAt := read()
+	if publishedAt == nil {
+		t.Fatalf("the holder's record left event %d unpublished", event.ID)
+	}
+	record(uuid.New(), "s3")
+
+	destinations, after := read()
+	if want := []string{owner, contracts.AgentSubject("s2"), contracts.AgentSubject("s3")}; !slices.Equal(destinations, want) {
+		t.Errorf("event %d was published to %v, want %v: the second record reached s3", event.ID, destinations, want)
+	}
+	if after == nil || !after.Equal(*publishedAt) {
+		t.Errorf("event %d is published at %v after the second record, want the holder's %v", event.ID, after, publishedAt)
+	}
+	rows, err := database.Pool.Query(ctx, `
+		select from_kind || '/' || from_id || ' > ' || to_kind || '/' || to_id from graph_tuples
+		where source_event = $1 and kind = $2 order by 1
+	`, event.ID, graphstore.TupleDeliveredTo)
+	if err != nil {
+		t.Fatalf("read the deliveries of event %d: %v", event.ID, err)
+	}
+	tuples, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the deliveries of event %d: %v", event.ID, err)
+	}
+	want := []string{
+		graphstore.KindComment + "/" + comment + " > " + graphstore.KindSession + "/s2",
+		graphstore.KindComment + "/" + comment + " > " + graphstore.KindSession + "/s3",
+	}
+	if !slices.Equal(tuples, want) {
+		t.Errorf("event %d's deliveries are %v, want %v", event.ID, tuples, want)
 	}
 }
 

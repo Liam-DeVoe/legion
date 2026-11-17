@@ -52,8 +52,9 @@ const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id'
 //   - The depth bound holds a chain of replies that never repeats a row: neither walk takes more
 //     than $2 steps, so a chain that deep is answered whole and a longer one is cut at the bound.
 //     A cut is a row of its own in the answer: the key, no session, and cut set. The walk up was
-//     cut when a row it reached at the bound still replies to another, and the walk down when a
-//     row it reached at the bound has a reply.
+//     cut when a row it reached at the bound still replies to a row it has not visited - one it
+//     has visited is the cycle the visited guard ended, which cuts nothing - and the walk down
+//     when a row it reached at the bound has a reply.
 //
 // The thread's members are both walks' comments, so a cycle or a cut chain still reaches the
 // authors of the comments the walk up visited, the replied-to comment's among them. The thread's
@@ -109,7 +110,7 @@ const commentRecipientsQuery = `
 		` + documentCreditsSQL + `
 	),
 	cuts as (
-		select key from up where depth = $2 and reply_to is not null
+		select key from up where depth = $2 and reply_to is not null and reply_to <> all(visited)
 		union
 		select t.key from thread t
 		where t.depth = $2 and exists (select 1 from comments c where c.reply_to = t.id)

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -36,7 +36,7 @@ func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 	database := storetest.Open(t)
 	trace := &assigneeArmTrace{}
 	traced := storetest.TracedStore(t, database, trace)
-	handler, _, deps := newTestServer(t, testServerOptions{
+	handler, _, _ := newTestServer(t, testServerOptions{
 		store: traced,
 		// The caller's identity is resolved on the untraced pool, so a counted request's
 		// statements are its write's own and not the sign-in lookup every request makes.
@@ -279,53 +279,76 @@ func TestTheAssigneeArmFollowsWhoAnAskWaitsOn(t *testing.T) {
 			fmt.Sprintf("person:carol > %s @%d", fallsThread, fallsRestored))
 	})
 
-	t.Run("a failure after the change of assignee's first append leaves neither its tuples nor the assignee", func(t *testing.T) {
+	t.Run("a change of assignee whose move fails leaves neither its tuples nor the assignee", func(t *testing.T) {
 		issue := createInteractionIssue(t, handler, "ARMF", "The failed change", "A spec")
 		assignIssue(t, handler, issue.Key, "bob")
 		ask := createIssueAsk(t, handler, issue.Key, "Does the failure leave it?")
 		opened := writeEventOf(t, database, "ask.opened", ask)
-		// The change of assignee as patchIssue runs it: the issue's row, the issue's event, then
-		// the move of its asks under that event.
-		writer := projectionWriter{
-			name: "the change of assignee",
-			write: func(ctx context.Context, tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, `update issues set assignee = $2 where key = $1`, issue.Key, "dana"); err != nil {
-					return err
-				}
-				event, err := deps.Events.Append(ctx, tx, issueOwner(issue.Key).event("issue.updated",
-					model.Actor{Kind: "user", ID: "alice"}, map[string]any{"key": issue.Key}))
-				if err != nil {
-					return err
-				}
-				return inboxwrite.MoveWaiting(ctx, tx, inboxwrite.Reassigned(issue.Key, event))
-			},
+		updates := issueEventCount(t, database, issue.Key, "issue.updated")
+		// The move's one append fails: a trigger refuses every delivered_to from the ask, which in
+		// this write only the move appends - the retraction of bob's delivery and dana's - so PATCH
+		// fails after its row, its event and the move's lock and read, at the move's append.
+		refuseTuplesFrom(t, database, graphstore.KindAsk, ask, graphstore.TupleDeliveredTo)
+		response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]any{"assignee": "dana"}, "alice")
+		if response.Code < http.StatusInternalServerError {
+			t.Fatalf("the change of assignee whose move failed answered %d %s, want a 5xx", response.Code, response.Body.String())
 		}
-		run := &projectionRun{database: traced}
-		whole := run.runWatched(t, ctx, writer, -1, false)
-		appended := whole.index("insert into graph_tuples")
-		if appended < 0 {
-			t.Fatalf("the change of assignee appended no tuple in its transaction; it ran %v", statementTexts(whole.statements))
+		var assignee *string
+		if err := database.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, issue.Key).Scan(&assignee); err != nil {
+			t.Fatalf("read %s's assignee: %v", issue.Key, err)
 		}
-		for _, abort := range []bool{false, true} {
-			failed := run.runWatched(t, ctx, writer, appended+1, abort)
-			if off := failed.elsewhere(); len(off) != 0 {
-				t.Errorf("the change of assignee ran statements outside its transaction:\n  %s", strings.Join(off, "\n  "))
-			}
-			var assignee *string
-			if err := database.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, issue.Key).Scan(&assignee); err != nil {
-				t.Fatalf("read %s's assignee: %v", issue.Key, err)
-			}
-			if assignee == nil || *assignee != "bob" {
-				t.Errorf("after the failed change (abort %v) %s is assigned to %v, want bob still", abort, issue.Key, assignee)
-			}
-			thread := "ask:" + ask
-			requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
-				fmt.Sprintf("%s > person:bob @%d", thread, opened))
-			requireRelationTuples(t, database, graphstore.TupleParticipatesIn, thread,
-				fmt.Sprintf("%s > %s @%d", session, thread, opened),
-				fmt.Sprintf("person:bob > %s @%d", thread, opened))
+		if assignee == nil || *assignee != "bob" {
+			t.Errorf("after the failed change %s is assigned to %v, want bob still", issue.Key, assignee)
+		}
+		if after := issueEventCount(t, database, issue.Key, "issue.updated"); after != updates {
+			t.Errorf("the failed change left %d issue.updated events of %s, want the %d before it", after, issue.Key, updates)
+		}
+		thread := "ask:" + ask
+		requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+			fmt.Sprintf("%s > person:bob @%d", thread, opened))
+		requireRelationTuples(t, database, graphstore.TupleParticipatesIn, thread,
+			fmt.Sprintf("%s > %s @%d", session, thread, opened),
+			fmt.Sprintf("person:bob > %s @%d", thread, opened))
+	})
+}
+
+// refuseTuplesFrom makes every append of a tuple of kind from node fromKind/fromID fail, for the
+// rest of t: a trigger on graph_tuples the test installs and its cleanup drops, which raises on
+// the first such row of a statement, so the write that appends it fails at that statement and
+// nowhere before it. The node's id is the test's own, so the trigger reaches no other write.
+func refuseTuplesFrom(t *testing.T, database *store.Store, fromKind, fromID, kind string) {
+	t.Helper()
+	ctx := context.Background()
+	name := "refuse_" + strings.ReplaceAll(uuid.NewString(), "-", "_")
+	if _, err := database.Pool.Exec(ctx, `
+		create function `+name+`() returns trigger language plpgsql as $$
+		begin
+			raise exception 'the test refuses % from %/%', new.kind, new.from_kind, new.from_id;
+		end $$`); err != nil {
+		t.Fatalf("create the refusing function: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		create trigger `+name+` before insert on graph_tuples for each row
+		when (new.from_kind = `+quoteLiteral(fromKind)+` and new.from_id = `+quoteLiteral(fromID)+` and new.kind = `+quoteLiteral(kind)+`)
+		execute function `+name+`()`); err != nil {
+		t.Fatalf("create the refusing trigger: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := database.Pool.Exec(context.Background(), `drop trigger `+name+` on graph_tuples; drop function `+name+`()`); err != nil {
+			t.Errorf("drop the refusing trigger: %v", err)
 		}
 	})
+}
+
+// issueEventCount is how many events of eventType the issue key holds.
+func issueEventCount(t *testing.T, database *store.Store, key, eventType string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from events where issue_key = $1 and type = $2`, key, eventType).Scan(&count); err != nil {
+		t.Fatalf("count the %s events of %s: %v", eventType, key, err)
+	}
+	return count
 }
 
 // TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn races a move of a
@@ -461,6 +484,108 @@ func TestAMoveOfTheDefaultTakesTurnsWithEveryWriteThatDecidesWhoAnAskWaitsOn(t *
 		}
 		requireOneStandingDelivery(t, database, ask, "erin")
 	})
+}
+
+// TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow holds a settlement's restore of an ask it
+// retracted to R2's move (docs' moveRestored, dispatch://INFRA-1152): while the retraction stood
+// the ask was not open, so a change of its issue's assignee moved nothing of it; once its block
+// comes back the ask is open again and its delivery moves to the person it waits on now, under
+// the ask.opened that records the restore, and is retracted for the person it stood to, with
+// their part in the thread, which nothing else holds.
+func TestASettlementsRestoreMovesTheAskToWhoItWaitsOnNow(t *testing.T) {
+	handler, database, documentService := blockAskHandlerWithDocuments(t)
+	seedPeople(t, database, "dana")
+	issue := createInteractionIssue(t, handler, "TEST", "A retracted ask comes back", "Context\n")
+	assignIssue(t, handler, issue.Key, "bob")
+	ask := writeBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID)
+	opened := writeEventOf(t, database, "ask.opened", ask)
+	thread := "ask:" + ask
+	session := "session:" + sessionActor()["id"].(string)
+	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+		fmt.Sprintf("%s > person:bob @%d", thread, opened))
+
+	removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
+	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
+	if retracted := readBlockAsk(t, handler, ask); retracted.State != "resolved" {
+		t.Fatalf("the ask whose block was deleted is %q, want the settlement to have retracted it", retracted.State)
+	}
+	// The ask is not open, so the change of assignee moves nothing of it.
+	assignIssue(t, handler, issue.Key, "dana")
+	if under := tuplesUnder(t, database, latestEventOf(t, database, "issue.updated"), ask); len(under) != 0 {
+		t.Fatalf("the change of assignee wrote %v of the retracted ask, want nothing: a move reaches open asks alone", under)
+	}
+
+	if restoring := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits",
+		map[string]any{"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": transportAsk}}},
+		"alice"); restoring.Code != http.StatusOK {
+		t.Fatalf("write the ask block back: status=%d body=%s", restoring.Code, restoring.Body.String())
+	}
+	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-restore")
+	if back := readBlockAsk(t, handler, ask); back.State != "open" || back.WaitingOnPerson != "dana" {
+		t.Fatalf("the restored ask is %q waiting on %q, want it open and waiting on dana", back.State, back.WaitingOnPerson)
+	}
+	restored := writeEventOf(t, database, "ask.opened", ask)
+	if restored == opened {
+		t.Fatalf("the settlement appended no ask.opened for the ask it restored")
+	}
+	requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+		fmt.Sprintf("%s > person:bob @%d", thread, opened),
+		fmt.Sprintf("%s > person:bob @%d retracted", thread, restored),
+		fmt.Sprintf("%s > person:dana @%d", thread, restored))
+	requireRelationTuples(t, database, graphstore.TupleParticipatesIn, thread,
+		fmt.Sprintf("%s > %s @%d", session, thread, opened),
+		fmt.Sprintf("person:bob > %s @%d", thread, opened),
+		fmt.Sprintf("person:bob > %s @%d retracted", thread, restored),
+		fmt.Sprintf("person:dana > %s @%d", thread, restored))
+}
+
+// TestEveryAskCreateReachesWhoItWaitsOn holds the two creates of an ask besides createAskFor to
+// the assignee arm of their create (inboxwrite.Record, dispatch://INFRA-1152 R2): a settlement's
+// block ask (docs' createAskBlock), whose person Record reads itself (waitingOn), and an approval
+// request (openApprovalAsk), whose person its insert read (Write.WaitingOn). Each reaches the
+// issue's assignee, who takes part in its thread, under its ask.opened, and its asker takes part.
+func TestEveryAskCreateReachesWhoItWaitsOn(t *testing.T) {
+	t.Run("a settlement's block ask", func(t *testing.T) {
+		handler, database, _ := blockAskHandlerWithDocuments(t)
+		issue := createInteractionIssue(t, handler, "TEST", "A block ask waits on bob", "Context\n")
+		assignIssue(t, handler, issue.Key, "bob")
+		ask := writeBlockAsk(t, handler, issue.Key, issue.PrimaryArtifactID)
+		opened := writeEventOf(t, database, "ask.opened", ask)
+		thread := "ask:" + ask
+		requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+			fmt.Sprintf("%s > person:bob @%d", thread, opened))
+		requireRelationTuples(t, database, graphstore.TupleParticipatesIn, thread,
+			fmt.Sprintf("session:%s > %s @%d", sessionActor()["id"], thread, opened),
+			fmt.Sprintf("person:bob > %s @%d", thread, opened))
+	})
+	t.Run("an approval request", func(t *testing.T) {
+		handler, database := newTestHandlerWithStore(t)
+		issue := createInteractionIssue(t, handler, "TEST", "An approval request waits on bob", "A spec")
+		assignIssue(t, handler, issue.Key, "bob")
+		request := requestApproval(t, handler, issue.PrimaryArtifactID)
+		opened := writeEventOf(t, database, "ask.opened", request.ID)
+		thread := "ask:" + request.ID
+		requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+			fmt.Sprintf("%s > person:bob @%d", thread, opened))
+		requireRelationTuples(t, database, graphstore.TupleParticipatesIn, thread,
+			fmt.Sprintf("session:%s > %s @%d", sessionActor()["id"], thread, opened),
+			fmt.Sprintf("person:bob > %s @%d", thread, opened))
+	})
+}
+
+// writeBlockAsk writes transportAsk's block into the document as sessionActor, waits for the
+// settlement that indexes it, and answers the id of the ask it opened on the issue.
+func writeBlockAsk(t *testing.T, handler http.Handler, issueKey, artifactID string) string {
+	t.Helper()
+	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
+		"actor": sessionActor(),
+		"ops":   []map[string]string{{"op": "insert", "after": "end", "markdown": transportAsk}},
+	})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the ask block: status=%d body=%s", written.Code, written.Body.String())
+	}
+	awaitIndexedAskBlock(t, handler, artifactID, "decision", "Which transport?")
+	return blockAskID(t, handler, issueKey, "decision")
 }
 
 // requireOneStandingDelivery fails unless ask askID waits on want (asks.AskedOfPersonExpression)

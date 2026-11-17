@@ -485,9 +485,11 @@ func publishedDestinationsProjectTheOutboxsTuples(t *testing.T) {
 	rig := newAttemptRig(t)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "The session half", "before")
 	rig.route(issue.Key, "session:s2")
-	if posted := postMentionedComment(t, rig.handler, issue.Key, map[string]any{"body": "For whoever has the issue."}); posted.Code != http.StatusCreated {
+	posted := postMentionedComment(t, rig.handler, issue.Key, map[string]any{"body": "For whoever has the issue."})
+	if posted.Code != http.StatusCreated {
 		t.Fatalf("the routed comment: status=%d body=%s", posted.Code, posted.Body.String())
 	}
+	routed := replyID(t, posted.Body.Bytes())
 	mentioned := rig.mention(issue.Key, "And for s1 by name.", "session:s1")
 	settledCommentDeliveries(t, rig.database, mentioned.ID)
 	runOutboxUntilSettled(t, rig.deps, &recordingOutboxPublisher{}, issue.Key, mentioned.ID)
@@ -499,7 +501,15 @@ func publishedDestinationsProjectTheOutboxsTuples(t *testing.T) {
 	}
 	createIssueMessage(t, rig.handler, issue.Key, map[string]any{"body": "For s1 alone.", "target": "session:s1", "delivery": "steer"}, "alice")
 	runOutboxUntilSettled(t, rig.deps, &recordingOutboxPublisher{}, issue.Key, mentioned.ID)
-	requirePublishedDestinationsProjectTheOutboxsTuples(t, rig.database, issue.Key)
+	// Each delivery written out: the routed comment and the mentioned one each reach the session
+	// the issue is routed to, the mention's receipt the session its attempt reached, and the
+	// message routed to the role that role; the targeted message and its receipt, and the
+	// issue's own events, reach no node the outbox records.
+	requirePublishedDestinationsProjectTheOutboxsTuples(t, rig.database, issue.Key,
+		"comment.created comment/"+routed+" > session/s2",
+		"comment.created comment/"+mentioned.ID+" > session/s2",
+		"comment.delivery comment/"+mentioned.ID+" > session/s1",
+		"message.created message/"+rig.messageID(issue.Key, "For whoever holds the role.")+" > role/reviewer")
 }
 
 // attemptRig is the server one attempt case drives: its handler, store and dependencies, the
@@ -1029,20 +1039,21 @@ const outboxWriter = "dispatch-outbox"
 
 // requirePublishedDestinationsProjectTheOutboxsTuples holds every published event of issueKey to
 // the projection outbox.deliveredGraph states. The delivered_to tuples the outbox appended under
-// an event about a comment or a message run from that item's node, and their far ends are
-// exactly the session and role topics of the event's published_destinations, each once. An event
-// about anything else appends none, whatever sessions and roles it reached. A comment.delivery
-// receipt is published to its owner topic alone, and its one tuple, from the comment to the
-// session its attempt reached, is that delivery's, which comment_deliveries projects. The owner
-// topic of each event is a topic no tuple projects. The events must hold one of each of these
-// shapes, so a run that published nothing proves nothing.
-func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database *store.Store, issueKey string) {
+// the issue's events are exactly want, each "<event type> <from kind>/<from id> > <to kind>/<to id>",
+// written out by the caller. Of every event about a comment or a message but a comment.delivery
+// receipt, the session and role topics of its published_destinations are exactly the far ends of
+// the tuples under it, each once; a receipt is published to its owner topic alone, its one tuple
+// being its attempt's delivery, which comment_deliveries projects; an event about anything else
+// appends no tuple (want names none), whatever sessions and roles it reached, and the run must
+// hold one that reached a route, so it proves something of them. Each event is published to its
+// one owner topic, which no tuple projects.
+func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database *store.Store, issueKey string, want ...string) {
 	t.Helper()
 	ctx := context.Background()
-	type outboxTuple struct{ from, to string }
-	tuples := map[int64][]outboxTuple{}
+	reached := map[int64][]string{}
+	var got []string
 	rows, err := database.Pool.Query(ctx, `
-		select t.source_event, t.from_kind || '/' || t.from_id, t.to_kind || '/' || t.to_id
+		select t.source_event, e.type, t.from_kind || '/' || t.from_id, t.to_kind || '/' || t.to_id
 		from graph_tuples t join events e on e.id = t.source_event
 		where t.kind = $1 and t.who ->> 'id' = $2 and e.issue_key = $3
 	`, graphstore.TupleDeliveredTo, outboxWriter, issueKey)
@@ -1051,13 +1062,20 @@ func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database 
 	}
 	for rows.Next() {
 		var event int64
-		var tuple outboxTuple
-		if err := rows.Scan(&event, &tuple.from, &tuple.to); err != nil {
+		var eventType, from, to string
+		if err := rows.Scan(&event, &eventType, &from, &to); err != nil {
 			t.Fatalf("read an outbox delivery: %v", err)
 		}
-		tuples[event] = append(tuples[event], tuple)
+		got = append(got, eventType+" "+from+" > "+to)
+		reached[event] = append(reached[event], topicOfNode(t, to))
 	}
 	rows.Close()
+	slices.Sort(got)
+	want = slices.Clone(want)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("the outbox's deliveries under %s's events are\n  %s\nwant\n  %s", issueKey, strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+	}
 	var fallbacks int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from comment_fallback_copies f join comments c on c.id = f.comment_id where c.issue_key = $1
@@ -1066,29 +1084,24 @@ func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database 
 	}
 
 	events, err := database.Pool.Query(ctx, `
-		select id, type, payload, published_destinations, published_at is not null
+		select id, type, published_destinations, published_at is not null
 		from events where issue_key = $1 order by id
 	`, issueKey)
 	if err != nil {
 		t.Fatalf("read the events of %s: %v", issueKey, err)
 	}
 	defer events.Close()
-	seen := map[string]int{}
+	routed := 0
 	for events.Next() {
 		var id int64
 		var eventType string
-		var raw []byte
 		var destinations []string
 		var published bool
-		if err := events.Scan(&id, &eventType, &raw, &destinations, &published); err != nil {
+		if err := events.Scan(&id, &eventType, &destinations, &published); err != nil {
 			t.Fatalf("read an event of %s: %v", issueKey, err)
 		}
 		if !published {
 			t.Fatalf("event %d (%s) is unpublished after the outbox settled", id, eventType)
-		}
-		var payload map[string]any
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			t.Fatalf("decode the payload of event %d: %v", id, err)
 		}
 		var owners, topics []string
 		for _, destination := range destinations {
@@ -1101,77 +1114,26 @@ func requirePublishedDestinationsProjectTheOutboxsTuples(t *testing.T, database 
 		if len(owners) != 1 {
 			t.Errorf("event %d (%s) was published to owner topics %v, want its one", id, eventType, owners)
 		}
-		var reached []string
-		item := deliveredItemOf(eventType, payload)
-		for _, tuple := range tuples[id] {
-			if tuple.from != item {
-				t.Errorf("event %d (%s) caused a delivery from %s, want only its item %q's", id, eventType, tuple.from, item)
-			}
-			reached = append(reached, topicOfNode(t, tuple.to))
-		}
-		slices.Sort(reached)
+		delivered := reached[id]
+		slices.Sort(delivered)
 		slices.Sort(topics)
 		switch {
 		case eventType == "comment.delivery":
-			want := []string{}
-			if state, _ := payload["state"].(string); model.DeliveryTaken(state) {
-				if session, _ := payload["session_id"].(string); session != "" {
-					want = append(want, contracts.AgentSubject(session))
-				}
+			if len(topics) != 0 {
+				t.Errorf("receipt %d was published to %v, want its owner topic alone", id, topics)
 			}
-			if len(topics) != 0 || !slices.Equal(reached, want) {
-				t.Errorf("receipt %d was published to %v and caused deliveries to %v, want its owner topic alone and the delivery %v of its attempt",
-					id, topics, reached, want)
-			}
-			if len(want) == 1 {
-				seen["a mention's receipt"]++
-			}
-		case item != "":
-			if !slices.Equal(reached, topics) {
+		case strings.HasPrefix(eventType, "comment.") || strings.HasPrefix(eventType, "message."):
+			if !slices.Equal(delivered, topics) {
 				t.Errorf("event %d (%s) was published to %v, and the outbox's deliveries under it reach %v: published_destinations is not their projection",
-					id, eventType, topics, reached)
+					id, eventType, topics, delivered)
 			}
-			if len(topics) > 0 {
-				seen[strings.SplitN(eventType, ".", 2)[0]+" reaching "+strings.Split(strings.TrimPrefix(topics[0], "notifications."), ".")[0]]++
-			}
-		default:
-			if len(reached) != 0 {
-				t.Errorf("event %d (%s) is about no comment or message, and caused deliveries to %v", id, eventType, reached)
-			}
-			if len(topics) > 0 {
-				seen["an event about neither reaching a route"]++
-			}
+		case len(topics) > 0:
+			routed++
 		}
 	}
-	for _, shape := range []string{"comment reaching agent", "message reaching role", "a mention's receipt", "an event about neither reaching a route"} {
-		if seen[shape] == 0 {
-			t.Errorf("the run held no event of the shape %q, so it proves nothing of it; it held %v", shape, seen)
-		}
+	if routed == 0 {
+		t.Errorf("the run held no event about neither a comment nor a message that reached a route, so it proves nothing of one")
 	}
-}
-
-// deliveredItemOf is the node an event of eventType is about, as the outbox reads it
-// (outbox.deliveredItem): the comment or the message its payload names, kind/id, or "".
-func deliveredItemOf(eventType string, payload map[string]any) string {
-	named := func(fields ...string) string {
-		for _, field := range fields {
-			if id, _ := payload[field].(string); id != "" {
-				return id
-			}
-		}
-		return ""
-	}
-	switch {
-	case strings.HasPrefix(eventType, "comment."):
-		if id := named("id", "comment_id"); id != "" {
-			return graphstore.KindComment + "/" + id
-		}
-	case strings.HasPrefix(eventType, "message."):
-		if id := named("id", "message_id"); id != "" {
-			return graphstore.KindMessage + "/" + id
-		}
-	}
-	return ""
 }
 
 // topicOfNode is the Envoy topic the session or role node kind/id is reached on.

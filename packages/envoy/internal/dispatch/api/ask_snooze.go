@@ -77,11 +77,14 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	// one that can land near midnight keeps a few seconds of today in hand rather than naming a
 	// moment this could refuse. The ask is selected rather than its id inserted, so an unknown ask
 	// stores nothing and reads as absent - a 404 - instead of the foreign key's 500; a past moment
-	// is refused first, whatever ask it names. previous is read from the statement's own snapshot,
-	// before the write, so a snooze to the moment the row already holds is known to move nothing.
-	// A snooze that moves the row marks it at its snoozed_until, the moment of its snoozed tuple
-	// (decision 13), where the mark fits the store ($4, markFits); one that moves nothing leaves
-	// the row's marker as it was, since it states no tuple.
+	// is refused first, whatever ask it names. previous is the row as it stands once locked `for
+	// no key update`, which the insert's own select reads before it writes (the join), so it is the
+	// version the conflict arm then compares with and updates: a snooze another request committed
+	// after this statement's snapshot was taken is waited for and read, rather than the snapshot's
+	// older row, so a snooze to the moment the row already holds is known to move nothing and every
+	// other one states its tuple. A snooze that moves the row marks it at its snoozed_until, the
+	// moment of its snoozed tuple (decision 13), where the mark fits the store ($4, markFits); one
+	// that moves nothing leaves the row's marker as it was, since it states no tuple.
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -94,10 +97,12 @@ func (s *server) putAskSnooze(w http.ResponseWriter, r *http.Request) {
 	if err := tx.QueryRow(r.Context(), `
 		with previous as (
 			select snoozed_until from user_ask_snooze where login = $1 and ask_id = $2
+			for no key update
 		), snoozed as (
 			insert into user_ask_snooze (login, ask_id, snoozed_until, tuples_stored_at)
-			select $1, id, $3::timestamptz, case when $4::boolean then $3::timestamptz end
-			from asks where id = $2 and $3::timestamptz > now()
+			select $1, a.id, $3::timestamptz, case when $4::boolean then $3::timestamptz end
+			from asks a left join previous on true
+			where a.id = $2 and $3::timestamptz > now()
 			on conflict (login, ask_id) do update set
 				snoozed_until = excluded.snoozed_until,
 				tuples_stored_at = case when user_ask_snooze.snoozed_until is distinct from excluded.snoozed_until

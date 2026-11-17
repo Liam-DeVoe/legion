@@ -179,11 +179,14 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // from the caller's own text rather than bound as a parsed time, and stored as no later than now,
 // exactly as the read mark is; a request that named threads rather than filters binds no text at
 // all, and least() over a null mark is now(), the moment it was dismissed. read_through only moves
-// forward, and the row answers the read mark it holds once dismissed, which the dismissal states
-// too, since dismissing marks the thread read. A timestamp as a value is sound, and a filtered
-// dismissal is matched by one: it writes the rows whose replied_at is at or before
-// dismiss_through, the as_of rule the mark-all takes too (INFRA-450's spec, v32). What decides a
-// named dismissal's rows is the version.
+// forward, and the row answers the read mark it holds once dismissed and whether the dismissal
+// moved it, since dismissing marks the thread read and a read mark is stated only where it moved
+// (threadMarks). The read mark the row held before is read in the statement's own snapshot, which
+// holds the row as the lock taken before it left it (writeInboxThreadMarks): no other writer moves
+// a row this transaction holds. A timestamp as a value is sound, and a filtered dismissal is
+// matched by one: it writes the rows whose replied_at is at or before dismiss_through, the as_of
+// rule the mark-all takes too (INFRA-450's spec, v32). What decides a named dismissal's rows is
+// the version.
 //
 // That version is user_threads.version ($4, one per thread beside the ids in $3), which the list
 // answered for the row and which user_threads_record increments on every write by somebody else,
@@ -205,7 +208,7 @@ var inboxDismissCheckAgentRoots = myAgentMarks + `
 // inboxRestoreThreads is the other direction: it clears the mark on every row that carries one,
 // and stores no mark and checks no version, which are the two parameters the two differ by
 // (inboxMarkArgs). The moment it answers for each row is the write's own, which is when the
-// dismissal's tuple is retracted.
+// dismissal's tuple is retracted, and it moves no read mark.
 const (
 	inboxDismissMarkThreads = `
 	update user_threads t
@@ -214,11 +217,13 @@ const (
 	from unnest($3::uuid[], $4::bigint[]) as seen(thread_id, version)
 	where t.login = $1 and t.thread_id = seen.thread_id and t.dismissed_at is null
 	  and t.version = seen.version
-	returning t.project_key, t.thread_id::text, t.kind, t.read_through, t.dismissed_at`
+	returning t.project_key, t.thread_id::text, t.kind, t.read_through, t.dismissed_at,
+	          t.read_through > (select held.read_through from user_threads held
+	                            where held.login = t.login and held.thread_id = t.thread_id)`
 	inboxRestoreThreads = `
 	update user_threads set dismissed_at = null
 	where login = $1 and thread_id = any($2::uuid[]) and dismissed_at is not null
-	returning project_key, thread_id::text, kind, read_through, now()`
+	returning project_key, thread_id::text, kind, read_through, now(), false`
 )
 
 // inboxDismissMarkAgentThreads writes one dismissal row per Agent thread it was given, in the
@@ -404,20 +409,23 @@ func (plan inboxDismissPlan) agentFits(actor model.Actor) []any {
 }
 
 // threadMarks are the marks this plan's Reply write states of one row it moved (api/read_marks.go):
-// for a dismissal, dismissed to the thread's root at the dismissal and read_through at the read
-// mark the row now holds, since dismissing marks the thread read; for a restore, the retraction of
-// the dismissal at the moment of the write. Their event is the one commitInboxMarks appends for the
-// row's project.
+// for a dismissal, dismissed to the thread's root at the dismissal, and read_through at the read
+// mark the row now holds where the dismissal moved it, since dismissing marks the thread read; for
+// a restore, the retraction of the dismissal at the moment of the write. Their event is the one
+// commitInboxMarks appends for the row's project.
 func (plan inboxDismissPlan) threadMarks(actor model.Actor, thread inboxMarkedThread) []graphstore.Tuple {
 	if plan.restore {
 		return []graphstore.Tuple{
 			personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, false, graphstore.NoEvent),
 		}
 	}
-	return []graphstore.Tuple{
+	marks := []graphstore.Tuple{
 		personMark(actor, graphstore.TupleDismissed, thread.kind, thread.id, thread.at, true, graphstore.NoEvent),
-		personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id, thread.readThrough, true, graphstore.NoEvent),
 	}
+	if thread.readMoved {
+		marks = append(marks, personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id, thread.readThrough, true, graphstore.NoEvent))
+	}
+	return marks
 }
 
 // agentMark is the mark this plan's Agent write states of one root it changed: dismissed to the

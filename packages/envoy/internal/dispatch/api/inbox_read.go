@@ -138,17 +138,18 @@ const (
 // inboxReadMarkThreads moves the caller's mark on every Reply thread it was given, and answers
 // each row it moved in the shape every mark statement of these two routes answers
 // (writeInboxThreadMarks): its project, its thread and the thread root's kind, the read mark it now
-// holds, and the moment of the mark the statement wrote, here that read mark again. Every row it
-// reaches is one inboxReadLockThreads has just taken, so the order its own plan scans them in
-// decides nothing. read_through is cast by Postgres from the caller's own text rather than bound
-// as a parsed time, and stored as no later than now, exactly as putThreadRead stores one mark: a
-// mark never moves back, and a time carrying nanoseconds is not truncated a microsecond short of
-// the write it means to cover.
+// holds, the moment of the mark the statement wrote, here that read mark again, and whether it
+// moved that read mark, which every row it answers did. Every row it reaches is one
+// inboxReadLockThreads has just taken, so the order its own plan scans them in decides nothing.
+// read_through is cast by Postgres from the caller's own text rather than bound as a parsed time,
+// and stored as no later than now, exactly as putThreadRead stores one mark: a mark never moves
+// back, and a time carrying nanoseconds is not truncated a microsecond short of the write it means
+// to cover.
 const inboxReadMarkThreads = `
 	update user_threads set read_through = least($2::text::timestamptz, now())
 	where login = $1 and thread_id = any($3::uuid[])
 	  and read_through < least($2::text::timestamptz, now())
-	returning project_key, thread_id::text, kind, read_through, read_through`
+	returning project_key, thread_id::text, kind, read_through, read_through, true`
 
 // inboxReadMarkAgentReplies writes the agent replies this request reads, by id, as
 // putUserAgentState writes the ones a view showed: the ids are sorted before the insert so two
@@ -500,10 +501,11 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // owner takes first. The project's default is written under the project's row `for no key
 // update`, which putProjectDefaultAssignee takes first, as its owner. A write that reads the
 // default to deliver an ask - a create that falls through to it, an issue's assignee cleared, a
-// reopen restoring its withdrawn asks - takes that project's row `for share`
-// (inboxwrite.HoldDefault) after its owner rows, the order events.Broker.LockOwners takes an
-// issue's owner and a project's, and before any asks row, node or tuple it writes, settlement
-// before the document's asks rows (docs' reconcileAskBlocks). Then a move of who asks wait on
+// reopen restoring its withdrawn asks, a settlement that opens an ask or restores one it
+// retracted - takes that project's row `for share` (inboxwrite.HoldDefault) after its owner rows,
+// the order events.Broker.LockOwners takes an issue's owner and a project's, and before any asks
+// row, node or tuple it writes, settlement before the document's asks rows (docs'
+// reconcileAskBlocks). Then a move of who asks wait on
 // (inboxwrite.MoveWaiting) locks the asks rows it moves `for no key update`, in ascending id,
 // after its owner row and its project row and before the person nodes and tuples it writes, and
 // reads who each ask waits on, and whom its delivery stands to, in a statement after that lock,
@@ -794,13 +796,15 @@ type inboxReadMarked struct {
 
 // inboxMarkedThread is one row a mark statement moved, as every such statement answers it: its
 // thread and the kind of the thread's root, which is the far end of the mark's tuple, the read
-// mark the row now holds, and the moment of the mark the statement wrote - the read mark itself for
+// mark the row now holds, the moment of the mark the statement wrote - the read mark itself for
 // the mark-all, the dismissal for a dismissal, the moment of the write for a restore
-// (api/inbox_dismiss.go).
+// (api/inbox_dismiss.go) - and whether the statement moved the row's read mark, which is where a
+// read_through tuple is stated.
 type inboxMarkedThread struct {
 	id, kind    string
 	readThrough time.Time
 	at          time.Time
+	readMoved   bool
 }
 
 // writeInboxThreadMarks takes the caller's rows in thread_id order, runs one mark statement over
@@ -831,7 +835,7 @@ func writeInboxThreadMarks(
 	for rows.Next() {
 		var project string
 		var thread inboxMarkedThread
-		if err := rows.Scan(&project, &thread.id, &thread.kind, &thread.readThrough, &thread.at); err != nil {
+		if err := rows.Scan(&project, &thread.id, &thread.kind, &thread.readThrough, &thread.at, &thread.readMoved); err != nil {
 			return moved, err
 		}
 		moved.marked++

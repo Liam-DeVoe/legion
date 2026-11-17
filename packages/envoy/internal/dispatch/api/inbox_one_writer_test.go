@@ -245,6 +245,57 @@ func TestTheOneWriterRecordsParticipationAndDelivery(t *testing.T) {
 		}
 	})
 
+	t.Run("a person a reply reached before their row began is marked above that delivery", func(t *testing.T) {
+		// bob waits on the ask, so his part in its thread and its delivery to him are the hand-on's
+		// and he holds no row of it; alice's comment in the thread then reaches him, a delivery a
+		// reply caused, and his own write after it begins his row. The row is marked at the log's
+		// position as his write saw it, above alice's delivery, so the version it begins at counts
+		// no reply: a marked_seq of 0 would count alice's.
+		seedPeople(t, database, "bob")
+		asked := createPersonAsk(t, handler, issue.Key, "alice", "Who takes the rollout?")
+		handAskOn(t, handler, asked.ID, "bob", "alice")
+		thread := "ask:" + asked.ID
+		handed := writeEventOf(t, database, "ask.asked_of", asked.ID)
+		requireRelationTuples(t, database, graphstore.TupleDeliveredTo, thread,
+			fmt.Sprintf("%s > person:bob @%d", thread, handed))
+		asking := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Can you take it?", "ask_id": asked.ID}, "alice")
+		askingEvent := writeEventOf(t, database, "comment.created", asking.ID)
+		requireRelationTuples(t, database, graphstore.TupleDeliveredTo, "comment:"+asking.ID,
+			fmt.Sprintf("comment:%s > person:bob @%d", asking.ID, askingEvent))
+		if logins := threadRowLogins(t, database, asked.ID); !slices.Equal(logins, []string{"alice"}) {
+			t.Fatalf("the ask's rows are %v before bob wrote, want the asker's alone", logins)
+		}
+
+		taking := createThreadComment(t, handler, issue.Key, map[string]any{"body": "I can.", "ask_id": asked.ID}, "bob")
+		takingEvent := writeEventOf(t, database, "comment.created", taking.ID)
+		if row := readThreadRow(t, database, "bob", asked.ID); !row.marked || row.markedVersion != 0 || row.version != 0 {
+			t.Errorf("bob's row = %+v, want one his write began, marked at version 0, at version 0", row)
+		}
+		var markedSeq, seen, delivered int64
+		if err := database.Pool.QueryRow(ctx, `
+			select u.marked_seq,
+			       (select max(t.seq) from graph_tuples t where t.seq < (
+			            select r.seq from graph_tuples r
+			            where r.from_kind = $3 and r.from_id = 'bob' and r.kind = $4 and r.to_kind = $5 and r.to_id = $1
+			              and r.source_event = $2)),
+			       (select d.seq from graph_tuples d
+			        where d.from_kind = $6 and d.from_id = $7 and d.kind = $8 and d.to_kind = $3 and d.to_id = 'bob')
+			from user_threads u where u.login = 'bob' and u.thread_id = $1::uuid
+		`, asked.ID, takingEvent, graphstore.KindPerson, graphstore.TupleReadThrough, graphstore.KindAsk,
+			graphstore.KindComment, asking.ID, graphstore.TupleDeliveredTo).Scan(&markedSeq, &seen, &delivered); err != nil {
+			t.Fatalf("read bob's marker: %v", err)
+		}
+		// The row's insert reads the newest position of the log its transaction sees, and bob's
+		// read_through to the thread is the next tuple the write appends.
+		if markedSeq != seen {
+			t.Errorf("bob's row is marked at seq %d, want %d, the newest tuple before the read mark his write stated", markedSeq, seen)
+		}
+		if markedSeq < delivered {
+			t.Errorf("bob's row is marked at seq %d, below alice's delivery to him at %d, which his row would count", markedSeq, delivered)
+		}
+		requireVersionCountsReplies(t, database, "bob", graphstore.KindAsk, asked.ID)
+	})
+
 	t.Run("ToPerson is the one way a relation reaches a person, and never past a node's author", func(t *testing.T) {
 		tx, err := database.Pool.Begin(ctx)
 		if err != nil {

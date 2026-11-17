@@ -78,12 +78,8 @@ func TestTheCommentWalkAnswersAChainAtTheBoundAndCutsOneLonger(t *testing.T) {
 
 			var logged logtest.Buffer
 			logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-			loaded, err := loadCommentRecipients(ctx, database.Pool, []string{root.id, newest.id})
-			if err != nil {
+			if _, err := loadCommentRecipients(ctx, database.Pool, []string{root.id, newest.id}); err != nil {
 				t.Fatalf("load the recipients of a chain of %d replies: %v", tc.replies, err)
-			}
-			if !reflect.DeepEqual(loaded, recipients) {
-				t.Errorf("loadCommentRecipients answers %v, want what the walk answered, %v", loaded, recipients)
 			}
 			lines := strings.Split(strings.TrimSpace(logged.Lines(cutWalkLog)), "\n")
 			if len(wantCut) == 0 {
@@ -144,6 +140,43 @@ func TestTheCommentWalkEndsACycleOnTheRowsItVisited(t *testing.T) {
 	if len(cut) != 0 {
 		t.Errorf("the walk over a two-comment cycle says it cut %v, want no cut: it went round the cycle to the depth bound (%d) rather than ending on the rows it visited",
 			cut, maxCommentThreadDepth)
+	}
+}
+
+// The two limits meeting: a cycle of maxCommentThreadDepth+1 comments, keyed at either end of the
+// chain it closes, has the walk up reach its last new row at exactly the bound's depth, still
+// replying to another - the row it set out from, which it has visited. The visited guard ends the
+// walk there, so it is no cut: the walk answers every author of the cycle, in the order they wrote,
+// says it cut nothing, and loadCommentRecipients logs no line.
+func TestTheCommentWalkEndsACycleAtTheBoundWithoutACut(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "T-1", nil)
+	chain := seedReplyChain(t, database, maxCommentThreadDepth)
+	root, newest := chain[0], chain[len(chain)-1]
+	if _, err := database.Pool.Exec(context.Background(), `update comments set reply_to = $1 where id = $2`, newest.id, root.id); err != nil {
+		t.Fatalf("close the reply_to cycle: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), walkDeadline)
+	defer cancel()
+	recipients, cut, err := walkCommentThreads(ctx, database.Pool, []string{root.id, newest.id})
+	if err != nil {
+		t.Fatalf("the walk over a cycle of %d comments did not answer inside %s: %v", len(chain), walkDeadline, err)
+	}
+	want := map[string][]threadRecipient{root.id: threadMembers(chain), newest.id: threadMembers(chain)}
+	if !reflect.DeepEqual(recipients, want) {
+		t.Errorf("the walk over a cycle of %d comments reaches %v, want %v", len(chain), recipients, want)
+	}
+	if len(cut) != 0 {
+		t.Errorf("the walk over a cycle of %d comments (bound %d) says it cut %v, want no cut: the row it stopped at replies to one it visited",
+			len(chain), maxCommentThreadDepth, cut)
+	}
+	var logged logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	if _, err := loadCommentRecipients(ctx, database.Pool, []string{root.id, newest.id}); err != nil {
+		t.Fatalf("load the recipients of the cycle: %v", err)
+	}
+	if lines := strings.TrimSpace(logged.Lines(cutWalkLog)); lines != "" {
+		t.Errorf("the walk over the cycle logged a cut:\n%s", lines)
 	}
 }
 

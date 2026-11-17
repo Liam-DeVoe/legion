@@ -416,21 +416,28 @@ func (s *server) putUserAgentState(w http.ResponseWriter, r *http.Request) {
 		marks = append(marks, personMark(actor, graphstore.TupleCleared, graphstore.KindSession, sessionID, cleared, true, graphstore.NoEvent))
 	}
 	if readThrough != nil {
-		// The mark only moves forward, and the row answers the mark it holds once the upsert ran,
-		// which is what its tuple states, moved or not.
+		// The mark only moves forward, and its tuple is stated only where the upsert moved it: a
+		// new row, a mark past the one the row held, or a row no tuple states yet (its marker is
+		// null), which the update marks and the tuple then states. A mark at or before the one a
+		// marked row holds leaves the row as it is and returns nothing, so a tab that sends the
+		// same mark again adds nothing to the person's history of it (directMarks reads its newest).
 		var read time.Time
-		if err := tx.QueryRow(r.Context(), `
+		err := tx.QueryRow(r.Context(), `
 			insert into user_agent_read (login, session_id, read_through, tuples_stored_at)
 			values ($1, $2, least($3::timestamptz, now()), case when $4::boolean then least($3::timestamptz, now()) end)
 			on conflict (login, session_id) do update set
 				read_through = greatest(user_agent_read.read_through, excluded.read_through),
 				tuples_stored_at = case when $4::boolean then greatest(user_agent_read.read_through, excluded.read_through) end
+			where user_agent_read.read_through < excluded.read_through or user_agent_read.tuples_stored_at is null
 			returning read_through
-		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read); err != nil {
+		`, model.CanonicalLogin(actor.ID), sessionID, *readThrough, sessionFits).Scan(&read)
+		switch {
+		case err == nil:
+			marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.NoEvent))
+		case !errors.Is(err, pgx.ErrNoRows):
 			s.writeHandlerError(w, err)
 			return
 		}
-		marks = append(marks, personMark(actor, graphstore.TupleReadThrough, graphstore.KindSession, sessionID, read, true, graphstore.NoEvent))
 	}
 	if input.Pinned != nil {
 		// The pin is keyed on the canonical login, like the read mark and unlike the Clear: it is

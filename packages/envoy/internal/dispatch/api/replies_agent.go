@@ -87,8 +87,9 @@ func agentSessionOf(target string) string {
 // mark and the Clear from the person's one node, and a row no tuple states yet on the key the
 // release before read it by. It reads $1 and $2 alone, since a read here may bind $3 for a statement
 // of its own (inboxDismissCheckAgentRoots). It is materialized and read once per statement rather
-// than per root - a person has a mark here per session they have ever read or cleared, a handful,
-// where the roots are every one-off message they ever sent.
+// than per root: it is one row a session they have ever read or cleared, each read off the index
+// in two probes a kind however many marks they stated there (newestMarks), where the roots are
+// every one-off message they ever sent.
 var myAgentMarks = `
 	with marks as materialized (
 		select session_id, at from (` + directMarks(false) + `

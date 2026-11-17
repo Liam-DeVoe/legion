@@ -74,6 +74,10 @@ type settlementReconciliation struct {
 	// and each answer it restored - beside the type of the event that records each, which the one
 	// writer of those threads records once that event is appended (recordThreads).
 	threads []threadWrite
+	// restoredOpen are the asks a settlement retracted that this settlement restored open, whose
+	// delivery moves to the person each waits on now once its ask.opened is appended
+	// (moveRestored): no move reached the ask while it was retracted.
+	restoredOpen []string
 	// copiedFrom is, for every ask block of the tree settlement read, the ask its block is a copy
 	// of (copiedAskSources), or "" for a block that is no copy, which claimCopies states as the
 	// copied_from of the block's node once the version's blocks are indexed.
@@ -233,6 +237,38 @@ func (r *settlementReconciliation) recordThreads(ctx context.Context, tx pgx.Tx,
 		}
 	}
 	return nil
+}
+
+// moveRestored moves the delivery of each ask this settlement restored open to the person it
+// waits on now (inboxwrite.MoveWaiting, dispatch://INFRA-1152 R2), under the ask.opened that
+// records its restore, found among appended as causeFollows finds an ask.opened. While a
+// settlement's retraction stood the ask was not open, so no move reached it: a hand-on refuses an
+// ask that is not open, and a change of its issue's assignee or of its project's default moves
+// open asks alone. Its delivery stands where the retraction left it, and an assignee or a default
+// written meanwhile is where it goes, as an issue's reopen moves the asks its close withdrew. The
+// asks rows are held since loadAskBlocks, and the project's row where the ask falls through to
+// its default since reconcileAskBlocks took it (inboxwrite.HoldDefault), so the move reads who
+// each waits on as this settlement commits it. A restored ask whose ask.opened is not among
+// appended is a settlement that lost the event recording it, and fails here naming the ask.
+func (r *settlementReconciliation) moveRestored(ctx context.Context, tx pgx.Tx, appended []model.Event) error {
+	if len(r.restoredOpen) == 0 {
+		return nil
+	}
+	opened := make(map[string]model.Event, len(r.restoredOpen))
+	for _, event := range appended {
+		if payload, ok := event.Payload.(model.AskEventPayload); ok && event.Type == "ask.opened" {
+			opened[payload.ID] = event
+		}
+	}
+	restored := make(map[string]model.Event, len(r.restoredOpen))
+	for _, ask := range r.restoredOpen {
+		event, found := opened[ask]
+		if !found {
+			return fmt.Errorf("settlement restored ask %s open and appended no ask.opened for it", ask)
+		}
+		restored[ask] = event
+	}
+	return inboxwrite.MoveWaiting(ctx, tx, inboxwrite.Restored(restored))
 }
 
 // indexedAsk is one ask this settlement indexed: its id, the type of the event of its own that
@@ -598,11 +634,23 @@ func settlementRetracted(ask model.Ask) bool {
 }
 
 // settlementRetraction reports whether resolution is a retraction settlement wrote when its ask's
-// block left the document (settlementRetracted). reopenOwedAskDocuments holds this rule in SQL,
-// for the reopen's mark, so a change to one is a change to the other.
+// block left the document (settlementRetracted). settlementRetractedSQL holds this rule in SQL, so
+// a change to one is a change to the other.
 func settlementRetraction(resolution model.AskResolution) bool {
 	return resolution.Kind == "retracted" &&
 		(resolution.Actor.SameAs(SettlementActor) || strings.HasPrefix(resolution.Reason, SettlementRetractionReason))
+}
+
+// settlementRetractedSQL is settlementRetracted's rule in SQL over the asks row named ask, read
+// off its stored state and resolution: resolved, of kind "retracted", by an actor of kind
+// actorKind and id actorID or for a reason that opens with reason, each the placeholder its
+// statement binds SettlementActor.Kind, SettlementActor.ID and SettlementRetractionReason to. The
+// reopen's mark (reopenOwedAskDocuments) and a settlement's hold of the default
+// (mayDeliverAskBlock) read the rule through it.
+func settlementRetractedSQL(ask, actorKind, actorID, reason string) string {
+	return ask + `.state = 'resolved' and ` + ask + `.resolution->>'kind' = 'retracted'
+		and ((` + ask + `.resolution->'actor'->>'kind' = ` + actorKind + ` and ` + ask + `.resolution->'actor'->>'id' = ` + actorID + `)
+			or starts_with(` + ask + `.resolution->>'reason', ` + reason + `))`
 }
 
 // closeWithdrawn reports whether ask is resolved as its issue's close withdrew it
@@ -673,18 +721,19 @@ func (s *Service) reconcileAskBlocks(
 	blocks = readable
 	// A block no ask row of this document names opens an ask, which on a project document, or on
 	// an issue nobody holds, waits on its project's default, read to deliver it when its thread is
-	// recorded (recordThreads, inboxwrite.Record). The project's row is held `for share` before
-	// the document's asks rows are locked below and before anything is written, so a move of the
-	// default - which holds that row first and then the asks rows it moves - either committed
-	// already or waits for this settlement (inboxwrite.HoldDefault). Which blocks are new is read
-	// with no lock: the owner row this settlement holds stops every other writer of this
-	// document's asks.
+	// recorded (recordThreads, inboxwrite.Record); and a block naming an ask a settlement retracted
+	// may restore it open, which reads that default to move its delivery (moveRestored). The
+	// project's row is held `for share` before the document's asks rows are locked below and
+	// before anything is written, so a move of the default - which holds that row first and then
+	// the asks rows it moves - either committed already or waits for this settlement
+	// (inboxwrite.HoldDefault). Which blocks open or restore an ask is read with no lock: the owner
+	// row this settlement holds stops every other writer of this document's asks.
 	if !issueClosed && len(blocks) > 0 {
-		opens, err := opensAskBlock(ctx, tx, artifactID, blocks)
+		delivers, err := mayDeliverAskBlock(ctx, tx, artifactID, blocks)
 		if err != nil {
 			return settlementReconciliation{}, err
 		}
-		if opens {
+		if delivers {
 			var document *string
 			if owner.IssueKey == nil {
 				document = &artifactID
@@ -837,6 +886,9 @@ func (s *Service) reconcileAskBlocks(
 			eventType := "ask.opened"
 			if ask.State == "answered" {
 				eventType = "ask.answered"
+			} else {
+				// Open again, it waits on whoever its issue or its project names now.
+				reconciled.restoredOpen = append(reconciled.restoredOpen, ask.ID)
 			}
 			reconciled.answers = append(reconciled.answers, settledAnswer{ask: ask.ID, eventType: eventType, held: held})
 			if answered != nil {
@@ -1319,26 +1371,32 @@ func parseAskBlockLeniently(node *pmdoc.Node) (askBlock, error) {
 	return askBlock{node: node, id: blockID, question: question, options: options, multiple: multiple, urgency: urgency}, nil
 }
 
-// opensAskBlock is whether one of blocks, the readable ask blocks of document artifactID, has no
-// ask row naming it, so a settlement of that document may open an ask (reconcileAskBlocks). A copy
-// of another document's ask has no row here either and opens none, so the answer may say yes where
-// the settlement then opens nothing; it never says no where the settlement opens one. It reads with
-// no lock.
-func opensAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, blocks []askBlock) (bool, error) {
+// mayDeliverAskBlock is whether a settlement of document artifactID may deliver an ask to the
+// person it waits on (reconcileAskBlocks): one of blocks, the document's readable ask blocks, has
+// no ask row naming it, so the settlement may open an ask, or names an ask a settlement retracted
+// (settlementRetractedSQL), which it may restore open (moveRestored). A copy of another
+// document's ask has no row here either and opens none, and a retracted ask may come back
+// answered, so the answer may say yes where the settlement then delivers nothing; it never says
+// no where the settlement delivers one. It reads with no lock.
+func mayDeliverAskBlock(ctx context.Context, tx pgx.Tx, artifactID string, blocks []askBlock) (bool, error) {
 	ids := make([]string, len(blocks))
 	for index, block := range blocks {
 		ids[index] = block.id
 	}
-	var opens bool
+	var delivers bool
 	if err := tx.QueryRow(ctx, `
 		select exists (
 			select 1 from unnest($2::text[]) as named (id)
 			where not exists (select 1 from asks a where a.block_artifact_id = $1 and a.block_id = named.id)
+		) or exists (
+			select 1 from asks a
+			where a.block_artifact_id = $1 and a.block_id = any($2::text[])
+			  and `+settlementRetractedSQL("a", "$3", "$4", "$5")+`
 		)
-	`, artifactID, ids).Scan(&opens); err != nil {
-		return false, fmt.Errorf("read which ask blocks of document %s have no ask: %w", artifactID, err)
+	`, artifactID, ids, SettlementActor.Kind, SettlementActor.ID, SettlementRetractionReason).Scan(&delivers); err != nil {
+		return false, fmt.Errorf("read which ask blocks of document %s open or restore an ask: %w", artifactID, err)
 	}
-	return opens, nil
+	return delivers, nil
 }
 
 // loadAskBlocks reads and locks every ask anchored to a block of this document. `for no key

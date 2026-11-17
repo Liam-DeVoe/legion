@@ -178,27 +178,35 @@ func moveRows(ctx context.Context, tx pgx.Tx, thread thread, w Write, logins []s
 }
 
 // keepRow is step 5 of Record: the row of login, w's writer, on the thread, its read mark moved to
-// the write's moment where it stood earlier, and it answers the read mark the row stands at once
-// the upsert ran, which is the moment Record's read_through tuple states. A row this write begins
-// is marked from its insert: marked_version 0, since no write by somebody else has reached it, and
-// marked_seq the newest position of the log this transaction sees, which is above every tuple an
-// earlier write into the thread appended - each of those committed before this write took the
-// owner row - and below every one a later write appends. A row that was there keeps the marker it
-// holds, or holds none, which is a row the backfill takes; as the trigger's own insert, it touches
-// neither version nor the dismissal.
-func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login string) (time.Time, error) {
+// the write's moment where it stood earlier. It answers the read mark the row stands at once the
+// upsert ran, which is the moment Record's read_through tuple states, and whether the upsert moved
+// it - a row it began, or a mark that stood earlier - since a read mark is stated only where it
+// moved: a write at or before the mark its writer's row holds leaves the row's mark, and its
+// tuple, as they were. A row this write begins is marked from its insert: marked_version 0,
+// since no write by somebody else has reached it, and marked_seq the newest position of the log
+// this transaction sees, which is above every tuple an earlier write into the thread appended -
+// each of those committed before this write took the owner row - and below every one a later
+// write appends. A row that was there keeps the marker it holds, or holds none, which is a row
+// the backfill takes; as the trigger's own insert, it touches neither version nor the dismissal.
+// The conflict arm that moves no mark still locks the row, as the trigger's upsert did.
+func keepRow(ctx context.Context, tx pgx.Tx, thread thread, w Write, login string) (time.Time, bool, error) {
 	var readThrough time.Time
-	if err := tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
 		insert into user_threads (login, thread_id, kind, project_key, issue_key, artifact_id, read_through, marked_version, marked_seq)
 		values ($1, $2::uuid, $3, $4, $5, case when $5::text is null then $6::uuid end, $7, 0,
 		        (select coalesce(max(seq), 0) from graph_tuples))
 		on conflict (login, thread_id) do update
-			set read_through = greatest(user_threads.read_through, excluded.read_through)
+			set read_through = excluded.read_through
+			where user_threads.read_through < excluded.read_through
 		returning read_through
-	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At).Scan(&readThrough); err != nil {
-		return time.Time{}, fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
+	`, login, thread.id, thread.kind, w.Project, w.IssueKey, w.ArtifactID, w.At).Scan(&readThrough)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
 	}
-	return readThrough, nil
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("keep the row of %s on thread %s/%s: %w", login, thread.kind, thread.id, err)
+	}
+	return readThrough, true, nil
 }
 
 // clearAgentDismissals takes the Agent dismissals of root, the message a session's reply climbed

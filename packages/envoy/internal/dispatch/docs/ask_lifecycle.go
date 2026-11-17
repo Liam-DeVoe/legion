@@ -209,11 +209,10 @@ func (s *Service) writeDocumentAskStates(
 // settlement after the issue's reopen has to reconcile: one that holds an ask block no settlement
 // has indexed, the blocks doc_ask_block_authors keeps an author for; one that is the block
 // document (asks.block_artifact_id) of an open ask, read once the reopen has restored the asks the
-// close withdrew; and one that is the block document of an ask a settlement retracted. The
-// retraction is settlementRetraction's rule in SQL, read off the stored resolution: kind
-// "retracted", and an actor $2 (kind) and $3 (id) or a reason that opens with $4
-// (SettlementActor, SettlementRetractionReason), so the two change together.
-const reopenOwedAskDocuments = `
+// close withdrew; and one that is the block document of an ask a settlement retracted, by
+// settlementRetracted's rule in SQL (settlementRetractedSQL), its actor $2 (kind) and $3 (id) and
+// its reason's opening $4 (SettlementActor, SettlementRetractionReason).
+var reopenOwedAskDocuments = `
 	select a.id::text from artifacts a
 	where a.issue_key = $1 and a.kind = 'doc'
 		and (exists (select from doc_ask_block_authors b where b.artifact_id = a.id)
@@ -222,10 +221,8 @@ const reopenOwedAskDocuments = `
 				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'open')
 			or exists (
 				select from asks k
-				where k.block_artifact_id = a.id and k.block_id is not null and k.state = 'resolved'
-					and k.resolution->>'kind' = 'retracted'
-					and ((k.resolution->'actor'->>'kind' = $2 and k.resolution->'actor'->>'id' = $3)
-						or starts_with(k.resolution->>'reason', $4))))
+				where k.block_artifact_id = a.id and k.block_id is not null
+					and ` + settlementRetractedSQL("k", "$2", "$3", "$4") + `))
 	order by a.id`
 
 // MarkReopenOwedAskDocuments marks owing a settlement each document of issueKey whose ask blocks a
