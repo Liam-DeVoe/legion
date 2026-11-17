@@ -1,9 +1,7 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Result } from "../web/src/api/paths";
 import type { ArtifactUploadResponse } from "../web/src/api/types";
-import { NODE_REFERENCES_WORDS, sentenceCase } from "../web/src/features/issue-page/page-words";
 import { markdownWorkerThreshold } from "../web/src/features/refs/markdown-worker-threshold";
 import { buildRunPath } from "../web/src/features/refs/routes";
 import { type FakeSession, setLiveSessions } from "./agents";
@@ -35,6 +33,7 @@ import {
   webDistOf,
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
+import { RUN_WORD, runAs } from "./issue-page-z";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -197,23 +196,6 @@ async function uploadAgentPicture(sessionID: string): Promise<string> {
 /** The question alice asks the command bar, whose run's own page the walk opens. */
 const runQuestion = "What is rolling out in Core?";
 
-/** The heading of a run's own page: the word for what a run is (`RunPage`). */
-const runWord = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
-
-/** Asks `runQuestion` of CORE as alice, as the command bar does, and answers the run's id. */
-async function askRun(): Promise<string> {
-  const response = await fetch(new URL("/api/v1/going/requests", baseUrl), {
-    body: JSON.stringify({ project: "CORE", words: runQuestion }),
-    headers: { ...(await userHeaders("alice")), "Content-Type": "application/json" },
-    method: "POST",
-  });
-  if (response.status !== 201) {
-    throw new Error(`command bar run: ${response.status} ${await response.text()}`);
-  }
-  const run = (await response.json()) as Result<"/api/v1/going/requests", "post">;
-  return run.id;
-}
-
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
@@ -312,7 +294,7 @@ async function seedEveryRoute(): Promise<Seeded> {
   );
   const agentArtifact = await uploadAgentPicture(session.session_id);
   // A command bar run's own page draws only a run its reader asked.
-  const run = await askRun();
+  const run = (await runAs("alice", runQuestion, "CORE")).id;
   await seedDeliveryFixture();
   return {
     agentArtifact,
@@ -602,7 +584,7 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [
         page
           .locator("[data-issue-page]")
-          .getByRole("heading", { exact: true, level: 1, name: runWord }),
+          .getByRole("heading", { exact: true, level: 1, name: RUN_WORD }),
       ],
       url: buildRunPath(seed.run),
     },

@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 
-import type { IssueDetails } from "../../../api/types";
+import type { GraphEdge, IssueDetails } from "../../../api/types";
 import type { ExtraReferenceRow } from "../../refs/ReferencedBy";
 import { buildRunPath } from "../../refs/routes";
 import { NODE_REFERENCES_WORDS, sentenceCase } from "../page-words";
@@ -20,7 +20,7 @@ import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-re
 const RUN_SUPERTAG = "interaction";
 
 /** The tuple kind from a node a run created or changed to that run. */
-const CHANGED_BY_RUN = "changed_by_run";
+const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
 
 const NO_ROWS: readonly ExtraReferenceRow[] = [];
 
@@ -30,11 +30,11 @@ function madeAt(run: TreeAnswerNode): number {
   return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
 }
 
+/** A run with when it was made (`madeAt`), which orders it. */
+type DatedRun = { readonly run: TreeAnswerNode; readonly time: number };
+
 /** Newest first, and runs made at the same time by id, byte by byte. */
-function newestFirst(
-  a: { readonly run: TreeAnswerNode; readonly time: number },
-  b: { readonly run: TreeAnswerNode; readonly time: number }
-): number {
+function newestFirst(a: DatedRun, b: DatedRun): number {
   if (a.time !== b.time) return a.time < b.time ? 1 : -1;
   if (a.run.id === b.run.id) return 0;
   return a.run.id < b.run.id ? -1 : 1;
@@ -63,7 +63,7 @@ export function runRows(tree: TreeAnswer | undefined): readonly ExtraReferenceRo
   for (const tuple of tree.tuples) {
     if (tuple.kind === CHANGED_BY_RUN) changed.add(tuple.to);
   }
-  const runs: { readonly run: TreeAnswerNode; readonly time: number }[] = [];
+  const runs: DatedRun[] = [];
   for (const node of tree.nodes) {
     // Taking the id out of the set as its node is taken keeps one run to one row.
     if (node.supertag === RUN_SUPERTAG && changed.delete(node.id)) {
@@ -84,7 +84,7 @@ export interface RunRowsRead {
   readonly failed: boolean;
   /** Reads the tree again. */
   readonly retry: () => void;
-  /** Whether a read of the tree is out. */
+  /** Whether a retry is out while the read has failed. */
   readonly retrying: boolean;
 }
 
@@ -96,21 +96,20 @@ export interface RunRowsRead {
  * rows are none.
  */
 export function useRunRows(issue: IssueDetails): RunRowsRead {
-  const { data, isError, isFetching, isSuccess, refetch } = useQuery({
-    ...issueTreeQuery(issue.key),
-    enabled: false,
-  });
-  const rows = useMemo(() => runRows(data), [data]);
+  const read = useQuery({ ...issueTreeQuery(issue.key), enabled: false, select: runRows });
+  const { data: rows = NO_ROWS, isError, isSuccess, refetch } = read;
+  // `isFetching` is read only while the read has failed, the one time its Retry is drawn.
+  const retrying = isError && read.isFetching;
   return useMemo(
     () => ({
       failed: isError,
       retry: () => {
         void refetch();
       },
-      retrying: isFetching,
+      retrying,
       rows,
       settled: isSuccess || isError,
     }),
-    [isError, isFetching, isSuccess, refetch, rows]
+    [isError, isSuccess, refetch, retrying, rows]
   );
 }

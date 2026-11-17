@@ -14,16 +14,8 @@ import {
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
-import {
-  EMPTY_STATE_LINES,
-  NODE_REFERENCES_WORDS,
-  NODE_TYPE_NAMES,
-  STATE_LINES,
-  sentenceCase,
-} from "../page-words";
-import { type RunFrame, type RunWords, runView } from "./run-page";
-
-const WORDS: RunWords = { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, NODE_TYPE_NAMES, STATE_LINES };
+import { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, STATE_LINES, sentenceCase } from "../page-words";
+import { type RunFrame, runView } from "./run-page";
 
 const RUN = "3f2b8c1e-5d4a-4b6f-9e2d-1a7c0b9e8f43";
 const ASKED_AT = "2026-11-17T09:00:00Z";
@@ -78,7 +70,7 @@ test("the view holds the question, the time, each frame in order with its drawin
     frame(1, GOING_EVENT_TEXT, { text: "The release " }),
     frame(4, GOING_EVENT_CUT, { words: 120 }),
   ];
-  const view = runView(answerOf(frames, [CHANGED_ISSUE]), WORDS);
+  const view = runView(answerOf(frames, [CHANGED_ISSUE]));
 
   expect(view.question).toBe(QUESTION);
   expect(view.at).toBe(ASKED_AT);
@@ -104,16 +96,16 @@ test("the view holds the question, the time, each frame in order with its drawin
   ]);
 
   // A node two edges name is one changed node.
-  expect(runView(answerOf([], [CHANGED_ISSUE, CHANGED_ISSUE]), WORDS).changed).toHaveLength(1);
+  expect(runView(answerOf([], [CHANGED_ISSUE, CHANGED_ISSUE])).changed).toHaveLength(1);
   // A count that is no number draws as 0.
-  expect(runView(answerOf([frame(1, GOING_EVENT_CUT, { words: "many" })]), WORDS).parts).toEqual([
+  expect(runView(answerOf([frame(1, GOING_EVENT_CUT, { words: "many" })])).parts).toEqual([
     { kind: "line", text: `${STATE_LINES.run_cut.before}0${STATE_LINES.run_cut.after}` },
   ]);
 
   // No answer at all, and each way a run fails, by its line; a code the page does not know, and
   // none, draw the answer having failed.
   const lines = (frames: readonly RunFrame[]) =>
-    runView(answerOf(frames), WORDS).parts.map((part) => (part.kind === "line" ? part.text : ""));
+    runView(answerOf(frames)).parts.map((part) => (part.kind === "line" ? part.text : ""));
   expect(lines([frame(1, GOING_EVENT_NONE), frame(2, GOING_EVENT_END)])).toEqual([
     EMPTY_STATE_LINES.run_none,
   ]);

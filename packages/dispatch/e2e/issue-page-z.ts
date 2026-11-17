@@ -2,7 +2,12 @@ import { expect, type Locator, type Page } from "@playwright/test";
 
 import { type Body, type Result, routeUrl } from "../web/src/api/paths";
 import { PROPERTY_LABELS } from "../web/src/features/issue-page/page-structure";
-import { ANSWER_LINES, CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
+import {
+  ANSWER_LINES,
+  CONTROL_LABELS,
+  NODE_REFERENCES_WORDS,
+  sentenceCase,
+} from "../web/src/features/issue-page/page-words";
 import { buildIssuePath } from "../web/src/features/refs/routes";
 import { baseUrl, createComment, createIssue, createProject, userHeaders } from "./api";
 import { marginSection } from "./issue-page-h";
@@ -52,6 +57,9 @@ export const RUN_QUESTION = "Close this once the checks pass";
  *  page draws it as its first line. */
 export const RUN_COMMENT = "Labelled for the next release";
 
+/** The word for what a run is: its row's link in Details and its page's heading. */
+export const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
+
 /** The labels the run's two changes of the issue leave on it, in turn. */
 const FIRST_LABELS = ["release"];
 const SECOND_LABELS = ["release", "checked"];
@@ -72,7 +80,7 @@ export interface RunSeed {
 
 /** Asks `words` of `project` as `login`, as the command bar does, and answers the run the server
  *  recorded. */
-async function runAs(
+export async function runAs(
   login: string,
   words: string,
   project: string
@@ -210,11 +218,6 @@ export function retryBeside(failure: Locator): Locator {
   return failure
     .locator("xpath=..")
     .getByRole("button", { exact: true, name: CONTROL_LABELS.retry });
-}
-
-/** The run's own page. */
-export function runPageOf(page: Page): Locator {
-  return page.locator("[data-issue-page]");
 }
 
 /** The shell's content element: the page a route draws, and nothing beside it. */

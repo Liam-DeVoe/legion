@@ -15,12 +15,13 @@ import { queryRetry } from "../../../api/query-client";
 import type { GraphEdge, GraphReferences } from "../../../api/types";
 import { referencesQuery } from "../../refs/reference-target";
 import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { storeAddressReference } from "../../refs/store-address";
 import { drawnLine, firstLineOf } from "../issue-tree";
 import {
-  type EMPTY_STATE_LINES,
-  type NODE_REFERENCES_WORDS,
-  type NODE_TYPE_NAMES,
-  type STATE_LINES,
+  EMPTY_STATE_LINES,
+  NODE_REFERENCES_WORDS,
+  NODE_TYPE_NAMES,
+  STATE_LINES,
   sentenceCase,
 } from "../page-words";
 import { plainWords } from "../tree-drafts";
@@ -44,28 +45,25 @@ export interface RunFrame {
 }
 
 /** The run's frames, as its node carries them: none where the node carries none. */
-export function runFramesOf(node: GraphReferences["node"]): readonly RunFrame[] {
-  // INFRA-1950's generated `GraphFrame`, written here until that branch reaches this stack: the
-  // merge which brings it gives `GraphNode` its `frames` and replaces this cast and `RunFrame`
-  // with `GraphFrame` from `../../../api/types`.
+function runFramesOf(node: GraphReferences["node"]): readonly RunFrame[] {
+  // `GraphNode` has no `frames` until the merge `RunFrame`'s doc names, which drops this cast.
   return (node as GraphReferences["node"] & { readonly frames?: readonly RunFrame[] }).frames ?? [];
 }
 
-/** A run's id: the lowercase canonical uuid the last segment of its address holds. */
-const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-
-/** Whether `id` can name a run at all. Anything else names no run, so nothing is asked for it. */
-export function isRunId(id: string | undefined): id is string {
-  return id !== undefined && RUN_ID.test(id);
+/** Whether `id` can name a run at all: the lowercase canonical uuid the last segment of its
+ *  address holds, as the store writes one. Anything else names no run, so nothing is asked for
+ *  it. */
+function isRunId(id: string | undefined): id is string {
+  return id !== undefined && storeAddressReference(runAddress(id)) !== undefined;
 }
 
 /** The `dispatch://` address of the run `id`. */
-export function runAddress(id: string): string {
+function runAddress(id: string): string {
   return `dispatch://interaction/${id}`;
 }
 
 /** The edge kind from a node a run changed to that run. */
-const CHANGED_BY_RUN = "changed_by_run";
+const CHANGED_BY_RUN: GraphEdge["kind"] = "changed_by_run";
 
 /** Whether a read failed because there is no run to read: the address names none (400), or none
  *  the reader may open (404), which the page cannot tell apart and neither can a retry. */
@@ -80,7 +78,7 @@ function isMissingRun(error: unknown): boolean {
  * kind after the address keeps it apart from the unfiltered read of the same address. A run that
  * is missing is asked for once; any other failure is asked again as every read is (`queryRetry`).
  */
-export const runQuery = (id: string) =>
+const runQuery = (id: string) =>
   queryOptions({
     queryKey: [...referencesQuery(runAddress(id)).queryKey, CHANGED_BY_RUN] as const,
     queryFn: () => api.getReferences(runAddress(id), { kind: CHANGED_BY_RUN }),
@@ -100,17 +98,6 @@ export function useRun(id: string | undefined): RunRead {
   const named = isRunId(id);
   const query = useQuery({ ...runQuery(id ?? ""), enabled: named });
   return { notFound: !named || isMissingRun(query.error), query };
-}
-
-/** The tables of `page-words.ts` the view's words come from, as the module names them. */
-export interface RunWords {
-  readonly EMPTY_STATE_LINES: Pick<typeof EMPTY_STATE_LINES, "run_none">;
-  readonly NODE_REFERENCES_WORDS: Pick<typeof NODE_REFERENCES_WORDS, "kinds">;
-  readonly NODE_TYPE_NAMES: typeof NODE_TYPE_NAMES;
-  readonly STATE_LINES: Pick<
-    typeof STATE_LINES,
-    "run_changed" | "run_cut" | "run_did_not_arrive" | "run_failed" | "run_no_model"
-  >;
 }
 
 /** One piece of the answer, in the order its frames came: the model's text, one thing it cites,
@@ -155,21 +142,20 @@ function stringOf(value: unknown): string {
 
 /** The line an `error` frame draws for its code: `GOING_ERROR_ANSWER_FAILED`, a code the page
  *  does not know, and no code at all are each the answer having failed. */
-function errorLine(code: unknown, lines: RunWords["STATE_LINES"]): string {
+function errorLine(code: unknown): string {
   switch (code) {
     case GOING_ERROR_ANSWER_DID_NOT_ARRIVE:
-      return lines.run_did_not_arrive;
+      return STATE_LINES.run_did_not_arrive;
     case GOING_ERROR_NO_MODEL_CONFIGURED:
-      return lines.run_no_model;
+      return STATE_LINES.run_no_model;
     default:
-      return lines.run_failed;
+      return STATE_LINES.run_failed;
   }
 }
 
 /** The parts `frames` draw, in `sequence` order: a run of `text` frames is one answer, and an
  *  `end` frame, or a frame of a name the page does not know, draws nothing. */
-function partsOf(frames: readonly RunFrame[], words: RunWords): RunPart[] {
-  const lines = words.STATE_LINES;
+function partsOf(frames: readonly RunFrame[]): RunPart[] {
   const parts: RunPart[] = [];
   for (const frame of [...frames].sort((a, b) => a.sequence - b.sequence)) {
     const data = frame.data ?? {};
@@ -190,20 +176,20 @@ function partsOf(frames: readonly RunFrame[], words: RunWords): RunPart[] {
       case GOING_EVENT_CUT:
         parts.push({
           kind: "line",
-          text: `${lines.run_cut.before}${countOf(data.words)}${lines.run_cut.after}`,
+          text: `${STATE_LINES.run_cut.before}${countOf(data.words)}${STATE_LINES.run_cut.after}`,
         });
         break;
       case GOING_EVENT_CHANGED:
         parts.push({
           kind: "line",
-          text: `${lines.run_changed.before}${countOf(data.dropped)}${lines.run_changed.after}`,
+          text: `${STATE_LINES.run_changed.before}${countOf(data.dropped)}${STATE_LINES.run_changed.after}`,
         });
         break;
       case GOING_EVENT_NONE:
-        parts.push({ kind: "line", text: words.EMPTY_STATE_LINES.run_none });
+        parts.push({ kind: "line", text: EMPTY_STATE_LINES.run_none });
         break;
       case GOING_EVENT_ERROR:
-        parts.push({ kind: "line", text: errorLine(data.code, lines) });
+        parts.push({ kind: "line", text: errorLine(data.code) });
         break;
     }
   }
@@ -212,9 +198,9 @@ function partsOf(frames: readonly RunFrame[], words: RunWords): RunPart[] {
 
 /** The nodes `edges` name, once each, in the read's order: each by its kind's word, the first
  *  line of its words, and the page its address opens. */
-function changedOf(edges: readonly GraphEdge[], words: RunWords): RunChange[] {
-  const kinds: Readonly<Record<string, string>> = words.NODE_REFERENCES_WORDS.kinds;
-  const types: Readonly<Record<string, string>> = words.NODE_TYPE_NAMES;
+function changedOf(edges: readonly GraphEdge[]): RunChange[] {
+  const kinds: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
+  const types: Readonly<Record<string, string>> = NODE_TYPE_NAMES;
   const changed = new Map<string, RunChange>();
   for (const edge of edges) {
     const { id, kind, ref } = edge.node;
@@ -231,12 +217,12 @@ function changedOf(edges: readonly GraphEdge[], words: RunWords): RunChange[] {
   return [...changed.values()];
 }
 
-/** What the run's page draws of `answer`, the run's read (`runQuery`), in `words`. */
-export function runView(answer: GraphReferences, words: RunWords): RunView {
+/** What the run's page draws of `answer`, the run's read (`runQuery`). */
+export function runView(answer: GraphReferences): RunView {
   return {
     at: answer.node.made_at,
-    changed: changedOf(answer.edges ?? [], words),
-    parts: partsOf(runFramesOf(answer.node), words),
+    changed: changedOf(answer.edges ?? []),
+    parts: partsOf(runFramesOf(answer.node)),
     question: answer.node.text ?? "",
   };
 }

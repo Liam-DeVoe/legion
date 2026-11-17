@@ -13,18 +13,12 @@ import { authorText, pageChrome } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
-  EMPTY_STATE_LINES,
   NODE_REFERENCES_WORDS,
-  NODE_TYPE_NAMES,
   RUN_PAGE_WORDS,
-  STATE_LINES,
   sentenceCase,
 } from "../page-words";
 import { ROW_LINK } from "../row-references";
-import { type RunPart, type RunWords, runView, useRun } from "./run-page";
-
-/** The words the run's view is drawn in, from the page's one list. */
-const WORDS: RunWords = { EMPTY_STATE_LINES, NODE_REFERENCES_WORDS, NODE_TYPE_NAMES, STATE_LINES };
+import { type RunPart, runView, useRun } from "./run-page";
 
 /** The page's heading: the word for what a run is. */
 const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
@@ -73,7 +67,7 @@ export function RunPage(): ReactNode {
 
 /** The run as its read answered it. */
 function RunAnswer({ answer }: { answer: GraphReferences }): ReactNode {
-  const view = useMemo(() => runView(answer, WORDS), [answer]);
+  const view = useMemo(() => runView(answer), [answer]);
   const questionHeading = useId();
   const changedHeading = useId();
   return (

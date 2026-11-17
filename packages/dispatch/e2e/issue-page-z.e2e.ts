@@ -3,10 +3,9 @@ import {
   NODE_REFERENCES_WORDS,
   RUN_PAGE_WORDS,
   STATE_LINES,
-  sentenceCase,
 } from "../web/src/features/issue-page/page-words";
 import { buildDispatchReference, buildRunPath } from "../web/src/features/refs/routes";
-import { gotoIssue, issueRead, openDetails, phase } from "./issue-page";
+import { gotoIssue, issuePage, issueRead, openDetails, phase } from "./issue-page";
 import { DESKTOP } from "./issue-page-g";
 import { marginSection } from "./issue-page-h";
 import { withIssuePage } from "./issue-page-option";
@@ -17,10 +16,10 @@ import {
   notFoundText,
   RUN_COMMENT,
   RUN_QUESTION,
+  RUN_WORD,
   referenceReads,
   referencesControl,
   retryBeside,
-  runPageOf,
   runReference,
   runRowsOf,
   seedRunIssue,
@@ -43,9 +42,6 @@ import { asUser } from "./users";
  * (`GET /api/v1/references?to=dispatch://interaction/<id>&kind=changed_by_run`) reach it with
  * those branches - and these rows pass once they have.
  */
-
-/** The word for what a run is: its row's link in Details and its page's heading. */
-const RUN_WORD = sentenceCase(NODE_REFERENCES_WORDS.kinds.interaction);
 
 // SLOW(>=2s): three issues, a run and its three writes seeded, then three loads of the issue:
 // alice's, hers again with the tree read refused until its retries run out, and bob's in a
@@ -176,7 +172,7 @@ test("the run's page is its asker's alone", async ({ browser }) => {
     const traffic = watchApiRequests(page);
     const address = buildRunPath(seeded.run);
     await page.goto(address);
-    const run = runPageOf(page);
+    const run = issuePage(page);
     await expect(run, "the run's page holds its question").toContainText(RUN_QUESTION);
     const reference = runReference(seeded.run);
     expect(
@@ -206,15 +202,16 @@ test("the run's page is its asker's alone", async ({ browser }) => {
     await expect
       .poll(() => new URL(page.url()).pathname, "the run's row did not open the run's page")
       .toBe(address);
-    await expect(runPageOf(page)).toContainText(RUN_QUESTION);
+    await expect(issuePage(page)).toContainText(RUN_QUESTION);
 
     // To bob, the run's address and a run nobody asked are one page: the unknown address's.
+    let unknown: string;
     const bob = await asUser(browser, "bob");
     try {
       await withIssuePage(bob, "bob");
       const his = await bob.newPage();
       await his.setViewportSize(DESKTOP);
-      const unknown = await notFoundText(his);
+      unknown = await notFoundText(his);
       for (const path of [address, buildRunPath(crypto.randomUUID())]) {
         await his.goto(path);
         await expect(mainContent(his), "bob reads the unknown run's page").toHaveText(unknown);
@@ -228,7 +225,6 @@ test("the run's page is its asker's alone", async ({ browser }) => {
     try {
       const hers = await today.newPage();
       await hers.setViewportSize(DESKTOP);
-      const unknown = await notFoundText(hers);
       await hers.goto(address);
       await expect(
         mainContent(hers),
