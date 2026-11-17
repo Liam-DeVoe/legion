@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the pages whose text is
+ * The reading list's walk (`e2e/reading-rows.ts`) over the pages whose text is
  * no record of the reference graph and still reads through the one renderer: a component's prose
  * on its project's Architecture page, a priority's description on the priority's own page, and
  * an issue's reason for touching no component, on the Architecture page's Not architectural list

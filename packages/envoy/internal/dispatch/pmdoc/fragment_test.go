@@ -134,7 +134,7 @@ func snippetTextHolding(markdown, word string) (snippetText, bool) {
 
 // A search hit's snippet is the headline set back into the source ts_headline read and widened
 // to the source's own constructs. Each headline below is exactly what ts_headline answered for
-// its source with search.go's headlineOptions, measured on PostgreSQL 18.6 (INFRA-1702); the
+// its source with search.go's headlineOptions, measured on PostgreSQL 18.6; the
 // check beside each is what the snippet must read as.
 func TestASearchSnippetReadsAsTheSourceItQuotes(t *testing.T) {
 	for _, test := range []struct {

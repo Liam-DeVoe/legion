@@ -731,8 +731,10 @@ function AnswerForm({
         </OutlineTargetLine>
         {/* The line wraps for what asks a row of its own: the open picker's list, on a phone the
             options and the controls under the field, which has the line's whole width, and at
-            any width a row of them wider than the room beside the field, which then wraps
-            inside the line's width (`pageComposerAnswerControls`). */}
+            any width a row of them that would leave the field under 240 px. Words alone make an
+            answer, so the field keeps the room to type in that it has on a phone (`min-w-60!`
+            over its own `min-w-0`) and such a row goes under it; a row wider than the line
+            wraps inside the line's width (`pageComposerAnswerControls`). */}
         <div className={`${pageComposer.line} flex-wrap`}>
           <MentionField
             body={text}
@@ -740,7 +742,7 @@ function AnswerForm({
             issueKey={issueKey}
             label={CONTROL_LABELS.answer}
             labelHidden
-            look={`${pageComposer.field} max-[761px]:basis-full`}
+            look={`${pageComposer.field} min-w-60! max-[761px]:basis-full`}
             onChange={(change) => setText(change.body)}
             // Enter sends and Shift+Enter breaks the line, as on the box's other lines.
             onKeyDown={(event) => sendOnEnter(event, pickerOpen, send)}

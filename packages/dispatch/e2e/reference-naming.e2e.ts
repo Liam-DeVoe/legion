@@ -27,7 +27,7 @@ import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
- * INFRA-1702's `c-naming-rule`: one text, read the same way wherever it is shown.
+ * The naming rule: one text, read the same way wherever it is shown.
  *
  * An address standing on its own, and a link whose words are that same address, read as the
  * target's current name; a link whose words its author wrote keeps those words, because the

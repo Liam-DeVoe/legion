@@ -30,7 +30,7 @@ import { asUser } from "./users";
 import { NO_MATCH } from "./writing-boxes";
 
 /**
- * INFRA-1702's `c-picker-three-doors`: one picker behind `[[`, `@` and `#`.
+ * The picker's three doors: one picker behind `[[`, `@` and `#`.
  *
  * All three doors open the same list over the same rows, grouped by kind, each ranking the
  * kinds its own door names first (`kindOrder`); the arrows move, Enter and Tab take the row,

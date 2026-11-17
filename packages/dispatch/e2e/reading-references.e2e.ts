@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the surfaces that show a
+ * The reading list's walk (`e2e/reading-rows.ts`) over the surfaces that show a
  * record through another record's reference to it, and over the search palette: the cards under
  * a body that is nothing but references, the two lines a Dispatch card draws of its target, the
  * hover card over a reference to a comment and to an ask, the palette's hits, and the excerpt a

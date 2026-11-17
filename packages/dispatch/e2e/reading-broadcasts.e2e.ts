@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) over the four places a
+ * The reading list's walk (`e2e/reading-rows.ts`) over the four places a
  * broadcast shows text: a recipient's reply and the broadcast's own body on the broadcast's page,
  * the one-line body of its row on the Broadcasts list, and the row its send leaves on the Agents
  * page. The reply is a message, a record of this Dispatch, though one on no issue, so it

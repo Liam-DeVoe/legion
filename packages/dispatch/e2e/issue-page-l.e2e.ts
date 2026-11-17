@@ -981,6 +981,54 @@ test("the answer line's options and Send answer stand inside the box and the scr
   });
 });
 
+// The answer line's field keeps room to type at every width, however much of the line the
+// options take: words alone make an answer, and 240 px is the room the box gives the field to
+// type in on a phone. A question of three options whose chips with Decline to answer and Send
+// answer almost fill the line beside the field is the case to read: the controls then take a
+// row of their own under the field rather than leave it a few words wide.
+// SLOW(>=2s): forty comments and a question of three options seeded, and the answer line opened.
+test("the answer line's field keeps room to type beside options that almost fill the line", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const seed = async () => {
+    const forty = await seedFortyComments();
+    const question = await createAsk(
+      forty.key,
+      {
+        options: [
+          { label: "The first choice of three, long one" },
+          { label: "The second choice of three, long" },
+          { label: "The third choice, also rather long ones here" },
+        ],
+        question: "Which of three long choices?",
+      },
+      { actor: { id: "e2e-box-asker", kind: "session" as const }, as: "agent" as const }
+    );
+    return { ...forty, threeOptions: question.id };
+  };
+  await phase(browser, seed, async (page, seeded) => {
+    const at = `at ${DESKTOP.width}x${DESKTOP.height}`;
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect(composerField(page), `the box is not drawn ${at}`).toBeVisible();
+    await focusRow(page, seeded.threeOptions);
+    await page.keyboard.press("a");
+    const field = composerField(page);
+    await expect(field, `a put no caret in the box ${at}`).toBeFocused();
+    await expect(
+      composer(page).locator("[data-answer-option]"),
+      `the answer line draws no option ${at}`
+    ).toHaveCount(3);
+    const width = (await field.boundingBox())?.width ?? 0;
+    expect(
+      width,
+      `the answer's field is ${width.toFixed(1)} px wide beside the options ${at}`
+    ).toBeGreaterThanOrEqual(240);
+  });
+});
+
 /** The forty comments of `seedFortyComments`, an issue of one comment, whose outline is shorter
  *  than the screen, and an issue with a spec of one statement: each unread for the reader. */
 async function seedReadMarks() {
@@ -1262,7 +1310,7 @@ test("r on a statement writes a comment under it", async ({ browser }) => {
 test.skip("r on a statement in the Spec view writes a comment under it @owed", {
   annotation: {
     description:
-      "Owed: the Spec view's rows take the writer's r only once the view's keymap is passed the box's writer, which it is not yet, so this reading is skipped until then.",
+      "Owed on part J (decisions 74 and 61): the Spec view's rows take the writer's r only once J passes the writer to the view's keymap, so this reading is skipped until then.",
     type: "owed",
   },
 }, async ({ browser }) => {

@@ -590,7 +590,7 @@ function answerCollaborators(answer: (key: string) => IssueCollaborators = colla
   return read;
 }
 
-// INFRA-1702 Q2: a role is known while a session the registry lists holds it, or while the
+// A role is known while a session the registry lists holds it, or while the
 // collaborators of the issue the record is on record it (`role-holders.ts`): the issue's stopped
 // roles, which the picker offers under "Not running". Such a role reads as its token, linked to
 // its page, bare and as a mention, and the plain-text projection names it the same way, though

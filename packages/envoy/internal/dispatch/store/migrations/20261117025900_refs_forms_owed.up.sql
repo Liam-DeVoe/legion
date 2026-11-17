@@ -1,5 +1,5 @@
 -- 20261117025900_refs_forms_owed.up.sql
--- The queue of text owed an index with the reference forms INFRA-1702 adds to the grammar: an
+-- The queue of text owed an index with the reference forms this release adds to the grammar: an
 -- issue's tab addresses (`dispatch://CORE-45/plan`, `/verification`, `/activity`, `/children`,
 -- `/artifacts`, `/collaborators`, `/conversation`, `/log`, and the same as dashboard URLs) and the
 -- dashboard URLs of an issue's document (`https://<origin>/issues/CORE-50/artifact/notes-md`, with

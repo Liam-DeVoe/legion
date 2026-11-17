@@ -240,6 +240,12 @@ type itemBlockSource struct {
 	ids       func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
 	madeBy    []*string
 	pairs     func(next []itemblocks.Block, ids []string) []blockPair
+	// settleForms says the write has already reconciled the item's own references, so once its
+	// blocks are indexed the item's whole text has been read with this build's grammar: the
+	// state update that ends the index settles what the forms queue holds for the item
+	// (RefsFormsOwed) in the same statement, after every delete the index made, and costs the
+	// write no round trip of its own (recordItemIndexed).
+	settleForms bool
 }
 
 // indexItemBlocks records source as the current revision of the blocks of item itemID, written at
@@ -393,7 +399,7 @@ func indexItemBlocks(
 	// told apart in pg_stat_statements by their state query: an item's reads `with state as (
 	// update comment_block_state s set …)`, a document's `with state as ( update
 	// document_block_versions v set windows_owed_at = null …)`.
-	if err := recordItemIndexed(ctx, tx, kind, tables, itemID, revision, counter, source.bodySum); err != nil {
+	if err := recordItemIndexed(ctx, tx, kind, tables, itemID, revision, counter, source.bodySum, source.settleForms); err != nil {
 		return nil, err
 	}
 	return moved, nil
@@ -401,7 +407,10 @@ func indexItemBlocks(
 
 // recordItemIndexed records the item indexed from the text whose sum is bodySum, at revision
 // with next as the next block number for a kind that counts revisions, clears the block
-// index's marker and leaves the window arm's standing.
+// index's marker and leaves the window arm's standing. With settleForms it also deletes the
+// item's row of refs_forms_owed, in the same statement (itemBlockSource.settleForms): the
+// statement is the index's last, so the delete follows every delete of its block edges, each of
+// which owes that queue the item (migrations 20261117025907-20261117025910).
 //
 // The two markers part here. owed_at is this write's to settle: the blocks it names are the
 // blocks this transaction wrote. windows_owed_at is not, since the windows of those blocks are
@@ -426,6 +435,7 @@ func recordItemIndexed(
 	itemID string,
 	revision, next int,
 	bodySum string,
+	settleForms bool,
 ) error {
 	const owed = `owed_at = null, windows_owed_at = coalesce(windows_owed_at, now())`
 	var statement string
@@ -438,6 +448,10 @@ func recordItemIndexed(
 		statement = `update ` + tables.state + ` set body_sha256 = $2, ` + owed +
 			` where ` + tables.item + ` = $1::uuid`
 		args = []any{itemID, bodySum}
+	}
+	if settleForms {
+		args = append(args, string(kind))
+		statement = fmt.Sprintf(`with settled as (delete from refs_forms_owed where kind = $%d and id = $1::uuid) `, len(args)) + statement
 	}
 	if _, err := tx.Exec(ctx, statement, args...); err != nil {
 		return fmt.Errorf("record the blocks of %s %s indexed: %w", kind, itemID, err)

@@ -58,7 +58,7 @@ import {
 } from "./writing-boxes";
 
 /**
- * INFRA-1702's `c-field-everywhere`: the same picker in every box a person writes in.
+ * The check that every box has the picker: the same picker in every box a person writes in.
  *
  * One `test()` per covered box of `DISPATCH_WRITING_BOXES`, generated from that list, so a box
  * the list gains with no way to drive it fails a row of its own and a driver for a box the list
@@ -71,7 +71,7 @@ import {
  * lists is the one thing its own row decides (`issueRows`), and each box is held to its row's
  * answer.
  *
- * INFRA-1702's `c-delivery-unchanged` is held in the same rows: each box whose write delivers is
+ * The check that delivery is unchanged is held in the same rows: each box whose write delivers is
  * sent through its own send control, which its driver hands to `expectRow`, and the fake Envoy
  * listener takes exactly one frame for the party picked in it, in the mode the composer's rule
  * gives, read again once the server has settled the delivery (`expectSend`). A send can close

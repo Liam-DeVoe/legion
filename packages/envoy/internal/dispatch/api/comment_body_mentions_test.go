@@ -14,7 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// A mention is a reference (INFRA-1702 R4): the parties a comment names are the ones its body
+// A mention is a reference: the parties a comment names are the ones its body
 // writes as party references, beside any the request's own `mentions` array still carries. These
 // rows cover that set - what it holds, what it refuses, and what a person in it does.
 

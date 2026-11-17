@@ -467,7 +467,7 @@ test("a long-named picture in a comment draws, its link to a long-named document
       .locator(`a[data-dispatch-href="${designTarget}"]`);
     await expect(link).toHaveAttribute("href", path);
     // The link keeps the words its author wrote. Only an address standing on its own, and a
-    // link whose words are its own address, read as the target's name (INFRA-1702 R8), so this
+    // link whose words are its own address, read as the target's name, so this
     // one never grows into the document's long name after the body paints and never slides
     // under a pointer resting on a paragraph.
     await expect(link).toHaveText("design");

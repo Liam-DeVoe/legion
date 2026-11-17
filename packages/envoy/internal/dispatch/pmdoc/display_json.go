@@ -196,8 +196,8 @@ func DisplaySnippetJSON(markdown, start, stop string) json.RawMessage {
 // was. ts_headline marks the words of an address as it marks any other words: a document stores
 // the autolink `<dispatch://CORE-1>` as `[dispatch://CORE-1](dispatch://CORE-1)` (text's
 // referenceEnd), and a search for CORE answers `<b>CORE</b>-1](dispatch://<b>CORE</b>-1)`, which
-// SearchSnippet widens back to the whole link (measured on PostgreSQL 18 with headlineOptions,
-// INFRA-1702). Left in the href, the sentinels make an address the browser cannot read as a
+// SearchSnippet widens back to the whole link (measured on PostgreSQL 18 with headlineOptions).
+// Left in the href, the sentinels make an address the browser cannot read as a
 // reference, so it takes the link away and shows the raw address; left in an image's src, the
 // picture names no file. An attribute holds no run a mark can sit on, so a sentinel there has
 // nothing to mark: a caption drawn from an image's alt is drawn plain. ts_headline marks one word

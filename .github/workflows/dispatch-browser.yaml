@@ -17,7 +17,7 @@ name: Dispatch browser suite
 # same embedder job, over every row. So an unlabelled pull request pays for the rows that
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them. `references` runs the
-# `chromium` project over every row of the eleven spec files dispatch://INFRA-1702's
+# `chromium` project over every row of the eleven spec files the reference framework's
 # Verification document names and the nine of the reading list's walk, on the four shard
 # machines and the merge job alone, so a pull request that changes the reference framework
 # gets those rows from CI at its head rather than from a run by hand. It gates nothing:
@@ -602,7 +602,7 @@ jobs:
               lane_files=""
               ;;
             references)
-              # The eleven spec files dispatch://INFRA-1702's Verification document names, the
+              # The eleven spec files the reference framework's Verification document names, the
               # nine of the reading list's walk (e2e/reading-rows.ts), and main's parse-count walk,
               # which holds every page those rows draw to no parse of a stored text on the page's
               # own thread, and the one place they are written: ci.yaml's dispatch-references job
@@ -1230,7 +1230,7 @@ jobs:
   #
   # On the pull-request and full lanes, where the alone and multiprocess jobs above run on `full`
   # alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
-  # pull request it is on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a
+  # pull request it is on (the bar's embedding count) rather than a clock reading or a
   # second server shape. A lane that skipped it would leave the claim unread until the merge
   # queue. Not on `references`: that lane runs eleven named spec files and e2e/search-tiers.e2e.ts
   # is none of them, and this job's check stays the pull-request lane's, which runs it.

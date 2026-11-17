@@ -177,7 +177,7 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	// inside that read declares no tree at all. The architecture tree and one node's own text
 	// are rows of the schema reading alone - the trees they carry need an architecture source
 	// and a block reference this issue has neither of - and they are the two rows that were
-	// found naming the model (INFRA-635). A backlink's excerpt is read live: the reply above
+	// found naming the model. A backlink's excerpt is read live: the reply above
 	// is a replies_to edge of the comment it answers, whose excerpt is the head of the reply's
 	// body. A decision's text is a row of the schema reading too: its live reading is the
 	// decisions view's own test, which has a decisions.md to read (decisions_test.go).

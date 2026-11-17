@@ -1,5 +1,5 @@
 /**
- * The reading list's walk (INFRA-1702's R9, `e2e/reading-rows.ts`) across a document and its
+ * The reading list's walk (`e2e/reading-rows.ts`) across a document and its
  * margin: the reason a reviewer gave in a document's Reviews dialog, a decision card beside the
  * spec block it shaped, a conversation the reader pinned to the margin, and a thread card's
  * three drawings - its comment opened, its collapsed preview, and a suggestion's two sides.

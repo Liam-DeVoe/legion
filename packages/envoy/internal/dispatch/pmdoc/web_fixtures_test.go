@@ -56,7 +56,7 @@ const (
 // webMarkedCore1 is CORE-1 as ts_headline marks it for the query CORE-1, word by word:
 // `select ts_headline('english', 'Tracked as dispatch://CORE-1 since Monday.',
 // websearch_to_tsquery('english', 'CORE-1'))` answers `Tracked as dispatch://<b>CORE</b><b>-1</b>
-// since Monday.`, and the bare key `<b>CORE</b><b>-1</b>` (measured 2026-11-13, INFRA-1702). A
+// since Monday.`, and the bare key `<b>CORE</b><b>-1</b>` (measured 2026-11-13). A
 // fixture marking the address whole is a shape the search never sends.
 const webMarkedCore1 = webSnippetStart + "CORE" + webSnippetStop + webSnippetStart + "-1" + webSnippetStop
 
@@ -130,7 +130,7 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 		// A search for CORE over the link a document stores for the autolink
 		// `<dispatch://CORE-1>`: ts_headline marks the key in the link's words and in its address
 		// alike, `[dispatch://<b>CORE</b>-1](dispatch://<b>CORE</b>-1)` once SearchSnippet has
-		// widened the cut back to the whole link (measured 2026-11-14, INFRA-1702), and the
+		// widened the cut back to the whole link (measured 2026-11-14), and the
 		// snippet's tree keeps the mark on the words and the address as it was stored.
 		{
 			"a-marked-autolink-to-a-reference",

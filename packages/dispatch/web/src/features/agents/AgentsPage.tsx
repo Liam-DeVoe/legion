@@ -1455,9 +1455,9 @@ export function AgentsPage(): ReactNode {
   const issueKeysBySession = useMemo(() => sessionIssueKeys(inbox.data ?? []), [inbox.data]);
   // The free-text query, the machines and the roles are the page's own `?q=`, `?machine=` and
   // `?role=`, all owned by `agent-search.ts`; the group selection stays plain component state.
-  // A link in from the machines page of dispatch://INFRA-883 names one machine in `?machine=`,
+  // A link in from the machines page names one machine in `?machine=`,
   // which is this filter with that one host ticked, and `/agents?role=<token>` is the page a
-  // `dispatch://role/<token>` reference opens (INFRA-1702), which is that filter with one role
+  // `dispatch://role/<token>` reference opens, which is that filter with one role
   // ticked.
   const [search, setSearch] = useAgentSearch();
   const [machines, setMachines] = useAgentMachines();
@@ -1471,7 +1471,7 @@ export function AgentsPage(): ReactNode {
     if (next.search !== search) setSearch(next.search);
   };
   // The picked roles no live session carries, which the empty state names rather than letting
-  // the reader read this list as every role there is (INFRA-1702): a role is here only while a
+  // the reader read this list as every role there is: a role is here only while a
   // session holds it.
   const unheldRoles = roles.filter(
     (role) => !agents.some((agent) => (agent.roles ?? []).includes(role))
