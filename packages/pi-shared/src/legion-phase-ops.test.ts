@@ -448,8 +448,8 @@ test("a rating is sent on a completion at any phase: the late retro's at merging
 // contract's own test parses it with, goes through the executor as the retro's completion: the
 // tool takes exactly the cases the daemon accepted and posts each rating and reason as it was
 // given, and refuses every other case naming a rating field, with no request sent. Blank is Go's
-// strings.TrimSpace on the daemon's side, where JavaScript's trim keeps U+0085 and strips U+FEFF
-// (`@legion/contracts/go-blank`).
+// strings.TrimSpace on the daemon's side, not JavaScript's trim; `goBlankPattern`'s doc comment
+// (`@legion/contracts/go-blank`) names the two characters on which the two differ.
 test("the tool takes exactly the ratings the daemon takes, and sends a refused one nowhere", async () => {
   const { cases } = PlanRatingCases.parse(daemonFixture("plan-rating-cases.json"));
   expect(cases.some((c) => c.verdict === "accepted")).toBe(true);
