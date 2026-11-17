@@ -10,9 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -42,6 +45,44 @@ func TestTheServingNoneLineIsLoggedWhenTheReadsSubscriptionNarrowingFails(t *tes
 	testwait.Eventually(t, "the serving-none line", func() bool { return strings.Contains(logged.String(), servingNoneMessage) })
 	testwait.Eventually(t, "a retry of the read whose narrowing failed", func() bool { return narrowings.Load() > 1 })
 	wantServingNone(t, logged, "while every narrowing is refused", api.NoRepositoryMapped("LEGION"))
+}
+
+// abortingStore is a record store whose abortAt'th live-record snapshot (Issues, counted from 1)
+// answers the real snapshot and then aborts its transaction with a failing statement, so the
+// transaction's COMMIT fails (pgx.ErrTxCommitRollback) after whatever the caller does in memory
+// once the snapshot is read. Zero aborts none.
+type abortingStore struct {
+	record.Store
+	abortAt atomic.Int64
+	calls   atomic.Int64
+}
+
+func (s *abortingStore) Issues(ctx context.Context, tx pgx.Tx) ([]record.Issue, error) {
+	issues, err := s.Store.Issues(ctx, tx)
+	if n := s.calls.Add(1); err == nil && n == s.abortAt.Load() {
+		_, _ = tx.Exec(ctx, "select 1/0")
+	}
+	return issues, err
+}
+
+// A read whose publication transaction has set the mapping in memory, and whose COMMIT then fails,
+// still logs the serving-none line when that mapping serves none: the daemon serves none, and
+// refuses every issue for it, from the set on. The read unmaps the last repositories; its first
+// snapshot is the heard superset's (step 1) and its second the publication's, which is aborted.
+func TestTheServingNoneLineIsLoggedWhenThePublicationsCommitFails(t *testing.T) {
+	w, client, _, logged, _ := servingNoneLogRig(t, &installations{})
+	wantServingNone(t, logged, "at boot, serving both")
+	store := &abortingStore{Store: w.records}
+	w.records = store
+	client.set()
+	store.abortAt.Store(store.calls.Load() + 2)
+	if err := w.refreshMapping(context.Background()); !errors.Is(err, pgx.ErrTxCommitRollback) {
+		t.Fatalf("the read whose publication was aborted = %v, want its COMMIT refused (%v)", err, pgx.ErrTxCommitRollback)
+	}
+	if served(w, "acme/widgets") || served(w, "zeta/tools") {
+		t.Fatal("a repository is still served: the publication's set did not run before its COMMIT failed")
+	}
+	wantServingNone(t, logged, "after the publication's COMMIT failed", api.NoRepositoryMapped("LEGION"))
 }
 
 // The daemon comes to serve no repository with the same repositories mapped: its one repository,

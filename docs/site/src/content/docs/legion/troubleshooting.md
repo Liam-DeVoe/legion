@@ -317,7 +317,7 @@ Check, in order:
    repositories in Dispatch (Settings → Repositories → Projects), one of them its default, and
    move the issue to `todo` again: Dispatch refuses setting an issue's repository while its project
    maps none. A child of a tree is told the same way, and its tree's architect gets a
-   `child-not-recorded` notice with the same remedy.
+   `child-not-recorded` notice, which for the empty mapping names the same remedy.
 4. **The slots.** When every slot is taken the issue waits its turn:
 
    ```sh
