@@ -29,9 +29,9 @@ export interface KeyedLayerOptions {
  * each answer the layer judged (`options.judged`, each 2xx by default) to a request that carries
  * an `Idempotency-Key` names that key back, as `TestEveryKeyedAnswerNamesItsKey` holds every
  * Dispatch answer to a keyed write to, unless the stand-in named a key itself. A Dispatch that
- * names no key back is the build before the keyed layer (`options.noKeyedLayer`), whose answer
- * the client takes only where it holds what the call sent (`DispatchClient.#writtenRow`). Every
- * other answer is as the stand-in gave it.
+ * names no key back is the build before the keyed layer (`options.noKeyedLayer`), none of whose
+ * 2xx the client takes as its call's answer (`DispatchClient.#writtenRow`). Every other answer is
+ * as the stand-in gave it.
  */
 export function keyedLayer<Args extends [Request | string | URL, ...unknown[]]>(
   answer: (...args: Args) => Response | Promise<Response>,

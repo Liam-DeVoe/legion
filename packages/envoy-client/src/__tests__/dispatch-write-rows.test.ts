@@ -1,17 +1,17 @@
 // Every keyed write of the client (`#write`, `#writeAnswer`, `#upload`: each POST and PATCH) reads
 // its 2xx into the row its callers read (`dispatch-write-rows.ts`) by one rule, which turns on
 // whether the 2xx names the call's `Idempotency-Key` back, as Dispatch's keyed layer does on every
-// 2xx it gives a keyed write. A 2xx that names it back is Dispatch's: its row is the answer, and a
-// body that gives no row is a landing whose answer was lost (`ANSWER_LOST`). A 2xx that names no
-// key back and gives the row is the answer of a Dispatch with no keyed layer. Any other 2xx is not
-// Dispatch's answer to the call, so the write's outcome is unknown. A route that stores nothing
-// made nothing either way. A row check stricter than Dispatch's true answer would turn a good
-// answer into a landing, so each method is driven here against the answers its route's operation
-// declares in the OpenAPI document the server generates (`test/route-answers.ts` reads it):
-// two instances of each 2xx schema, the least one the schema admits (every optional member
-// absent, every nullable member null, every list empty) and the most one (every member present,
-// none null, every list holding one item), each an answer the route declares. The answers the
-// other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
+// answer it gives a keyed write, on every write route. A 2xx that names it back is Dispatch's: its
+// row is the answer, and a body that gives no row is a landing whose answer was lost
+// (`ANSWER_LOST`). Any other 2xx, one that names no key back or another request's, is not
+// Dispatch's answer to the call, whatever it holds, so the write's outcome is unknown. A route that
+// stores nothing made nothing either way. A row check stricter than Dispatch's true answer would
+// turn a good answer into a landing, so each method is driven here against the answers its
+// route's operation declares in the OpenAPI document the server generates (`test/route-answers.ts`
+// reads it): two instances of each 2xx schema, the least one the schema admits (every optional
+// member absent, every nullable member null, every list empty) and the most one (every member
+// present, none null, every list holding one item), each an answer the route declares. The answers
+// the other tests' stubs serve for a keyed write come from `routeAnswer`, which holds each to its
 // route's schema.
 import { describe, expect, test } from "bun:test";
 import {
@@ -22,15 +22,7 @@ import {
 } from "@legion/contracts";
 import { z } from "zod";
 import { keyedLayer } from "../../test/keyed-layer";
-import {
-  answerErrors,
-  answersOf,
-  declaredAt,
-  instance,
-  onRoute,
-  requestMembers,
-  routeAnswer,
-} from "../../test/route-answers";
+import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import {
   DISPATCH_ANSWER_LOST,
@@ -40,7 +32,7 @@ import {
   DispatchWriteLandedError,
   writeOutcomeUnknown,
 } from "../dispatch-http";
-import { type Held, heldBy, rowStores, type SentWrite, WRITE_ROWS } from "../dispatch-write-rows";
+import { rowStores, WRITE_ROWS } from "../dispatch-write-rows";
 
 const actor = { kind: "session", id: "session-rows" } as Actor;
 const content = { name: "notes.md", content: "# Notes\n", actor };
@@ -57,15 +49,6 @@ interface WriteRowCase {
   readonly noRouteFirst?: string;
   /** What tells this case from another of the same method and route. */
   readonly variant?: string;
-  /** The row this route's answer is read into, where it is not the method's own (a fallback
-   *  route's, whose one source the method answers as its list). */
-  readonly answered?: keyof typeof WRITE_ROWS;
-}
-
-/** The row the case's answer is read into: the held values of the stand-in, of each "another"
- *  row and of the declaration check are this row's. */
-function rowOf(row: WriteRowCase): (typeof WRITE_ROWS)[keyof typeof WRITE_ROWS] {
-  return WRITE_ROWS[row.answered ?? row.method];
 }
 
 /** The methods no caller reads the answer of, whose row is any object: `{}` is their row. */
@@ -126,7 +109,6 @@ const CASES: readonly WriteRowCase[] = [
     method: "syncArchitectureSources",
     route: "POST /api/v1/projects/{key}/architecture-source/sync",
     noRouteFirst: "POST /api/v1/projects/{key}/architecture-sources/sync",
-    answered: "syncArchitectureSource",
     call: (client) => client.syncArchitectureSources("ACME"),
   },
   {
@@ -312,27 +294,16 @@ const CASES: readonly WriteRowCase[] = [
  *  none, as a Dispatch with no keyed layer or something in Dispatch's place does, or another. */
 type Echo = "this" | "none" | "other";
 
-/** What a request of the client sent, as a row's held values read it (`heldBy`): its path's
- *  segments from `api` on, and its JSON body. */
-async function sentBy(request: Request): Promise<SentWrite> {
-  const json = request.headers.get("Content-Type")?.startsWith("application/json") === true;
-  return {
-    path: new URL(request.url).pathname.split("/").slice(1).map(decodeURIComponent),
-    body: json ? await request.json() : undefined,
-  };
-}
-
-/** A Dispatch that answers the case's route with `status` and `body` under `type` (or the body
- *  `body` makes of what the request sent), behind a keyed layer that names back the key `echo`
- *  says (`keyedLayer`: the call's own on every answer it gives the route, none, or another
- *  request's, which the stand-in names itself), with the headers `extra` adds, recording each
- *  request it was sent. Its fallback's first route has no route for it: the router answers that,
- *  before the layer. */
+/** A Dispatch that answers the case's route with `status` and `body` under `type`, behind a keyed
+ *  layer that names back the key `echo` says (`keyedLayer`: the call's own on every answer it
+ *  gives the route, none, or another request's, which the stand-in names itself), with the headers
+ *  `extra` adds, recording each request it was sent. Its fallback's first route has no route for
+ *  it: the router answers that, before the layer. */
 function dispatchAnswering(
   row: WriteRowCase,
   status: number,
   type: string,
-  body: string | ((sent: SentWrite) => string),
+  body: string,
   echo: Echo,
   extra: Readonly<Record<string, string>> = {}
 ) {
@@ -344,8 +315,7 @@ function dispatchAnswering(
         headers[IDEMPOTENCY_KEY_HEADER] =
           `${request.headers.get(IDEMPOTENCY_KEY_HEADER) ?? ""}-another`;
       }
-      const text = typeof body === "string" ? body : body(await sentBy(request));
-      return new Response(text, { status, headers });
+      return new Response(body, { status, headers });
     },
     echo === "none" ? { noKeyedLayer: true } : { judged: () => true }
   );
@@ -374,7 +344,7 @@ async function outcome(
   row: WriteRowCase,
   status: number,
   type: string,
-  body: string | ((sent: SentWrite) => string),
+  body: string,
   echo: Echo,
   extra: Readonly<Record<string, string>> = {}
 ) {
@@ -401,55 +371,6 @@ function noAnswer(
 ): { landed?: DispatchLandedCode; unknown?: boolean; missing?: string } {
   if (!rowStores(WRITE_ROWS[row.method])) return { missing: DISPATCH_ANSWER_LOST };
   return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
-}
-
-/** The value a call sent that `held` names, or undefined where the call did not set it. */
-function sentValue(held: Held, sent: SentWrite): unknown {
-  const value =
-    "segment" in held
-      ? sent.path[held.segment]
-      : (sent.body as Record<string, unknown> | undefined)?.[held.member];
-  return value === null || value === "" ? undefined : value;
-}
-
-/**
- * `answer` with each value the call sent that the case's row holds (`heldBy`) laid at the member
- * that holds it, as Dispatch answers the call's own write; with `other` (one of those values),
- * that one value changed, as another call's answer holds it. A member `answer` holds no object
- * for on the way (absent, null, an empty list) is taken from `most`, the route's most answer, so
- * the answer stays one the route declares.
- */
-function holdingSent(
-  row: WriteRowCase,
-  answer: unknown,
-  most: unknown,
-  sent: SentWrite,
-  other?: Held
-): unknown {
-  const out = structuredClone(answer);
-  for (const held of heldBy(rowOf(row))) {
-    const value = sentValue(held, sent);
-    if (value === undefined) continue;
-    let node = out as Record<string | number, unknown>;
-    let model = most as Record<string | number, unknown>;
-    const leaf = held.at.at(-1) as string | number;
-    for (const step of held.at.slice(0, -1)) {
-      if (typeof node[step] !== "object" || node[step] === null || node[step] === undefined) {
-        node[step] = structuredClone(model[step]);
-      }
-      if (Array.isArray(node[step]) && (node[step] as unknown[]).length === 0) {
-        node[step] = structuredClone(model[step]);
-      }
-      node = node[step] as Record<string | number, unknown>;
-      model = model[step] as Record<string | number, unknown>;
-    }
-    const numeric = typeof model[leaf] === "number";
-    const changed = held === other;
-    node[leaf] = numeric
-      ? Number(value) + (changed ? 1 : 0)
-      : `${String(value)}${changed ? "-another" : ""}`;
-  }
-  return out;
 }
 
 /** Each path inside `schema` at which an object refuses a member it does not name (a
@@ -511,48 +432,6 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
   test("the routes that store nothing are the round trip and the related-item check", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
     expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
-  });
-
-  // A row's held values are what a no-key answer is held to (`rowHolds`): a value the route's
-  // request does not take, or a member its answers do not hold, would turn every such answer
-  // into an unknown outcome, or hold it to nothing.
-  test("each value a row holds is a path parameter or a body member its route's request takes, and a key, id, word or number every answer it is driven with holds", () => {
-    const wrong = CASES.flatMap((row) => {
-      const segments = (row.route.split(" ")[1] as string).split("/").slice(1);
-      const answers = answersOf(row.route).filter(
-        (answer) => !(row.never?.status === answer.status && row.never.branch === answer.branch)
-      );
-      return heldBy(rowOf(row)).flatMap((held) => {
-        const taken =
-          "segment" in held
-            ? /^\{[a-z_]+\}$/.test(segments[held.segment] ?? "")
-            : requestMembers(row.route).includes(held.member);
-        const holds = answers.every((answer) => {
-          const leaf = declaredAt(answer.schema, held.at);
-          const value = leaf === undefined ? undefined : instance(leaf, "most");
-          return typeof value === "string" || typeof value === "number";
-        });
-        const named = "segment" in held ? `segment ${held.segment}` : held.member;
-        return taken && holds
-          ? []
-          : [
-              `${row.method} (${row.route}) ${named} at ${held.at.join(".")}: taken ${taken}, held ${holds}`,
-            ];
-      });
-    });
-    expect(wrong).toEqual([]);
-  });
-
-  test("the rows that hold nothing the call sent are the six the table names", () => {
-    const none = Object.entries(WRITE_ROWS).filter(([, row]) => heldBy(row).length === 0);
-    expect(none.map(([method]) => method).sort()).toEqual([
-      "agentMessage",
-      "deliveryReply",
-      "docEdit",
-      "markdownRoundTrip",
-      "nameArtifactVersion",
-      "related",
-    ]);
   });
 
   // A newer Dispatch may answer a member the row does not name, at any depth, and an older client
@@ -635,53 +514,20 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     if (first === undefined) throw new Error(`${row.route} declares no 2xx answer`);
     const status = first.status;
     const least = instance(first.schema, "least");
-    const most = instance(first.schema, "most");
-    /** The least answer holding what the call sent, or another call's (`holdingSent`), and the
-     *  ways each one served is not an answer the route declares, read after the call. */
-    const holding = (other?: Held) => {
-      const refused: string[][] = [];
-      const body = (sent: SentWrite): string => {
-        const answered = holdingSent(row, least, most, sent, other);
-        refused.push(answerErrors(row.route, status, answered));
-        return JSON.stringify(answered);
-      };
-      return { body, refused };
-    };
-    // Every Dispatch 2xx to a keyed write names its key back (`TestEveryKeyedAnswerNamesItsKey`,
-    // packages/envoy/internal/dispatch/api/request_keys_test.go); a Dispatch that runs no keyed
-    // layer names none, and its answer is still the call's where it holds what the call sent
-    // that the row's answer names back.
-    test(`${label}: the least ${status} answer naming no key back is the call's answer`, async () => {
-      const served = holding();
-      const got = await outcome(row, status, "application/json", served.body, "none");
-      expect({
-        landed: got.landed,
-        unknown: got.unknown,
-        missing: got.missing,
-        thrown: got.thrown,
-        served: served.refused,
-      }).toEqual({
+    // Dispatch's keyed layer names the key back on every answer of every write route
+    // (`TestEveryKeyedAnswerNamesItsKey`, packages/envoy/internal/dispatch/api/
+    // request_keys_test.go), so its own least answer naming no key back came from something in its
+    // place: it is no answer of the call's, whatever it holds, and the client compares none of it
+    // with what the call sent. A route that stores nothing made nothing either way.
+    test(`${label}: the least ${status} answer naming no key back is not the call's answer`, async () => {
+      const got = await outcome(row, status, "application/json", JSON.stringify(least), "none");
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
         missing: undefined,
-        thrown: undefined,
-        served: [[]],
+        ...noAnswer(row, "none"),
       });
     });
-    // One that holds another value than the call sent is another call's answer (a proxy or a
-    // cache that answers one write with another's), which says nothing of this write.
-    for (const held of heldBy(rowOf(row))) {
-      test(`${label}: the least ${status} answer naming no key back, of another ${held.at.join(".")}, is not this call's`, async () => {
-        const served = holding(held);
-        const got = await outcome(row, status, "application/json", served.body, "none");
-        expect({
-          landed: got.landed,
-          unknown: got.unknown,
-          missing: got.missing,
-          served: served.refused,
-        }).toEqual({ landed: undefined, unknown: true, missing: undefined, served: [[]] });
-      });
-    }
     test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
       const got = await outcome(row, status, "application/json", JSON.stringify(least), "other");
       expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
@@ -736,7 +582,11 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
         ["an HTML page", "text/html", "<html><body>not json</body></html>"],
         ["an empty body", "application/json", ""],
         ["JSON null", "application/json", "null"],
-        ...(READS_NOTHING[row.method] ? [] : [["the JSON {}", "application/json", "{}"]]),
+        // `{}` is the row of a method no caller reads the answer of, so it is that call's answer
+        // where it names the key back, and no answer where it names none.
+        ...(READS_NOTHING[row.method] && echo === "this"
+          ? []
+          : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
         const expected = noAnswer(row, echo);
         const reads =

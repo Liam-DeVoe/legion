@@ -165,19 +165,6 @@ export function answersOf(route: string): { status: number; branch: number; sche
   return out;
 }
 
-/** The members the JSON body of `route`'s request declares, at its top; none where it takes no
- *  JSON body. */
-export function requestMembers(route: string): string[] {
-  const body = operationOf(route).operation.requestBody as
-    | { readonly content?: Readonly<Record<string, { readonly schema: Schema }>> }
-    | undefined;
-  const schema = body?.content?.["application/json"]?.schema;
-  if (schema === undefined) return [];
-  return objectParts(schema).flatMap((part) =>
-    Object.keys((part.properties as Record<string, Schema> | undefined) ?? {})
-  );
-}
-
 /** Whether `path` is an instance of the route template `template`. */
 export function onRoute(template: string, path: string): boolean {
   const wanted = template.split("/");
@@ -261,25 +248,6 @@ function declaredIn(parts: readonly Schema[], name: string): Schema | undefined 
   return parts
     .map((part) => (part.properties as Record<string, Schema> | undefined)?.[name])
     .find((declared) => declared !== undefined);
-}
-
-/** The schema `raw` declares at `path` (a member's name, or a number for an item of a list), with
- *  null set aside, or undefined where it declares nothing there. An object that takes members it
- *  does not name declares each as its `additionalProperties` says. */
-export function declaredAt(raw: Schema, path: readonly (string | number)[]): Schema | undefined {
-  let at: Schema | undefined = raw;
-  for (const step of path) {
-    if (at === undefined) return undefined;
-    const parts = objectParts(branchesOf(at)[0]);
-    at =
-      typeof step === "number"
-        ? (parts.find((part) => part.items !== undefined)?.items as Schema | undefined)
-        : (declaredIn(parts, step) ??
-          (parts
-            .map((part) => part.additionalProperties)
-            .find((taken) => typeof taken === "object" && taken !== null) as Schema | undefined));
-  }
-  return at === undefined ? undefined : branchesOf(at)[0];
 }
 
 /** The branch of `raw` that `value` is read against, since an answer is one branch of a union and

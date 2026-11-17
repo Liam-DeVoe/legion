@@ -2651,31 +2651,6 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }, 30_000);
   }
 
-  // A Dispatch with no keyed layer, the build before it, names no key back on its 201, and its
-  // stored result is still the answer: printed whole, exit 0.
-  test("a 201 with the stored result that names no key back prints it and exits 0", async () => {
-    const { seen, server } = answeringWhole(
-      "201 Created",
-      "application/json",
-      JSON.stringify(stored),
-      "none"
-    );
-    try {
-      const ran = await spawnJob(record, {
-        ...jobEnvironment(),
-        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      });
-      expect({ code: ran.code, stderr: ran.stderr, posts: seen.posts }).toEqual({
-        code: 0,
-        stderr: "",
-        posts: 1,
-      });
-      expect(JSON.parse(ran.stdout)).toEqual(stored);
-    } finally {
-      server.stop(true);
-    }
-  }, 30_000);
-
   // A 2xx that is not Dispatch's answer to the write - it names no key back and gives no stored
   // result, or names another request's key back - came from whatever answers in Dispatch's place
   // (a proxy's page, a server that is not Dispatch), which may have passed the write on first:
@@ -2727,32 +2702,52 @@ describe("dispatch result --project, as a CI job writes it", () => {
     }, 30_000);
   }
 
-  // A 201 that names no key back is the answer of a Dispatch with no keyed layer only where the
-  // result it stored is the one this call wrote: its project, check, verdict and commit. Another
-  // call's stored result (a proxy or a cache that answers one write with another's) says nothing of
-  // this write, which may have reached Dispatch behind it: write_outcome_unknown, exit 1.
+  // Dispatch's keyed layer names the key back on every answer of every write route, so a 201 that
+  // names no key back is no answer of Dispatch's to this write, whatever result it holds: this
+  // call's own, another run's of the same check, verdict and commit (the hardening note H1 of the
+  // deep audit of 7735fa52b4), or another call's of another project, check, verdict or commit (a
+  // proxy or a cache that answers one write with another's). The write may have reached Dispatch
+  // behind what answered: write_outcome_unknown, exit 1. No content of the answer is compared.
   const { predicate, subject } = stored.attestation;
   /** Another call's stored result: the job's own, its attestation changed as `change` says. */
   const another = (change: Partial<typeof stored.attestation>): typeof stored => ({
     ...stored,
     attestation: { ...stored.attestation, ...change },
   });
-  for (const [member, other] of [
-    ["project", another({ predicate: { ...predicate, project: "OTHER" } })],
-    ["check", another({ predicate: { ...predicate, check: "p-2" } })],
-    ["verdict", another({ predicate: { ...predicate, verdict: "fail" } })],
+  for (const [held, body] of [
+    ["this call's own stored result", stored],
     [
-      "commit",
+      "another run's stored result of the same check, verdict and commit",
+      routeAnswer(
+        "POST /api/v1/projects/{key}/results",
+        storedSpecResult(44, "pass", "macos", 2),
+        201
+      ),
+    ],
+    [
+      "another call's stored result, of another project",
+      another({ predicate: { ...predicate, project: "OTHER" } }),
+    ],
+    [
+      "another call's stored result, of another check",
+      another({ predicate: { ...predicate, check: "p-2" } }),
+    ],
+    [
+      "another call's stored result, of another verdict",
+      another({ predicate: { ...predicate, verdict: "fail" } }),
+    ],
+    [
+      "another call's stored result, of another commit",
       another({
         subject: subject.map((item) => ({ ...item, digest: { gitCommit: "2".repeat(40) } })),
       }),
     ],
   ] as const) {
-    test(`a 201 with another call's stored result, of another ${member}, that names no key back prints write_outcome_unknown and exits 1`, async () => {
+    test(`a 201 with ${held} that names no key back prints write_outcome_unknown and exits 1`, async () => {
       const { seen, server } = answeringWhole(
         "201 Created",
         "application/json",
-        JSON.stringify(other),
+        JSON.stringify(body),
         "none"
       );
       try {
