@@ -719,13 +719,9 @@ type reloadedRoom struct {
 func (r *reloadedRoom) leave() {
 	r.t.Helper()
 	_ = r.socket.Close()
-	deadline := time.Now().Add(roomWait(r.t))
-	for registeredConnections(r.service) != 0 {
-		if time.Now().After(deadline) {
-			r.t.Fatal("the second room's socket never left")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(r.t, roomWait(r.t), "the second room's socket to leave", func() bool {
+		return registeredConnections(r.service) == 0
+	})
 }
 
 // unloadAcrossAReload loads a document's room, closes it, holds ygo's call of the room's unload,

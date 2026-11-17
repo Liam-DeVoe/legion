@@ -244,9 +244,8 @@ type Limits struct {
 	ReservedReads int
 	// HeavyReadLane is how many requests of one heavy read route may run at once
 	// (heavyReadLaneLimit, lane.go: one a processor, at least MinHeavyReadLane and at most
-	// MaxHeavyReadLane); zero and below
-	// are one. The lanes are the same width: each of them is one route's hold on the database,
-	// and the measurement that sized them sized them together.
+	// MaxHeavyReadLane); zero and below are one. The lanes are the same width: each of them is
+	// one route's hold on the database, and the measurement that sized them sized them together.
 	HeavyReadLane int
 }
 
@@ -298,7 +297,7 @@ func (l *Limiter) Outside() *Outside { return &l.outside }
 // (DefaultReadWait, DefaultWriteWait), and a ReservedReads is kept within zero and the smaller of
 // the read limit and the total, which is all the reads could ever hold.
 func New(limits Limits) *Limiter {
-	l := &Limiter{outside: Outside{limit: OutsideLimit}}
+	l := &Limiter{}
 	waits := [classCount]time.Duration{Read: limits.ReadWait, Write: limits.WriteWait}
 	defaults := [classCount]time.Duration{Read: DefaultReadWait, Write: DefaultWriteWait}
 	for class, limit := range [classCount]int{Read: limits.Read, Write: limits.Write} {

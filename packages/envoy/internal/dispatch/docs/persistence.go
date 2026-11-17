@@ -225,7 +225,10 @@ func (p *PgVersioned) loadStored(ctx context.Context, room string, use func(head
 }
 
 // Head is the version Load folds the room up to now, read through the pool that owns loads, as
-// Load reads it: a room load (servicePersistenceAdapter.LoadDoc) asks it.
+// Load reads it: a rebuild asks it for the head of the history it judges before it loads that
+// history (Service.RebuildDocument). A room load that checks a socket's preload reads the same
+// head (headVersion) in the statement that reads the document's pending settlement beside it
+// (preloadCheckStatement), not through this.
 func (p *PgVersioned) Head(ctx context.Context, room string) (persistence.Version, error) {
 	rooms, err := p.store.Pool.Rooms()
 	if err != nil {

@@ -125,14 +125,14 @@ func holdTheRoomsPool(t *testing.T, service *Service) func() {
 	}
 }
 
-// roomsAcquires is how many connections the rooms pool has handed out since it opened.
+// roomsAcquires is how many connections the rooms pool has handed out since it opened
+// (poolAcquires). Its callers hold the whole pool first (holdTheRoomsPool), so a count of none is
+// a pool that is not open, and the test fails rather than measure a read against it.
 func roomsAcquires(t *testing.T, service *Service) uint64 {
 	t.Helper()
-	for _, pool := range service.store.Pool.Stats() {
-		if pool.Name == store.RoomsPool {
-			return pool.Acquire.Count
-		}
+	count := poolAcquires(service, store.RoomsPool)
+	if count == 0 {
+		t.Fatal("the rooms pool is not open")
 	}
-	t.Fatal("the rooms pool is not open")
-	return 0
+	return count
 }

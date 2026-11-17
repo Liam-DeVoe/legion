@@ -42,7 +42,7 @@ import (
 //
 // The one refusal is for room. The decision is made outside admission, before it
 // (routeHandler, liveSocketHandler), and it writes the proof's single-use row on the request pool
-// (store.DPoPProofs), so it takes a place of the pool's share outside admission first
+// (store.DPoPProofs), so it takes a place of the pool's share outside admission for that
 // (admission.Outside), and a presentation that finds every place held is answered at once with
 // admission's own refusal for a full queue of the request's class (admission.WriteRefused): the
 // same 429 OVERLOADED, Retry-After and body, so its client cannot tell the two apart and comes back
@@ -67,13 +67,24 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor) under a place of the
-// request pool's share outside admission, given back once the decision is made, or false, with
-// nothing decided, where every place is held. A deployment with no broker decides nothing that
-// reads the pool (errNoBrokerConfigured), so it takes no place.
+// decidedBrokerToken is r's DPoP presentation decided (brokerTokenActor), or false, with nothing
+// decided, where every place of the request pool's share outside admission is held. The broker is
+// asked first, whether the token is live (brokertoken.Verifier.Live), holding no place: that round
+// trip reads nothing of the request pool and can take the introspection's whole five seconds, and
+// a place held for it would let a broker slow to answer fill the share with no database work at
+// all, refusing every document socket and skipping every heartbeat check that reads the pool. A
+// token the broker does not hold live is refused there, as brokerTokenActor refuses it
+// (brokerTokenRefusal). The place is taken then, for the decision's own reads of the pool, and
+// given back once it is made: brokerTokenActor's Verify finds the broker's answer remembered
+// (brokertoken.AffirmativeCacheTTL), so what it does under the place is check the proof against it
+// and write the proof's row. A deployment with no broker decides nothing that reads the pool
+// (errNoBrokerConfigured), so it takes no place.
 func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, bool) {
 	if s.deps.BrokerTokens == nil {
 		return resolvedCaller{err: errNoBrokerConfigured()}, true
+	}
+	if _, err := s.deps.BrokerTokens.Live(r.Context(), r); err != nil {
+		return resolvedCaller{err: s.brokerTokenRefusal(err)}, true
 	}
 	if !s.outside.Take(admission.DPoPDecision) {
 		return resolvedCaller{}, false
@@ -92,20 +103,14 @@ func (s *server) decidedBrokerToken(r *http.Request) (resolvedCaller, bool) {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// brokertoken.Verifier.Live. Nothing is admitted through this, only kept.
+// brokertoken.Verifier.Live. Nothing is admitted through this, only kept. That reads nothing of the
+// request pool, so it takes no place of the pool's share outside admission: however full that
+// share is it is made, and a token the broker stopped holding live closes its socket at the first
+// heartbeat that asks.
 //
-// A resolution that reads the request pool (resolutionReadsRequestPool) takes a place of that
-// pool's share outside admission first, and is skipped where none is free
-// (errHeartbeatCheckSkipped). One that reads none - the broker's answer above among them - takes
-// no place, so however full that share is it is made, and a token the broker stopped holding live
-// closes its socket at the first heartbeat that asks.
+// Every other resolution that reads the request pool (resolutionReadsRequestPool) takes a place of
+// that share first, and is skipped where none is free (errHeartbeatCheckSkipped).
 func (s *server) callerStillResolves(r *http.Request) error {
-	if s.resolutionReadsRequestPool(r) {
-		if !s.outside.Take(admission.HeartbeatCheck) {
-			return errHeartbeatCheckSkipped
-		}
-		defer s.outside.Release()
-	}
 	if _, presented := brokertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
 			return errNoBrokerConfigured()
@@ -113,21 +118,23 @@ func (s *server) callerStillResolves(r *http.Request) error {
 		_, err := s.deps.BrokerTokens.Live(r.Context(), r)
 		return err
 	}
+	if s.resolutionReadsRequestPool(r) {
+		if !s.outside.Take(admission.HeartbeatCheck) {
+			return errHeartbeatCheckSkipped
+		}
+		defer s.outside.Release()
+	}
 	_, _, err := s.optionalActor(r)
 	return err
 }
 
 // resolutionReadsRequestPool reports whether resolving r's caller again on a heartbeat
-// (callerStillResolves) reads the request pool, by the credential optionalActor would resolve it
-// by, in optionalActor's own order: a personal token's row and a sign-in cookie's session do; a
-// broker-issued token (the broker's answer alone, above), the deployment's shared token (a
-// comparison with the token it holds) and a service-account token (its issuer's keys) do not. A
-// credential kind optionalActor learns later reads the pool here until this learns it too, so it
-// is limited rather than not.
+// (callerStillResolves), r presenting no broker-issued token, reads the request pool, by the
+// credential optionalActor would resolve it by, in optionalActor's own order: a personal token's
+// row and a sign-in cookie's session do; the deployment's shared token (a comparison with the token
+// it holds) and a service-account token (its issuer's keys) do not. A credential kind optionalActor
+// learns later reads the pool here until this learns it too, so it is limited rather than not.
 func (s *server) resolutionReadsRequestPool(r *http.Request) bool {
-	if _, presented := brokertoken.Presented(r); presented {
-		return false
-	}
 	token, present := auth.BearerToken(r)
 	if !present {
 		return true
@@ -190,34 +197,8 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		return model.Actor{}, false, errNoBrokerConfigured()
 	}
 	caller, err := s.deps.BrokerTokens.Verify(r.Context(), r)
-	switch {
-	case err == nil:
-	case errors.Is(err, brokertoken.ErrNotActive):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
-			"the secrets broker does not hold this access token as live")
-	case errors.Is(err, brokertoken.ErrKeyMismatch):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
-			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
-			"the DPoP proof did not verify")
-	case errors.Is(err, brokertoken.ErrNotASession):
-		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
-			"this access token is not a session's credential: the secrets broker names no session for it")
-	case errors.Is(err, brokertoken.ErrRateLimited):
-		wait := s.deps.BrokerTokens.RetryAfter()
-		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
-			"too many access tokens checked from this address; try again in %s", wait)
-		// The one rounding every bucket of internal/ratelimit's refusals carries, the broker's
-		// own 429s included, so a caller reads one wait the same way whichever refused it.
-		refusal.retryAfter = ratelimit.RetryAfterSeconds(wait)
-		return model.Actor{}, false, refusal
-	default:
-		// The class only, as serviceTokenActor logs one: this runs before any authorization, so
-		// anything the caller chose would be theirs to write into the operator's log.
-		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
-		return model.Actor{}, false, errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
-			"the secrets broker cannot be reached; try again in a minute")
+	if err != nil {
+		return model.Actor{}, false, s.brokerTokenRefusal(err)
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own
 	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
@@ -270,4 +251,40 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindBrokerToken, writer)
 	return actor, false, nil
+}
+
+// brokerTokenRefusal is the answer to a broker-issued token the verifier did not let through, by
+// the sentinel its Verify or its Live answered (brokerTokenActor lists the answers): one mapping
+// for the decision's two steps, the broker's answer it asks first holding no place
+// (decidedBrokerToken) and the proof's check that follows, so a caller is told the same whichever
+// of them refused it.
+func (s *server) brokerTokenRefusal(err error) error {
+	switch {
+	case errors.Is(err, brokertoken.ErrNotActive):
+		return errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
+			"the secrets broker does not hold this access token as live")
+	case errors.Is(err, brokertoken.ErrKeyMismatch):
+		return errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
+			"the DPoP proof's key is not the key this access token is bound to")
+	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+		return errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
+			"the DPoP proof did not verify")
+	case errors.Is(err, brokertoken.ErrNotASession):
+		return errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
+			"this access token is not a session's credential: the secrets broker names no session for it")
+	case errors.Is(err, brokertoken.ErrRateLimited):
+		wait := s.deps.BrokerTokens.RetryAfter()
+		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
+			"too many access tokens checked from this address; try again in %s", wait)
+		// The one rounding every bucket of internal/ratelimit's refusals carries, the broker's
+		// own 429s included, so a caller reads one wait the same way whichever refused it.
+		refusal.retryAfter = ratelimit.RetryAfterSeconds(wait)
+		return refusal
+	default:
+		// The class only, as serviceTokenActor logs one: this runs before any authorization, so
+		// anything the caller chose would be theirs to write into the operator's log.
+		slog.Warn("dispatch: the secrets broker could not be reached to check an access token", "error", err)
+		return errorf(http.StatusServiceUnavailable, "BROKER_UNAVAILABLE",
+			"the secrets broker cannot be reached; try again in a minute")
+	}
 }

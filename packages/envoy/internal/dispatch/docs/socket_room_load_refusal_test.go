@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rows here are about a document socket whose admission went through and whose room's load did
@@ -88,7 +89,7 @@ func TestARoomLoadThatFindsThePoolBusyRefusesItsSocketWithinOneBound(t *testing.
 	if got := renders.Load(); got != 1 {
 		t.Errorf("the cold socket rendered its document %d times, want once: the admission's rendering", got)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -116,14 +117,14 @@ func TestAnAdmittedRoomLoadTakesOneRoomsPoolConnection(t *testing.T) {
 			return
 		}
 		renders.Add(1)
-		atRender.CompareAndSwap(0, roomsPoolAcquires(service))
+		atRender.CompareAndSwap(0, poolAcquires(service, store.RoomsPool))
 	}
 
 	admitSocket(t, server.URL, artifactID, "a cold open")
 	if got := renders.Load(); got != 1 {
 		t.Fatalf("the cold socket rendered its document %d times, want once: its room's load took the admission's preload", got)
 	}
-	if took := roomsPoolAcquires(service) - atRender.Load(); took != 1 {
+	if took := poolAcquires(service, store.RoomsPool) - atRender.Load(); took != 1 {
 		t.Errorf("the cold socket's room load took %d rooms-pool connections after its admission read the document, want one", took)
 	}
 }
@@ -217,13 +218,9 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 	answers := answerSocketAsync(server.URL, artifactID)
 	// ygo authorizes the socket before it joins the room, so a socket registered on the room's
 	// record is one whose join is waiting on the warm-up's load.
-	deadline := time.Now().Add(roomWait(t))
-	for registeredConnections(service) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatal("the socket was never authorized, so its join never waited on the room's load")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, roomWait(t), "the socket's authorization, so its join waits on the room's load", func() bool {
+		return registeredConnections(service) != 0
+	})
 	cause := fmt.Errorf("re-resolve the socket's caller: %w", store.ErrPoolBusy)
 	(*endRequest.Load())(cause)
 
@@ -237,7 +234,7 @@ func TestASocketWhoseRequestTheServerEndsWhileItsRoomLoadsIsRefused503(t *testin
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -353,7 +350,7 @@ func TestASocketWhoseFleetReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -465,13 +462,9 @@ func TestAJoinWaitingOnALoadIsServedWhenTheRequestThatBeganTheLoadEnds(t *testin
 	second := dialSocketAsync(server.URL, artifactID)
 	// ygo authorizes a socket just before its join, so a second socket registered on the room's
 	// record is one about to wait on the first one's load; the pause is for it to reach that wait.
-	deadline := time.Now().Add(roomWait(t))
-	for registeredConnections(service) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatal("the second socket was never authorized, so it never waited on the first one's load")
-		}
-		time.Sleep(time.Millisecond)
-	}
+	waitFor(t, roomWait(t), "the second socket's authorization, so it waits on the first one's load", func() bool {
+		return registeredConnections(service) >= 2
+	})
 	time.Sleep(100 * time.Millisecond)
 	(*endFirst.Load())(nil)
 	release()
@@ -598,7 +591,7 @@ func TestASocketWhoseIssueReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) 
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -643,7 +636,7 @@ func TestASocketWhoseRequestTheServerEndsWhileItsFailedRoomRecoversIsRefused503(
 	if answer.retryAfter != admission.RetryAfter {
 		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -678,24 +671,14 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	})
 	server := newTestServer(t, service)
 	artifactID := createDocuments(t, database, 1)[0]
-	requestReads := func() uint64 {
-		for _, pool := range service.store.Pool.Stats() {
-			if pool.Name == store.RequestsPool {
-				return pool.Acquire.Count
-			}
-		}
-		t.Fatal("the request pool reports no figures")
-		return 0
-	}
-
 	for range admission.OutsideLimit {
 		if !outside.Take(admission.HeartbeatCheck) {
 			t.Fatalf("take a place outside admission: the %d places are held already", admission.OutsideLimit)
 		}
 	}
-	before := requestReads()
+	before := poolAcquires(service, store.RequestsPool)
 	answer := <-answerSocketAsync(server.URL, artifactID)
-	read := requestReads() - before
+	read := poolAcquires(service, store.RequestsPool) - before
 	for range admission.OutsideLimit {
 		outside.Release()
 	}
@@ -715,7 +698,7 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	if refused := outside.Stats().Refused[admission.SocketAdmission]; refused != 1 {
 		t.Errorf("the places outside admission counted %d refused socket admissions, want 1", refused)
 	}
-	line := logLineWith(logs.String(), "a document socket was refused")
+	line := logs.Lines("a document socket was refused")
 	if line == "" {
 		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
 	}
@@ -758,6 +741,61 @@ func TestASocketsAdmissionReadsHoldAPlaceOutsideAdmission(t *testing.T) {
 	}
 	if got := outside.Stats().InUse; got != 0 {
 		t.Errorf("the places held once the admitted socket was handed to ygo = %d, want 0: the socket's reads gave theirs back while it stays open", got)
+	}
+}
+
+// A socket whose read of its caller's session finds the request pool busy is refused by its
+// admission, 503 with Retry-After and a WARN line naming the read and the pool, where it was 401
+// "unauthorized": a busy pool told a signed-in browser that it was not signed in. A caller the read
+// finds not signed in is still 401. The caller is read on the request pool, as production reads
+// its sign-in cookie's session there (cmd/dispatch's store.NewPgSessionStore on database.Pool), and
+// every connection of that pool is held as the socket opens.
+func TestASocketWhoseSessionReadFindsTheRequestPoolBusyIsRefused503(t *testing.T) {
+	logs := captureWarnings(t)
+	database := storetest.Open(t)
+	_, server := newTestServiceInstance(t, database)
+	artifactID := createDocuments(t, database, 1)[0]
+
+	connection, unsigned, err := gws.DefaultDialer.Dial(socketURL(server.URL, artifactID), nil)
+	if connection != nil {
+		_ = connection.Close()
+	}
+	if unsigned == nil || unsigned.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("a socket that names no caller was answered %v (%v), want 401", unsigned, err)
+	}
+
+	var held []*pgxpool.Conn
+	t.Cleanup(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	for range database.Pool.Stat().MaxConns() {
+		conn, err := database.Pool.Acquire(context.Background())
+		if err != nil {
+			t.Fatalf("hold a request-pool connection: %v", err)
+		}
+		held = append(held, conn)
+	}
+	answer := <-answerSocketAsync(server.URL, artifactID)
+	if answer.err != nil {
+		t.Fatal(answer.err)
+	}
+	t.Logf("the socket's handshake was answered %d %q", answer.status, answer.body)
+	if answer.status != http.StatusServiceUnavailable {
+		t.Fatalf("a socket whose session read found the request pool busy was answered %d %q, want 503", answer.status, answer.body)
+	}
+	if answer.retryAfter != admission.RetryAfter {
+		t.Errorf("the refused socket's Retry-After = %q, want %q", answer.retryAfter, admission.RetryAfter)
+	}
+	line := logs.Lines("a document socket was refused")
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logs.String())
+	}
+	for _, want := range []string{"its caller's session could not be read", "room=" + artifactID, "pool=" + store.RequestsPool, store.ErrPoolBusy.Error()} {
+		if !strings.Contains(line, want) {
+			t.Errorf("the refused socket's line %q does not carry %q", line, want)
+		}
 	}
 }
 
@@ -804,11 +842,12 @@ func takeTheRoomsPool(t *testing.T, service *Service) heldRoomsPool {
 	return held
 }
 
-// roomsPoolAcquires is how many connections service's rooms pool has handed out since it opened,
-// readable from a hook on the server's goroutine (roomsAcquires is the test goroutine's).
-func roomsPoolAcquires(service *Service) uint64 {
+// poolAcquires is how many connections service's pool named name has handed out since it opened,
+// 0 for a pool not open. It fails no test, so a hook on the server's goroutine may read it too;
+// roomsAcquires is the test goroutine's, which fails the test for a rooms pool not open.
+func poolAcquires(service *Service, name string) uint64 {
 	for _, pool := range service.store.Pool.Stats() {
-		if pool.Name == store.RoomsPool {
+		if pool.Name == name {
 			return pool.Acquire.Count
 		}
 	}
@@ -820,16 +859,13 @@ func roomsPoolAcquires(service *Service) uint64 {
 // why it did not.
 func waitForRoomLoad(service *Service, room string, wait time.Duration) func() error {
 	return func() error {
-		deadline := time.Now().Add(wait)
-		for {
-			if _, loading := service.roomLoads.Load(room); loading {
-				return nil
-			}
-			if time.Now().After(deadline) {
-				return errors.New("the settlement's warm-up never began its load of the room")
-			}
-			time.Sleep(time.Millisecond)
+		if !testwait.Holds(wait, time.Millisecond, func() bool {
+			_, loading := service.roomLoads.Load(room)
+			return loading
+		}) {
+			return errors.New("the settlement's warm-up never began its load of the room")
 		}
+		return nil
 	}
 }
 
@@ -884,14 +920,4 @@ func answerSocketAsync(serverURL, id string) <-chan socketAnswer {
 		}
 	}()
 	return answers
-}
-
-// logLineWith is the first line of logged that holds marker, or "" when none does.
-func logLineWith(logged, marker string) string {
-	for _, line := range strings.Split(logged, "\n") {
-		if strings.Contains(line, marker) {
-			return line
-		}
-	}
-	return ""
 }

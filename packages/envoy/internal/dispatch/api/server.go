@@ -1234,6 +1234,7 @@ func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, s
 			return
 		case err == nil:
 			failedInARow = 0
+			continue
 		case transientCheckFailure(err):
 			heartbeatTransientFailures.Add(1)
 			failedInARow++
@@ -1241,12 +1242,10 @@ func (s *server) checkEveryHeartbeat(ctx context.Context, check *http.Request, s
 				continue
 			}
 			heartbeatClosesAtCeiling.Add(1)
-			closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
-			return
-		default:
-			closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
-			return
 		}
+		// A refusal, or the ceiling's transient failure.
+		closeConnection(fmt.Errorf("%w: %w", errCallerNoLongerResolves, err))
+		return
 	}
 }
 

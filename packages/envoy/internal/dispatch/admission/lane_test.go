@@ -247,8 +247,8 @@ func TestALaneIsOneRequestWideAProcessorUpToTheReadClassesShare(t *testing.T) {
 			t.Errorf("heavyReadLaneLimit(%d) = %d, want %d", c.procs, got, c.want)
 		}
 	}
-	if lanes := len(HeavyReadLanes()); lanes*MinHeavyReadLane*2 > readLimit(2) {
-		t.Errorf("%d lanes of %d requests weighing 2 hold more than the %d read units two processors admit", lanes, MinHeavyReadLane, readLimit(2))
+	if lanes := len(HeavyReadLanes()); lanes*MinHeavyReadLane > readLimit(1) {
+		t.Errorf("%d lanes of %d requests hold more than the %d read units one processor admits", lanes, MinHeavyReadLane, readLimit(1))
 	}
 	if lanes := len(HeavyReadLanes()); lanes*MaxHeavyReadLane > MaxReadLimit {
 		t.Errorf("%d lanes of %d hold more than the read class's %d", lanes, MaxHeavyReadLane, MaxReadLimit)

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,24 +37,13 @@ type documentSocketTokenRig struct {
 	// checks take their places of (admission.Outside).
 	limiter *admission.Limiter
 	// checks is the API's identity, the cookie identity the document service reads too, counting
-	// the resolutions the API asks of it: after the setup's requests, the sockets' heartbeat
-	// checks (signInStillResolves).
-	checks     *countingIdentity
+	// the resolutions the API asks of it (busyCallerIdentity, never set busy here): after the
+	// setup's requests, the sockets' heartbeat checks (signInStillResolves).
+	checks     *busyCallerIdentity
 	cookie     *http.Cookie
 	server     *httptest.Server
 	sockets    *servedSockets
 	artifactID string
-}
-
-// countingIdentity is an Identity counting the resolutions it is asked for.
-type countingIdentity struct {
-	identity.Identity
-	asked atomic.Int32
-}
-
-func (i *countingIdentity) Login(r *http.Request) (string, error) {
-	i.asked.Add(1)
-	return i.Identity.Login(r)
 }
 
 // documentSocketPerson is the person signed in on a documentSocketTokenRig.
@@ -73,7 +61,7 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration) *documentS
 	database := rig.tokens.database
 	rig.sessions = store.NewPgSessionStore(database.Pool)
 	person := identity.CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions}
-	rig.checks = &countingIdentity{Identity: person}
+	rig.checks = &busyCallerIdentity{Identity: person}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: person, Settle: time.Hour})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })

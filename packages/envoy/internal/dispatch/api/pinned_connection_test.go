@@ -13,16 +13,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// requestPoolAcquires is how many acquires the request pool's tracer has counted.
-func requestPoolAcquires(t *testing.T, pool *store.Pool) uint64 {
+// requestPoolStats is the request pool's stats: its connection counts and what its acquire tracer
+// has counted, among them the acquires made (Acquire.Count) and waiting now (Acquire.Waiting).
+func requestPoolStats(t *testing.T, pool *store.Pool) store.PoolStats {
 	t.Helper()
 	for _, stats := range pool.Stats() {
 		if stats.Name == store.RequestsPool {
-			return stats.Acquire.Count
+			return stats
 		}
 	}
 	t.Fatal("the request pool reports no stats")
-	return 0
+	return store.PoolStats{}
 }
 
 // awaitQuietRequestPool returns once the request pool holds no connection and has counted no
@@ -31,13 +32,13 @@ func requestPoolAcquires(t *testing.T, pool *store.Pool) uint64 {
 func awaitQuietRequestPool(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	last, quietSince := requestPoolAcquires(t, pool), time.Now()
+	last, quietSince := requestPoolStats(t, pool).Acquire.Count, time.Now()
 	for time.Since(quietSince) < 300*time.Millisecond {
 		if time.Now().After(deadline) {
 			t.Fatal("the request pool never went quiet after the seed")
 		}
 		time.Sleep(20 * time.Millisecond)
-		if now := requestPoolAcquires(t, pool); now != last || pool.Stat().AcquiredConns() != 0 {
+		if now := requestPoolStats(t, pool).Acquire.Count; now != last || pool.Stat().AcquiredConns() != 0 {
 			last, quietSince = now, time.Now()
 		}
 	}
@@ -102,9 +103,9 @@ func TestEachHotReadTakesOneRequestPoolConnection(t *testing.T) {
 	seed := seedPinnedReadIssue(t, handler)
 	for _, path := range hotReadPaths(seed) {
 		awaitQuietRequestPool(t, database.Pool)
-		before := requestPoolAcquires(t, database.Pool)
+		before := requestPoolStats(t, database.Pool).Acquire.Count
 		response := dispatchRequest(t, handler, http.MethodGet, path, nil, "alice")
-		acquires := requestPoolAcquires(t, database.Pool) - before
+		acquires := requestPoolStats(t, database.Pool).Acquire.Count - before
 		if response.Code != http.StatusOK {
 			t.Errorf("GET %s: status=%d body=%s, want 200", path, response.Code, response.Body.String())
 			continue
@@ -125,12 +126,12 @@ func TestAnIssueReadIsAnsweredByAOneConnectionRequestPool(t *testing.T) {
 	seed := seedPinnedReadIssue(t, handler)
 	awaitQuietRequestPool(t, database.Pool)
 
-	before := requestPoolAcquires(t, database.Pool)
+	before := requestPoolStats(t, database.Pool).Acquire.Count
 	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+seed.key, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("issue read on a one-connection request pool: status=%d body=%s, want 200", response.Code, response.Body.String())
 	}
-	if acquires := requestPoolAcquires(t, database.Pool) - before; acquires != 1 {
+	if acquires := requestPoolStats(t, database.Pool).Acquire.Count - before; acquires != 1 {
 		t.Fatalf("issue read on a one-connection request pool took %d checkouts, want 1", acquires)
 	}
 }

@@ -767,7 +767,7 @@ func (s *Service) releaseAdmission(room string, state *roomState) {
 
 // roomLoadFailure is one failed load of a room as the load recorded it on the room's record
 // (noteLoadFailed): the error it ended with. Each failure is a record of its own, so a socket tells
-// a failure recorded since it looked (loadFailureSince) from the one it found there.
+// a failure recorded since it looked (loadFailedSince) from the one it found there.
 type roomLoadFailure struct{ err error }
 
 // noteLoadFailed records err, what a load of room ended with, on room's record, for the sockets
@@ -789,13 +789,11 @@ func (state *roomState) latestLoadFailure() *roomLoadFailure {
 	return state.loadFailure
 }
 
-// loadFailureSince is the error of the load failure last recorded on state, unless that is before,
-// the one a socket found there as its admission took the record: nil when no load of the room has
-// failed since.
-func (state *roomState) loadFailureSince(before *roomLoadFailure) error {
-	state.mu.Lock()
-	defer state.mu.Unlock()
-	if state.loadFailure == before {
+// failureSinceLocked is the error of the load failure last recorded on state, nil when it holds
+// none or the one it holds is before, the one a socket found as its admission took the room's
+// record. Its caller holds state.mu.
+func (state *roomState) failureSinceLocked(before *roomLoadFailure) error {
+	if state.loadFailure == nil || state.loadFailure == before {
 		return nil
 	}
 	return state.loadFailure.err
@@ -809,7 +807,10 @@ func (state *roomState) loadFailureSince(before *roomLoadFailure) error {
 // failure there (noteLoadFailed): a failure the successor holds is since the hold unless it is the
 // one held had then. nil when neither holds one.
 func (s *Service) loadFailedSince(room string, held *roomState, before *roomLoadFailure) error {
-	if err := held.loadFailureSince(before); err != nil {
+	held.mu.Lock()
+	err := held.failureSinceLocked(before)
+	held.mu.Unlock()
+	if err != nil {
 		return err
 	}
 	state := s.lockExistingState(room)
@@ -817,10 +818,10 @@ func (s *Service) loadFailedSince(room string, held *roomState, before *roomLoad
 		return nil
 	}
 	defer s.unlockState(room, state)
-	if state == held || state.loadFailure == nil || state.loadFailure == before {
+	if state == held {
 		return nil
 	}
-	return state.loadFailure.err
+	return state.failureSinceLocked(before)
 }
 
 // roomSlots is the places the room cap (roomCap) counts: every room ygo holds, from its load

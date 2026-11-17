@@ -16,7 +16,6 @@ import (
 	"time"
 
 	gws "github.com/gorilla/websocket"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
@@ -213,7 +212,7 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 		requests[i] = caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
 	}
 
-	release := holdEveryConnectionUntilReleased(t, rig.database.Pool)
+	release := holdEveryConnection(t, rig.database.Pool)
 	answers := make([]*httptest.ResponseRecorder, burst)
 	done := make(chan struct{}, burst)
 	for i, request := range requests {
@@ -232,7 +231,7 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 				more = false
 			}
 		}
-		waiting := requestPoolWaiting(t, rig.database.Pool)
+		waiting := int(requestPoolStats(t, rig.database.Pool).Acquire.Waiting)
 		peak = max(peak, waiting)
 		if answered+waiting == burst {
 			break
@@ -281,6 +280,112 @@ func TestABurstOfDPoPPresentationsTakesNoMoreOfTheRequestPoolThanAdmissionLeaves
 	if response := rig.serve(again); response.Code != http.StatusOK {
 		t.Fatalf("a refused presentation sent again was answered %d %s, want 200: its proof was spent", response.Code, response.Body.String())
 	}
+}
+
+// A broker slow to answer holds none of the request pool's share outside admission: a DPoP
+// presentation asks the broker whether its token is live before it takes a place
+// (decidedBrokerToken), so while twice the share's presentations, each its own token, wait on
+// introspections the broker has not answered, every place is free, a document socket's heartbeat
+// check takes one and resolves its caller, and a further presentation, of a token whose answer the
+// verifier remembers, takes one and is served. The request pool is free throughout: a place held
+// here would be held for the broker's round trip alone. Once the broker answers, the presentations
+// that waited on it reach the share at once, twice as many as it holds, so each is served or
+// refused admission's 429 for a full share, and the share counts every refusal. The verifier's
+// clock stands still, so the remembered answer outlasts however long a loaded runner takes.
+func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T) {
+	burst := 2 * admission.OutsideLimit
+	limiter := admission.New(admission.DefaultLimits())
+	broker := &heldIntrospections{release: make(chan struct{})}
+	answer := sync.OnceFunc(func() { close(broker.release) })
+	now := time.Now()
+	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *brokertoken.Options) {
+		options.HTTP = &http.Client{Transport: broker}
+		options.Now = func() time.Time { return now }
+	})
+	// Before the rig's own cleanups, so no presentation is still waiting on the broker when the
+	// server and its database close.
+	var serving sync.WaitGroup
+	t.Cleanup(func() {
+		answer()
+		serving.Wait()
+	})
+	caller := newBrokerCaller(t)
+	const remembered = "a-token-whose-answer-the-verifier-remembers"
+	rig.broker.Says(remembered, liveNamedToken(caller.jkt))
+	if response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", remembered, nil)); response.Code != http.StatusOK {
+		t.Fatalf("the presentation that warms the verifier's answer: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+
+	broker.holding.Store(true)
+	answers := make([]*httptest.ResponseRecorder, burst)
+	done := make(chan struct{}, burst)
+	for i := range burst {
+		token := fmt.Sprintf("a-token-the-broker-is-slow-to-answer-%d", i)
+		rig.broker.Says(token, liveNamedToken(caller.jkt))
+		request := caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil)
+		serving.Go(func() {
+			answers[i] = rig.serve(request)
+			done <- struct{}{}
+		})
+	}
+	pollUntil(t, 10*time.Second, "every presentation waiting on the broker or answered", func() bool {
+		return int(broker.entered.Load())+len(done) == burst
+	})
+	if stats := limiter.Outside().Stats(); stats.InUse != 0 || stats.Refused != [len(stats.Refused)]uint64{} {
+		t.Fatalf("with %d presentations waiting on the broker, %d places of the share outside admission are held and %v refused, want none held and none refused",
+			broker.entered.Load(), stats.InUse, stats.Refused)
+	}
+	check := httptest.NewRequest(http.MethodGet, "/ws/doc/room", nil)
+	check.Header.Set("X-Dispatch-User", "alice")
+	if err := rig.served.signInStillResolves(check); err != nil {
+		t.Fatalf("a heartbeat check while presentations wait on the broker: %v, want its caller resolved", err)
+	}
+	if response := rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", remembered, nil)); response.Code != http.StatusOK {
+		t.Fatalf("a presentation of a remembered token while others wait on the broker: status=%d body=%s, want 200", response.Code, response.Body.String())
+	}
+
+	answer()
+	for range burst {
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Fatal("a presentation that waited on the broker was never answered once it answered")
+		}
+	}
+	refused := 0
+	for i, response := range answers {
+		switch {
+		case response.Code == http.StatusOK:
+		case response.Code == http.StatusTooManyRequests && refusalCode(response.Body.Bytes()) == admission.CodeOverloaded:
+			refused++
+		default:
+			t.Errorf("presentation %d, which waited on the broker: status=%d body=%s, want 200 or admission's 429", i, response.Code, response.Body.String())
+		}
+	}
+	if counted := limiter.Outside().Stats().Refused[admission.DPoPDecision]; counted != uint64(refused) {
+		t.Errorf("%d presentations refused 429 once the broker answered, and the share counted %d DPoP decisions refused", refused, counted)
+	}
+}
+
+// heldIntrospections is the transport a verifier sends its introspections through. While holding
+// is set, each waits until release closes, or its request's context ends, before it reaches the
+// broker, and entered counts those that have begun waiting.
+type heldIntrospections struct {
+	holding atomic.Bool
+	entered atomic.Int32
+	release chan struct{}
+}
+
+func (h *heldIntrospections) RoundTrip(r *http.Request) (*http.Response, error) {
+	if h.holding.Load() {
+		h.entered.Add(1)
+		select {
+		case <-h.release:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+	}
+	return http.DefaultTransport.RoundTrip(r)
 }
 
 // admissionsQueueFullRefusal is admission's own answer to a read on rig's server it has no room
@@ -333,38 +438,4 @@ func holdTheShareOutsideAdmission(t *testing.T, outside *admission.Outside) func
 			outside.Release()
 		}
 	})
-}
-
-// holdEveryConnectionUntilReleased is holdEveryConnection with a release of its own, which the
-// test's end runs too.
-func holdEveryConnectionUntilReleased(t *testing.T, pool *store.Pool) func() {
-	t.Helper()
-	held := make([]*pgxpool.Conn, 0, pool.Stat().MaxConns())
-	for range pool.Stat().MaxConns() {
-		conn, err := pool.Acquire(context.Background())
-		if err != nil {
-			t.Fatalf("hold a connection: %v", err)
-		}
-		held = append(held, conn)
-	}
-	release := sync.OnceFunc(func() {
-		for _, conn := range held {
-			conn.Release()
-		}
-	})
-	t.Cleanup(release)
-	return release
-}
-
-// requestPoolWaiting is how many acquires of pool, a request pool, are waiting for a connection
-// now: the pool's own count.
-func requestPoolWaiting(t *testing.T, pool *store.Pool) int {
-	t.Helper()
-	for _, stats := range pool.Stats() {
-		if stats.Name == store.RequestsPool {
-			return int(stats.Acquire.Waiting)
-		}
-	}
-	t.Fatal("the store reports no request pool")
-	return 0
 }

@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -15,20 +18,28 @@ import (
 // reached a held pool fails in a fraction of a second rather than after the pool's own bound.
 const partitionAcquireBound = 300 * time.Millisecond
 
-// holdEveryConnection takes every connection of pool and holds it until the test ends: the pool as
-// a burst of work that has it all.
-func holdEveryConnection(t *testing.T, pool *store.Pool) {
+// holdEveryConnection takes every connection of pool and holds it until the release it answers
+// runs, or the test ends: the pool as a burst of work that has it all.
+func holdEveryConnection(t *testing.T, pool *store.Pool) (release func()) {
 	t.Helper()
+	var held []*pgxpool.Conn
+	release = sync.OnceFunc(func() {
+		for _, conn := range held {
+			conn.Release()
+		}
+	})
+	t.Cleanup(release)
 	for range pool.Stat().MaxConns() {
 		conn, err := pool.Acquire(context.Background())
 		if err != nil {
 			t.Fatalf("hold a connection: %v", err)
 		}
-		t.Cleanup(conn.Release)
+		held = append(held, conn)
 	}
 	if stat := pool.Stat(); stat.AcquiredConns() != stat.MaxConns() {
 		t.Fatalf("the pool holds %d of %d connections, want all", stat.AcquiredConns(), stat.MaxConns())
 	}
+	return release
 }
 
 // appendEventOn commits one event on issueKey through a transaction of pool, as another writer's

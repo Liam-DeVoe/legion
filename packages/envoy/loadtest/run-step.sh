@@ -85,6 +85,8 @@ set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 stack=$here/stack.sh
+# The same path under a name of finish's own (below): prepare_stack (common.sh) has a local stack.
+not_run_stack=$stack
 # shellcheck source=packages/envoy/loadtest/common.sh
 source "$here/common.sh"
 resolve_paths
@@ -126,8 +128,9 @@ out=$(realpath -m -- "$out")
 # the attempt's output file too, and every die, here or in a stack.sh it starts, keeps its message
 # in LOADTEST_DIE_FILE (common.sh). The tees ignore the signals that stop a step, so that its last
 # lines still reach the record, and close descriptor 9, so that they never hold the root's lock
-# that a series step inherits. finish reads only not_run_* globals: bash runs it in the scope of the
-# function that exited, whose locals (lock_root's record, for one) would hide other names.
+# that a series step inherits. finish reads only not_run_* globals and LOADTEST_DIE_FILE: bash runs
+# it in the scope of the function that exited, whose locals (lock_root's record, prepare_stack's
+# stack) would hide other names.
 not_run_name=$name not_run_dir=$out not_run_file=$(not_run_record "$out")
 rm -f -- "$not_run_file"
 not_run_attempt=$(mktemp -d)
@@ -136,9 +139,10 @@ exec > >(trap '' INT TERM HUP && exec tee -a -- "$not_run_attempt/output" 9>&-)
 not_run_tee_out=$!
 exec 2> >(trap '' INT TERM HUP && exec tee -a -- "$not_run_attempt/output" >&2 9>&-)
 not_run_tee_err=$!
-# step_ours: the step directory held no step when this run checked it, so a window its meta.json
-# names is this run's. dispatch_up: the reset has started Dispatch, which the step stops as it ends.
-step_ours=false dispatch_up=false
+# not_run_step_ours: the step directory held no step when this run checked it, so a window its
+# meta.json names is this run's. not_run_dispatch_up: the reset has started Dispatch, which the step
+# stops as it ends.
+not_run_step_ours=false not_run_dispatch_up=false
 
 # finish, on every exit: stop Dispatch and the listener's latency proxy when the reset started them;
 # then, unless this run's window opened, write the not-run record: the step's name and directory,
@@ -151,8 +155,8 @@ finish() {
   set +e
   # Read before the stop below, whose own refusal would take its place.
   [ ! -s "$LOADTEST_DIE_FILE" ] || refusal=$(<"$LOADTEST_DIE_FILE")
-  if $dispatch_up; then "$stack" stop dispatch envoy_proxy; fi
-  if $step_ours && window_start "$not_run_dir" >/dev/null; then opened=true; fi
+  if $not_run_dispatch_up; then "$not_run_stack" stop dispatch envoy_proxy; fi
+  if $not_run_step_ours && window_start "$not_run_dir" >/dev/null; then opened=true; fi
   # Close this shell's ends of the tees' pipes, and give the tees 5 s to write out what they hold.
   exec >/dev/null 2>&1
   for ((i = 0; i < 100; i++)); do
@@ -285,7 +289,7 @@ if [ -e "$out" ] && [ -n "$(ls -A -- "$out")" ]; then
   die "$out already holds a step; remove it or name another step"
 fi
 # From here the step directory is this run's: a window its meta.json names is this run's (finish).
-step_ours=true
+not_run_step_ours=true
 
 started=$SECONDS
 if $replay; then
@@ -315,7 +319,7 @@ mkdir -p -- "$out"
 # the reset, it would show Dispatch's own start-up work instead.
 box_busy=$("$stack" loadgen box-busy)
 # finish stops Dispatch and the latency proxy on any exit from here to their stop below.
-dispatch_up=true
+not_run_dispatch_up=true
 if $replay; then
   "$stack" reset --replay "$out/dispatch.log"
   cp -- "$ROOT/replay/last-reset.json" "$out/last-reset.json"
@@ -326,7 +330,7 @@ fi
 rc=0
 "$stack" loadgen run -name "$name" -out "$out" -build-commit "$commit" -build-dirty="$dirty" -box-busy-before "$box_busy" "${args[@]}" || rc=$?
 "$stack" stop dispatch envoy_proxy
-dispatch_up=false
+not_run_dispatch_up=false
 cp -- "$ROOT/logs/listener.out" "$out/listener.log"
 cp -- "$ROOT/logs/nats.out" "$out/nats.log"
 [ -z "$LOADTEST_ENVOY_RTT" ] || cp -- "$ROOT/logs/envoy-proxy.out" "$out/envoy-proxy.log"

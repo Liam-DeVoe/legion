@@ -3,8 +3,6 @@ package admission
 import (
 	"sync"
 	"sync/atomic"
-
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The request pool's work outside admission. Admission hands out MaxAdmittedUnits of the request
@@ -15,9 +13,11 @@ import (
 //   - a broker-issued token's DPoP presentation, which the API decides before admission (api's
 //     decideBrokerToken) and whose decision writes the proof's single-use row on the request pool
 //     (store.DPoPProofs). Every such request waited on the pool's acquire queue before admission
-//     could refuse it, with nothing bounding how many did. A decision that finds every place held
-//     is refused at once with admission's own refusal, 429 OVERLOADED for a full queue, and its
-//     proof is not spent;
+//     could refuse it, with nothing bounding how many did. The broker is asked whether the token
+//     is live first, holding no place, and the place is taken only for what reads the pool, the
+//     proof's check against the answer the broker just gave and its row, so a broker slow to answer
+//     holds none of the places. A decision that finds every place held is refused at once with
+//     admission's own refusal, 429 OVERLOADED for a full queue, and its proof is not spent;
 //   - a socket's heartbeat check, where it reads the request pool (api's whileCallerResolves: the
 //     sign-in cookie's session, a personal token's row). One runs every heartbeat for every open
 //     socket, so a restart's reconnect lines them up: 991 waited on the pool at once in INFRA-592's
@@ -46,18 +46,19 @@ import (
 //
 // None of them waits for a place: a decision or a socket refused is told to come back after
 // Retry-After, and a check skipped is made at the next heartbeat, so none of them queues for the
-// pool behind the rest. A place is held for the whole of its work: a decision's whole decision,
-// the broker's round trip for a token whose answer is not remembered included, a check's whole
+// pool behind the rest. A place is held for the whole of the work that reads the pool: a
+// decision's proof check and the row it writes, once the broker has answered, a check's whole
 // check, and a socket's three admission reads.
 
 // OutsideLimit is how many places the work outside admission may hold at once: the request
-// pool's connections admission does not hand out, store.SharedPoolSize less MaxAdmittedUnits, 48
-// less 40, so 8, and it moves with either. The DPoP decisions, the heartbeat checks and the
-// document sockets' admission reads together then hold no more of the pool than admission leaves.
-// Nothing bounded them before, and the 8 did not last: at ten times the load with bearer tokens
-// alone the request pool's connections in use reached 48 in all four of the head's steps, with up
-// to 15 callers waiting (INFRA-592, tester round 38).
-const OutsideLimit = store.SharedPoolSize - MaxAdmittedUnits
+// pool's connections admission does not hand out, unadmittedConnections, 8 of the 48. Admission's
+// own cap is the pool's size less those (MaxAdmittedUnits), so the 8 stay the 8 whatever the
+// pool's size, and admission's 40 is what moves with it. The DPoP decisions, the heartbeat checks
+// and the document sockets' admission reads together then hold no more of the pool than admission
+// leaves. Nothing bounded them before, and the 8 did not last: at ten times the load with bearer
+// tokens alone the request pool's connections in use reached 48 in all four of the head's steps,
+// with up to 15 callers waiting (INFRA-592, tester round 38).
+const OutsideLimit = unadmittedConnections
 
 // OutsideUser is a kind of work that takes a place of OutsideLimit, which the refusals are counted
 // by (OutsideStats.Refused).
@@ -93,7 +94,6 @@ func OutsideUsers() []OutsideUser {
 // never queues: Take answers at once. A nil Outside limits nothing, so a server a test builds
 // without a Limiter takes every place it asks for.
 type Outside struct {
-	limit   int64
 	inUse   atomic.Int64
 	refused [outsideUserCount]atomic.Uint64
 }
@@ -108,7 +108,7 @@ func (o *Outside) Take(user OutsideUser) bool {
 	}
 	for {
 		held := o.inUse.Load()
-		if held >= o.limit {
+		if held >= OutsideLimit {
 			o.refused[user].Add(1)
 			return false
 		}
@@ -151,7 +151,7 @@ type OutsideStats struct {
 // Stats reads the counts. Each is read on its own, so a scrape that races a Take may see it in one
 // count and not yet in another.
 func (o *Outside) Stats() OutsideStats {
-	stats := OutsideStats{Limit: int(o.limit), InUse: int(o.inUse.Load())}
+	stats := OutsideStats{Limit: OutsideLimit, InUse: int(o.inUse.Load())}
 	for user := range outsideUserCount {
 		stats.Refused[user] = o.refused[user].Load()
 	}

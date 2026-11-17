@@ -94,8 +94,9 @@ func HeavyReadLanes() []Lane { return []Lane{Search, References, IssueArtifacts,
 // lanes of two, and on the load test's two-processor bed at 2x those refused 16 heavy reads
 // (15 of an issue's references, 1 of the issue list) that main, with no lanes, served with a p99
 // of 540 and 368 ms (INFRA-592, tester round 38, steps s-head-2x and s-main-2x). Four lanes of
-// three, each request weighing 2, hold 24 read units, within the 28 the read class admits on two
-// processors, so the floor narrows no other read.
+// three, each request one unit (a heavy read route sets no weight), hold 12 read units, within the
+// 14 the read class admits on one processor, so the floor admits no more heavy reads than the read
+// class can hold.
 func heavyReadLaneLimit(procs int) int {
 	return max(MinHeavyReadLane, perCPULimit(procs, heavyReadsPerCPU, MaxHeavyReadLane))
 }

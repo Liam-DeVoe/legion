@@ -189,12 +189,14 @@ func socketRoom(r *http.Request) string {
 // ServeHTTP serves the Hocuspocus-framed document websocket endpoint. A caller that does not
 // resolve is refused 401, except a person whose lapsed confirmation the sign-in issuer could not
 // renew (identity.ErrSignInUnavailable), who is still signed in and is refused 503
-// SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError). A socket's admission
-// resolves the caller and reads the document's issue once each, here, and hands both to ygo's
-// authorization of the same request (authorize) on the connection's state; a warm room's schema
-// verdict is the one its update observer recorded (residentVerdict), so admitting a socket to a
-// warm room walks no rooms and renders nothing, and a cold one renders its document once
-// (admitDocument).
+// SIGNIN_UNAVAILABLE as every other route refuses them (identity.WriteError), and a caller whose
+// session the pool could not read (store.Unserved), whom nothing has found signed out and who is
+// refused as the admission refuses any read it could not make (refuseAdmission). A socket's
+// admission resolves the caller and reads the document's issue and the live server processes once
+// each, here, and hands them to ygo's authorization of the same request (authorize) on the
+// connection's state; a warm room's schema verdict is the one its update observer recorded
+// (residentVerdict), so admitting a socket to a warm room walks no rooms and renders nothing, and
+// a cold one renders its document once (admitDocument).
 //
 // Before it loads anything the socket takes its places under the caps, a connection's
 // (reserveConnection) and its room's (reserveRoom), and a socket that cannot take either is
@@ -252,6 +254,14 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, identity.ErrSignInUnavailable) {
 			identity.WriteError(w, r, err)
+			return
+		}
+		// A read of the caller's session the pool could not serve says nothing of whether the
+		// caller is signed in, and a 401 tells a signed-in browser it is not: it is the admission's
+		// refusal, as every other read of it the pool cannot serve is. A caller the read found not
+		// signed in is still 401.
+		if store.Unserved(r.Context(), err) {
+			refuseAdmission(w, r, "dispatch: a document socket was refused: its caller's session could not be read", room, store.RequestsPool, err)
 			return
 		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -368,16 +378,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // refuseAdmission answers a document socket whose admission failed with err: a read - of its
-// document's issue, of its document, or of the live server processes - through the pool pool names,
-// or the wait for its failed room's recovery, which names none. The browser left while it ran when
-// the request's context ended with net/http's own context.Canceled, which ends the read or the
-// wait with the request's own cancellation (loadTree): nothing refused the socket, and nobody is
-// left to read an answer, so none is written and the line carries the client gone, as a request
-// whose client left in admission's queue does (accesslog.ClientGone). A context the server ended
-// under the socket carries a cause of its own - the heartbeat's re-resolution of the caller failed
-// (api's whileCallerResolves), which under load is a busy pool and not a browser that left - and
-// that socket's browser is still waiting, so it is refused like any other (refuseUnservedSocket),
-// with message, and with that cause.
+// caller's session, of its document's issue, of its document, or of the live server processes -
+// through the pool pool names, or the wait for its failed room's recovery, which names none. The
+// browser left while it ran when the request's context ended with net/http's own
+// context.Canceled, which ends the read or the wait with the request's own cancellation
+// (loadTree): nothing refused the socket, and nobody is left to read an answer, so none is written
+// and the line carries the client gone, as a request whose client left in admission's queue does
+// (accesslog.ClientGone). A context the server ended under the socket carries a cause of its own -
+// the heartbeat's re-resolution of the caller failed (api's whileCallerResolves), which under load
+// is a busy pool and not a browser that left - and that socket's browser is still waiting, so it
+// is refused like any other (refuseUnservedSocket), with message, and with that cause.
 func refuseAdmission(w http.ResponseWriter, r *http.Request, message, room, pool string, err error) {
 	cause := context.Cause(r.Context())
 	if cause == context.Canceled {
