@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
 
@@ -23,44 +23,53 @@ const guards = [
   .join("\n");
 
 const dir = temporaryDirectory("claude-backend-guards-test");
-// The stand-in processes are copies of two real programs, so a host without them has nothing to
-// start and every row here is skipped.
+// The rows run the guards in the host's bash and wait with its sleep, so a host without them has
+// nothing to run them in and every row here is skipped.
 // The gate is given both names: it walks each one and names the missing ones in its warning.
-// `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
-const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep");
-function tool(name: string): string {
-  const path = found.get(name) ?? null;
-  if (path === null) throw new Error(`${name} is not on PATH`);
-  return path;
-}
-// The run's legion is a copy of bash, so a process can carry it as its executable (/proc/<pid>/exe)
-// with `claude-bridge` as its first argument: bash runs the script of that name from its working
+// Every process a guard or await_child judges by its executable (/proc/<pid>/exe) or its first
+// argument is a copy of the Bun running this file (process.execPath), or that Bun itself ($BUN in
+// run), and never a copy of a program found on the host's PATH. A copy of what PATH finds runs as
+// itself only where that is a program of its own: a wrapper script runs under its interpreter and
+// then execs the real program, so its process is /bin/sh and then /usr/bin/sleep, never the copy;
+// and a multi-call binary (busybox, or the uutils coreutils that Ubuntu 25.10 installs as
+// /usr/bin/sleep) chooses what to run by the name it is called by, so a copy called claude runs
+// nothing and exits.
+// The run's legion is a copy of Bun, so a process can carry it as its executable with
+// `claude-bridge` as its first argument: Bun runs the script of that name from its working
 // directory, which starts its second argument as its child and waits on it, as the bridge waits on
 // Claude Code.
 const work = join(dir, "work");
-// The run's claude is a copy of sleep, under a directory whose name holds a space.
+// The run's claude is another copy of Bun, under a directory whose name holds a space.
 const claudeDir = join(dir, "bin with space");
 const claude = join(claudeDir, "claude");
 const cwd = join(dir, "cwd");
+// The bridge stand-ins' script. `<script> -- CHILD …` starts CHILD, a Bun, with a program that only
+// keeps it alive until the run kills it. Bun leaves the `--` after the script's name out of
+// process.argv; /proc/<pid>/cmdline, which the guards read, keeps it.
+const bridgeScript = `const [first, second] = process.argv.slice(2);
+const child = Bun.spawn([first === "--" ? second : first, "-e", "setTimeout(() => {}, 600_000)"], {
+  stdio: ["ignore", "ignore", "inherit"],
+});
+await child.exited;
+`;
 beforeAll(() => {
   if (skip) return;
   mkdirSync(work);
-  copyFileSync(tool("bash"), join(work, "legion"));
+  copyFileSync(process.execPath, join(work, "legion"));
   mkdirSync(claudeDir);
-  copyFileSync(tool("sleep"), claude);
+  copyFileSync(process.execPath, claude);
   mkdirSync(cwd);
-  for (const script of ["claude-bridge", "worker-shim"]) {
-    writeFileSync(join(cwd, script), '"$2" 600\n:\n');
-  }
+  for (const script of ["claude-bridge", "worker-shim"])
+    writeFileSync(join(cwd, script), bridgeScript);
 });
 
 // run runs BODY after the guards, with the rig's globals set, a scratch directory of its own in
-// $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away from the
-// test's pipes, and sets pid to its process. await_child EXE sets child to pid's first child once
-// that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child carries
-// its parent's command line until it execs, and a guard asked about it then answers for the parent.
-// Every process either names is killed when BODY ends.
+// $scratch, the Bun running this file in $BUN, and two helpers. spawn ARGS… starts ARGS in the
+// background, its output away from the test's pipes, and sets pid to its process. await_child EXE
+// sets child to pid's first child once that child is running EXE (its /proc/<pid>/exe), not merely
+// once it exists: a forked child carries its parent's command line until it execs, and a guard
+// asked about it then answers for the parent. Every process either names is killed when BODY ends.
 function run(body: string) {
   const prelude = `set -Eeuo pipefail
 ${guards}
@@ -93,7 +102,13 @@ await_child() {
 `;
   const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir },
+    env: {
+      PATH: process.env.PATH ?? "",
+      WORK: work,
+      CLAUDE: claude,
+      SCRATCH: dir,
+      BUN: process.execPath,
+    },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -124,8 +139,22 @@ printf 'accepted %s of 20\\n' "$ok"
     "refuses a parent that is not the run's legion, whose argument only mentions the bridge",
     () => {
       const r = run(`
-spawn bash -c 'sleep 600; :' prompt "your parent is $work/legion claude-bridge -- $claude_bin"
-await_child "$(command -v sleep)"
+spawn "$BUN" -e 'await Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 600_000)"]).exited' prompt "your parent is $work/legion claude-bridge -- $claude_bin"
+await_child "$BUN"
+if bridged "$child"; then echo accepted; else echo refused; fi
+`);
+      expect(r.err).toBe("");
+      expect(r.out.trim()).toBe("refused");
+    },
+    slow
+  );
+
+  test(
+    "refuses a parent with the bridge's own arguments whose executable is not the run's legion",
+    () => {
+      const r = run(`
+spawn "$BUN" claude-bridge -- "$claude_bin"
+await_child "$claude_bin"
 if bridged "$child"; then echo accepted; else echo refused; fi
 `);
       expect(r.err).toBe("");
@@ -141,8 +170,8 @@ if bridged "$child"; then echo accepted; else echo refused; fi
 spawn "$work/legion" worker-shim -- "$claude_bin" claude-bridge -- "$claude_bin"
 await_child "$claude_bin"
 if bridged "$child"; then echo "worker-shim: accepted"; else echo "worker-shim: refused"; fi
-spawn "$work/legion" claude-bridge -- "$(command -v sleep)"
-await_child "$(command -v sleep)"
+spawn "$work/legion" claude-bridge -- "$BUN"
+await_child "$BUN"
 if bridged "$child"; then echo "other claude: accepted"; else echo "other claude: refused"; fi
 `);
       expect(r.err).toBe("");
