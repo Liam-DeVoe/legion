@@ -107,6 +107,17 @@ func stepsOf(t *testing.T, handler http.Handler, issue string) []model.StepRecor
 	return steps
 }
 
+// stepOf is the run id as the read of issue lists it; a read that does not list it fails the test.
+func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepRecord {
+	t.Helper()
+	steps := stepsOf(t, handler, issue)
+	index := slices.IndexFunc(steps, func(step model.StepRecord) bool { return step.ID == id })
+	if index < 0 {
+		t.Fatalf("the read of %s does not list the run %s", issue, id)
+	}
+	return steps[index]
+}
+
 // requireStepRefusal fails unless response is status with code, its message naming each of words.
 func requireStepRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, words ...string) {
 	t.Helper()
@@ -455,17 +466,8 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
 			t.Fatalf("the write of %s answers %s, want start %s", row.input, stepJSON(t, written), row.want)
 		}
-		found := false
-		for _, step := range stepsOf(t, handler, issue) {
-			if step.ID == id {
-				found = true
-				if step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
-					t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
-				}
-			}
-		}
-		if !found {
-			t.Fatalf("the read does not list the run %s", id)
+		if step := stepOf(t, handler, issue, id); step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
+			t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
 		}
 	}
 }
@@ -577,15 +579,9 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
 				t.Fatalf("the later end answers %s, want the first return to place 0", stepJSON(t, again))
 			}
-			for _, step := range stepsOf(t, handler, issue) {
-				if step.ID == id {
-					if step.ReturnedTo == nil || *step.ReturnedTo != 0 {
-						t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
-					}
-					return
-				}
+			if step := stepOf(t, handler, issue, id); step.ReturnedTo == nil || *step.ReturnedTo != 0 {
+				t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
 			}
-			t.Fatalf("the read does not list the run %s", id)
 		})
 	}
 }

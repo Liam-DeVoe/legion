@@ -254,12 +254,8 @@ func TestARunKeepsTheDestinationOfTheEndThatSetItsResult(t *testing.T) {
 			for index, write := range row.writes(id) {
 				answered = put(t, pool, write, minute(index))
 			}
-			steps := issueSteps(t, pool, "LEG-1")
-			index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
-			if index < 0 {
-				t.Fatalf("LEG-1 does not list the run %s", id)
-			}
-			for what, step := range map[string]Step{"the last write's answer": answered, "the read": steps[index].Step} {
+			read := stepOf(t, pool, "LEG-1", id).Step
+			for what, step := range map[string]Step{"the last write's answer": answered, "the read": read} {
 				if step.Result != row.result || !reflect.DeepEqual(step.ReturnedTo, row.returned) {
 					t.Errorf("%s reads result %q returned_to %s, want %q returned_to %s",
 						what, step.Result, destination(step.ReturnedTo), row.result, destination(row.returned))
@@ -319,16 +315,8 @@ func TestAHeldFieldKeepsItsFirstValue(t *testing.T) {
 				written, again := writes(id)
 				put(t, pool, written, minute(0))
 				answered := put(t, pool, again, minute(1))
-				var read *Step
-				for _, step := range issueSteps(t, pool, "LEG-1") {
-					if step.ID == id {
-						read = &step.Step
-					}
-				}
-				if read == nil {
-					t.Fatalf("LEG-1 does not list the run %s", id)
-				}
-				for what, step := range map[string]Step{"the second write's answer": answered, "the read": *read} {
+				read := stepOf(t, pool, "LEG-1", id).Step
+				for what, step := range map[string]Step{"the second write's answer": answered, "the read": read} {
 					if got := row.held(step); got != row.want {
 						t.Errorf("%s holds %s %v, want the first write's %v", what, name, got, row.want)
 					}
@@ -360,12 +348,8 @@ func TestALateReportKeepsTheEndedRunsSession(t *testing.T) {
 			late := implementer(id)
 			late.Report, late.Session = new(report), session
 			answered := put(t, pool, late, minute(2))
-			steps := issueSteps(t, pool, "LEG-1")
-			index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
-			if index < 0 {
-				t.Fatalf("LEG-1 does not list the run %s", id)
-			}
-			for what, step := range map[string]Step{"the report's answer": answered, "the read": steps[index].Step} {
+			read := stepOf(t, pool, "LEG-1", id).Step
+			for what, step := range map[string]Step{"the report's answer": answered, "the read": read} {
 				if step.Session != "ses-first" || step.Model != "anthropic/claude-opus-5" || step.Report != report {
 					t.Errorf("%s holds session %q model %q report %q, want the end's ses-first and anthropic/claude-opus-5 beside report %s",
 						what, step.Session, step.Model, step.Report, report)
@@ -807,10 +791,8 @@ func TestARetroOrAMergeTakesNoType(t *testing.T) {
 			if after := wholeLog(t, pool); !reflect.DeepEqual(after, before) {
 				t.Errorf("the refused write moved the log from %d tuples to %d", len(before), len(after))
 			}
-			for _, step := range issueSteps(t, pool, "LEG-1") {
-				if step.ID == id && step.Type != "" {
-					t.Errorf("the %s holds type %q, want none", kind, step.Type)
-				}
+			if step := stepOf(t, pool, "LEG-1", id); step.Type != "" {
+				t.Errorf("the %s holds type %q, want none", kind, step.Type)
 			}
 		})
 	}
@@ -849,6 +831,17 @@ func issueSteps(t *testing.T, pool *store.Pool, issue string) []StepRead {
 		t.Fatalf("read the steps of %s: %v", issue, err)
 	}
 	return steps
+}
+
+// stepOf is the run id as the read of issue lists it; a read that does not list it fails the test.
+func stepOf(t *testing.T, pool *store.Pool, issue, id string) StepRead {
+	t.Helper()
+	steps := issueSteps(t, pool, issue)
+	index := slices.IndexFunc(steps, func(step StepRead) bool { return step.ID == id })
+	if index < 0 {
+		t.Fatalf("%s does not list the run %s", issue, id)
+	}
+	return steps[index]
 }
 
 func countNodes(t *testing.T, pool *store.Pool, id string) int {
