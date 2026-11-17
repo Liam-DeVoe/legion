@@ -2072,3 +2072,58 @@ test("each row of the view's tree carries its own id, and a key gives the tab st
     view.unmount();
   }
 });
+
+// Review 5933840110's second finding on pull request #4221 (at `VerificationFilterBody.tsx:482`),
+// pinned by INFRA-3936's tester on a running build of 6bd12234: on INFRA-1196's check `c-tree`,
+// with 26 results standing, `?q=` with a word one earlier result holds drew all 26 and the line
+// of earlier results open, 15,190 px tall. A query that keeps one earlier result of a check keeps
+// that result and no other: the check draws it, and the earlier results the query did not keep
+// stay folded behind their line, so the view draws no result that the reader neither kept by the
+// query nor opened (part V's R4, ruling 6, and departure 10).
+test("a query that keeps one earlier result draws that result and leaves the others folded", () => {
+  const kept = "The page drew the okapi column twice.";
+  const many = check({
+    block_id: "c-many",
+    results: [
+      result({
+        check_block_id: "c-many",
+        created_at: "2026-11-11T09:00:00Z",
+        id: "result-kept",
+        observed: kept,
+      }),
+      result({
+        check_block_id: "c-many",
+        created_at: "2026-11-12T09:00:00Z",
+        id: "result-second",
+        observed: "40 passed",
+      }),
+      result({
+        check_block_id: "c-many",
+        created_at: "2026-11-13T09:00:00Z",
+        id: "result-third",
+        observed: "41 passed",
+      }),
+      result({
+        check_block_id: "c-many",
+        created_at: "2026-11-14T09:00:00Z",
+        id: "result-newest",
+        observed: "42 passed",
+      }),
+    ],
+  });
+  const statement = statementNode("r1", "The page draws it.", [checkNode(many)]);
+  const view = drawBody([statement], [many], {
+    query: "okapi",
+    whole: verificationView([statement]),
+  });
+  try {
+    const drawn = textsOf(view, "[data-verification-result] [data-node-words]");
+    expect(drawn, "the result the query kept is not drawn").toContain(kept);
+    expect(
+      drawn.filter((words) => words === "40 passed" || words === "41 passed"),
+      "an earlier result the query did not keep is drawn"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+  }
+});

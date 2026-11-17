@@ -1289,3 +1289,98 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     );
   });
 });
+
+// Review 5933840110's first finding on pull request #4221 (at `VerificationFilterBody.tsx:323`),
+// pinned by INFRA-3936's tester on a running build of 6bd12234: with the Verification document's
+// blocks read refused from the first load, Enter on the failed-read line's Retry left the focus on
+// the page's body, both while the read was asked again and after it answered, and `j` then moved
+// no row. A keyboard action never leaves the focus on the page's body (the architect's decision
+// 162 on dispatch://INFRA-1196): Retry pressed by the keyboard keeps the focus inside the view
+// while the read is asked again, when it is refused again, and once it answers, and the tree then
+// answers its keys (part V's R8, decisions 117 and 126).
+// SLOW(>=2s): a whole seeded issue loaded with its blocks read refused, asked again three times
+// with the page's retry waits, then let answer.
+test("the Verification view keeps the focus in the view when Retry is pressed by the keyboard", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const blocksRoute = `**/api/v1/artifacts/${seeded.verificationArtifactId}/blocks`;
+    let refusals = 0;
+    const refuse = async (route: Route) => {
+      refusals += 1;
+      await route.fulfill({ json: { code: "INTERNAL", error: "boom" }, status: 500 });
+    };
+    await page.route(blocksRoute, refuse);
+    await openPreset(page, seeded.key, "verification");
+    const body = verificationBody(page);
+    const retry = verificationUnreadable(page, "blocks").getByRole("button", {
+      exact: true,
+      name: "Retry",
+    });
+    await expect(retry, "the refused blocks read draws no Retry").toHaveCount(1);
+    const onPageBody = () =>
+      page.evaluate(
+        () => document.activeElement === null || document.activeElement === document.body
+      );
+
+    // Enter on Retry while the read is still refused: the read is asked again, refused again,
+    // and its line comes back, and at no reading is the focus on the page's body.
+    await retry.focus();
+    const asked = refusals;
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    expect(
+      await onPageBody(),
+      "Enter on Retry leaves the focus on the page's body while the read is asked again"
+    ).toBe(false);
+    await expect
+      .poll(() => refusals - asked, { message: "Retry does not ask the blocks read again" })
+      .toBeGreaterThanOrEqual(3);
+    await expect(retry, "the read refused again draws no Retry").toHaveCount(1);
+    await nextFrames(page);
+    expect(
+      await onPageBody(),
+      "Enter on Retry leaves the focus on the page's body once the read is refused again"
+    ).toBe(false);
+    expect(
+      await focusInside(body),
+      "Enter on Retry leaves the focus outside the view once the read is refused again"
+    ).toBe(true);
+
+    // The refusal lifted, Enter on Retry: the read answers and the view draws its rows, the
+    // focus stays in the view, and the tree answers `j`.
+    await page.unroute(blocksRoute, refuse);
+    await retry.focus();
+    await page.keyboard.press("Enter");
+    await nextFrames(page);
+    expect(
+      await onPageBody(),
+      "Enter on Retry leaves the focus on the page's body while the read that will answer is out"
+    ).toBe(false);
+    await expect
+      .poll(() => verificationCardBoxes(page).count(), {
+        message: "Retry does not bring the view its rows once the read answers",
+      })
+      .toBeGreaterThan(0);
+    await nextFrames(page);
+    expect(
+      await onPageBody(),
+      "Enter on Retry leaves the focus on the page's body once the read answered"
+    ).toBe(false);
+    expect(
+      await focusInside(body),
+      "Enter on Retry leaves the focus outside the view once the read answered"
+    ).toBe(true);
+    await page.keyboard.press("j");
+    await nextFrames(page);
+    expect(
+      await body.evaluate(
+        (element) =>
+          element.contains(document.activeElement) &&
+          document.activeElement?.getAttribute("role") === "treeitem"
+      ),
+      "after Retry the tree does not answer j with a row"
+    ).toBe(true);
+  });
+});
