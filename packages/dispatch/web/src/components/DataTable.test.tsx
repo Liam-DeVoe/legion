@@ -222,13 +222,13 @@ function Deploys({
         openFilter={openFilter}
         pager={pager ?? undefined}
         renderFilter={renderFilter}
-        renderGroup={({ entry: { row }, index, measure }) => (
+        renderGroup={({ entry: { continued, row }, index, measure }) => (
           <DataTableGroupRow
             columns={model.table.getVisibleLeafColumns().length}
             expanded={row.getIsExpanded()}
             heading={<em>{String(row.groupingValue)}</em>}
             index={index}
-            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}`}
+            label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${String(row.groupingValue)}${continued ? ", continued" : ""}`}
             measure={measure}
             onToggle={row.getToggleExpandedHandler()}
             slot={groupSlot ?? <span>{row.getLeafRows().length} deploys</span>}
@@ -494,6 +494,51 @@ test("a group's heading row folds its rows away and opens them again, with the c
   expect(folded).toHaveAttribute("aria-expanded", "false");
   await user.click(folded);
   expect(listed(table)).toEqual(["d1", "d3", "d2"]);
+});
+
+// k18 Three (R14): a page that starts with a leaf draws its group's heading first, and that
+// heading reads continued only when the page before held a leaf of the group. A heading that was
+// the page before's last row, with none of its rows there, opens its group on the next page.
+test.each([
+  // Page 1: the eu heading, 8 eu rows, then the us heading with no us row.
+  ["first leaf opens page 2", 8, "Collapse us"],
+  // Page 1: the eu heading and 9 of eu's 12 rows; its other 3 rows open page 2.
+  ["leaves run onto page 2", 12, "Collapse eu, continued"],
+])("the heading at page 2's top of the group whose %s", async (_name, eu, heading) => {
+  const user = userEvent.setup();
+  const rows = [
+    ...Array.from({ length: eu }, (_, index) => ({
+      id: `eu${index + 1}`,
+      minutes: index,
+      region: "eu",
+      service: `service ${index + 1}`,
+      state: "live",
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      id: `us${index + 1}`,
+      minutes: index,
+      region: "us",
+      service: `service ${index + 1}`,
+      state: "live",
+    })),
+  ];
+  draw(
+    <Deploys
+      groupOrder={(_column, a, b) => a.localeCompare(b)}
+      grouping={["region"]}
+      pageSize={10}
+      rows={rows}
+    />
+  );
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  await user.click(screen.getByRole("button", { name: "Next ›" }));
+  // The page's first line, which the box draws at index 0 below its spacer row.
+  const first = table.querySelector('tbody tr[data-index="0"]');
+  if (!(first instanceof HTMLElement)) throw new Error("Page 2 draws no line");
+  const toggle = within(first).getByRole("button", { name: /^Collapse / });
+  // The words the caller wrote, then the name a screen reader reads from them.
+  expect(toggle.getAttribute("aria-label")).toBe(heading);
+  expect(toggle).toHaveAccessibleName(heading);
 });
 
 test("says the caller's own words when no row is listed", async () => {
@@ -1245,7 +1290,7 @@ test("the table counts every row of its page for a screen reader, drawn or not, 
   expect(grouped).toHaveAttribute("aria-rowcount", "6");
   expect(places(grouped)).toEqual(["2", "3", "4", "5", "6"]);
   expect(
-    within(grouped).getByRole("button", { name: "Collapse us" }).closest("tr")
+    within(grouped).getByRole("button", { name: "Collapse us, continued" }).closest("tr")
   ).toHaveAttribute("aria-rowindex", "2");
 });
 

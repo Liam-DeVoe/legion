@@ -1,4 +1,5 @@
 import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table";
+import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
 
 /**
@@ -57,8 +58,14 @@ function matchesFilters<Row>(
         .toLowerCase();
       return typed === "" || column.text(row).toLowerCase().includes(typed);
     }
-    const picked = Array.isArray(filter.value) ? filter.value.map(String) : [];
-    return picked.length === 0 || (column.values?.(row) ?? []).some((v) => picked.includes(v));
+    // A pick matches a value by its `fold`, as its filter ticks it (`MultiSelect`), so a ticked
+    // pick in another case than its option's own lists that option's rows.
+    const picked = new Set(
+      Array.isArray(filter.value) ? filter.value.map((value) => fold(String(value))) : []
+    );
+    return (
+      picked.size === 0 || (column.values?.(row) ?? []).some((value) => picked.has(fold(value)))
+    );
   });
 }
 

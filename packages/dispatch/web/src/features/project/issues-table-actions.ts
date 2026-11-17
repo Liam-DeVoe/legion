@@ -142,12 +142,12 @@ export function useIssueTableActions({
   const titleOf = (key: string) => issues.find((issue) => issue.key === key)?.title ?? key;
   const named = (keys: readonly string[]) =>
     keys.length === 1 ? `${keys[0]} “${titleOf(keys[0] ?? "")}”` : `${keys.length} issues`;
+  /** Whether a bulk action may begin. Where it may not, the notice says why: another tab's move
+   *  or this tab's own interrupted action is still in the store (`useTableRecovery`). */
   const canBegin = () => {
-    if (!recovery.current.current) return true;
-    setNotice({
-      kind: "error",
-      text: "Finish or Dismiss the interrupted action before starting another one.",
-    });
+    const refused = recovery.refusal();
+    if (refused === undefined) return true;
+    setNotice({ kind: "error", text: refused });
     return false;
   };
   /** The rank writes of a start-next action, sent in order, stopping the moment the reader
@@ -182,13 +182,6 @@ export function useIssueTableActions({
   };
   /** Sends a start-next action for queued issues already checked by `startNext`. */
   const runQueued = (queued: readonly string[]) => {
-    if (!queued.length) {
-      setNotice({
-        kind: "error",
-        text: "Only issues waiting in Legion's queue can start next.",
-      });
-      return;
-    }
     if (!startNextWrites(items, queued).length) {
       setNotice({
         kind: "success",
@@ -196,7 +189,13 @@ export function useIssueTableActions({
       });
       return;
     }
-    const record = recovery.begin({ kind: "startNext", keys: queued });
+    // Refused here too: another tab can begin a move while the confirm is open.
+    const begun = recovery.begin({ kind: "startNext", keys: queued });
+    if (begun.kind === "refused") {
+      setNotice({ kind: "error", text: begun.text });
+      return;
+    }
+    const { record } = begun;
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
@@ -212,15 +211,33 @@ export function useIssueTableActions({
       }
     );
   };
-  /** A start-next the reader has not seen the whole of: `Select all N matching` picked rows
-   *  off the page, and each one is a write, so the count is put to them first. */
+  /**
+   * Starts `keys` next. Start next keeps its own set, the Todo issues labelled `legion` in rank
+   * order, and each issue of that set among `keys` moves ahead of the others (`startNextWrites`).
+   * A selection with none of the set is refused with a text that names the set. The reader is
+   * asked first where some selected issues are outside the set, with how many stay where they
+   * are, and where the selection holds rows off the page (`confirmFirst`: `Select all N
+   * matching`), since each issue is one write.
+   */
   const startNext = (keys: readonly string[], confirmFirst = false) => {
     if (!canBegin()) return;
     const queued = queuedInOrder(items, keys);
-    if (confirmFirst && queued.length) {
+    if (!queued.length) {
+      setNotice({ kind: "error", text: "Start next moves only Todo issues labelled legion." });
+      return;
+    }
+    const outside = keys.length - queued.length;
+    if (confirmFirst || outside > 0) {
+      const moves = `${queued.length} ${queued.length === 1 ? "issue moves" : "issues move"} ahead of the other Todo issues labelled legion.`;
+      const stays =
+        outside === 0
+          ? ""
+          : outside === 1
+            ? " 1 selected issue is not a Todo issue labelled legion. It stays where it is."
+            : ` ${outside} selected issues are not Todo issues labelled legion. They stay where they are.`;
       setConfirming({
         title: "Start these next?",
-        body: `${queued.length} issues move to the head of Legion's queue, one write each.`,
+        body: `${moves} Dispatch sends one write for each issue.${stays}`,
         confirmLabel: "Start next",
         run: () => runQueued(queued),
       });

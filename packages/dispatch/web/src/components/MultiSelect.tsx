@@ -19,7 +19,10 @@ import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
-function fold(value: string | undefined): string {
+/** A value as a pick compares it: trimmed and lower-cased, as the server compares a label. The
+ *  list ticks and unpicks by it, and a table that matches its rows to the picks folds by it too,
+ *  so a ticked pick lists the rows of the option it ticks. */
+export function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
 

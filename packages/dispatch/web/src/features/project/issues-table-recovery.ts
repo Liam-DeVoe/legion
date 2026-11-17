@@ -16,6 +16,9 @@ export interface TableAction {
   kind: (typeof ACTION_KINDS)[number];
   project: string;
   keys: readonly string[];
+  /** The id of the tab that began the action (`thisTab`). A record of an earlier build has
+   *  none, and is another tab's to every tab. */
+  tab?: string;
   /** When the action was begun, as epoch milliseconds. A record older than `ACTION_LIFETIME_MS`
    *  is a tab somebody closed a day ago, not work this reader left half-done. */
   startedAt?: number;
@@ -44,6 +47,7 @@ export function readTableAction(project: string): TableAction | undefined {
     typeof action.writes === "object" &&
     !Array.isArray(action.writes) &&
     Object.values(action.writes).every((key) => typeof key === "string") &&
+    (action.tab === undefined || typeof action.tab === "string") &&
     (action.startedAt === undefined ||
       (typeof action.startedAt === "number" && Date.now() - action.startedAt < ACTION_LIFETIME_MS))
   )
@@ -55,7 +59,47 @@ export function writeTableAction(project: string, action: TableAction | undefine
   writeStore(tableStorageKey(project), { action });
 }
 
-export function useTableRecovery(project: string, report: (text: string) => void) {
+/** Where a tab keeps its id: its `sessionStorage`, which a reload keeps and no other tab shares. */
+const TAB_STORAGE_KEY = "dispatch.table-tab";
+/** The id of a tab whose browser refuses `sessionStorage`, which lasts as long as the page. */
+let pageTab: string | undefined;
+
+/** This tab's id, made the first time a table asks for it, which is when the reader begins a
+ *  bulk action. A record carries the id of the tab that began it, so a reload of that tab knows
+ *  the record for its own, and every other tab knows it for another tab's. */
+function thisTab(): string {
+  try {
+    const kept = window.sessionStorage.getItem(TAB_STORAGE_KEY);
+    if (kept !== null) return kept;
+    const made = newSendKey();
+    window.sessionStorage.setItem(TAB_STORAGE_KEY, made);
+    return made;
+  } catch {
+    pageTab ??= newSendKey();
+    return pageTab;
+  }
+}
+
+/** What a bulk action says while another tab's record is in the store (D12). */
+const OTHER_TAB_ACTION =
+  "Another tab has not finished moving these issues. Finish or discard that move first.";
+/** What a bulk action says while this tab's own interrupted action is in the store. */
+const OWN_ACTION = "Finish or Dismiss the interrupted action before starting another one.";
+
+/** A bulk action begun, with the record that names it, or refused, with the text that says why. */
+export type Begun =
+  | { readonly kind: "begun"; readonly record: TableAction }
+  | { readonly kind: "refused"; readonly text: string };
+
+/**
+ * The record of the bulk action a reload can interrupt, kept in the browser so any tab can finish
+ * or discard it. One record is kept for a listing, whichever tab began it. So a bulk action is
+ * refused while the record of another tab is in the store, and the window's `storage` event
+ * brings this table another tab's record and its end at once (D12). A record a closed tab left
+ * is finished or discarded in any tab, and its writes keep their send keys. `tab` names this
+ * tab for a test that draws two tabs in one window. Without it the tab's own id is read.
+ */
+export function useTableRecovery(project: string, report: (text: string) => void, tab?: string) {
   const writes = useWrites();
   const [action, setAction] = useState(() => readTableAction(project));
   const current = useRef(action);
@@ -142,22 +186,60 @@ export function useTableRecovery(project: string, report: (text: string) => void
       }
       if (event.kind !== "refused") owned.current.delete(event.write.id);
     });
+    // Another tab's record, and its end, reach this tab through the window's `storage` event,
+    // which every tab of the browser but the one that wrote is told of.
+    const storageKey = tableStorageKey(project);
+    const fromAnotherTab = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== storageKey) return;
+      current.current = readTableAction(project);
+      setAction(current.current);
+    };
+    window.addEventListener("storage", fromAnotherTab);
     return () => {
       alive.current = false;
       observe();
       outcome();
+      window.removeEventListener("storage", fromAnotherTab);
     };
   }, [project, writes, remember]);
 
   const active = (id: string) => alive.current && current.current?.id === id;
+  /** Why a bulk action may not begin now, or `undefined` where it may. The store is read again
+   *  here, since another tab can have begun an action after the last `storage` event. A record
+   *  of another tab's is taken into this table, so its offer to finish it shows here too. */
+  const refusal = (): string | undefined => {
+    const stored = readTableAction(project);
+    if (stored !== undefined && stored.tab !== (tab ?? thisTab())) {
+      if (stored.id !== current.current?.id) {
+        current.current = stored;
+        if (alive.current) setAction(stored);
+      }
+      return OTHER_TAB_ACTION;
+    }
+    return stored !== undefined || current.current !== undefined ? OWN_ACTION : undefined;
+  };
   return {
     action,
     current,
     active,
-    begin: (record: Omit<TableAction, "id" | "project" | "writes" | "startedAt">) => {
-      const next = { ...record, id: newSendKey(), project, startedAt: Date.now(), writes: {} };
+    refusal,
+    /** Begins a bulk action and keeps its record, unless `refusal` refuses it: a record is
+     *  never written over another tab's. */
+    begin: (
+      record: Omit<TableAction, "id" | "project" | "tab" | "writes" | "startedAt">
+    ): Begun => {
+      const refused = refusal();
+      if (refused !== undefined) return { kind: "refused", text: refused };
+      const next = {
+        ...record,
+        id: newSendKey(),
+        project,
+        tab: tab ?? thisTab(),
+        startedAt: Date.now(),
+        writes: {},
+      };
       remember(next);
-      return next;
+      return { kind: "begun", record: next };
     },
     /** The keys of the writes a step of `id`'s action is about to send, kept with the record so
      *  a resume can wait on them. One storage write and one render for the whole batch: a

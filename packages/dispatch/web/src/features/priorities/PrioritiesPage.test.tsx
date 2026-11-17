@@ -124,8 +124,9 @@ function answerListing(issues: readonly IssueSummary[]) {
 }
 
 /** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
- *  reader who is not a person, and so may not write a priority, where `writer` is false. */
-function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
+ *  reader who is not a person, and so may not write a priority, where `writer` is false. The
+ *  page opens on `/priorities` with the address's `search`. */
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true, search = "") {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
@@ -148,7 +149,7 @@ function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], whoami);
   const view = render(
-    <MemoryRouter initialEntries={["/priorities"]}>
+    <MemoryRouter initialEntries={[`/priorities${search}`]}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <PrioritiesPage />
@@ -742,4 +743,20 @@ test("a column filter of the priorities table is a chip of its row, even while i
   await user.click(chip());
   await waitFor(() => expect(listed()).toBe(before));
   expect(screen.queryByRole("button", { name: /^Remove Owner: / })).toBeNull();
+});
+
+// R14: a pick in another case than its option's own is that option, ticked once, and it lists
+// that option's rows: the table matches a pick without regard to case, as its filter ticks it.
+test("a priorities filter pick in another case lists its option's rows, ticked once", async () => {
+  const user = userEvent.setup();
+  page(FIFTEEN, [], true, "?p.f.owner=bet%20controller");
+  const section = await screen.findByRole("region", { name: "Priorities" });
+  const table = await within(section).findByRole("table", { name: "Priorities table" });
+  await waitFor(() => expect(within(table).getAllByRole("row")).toHaveLength(2));
+  expect(within(table).getByRole("row", { name: /Linkage closure eval/ })).toBeDefined();
+
+  await user.click(within(table).getByRole("button", { name: "Filter Owner: 1 picked" }));
+  const offered = await screen.findAllByRole("option", { name: /^BET controller/i });
+  expect(offered).toHaveLength(1);
+  expect(offered[0]).toHaveAttribute("aria-selected", "true");
 });

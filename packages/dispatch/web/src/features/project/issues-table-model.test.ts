@@ -124,6 +124,17 @@ test("facet counts apply search and every other filter, not their own", () => {
   ).toEqual(["FrontEnd"]);
 });
 
+// R14: a pick in another case than a value the column knows is that value, so `?status=Done`
+// picks the done issues and the filter draws Done once, ticked (`ColumnFilter`).
+test("a status in another case is read as the status of that name", () => {
+  const status = (search: string) =>
+    readUrl(new URLSearchParams(search)).filters.find(({ id }) => id === "status")?.value;
+  expect(status("status=Done")).toEqual(["done"]);
+  expect(status("status=Done&status=done&status=TODO")).toEqual(["done", "todo"]);
+  // A status this build does not know stays as the address spells it.
+  expect(status("status=in-progress")).toEqual(["in-progress"]);
+});
+
 test("URL round trip preserves Board status and label params plus every table control", () => {
   const state = {
     ...defaultView,
@@ -179,6 +190,56 @@ test("Start next ranks the selected rows in queue order and skips the ones alrea
   expect(startNextWrites(rows(["A", "C"]), ["B", "C"])).toEqual([
     { key: "C", input: { rank: { before: "A" } } },
   ]);
+});
+
+/** The array searches that cost a pass over the array they run on. */
+const SCANS = ["includes", "indexOf", "splice"] as const;
+/**
+ * Runs `run` with `Array.prototype.includes`, `indexOf` and `splice` wrapped to add up the length
+ * of each array they run on, and answers what `run` answered with that sum. Nothing else is
+ * wrapped, and every method is put back before the answer, so no assertion runs while they are.
+ */
+function lengthsScanned<T>(run: () => T): { value: T; scanned: number } {
+  type Scan = (this: unknown[], ...args: unknown[]) => unknown;
+  const methods = Array.prototype as unknown as Record<(typeof SCANS)[number], Scan>;
+  const originals = SCANS.map((name) => [name, methods[name]] as const);
+  let scanned = 0;
+  for (const [name, original] of originals)
+    methods[name] = function (this: unknown[], ...args: unknown[]) {
+      scanned += this.length;
+      return original.apply(this, args);
+    };
+  try {
+    const value = run();
+    return { value, scanned };
+  } finally {
+    for (const [name, original] of originals) methods[name] = original;
+  }
+}
+
+// k18 One (R14): the work Start next does after `Select all N matching` and before its first
+// write is linear. Counted by the lengths the array searches run on, not by a clock: a search
+// of the queue per selected row adds up to more than N²/2.
+test("Start next over 10,000 queued rows searches no array once per selected row", () => {
+  const N = 10_000;
+  const queue = buildItems(
+    Array.from({ length: N }, (_, index) =>
+      issue(`Q-${index}`, { rank: String(index).padStart(5, "0"), labels: ["legion"] })
+    ),
+    (actor) => actor.id
+  );
+  const every = queue.map((item) => item.issue.key);
+
+  const all = lengthsScanned(() => startNextWrites(queue, queuedInOrder(queue, every)));
+  expect(all.value).toEqual([]);
+  expect(all.scanned).toBeLessThan(20 * N);
+
+  // Every row but the first: each selected row moves ahead of the first, in queue order.
+  const moving = lengthsScanned(() => startNextWrites(queue, queuedInOrder(queue, every.slice(1))));
+  expect(moving.value).toHaveLength(N - 1);
+  expect(moving.value[0]).toEqual({ key: `Q-${N - 1}`, input: { rank: { before: "Q-0" } } });
+  expect(moving.value.at(-1)).toEqual({ key: "Q-1", input: { rank: { before: "Q-2" } } });
+  expect(moving.scanned).toBeLessThan(20 * N);
 });
 
 // The server matches a label on `lower(label)`, so an issue labelled `Legion` is queued, exactly

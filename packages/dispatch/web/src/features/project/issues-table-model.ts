@@ -8,6 +8,7 @@ import type {
   LegionBoardResponse,
   UpdateIssueInput,
 } from "../../api/types";
+import { fold } from "../../components/MultiSelect";
 import type { LayoutColumns } from "../../components/table-layout";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -150,7 +151,8 @@ export type ColumnFilterSpec =
       readonly order?: readonly string[];
       /** A value as the reader sees it, in an option and in a group's heading. */
       readonly show?: (value: string) => string;
-      /** A row must carry every picked value, not just one of them, compared case-insensitively. */
+      /** A row must carry every picked value, not just one of them. Every pick matches without
+       *  regard to case (`matchesFilters`). */
       readonly match?: "all";
       /** The URL parameter the picks travel in; `f.<id>` when absent. */
       readonly param?: string;
@@ -1030,12 +1032,13 @@ export function matchesFilters(
     if (filter?.kind === "range")
       return inWindow(filter.value(item), readWindow(String(value ?? ""), nowMs));
     if (!Array.isArray(value) || value.length === 0) return true;
-    const values = facets(item, id, nowMs);
+    // A pick matches a value by its `fold`, as the filter ticks it (`MultiSelect`): a link that
+    // spells a label or a name in another case picks the same rows.
+    const folded = facets(item, id, nowMs).map(fold);
+    const carries = (picked: string) => folded.includes(fold(String(picked)));
     return filter?.kind === "picks" && filter.match === "all"
-      ? value.every((picked: string) =>
-          values.some((entry) => entry.toLowerCase() === picked.toLowerCase())
-        )
-      : values.some((entry) => value.includes(entry));
+      ? value.every(carries)
+      : value.some(carries);
   });
 }
 /** The headings that stand for "none of them", wherever a column has one: they read last, after
@@ -1145,6 +1148,17 @@ const viewName = (key: string, stateKey: string | undefined): string | undefined
       ? key.slice(stateKey.length + 1)
       : undefined;
 
+/** A picked value out of the URL as column `filter` keeps it: through its `normalize`, then in
+ *  the spelling of the column's own value of that name, matched without regard to case, so
+ *  `?status=Done` picks `done` and its filter draws one ticked option. A value the column does
+ *  not know, or one its rows name (a label), stays as the URL spells it. */
+function readPick(filter: ColumnFilterSpec | undefined, value: string): string {
+  if (filter?.kind !== "picks") return value;
+  const read = filter.normalize ? filter.normalize(value) : value;
+  const folded = fold(read);
+  return (filter.always ?? filter.order)?.find((own) => fold(own) === folded) ?? read;
+}
+
 export function readUrl(params: URLSearchParams, stateKey?: string): View {
   const key = (name: string) => viewKey(name, stateKey);
   const sorting = (params.get(key("sort")) ?? "")
@@ -1162,11 +1176,7 @@ export function readUrl(params: URLSearchParams, stateKey?: string): View {
             value:
               filter?.kind === "text" || filter?.kind === "range"
                 ? params.get(param)
-                : params
-                    .getAll(param)
-                    .map((value) =>
-                      filter?.kind === "picks" && filter.normalize ? filter.normalize(value) : value
-                    ),
+                : [...new Set(params.getAll(param).map((value) => readPick(filter, value)))],
           },
         ]
       : [];
@@ -1254,40 +1264,53 @@ export function writeUrl(params: URLSearchParams, state: View, stateKey?: string
   return next;
 }
 
-/** The selected issues that are in Legion's queue, in the order the queue holds them. */
+/** The selected issues in Start next's set, the Todo issues labelled `legion`, in the order the
+ *  set holds them. The selection is a `Set`, so one pass over the rows reads it: `Select all N
+ *  matching` hands this every issue of the project. */
 export function queuedInOrder(items: readonly Item[], keys: readonly string[]): string[] {
+  const selected = new Set(keys);
   return items
-    .filter((item): item is Item & { queue: number } => item.queue !== undefined)
+    .filter(
+      (item): item is Item & { queue: number } =>
+        item.queue !== undefined && selected.has(item.issue.key)
+    )
     .sort((a, b) => a.queue - b.queue)
-    .filter((item) => keys.includes(item.issue.key))
     .map((item) => item.issue.key);
 }
 
 /**
- * The rank writes that move `keys` to the head of Legion's queue, each one placing its issue
- * before the one the previous write placed. Rows already ahead of everything unselected are
- * left alone, so a finished action writes nothing, and a resumed one writes only what is left:
- * the same function serves the first attempt and the one that picks it up again.
+ * The rank writes that move `keys` ahead of the other issues of Start next's set, each one
+ * placing its issue before the one the previous write placed. Rows already ahead of everything
+ * unselected are left alone, so a finished action writes nothing, and a resumed one writes only
+ * what is left: the same function serves the first attempt and the one that picks it up again.
+ *
+ * One pass, with no search of the queue per key. A write puts its issue straight before the one
+ * the previous step placed, so every issue a write moved stands just ahead of the last issue
+ * left in its place. A key behind that issue in the queue is behind them all and moves; a key
+ * ahead of it stays, and it is then the issue the next key is compared against.
  */
 export function startNextWrites(
   items: readonly Item[],
   keys: readonly string[]
 ): { key: string; input: UpdateIssueInput }[] {
   const queue = items
-    .filter((item) => item.queue !== undefined)
-    .sort((a, b) => (a.queue ?? 0) - (b.queue ?? 0))
+    .filter((item): item is Item & { queue: number } => item.queue !== undefined)
+    .sort((a, b) => a.queue - b.queue)
     .map((item) => item.issue.key);
-  const queued = new Set(queue);
-  const selected = keys.filter((key) => queued.has(key));
-  const selectedKeys = new Set(selected);
-  let before = queue.find((key) => !selectedKeys.has(key));
+  const place = new Map(queue.map((key, index) => [key, index]));
+  const selected = [...new Set(keys)].flatMap((key) => {
+    const at = place.get(key);
+    return at === undefined ? [] : [{ key, at }];
+  });
+  const chosen = new Set(selected.map(({ key }) => key));
+  let before = queue.find((key) => !chosen.has(key));
+  // The place of the last issue left where it stands, which `before` is or stands just ahead of.
+  let still = before === undefined ? undefined : place.get(before);
   const operations: { key: string; input: UpdateIssueInput }[] = [];
-  for (const key of selected.reverse()) {
-    if (before && queue.indexOf(key) > queue.indexOf(before)) {
+  for (const { key, at } of selected.reverse()) {
+    if (before !== undefined && still !== undefined && at > still)
       operations.push({ key, input: { rank: { before } } });
-      queue.splice(queue.indexOf(key), 1);
-      queue.splice(queue.indexOf(before), 0, key);
-    }
+    else still = at;
     before = key;
   }
   return operations;

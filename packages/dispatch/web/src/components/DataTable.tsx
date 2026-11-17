@@ -134,7 +134,8 @@ export interface DataTableOptions<Row> {
 /** One line the table draws: a row, or a group's heading. */
 export interface DisplayRow<Row> {
   readonly row: TableRow<Row>;
-  /** The heading of a group that began on an earlier page, repeated at this page's top. */
+  /** The heading of a group whose rows began on an earlier page, repeated at this page's top. A
+   *  heading drawn there for a group whose first row opens this page is not continued. */
   readonly continued?: boolean;
   /** How many of the group's rows this page shows. */
   readonly shown?: number;
@@ -261,10 +262,19 @@ export function useDataTable<Row>({
   });
 
   const pageRows = table.getRowModel().rows;
+  // A page that starts with a leaf draws its group's heading first. The heading reads continued
+  // only when the page before held a leaf of that group: one that was the page before's last
+  // row, with none of its rows there, is dropped there (below) and opens its group here.
+  const first = pageRows[0];
+  const lead = first !== undefined && !first.getIsGrouped() ? first.getParentRow() : undefined;
+  const { pageIndex, pageSize } = table.getState().pagination;
+  // A server's page holds every row it is given, so no page before it is held here.
+  const previous =
+    lead === undefined || serverPage !== undefined
+      ? undefined
+      : table.getPrePaginationRowModel().rows[pageIndex * pageSize - 1];
   const continued =
-    pageRows[0] !== undefined && !pageRows[0].getIsGrouped()
-      ? pageRows[0].getParentRow()
-      : undefined;
+    previous !== undefined && !previous.getIsGrouped() && previous.getParentRow()?.id === lead?.id;
   // A page is a flat slice of leaves, so its last heading can be one whose rows all start on
   // the next page. A heading with nothing under it here is left for the page that holds its
   // rows; the ones that stay say how many of their rows this page shows. A collapsed group
@@ -276,9 +286,7 @@ export function useDataTable<Row>({
       if (group !== undefined) onThisPage.set(group, (onThisPage.get(group) ?? 0) + 1);
     }
   const displayRows: DisplayRow<Row>[] = [
-    ...(continued === undefined
-      ? []
-      : [{ row: continued, continued: true, shown: onThisPage.get(continued.id) }]),
+    ...(lead === undefined ? [] : [{ row: lead, continued, shown: onThisPage.get(lead.id) }]),
     ...pageRows.flatMap((row) => {
       if (!row.getIsGrouped()) return [{ row }];
       if (!row.getIsExpanded()) return [{ row }];

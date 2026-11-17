@@ -1348,6 +1348,56 @@ test("Start next on a selection larger than the page asks first", async () => {
   await waitFor(() => expect(send).toHaveBeenCalled());
 });
 
+// R4: Start next keeps its own set, the Todo issues labelled legion, and its texts name it. A
+// selection with none of the set is refused, and nothing is sent.
+test("Start next on a selection with no Todo issue labelled legion is refused with a text that names the set", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-1") as never);
+  restores.push(() => send.mockRestore());
+  table([
+    issue("CORE-1", { labels: ["legion"], rank: "a" }),
+    issue("CORE-2", { rank: "b" }),
+    issue("CORE-3", { labels: ["legion"], status: "testing", rank: "c" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(
+    within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
+  );
+  const region = screen.getByRole("region", { name: "Project issues" });
+  expect((await within(region).findByRole("alert")).textContent).toBe(
+    "Start next moves only Todo issues labelled legion."
+  );
+  expect(screen.queryByRole("dialog", { name: "Start these next?" })).toBeNull();
+  expect(send).not.toHaveBeenCalled();
+});
+
+// R4: in a mixed selection the confirm says how many selected issues are outside Start next's set
+// and stay where they are, and the issues of the set move.
+test("Start next on a mixed selection names how many selected issues stay where they are", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-2") as never);
+  restores.push(() => send.mockRestore());
+  table([
+    issue("CORE-1", { labels: ["legion"], rank: "a" }),
+    issue("CORE-2", { labels: ["legion"], rank: "b" }),
+    issue("CORE-3", { rank: "c" }),
+    issue("CORE-4", { labels: ["legion"], status: "testing", rank: "d" }),
+  ]);
+  for (const key of ["CORE-2", "CORE-3", "CORE-4"])
+    await user.click(await screen.findByRole("checkbox", { name: `Select ${key}` }));
+  await user.click(
+    within(screen.getByRole("toolbar")).getByRole("button", { name: /^Start next$/ })
+  );
+  const asked = await screen.findByRole("dialog", { name: "Start these next?" });
+  expect(asked.textContent).toContain(
+    "1 issue moves ahead of the other Todo issues labelled legion. Dispatch sends one write for each issue. 2 selected issues are not Todo issues labelled legion. They stay where they are."
+  );
+  expect(send).not.toHaveBeenCalled();
+  await user.click(within(asked).getByRole("button", { name: /^Start next$/ }));
+  await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+});
+
 // F1: the button named Clear filters goes back to the view the table opens with, which is not
 // "every closed issue in the project".
 test("Clear filters restores the default view rather than loading every closed issue", async () => {

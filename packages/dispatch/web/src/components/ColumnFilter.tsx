@@ -9,7 +9,7 @@ import {
 } from "../theme/classes";
 import { CONTROL } from "./control-names";
 import type { RowNoun } from "./DataTable";
-import { MultiSelect } from "./MultiSelect";
+import { fold, MultiSelect } from "./MultiSelect";
 import { PanelTrigger } from "./PanelTrigger";
 import { RangeFilter } from "./RangeFilter";
 
@@ -91,11 +91,22 @@ export function ColumnFilter<TData>({
   }
   const picks = (column.getFilterValue() as string[] | undefined) ?? [];
   const order = meta?.order;
-  const options = [...new Set([...counts.keys(), ...picks, ...(meta?.always ?? [])])].sort(
-    (a, b) =>
-      order === undefined
-        ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
-        : order.indexOf(a) - order.indexOf(b)
+  // `MultiSelect` ticks and unpicks a value by its `fold`, so a pick in another case than an
+  // option's own (`?status=Done`, `?label=Legion` for the project's `legion`) is that option,
+  // drawn once: ticked, and one press unpicks it. Only a pick no option names is drawn as an
+  // option of its own, once whatever cases the address spells it in.
+  const offered = [...new Set([...counts.keys(), ...(meta?.always ?? [])])];
+  const named = new Set(offered.map(fold));
+  const outside = picks.filter((pick) => {
+    const folded = fold(pick);
+    if (named.has(folded)) return false;
+    named.add(folded);
+    return true;
+  });
+  const options = [...offered, ...outside].sort((a, b) =>
+    order === undefined
+      ? (counts.get(b) ?? 0) - (counts.get(a) ?? 0)
+      : order.indexOf(a) - order.indexOf(b)
   );
   const show = meta?.show ?? ((value: string) => value);
   return (
