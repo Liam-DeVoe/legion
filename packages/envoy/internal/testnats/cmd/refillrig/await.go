@@ -173,7 +173,7 @@ func runAwait(args []string) error {
 			}
 			var signalled int64
 			if *front != 0 {
-				if err := endFront(*front); err != nil {
+				if err := endFront(*front, frontGrace, procState); err != nil {
 					return err
 				}
 			}
@@ -215,62 +215,80 @@ const frontGrace = 5 * time.Second
 // forked is then listed, and it forks no more. It lists those children, sends SIGKILL to the
 // group, and waits until the leader and each child have exited. Once endFront returns, no process
 // of the front accepts on the kept port or connects to the port the server is about to release.
-func endFront(pgid int) error {
+// grace bounds both waits (frontGrace), and state reads a process's state (procState; a test
+// gives its own).
+func endFront(pgid int, grace time.Duration, state func(int) byte) error {
 	if runtime.GOOS != "linux" {
 		return errors.New("-front reads /proc, which only Linux has")
 	}
 	if group, err := syscall.Getpgid(pgid); err == nil && group != pgid {
 		return fmt.Errorf("-front %d leads no process group (it is in group %d)", pgid, group)
 	}
-	deadline := time.Now().Add(frontGrace)
+	deadline := time.Now().Add(grace)
+	wait := func(pid int, what string, done func(byte) bool) error {
+		for !done(state(pid)) {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("the front's process %d did not %s within %s", pid, what, grace)
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+		return nil
+	}
 	if err := syscall.Kill(-pgid, syscall.SIGSTOP); err != nil && !errors.Is(err, syscall.ESRCH) {
 		return fmt.Errorf("stop the front's process group %d: %w", pgid, err)
 	}
-	stopped := func(state byte) bool { return state == 'T' || gone(state) }
-	if err := waitState(pgid, deadline, "stop", stopped); err != nil {
+	pids := []int{pgid}
+	err := wait(pgid, "stop", func(s byte) bool { return s == 'T' || gone(s) })
+	if err == nil && !gone(state(pgid)) {
+		var listed []int
+		listed, err = children("/proc", pgid)
+		pids = append(pids, listed...)
+	}
+	// The group gets SIGKILL even when the stop wait or the list failed: a stopped process acts on
+	// no other signal that ends it, so a group left stopped would outlast a caller's SIGTERM, and
+	// the caller's wait for it (e2e-refill.sh's stop_front) would never return.
+	if killErr := syscall.Kill(-pgid, syscall.SIGKILL); killErr != nil && !errors.Is(killErr, syscall.ESRCH) {
+		return errors.Join(err, fmt.Errorf("kill the front's process group %d: %w", pgid, killErr))
+	}
+	if err != nil {
 		return err
 	}
-	pids := append([]int{pgid}, children(pgid)...)
-	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill the front's process group %d: %w", pgid, err)
-	}
 	for _, pid := range pids {
-		if err := waitState(pid, deadline, "exit", gone); err != nil {
+		if err := wait(pid, "exit", gone); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// waitState waits until done accepts the state /proc gives the front's process pid, and fails
-// once deadline has passed.
-func waitState(pid int, deadline time.Time, what string, done func(byte) bool) error {
-	for !done(procState(pid)) {
-		if time.Now().After(deadline) {
-			return fmt.Errorf("the front's process %d did not %s within %s", pid, what, frontGrace)
-		}
-		time.Sleep(100 * time.Microsecond)
+// children lists the processes that pid forked and that are still its children, from the
+// children file of each of its threads under proc (/proc). A process has one such file for each
+// thread, so finding none (a kernel built without CONFIG_PROC_CHILDREN) is an error, as is a file
+// that cannot be read: an empty list would read as a front with no connection.
+func children(proc string, pid int) ([]int, error) {
+	pattern := filepath.Join(proc, strconv.Itoa(pid), "task", "*", "children")
+	files, err := filepath.Glob(pattern)
+	if err == nil && len(files) == 0 {
+		err = fs.ErrNotExist
 	}
-	return nil
-}
-
-// children lists the processes that pid forked and that are still its children, from the /proc
-// children file of each of its threads.
-func children(pid int) []int {
-	files, _ := filepath.Glob(fmt.Sprintf("/proc/%d/task/*/children", pid))
+	if err != nil {
+		return nil, fmt.Errorf("list the children of the front's leader %d (%s): %w", pid, pattern, err)
+	}
 	var pids []int
 	for _, file := range files {
 		text, err := os.ReadFile(file)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("list the children of the front's leader %d: %w", pid, err)
 		}
 		for _, field := range strings.Fields(string(text)) {
-			if child, err := strconv.Atoi(field); err == nil {
-				pids = append(pids, child)
+			child, err := strconv.Atoi(field)
+			if err != nil {
+				return nil, fmt.Errorf("list the children of the front's leader %d: %s: %w", pid, file, err)
 			}
+			pids = append(pids, child)
 		}
 	}
-	return pids
+	return pids, nil
 }
 
 // procState returns the state letter /proc gives pid (R, S, T, Z, X and so on), 0 once /proc lists

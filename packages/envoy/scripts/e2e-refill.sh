@@ -327,13 +327,15 @@ start_nats() {
 }
 
 # stop_front ends natsd's front and every connection through it (its whole session's process
-# group: socat forks one process per connection). The front lives only while NATS does: stop_nats
-# stops it before NATS, and the awaiter that kills NATS in the interrupt scenario kills it first
-# (run_interrupt), so it never forwards to a port NATS released, which another program could bind;
-# until the next front starts, the kept port queues each connection, and a client sees a hang
-# rather than a refusal.
+# group: socat forks one process per connection), continuing the group first, as stop_nats does
+# NATS: a stopped process acts on no SIGTERM, and the awaiter stops the group before it kills it
+# (refillrig await -front). The front lives only while NATS does: stop_nats stops it before NATS,
+# and the awaiter that kills NATS in the interrupt scenario kills it first (run_interrupt), so it
+# never forwards to a port NATS released, which another program could bind; until the next front
+# starts, the kept port queues each connection, and a client sees a hang rather than a refusal.
 stop_front() {
   if [[ -n "$front_pid" ]] && kill -0 "$front_pid" 2>/dev/null; then
+    kill -CONT -- -"$front_pid" 2>/dev/null || true
     kill -- -"$front_pid" 2>/dev/null || true
     wait "$front_pid" 2>/dev/null || true
   fi
@@ -651,8 +653,9 @@ run_interrupt() {
       say "interrupt (stop): NATS continued $((($(date +%s%N) - interrupted) / 1000000)) ms after it was stopped"
       ;;
     restart)
-      # A run whose read never began killed nothing: stop the front and kill NATS here, in that
-      # order, so the wait cannot hang.
+      # A run whose read never began killed nothing, and one whose awaiter killed the front and
+      # NATS left both unreaped and front_pid set, which start_nats needs empty to start the next
+      # front: in either case stop the front and kill NATS here, in that order, so no wait hangs.
       stop_front
       kill -KILL "$nats_pid" 2>/dev/null || true
       wait "$nats_pid" 2>/dev/null || true
