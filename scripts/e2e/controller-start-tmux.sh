@@ -46,6 +46,7 @@ ptoken=${project,,}
 containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
 nats_container=legion-e2e-controller-nats-$containers_tag
 pg_container=legion-e2e-controller-pg-$containers_tag
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
 containers=()
 state=$work/state
 omp_home=$work/omp-home

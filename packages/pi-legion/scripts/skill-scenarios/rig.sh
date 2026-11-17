@@ -277,6 +277,7 @@ timeout_hook=
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
 # The ids of the batch's own containers, by which services_down removes them (start_container).
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
 service_containers=()
 tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }

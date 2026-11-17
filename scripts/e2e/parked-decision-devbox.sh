@@ -97,6 +97,7 @@ repo="sjawhar/legion-smoke"
 containers_tag=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
 pg_container="legion-e2e-pd-pg-$containers_tag"
 nats_container="legion-e2e-pd-nats-$containers_tag"
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
 containers=()
 tmux_server="legion-e2e-pd-$$"
 daemon_pid=
