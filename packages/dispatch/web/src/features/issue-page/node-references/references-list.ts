@@ -193,5 +193,9 @@ function itemLine(
     line += named.key === undefined ? named.words : `${named.key} ${named.words}`;
     at = one.end;
   }
-  return drawnLine({ cut: first.cut, line: `${line}${first.line.slice(at)}` });
+  return drawnLine({
+    cut: first.cut,
+    line: `${line}${first.line.slice(at)}`,
+    sentence: first.sentence,
+  });
 }
