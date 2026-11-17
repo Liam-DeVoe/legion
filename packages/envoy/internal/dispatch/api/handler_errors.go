@@ -92,8 +92,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, r *http.Request, err e
 		}
 		writeError(w, r, apiErr.code, apiErr.message)
 		// A 500 the handler named is a server fault like any other, so the operator's log shows it.
-		if name, status, _ := codePair(requestAPIVersion(r), apiErr.code); status == http.StatusInternalServerError {
-			slog.Error("dispatch: API handler failed", "code", name, "error", err)
+		// The line names the code by the constant's own pairs (Code.String) and not by the name the
+		// request's version answers: a value taken through the request is one CodeQL traces from its
+		// headers into the log (go/clear-text-logging).
+		if _, status, _ := codePair(requestAPIVersion(r), apiErr.code); status == http.StatusInternalServerError {
+			slog.Error("dispatch: API handler failed", "code", apiErr.code.String(), "error", err)
 		}
 		return
 	}
