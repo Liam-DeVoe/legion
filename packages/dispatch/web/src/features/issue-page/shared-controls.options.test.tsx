@@ -66,7 +66,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useDialog } from "../shell/useDialog";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
+import { FormActions, type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS } from "./page-words";
 import {
@@ -1099,16 +1099,22 @@ function claimShape(chip: Element): string[] {
   return shape;
 }
 
+/** A text node as `claimShape` records it. */
+function textNode(words: string): string {
+  return JSON.stringify(words);
+}
+
 /** The claim's markup in each state as `ClaimChip` drew it before a claim in a row of Details
  *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
- *  and the header's pill inside it. */
+ *  and the header's pill inside it. Inside, each of the page's words is built from its list
+ *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string. */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {
       free: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
-        '"Claimed by"',
+        textNode(PROPERTY_LABELS.claim),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
@@ -1116,17 +1122,17 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
-        '"unresponsive"',
+        textNode(CONTROL_LABELS.unresponsive),
         '<span class="">',
-        '" since "',
+        textNode(` ${CONTROL_LABELS.unresponsive_since} `),
         '<time class="max-w-full [overflow-wrap:anywhere]">',
         '<span class="">',
-        '", free for another agent to take now"',
+        textNode(`, ${CONTROL_LABELS.takeable_now}`),
       ],
       held: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
-        '"Claimed by"',
+        textNode(PROPERTY_LABELS.claim),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
@@ -1135,7 +1141,7 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
       lapsed: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] border-page-hair bg-page-pane text-page-muted min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
-        '"Claimed by"',
+        textNode(PROPERTY_LABELS.claim),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
@@ -1143,12 +1149,12 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
-        '"not running"',
+        textNode(CONTROL_LABELS.not_running),
       ],
       unchecked: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
-        '"Claimed by"',
+        textNode(PROPERTY_LABELS.claim),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
@@ -1156,12 +1162,12 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
-        '"running state unknown"',
+        textNode(CONTROL_LABELS.unchecked),
       ],
       waiting: [
         '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-page-mark text-page-ink min-w-0 max-w-full gap-1">',
         '<span class="shrink-0">',
-        '"Claimed by"',
+        textNode(PROPERTY_LABELS.claim),
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
@@ -1169,12 +1175,12 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
         '<span class="min-w-0 [overflow-wrap:anywhere]">',
-        '"unresponsive"',
+        textNode(CONTROL_LABELS.unresponsive),
         '<span class="">',
-        '" since "',
+        textNode(` ${CONTROL_LABELS.unresponsive_since} `),
         '<time class="max-w-full [overflow-wrap:anywhere]">',
         '<span class="">',
-        '", free for another agent from "',
+        textNode(`, ${CONTROL_LABELS.takeable} `),
         '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
     },
@@ -1311,6 +1317,52 @@ test("inRow draws the claim as a sentence that wraps between words", async () =>
     want[`inside ${state}`] = RECORDED_CLAIMS.inside[state];
   }
   expect(drawn).toEqual(want);
+});
+
+/** What keeps a piece of a line whole on it (`shared-controls.tooltips.test.tsx`'s
+ *  `HOLDS_ITS_LINE`): `shrink-0` and `flex-none` keep its width in a flex row,
+ *  `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one line, and
+ *  `truncate` cuts what does not fit. */
+const HOLDS_WHOLE = [
+  "flex-none",
+  "shrink-0",
+  "text-nowrap",
+  "truncate",
+  "whitespace-nowrap",
+  "whitespace-pre",
+];
+
+// At a phone's 320 px the claim in a row of Details wraps word by word: inside `NoTooltips`, drawn
+// with the most words the chip draws (an unresponsive holder, the heartbeat it was last seen at
+// and the moment it comes free, each instant a `<time>`), no piece of the claim carries a class of
+// `HOLDS_WHOLE` or an inline `flex-shrink: 0`. The separators between the pieces are hidden from a
+// reader and hold no word, and `AgentName`'s state mark is a dot with no word in it.
+test("in Details' row every word of the claim wraps, and none is held whole against the row", async () => {
+  const read = await readClaim("waiting", "inside", true, (chip) => ({
+    held: [chip, ...chip.querySelectorAll("*")]
+      .filter(
+        (element) =>
+          element.getAttribute("aria-hidden") !== "true" &&
+          !element.matches("[data-agent-name] > [role='img']")
+      )
+      .flatMap((element) => {
+        const held = classOf(element).filter((token) => HOLDS_WHOLE.includes(token));
+        if (element instanceof HTMLElement && element.style.flexShrink === "0") {
+          held.push("flex-shrink: 0");
+        }
+        return held.map(
+          (token) =>
+            `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${element.textContent}: ${token}`
+        );
+      }),
+    times: chip.querySelectorAll("time").length,
+    unresponsive: chip.querySelector("[data-testid='issue-claim-unresponsive']") !== null,
+  }));
+  expect({ times: read.times, unresponsive: read.unresponsive }).toEqual({
+    times: 3,
+    unresponsive: true,
+  });
+  expect(read.held).toEqual([]);
 });
 
 // Inside `NoTooltips` the priority's add control in a row of Details is, from `md`, as tall as the
@@ -3371,51 +3423,48 @@ test("Escape in the priority's form closes the form alone and returns the focus 
   }
 });
 
-// The same ruling, for the third way the form closes: Add's write disables the add control until
-// the write settles, and a disabled control holds no focus, so the focus waits on the body and
-// moves to the add control once the write settles. A focus the reader put elsewhere in between
-// stays where the reader put it.
-test("Add in the priority's form returns the focus to its add control once its write settles", async () => {
+// The same ruling, for the third way the form closes, outside `NoTooltips`: Add's write disables
+// the add control until the write settles, as on `main`, and a disabled control holds no focus, so
+// the focus waits on the body and moves to the add control once the write settles. A focus the
+// reader put elsewhere in between stays where the reader put it. Inside `NoTooltips` the add
+// control is refused with `aria-disabled` and holds the focus all along, which the case after
+// this one asserts.
+test("outside NoTooltips Add in the priority's form returns the focus to its add control once its write settles", async () => {
   const user = userEvent.setup();
-  for (const surface of ["outside", "inside"] as const) {
-    for (const reader of ["waits", "moves on"] as const) {
-      const patchIssue = answerIssuePatches();
-      const written = Promise.withResolvers<Issue>();
-      patchIssue.mockImplementation(() => written.promise);
-      const view = draw(
-        <>
-          <button type="button">Elsewhere</button>
-          {addablePriorityLine(surface)}
-        </>,
-        surface
+  for (const reader of ["waits", "moves on"] as const) {
+    const patchIssue = answerIssuePatches();
+    const written = Promise.withResolvers<Issue>();
+    patchIssue.mockImplementation(() => written.promise);
+    const view = draw(
+      <>
+        <button type="button">Elsewhere</button>
+        {addablePriorityLine("outside")}
+      </>,
+      "outside"
+    );
+    try {
+      addControlOf(view, "outside").focus();
+      await user.keyboard("{Enter}");
+      const picker = await pickerOf(view);
+      await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
+      await user.selectOptions(picker, "evals-now");
+      await user.click(within(view.container).getByRole("button", { name: "Add" }));
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      // While the write is out the add control is disabled and holds no focus.
+      expect(pickerShown(view)).toBe(false);
+      expect(addControlOf(view, "outside")).toBeDisabled();
+      expect(document.activeElement).toBe(document.body);
+      const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
+      if (reader === "moves on") elsewhere.focus();
+      written.resolve({} as Issue);
+      await waitFor(() => expect(addControlOf(view, "outside")).not.toBeDisabled());
+      await settleReads();
+      expect(document.activeElement).toBe(
+        reader === "waits" ? addControlOf(view, "outside") : elsewhere
       );
-      try {
-        addControlOf(view, surface).focus();
-        await user.keyboard("{Enter}");
-        const picker = await pickerOf(view);
-        await waitFor(() => expect(within(picker).getAllByRole("option")).toHaveLength(3));
-        await user.selectOptions(picker, "evals-now");
-        await user.click(within(view.container).getByRole("button", { name: CONTROL_LABELS.add }));
-        await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-        // While the write is out the add control is disabled and holds no focus.
-        expect(pickerShown(view)).toBe(false);
-        // Inside, the case below asserts the add control while the write is out.
-        if (surface === "outside") {
-          expect(addControlOf(view, surface)).toBeDisabled();
-          expect(document.activeElement).toBe(document.body);
-        }
-        const elsewhere = within(view.container).getByRole("button", { name: "Elsewhere" });
-        if (reader === "moves on") elsewhere.focus();
-        written.resolve({} as Issue);
-        await waitFor(() => expect(addControlOf(view, surface)).not.toBeDisabled());
-        await settleReads();
-        expect(document.activeElement).toBe(
-          reader === "waits" ? addControlOf(view, surface) : elsewhere
-        );
-      } finally {
-        patchIssue.mockRestore();
-        undraw(view);
-      }
+    } finally {
+      patchIssue.mockRestore();
+      undraw(view);
     }
   }
 });
@@ -3988,14 +4037,10 @@ test("inside NoTooltips Request changes opens no dialog while Approve's write is
   }
 });
 
-// Where the clipboard is missing (an origin that is not secure) or refuses, `copyText` copies
-// through a temporary text box that takes the focus and leaves the page, which drops the focus to
-// the body. Inside `NoTooltips` the focus returns to the copy button: at once where the clipboard
-// is missing, on a second press made while "Copied" still shows too, and once the copy settles
-// where the clipboard refused. Outside `NoTooltips` the focus stays where the copy left it, the
-// body.
-test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
-  const user = userEvent.setup();
+/** Runs `run` with `copyText`'s fallback as a browser runs it: `document.execCommand` copies, and
+ *  each command it is given is recorded in `copied`; the temporary text box's `select()` takes the
+ *  focus. The clipboard a case sets (`setClipboard`) is put back after. */
+async function withCopyFallback(run: (copied: string[]) => Promise<void>): Promise<void> {
   const originalClipboard = navigator.clipboard;
   const originalExecCommand = document.execCommand;
   const copied: string[] = [];
@@ -4013,42 +4058,112 @@ test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", 
     this.focus();
   });
   try {
+    await run(copied);
+  } finally {
+    select.mockRestore();
+    setClipboard(originalClipboard);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: originalExecCommand,
+    });
+  }
+}
+
+/** Gives the page `clipboard`: `undefined`, as on an origin that is not secure, or a clipboard
+ *  whose `writeText` answers as the case says. */
+function setClipboard(clipboard: Pick<Clipboard, "writeText"> | undefined): void {
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+}
+
+// Where the clipboard is missing (an origin that is not secure) or refuses, `copyText` copies
+// through a temporary text box that takes the focus and leaves the page, which drops the focus to
+// the body. Inside `NoTooltips` the focus returns to the copy button after each copy: at once
+// where the clipboard is missing, and once the copy settles where the clipboard refused, on a
+// second press made while the first copy's "Copied" still shows too. Outside `NoTooltips` the
+// focus stays where the copy left it, the body.
+test("inside NoTooltips a copy pressed by Enter keeps the focus on its button", async () => {
+  const user = userEvent.setup();
+  await withCopyFallback(async (copied) => {
     for (const surface of ["inside", "outside"] as const) {
       for (const clipboard of ["missing", "refusing"] as const) {
-        Object.defineProperty(navigator, "clipboard", {
-          configurable: true,
-          value:
-            clipboard === "missing"
-              ? undefined
-              : { writeText: async () => Promise.reject(new Error("denied")) },
-        });
+        setClipboard(
+          clipboard === "missing"
+            ? undefined
+            : { writeText: async () => Promise.reject(new Error("denied")) }
+        );
         copied.length = 0;
         const view = draw(<CopyButton value="CORE-1" what="issue key" />, surface);
         try {
           const scope = within(view.container);
           const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
-          const presses = clipboard === "missing" ? 2 : 1;
-          for (let press = 0; press < presses; press += 1) {
+          for (let press = 0; press < 2; press += 1) {
+            // The second press is made within the first copy's 1.5 s, while its "Copied" shows.
+            if (press > 0) expect(scope.queryByText("Copied")).not.toBeNull();
             button.focus();
             await user.keyboard("{Enter}");
             await scope.findByText("Copied");
             await settleReads();
             expect(copied).toHaveLength(press + 1);
-            expect(document.activeElement).toBe(surface === "inside" ? button : document.body);
+            const focus =
+              document.activeElement === button
+                ? "the copy button"
+                : document.activeElement === document.body
+                  ? "the body"
+                  : document.activeElement?.outerHTML;
+            expect({ clipboard, focus, press }).toEqual({
+              clipboard,
+              focus: surface === "inside" ? "the copy button" : "the body",
+              press,
+            });
           }
         } finally {
           undraw(view);
         }
       }
     }
-  } finally {
-    select.mockRestore();
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: originalClipboard });
-    Object.defineProperty(document, "execCommand", {
-      configurable: true,
-      value: originalExecCommand,
-    });
-  }
+  });
+});
+
+// A reader who moves the focus to another control while a copy is out keeps it there: the
+// clipboard refuses after the move, and the fallback's text box takes the focus and leaves it on
+// the body, so inside `NoTooltips` the focus goes back to where the reader put it, not to the
+// copy button. Outside `NoTooltips` the focus stays where the copy left it, the body.
+test("inside NoTooltips a copy leaves a focus the reader moved elsewhere where it is", async () => {
+  const user = userEvent.setup();
+  await withCopyFallback(async (copied) => {
+    for (const surface of ["inside", "outside"] as const) {
+      const refused = Promise.withResolvers<void>();
+      setClipboard({ writeText: () => refused.promise });
+      copied.length = 0;
+      const view = draw(
+        <>
+          <CopyButton value="CORE-1" what="issue key" />
+          <button type="button">Elsewhere</button>
+        </>,
+        surface
+      );
+      try {
+        const scope = within(view.container);
+        const button = scope.getByRole("button", { name: "Copy issue key CORE-1" });
+        const elsewhere = scope.getByRole("button", { name: "Elsewhere" });
+        button.focus();
+        await user.keyboard("{Enter}");
+        await settleReads();
+        // The copy is out: the clipboard has not answered, and the fallback has not run.
+        expect(copied).toEqual([]);
+        expect(document.activeElement).toBe(button);
+
+        elsewhere.focus();
+        refused.reject(new Error("denied"));
+        await scope.findByText("Copied");
+        await settleReads();
+        expect(copied).toEqual(["copy"]);
+        expect(document.activeElement).toBe(surface === "inside" ? elsewhere : document.body);
+      } finally {
+        undraw(view);
+      }
+    }
+  });
 });
 
 /** CORE-1's priority line on the issue as `read` answers it: a write of what the issue advances
@@ -4522,6 +4637,103 @@ test("Escape in the route box closes the box and leaves Details open", async () 
 
 test("Escape in the parent box closes the box and leaves Details open", async () => {
   await escapeInFieldBox("parent", PROPERTY_LABELS.parent);
+});
+
+/** An editor's two buttons in a form of its own, whose save is out from a submit until `saved`
+ *  settles: `saving` and `waiting` hold then, as an editor that draws its refusal in itself holds
+ *  them. `onSubmit` and `onCancel` hear each submit of the form and each cancel. */
+function HeldSaveForm({
+  onCancel,
+  onSubmit,
+  saved,
+}: {
+  onCancel: () => void;
+  onSubmit: () => void;
+  saved: Promise<void>;
+}): ReactNode {
+  const [out, setOut] = useState(false);
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+        setOut(true);
+        void saved.then(() => setOut(false));
+      }}
+    >
+      <input aria-label={PROPERTY_LABELS.route} />
+      <FormActions
+        cancel={onCancel}
+        saveLabel={CONTROL_LABELS.save_route}
+        saving={out}
+        waiting={out}
+      />
+    </form>
+  );
+}
+
+// An editor's Save and Cancel refuse a press with `aria-disabled` while its save is out, never
+// `disabled`, which drops the focus to the body in a browser: Save, pressed by Enter, keeps the
+// focus, and neither Enter on it again nor Enter in the box, which clicks it too, submits again;
+// Cancel, while the editor waits for that save, keeps the focus as well and cancels nothing. Once
+// the save lands both take a press again. The editors are drawn only on the new issue page, so
+// the case is drawn inside `NoTooltips` alone.
+test("inside NoTooltips an editor's Save and Cancel keep the focus while its save is out", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const saved = Promise.withResolvers<void>();
+  let submits = 0;
+  let cancels = 0;
+  const view = draw(
+    <HeldSaveForm
+      onCancel={() => {
+        cancels += 1;
+      }}
+      onSubmit={() => {
+        submits += 1;
+      }}
+      saved={saved.promise}
+    />,
+    "inside"
+  );
+  try {
+    const scope = within(view.container);
+    const save = scope.getByRole("button", { name: CONTROL_LABELS.save_route });
+    const cancel = scope.getByRole("button", { name: CONTROL_LABELS.cancel });
+    const box = scope.getByRole("textbox", { name: PROPERTY_LABELS.route });
+    save.focus();
+    await user.keyboard("{Enter}");
+    await settleReads();
+    expect(submits).toBe(1);
+    expectRefusedHoldingFocus(save);
+    await user.keyboard("{Enter}");
+    await settleReads();
+    expect(submits).toBe(1);
+    expectRefusedHoldingFocus(save);
+
+    box.focus();
+    await user.keyboard("{Enter}");
+    await settleReads();
+    expect(submits).toBe(1);
+    expect(document.activeElement).toBe(box);
+
+    cancel.focus();
+    expectRefusedHoldingFocus(cancel);
+    await user.keyboard("{Enter}");
+    await settleReads();
+    expect(cancels).toBe(0);
+    expectRefusedHoldingFocus(cancel);
+
+    saved.resolve();
+    await waitFor(() => expect(cancel.hasAttribute("aria-disabled")).toBe(false));
+    expect(save.hasAttribute("aria-disabled")).toBe(false);
+    await user.keyboard("{Enter}");
+    expect(cancels).toBe(1);
+  } finally {
+    saved.resolve();
+    undraw(view);
+    unemulate();
+  }
 });
 
 /** An AskCard's queries, as a case reads them (`within`'s). */
