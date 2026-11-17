@@ -108,7 +108,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 // table's own result for the trigger, the step the work returns to, and the report handoff names
 // (endOfTransition). The move names it on the issue as it stood, before the write that moves it.
 func (e *Engine) nameMoveEnd(ctx context.Context, issue record.Issue, trigger TriggerKind, to phase.Phase, handoff record.PhaseRow) error {
-	place, ok := recordedPlace(issue)
+	step, ok := standingStep(issue)
 	if !ok {
 		return nil
 	}
@@ -116,7 +116,7 @@ func (e *Engine) nameMoveEnd(ctx context.Context, issue record.Issue, trigger Tr
 	if err != nil {
 		return err
 	}
-	runs.ends[runAt{issue: issue.Key, generation: issue.Generation, place: place}] = endOfTransition(trigger, record.StandsAt(issue), to, handoff)
+	runs.ends[runAt{issue: issue.Key, generation: issue.Generation, place: step.place}] = endOfTransition(trigger, step.at, to, handoff)
 	return nil
 }
 
@@ -212,7 +212,7 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if now == nil {
 			return true, nil
 		}
-		if place, ok := recordedPlace(*now); !ok || place != run.place || now.Generation != run.generation {
+		if step, ok := standingStep(*now); !ok || step.place != run.place || now.Generation != run.generation {
 			return true, nil
 		}
 		root := now
@@ -274,14 +274,14 @@ func (e *Engine) settleRuns(ctx context.Context, tx pgx.Tx, runs *factRuns, keys
 		if stood == nil {
 			continue
 		}
-		place, ok := recordedPlace(*stood)
+		step, ok := standingStep(*stood)
 		if !ok {
 			continue
 		}
-		if row, counted := rows[runAt{issue: key, place: place}]; counted && row.Run != record.RunUncounted {
+		if row, counted := rows[runAt{issue: key, place: step.place}]; counted && row.Run != record.RunUncounted {
 			continue
 		}
-		run := runAt{issue: key, generation: stood.Generation, place: place}
+		run := runAt{issue: key, generation: stood.Generation, place: step.place}
 		ended, err := over(run, now, false)
 		if err != nil {
 			return err
@@ -323,13 +323,6 @@ func (e *Engine) mergeCanLand(ctx context.Context, tx pgx.Tx, runs *factRuns, me
 		return false, err
 	}
 	return handover != nil && handover.Tree == root.Tree && handover.Generation == root.Generation, nil
-}
-
-// recordedPlace is the place of the step issue stands in (record.StandsAt) and whether its runs are
-// recorded: a phase that runs a step, of an issue key (recordsSteps).
-func recordedPlace(issue record.Issue) (record.StepPlace, bool) {
-	place, _, _, ok := stepOf(record.StandsAt(issue))
-	return place, ok && recordsSteps(issue)
 }
 
 // stepPhases is every phase that runs a step (stepOf).

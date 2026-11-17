@@ -1603,8 +1603,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		// to merge, and accepting's role is the tree's architect, which start skips. The step starts
 		// all the same, under the agent it names (startNamedStep): nobody for the merge, whose close
 		// ends it, and the tree's architect for accepting.
-		if err := e.startNamedStep(ctx, tx, issue); err != nil {
-			return err
+		if step, ok := standingStep(issue); ok {
+			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
+				return err
+			}
 		}
 	default:
 		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {

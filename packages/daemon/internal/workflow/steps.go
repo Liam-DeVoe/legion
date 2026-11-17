@@ -63,6 +63,26 @@ func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType,
 	return record.StepPlace{}, "", "", false
 }
 
+// standing is the step an issue stands in: its place, its role and its type (stepOf), and the
+// phase it is the step of (record.StandsAt).
+type standing struct {
+	place record.StepPlace
+	role  stepRole
+	typ   stepType
+	at    phase.Phase
+}
+
+// standingStep is the one place that decides which step issue stands in and whether its runs are
+// recorded: the step of the phase it stands in (record.StandsAt, so a held issue's is the step of
+// the phase its hold is from), and false for a phase that runs no step — admitted, awaiting a
+// person, held, done — or a record key that is no issue key (recordsSteps). Every writer of a
+// step's record takes the step it found.
+func standingStep(issue record.Issue) (standing, bool) {
+	at := record.StandsAt(issue)
+	place, role, typ, ok := stepOf(at)
+	return standing{place: place, role: role, typ: typ, at: at}, ok && recordsSteps(issue)
+}
+
 // StepResult is how a run of a step ended: one of the three results Dispatch takes for a step
 // record. Any other text is refused there as 400 STEP_INPUT, which the outbox drops for good
 // (internal/daemon's stepRecordRefused), so every end names its result by one of the three
@@ -131,21 +151,17 @@ var stepStopped = StepEnd{Result: ResultStopped}
 // the issue that is over, the run of its own place among them (settleStart), so the end of the run
 // the issue leaves, or that its place held, reaches Dispatch before this start. The record never
 // makes the start wait: the row reaches Dispatch on a lane of its own (record.LaneRecord). A phase
-// that runs no step writes nothing, and neither does a record key that is no issue key
-// (recordsSteps).
-func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, agent claim.Token) error {
-	place, role, typ, ok := stepOf(record.StandsAt(issue))
-	if !ok || !recordsSteps(issue) {
-		return nil
-	}
-	if err := e.settleStart(ctx, tx, issue.Key, place); err != nil {
+// that runs no step and a record key that is no issue key are no step its callers find
+// (standingStep).
+func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing, agent claim.Token) error {
+	if err := e.settleStart(ctx, tx, issue.Key, step.place); err != nil {
 		return err
 	}
 	// The moment is the one the count of starts keeps, which PostgreSQL holds to the microsecond
 	// and the end reads back, so the start and the end write one moment (endStep).
 	now := e.now().Truncate(time.Microsecond)
-	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, place, func(starts int64) record.StepRecord {
-		write := stepWrite(issue, place, role, typ, string(agent), starts)
+	write, err := e.store.RaiseStepStarts(ctx, tx, issue.Key, step.place, func(starts int64) record.StepRecord {
+		write := stepWrite(issue, step.place, step.role, step.typ, string(agent), starts)
 		write.StartedAt = new(now)
 		return write
 	})
@@ -172,27 +188,26 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, a
 // agent now, the only write that names either (startStep). A phase that runs no step writes
 // nothing, and neither does a record key that is no issue key (recordsSteps).
 func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, end StepEnd) error {
-	at := record.StandsAt(before)
-	place, role, typ, ok := stepOf(at)
-	if !ok || !recordsSteps(before) {
+	step, ok := standingStep(before)
+	if !ok {
 		return nil
 	}
-	start, mark, err := e.store.EndStepStart(ctx, tx, before.Key, place)
+	start, mark, err := e.store.EndStepStart(ctx, tx, before.Key, step.place)
 	if err != nil || mark == record.AlreadyEnded {
 		return err
 	}
 	agent, startedAt := claim.Token(start.Agent), start.StartedAt
 	if mark == record.NotCounted {
-		if agent, startedAt, err = e.upgradedStart(ctx, tx, before, at); err != nil {
+		if agent, startedAt, err = e.upgradedStart(ctx, tx, before, step.at); err != nil {
 			return err
 		}
-		starts, first, err := e.store.EndUncountedStep(ctx, tx, before.Key, place, string(agent), startedAt)
+		starts, first, err := e.store.EndUncountedStep(ctx, tx, before.Key, step.place, string(agent), startedAt)
 		if err != nil || !first {
 			return err
 		}
 		start.Starts = starts
 	}
-	write := stepWrite(before, place, role, typ, string(agent), start.Starts)
+	write := stepWrite(before, step.place, step.role, step.typ, string(agent), start.Starts)
 	if !startedAt.IsZero() {
 		write.StartedAt = new(startedAt)
 	}
@@ -291,22 +306,17 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return stepClaim(issue, issue.Key, phase.RoleFor(at))
 }
 
-// startNamedStep writes the start of the step issue stands in under the agent that step names
-// (startAgent), the one place that decides who runs a start no phase worker's entry names: a move
-// into accepting, whose tree architect start skips, or into a merge GitHub has already made, which
-// nobody runs and whose close ends it (transition), and admission's promotion of a member whose
-// worker it does not start (StartStepRecord). A phase that runs no step writes nothing, and
-// neither does a record key that is no issue key, which names no claim (recordsSteps).
-func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	at := record.StandsAt(issue)
-	if _, _, _, ok := stepOf(at); !ok || !recordsSteps(issue) {
-		return nil
-	}
-	agent, err := e.startAgent(ctx, tx, issue, at)
+// startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
+// that step names (startAgent), the one place that decides who runs a start no phase worker's entry
+// names: a move into accepting, whose tree architect start skips, or into a merge GitHub has
+// already made, which nobody runs and whose close ends it (transition), and admission's promotion
+// of a member whose worker it does not start (StartStepRecord).
+func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
+	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {
 		return err
 	}
-	return e.startStep(ctx, tx, issue, agent)
+	return e.startStep(ctx, tx, issue, step, agent)
 }
 
 // stepClaim is the claim token of role on key, in issue's project.
@@ -359,13 +369,13 @@ func endOfTransition(trigger TriggerKind, from, to phase.Phase, handoff record.P
 // started for this run (workflow.StartFor). A second start there would open a run while the one
 // before it has no end, and the count would leave that one none.
 func (e *Engine) StartStepRecord(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-	place, _, _, ok := stepOf(record.StandsAt(issue))
-	if !ok || !recordsSteps(issue) {
+	step, ok := standingStep(issue)
+	if !ok {
 		return nil
 	}
-	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	latest, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
 	if err != nil || latest.Run == record.RunOpen {
 		return err
 	}
-	return e.startNamedStep(ctx, tx, issue)
+	return e.startNamedStep(ctx, tx, issue, step)
 }

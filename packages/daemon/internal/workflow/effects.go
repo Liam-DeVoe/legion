@@ -765,12 +765,12 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	// Every entry a phase worker is handed is the start of a run of its step: a transition's start
 	// and the promotion's start of a mid-phase member (StartPromotedWorker). The architect's own
 	// entry is no step of the issue's task.
-	if role != claim.RoleArchitect && recordsSteps(issue) {
+	if step, ok := standingStep(issue); ok && role != claim.RoleArchitect {
 		agent, err := stepClaim(issue, issue.Key, role)
 		if err != nil {
 			return 0, err
 		}
-		if err := e.startStep(ctx, tx, issue, agent); err != nil {
+		if err := e.startStep(ctx, tx, issue, step, agent); err != nil {
 			return 0, err
 		}
 	}
