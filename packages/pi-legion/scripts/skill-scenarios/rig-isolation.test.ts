@@ -86,9 +86,10 @@ function put(file: string, text: string, mode = 0o644) {
 // beside itself ($here) — run-names.ts's guard, the gh stand-in and the modules its bundle takes
 // in, the GitHub stand-in and its routes, the head watcher, the seeds — and three times a list
 // kept here was short by the one program the rig had newly started to run (gh-threads.ts, then
-// github-standin.ts with four more), so every run of the rows died. The rig's provenance list
-// (services_from) is no list of them either: it names what a run starts, not the modules those
-// import. Left out: the directory's tests (`*.test.ts`), which no run runs, and its
+// github-standin.ts with four more), so every run of the rows died. The rig's provenance
+// (services_from) is read off rig.sh and its programs' imports too (run-programs.ts), but the
+// copy takes the directory whole, so no reading of what a run runs can leave a run of the rows
+// short. Left out: the directory's tests (`*.test.ts`), which no run runs, and its
 // subdirectories (health-fixture/, the tester's recorded runs, which only a test reads). seed.ts is
 // copied and then replaced by the stand-in below.
 const co = path.join(scratch, "checkout");

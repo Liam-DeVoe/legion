@@ -700,7 +700,15 @@ provenance to `services/services-from-<label>`, and each run copies its label's 
 `<run>/services-from`, beside its `built-from`, before any agent of it starts: one
 `<service> <scope> <from> <digest>` a line, where `<scope>` is `label` (`<from>` is the label's
 checkout), `pin` (`<from>` is the pin) or `shared`, and `<digest>` is `sha256:<hex>` of the binary
-or program file the run starts, `-` where it starts none, or `missing`. `rig.sh health` calls a run
+or program file the run starts, `-` where it starts none, or `missing`. Its `shared` programs, the
+rig's directory's, one line each in byte order, are read off the rig, never kept in a list
+(`run-programs.ts`): every program a function of `rig.sh` names as `$here/<name>.ts` or
+`$here/<name>.go` (not `health.ts`, which only `rig.sh health` names and no run runs), every
+module of the directory one of those imports, exports from or imports dynamically, at any depth
+(`Bun.Transpiler`'s scan, which skips an import of types alone), and every Go program of the
+directory but a test, which `daemon-pane.ts` hands to `go run`. The list kept by hand before left
+out `daemon-pane.ts`, `score.ts`, `completion-answers.ts` and `judge.ts`, which runs run, and every
+module but `github-routes.ts`. `rig.sh health` calls a run
 unhealthy that has no `services-from`, whose `built-from` names no checkout, that names a service
 of scope `label` from any other checkout, or that does not name its listener, Dispatch server,
 daemon facts and worker pane as its label's.

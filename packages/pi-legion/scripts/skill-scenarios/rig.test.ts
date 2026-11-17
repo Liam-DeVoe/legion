@@ -8522,8 +8522,9 @@ sleep() { command sleep 0.05; }`;
 // 100, the max_connections of a server that admits 100, a `go` that records the directory each
 // build runs in and writes a binary naming it, a `bun` that records each read of a label's
 // daemon facts (label_facts) with the work directory and the build it was given, and refuses it
-// when FACTS_REFUSE names why, and a load_label whose label's checkout is a directory of the
-// row's own (<work>/checkouts/<label>).
+// when FACTS_REFUSE names why, and runs every other call as bun does (services_from's read of
+// the programs a run runs, run-programs.ts), and a load_label whose label's checkout is a
+// directory of the row's own (<work>/checkouts/<label>).
 describe("services_up and services_down", () => {
   const stubs = `
 until_true() { shift 2; "$@"; }
@@ -8534,8 +8535,13 @@ load_label() { P=$work/profiles/$1; co=$work/checkouts/$1; pin=omp@stub; profile
 pinned_omp() { printf '%s\\n' "$work/omp"; }
 go() { printf '%s go %s\\n' "$PWD" "$*" >>"$S/go-calls"; printf 'built in %s\\n' "$PWD" >"$3"; }
 bun() {
-  printf '%s|%s|%s\\n' "$SKILL_SCENARIOS_WORK" "$SKILL_SCENARIOS_DAEMON_PANE" "$*" >>"$S/facts-calls"
-  [ -z "\${FACTS_REFUSE:-}" ] || { printf 'daemon-pane facts: %s\\n' "$FACTS_REFUSE" >&2; return 1; }
+  case $1 in
+  */daemon-pane.ts)
+    printf '%s|%s|%s\\n' "$SKILL_SCENARIOS_WORK" "$SKILL_SCENARIOS_DAEMON_PANE" "$*" >>"$S/facts-calls"
+    [ -z "\${FACTS_REFUSE:-}" ] || { printf 'daemon-pane facts: %s\\n' "$FACTS_REFUSE" >&2; return 1; }
+    ;;
+  *) command bun "$@" ;;
+  esac
 }
 docker() {
   printf 'docker %s\\n' "$*" >>"$S/docker-calls"
@@ -8827,18 +8833,20 @@ docker() {
     });
   });
 
-  // Catches: a program this directory runs inside every run left off the run's provenance, so a
-  // change to it changes a run unseen by any digest a batch records: boot-refusal.ts, which
-  // boot_agent now runs itself inside every boot to decide a relaunch, run-names.ts, which
-  // launch runs before every agent to refuse a world that names the measurement,
-  // daemon-completion.go, which reads how the label's daemon takes a completion at every stand-in's
-  // boot, and gh-selectors.go, which reads the selector table the run's gh refuses an owner by;
-  // and a digest that is not the file's own.
-  test("services_from names every program a run runs from this directory, by its own digest", () => {
-    const here = import.meta.dir;
+  /** file_digest of `name` in `dir`: `sha256:<hex>` of its bytes, or `missing`. */
+  const digestOf = (dir: string, name: string) => {
+    const file = path.join(dir, name);
+    return existsSync(file)
+      ? `sha256:${new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex")}`
+      : "missing";
+  };
+  /** services_from for a label, run with its rig's directory at `here` (this one unless a row
+   * gives a copy of it): its exit, its stderr, and the digest of each program of `here` it names,
+   * `<program> shared <here> <digest>`, in its order. */
+  function provenanceOf(here: string) {
     const result = bash(
       [
-        ...["given_services", "safe_url", "file_digest", "services_from"].map(fn),
+        ...["fail", "given_services", "safe_url", "file_digest", "services_from"].map(fn),
         "pinned_omp() { echo /x/omp; }",
         `here=${here} co=/co pin=omp@pin I=/w/installs/0a1b2c3d4e5f profile=legion`,
         "nats_url=nats://127.0.0.1:4222 pg_url=postgres://127.0.0.1:5432/postgres",
@@ -8847,18 +8855,149 @@ docker() {
       [],
       given
     );
-    expect(result).toMatchObject({ code: 0, stderr: "" });
-    const digest = (file: string) =>
-      `sha256:${new Bun.CryptoHasher("sha256").update(readFileSync(path.join(here, file))).digest("hex")}`;
-    for (const program of [
-      "boot-refusal.ts",
-      "run-names.ts",
-      "gh-standin.ts",
-      "daemon-standin.ts",
-      "daemon-completion.go",
-      "gh-selectors.go",
-    ])
-      expect(result.stdout).toContain(`\n${program} shared ${here} ${digest(program)}\n`);
+    const programs = new Map<string, string>();
+    for (const line of result.stdout.split("\n")) {
+      const [program = "", scope, from, digest = "", extra] = line.split(" ");
+      if (scope === "shared" && from === here && extra === undefined) programs.set(program, digest);
+    }
+    return { code: result.code, stderr: result.stderr, programs };
+  }
+
+  // Catches: a program this directory runs on a run's path left off the run's provenance, so a
+  // change to it changes a run unseen by any digest a batch records. The list services_from kept
+  // by hand left out daemon-pane.ts (label_facts, worker_boot), score.ts (reviewer_wake),
+  // completion-answers.ts (skip_reason) and judge.ts (judge_ts), and every module of the
+  // directory those programs import but github-routes.ts. Catches too: a Go program daemon-pane.ts
+  // hands to `go run`, which no function names (daemon-routes.go, daemon-completion.go,
+  // gh-selectors.go), left off; a program only the command dispatch names, which no run runs
+  // (`rig.sh health`'s health.ts), put on; an order but byte order; and a digest that is not the
+  // file's own. The set is read here apart from run-programs.ts, which services_from reads it
+  // with: every program a function of rig.sh names (scriptFunctions), every module of this
+  // directory bun's bundler takes into one of them (its metafile), and every Go program.
+  test("services_from names every program a run runs from this directory, by its own digest, in byte order", async () => {
+    const here = realpathSync(import.meta.dir);
+    const { code, stderr, programs } = provenanceOf(here);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const named = new Set<string>();
+    for (const [, name = ""] of rigScript.matchAll(/^([A-Za-z_]\w*)\(\) \{/gm))
+      for (const [, program = ""] of fn(name).matchAll(/\$here\/([\w.-]+\.(?:ts|go))\b/g))
+        named.add(program);
+    const built = await Bun.build({
+      entrypoints: [...named]
+        .filter((name) => name.endsWith(".ts"))
+        .map((name) => path.join(here, name)),
+      target: "bun",
+      metafile: true,
+    });
+    expect(built.success).toBe(true);
+    const bundled = Object.keys(built.metafile?.inputs ?? {})
+      .map((input) => path.resolve(input))
+      .filter((file) => path.dirname(file) === here)
+      .map((file) => path.basename(file));
+    const go = readdirSync(here).filter(
+      (name) => name.endsWith(".go") && !name.endsWith("_test.go")
+    );
+    const expected = [...new Set([...named, ...bundled, ...go])].sort();
+    const recorded = [...programs.keys()];
+    expect({
+      missing: expected.filter((name) => !programs.has(name)),
+      unexpected: recorded.filter((name) => !expected.includes(name)),
+    }).toEqual({ missing: [], unexpected: [] });
+    expect(recorded).toEqual(expected);
+    for (const [name, digest] of programs)
+      expect(`${name} ${digest}`).toBe(`${name} ${digestOf(here, name)}`);
+  });
+
+  /** A directory of its own holding run-programs.ts, `files`, and a copy of rig.sh whose
+   * functions name one more program, new-program.ts, and whose command dispatch, when
+   * `dispatched` names a program, runs that one as a command of its own. */
+  function rigCopy(name: string, files: Record<string, string>, dispatched?: string): string {
+    const here = realpathSync(freshDir(name));
+    const copy = rigScript.replace(
+      /^case "\$\{1:-\}" in$/m,
+      (dispatch) =>
+        `start_new() { bun "$here/new-program.ts"; }\n${dispatch}${dispatched === undefined ? "" : `\nnew) shift && bun "$here/${dispatched}" ;;`}`
+    );
+    expect(copy).not.toBe(rigScript);
+    writeFileSync(path.join(here, "rig.sh"), copy);
+    cpSync(path.join(import.meta.dir, "run-programs.ts"), path.join(here, "run-programs.ts"));
+    for (const [file, text] of Object.entries(files)) writeFileSync(path.join(here, file), text);
+    return here;
+  }
+
+  // Catches: a provenance kept as a list, which a program rig.sh comes to run joins only when
+  // someone edits it. A copy of rig.sh whose functions name one more program records it, each
+  // module of the directory it imports, exports from or imports dynamically (past its `#!` line),
+  // and one more Go program, with no list edited anywhere; it records no program only its command
+  // dispatch names, and no Go test; and a program a function names that is not there is recorded
+  // `missing`, not refused.
+  test("a program rig.sh comes to run, and what it imports, are in services_from's provenance with no list edited", () => {
+    const files: Record<string, string> = {
+      "new-program.ts": [
+        "#!/usr/bin/env bun",
+        'import { one } from "./new-module";',
+        'export * from "./new-reexport";',
+        'const late = await import("./new-dynamic");',
+        "console.log(one, late);",
+        "",
+      ].join("\n"),
+      "new-module.ts": "export const one = 1;\n",
+      "new-reexport.ts": "export const two = 2;\n",
+      "new-dynamic.ts": "export const three = 3;\n",
+      "dispatch-only.ts": "console.log(4);\n",
+      "new-reader.go": "package main\n",
+      "new-reader_test.go": "package main\n",
+    };
+    const here = rigCopy("services-from-copy", files, "dispatch-only.ts");
+    const { code, stderr, programs } = provenanceOf(here);
+    expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    const added = [
+      "new-program.ts",
+      "new-module.ts",
+      "new-reexport.ts",
+      "new-dynamic.ts",
+      "new-reader.go",
+    ];
+    const asked = [...added, "dispatch-only.ts", "new-reader_test.go", "daemon-standin.ts"];
+    expect(
+      Object.fromEntries(asked.map((name) => [name, programs.get(name) ?? "unrecorded"]))
+    ).toEqual({
+      ...Object.fromEntries(added.map((name) => [name, digestOf(here, name)])),
+      "dispatch-only.ts": "unrecorded",
+      "new-reader_test.go": "unrecorded",
+      "daemon-standin.ts": "missing",
+    });
+  });
+
+  // Catches: a provenance written with the programs a run runs unread, which names none of them,
+  // as a run of a rig that runs none would: where the reading fails (an import of a program that
+  // does not resolve), services_from fails, naming why, and names no program. So it does for a
+  // rig.sh whose command dispatch it cannot find, where a reading of the whole script would take
+  // in the programs only a command runs (`rig.sh health`'s health.ts).
+  test("services_from fails, naming why, where the programs a run runs cannot be read", () => {
+    const unresolved = rigCopy("services-from-unread", {
+      "new-program.ts": 'import { gone } from "./gone";\nconsole.log(gone);\n',
+    });
+    const undispatched = realpathSync(freshDir("services-from-undispatched"));
+    const copy = rigScript.replace(/^case "\$\{1:-\}" in$/m, 'case "$1" in');
+    expect(copy).not.toBe(rigScript);
+    writeFileSync(path.join(undispatched, "rig.sh"), copy);
+    cpSync(
+      path.join(import.meta.dir, "run-programs.ts"),
+      path.join(undispatched, "run-programs.ts")
+    );
+    for (const [here, why] of [
+      [unresolved, /^run-programs: Cannot find module '\.\/gone'/],
+      [undispatched, /^run-programs: \S+\/rig\.sh holds no command dispatch, so which programs/],
+    ] as const) {
+      const { code, stderr, programs } = provenanceOf(here);
+      expect(code).toBe(1);
+      expect(stderr).toMatch(why);
+      expect(stderr).toContain(
+        `\nskill-scenarios: services_from: the programs a run of ${here}/rig.sh runs could not be read (above), so no run's provenance can name them\n`
+      );
+      expect([...programs.keys()]).toEqual([]);
+    }
   });
 
   // Catches: two labels' listeners started as one service (one log, one port file, one pid kept)

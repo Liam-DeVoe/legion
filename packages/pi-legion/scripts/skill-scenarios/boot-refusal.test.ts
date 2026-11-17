@@ -4,38 +4,15 @@
 // module's. What each refusal reads as is rig.test.ts's (boot_agent's relaunch rows, and "a claim
 // boot sentence is read in the wording of the run's own label's plugin").
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { CLAIM_BOOT_FAILED_OPENING } from "@legion/pi-shared/legion-claim-core";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { importGraph } from "./run-programs";
 import { spawnChecked } from "./test-programs";
 
 /** This checkout, whose plugin's claim core the runs below name in their built-from. */
 const CHECKOUT = path.resolve(import.meta.dir, "../../../..");
-
-/** Every file of this repository that bun loads to run the module `file`, itself among them: each
- * module its source imports (`Bun.Transpiler`'s scan, which leaves out an import of types alone,
- * as bun's run does), at any depth, a workspace package's own sources included, and no installed
- * package's. */
-function importGraph(file: string): Set<string> {
-  const scanner = new Bun.Transpiler({ loader: "ts" });
-  const seen = new Set<string>();
-  const visit = (one: string) => {
-    if (seen.has(one)) return;
-    seen.add(one);
-    for (const { path: specifier } of scanner.scanImports(readFileSync(one, "utf8"))) {
-      if (/^(?:node|bun):/.test(specifier)) continue;
-      const resolved = realpathSync(Bun.resolveSync(specifier, path.dirname(one)));
-      if (
-        !resolved.includes(`${path.sep}node_modules${path.sep}`) &&
-        /\.[cm]?[jt]sx?$/.test(resolved)
-      )
-        visit(resolved);
-    }
-  };
-  visit(realpathSync(file));
-  return seen;
-}
 
 // Catches: the boot-refusal reader importing health.ts or score.ts, or a module that does, which
 // puts every rule of a whole run's reading on the path of every run's boot; and the module's own

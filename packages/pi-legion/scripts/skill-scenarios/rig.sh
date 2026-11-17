@@ -1639,18 +1639,25 @@ file_digest() {
 #           module (daemon_pane_binary);
 #   pin     its Oh My Pi, the version that checkout pins (.omp-pin), <from> being the pin;
 #   shared  a service production shares across versions, or this rig's own instrument, <from>
-#           being where it comes from: the stand-ins, readers and seed programs of this
-#           directory (boot-refusal.ts, which boot_agent runs inside every boot, run-names.ts,
-#           which launch runs before every agent starts, and github-standin.ts with its route
-#           table github-routes.ts, the GitHub start_dispatch gives the run's Dispatch, among
-#           them), NATS, Postgres and the push guard's check.
+#           being where it comes from: each program of this directory a run runs, by name in
+#           byte order, then NATS, Postgres and the push guard's check. The programs are read off
+#           this script's own text and their imports (run-programs.ts, which says which): every
+#           one this script's functions name as $here/<name>.ts or $here/<name>.go, each module
+#           of the directory one of them imports, and every Go program of the directory, which
+#           daemon-pane.ts hands to `go run`. No list names them, so a program this script
+#           starts to run is recorded with no edit here; the list this kept by hand left out
+#           daemon-pane.ts (label_facts, worker_boot), score.ts (reviewer_wake),
+#           completion-answers.ts (skip_reason) and judge.ts (judge_ts), and every module of
+#           the directory those import but github-routes.ts.
 # <digest> is file_digest of the binary or program file a run starts (`missing` where that file is
 # not there), or `-` where it starts none. The README's skill-scenarios section
 # (packages/pi-envoy/scripts/README.md) holds the table of every service, with the reason each
 # shared one is shared.
 services_from() {
-  local listener=$1 dispatch=$2 pane=$3 omp program
+  local listener=$1 dispatch=$2 pane=$3 omp programs program
   omp=$(pinned_omp "$pin") || exit 1
+  programs=$(bun "$here/run-programs.ts" "$here/rig.sh") ||
+    fail "services_from: the programs a run of $here/rig.sh runs could not be read (above), so no run's provenance can name them"
   printf 'envoy-listener label %s %s\n' "$co" "$(file_digest "$listener")"
   printf 'dispatch label %s %s\n' "$co" "$(file_digest "$dispatch")"
   printf 'plugins label %s -\n' "$co"
@@ -1658,9 +1665,9 @@ services_from() {
   printf 'daemon-facts label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'worker-pane label %s %s\n' "$co" "$(file_digest "$pane")"
   printf 'omp pin %s %s\n' "$pin" "$(file_digest "$omp")"
-  for program in daemon-standin.ts daemon-pane.go daemon-routes.go daemon-completion.go gh-selectors.go worker-pane.ts gh-standin.ts github-standin.ts github-routes.ts seed.ts head-watcher.ts record-publishes.ts boot-refusal.ts run-names.ts; do
+  while IFS= read -r program; do
     printf '%s shared %s %s\n' "$program" "$here" "$(file_digest "$here/$program")"
-  done
+  done <<<"$programs"
   if given_services; then
     printf 'nats shared %s -\n' "$(safe_url "$nats_url")"
     printf 'postgres shared %s -\n' "$(safe_url "$pg_url")"
