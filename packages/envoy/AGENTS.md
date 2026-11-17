@@ -3265,11 +3265,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Right after `compare`, a letter, a digit, `_`, `-`, `.` or `/` makes `compare` part of another word or a path, such as `compare-all`, `compare.sh` or `compare/`.
   Each other byte ends the word: white space, a quote, `;`, `|`, `&`, `(`, `)`, `<`, `>`, a comma, a bracket, and the start or the end of the file.
   A backslash right after `compare` is an escape, and the byte after it takes its place.
+  A quote there ends the word only when no letter, digit or `_` follows the quote, so `"compare"d` and `compare\"d` are other words.
   After a backslash, `n`, `t` and `r` stand for white space, so `\n`, `\t` and `\r` end the word on each side, as a backslash before a space or a line break does after `compare`.
+  PowerShell reads a lone carriage return as a line break, and Bash reads it as a byte of the word, so for Bash a `\r` beside the two words names a line that runs no comparison.
   So a name right after `\7` or `\-` is not named, nor `compare` before `\x20` or `\x64`.
   So `run: "set -e\nspec-check compare …"`, `run: "spec-check compare\ --dir …"` and `"spec-check compare".split()` are named, and `needs: [spec-check, compare-baselines]` is not.
   The rule reads the file's bytes and runs no shell expansion, so it does not find a command that an expansion, an escape or an alias builds, one with another word between the two, such as a redirection, a here-document or an image, or a `run: |` block whose two line continuations need the indentation after one kept and after the other removed.
-  Before the name, only `\n`, `\t` and `\r` of the escapes stand for white space; each other escape or expansion of one language that builds the boundary is outside the claim (`\x20`, `\x0a`, `\012`, `\u000a`, PowerShell's `` `n ``, a batch file's `%~dp0`, `$1`).
+  Before the name, only `\n`, `\t` and `\r` of the escapes stand for white space; each other escape or expansion of one language that builds the boundary is outside the claim (`\x20`, `\x0a`, `\012`, `\u000a`, PowerShell's `` `n ``, a batch file's `%~dp0`, `$1`), and so are `\0` before the name, whose NUL byte Bash skips, and `\t` between the two words.
   `TestCIFilesThatCompareLeavesAFormOutsideTheClaim` holds each of these limits, and `TestCIFilesThatCompareNamesEachCallThatAHeadNamed` each calling line that a head of #4183 named (`cmd/spec-check/testdata/ci-files/named-calls.txt`).
 
 - `cmd/spec-check state --scenario <dir> [--json]` derives the states of a scenario of The Spec (`cmd/spec-check/state.go`), in the format `specgraph.ReadScenario` reads (`internal/dispatch/specgraph/scenario.go`).

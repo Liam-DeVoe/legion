@@ -218,8 +218,8 @@ func testGuard(t *testing.T, binary string) {
 	})
 	// The two bounds read the file's own bytes, so the review's two Python lines, which split() turns
 	// into a list, are named: the quote after compare ends the word, and the . after the quote makes
-	// no other word of it. After compare, the byte after a backslash takes its place, so the audit's
-	// escaped space in a double-quoted YAML value ends the word, and so does \r.
+	// no other word of it. After compare, the byte after a backslash takes its place, so an escaped
+	// space ends the word, and so does \r, which PowerShell reads as a line break and Bash does not.
 	t.Run("guard names compare before a quote, an escaped space or \\r", func(t *testing.T) {
 		t.Parallel()
 		root, workflow := workflowTree(t, `      - run: "env -u GITHUB_ACTIONS spec-check compare\ --dir .dispatch/spec --approved approved.json"`+"\n"+

@@ -368,11 +368,15 @@ func TestCIFilesThatCompareReadsTheCommandsNameAsAWordOfItsOwn(t *testing.T) {
 // break, a tab and a carriage return, and an escaped space or quote into that byte. The two bounds
 // read the file's own bytes. After a backslash, n, t and r stand for white space, so the comparison
 // right after \n, \t or \r is named, and so is compare right before one. After compare, the byte
-// after a backslash takes its place, so an escaped space or quote ends the word too, as Bash runs
-// each. Any other letter, digit, _ or - after a backslash is a byte of a word before the name, so a
-// name right after \7, \-, \0 or \_, or in a Windows directory such as C:\bin\2spec-check, is no
-// command that a shell runs. A backslash right before the name is no byte of a word, so a Windows
-// path to the command is named. The escapes outside the claim are in
+// after a backslash takes its place, so an escaped space or quote ends the word too. Bash reads a
+// line break and a tab as white space and a carriage return as a byte of its word, so for Bash a
+// \r beside the two words names a line that runs no comparison (spec-check gets compare\r--dir, and
+// set -e\rspec-check fails at set); PowerShell reads a lone carriage return as a line break (its
+// language specification, 2.2.2 Line terminators), so there the line compares. Any other letter,
+// digit, _ or - after a backslash is a byte of a word before the name, so a name right after \7,
+// \- or \_, or in a Windows directory such as C:\bin\2spec-check, is no command that a shell runs. A
+// backslash right before the name is no byte of a word, so a Windows path to the command is named.
+// The escapes outside the claim, \0 before the name among them, are in
 // TestCIFilesThatCompareLeavesAFormOutsideTheClaim.
 func TestCIFilesThatCompareReadsAnEscapeAsTheEndOfAWord(t *testing.T) {
 	t.Parallel()
@@ -382,18 +386,17 @@ func TestCIFilesThatCompareReadsAnEscapeAsTheEndOfAWord(t *testing.T) {
 	}{
 		{"a double-quoted run: value with \\n before the name", ".github/workflows/a.yaml", `      - run: "set -e\nspec-check compare --dir .dispatch/spec --approved a.json"`, true},
 		{"a double-quoted run: value with \\t before the name", ".github/workflows/a.yaml", `      - run: "set -e;\tspec-check compare --dir a"`, true},
-		{"a double-quoted run: value with \\r before the name", ".github/workflows/a.yaml", `      - run: "set -e\rspec-check compare --dir a"`, true},
+		{"a double-quoted run: value with \\r before the name, a line break for PowerShell", ".github/workflows/a.yaml", `      - run: "set -e\rspec-check compare --dir a"`, true},
 		{"a double-quoted run: value with an escaped space before the name", ".github/workflows/a.yaml", `      - run: "set -e;\ spec-check compare --dir a"`, true},
 		{"execSync with \\n before the name", "scripts/a.ts", `execSync("set -e\nspec-check compare --dir a");`, true},
 		{"a double-quoted run: value with \\n after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\n--dir .dispatch/spec --approved a.json"`, true},
 		{"execSync with \\n after compare", "scripts/a.ts", `execSync("spec-check compare\n");`, true},
 		{"a double-quoted run: value with \\t after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\t--dir a"`, true},
-		{"a double-quoted run: value with \\r after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\r--dir a"`, true},
+		{"a double-quoted run: value with \\r after compare, a line break for PowerShell", ".github/workflows/a.yaml", `      - run: "spec-check compare\r--dir a"`, true},
 		{"a double-quoted run: value with an escaped space after compare, behind env -u", ".github/workflows/a.yaml", `      - run: "env -u GITHUB_ACTIONS spec-check compare\ --dir .dispatch/spec --approved approved.json"`, true},
 		{"a double-quoted run: value with an escaped quote after compare", ".github/workflows/a.yaml", `      - run: "bash -c \"spec-check compare\""`, true},
 		{"no command: \\7 before the name", "scripts/a.sh", `bash -c $'true;\7spec-check compare --dir a'`, false},
 		{"no command: \\- before the name", "scripts/a.sh", `\-spec-check compare --dir a`, false},
-		{"no command: \\0 before the name", "scripts/a.ts", `execSync("\0spec-check compare");`, false},
 		{"no command: \\_ before the name", "scripts/a.ts", `execSync("\_spec-check compare");`, false},
 		{"no command: a Windows directory 2spec-check", "scripts/a.cmd", `C:\bin\2spec-check compare --dir a`, false},
 		{"no command: a Windows directory bspec-check", "scripts/a.cmd", `C:\a\bspec-check compare --dir a`, false},
@@ -415,7 +418,8 @@ func TestCIFilesThatCompareReadsAnEscapeAsTheEndOfAWord(t *testing.T) {
 }
 
 // wordsThatOnlyHoldCompare is each line whose word after the command's name only holds compare, as
-// a job, another subcommand, a script or a path does: none names the command.
+// a job, another subcommand, a script or a path does, or a word that goes on after a quote that
+// ends compare, which Bash reads as compared or compare"d: none names the command.
 var wordsThatOnlyHoldCompare = []string{
 	"needs: [spec-check, compare-baselines]",
 	"spec-check compare-all",
@@ -423,6 +427,9 @@ var wordsThatOnlyHoldCompare = []string{
 	"spec-check compare.sh",
 	`spec-check "compare.sh"`,
 	`spec-check compare\.sh`,
+	`spec-check "compare"d`,
+	`spec-check 'compare'd`,
+	`spec-check compare\"d`,
 }
 
 // The word compare is a word of its own too: a letter, a digit, _, -, . or / right after it makes
@@ -490,16 +497,17 @@ func TestCIFilesThatCompareNamesAFoldedValueThatABackslashSplits(t *testing.T) {
 // image, or a run: | block whose two line continuations need the indentation after one kept and
 // after the other removed. Before the name, only \n, \t and \r of the escapes stand for white
 // space; each other escape or expansion of one language that builds the boundary is outside the
-// claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1). Each runs the
-// comparison in Bash, with x set to spec-check and sub to compare, and the glob where a file named
-// compare is. The refusal of compare stops each in a step that keeps GITHUB_ACTIONS; a container
-// that docker run starts without -e GITHUB_ACTIONS, as the --entrypoint form and a block list of a
-// command do, passes both. A command substitution that writes spec-check right before ) is named,
-// since the text holds the two words. In a run: | block, a backslash and a line break right after
-// the command's name, with more indentation after them, and a second pair inside the subcommand are
-// not found: the first pair needs the blanks that start the next line, the second needs them gone,
-// and each reading of the rule keeps them all or removes them all. The same text in a script is
-// named, since there no indentation follows the second pair.
+// claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's %~dp0, $1), and so are \0 before
+// the name, whose NUL byte Bash skips, and \t between the two words. Each runs the comparison in
+// Bash, with x set to spec-check and sub to compare, and the glob where a file named compare is.
+// The refusal of compare stops each in a step that keeps GITHUB_ACTIONS; a container that docker
+// run starts without -e GITHUB_ACTIONS, as the --entrypoint form and a block list of a command do,
+// passes both. A command substitution that writes spec-check right before ) is named, since the
+// text holds the two words. In a run: | block, a backslash and a line break right after the
+// command's name, with more indentation after them, and a second pair inside the subcommand are not
+// found: the first pair needs the blanks that start the next line, the second needs them gone, and
+// each reading of the rule keeps them all or removes them all. The same text in a script is named,
+// since there no indentation follows the second pair.
 func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct {
@@ -533,9 +541,10 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 			expectScriptAndBlock(t, row.text, at)
 		})
 	}
-	// An escape or an expansion of one language that builds the boundary of a word, or the
-	// subcommand: the same bytes are another program's name in another language, so each is outside
-	// the claim, as the earlier heads that named some of them read it.
+	// An escape or an expansion of one language that builds the boundary of a word or the
+	// subcommand, or that stands for a byte Bash skips: the same bytes are another program's name
+	// in another language, so each is outside the claim, as the earlier heads that named some of
+	// them read it.
 	for _, row := range []struct{ name, path, text string }{
 		{"\\x20 after compare", ".github/workflows/a.yaml", `      - run: "spec-check compare\x20--dir a"`},
 		{"\\x20 before the name", ".github/workflows/a.yaml", `      - run: "set -e;\x20spec-check compare --dir a"`},
@@ -548,6 +557,11 @@ func TestCIFilesThatCompareLeavesAFormOutsideTheClaim(t *testing.T) {
 		{"PowerShell's `n after cd", "scripts/a.ps1", "Invoke-Expression \"cd .`nspec-check compare\""},
 		{"a batch file's %~dp0 before the name", "scripts/a.cmd", `%~dp0spec-check compare --dir a`},
 		{"$1 before the name", "scripts/a.sh", `$1spec-check compare --dir a`},
+		{"\\0 before the name, whose NUL byte Bash skips", ".github/workflows/a.yaml", `      - run: "set -e\n\0spec-check compare --dir a"`},
+		{"\\0 before the name in the text that printf writes for Bash", "scripts/a.sh", `printf 'set -e\n\0spec-check compare --dir a\n' | bash`},
+		{"\\t between the two words", ".github/workflows/a.yaml", `      - run: "spec-check\tcompare --dir a"`},
+		{"\\t between the two words in execSync", "scripts/a.ts", `execSync("spec-check\tcompare --dir a");`},
+		{"\\t between the two words in an ANSI-C quote", "scripts/a.sh", `bash -c $'spec-check\tcompare --dir a'`},
 		{"a YAML \\x63 that builds the subcommand", ".github/workflows/a.yaml", `      - run: "spec-check \x63ompare --dir .dispatch/spec --approved a.json"`},
 		{"a YAML \\u0065 that builds the subcommand", ".github/workflows/a.yaml", `      - run: "spec-check compar\u0065 --dir .dispatch/spec --approved a.json"`},
 	} {

@@ -105,17 +105,19 @@
 // digit, _, -, . or / makes compare part of another word or a path, such as compare-all,
 // compare.sh or compare/. Each other byte ends the word: white space, a quote, ;, |, &, (, ), <, >,
 // a comma, a bracket, and the start or the end of the file. A backslash right after compare is an
-// escape, and the byte after it takes its place. After a backslash, n, t and r stand for white
-// space, so \n, \t and \r end the word on each side, as a backslash before a space or a line break
-// does after compare. So a name right after \7 or \- is not named, nor compare before \x20 or
-// \x64.
+// escape, and the byte after it takes its place. A quote there ends the word only when no letter,
+// digit or _ follows the quote, so "compare"d and compare\"d are other words. After a backslash, n,
+// t and r stand for white space, so \n, \t and \r end the word on each side, as a backslash before
+// a space or a line break does after compare. So a name right after \7 or \- is not named, nor
+// compare before \x20 or \x64.
 // The rule reads the file's bytes and runs no shell expansion, so it does not find a command that
 // an expansion, an escape or an alias builds, one with another word between the two, such as a
 // redirection, a here-document or an image, or a run: | block whose two line continuations need
 // the indentation after one kept and after the other removed. Before the name, only \n, \t and \r
 // of the escapes stand for white space; each other escape or expansion of one language that builds
 // the boundary is outside the claim (\x20, \x0a, \012, \u000a, PowerShell's `n, a batch file's
-// %~dp0, $1). It is no defence against an author who hides the command: compare itself refuses to
+// %~dp0, $1), and so are \0 before the name, whose NUL byte Bash skips, and \t between the two
+// words. It is no defence against an author who hides the command: compare itself refuses to
 // run in a CI job. A step can run the comparison from a file it does not read, such as a package
 // script or a make target: compare's refusal covers that route when the step passes the runner's
 // environment on, and nothing covers it when the step does not.
