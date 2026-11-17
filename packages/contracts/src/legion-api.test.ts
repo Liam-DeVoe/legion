@@ -2071,11 +2071,11 @@ test("the state golden names the held lifecycle rows, and the list cannot be dro
   expect(LegionStateResponse.safeParse(dropped).success).toBeFalse();
 });
 
-// The questions passed to the controller (contract 149): the golden carries the question LEGION-207's
+// The questions passed to the controller (contract 157): the golden carries the question LEGION-207's
 // stopped tester could not answer, a state with none carries an empty list rather than none, and a
 // question names its role and when it was passed. The key is not required, for the reason
 // `wakesWaiting` is not: a daemon at this contract leaves it off the state it serves a caller whose
-// pod's claims record a contract below 149, since a reader before it refuses the key however empty
+// pod's claims record a contract below 157, since a reader before it refuses the key however empty
 // (`api.stateFor`, `withoutQuestionsForController`). So a body without the key parses, and a reader
 // of it learns nothing about which questions were passed rather than losing the whole state.
 test("the state golden lists the questions passed to the controller, and the key may be absent", () => {
