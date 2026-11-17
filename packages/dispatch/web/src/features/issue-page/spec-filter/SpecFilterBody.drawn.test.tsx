@@ -36,7 +36,7 @@ import type { OutlineRequest } from "../IssueTree";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { shortDay } from "../node-time";
 import { OutlineRequestProvider } from "../outline-request";
-import { KEY_REPORTS } from "../page-structure";
+import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
   ANSWER_LINES,
   CONTROL_LABELS,
@@ -114,7 +114,8 @@ function locationOf(view: RenderResult): string {
 }
 
 /** The documents whose blocks the page's tree is built from, as `useIssueTree.ts` finds them:
- *  the spec, and the plan, Verification and decisions documents the issue read names. */
+ *  the spec, and the plan, Verification and decisions documents the issue read names. A copy of
+ *  that module's private `treeDocumentIds`, imported in its place once that module exports it. */
 function treeDocuments(issue: IssueDetails): string[] {
   const documents = [
     primarySpec(issue),
@@ -1231,6 +1232,37 @@ test("a press on a group's heading leaves the focus where it was", async () => {
     // A press on a statement does focus it, so the press above was one that could have.
     await user.pointer({ keys: "[MouseLeft]", target: rowOf(view, "spec#b-r2") });
     expect(document.activeElement).toBe(rowOf(view, "spec#b-r2"));
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// R9: a group's heading draws its parent's own words as its author's, whatever they say, so a
+// parent whose author wrote exactly its kind's word is drawn in their words; only a parent with
+// no words at all is named by the page's word for its kind.
+test("a group's heading draws its parent's words as its author's, even where they are its kind's word", () => {
+  const { read, view } = drawBody(
+    issueTree([
+      node({
+        children: [statement("r1")],
+        id: "comment-1",
+        text: NODE_TYPE_NAMES.comment,
+        type: "comment",
+      }),
+      node({ children: [statement("r2")], id: "comment-2", text: "", type: "comment" }),
+    ])
+  );
+  try {
+    const lines = [...view.container.querySelectorAll("[data-spec-group-heading] > p:last-child")];
+    expect(lines.map((line) => line.textContent)).toEqual([
+      NODE_TYPE_NAMES.comment,
+      NODE_TYPE_NAMES.comment,
+    ]);
+    expect(
+      lines.map((line) => line.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)),
+      "the heading draws its author's own words as the page's"
+    ).toEqual([true, false]);
   } finally {
     view.unmount();
     read.mockRestore();

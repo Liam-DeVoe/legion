@@ -37,11 +37,14 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   const specSlug = spec?.slug ?? "";
   const address = issueAddress(route, search, hash, specSlug);
   const { root } = useIssueTree(issue);
-  // The sentences are the spec's summary, so they wait on the spec's blocks alone, which the
-  // head waits on before it says the spec holds no summary. This observer reads the key the
-  // tree fills and fetches nothing of its own.
+  // The head says the spec holds no summary only once the spec's blocks are held, which is when
+  // the tree holds its summary node where it has one. The sentences are drawn from that node's
+  // reading (`TreeNode.tree`), which comes with the batched names read, and that read waits
+  // until no read of the tree is still out - the plan's blocks, the comments, the messages and
+  // the reader's login among them (`useIssueTree.ts`) - so until then "In short" draws its
+  // heading with nothing under it.
   const specBlocks = useQuery(treeRead(artifactBlocksQuery(spec?.id ?? "")));
-  const reading = spec !== undefined && specBlocks.data === undefined;
+  const specHeld = spec !== undefined && specBlocks.data !== undefined;
   const memo = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
   const view = useMemo(
     () => presetView(root, "conversation", address.filter, undefined, memo?.id),
@@ -56,13 +59,7 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   if (isFilter(address.preset)) return null;
   return (
     <NoTooltips>
-      <IssueThreeThings
-        hasSpec={spec !== undefined}
-        look="contents"
-        nameOf={nameOf}
-        reading={reading}
-        summary={memo}
-      />
+      <IssueThreeThings look="contents" nameOf={nameOf} specHeld={specHeld} summary={memo} />
       <ContentsList
         focusBranch={focusBranch}
         nameOf={nameOf}

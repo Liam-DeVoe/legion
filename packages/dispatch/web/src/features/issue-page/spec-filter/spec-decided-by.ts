@@ -2,14 +2,9 @@ import type { Actor, CheckBlock, Decision, DisplayTree, IssueDecisions } from ".
 import { parseNodeReference } from "../../refs/routes";
 import type { TextSource } from "../../refs/text-references";
 import { drawnLine, firstLineOf, isStatement, lineWordsRaw, type TreeNode } from "../issue-tree";
+import { chipWords } from "../node-row-chip";
 import { LEADING_LABEL, referenceStandIns, SENTENCE_END } from "../one-line";
-import {
-  isReader,
-  NODE_TYPE_NAMES,
-  type NodeState,
-  type NodeType,
-  type StatementState,
-} from "../page-words";
+import { isReader, type NodeState, type NodeType, type StatementState } from "../page-words";
 import { plainWordsRaw } from "../tree-drafts";
 import { nodesInOrder } from "../tree-keys";
 import { statementStandings } from "../verification-filter/statement-state";
@@ -81,6 +76,10 @@ export interface SpecDecision {
   readonly at?: string;
   /** Who decided it, where the model holds an author. */
   readonly by?: Actor;
+  /** How a line names the decision among others, after "informed by": its quote cut to a chip's
+   *  length as a chip names its target (`chipWords`), cut with each reference it cites unnamed
+   *  and each named after the cut (`referenceStandIns`), so the cut never falls inside a name. */
+  readonly chip: string;
   /** The options a person chose, in the ask's own words with each reference they cite named
    *  (`referenceStandIns`); empty where they chose none. */
   readonly chose: readonly string[];
@@ -135,19 +134,20 @@ export interface SpecStatement {
  *  together (R5: "the same decision stands in a column beside the statements it shaped"). */
 export interface SpecRun {
   /** The decision that shaped every statement of the run; absent where none did (R35), and
-   *  where the one that did waits on the asks read (`waiting`). */
+   *  where the one that did is a person's whose answer the asks read has not brought yet. Such a
+   *  run is that decision's all the same, and its cell says nothing, as every cell with no
+   *  decision does until what decided each statement is held (`SpecFilterBody.tsx`'s
+   *  `decidedHeld`). */
   readonly decision?: SpecDecision;
   readonly statements: readonly SpecStatement[];
-  /** The reference of the person's decision that heads the run and waits on the asks read
-   *  (`specDecidedBy`'s `asksHeld`): the run is that decision's, so its cell says nothing until
-   *  the read is in, and cannot say that none shaped it. */
-  readonly waiting?: string;
 }
 
-/** A person's decision that waits on the asks read, by its reference: one of a statement's ties,
- *  which keeps its place among them and is drawn as nothing until the read is in. */
-interface WaitingTie {
-  readonly waiting: string;
+/** One of a statement's ties as the runs are built: the decision as the column draws it, and
+ *  the key the runs are split by. A person's decision whose answer the asks read has not brought
+ *  yet keeps its place by its reference, with no decision drawn for it until the read is in. */
+interface Tie {
+  readonly decision?: SpecDecision;
+  readonly key: string;
 }
 
 /** The node a group of statements hangs under, which the filter draws as no row of its own
@@ -157,7 +157,8 @@ export interface SpecParent {
   readonly by?: Actor;
   readonly id: string;
   /** Its own words' first line, as R1 draws one (`lineWordsRaw`, `drawnLine`), with each
-   *  reference named after the cut; its kind's word where it has no words. */
+   *  reference named after the cut; empty where it has no words, which the view names by its
+   *  kind's word. */
   readonly line: string;
   readonly type: NodeType;
 }
@@ -230,8 +231,10 @@ export function specDecidedBy({
   const standings = statementStandings(root, checks);
   const groups: {
     parent?: SpecParent;
-    runs: { decision?: SpecDecision; statements: SpecStatement[]; waiting?: string }[];
+    runs: { decision?: SpecDecision; statements: SpecStatement[] }[];
   }[] = [];
+  // The key of the last run built, which the next statement's head is matched against.
+  let runKey: string | undefined;
   // Every row the Spec filter kept, in the order it draws them: the view's nodes but its root.
   // A statement is a requirement of the issue's own spec (`isStatement`).
   const rows = nodesInOrder(view).slice(1);
@@ -245,16 +248,16 @@ export function specDecidedBy({
     // in its place. The others that informed the statement are named after "informed by" all the
     // same, since what they say does not wait on that read; a waiting one among them is named
     // by nothing until it is in.
-    const ties: readonly (SpecDecision | WaitingTie)[] = [
-      ...(under === undefined ? [] : [under]),
-      ...(shaped.get(node.id) ?? []).filter((made) => "waiting" in made || made.id !== under?.id),
+    const ties: readonly Tie[] = [
+      ...(under === undefined ? [] : [tieOf(under)]),
+      ...(shaped.get(node.id) ?? []).filter((tie) => tie.key !== under?.id),
     ];
     const head = ties.at(0);
-    const decision = head === undefined || "waiting" in head ? undefined : head;
-    const waits = head !== undefined && "waiting" in head ? head.waiting : undefined;
     const standing = standings.get(node.id);
     const statement: SpecStatement = {
-      alsoShapedBy: ties.slice(1).filter((tie): tie is SpecDecision => !("waiting" in tie)),
+      alsoShapedBy: ties
+        .slice(1)
+        .flatMap((tie) => (tie.decision === undefined ? [] : [tie.decision])),
       mark:
         node.gaps.includes("no_check") || standing === undefined || !standing.covered
           ? "no_check"
@@ -262,21 +265,19 @@ export function specDecidedBy({
       node,
     };
     const fresh = {
-      ...(decision === undefined ? {} : { decision }),
+      ...(head?.decision === undefined ? {} : { decision: head.decision }),
       statements: [statement],
-      ...(waits === undefined ? {} : { waiting: waits }),
     };
     const group = groups.at(-1);
+    const run = group?.runs.at(-1);
     if (group === undefined || group.parent?.id !== parent?.id) {
       groups.push({ ...(parent === undefined ? {} : { parent }), runs: [fresh] });
-      continue;
-    }
-    const run = group.runs.at(-1);
-    if (run === undefined || run.decision?.id !== decision?.id || run.waiting !== waits) {
+    } else if (run === undefined || runKey !== head?.key) {
       group.runs.push(fresh);
-      continue;
+    } else {
+      run.statements.push(statement);
     }
-    run.statements.push(statement);
+    runKey = head?.key;
   }
   return { groups, others: rows.filter((row) => !isStatement(row)) };
 }
@@ -333,7 +334,7 @@ function asksById(nodes: ReadonlyMap<string, TreeNode>): ReadonlyMap<string, Tre
 
 /** The decisions that shaped each statement, by the statement's node id, in the order the
  *  decisions read answers them: each drawn, but a person's while the asks read holds no answer
- *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie that waits. */
+ *  (`specDecidedBy`'s `asksHeld`), which keeps its place as a tie with no decision drawn. */
 function shapedBy({
   asks,
   asksHeld,
@@ -350,29 +351,33 @@ function shapedBy({
   nodeIdOf: (reference: string) => string | undefined;
   nodes: ReadonlyMap<string, TreeNode>;
   reader: string | undefined;
-}): ReadonlyMap<string, readonly (SpecDecision | WaitingTie)[]> {
-  const shaped = new Map<string, (SpecDecision | WaitingTie)[]>();
-  const idOf = (tie: SpecDecision | WaitingTie) => ("waiting" in tie ? tie.waiting : tie.id);
+}): ReadonlyMap<string, readonly Tie[]> {
+  const shaped = new Map<string, Tie[]>();
   for (const decision of decisions?.decisions ?? []) {
     // A replaced decision draws no line (R5): it is drawn where it sits in the outline, and a
     // statement it shaped is no longer standing on it.
     if (decision.replaced) continue;
     const links = decision.links ?? [];
     if (links.length === 0) continue;
-    const made: SpecDecision | WaitingTie =
+    const made: Tie =
       decision.kind === "person" && !asksHeld
-        ? { waiting: decision.ref }
-        : decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader });
+        ? { key: decision.ref }
+        : tieOf(decisionOf(decision, { asks, nameOf, nodeIdOf, nodes, reader }));
     for (const link of links) {
       const id = link.to.ref === undefined ? undefined : nodeIdOf(link.to.ref);
       if (id === undefined) continue;
       const held = shaped.get(id) ?? [];
       // A decision that names one statement in two of its blocks is one decision of it.
-      if (!held.some((one) => idOf(one) === idOf(made))) held.push(made);
+      if (!held.some((one) => one.key === made.key)) held.push(made);
       shaped.set(id, held);
     }
   }
   return shaped;
+}
+
+/** `decision` as a tie, keyed by the node that holds the whole of it. */
+function tieOf(decision: SpecDecision): Tie {
+  return { decision, key: decision.id };
 }
 
 /** One decision as the column draws it: a person's by the answer they gave, an agent's by its
@@ -420,13 +425,18 @@ function decisionOf(
   // it, and with none of the symbols the cell draws as formatting. A decision the tree holds no
   // node for is read from its own text and its reading in the same way.
   const words = lineWordsRaw(node ?? { text: decision.text, tree: decision.text_tree });
+  // The quote and the name a line gives it among others are cut from the one stood-in line, each
+  // before its references are named, so no cut falls inside a name.
+  const references = referenceStandIns(nameOf);
+  const line = drawnLine(firstLineOf(references.standIn(words)));
   return {
     ...(at === undefined ? {} : { at }),
     ...(node?.author === undefined ? {} : { by: node.author }),
+    chip: references.named(chipWords(line)),
     chose: [],
     id: node?.id ?? decision.ref,
     ...(node === undefined ? {} : { node: node.id }),
-    quote: namedFirstLine(words, nameOf),
+    quote: references.named(line),
     reference: decision.ref,
     said: "agent",
     ...(node?.state === undefined ? {} : { state: node.state }),
@@ -456,14 +466,17 @@ function answerDecision(
   const written = firstSentenceOf(references.standIn(plainWordsRaw(answer.text)));
   // An option's label is a plain line too, so each reference it cites is named as the quote
   // names one, wherever the options are drawn: the quote, the cell's line of what was chosen,
-  // each line naming the decision.
-  const chose = answer.selected.map((label) => references.named(references.standIn(label)));
-  const quote = written === "" ? chose.join(", ") : references.named(written);
+  // each line naming the decision. The quote and the name a line gives it among others are cut
+  // from the one stood-in line, each before its references are named.
+  const labels = answer.selected.map((label) => references.standIn(label));
+  const line = written === "" ? labels.join(", ") : written;
+  const quote = references.named(line);
   const stored = answer.text.trim();
   return {
     at: answer.at,
     by: answer.by,
-    chose,
+    chip: references.named(chipWords(line)),
+    chose: labels.map((label) => references.named(label)),
     id: ask.id,
     question: namedFirstLine(lineWordsRaw(ask), nameOf),
     quote,
@@ -510,8 +523,7 @@ function parentOf(
     ...(parent?.at === undefined ? {} : { at: parent.at }),
     ...(parent?.author === undefined ? {} : { by: parent.author }),
     id: line.id,
-    // A parent with no words is named by its kind's word, never by its id.
-    line: words === "" ? NODE_TYPE_NAMES[line.type] : words,
+    line: words,
     type: line.type,
   };
 }

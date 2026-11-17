@@ -1288,14 +1288,21 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
 // R7 and R9, owed: the Spec view opened at its own address while the spec's blocks cannot be
 // read draws the statements' line saying so over its tree, and that line's Retry takes the
 // focus, since nothing else holds it on a fresh load and Tab from the tree never reaches the
-// line. The rule that gives a refused read's Retry the focus on a page load belongs to the
-// page's stage as another branch draws it, and that branch is not under this one yet, so the row
-// skips right after its setup until it is. It is written whole, so that only its skip goes then.
+// line. At this head that focus is the Spec body's own (`SpecFilterBody.tsx`, its effect over
+// the failed-read lines): the stage takes a focus only while nothing holds it, and only for the
+// view's tab-stop row. The failed-read line another branch exports brings its own rule for that
+// focus, which replaces the body's once that branch is under this one. The row is owed to that
+// rule, so it skips on its first line until then, and is written whole so that only its skip
+// goes.
 // SLOW(>=2s): a seeded issue and a load of the Spec view with one read refused, waited on until
 // the refused read's line is drawn.
 test("the Spec view opened at its address with the spec's blocks refused puts the focus on that read's Retry @owed", async ({
   browser,
 }) => {
+  test.skip(
+    true,
+    "owed: the stage that gives a refused read's Retry the focus on a page load is not under this branch yet"
+  );
   await phase(browser, seedNoChildren, async (page, seeded) => {
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const blocks = `/api/v1/artifacts/${seeded.specArtifactId}/blocks`;
@@ -1304,10 +1311,6 @@ test("the Spec view opened at its address with the spec's blocks refused puts th
       (url) => url.pathname === blocks,
       (route) =>
         route.fulfill({ json: { code: "INTERNAL", error: "blocks unavailable" }, status: 500 })
-    );
-    test.skip(
-      true,
-      "owed: the stage that gives a refused read's Retry the focus on a page load is not under this branch yet"
     );
     await gotoIssue(page, presetPath(seeded.key, "spec"));
     const line = issuePage(page).locator('[data-spec-unreadable="statements_unreadable"]');

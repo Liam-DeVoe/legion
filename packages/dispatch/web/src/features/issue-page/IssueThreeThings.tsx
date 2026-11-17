@@ -47,27 +47,24 @@ const LABELS = [
  * all says nothing of a summary.
  */
 export function IssueThreeThings({
-  hasSpec,
   look,
   nameOf,
-  reading,
+  specHeld,
   summary,
 }: {
-  /** Whether the issue has a primary spec, which is what can hold a summary: an issue with none
-   *  has no summary to say is missing. */
-  hasSpec: boolean;
   /** Where it is drawn: the Contents slot, which the pane and the Outline sheet draw alike, or
    *  the Spec view's first group. */
   look: "contents" | "spec";
   /** The page's name for a reference the sentences cite (`useReferenceNames`). */
   nameOf: (reference: string) => string | undefined;
-  /** Whether the spec's blocks, which hold its summary, are not held yet, which is what says
-   *  whether the spec holds a summary node at all. */
-  reading: boolean;
+  /** Whether the issue has a primary spec and its blocks, which hold its summary, are held:
+   *  what says whether the spec holds a summary node at all. An issue with no spec has no
+   *  summary to say is missing. */
+  specHeld: boolean;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
-  const tree = reading ? undefined : summary?.tree;
+  const tree = specHeld ? summary?.tree : undefined;
   const sentences = useMemo(
     () => (tree === undefined ? [] : summarySentences(tree, nameOf)),
     [nameOf, tree]
@@ -110,7 +107,7 @@ export function IssueThreeThings({
             </li>
           ))}
         </ul>
-      ) : hasSpec && !reading && summary === undefined ? (
+      ) : specHeld && summary === undefined ? (
         // A summary node whose reading has not come, or holds no words, is a summary all the
         // same, so only a spec with no summary node says it has none.
         <p className={`mt-1.5 mb-1 text-sm leading-5 ${pageMutedText}`} {...pageChrome}>

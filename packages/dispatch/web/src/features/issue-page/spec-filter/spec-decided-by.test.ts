@@ -5,7 +5,7 @@ import type { CheckBlock, Decision } from "../../../api/types";
 import { wordsOf } from "../../refs/tree-fragment";
 import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
-import { CHIP_LIMIT, chipWords } from "../node-row-chip";
+import { CHIP_LIMIT } from "../node-row-chip";
 import { useReferenceNames } from "../one-line";
 import { presetView } from "../presets";
 import { treeContext } from "../tree-drafts";
@@ -294,8 +294,8 @@ test("a reference named in an agent's quote ends no sentence at its name's label
 });
 
 // R5: every decision after the first that shaped a statement is named after "informed by" on
-// its line by its own words, cut as a
-// chip names its target, each reference in them named and never an address.
+// its line by its own words, cut as a chip names its target, each reference in them named after
+// the cut and never an address.
 test("a statement informed by two decisions names the second by its words within 32 characters", () => {
   const cited = statementRef("r2");
   const words = `Name each tie by ${cited} and never by its address. Then say why.`;
@@ -319,9 +319,37 @@ test("a statement informed by two decisions names the second by its words within
   expect(informed[0]?.quote).toBe(
     "Name each tie by the second statement and never by its address."
   );
-  const named = chipWords(informed[0]?.quote ?? "");
-  expect(named).toBe("Name each tie by the second…");
+  // The name does not fit in a chip's 32 characters, so the cut falls at the word before it and
+  // never inside it: the line is cut with the reference unnamed, and named after the cut.
+  const named = informed[0]?.chip ?? "";
+  expect(named).toBe("Name each tie by…");
   expect(named.length).toBeLessThanOrEqual(CHIP_LIMIT);
+});
+
+// R5: the name a statement's line gives another decision is cut at a chip's length before the
+// references it cites are named, as every one-line place cuts one, so no cut falls inside a
+// name: a first line whose name runs past the limit is cut at the word before that name.
+test("the name of a decision that informed a statement is cut before its references are named", () => {
+  const cited = statementRef("r2");
+  const words = `See ${cited} as the reader reads it.`;
+  const groups = bodyOf(
+    issueTree([
+      statement("r1"),
+      statement("r2"),
+      decisionNode("d1"),
+      decisionNode("d2", { text: words }),
+    ]),
+    [
+      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
+      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))], text: words }),
+    ],
+    READER,
+    [],
+    (reference) => (reference === cited ? "R2. Every address is drawn by…" : undefined)
+  );
+  const informed = groups[0]?.runs[0]?.statements[0]?.alsoShapedBy[0];
+  expect(informed?.quote).toBe("See R2. Every address is drawn by… as the reader reads it.");
+  expect(informed?.chip).toBe("See…");
 });
 
 // R5: a replaced decision draws no line, so the statement it shaped stands with none.

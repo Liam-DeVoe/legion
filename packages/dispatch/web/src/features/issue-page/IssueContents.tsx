@@ -192,13 +192,10 @@ export function ContentsList({
   // focus leaving the outline - for this list, say - leaves the entry the reader was last in.
   const focused = useFocusedNode()?.id;
   const [lastIn, setLastIn] = useState<string | undefined>(undefined);
-  const inEntry = useMemo(() => {
-    if (focused === undefined) return undefined;
-    return (pathTo(root, focused) ?? [])
-      .map((node) => node.id)
-      .filter((id) => entryIds.has(id))
-      .at(-1);
-  }, [entryIds, focused, root]);
+  const inEntry = useMemo(
+    () => nearestAtOrAbove(root, focused, (id) => entryIds.has(id)),
+    [entryIds, focused, root]
+  );
   useEffect(() => {
     if (inEntry !== undefined) setLastIn(inEntry);
   }, [inEntry]);
@@ -285,13 +282,7 @@ export function ContentsList({
   // fold above that entry hides it - else the first.
   const [stop, setStop] = useState<string | undefined>(undefined);
   const ids = rows.map((row) => row.entry.node.id);
-  const drawnAtOrAbove =
-    current === undefined
-      ? undefined
-      : (pathTo(root, current) ?? [])
-          .map((node) => node.id)
-          .filter((id) => ids.includes(id))
-          .at(-1);
+  const drawnAtOrAbove = nearestAtOrAbove(root, current, (id) => ids.includes(id));
   const tabStop = stop !== undefined && ids.includes(stop) ? stop : (drawnAtOrAbove ?? ids[0]);
   const moveTo = (id: string | undefined) => {
     if (id === undefined) return;
@@ -474,4 +465,20 @@ export function ContentsList({
       </div>
     </>
   );
+}
+
+/** The nearest node at or above node `id` in `root` that `counts`: the last of them on the path
+ *  from the root down to it, which is the one rule both the entry the reader is in and the
+ *  tab stop's fallback are read by. Undefined where `id` is, or where no node on that path
+ *  counts. */
+function nearestAtOrAbove(
+  root: TreeNode,
+  id: string | undefined,
+  counts: (id: string) => boolean
+): string | undefined {
+  if (id === undefined) return undefined;
+  return (pathTo(root, id) ?? [])
+    .map((node) => node.id)
+    .filter(counts)
+    .at(-1);
 }

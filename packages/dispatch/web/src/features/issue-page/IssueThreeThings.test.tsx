@@ -80,32 +80,22 @@ function summaryNode(text: string): TreeNode {
 }
 
 /** The head as a slot draws it: what the summary cites named once over `root`, the whole tree
- *  the summary is a node of (`slots/contents.tsx`), for an issue that has a spec unless `hasSpec`
- *  says not. */
+ *  the summary is a node of (`slots/contents.tsx`), for an issue whose spec's blocks are held
+ *  unless `specHeld` says not. */
 function Head({
-  hasSpec = true,
   look,
-  reading,
   root,
+  specHeld = true,
   summary,
 }: {
-  hasSpec?: boolean;
   look: "contents" | "spec";
-  reading: boolean;
   root: TreeNode;
+  specHeld?: boolean;
   summary: TreeNode | undefined;
 }): ReactNode {
   const issue = useMemo(() => issueDetails(), []);
   const { nameOf } = useIssueNames(issue, root);
-  return (
-    <IssueThreeThings
-      hasSpec={hasSpec}
-      look={look}
-      nameOf={nameOf}
-      reading={reading}
-      summary={summary}
-    />
-  );
+  return <IssueThreeThings look={look} nameOf={nameOf} specHeld={specHeld} summary={summary} />;
 }
 
 /** The sentences the head draws, in order, and the label before each. `reading` is whether the
@@ -119,7 +109,7 @@ function bullets(
 ): { labels: string[]; lines: string[]; unmount: () => void } {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head look={look} reading={reading} root={root} summary={summary} />
+      <Head look={look} root={root} specHeld={!reading} summary={summary} />
     </MemoryRouter>
   );
   const items = within(screen.getByTestId("issue-three-things")).queryAllByRole("listitem");
@@ -281,13 +271,7 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
 test("an issue with no spec says nothing of a summary", () => {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
-      <Head
-        hasSpec={false}
-        look="contents"
-        reading={false}
-        root={treeNode(KEY, "issue")}
-        summary={undefined}
-      />
+      <Head look="contents" root={treeNode(KEY, "issue")} specHeld={false} summary={undefined} />
     </MemoryRouter>
   );
   try {
@@ -797,7 +781,7 @@ test("a requirement, a decision and the head of a fully read issue draw no gap t
   );
   const head = render(
     <MemoryRouter>
-      <Head look="contents" reading={false} root={root} summary={specSummary(root, "spec")} />
+      <Head look="contents" root={root} summary={specSummary(root, "spec")} />
     </MemoryRouter>
   );
   try {

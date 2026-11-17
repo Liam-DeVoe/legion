@@ -49,7 +49,6 @@ import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTre
 import type { TreeNode } from "../issue-tree";
 import { NodeGlyph } from "../NodeGlyph";
 import { MoreWords, NodeEdges, useClamp, useRowOnScreen } from "../NodeRow";
-import { chipWords } from "../node-row-chip";
 import { shortDay } from "../node-time";
 import { CAP, useIssueNames } from "../one-line";
 import { useTakeOutlineRequest } from "../outline-request";
@@ -169,17 +168,11 @@ export function SpecFilterBody({
   // (`failedWithNothing`).
   const spec = primarySpec(issue);
   const verification = roleDocument(issue, "verification");
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const coverageRead = useQuery(treeRead(issueCoverageQuery(issue.key)));
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const specBlocksRead = useQuery(treeRead(artifactBlocksQuery(spec?.id ?? "")));
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const resultsRead = useQuery(treeRead(issueResultsQuery(issue.key)));
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const checksRead = useQuery(treeRead(artifactBlocksQuery(verification?.id ?? "")));
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const decisionsRead = useQuery(treeRead(issueDecisionsQuery(issue.key, true)));
-  // This observer reads the key the tree fills and fetches nothing of its own.
   const asksRead = useQuery(treeRead(issueAsksQuery(issue.key)));
   // One predicate per read: whether it holds an answer. Every part of the body that says what
   // decided a statement or how it stands - the decision cell and its line saying none did, the
@@ -402,7 +395,11 @@ export function SpecFilterBody({
   // line that held it left because its reads answered, as they do after its own Retry. A line
   // that held the focus and leaves no line behind hands it to the view's first row - the tree's
   // one tab stop - or to the tree itself where the view draws no row, as a focus on the tree
-  // rests there. A reader whose focus is anywhere else keeps it.
+  // rests there. A reader whose focus is anywhere else keeps it. At this head this is the one
+  // rule that gives a refused read's Retry the focus, a page load at the view's address
+  // included: the stage takes the focus only while nothing holds it, and only for the view's
+  // tab-stop row (`slots/stage.tsx`'s `ViewStage`). The failed-read line another branch
+  // exports brings its own rule for that focus, which replaces this one with it.
   const box = useRef<HTMLDivElement | null>(null);
   // The line the focus is in, from a focus inside it until the focus lands on something outside
   // it. A line taken off the page while it holds the focus leaves the focus on nothing, and
@@ -478,7 +475,9 @@ export function SpecFilterBody({
     <div className="mt-3.5 mb-[120px] flex w-full min-w-0 flex-col" data-spec-body="" ref={box}>
       {/* Each line of the reads that failed with nothing held, in the page's words, with a
           Retry that asks those reads alone again. The lines stand over the tree and never in
-          it: an alert inside a tree would break the tree's own structure of rows. */}
+          it: an alert inside a tree would break the tree's own structure of rows. Each is this
+          view's own copy of the failed-read line, imported in its place, with its focus rule,
+          once another branch's `FailedReadLine` from `issue-page/` is under this one. */}
       {unreadable.map(({ failed, line }) => (
         // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only read where the focus has gone, so the line needs no role of its own.
         <div
@@ -518,11 +517,12 @@ export function SpecFilterBody({
           prototype's `renderSpec` puts them after the column heads. */}
       <div className="mt-[18px] ml-[300px] min-w-0 max-[901px]:ml-0">
         <IssueThreeThings
-          hasSpec={spec !== undefined}
           look="spec"
           nameOf={nameOf}
-          // The sentences are the spec's summary, so they wait on the spec's blocks alone.
-          reading={!specBlocksHeld}
+          // The head says the spec holds no summary only once its blocks are held; the
+          // sentences themselves come with the batched names read, which waits until no read
+          // of the tree is still out (`slots/contents.tsx`).
+          specHeld={spec !== undefined && specBlocksRead.data !== undefined}
           summary={summary}
         />
       </div>
@@ -540,7 +540,7 @@ export function SpecFilterBody({
         // row; where the view draws no row it stays here.
         onFocus={(event) => {
           if (event.target !== event.currentTarget) return;
-          event.currentTarget.querySelector<HTMLElement>('[data-node-row][tabindex="0"]')?.focus();
+          event.currentTarget.querySelector<HTMLElement>(TAB_STOP_ROW)?.focus();
         }}
         // The keys a statement and a cell answer before the keymap does (`useTreeKeymap.ts`
         // listens on the window, after this): `w` on a statement, and `j`, `k` and the arrows
@@ -638,8 +638,10 @@ function failedWithNothing(read: { readonly data: unknown; readonly isError: boo
   return read.isError && read.data === undefined;
 }
 
-/** The issue's asks, under the key and with the request the page's tree reads them by
- *  (`useIssueTree.ts`), so an observer of it watches the tree's own read. */
+/** The issue's asks, under the key and with the request the page's tree reads them by, so an
+ *  observer of it watches the tree's own read. A copy of the read `useIssueTree.ts` writes
+ *  inline, as `slots/body.tsx` and `outline-writer.tsx` do: this module imports it in its place
+ *  once `api/queries.ts` exports the asks query. */
 function issueAsksQuery(key: string) {
   return { queryFn: () => api.listIssueAsks(key, "all"), queryKey: ["asks", key] };
 }
@@ -957,10 +959,11 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
       </p>
       <p
         className={`min-w-0 text-[15px] leading-6 font-semibold break-words ${pageInkText}`}
-        // A parent with no words is named by its kind's word, which is the page's own.
-        {...(parent.line === NODE_TYPE_NAMES[parent.type] ? pageChrome : authorText)}
+        // A parent with no words is named by its kind's word, which is the page's own, never by
+        // its id; any words the parent's author wrote are theirs, whatever they say.
+        {...(parent.line === "" ? pageChrome : authorText)}
       >
-        {parent.line}
+        {parent.line === "" ? NODE_TYPE_NAMES[parent.type] : parent.line}
       </p>
     </div>
   );
@@ -1437,12 +1440,13 @@ function Because({
 }
 
 /** One other decision that shaped the statement, named by its own words as a chip names its
- *  target (`chipWords`), as a link to it, then when it was made: the model holds no short name
- *  for a decision, and a block id is an identifier (R22). A decision with no words is named by
- *  its kind's word, so no link is empty. */
+ *  target (`SpecDecision.chip`, cut before its references are named), as a link to it, then
+ *  when it was made: the model holds no short name for a decision, and a block id is an
+ *  identifier (R22). A decision with no words is named by its kind's word, so no link is
+ *  empty. */
 function Informed({ decision }: { decision: SpecDecision }): ReactNode {
   const route = routeOf(decision);
-  const words = chipWords(decision.quote);
+  const words = decision.chip;
   const named =
     words === "" ? (
       <span {...pageChrome}>{NODE_TYPE_NAMES[decision.type]}</span>
