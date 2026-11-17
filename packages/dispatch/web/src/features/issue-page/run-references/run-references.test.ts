@@ -77,7 +77,7 @@ function treeOf(nodes: readonly TreeAnswerNode[], tuples: readonly TreeTuple[]):
   };
 }
 
-test("an interaction of the tree read is a row with B's words and the run's words", () => {
+test("an interaction of the tree read is a row with the page's words and the run's words", () => {
   const rows = runRows(
     treeOf([ISSUE_NODE, commentNode(COMMENT), runNode(RUN)], [changedBy(COMMENT, RUN)])
   );
