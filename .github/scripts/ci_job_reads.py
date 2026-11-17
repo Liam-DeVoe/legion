@@ -103,8 +103,9 @@ def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
 def with_fixtures_manifest(reads):
     """reads, and the shared test fixtures' manifest wherever they hold a file of the fixtures'
     own: a module that imports @legion/test-fixtures/* is resolved through that manifest's
-    `exports`. The manifest is no read of bun_job (it says why), so which gates read it is
-    derived here from which gates read the fixtures, never kept by hand."""
+    `exports`. While the manifest declares no install script it is no read of bun_job (that
+    function says why), so which gates read it is derived here from which gates read the
+    fixtures, never kept by hand."""
     reads = list(reads)
     if any(r.glob.startswith(f"{TEST_FIXTURES}/") for r in reads):
         reads.append(Read(TEST_FIXTURES_MANIFEST, f"a module importing @legion/test-fixtures/* (this gate reads "
@@ -242,13 +243,27 @@ def bun_job(job, workflow=""):
         ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
-        # Every workspace manifest but the shared test fixtures': a frozen install fails on a manifest
-        # its lockfile does not match, and otherwise installs what bun.lock records, so a change to
-        # that manifest alone changes no job's install, and one the lockfile refuses fails the
-        # install of every job that reads the fixtures, which with_fixtures_manifest selects.
+        # Every workspace manifest, but the shared test fixtures' while it declares no script an install
+        # runs. A frozen install installs what bun.lock records and runs no script of that manifest:
+        # it declares none, and the moment it declares one (runs_at_install) every Bun gate reads it
+        # again, so check-ci-filters.sh fails until bun_install and docs-pages.yaml name it. A
+        # registry dependency the lockfile lacks fails the install of every job that reads the
+        # fixtures, which with_fixtures_manifest selects; a version or `workspace:` change passes the
+        # install and changes nothing it does.
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
-          for w in WORKSPACES if w != TEST_FIXTURES],
+          for w in WORKSPACES if w != TEST_FIXTURES or runs_at_install(w)],
     )
+
+
+# The scripts of a workspace manifest Bun runs during an install, a frozen one included: Bun 1.4.4
+# runs preinstall, install, postinstall and prepare of a workspace another depends on.
+INSTALL_SCRIPTS = ("preinstall", "install", "postinstall", "prepare")
+
+
+def runs_at_install(workspace):
+    """Whether the workspace's manifest declares a script an install runs (INSTALL_SCRIPTS)."""
+    scripts = json.loads(Path(f"{workspace}/package.json").read_text()).get("scripts", {})
+    return any(name in scripts for name in INSTALL_SCRIPTS)
 
 
 def biome(where):

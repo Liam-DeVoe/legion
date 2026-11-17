@@ -519,10 +519,12 @@ jobs:
             # every workspace package.json:19-31 lists, and the tarball
             # packages/proof-editor/package.json installs proof-sdk-upstream from;
             # .github/actions/setup-bun installs the Bun .bun-version pins. The shared test
-            # fixtures' manifest is the one workspace manifest not here: alone it changes no
-            # install (a frozen install installs what bun.lock records, or fails), so the filters
-            # of the jobs that read the fixtures name it instead (ci_job_reads.py,
-            # with_fixtures_manifest).
+            # fixtures' manifest is the one workspace manifest not here: a frozen install installs
+            # what bun.lock records and runs no script of it, since it declares none (if it ever
+            # declares preinstall, install, postinstall or prepare, ci_job_reads.py's bun_job reads
+            # it again and check-ci-filters.sh fails until it is back here). A registry dependency
+            # the lockfile lacks fails the install, and the filters of the jobs that read the
+            # fixtures name the manifest (ci_job_reads.py, with_fixtures_manifest).
             bun_install: &bun_install
               - 'package.json'
               - 'bun.lock'
