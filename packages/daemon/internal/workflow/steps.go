@@ -25,32 +25,11 @@ type StepAgent struct {
 	Model   string
 }
 
-// stepOf is the step a phase runs as a step of the task default: the place its count of starts is
-// kept under, its place in the task (from 1 for a step, 0 for a retro or a merge, which no plan
-// names, so the kind tells those two apart), its role and its type ("" for a retro or a merge).
-// A phase that runs no step — admitted, awaiting a person, held, done — answers ok false; a held
-// issue's step is the step of the phase its hold is from (record.StandsAt), which the caller reads.
+// stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps
+// (stepIn). A held issue's step is the step of the phase its hold is from (record.StandsAt), which
+// the caller reads.
 func stepOf(p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
-	at := func(kind string, step int, role, typ string) (record.StepPlace, int, string, string, bool) {
-		return record.StepPlace{Task: defaultTask, Kind: kind, Place: step}, step, role, typ, true
-	}
-	switch p {
-	case phase.Planning:
-		return at("step", 1, "planner", "planning")
-	case phase.Implementing:
-		return at("step", 2, "implementer", "implementation")
-	case phase.Testing:
-		return at("step", 3, "tester", "testing")
-	case phase.Reviewing:
-		return at("step", 4, "reviewer", "review")
-	case phase.Accepting:
-		return at("step", 5, "acceptance", "review")
-	case phase.Retro:
-		return at("retro", 0, "implementer", "")
-	case phase.Merging:
-		return at("merge", 0, "merger", "")
-	}
-	return record.StepPlace{}, 0, "", "", false
+	return stepIn(DefaultSteps(), p)
 }
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role

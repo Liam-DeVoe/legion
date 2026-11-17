@@ -199,6 +199,9 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
 	return nil
 }
+func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return nil
+}
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

@@ -902,7 +902,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
 	case phase.Retro:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, "")
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil {
+			return intake.Result{}, err
+		}
+		// The completion that ends the retro carries the rating its agent gave the plan (the
+		// route took it on no other completion, api.PlanRatingContract), and a plugin before
+		// that contract sends none, so its retro writes no rating.
+		if fact.PlanRating == 0 {
+			return intake.Result{}, nil
+		}
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating, fact.PlanReason)
 	}
 	return intake.Result{}, nil
 }
@@ -1507,6 +1516,13 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
 	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
+	}
+	// The move out of admitted is where the run's work starts, and so where the plan it carries
+	// out is written: the default plan (defaultPlan), the steps whose first is the start below.
+	if trigger == TriggerGateOpened && recordsSteps(issue) {
+		if err := e.enqueue(ctx, tx, issue.Key, defaultPlan(issue)); err != nil {
+			return err
+		}
 	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
 	// session until its issue closes (leave), and its phase entry ends here, not its process. The
