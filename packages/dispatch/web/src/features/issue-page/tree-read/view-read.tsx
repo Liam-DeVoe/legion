@@ -12,10 +12,11 @@ const VIEW_FILTERS: readonly TreeFilter[] = ["spec", "verification", "plan"];
 /**
  * The filters' view reads of one load of the issue (dispatch://INFRA-4062 R4, R6), around the
  * stage. Each of Spec, Verification and Plan is read the first time its filter is on in a load,
- * and then held for the rest of it, never stale and never collected, so a filter turned off and
- * on again finds its answer held and sends nothing. `useIssueTree` watches the three reads
- * without ever sending one, and sets what they hold on the tree's root (`TreeNode.views`), which
- * is what each filter draws from.
+ * and then held for the rest of it, never stale and kept by this provider's observers, which
+ * stay mounted for the load, so a filter turned off and on again finds its answer held and sends
+ * nothing; once the stage goes, they are collected as any query nothing observes is.
+ * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
+ * tree's root (`TreeNode.views`), which is what each filter draws from.
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
@@ -47,7 +48,6 @@ export function ViewReadProvider({
     queries: VIEW_FILTERS.map((filter) => ({
       ...viewQuery(key, filter),
       enabled: dropped && preset === filter,
-      gcTime: Number.POSITIVE_INFINITY,
       staleTime: Number.POSITIVE_INFINITY,
     })),
   });

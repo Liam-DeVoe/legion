@@ -40,6 +40,7 @@ import {
 } from "./issue-page-g";
 import { expectActivePreset, pickPreset } from "./issue-page-i";
 import {
+  besideViewRead,
   blocksReads,
   convertedGate,
   type DecisionsRead,
@@ -96,12 +97,14 @@ import { type ApiRequests, expectLoadSettled, watchApiRequests } from "./traffic
  *    control fails on the parent first. Every other reading is the fixture's
  *    (`e2e/fixtures/issue-page-t-rows.json`), by key, as the page opens and with every branch
  *    open, and each time is its source's in this run.
- * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once".
+ * 2. `c-tree-requests`: "the first load reads the tree once and a filter its view once", and Plan,
+ *    pressed 31 s after the load, past the app's 30 s `staleTime`, sends no read but its view's
+ *    (INFRA-1196 decision 180).
  * 3. `c-views`: "each filter draws its view read's rows", on `seedWholeIssue` and
  *    `seedSpineCases`.
- * 4. `c-fresh`: "a write is drawn without a reload": a status picked in P's header sends one tree
- *    read (decision 174), and a reply sent from G's Reply on the open question becomes a row
- *    under it and sends one.
+ * 4. `c-fresh`: "a write is drawn without a reload": a status picked in P's header sends one or
+ *    two tree reads (decision 174: its own refresh, and its event's), and a reply sent from G's
+ *    Reply on the open question becomes a row under it and sends one or two.
  *
  * Each row checks its gates first, each with one `owedUnless` call, and skips where a gate is not
  * on T's base, with an `owed` annotation naming the gate and the decisions that make it owed; it
@@ -642,7 +645,16 @@ async function releaseFilter(page: Page, filter: TreeView): Promise<void> {
   await expectActivePreset(page, PRESET_NAMES.conversation);
 }
 
-// c-tree-requests.
+/** Moves the page's clock 31 s on, past the app's 30 s `staleTime` (`web/src/main.tsx`), and
+ *  waits out whatever a timer due in that time sent, so what follows counts what a press sends. */
+async function pastStaleTime(page: Page, traffic: ApiRequests): Promise<void> {
+  await page.clock.fastForward("00:31");
+  await expectLoadSettled(traffic);
+}
+
+// c-tree-requests, with INFRA-1196 decision 180's clause: a slot the stage mounts again past the
+// app's 30 s `staleTime` sends no read of its own, shown on Plan, whose slot reads only through
+// `useIssueTree`.
 // SLOW(>=2s): the whole seeded issue, its load waited out to a 1.5 s quiet window, Details
 // opened, and three filters each pressed on, off and on again with each press waited out.
 test("the first load reads the tree once and a filter its view once", async ({ browser }) => {
@@ -655,6 +667,7 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       verification: viewAnswerOf(page, "verification"),
     } satisfies Record<(typeof VIEW_FILTERS)[number], TreeAnswerWatch>;
     const traffic = watchApiRequests(page);
+    await page.clock.install();
     const load = await firstLoad(page, traffic, seeded.key);
     await expect(headerStatus(page), "the page draws no header").toBeVisible();
     expect(
@@ -677,6 +690,8 @@ test("the first load reads the tree once and a filter its view once", async ({ b
 
     for (const filter of VIEW_FILTERS) {
       const name = PRESET_NAMES[filter];
+      const late = filter === "plan";
+      if (late) await pastStaleTime(page, traffic);
       const first = traffic.requests.length;
       await pressFilter(page, traffic, filter);
       await heldAnswer(views[filter], `the ${name} view read`);
@@ -684,15 +699,24 @@ test("the first load reads the tree once and a filter its view once", async ({ b
       const pressed = traffic.requests.slice(first);
       expect(treeReads(pressed, seeded.key, filter), `${name} sends one view read`).toBe(1);
       expect(blocksReads(pressed), `${name} sends no blocks read`).toEqual([]);
+      if (late) {
+        expect(
+          besideViewRead(pressed, seeded.key, filter),
+          "a view pressed after 31 s sends no read"
+        ).toEqual([]);
+      }
       await releaseFilter(page, filter);
+      if (late) await pastStaleTime(page, traffic);
       const again = traffic.requests.length;
       await pressFilter(page, traffic, filter);
+      if (late) await expectLoadSettled(traffic);
       const repressed = traffic.requests.slice(again);
       expect(
         treeReads(repressed, seeded.key, filter),
         "a filter turned on again sends no view read"
       ).toBe(0);
       expect(blocksReads(repressed), `${name} turned on again sends no blocks read`).toEqual([]);
+      if (late) expect(repressed, "a view pressed after 31 s sends no read").toEqual([]);
       await releaseFilter(page, filter);
     }
   });
@@ -992,6 +1016,13 @@ async function stateWordOf(page: Page, id: string): Promise<string | null> {
   return rows.find((row) => row.id === id)?.state?.word ?? null;
 }
 
+/** Asserts what a write sends of the tree read: its own refresh's read, and one more where the
+ *  event the write raised lands after that read began (`subscribeTreeFreshness`), never more. */
+function expectOneOrTwoReads(reads: number, message: string): void {
+  expect(reads, message).toBeGreaterThanOrEqual(1);
+  expect(reads, message).toBeLessThanOrEqual(2);
+}
+
 // c-fresh, with INFRA-1196 decision 174's status clause, which needs no part L.
 // SLOW(>=2s): the whole seeded issue, its load waited out, a status written and waited out, and a
 // reply sent and waited for until its row is drawn.
@@ -1022,10 +1053,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
       (request) => request.method === "PATCH" && request.path === `/api/v1/issues/${seeded.key}`
     );
     expect(write, "the status pick sent no write of the issue").toBeGreaterThanOrEqual(0);
-    expect(
+    expectOneOrTwoReads(
       treeReads(sincePick.slice(write + 1), seeded.key, null),
-      "the status write sends one tree read"
-    ).toBe(1);
+      "the status write sends one or two tree reads"
+    );
     await expect(status, "the issue's row reads the new status").toHaveValue(next);
 
     const reads = await idReadsOf(seeded.key);
@@ -1052,10 +1083,10 @@ test("a write is drawn without a reload", async ({ browser }) => {
       .toBe(question);
     expect(loads, "the page reloaded to draw the new comment").toBe(0);
     await expectLoadSettled(traffic);
-    expect(
+    expectOneOrTwoReads(
       treeReads(traffic.requests.slice(sent), seeded.key, null),
-      "the write sends a tree read"
-    ).toBe(1);
+      "the write sends one or two tree reads"
+    );
   });
 });
 

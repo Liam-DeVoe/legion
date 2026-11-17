@@ -3,9 +3,9 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { IssueTreeAnswer } from "../web/src/api/client";
 import type { IssueDecisions } from "../web/src/api/types";
-import { decisionNodes } from "../web/src/features/issue-page/decision-review";
 import { CONTROL_LABELS, GAP_LINES, type Preset } from "../web/src/features/issue-page/page-words";
 import { type TreeIdReads, treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
+import { parseNodeReference } from "../web/src/features/refs/routes";
 import { nextFrames } from "./frames";
 import { blockNode, focusThePage, nodeRows, rowBody } from "./issue-page-g";
 import { type ApiRequest, type ApiRequests, expectLoadSettled } from "./traffic";
@@ -828,6 +828,23 @@ export function treeReads(
   }).length;
 }
 
+/** Every request of `requests` that is no page of a read of issue `key`'s view `view`, as its
+ *  method and path: what a press sent beside its view's own read. */
+export function besideViewRead(
+  requests: readonly ApiRequest[],
+  key: string,
+  view: TreeView
+): string[] {
+  return requests.flatMap((request) => {
+    const url = new URL(request.path, "http://requests.invalid");
+    const own =
+      request.method === "GET" &&
+      url.pathname === treePath(key) &&
+      url.searchParams.get("view") === view;
+    return own ? [] : [`${request.method} ${request.path}`];
+  });
+}
+
 /** The reads of a document's blocks (`GET /api/v1/artifacts/{id}/blocks`) `requests` hold, by
  *  path. */
 export function blocksReads(requests: readonly ApiRequest[]): string[] {
@@ -903,17 +920,28 @@ export function decisionTimes(
 }
 
 /** Whether the seed's decisions are nodes of the tree read `answer`: it holds a decision node of
- *  this issue, and every decision the decisions read answers is one (`decisionNodes`), where a
- *  section of `decisions.md` is none. */
+ *  this issue, and every decision the decisions read answers is one - a decision node of this
+ *  issue whose id is the decision's `block_id`, in the document the decision's `ref` names where
+ *  the node names its document - where a section of `decisions.md` is none. The check is this
+ *  file's own, so the page's matching of decisions to nodes can move under it. */
 export function decisionsAreNodes(
   answer: IssueTreeAnswer,
   read: DecisionsRead | undefined
 ): boolean {
-  const own = answer.nodes.some((node) => node.supertag === "decision" && node.issue === undefined);
-  if (!own || read === undefined) return false;
+  const own = new Map(
+    answer.nodes.flatMap((node) =>
+      node.supertag === "decision" && node.issue === undefined ? [[node.id, node] as const] : []
+    )
+  );
+  if (own.size === 0 || read === undefined) return false;
   if (read.kind === "view") return true;
-  const decisions = read.answer.decisions ?? [];
-  return decisionNodes(decisions, answer).size === decisions.length;
+  return (read.answer.decisions ?? []).every((decision) => {
+    const node = own.get(decision.block_id);
+    if (node === undefined) return false;
+    if (node.document === undefined) return true;
+    const route = parseNodeReference(decision.ref);
+    return route?.kind === "artifact" && route.slug === node.document.slug;
+  });
 }
 
 // ---------------------------------------------------------------------------------------------

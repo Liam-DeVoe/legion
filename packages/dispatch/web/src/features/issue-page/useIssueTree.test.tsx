@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -693,7 +693,8 @@ test("the tree is read in one request, and no document's blocks are read", async
     const view = renderHook(() => useIssueTree(withDocuments).root, { wrapper });
     // The names are read once every other read has answered, the tree read among them.
     await waitFor(() => expect(named).toBe(1));
-    expect((api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls).toEqual([[KEY, {}]]);
+    const reads = (api.getIssueTree as Mock<typeof api.getIssueTree>).mock.calls;
+    expect(reads.map(([key, query]) => [key, query])).toEqual([[KEY, {}]]);
     expect(api.getArtifactBlocks).not.toHaveBeenCalled();
     view.unmount();
   } finally {
@@ -852,6 +853,89 @@ test("an invalidated comments query reads the tree again", async () => {
     view.unmount();
   } finally {
     unsubscribe();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// dispatch://INFRA-1196 decision 181: where the decisions read's own invalidation is one of the
+// changes - a Keep that failed invalidates it, and so does an event that names it - its read is
+// already out, so the refresh reads the tree again and does not ask for the decisions a second
+// time, which cancelled the read out and sent another.
+test("an invalidated decisions query reads the tree again and the decisions once", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const unsubscribe = subscribeTreeFreshness(client, KEY);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
+    expect(api.getIssueDecisions).toHaveBeenCalledTimes(1);
+
+    (api.getIssueTree as Mock<typeof api.getIssueTree>).mockResolvedValue(treeAnswer([comment]));
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: ["decisions", KEY] });
+    });
+    await waitFor(() =>
+      expect(nodesInOrder(view.result.current).some((node) => node.id === comment.id)).toBe(true)
+    );
+    expect(api.getIssueTree).toHaveBeenCalledTimes(2);
+    expect(api.getIssueDecisions).toHaveBeenCalledTimes(2);
+    view.unmount();
+  } finally {
+    unsubscribe();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** How many times each read the hook sends that an event refreshes has been sent, by name. */
+function readsSent(): Record<string, number> {
+  const reads = {
+    asks: api.listIssueAsks,
+    comments: api.listComments,
+    coverage: api.getIssueCoverage,
+    decisions: api.getIssueDecisions,
+    messages: api.listIssueMessages,
+    names: api.getReferenceTargets,
+    results: api.getIssueResults,
+    tree: api.getIssueTree,
+  };
+  return Object.fromEntries(
+    Object.entries(reads).map(([name, read]) => [
+      name,
+      (read as unknown as Mock<() => unknown>).mock.calls.length,
+    ])
+  );
+}
+
+// dispatch://INFRA-1196 decision 180: the page's reads are refreshed by events, never by age. A
+// slot the stage mounts again past the app's 30 s `staleTime` (`main.tsx`) builds its tree from
+// what the reads hold and sends none of them again. The sign-in is the shell's read, outside it.
+test("a remount after 30 s sends no read", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  try {
+    const first = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(api.getReferenceTargets).toHaveBeenCalledTimes(1));
+    first.unmount();
+    const sent = readsSent();
+
+    setSystemTime(new Date(Date.now() + 31_000));
+    const again = renderHook(() => useIssueTree(issue).root, { wrapper });
+    await waitFor(() => expect(taskWords(again.result.current)).toBe(TASK_WORDS));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(readsSent()).toEqual(sent);
+    again.unmount();
+  } finally {
+    setSystemTime();
     for (const stub of stubs) stub.mockRestore();
   }
 });

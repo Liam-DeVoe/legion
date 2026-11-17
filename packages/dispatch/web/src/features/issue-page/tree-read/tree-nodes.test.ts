@@ -884,10 +884,11 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
     const query = issueTreeQuery(KEY);
     const reading = client.fetchQuery(query);
     await asked.promise;
-    expect(read.mock.calls).toEqual([
+    expect(read.mock.calls.map(([key, page]) => [key, page])).toEqual([
       [KEY, {}],
       [KEY, { cursor: "page-2" }],
     ]);
+    expect(read.mock.calls.every(([, , init]) => init?.signal instanceof AbortSignal)).toBe(true);
     expect(client.getQueryData(query.queryKey)).toBeUndefined();
 
     later.resolve(second);
@@ -900,6 +901,36 @@ test("the cursor's pages are read in turn and the tree is built once", async () 
       blockNodeId("plan-md", "t1"),
       "c2",
     ]);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+// INFRA-1196 decision 181: the tree read honours TanStack's abort signal, so a read given up - a
+// reset, the last observer gone - asks for no next page, and a walk of many pages stops there.
+test("a read given up asks for no next page", async () => {
+  const first: TreeAnswer = {
+    ...answer([block("r1", "requirement", KEY, SPEC, 0)]),
+    cursor: "page-2",
+  };
+  const out = Promise.withResolvers<TreeAnswer>();
+  const read = spyOn(api, "getIssueTree").mockImplementation(async (_key, page) =>
+    page?.cursor === undefined ? out.promise : answer([])
+  );
+  try {
+    const client = new QueryClient();
+    const query = issueTreeQuery(KEY);
+    const reading = client.fetchQuery(query).catch(() => undefined);
+    await client.cancelQueries({ queryKey: query.queryKey });
+    await reading;
+    out.resolve(first);
+    // The walk goes on in a promise TanStack no longer hands out, so the case waits for the turn
+    // of the event loop after it: every step of the walk up to its next request is a microtask.
+    const turn = Promise.withResolvers<void>();
+    setTimeout(turn.resolve, 0);
+    await turn.promise;
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(client.getQueryData(query.queryKey)).toBeUndefined();
   } finally {
     read.mockRestore();
   }

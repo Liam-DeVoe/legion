@@ -2,6 +2,7 @@ import {
   matchQuery,
   type QueryClient,
   type QueryFilters,
+  type QueryStatus,
   queryOptions,
   useQuery,
 } from "@tanstack/react-query";
@@ -13,9 +14,10 @@ import {
   type IssueTreeNode,
   type IssueTreeTuple,
 } from "../../../api/client";
-import type { ArtifactBlock, IssueDetails } from "../../../api/types";
+import { refreshQueries } from "../../../api/query-refresh";
+import type { IssueDetails } from "../../../api/types";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
-import { blocksOfRole } from "./tree-nodes";
+import { blocksOfRole, type TreeBlock } from "./tree-nodes";
 
 /**
  * The issue's tree read (`GET /api/v1/issues/{key}/tree`, dispatch://INFRA-1253 R8): the one
@@ -71,40 +73,69 @@ export function mergeTreePages(pages: readonly [TreeAnswer, ...TreeAnswer[]]): T
  * the page before names (`cursor`), and the pages merged once the last answers, so the tree is
  * built once and never from part of the walk. A page that fails fails the read, and a read made
  * again - a refetch, a retry - starts from the first page, since a cursor names a place in the
- * walk as it stood when the page that gave it was answered.
+ * walk as it stood when the page that gave it was answered. A read TanStack gives up (`signal`:
+ * a reset, the last observer gone) ends its page in flight and asks for no next one.
  */
-async function readTree(key: string, view?: TreeFilter): Promise<TreeAnswer> {
-  const first = await api.getIssueTree(key, { view });
+async function readTree(
+  key: string,
+  view: TreeFilter | undefined,
+  signal: AbortSignal
+): Promise<TreeAnswer> {
+  const first = await api.getIssueTree(key, { view }, { signal });
   const pages: [TreeAnswer, ...TreeAnswer[]] = [first];
   let cursor = first.cursor;
   while (cursor !== null) {
-    const page = await api.getIssueTree(key, { cursor, view });
+    signal.throwIfAborted();
+    const page = await api.getIssueTree(key, { cursor, view }, { signal });
     pages.push(page);
     cursor = page.cursor;
   }
   return mergeTreePages(pages);
 }
 
+/**
+ * Window focus reads a query again only while its last answer failed, so a read that failed
+ * recovers on the open page while a healthy one stays quiet: the rule of `refetchFailedOnFocus`
+ * in `features/refs/reference-target.ts`, which that file keeps to itself.
+ */
+export const refetchFailedOnFocus = (query: {
+  readonly state: { readonly status: QueryStatus };
+}) => (query.state.status === "error" ? "always" : false);
+
+/**
+ * How the page's reads are kept fresh (dispatch://INFRA-1196 decision 180): by the events that
+ * can change them, never by age, so a slot the stage mounts again past the app's 30 s
+ * `staleTime` sends no read; only a read whose last answer failed is read again on focus. The
+ * tree read and its views take it, and so does every read of `useIssueTree` that an event
+ * refreshes.
+ */
+export const REFRESHED_BY_EVENTS = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
 /** The issue's whole tree, one query over every page (`readTree`). */
 export const issueTreeQuery = (key: string) =>
   queryOptions({
+    ...REFRESHED_BY_EVENTS,
     queryKey: issueTreeKey(key),
-    queryFn: () => readTree(key),
+    queryFn: ({ signal }) => readTree(key, undefined, signal),
   });
 
 /** One view of the issue's tree, one query over every page (`readTree`). A plain query rather
  *  than one per page, so an observer that is never enabled can watch a view a slot read. */
 export const viewQuery = (key: string, filter: TreeFilter) =>
   queryOptions({
+    ...REFRESHED_BY_EVENTS,
     queryKey: viewKey(key, filter),
-    queryFn: () => readTree(key, filter),
+    queryFn: ({ signal }) => readTree(key, filter, signal),
   });
 
 /** One role's blocks from the tree read, answered as the blocks read of that role's document
  *  answered them (`artifactBlocksQuery`), so a caller's lines that read these members stay as
  *  they are. The state is the tree read's own. */
 export interface TreeBlocksRead {
-  readonly data: ArtifactBlock[] | undefined;
+  readonly data: TreeBlock[] | undefined;
   readonly isError: boolean;
   readonly isSuccess: boolean;
   readonly refetch: () => Promise<unknown>;
@@ -181,10 +212,16 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
  * `["issue-messages", key, …]` and the decisions read's key) is invalidated - a page write's
  * `invalidateQueries`, and an event's own refresh (`api/query-refresh.ts`' `owe`) - or written
  * by `setQueryData` - a Keep and a status change write that way (TanStack's `success` action
- * with `manual`) - it reads the tree again, drops every view, so a held one is gone and the one
- * a slot has on is read again, and invalidates the decisions read, so it is read again where
- * something observes it. Every such change of one turn is one refresh, made in the microtask
- * after it.
+ * with `manual`), so such a write refreshes the tree while the live feed is down too - it reads
+ * the tree again, drops every view, so a held one is gone and the one a slot has on is read
+ * again, and reads the decisions again where something observes them. Every such change of one
+ * turn is one refresh, made in the microtask after it.
+ *
+ * The tree and the decisions are read again through the app's refresh scheduler
+ * (`refreshQueries`), which never cancels a read in flight - a walk of many pages is not started
+ * over by each event of a burst - and starts one at most once a second; so a write and the event
+ * it raises read the tree once or twice, never more. Where the decisions read's own invalidation
+ * was one of the turn's changes, its read is already out or owed, and is not asked for again.
  *
  * The tree's and the views' own keys are no query of the issue, and what its own calls raise is
  * ignored (`calling`), so a refresh never starts another. Nothing is refreshed before the tree
@@ -193,37 +230,46 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
  */
 export function subscribeTreeFreshness(queryClient: QueryClient, key: string): () => void {
   const decisionsKey = issueDecisionsQuery(key, true).queryKey;
+  const decisions: QueryFilters = { exact: true, queryKey: decisionsKey };
   const issueQueries: readonly QueryFilters[] = [
     { queryKey: ["issue", key] },
     { queryKey: ["asks", key] },
     { queryKey: ["comments", key] },
     { queryKey: ["issue-messages", key] },
-    { exact: true, queryKey: decisionsKey },
+    decisions,
   ];
   let calling = false;
   let queued = false;
   let stopped = false;
+  // Whether the decisions read's own invalidation is one of this turn's changes.
+  let decisionsInvalidated = false;
   const refresh = (): void => {
     queued = false;
+    const decisionsOwed = decisionsInvalidated;
+    decisionsInvalidated = false;
     if (stopped) return;
     calling = true;
     try {
-      void queryClient.invalidateQueries({ exact: true, queryKey: issueTreeKey(key) });
+      refreshQueries(queryClient, [
+        { exact: true, queryKey: issueTreeKey(key) },
+        ...(decisionsOwed ? [] : [{ exact: true, queryKey: decisionsKey }]),
+      ]);
       for (const filter of TREE_FILTERS) {
         void queryClient.resetQueries({ exact: true, queryKey: viewKey(key, filter) });
       }
-      void queryClient.invalidateQueries({ exact: true, queryKey: decisionsKey });
     } finally {
       calling = false;
     }
   };
   const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-    if (calling || queued || event.type !== "updated") return;
+    if (calling || event.type !== "updated") return;
     const { action, query } = event;
     const changed =
       action.type === "invalidate" || (action.type === "success" && action.manual === true);
     if (!changed || !issueQueries.some((filters) => matchQuery(filters, query))) return;
     if (queryClient.getQueryData(issueTreeKey(key)) === undefined) return;
+    if (action.type === "invalidate" && matchQuery(decisions, query)) decisionsInvalidated = true;
+    if (queued) return;
     queued = true;
     queueMicrotask(refresh);
   });
