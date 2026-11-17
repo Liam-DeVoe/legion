@@ -1353,9 +1353,11 @@ export function MentionComposer({
       ) : null}
       <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
         {compact ? null : bodyLabel}
+        {/* `data-reply-box`: the box a page's reply key hands the caret (the Inbox's `r`). */}
         <textarea
           aria-label={bodyLabel}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${inputClasses(true)} ${textPrimaryOnSurface}`}
+          data-reply-box=""
           onChange={(event) => onBodyChange(event.target.value, event.target.selectionStart)}
           onDrop={
             uploadOwner === undefined

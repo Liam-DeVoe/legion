@@ -11,6 +11,7 @@
  *  work out in `e2e/keyboard-complete.ts`. */
 import { setLiveSessions } from "./agents";
 import {
+  answerAsk,
   baseUrl,
   createArtifactAsk,
   createAsk,
@@ -19,7 +20,9 @@ import {
   createProject,
   createProjectDocument,
   editArtifact,
+  editAsk,
   getIssueArtifactText,
+  listIssueAsks,
   patchIssue,
   putRepoProject,
   requestApproval,
@@ -28,9 +31,19 @@ import {
 import { recordClipboard } from "./clipboard";
 import { documentEditor, openSpec, placeCaret } from "./editor";
 import { drawer } from "./inbox-drawer";
-import { inboxPane, paneScroller } from "./inbox-pane";
+import { inboxPane, paneScroller, selectedRow, selectRow } from "./inbox-pane";
+import {
+  DOCUMENT_FOOT,
+  headingOffset,
+  inboxAt,
+  restingColumn,
+  SECTION_HEADING,
+  seedQuestionColumn,
+  waitOutPlacement,
+} from "./inbox-pane-scroll";
 import { replyRowId, seedCommentThread, THREAD_SESSION } from "./inbox-threads";
 import {
+  answerWrites,
   asker,
   contrastOf,
   handOnControl,
@@ -42,6 +55,8 @@ import {
   OTHER_SITE,
   reloaded,
   returnMornings,
+  type SeededApproval,
+  seedTallAsks,
   snoozedUntil,
   snoozeWrites,
   unsnoozeWrites,
@@ -1725,4 +1740,733 @@ test("k-link-copy: y on a focused link copies its address on the Conversation ta
     ),
     "k-link-copy: in the margin's sheet, y on the comment's web link copies its URL"
   ).toBe(AWAY);
+});
+
+// ---------------------------------------------------------------------------
+// k-list-and-document (R3): the open document's own keys, pressed from the list. Space and
+// Shift+Space page it, `g g` and Shift+G take it to its ends, and the selection and the focus
+// stay where they are; on a control that Space presses itself the key is the control's.
+// ---------------------------------------------------------------------------
+
+/** Where the reading column stands, how tall it is, and how tall the document drawn in it is. */
+interface ColumnAt {
+  readonly height: number;
+  readonly scrollHeight: number;
+  readonly top: number;
+}
+
+function columnAt(page: Page): Promise<ColumnAt> {
+  return paneScroller(page).evaluate((column) => ({
+    height: column.clientHeight,
+    scrollHeight: column.scrollHeight,
+    top: column.scrollTop,
+  }));
+}
+
+/** What the document's keys leave alone, in words: the row the column shows, and the element
+ *  that holds the focus - by its row, as the page body, or by its tag and name. */
+function handOf(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const selected = document
+      .querySelector('[data-inbox-selected="true"]')
+      ?.getAttribute("data-inbox-row");
+    const active = document.activeElement;
+    const focus =
+      active === null || active === document.body
+        ? "the body"
+        : (active.getAttribute("data-inbox-row") ??
+          `${active.tagName} ${active.getAttribute("aria-label") ?? ""}`);
+    return `${selected ?? "nothing"} selected, the focus on ${focus}`;
+  });
+}
+
+/** Presses `keys` one after the other and reads that the column moved as `moved` says of where
+ *  it stood and where it stands, and that the selection and the focus are what they were. */
+async function pressInDocument(
+  page: Page,
+  keys: readonly string[],
+  step: string,
+  moved: (before: ColumnAt, after: ColumnAt) => boolean
+): Promise<void> {
+  const before = await columnAt(page);
+  const hand = await handOf(page);
+  for (const key of keys) {
+    await page.keyboard.press(key);
+  }
+  await expect
+    .poll(async () => moved(before, await columnAt(page)), {
+      message: `k-list-and-document: ${step}`,
+    })
+    .toBe(true);
+  expect(
+    await handOf(page),
+    `k-list-and-document: ${step}, and the selection and the focus stay where they were`
+  ).toBe(hand);
+}
+
+/** The tall approval requests, each of a spec at least four times the column's height, and a
+ *  question its asker reworded, whose card draws the `<summary>` of its earlier wording. */
+async function seedListAndDocument(): Promise<{
+  readonly reworded: string;
+  readonly tall: readonly SeededApproval[];
+}> {
+  await createProject({ key: "CORE", name: "Core" });
+  const tall = await seedTallAsks("CORE");
+  const issue = await createIssue({ force: true, project: "CORE", title: "Lease audit" });
+  const ask = await createAsk(issue.key, { question: "Which lease does the audit read?" }, asker);
+  await editAsk(ask.id, { question: "Which lease window does the audit read?" }, asker);
+  return { reworded: ask.id, tall };
+}
+
+/** Waits for the approval request the column shows to draw its spec whole: the last of its
+ *  numbered paragraphs (`seedTallAsks`). */
+async function tallDrawn(page: Page, title: string): Promise<void> {
+  await expect(
+    paneScroller(page).getByText(`${title} note 160:`),
+    `k-list-and-document: the column draws the whole of the ${title} spec`
+  ).toHaveCount(1);
+  const drawn = await columnAt(page);
+  expect(
+    drawn.scrollHeight,
+    `k-list-and-document: the ${title} spec is at least four times the column's height`
+  ).toBeGreaterThanOrEqual(4 * drawn.height);
+}
+
+/** Holds every read of `page` that one of `reads` matches until the answer is called, then
+ *  serves them all. A read the page gave up on while it was held - a query the column cancelled
+ *  as it mounted again - is already answered by then, and the hold lets it go unanswered rather
+ *  than failing the row on a read nobody waits for. */
+async function holdReads(page: Page, reads: readonly string[]): Promise<() => Promise<void>> {
+  const held = Promise.withResolvers<void>();
+  for (const read of reads) {
+    await page.route(read, async (route) => {
+      await held.promise;
+      await route.continue().catch(() => undefined);
+    });
+  }
+  return async () => {
+    held.resolve();
+    for (const read of reads) {
+      await page.unroute(read);
+    }
+  };
+}
+
+// SLOW(>=2s): three tall specs drawn in the column, then a document whose reads are held and
+// served, and the placement's bound waited out.
+test("k-list-and-document: Space, Shift+Space, g g and Shift+G scroll the open document from the list, and leave the selection, the focus and a control's own Space alone", async ({
+  page,
+}) => {
+  const copied = await recordClipboard(page);
+  const seed = await seedListAndDocument();
+  const [first, second] = seed.tall;
+  if (first === undefined || second === undefined) throw new Error("seedTallAsks seeded two");
+  const pagedDown = (before: ColumnAt, after: ColumnAt) =>
+    after.top - before.top >= before.height / 2 && after.top - before.top <= before.height;
+  const pagedUp = (before: ColumnAt, after: ColumnAt) =>
+    before.top - after.top >= before.height / 2 && before.top - after.top <= before.height;
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+
+  // A click on the first row selects it and leaves the focus on it.
+  await selectRow(page, first.askId);
+  const firstRow = page.locator(`[data-inbox-row="${first.askId}"]`);
+  await expect(
+    firstRow,
+    "k-list-and-document: the click leaves the focus on the row"
+  ).toBeFocused();
+  await tallDrawn(page, "Ledger handover");
+  await pressInDocument(
+    page,
+    ["Space"],
+    "Space scrolls the column down by half to all of its height",
+    pagedDown
+  );
+  await pressInDocument(
+    page,
+    ["Shift+Space"],
+    "Shift+Space scrolls it back up by half to all of its height",
+    pagedUp
+  );
+  await pressInDocument(
+    page,
+    ["Shift+G"],
+    "Shift+G puts the column at its end",
+    (_before, after) => Math.abs(after.top + after.height - after.scrollHeight) <= 1
+  );
+  await pressInDocument(
+    page,
+    ["g", "g"],
+    "g then g puts the column at its top",
+    (_before, after) => after.top === 0
+  );
+
+  // With the focus on the page body, as on the row.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  expect(
+    await page.evaluate(() => document.activeElement === document.body),
+    "k-list-and-document: the row let go, so the body has the focus"
+  ).toBe(true);
+  await pressInDocument(
+    page,
+    ["Space"],
+    "with the focus on the body, Space scrolls the column down by half to all of its height",
+    pagedDown
+  );
+
+  await page.keyboard.press("j");
+  await expect(selectedRow(page), "k-list-and-document: j selects the second ask").toHaveAttribute(
+    "data-inbox-row",
+    second.askId
+  );
+  await tallDrawn(page, "Mirror replay");
+
+  // On the pane head's Copy reference, Space presses the button and scrolls nothing.
+  const copy = inboxPane(page)
+    .locator("header")
+    .first()
+    .getByRole("button", { name: /^Copy reference/ });
+  await copy.focus();
+  const copiedBefore = (await copied()).length;
+  const beforeCopy = await columnAt(page);
+  await page.keyboard.press("Space");
+  await expect
+    .poll(async () => (await copied()).length, {
+      message: "k-list-and-document: Space on the pane head's Copy reference presses it",
+    })
+    .toBe(copiedBefore + 1);
+  expect((await copied()).at(-1), "k-list-and-document: it copies the second ask").toContain(
+    second.askId
+  );
+  expect(
+    (await columnAt(page)).top,
+    "k-list-and-document: Space on Copy reference moves no scrollTop"
+  ).toBe(beforeCopy.top);
+
+  // On a focused `<summary>` of the pane, Space opens or closes it and scrolls nothing.
+  await selectRow(page, seed.reworded);
+  const summary = inboxPane(page).locator("summary", { hasText: "Show 1 previous version" });
+  await expect(summary, "k-list-and-document: the reworded question draws a summary").toBeVisible();
+  await summary.focus();
+  const opened = () =>
+    summary.evaluate((node) => (node.parentElement as HTMLDetailsElement | null)?.open === true);
+  const wasOpen = await opened();
+  const beforeSummary = await columnAt(page);
+  await page.keyboard.press("Space");
+  await expect
+    .poll(opened, {
+      message: "k-list-and-document: Space on a focused summary of the pane opens or closes it",
+    })
+    .toBe(!wasOpen);
+  expect(
+    (await columnAt(page)).top,
+    "k-list-and-document: Space on the summary moves no scrollTop"
+  ).toBe(beforeSummary.top);
+
+  // An ask whose automatic placement is still running: its document's reads are held, so the
+  // column places the question's section, far down the document, as soon as they return.
+  const placed = await seedQuestionColumn("heading");
+  const release = await holdReads(page, [
+    `**/api/v1/artifacts/${placed.artifactId}`,
+    `**/api/v1/artifacts/${placed.artifactId}/text`,
+  ]);
+  await page.goto(inboxAt(placed.item));
+  await expect(selectedRow(page), "k-list-and-document: the held ask is selected").toHaveAttribute(
+    "data-inbox-row",
+    placed.item
+  );
+  await expect(paneScroller(page), "k-list-and-document: its column is drawn").toBeVisible();
+  await page.keyboard.press("Space");
+  const spaced = (await columnAt(page)).top;
+  await release();
+  await expect(
+    paneScroller(page).getByText(DOCUMENT_FOOT),
+    "k-list-and-document: the held document is drawn once its reads return"
+  ).toHaveCount(1);
+  await waitOutPlacement(page);
+  expect(
+    Math.abs((await restingColumn(page)).top - spaced),
+    "k-list-and-document: Space pressed while the placement runs leaves the column where the Space put it after the reads return"
+  ).toBeLessThanOrEqual(1);
+  expect(
+    await headingOffset(page, SECTION_HEADING),
+    "k-list-and-document: the section the placement would have opened at is still below the column's top"
+  ).toBeGreaterThan(8);
+});
+
+// ---------------------------------------------------------------------------
+// k-other-key (R17): the digit after a question's last real option is Other's, each option row of
+// the item in hand shows its digit, and a pick of Other puts the caret in the answer box on every
+// surface that draws a question.
+// ---------------------------------------------------------------------------
+
+/** The two options of the questions below that need no more than two. */
+const SHIP_OR_HOLD = [{ label: "Ship" }, { label: "Hold" }];
+
+/** The decision block of k-other-key's spec. */
+const LEASE_BLOCK = "lease-window";
+
+/** A decision block `id` asking `question` with `options`, as a spec writes one. */
+function decisionBlock(id: string, question: string, options: readonly string[]): string {
+  return [
+    `:::ask{#${id} urgency="med" multiple="false" state="open"}`,
+    question,
+    "",
+    ...options.map((option) => `- ${option}`),
+    ":::",
+  ].join("\n");
+}
+
+/** A spec holding a decision block with two options, and the line an ask is anchored to. */
+const DECISION_SPEC = [
+  "# Lease handover",
+  "",
+  "The mirror hands the lease back when the replay is done.",
+  "",
+  decisionBlock(LEASE_BLOCK, "Which window does the lease cover?", [
+    "The last hour",
+    "The last day",
+  ]),
+  "",
+].join("\n");
+
+/** The decision block of nine options. The server takes at most eight options on an ask it is
+ *  sent (`maxAskOptions`, `packages/envoy/internal/dispatch/api/asks.go`), so the question of
+ *  nine is one a spec writes, which the server indexes into an ask. */
+const NINE_BLOCK = "replay-window";
+
+/** The id of the ask the server indexed the decision block `blockId` of `issueKey`'s spec into,
+ *  once it has. */
+async function blockAsk(issueKey: string, blockId: string): Promise<string> {
+  let askId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        askId = (await listIssueAsks(issueKey)).find((ask) => ask.block_id === blockId)?.id;
+        return askId !== undefined;
+      },
+      { message: `the decision block ${blockId} is indexed into an ask` }
+    )
+    .toBe(true);
+  if (askId === undefined) throw new Error(`the decision block ${blockId} was never indexed`);
+  return askId;
+}
+
+interface OtherSeed {
+  readonly answeredId: string;
+  readonly anchoredId: string;
+  readonly decisionIssueKey: string;
+  readonly nineId: string;
+  readonly threeId: string;
+}
+
+/** A question of three options and one of nine, both waiting on alice; a question alice
+ *  answered with its first option; and an issue whose spec holds a decision block with two
+ *  options and whose conversation holds an ask anchored to that spec, so its margin draws it.
+ *  Each issue is made past the server's duplicate check (`force`): their titles share words. */
+async function seedOtherKey(): Promise<OtherSeed> {
+  await createProject({ key: "CORE", name: "Core" });
+  const threeIssue = await createIssue({ force: true, project: "CORE", title: "Ledger rollout" });
+  const three = await createAsk(
+    threeIssue.key,
+    {
+      options: [{ label: "Ship" }, { label: "Hold" }, { label: "Drop" }],
+      question: "Which way does the ledger roll out?",
+    },
+    asker
+  );
+  const nineIssue = await createIssue({
+    force: true,
+    project: "CORE",
+    spec: `# Mirror replay\n\n${decisionBlock(
+      NINE_BLOCK,
+      "Which window does the mirror replay?",
+      Array.from({ length: 9 }, (_, index) => `Window ${index + 1}`)
+    )}\n`,
+    title: "Mirror replay",
+  });
+  const answeredIssue = await createIssue({ force: true, project: "CORE", title: "Clock audit" });
+  const answered = await createAsk(
+    answeredIssue.key,
+    { options: SHIP_OR_HOLD, question: "Ship the clock audit?" },
+    asker
+  );
+  await answerAsk(answered.id, { expected_edited_at: null, selected: ["Ship"] });
+  const decided = await createIssue({
+    force: true,
+    project: "CORE",
+    spec: DECISION_SPEC,
+    title: "Lease handover",
+  });
+  const anchored = await createAsk(
+    decided.key,
+    {
+      anchor: { artifact: "spec", quote: "hands the lease back" },
+      options: SHIP_OR_HOLD,
+      question: "Hand the lease back at once?",
+    },
+    asker
+  );
+  return {
+    answeredId: answered.id,
+    anchoredId: anchored.id,
+    decisionIssueKey: decided.key,
+    nineId: await blockAsk(nineIssue.key, NINE_BLOCK),
+    threeId: three.id,
+  };
+}
+
+/** Clicks the Other of the question drawn in `scope` and reads that the caret is in its answer
+ *  box, as the step `step` says. */
+async function clickOther(scope: Locator, step: string): Promise<void> {
+  await scope.getByRole("radio", { name: "Other" }).click();
+  await expect(scope.locator("[data-ask-answer]"), `k-other-key: ${step}`).toBeFocused();
+}
+
+// SLOW(>=2s): two answers in the reading pane, then card mode, the Spec tab with its decision
+// block and margin, the Conversation tab and the Answers page, each opened.
+test("k-other-key: the digit after a question's last option picks Other and puts the caret in its answer box, and a click on Other does on every surface", async ({
+  page,
+}) => {
+  const seed = await seedOtherKey();
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  const pane = inboxPane(page);
+
+  // The question of three options, from its row: each option row shows its digit, Other's 4
+  // included, and 4 is Other.
+  await selectRow(page, seed.threeId);
+  const three = pane.getByTestId(`ask-${seed.threeId}`);
+  await expect(three.getByRole("radio", { name: "Other" })).toBeVisible();
+  await expect(
+    three.locator("label:has(input[type=radio]) kbd"),
+    "k-other-key: each of the first question's four option rows, Other's included, shows its digit, 1 to 4"
+  ).toHaveText(["1", "2", "3", "4"]);
+  const answers = answerWrites(page, seed.threeId);
+  await page.keyboard.press("4");
+  await expect(
+    three.getByRole("radio", { name: "Other" }),
+    "k-other-key: 4 checks Other on the question with three options"
+  ).toBeChecked();
+  await expect(
+    three.locator("[data-ask-answer]"),
+    "k-other-key: after 4 the caret is in the answer box"
+  ).toBeFocused();
+  await page.keyboard.type("my own words");
+  await page.keyboard.press("Control+Enter");
+  await expect
+    .poll(() => answers.length, { message: "k-other-key: Ctrl+Enter sends one answer" })
+    .toBe(1);
+  expect(
+    answers[0]?.input,
+    "k-other-key: the answer is the words alone, with no option"
+  ).toMatchObject({ selected: [], text: "my own words" });
+
+  // The question of nine options, a decision block the column draws in its document: Other is
+  // the tenth, `0`, and its pick opens the block card's note box with the caret in it.
+  await selectRow(page, seed.nineId);
+  const nine = pane.getByTestId(`ask-${seed.nineId}`);
+  await expect(nine.getByRole("radio", { name: "Other" })).toBeVisible();
+  await page.keyboard.press("0");
+  await expect(
+    nine.getByRole("radio", { name: "Other" }),
+    "k-other-key: 0 checks Other on the question with nine options"
+  ).toBeChecked();
+  await expect(
+    nine.locator("[data-ask-answer]"),
+    "k-other-key: after 0 the caret is in the answer box"
+  ).toBeFocused();
+
+  // A click on Other, on every surface that draws a question.
+  await page.setViewportSize(NARROW);
+  await page.goto("/");
+  await clickOther(
+    page.getByTestId(`ask-${seed.nineId}`),
+    "in card mode, a click on Other puts the caret in the answer box"
+  );
+
+  await page.setViewportSize(WIDE);
+  await openSpec(page, seed.decisionIssueKey, "hands the lease back");
+  await clickOther(
+    documentEditor(page).locator(`[data-dispatch-ask-block="${LEASE_BLOCK}"]`),
+    "on the decision block of the Spec tab, a click on Other puts the caret in the answer box"
+  );
+
+  await page.goto(`/issues/${seed.decisionIssueKey}/conversation`);
+  await clickOther(
+    page.locator(`[data-turn="ask:${seed.anchoredId}"]`),
+    "on the ask of the Conversation tab, a click on Other puts the caret in the answer box"
+  );
+
+  await openSpec(page, seed.decisionIssueKey, "hands the lease back");
+  await clickOther(
+    page.locator(`[data-margin-item="${seed.anchoredId}"]`),
+    "on that ask in the margin of the Spec tab, a click on Other puts the caret in the answer box"
+  );
+
+  // The Answers page, where a change of an answer given with a real option begins.
+  await page.goto("/answers");
+  await page
+    .locator(`[data-answer-row="${seed.answeredId}"]`)
+    .first()
+    .getByRole("button", { name: "Change answer" })
+    .click();
+  const changing = page.locator(`[data-answer-card="${seed.answeredId}"]`);
+  await expect(changing.getByRole("radio", { name: "Ship" })).toBeChecked();
+  await clickOther(
+    changing,
+    "on the Answers page, a click on Other where a change of the answer begins puts the caret in the answer box"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// k-answer-box (R18): Enter puts the caret in the answer box of the item in hand from its row,
+// the page body, the column after `l` and an option of its card, and `r` in the reply box of the
+// thread in hand.
+// ---------------------------------------------------------------------------
+
+/** The ask of a decision block alice answered and a session replied under, which the Inbox lists
+ *  as a Reply row; its block, in the column, folds the reply box behind "Write a reply". */
+async function seedDecisionThread(): Promise<string> {
+  const issue = await createIssue({
+    force: true,
+    project: "CORE",
+    spec: DECISION_SPEC,
+    title: "Lease handover",
+  });
+  const askId = await blockAsk(issue.key, LEASE_BLOCK);
+  await answerAsk(askId, { expected_edited_at: null, selected: ["The last hour"] });
+  await createComment(issue.key, { ask_id: askId, body: "The hour holds for now." }, asker);
+  return askId;
+}
+
+// SLOW(>=2s): four starts in the reading pane, card mode, then two threads opened in the pane.
+test("k-answer-box: Enter puts the caret in the answer box from the row, the body, the column and an option, and r puts it in a thread's reply box", async ({
+  page,
+}) => {
+  const copied = await recordClipboard(page);
+  await setLiveSessions([THREAD_SESSION]);
+  await createProject({ key: "CORE", name: "Core" });
+  const asks: string[] = [];
+  for (const title of ["Ledger rollout", "Mirror replay", "Clock audit"]) {
+    const issue = await createIssue({ force: true, project: "CORE", title });
+    asks.push(
+      (await createAsk(issue.key, { options: SHIP_OR_HOLD, question: `Ship the ${title}?` }, asker))
+        .id
+    );
+  }
+  const [firstAsk, , thirdAsk] = asks;
+  if (firstAsk === undefined || thirdAsk === undefined) throw new Error("three asks were seeded");
+  const threadIssue = await createIssue({ force: true, project: "CORE", title: "Replay budget" });
+  const thread = await seedCommentThread(
+    threadIssue.key,
+    "How far back does a replay go?",
+    "One hour, then it gives up."
+  );
+  const decisionThread = await seedDecisionThread();
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  const pane = inboxPane(page);
+  const box = pane.getByTestId(`ask-${firstAsk}`).locator("[data-ask-answer]");
+  await selectRow(page, firstAsk);
+  const row = page.locator(`[data-inbox-row="${firstAsk}"]`);
+  await expect(box).toBeVisible();
+
+  // From the row.
+  await row.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    box,
+    "k-answer-box: Enter from the row puts the caret in the answer box"
+  ).toBeFocused();
+  // From the page body.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  await page.keyboard.press("Enter");
+  await expect(
+    box,
+    "k-answer-box: Enter from the page body puts the caret in the answer box"
+  ).toBeFocused();
+  // From the document column, after `l`.
+  await row.focus();
+  await page.keyboard.press("l");
+  await expect(paneScroller(page), "k-answer-box: l puts the focus in the column").toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    box,
+    "k-answer-box: Enter from the document column puts the caret in the answer box"
+  ).toBeFocused();
+  // From an option of the card, after a click on it.
+  const ship = pane.getByTestId(`ask-${firstAsk}`).getByRole("radio", { name: "Ship" });
+  await ship.click();
+  await expect(ship).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(
+    box,
+    "k-answer-box: Enter after a click on an option puts the caret in the answer box"
+  ).toBeFocused();
+
+  // On the pane head's Copy reference, Enter presses the button and the caret stays out.
+  const copy = pane
+    .locator("header")
+    .first()
+    .getByRole("button", { name: /^Copy reference/ });
+  await copy.focus();
+  const copiedBefore = (await copied()).length;
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(async () => (await copied()).length, {
+      message: "k-answer-box: Enter on the pane head's Copy reference presses it",
+    })
+    .toBe(copiedBefore + 1);
+  await expect(copy, "k-answer-box: the focus stays on Copy reference").toBeFocused();
+  await expect(box, "k-answer-box: the caret is not in the answer box").not.toBeFocused();
+
+  // t9: the step that answers the first question (`1`, Enter, Ctrl+Enter) and reads that the
+  // second question's row has the focus and that Enter puts the caret in its answer box goes
+  // here; the focus after an answer is R8's (t9).
+
+  // In card mode, after a click on an option of the third card.
+  await page.setViewportSize(NARROW);
+  await page.goto("/");
+  const third = page.getByTestId(`ask-${thirdAsk}`);
+  await third.getByRole("radio", { name: "Ship" }).click();
+  await page.keyboard.press("Enter");
+  await expect(
+    third.locator("[data-ask-answer]"),
+    "k-answer-box: in card mode, Enter after a click on an option of the third card puts the caret in its answer box"
+  ).toBeFocused();
+
+  // `r` on the reply thread's row puts the caret in the thread's reply box.
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  await selectRow(page, replyRowId(thread));
+  await expect(pane.locator("[data-inbox-thread-body] textarea").first()).toBeVisible();
+  await page.keyboard.press("r");
+  expect(
+    await page.evaluate(
+      () =>
+        document.activeElement instanceof HTMLTextAreaElement &&
+        document.activeElement.closest('[data-testid="inbox-pane"] [data-inbox-thread-body]') !==
+          null
+    ),
+    "k-answer-box: r on the reply thread's row puts the caret in the thread's reply box"
+  ).toBe(true);
+
+  // On the thread of a decision block, whose block folds the box behind "Write a reply", `r`
+  // presses that first.
+  await selectRow(page, replyRowId(decisionThread));
+  const writeReply = pane.getByRole("button", { name: "Write a reply" });
+  await expect(writeReply).toHaveAttribute("aria-expanded", "false");
+  await page.keyboard.press("r");
+  await expect(
+    writeReply,
+    "k-answer-box: r opens the decision block's Write a reply"
+  ).toHaveAttribute("aria-expanded", "true");
+  expect(
+    await page.evaluate(
+      () =>
+        document.activeElement instanceof HTMLTextAreaElement &&
+        document.activeElement.closest('[data-testid="inbox-pane"]') !== null
+    ),
+    "k-answer-box: r on a decision block's thread puts the caret in the reply box it opens"
+  ).toBe(true);
+});
+
+// ---------------------------------------------------------------------------
+// k-new-tab (R20), the Inbox's part: Shift+O opens what `o` opens - the item's owner link, which
+// `o` follows - in a new page of the browser, beside the reading pane, in card mode and in the
+// drawer, and the first page keeps its address.
+// ---------------------------------------------------------------------------
+
+/** Presses Shift+O on `page` and reads that one new page of `context` opened at `address`, and
+ *  that `page` kept its own address. */
+async function shiftOOpens(
+  context: BrowserContext,
+  page: Page,
+  address: string,
+  place: string
+): Promise<void> {
+  const before = page.url();
+  const pages = context.pages().length;
+  const opened = await test.step(`k-new-tab: ${place}, Shift+O opens a new page`, () =>
+    newPageAt(context, () => page.keyboard.press("Shift+O")));
+  expect(opened.url(), `k-new-tab: ${place}, the new page is at the address o opens`).toBe(address);
+  expect(context.pages().length, `k-new-tab: ${place}, Shift+O opens one new page`).toBe(pages + 1);
+  expect(page.url(), `k-new-tab: ${place}, the first page keeps its address`).toBe(before);
+  await opened.close();
+}
+
+/** The absolute address of the owner link in `scope`, the link `o` follows. */
+function ownerAddress(scope: Locator): Promise<string> {
+  return scope
+    .locator("[data-inbox-owner]")
+    .first()
+    .evaluate((link) => (link as HTMLAnchorElement).href);
+}
+
+// SLOW(>=2s): the Inbox opened three times, each with a page opened from it.
+test("k-new-tab: Shift+O on the Inbox opens the item o opens in a new page, beside the reading pane, in card mode and in the drawer", async ({
+  context,
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Ledger rollout" });
+  await createAsk(issue.key, { question: "Ship the ledger rollout?" }, asker);
+  const runbook = await createProjectDocument(
+    "CORE",
+    { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
+    asker
+  );
+  await createArtifactAsk(
+    runbook.artifact.id,
+    { question: "Keep the runbook in the repository?" },
+    asker
+  );
+
+  // Beside the reading pane, `j` selects the second item, and the column's head holds its link.
+  await page.setViewportSize(WIDE);
+  await page.goto("/");
+  const rows = page.locator("[data-inbox-row]");
+  await expect(rows).toHaveCount(2);
+  const order = await rows.evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
+  );
+  await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", order[0] ?? "");
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  await expect(selectedRow(page), "k-new-tab: j selects the second item").toHaveAttribute(
+    "data-inbox-row",
+    order[1] ?? ""
+  );
+  await expect(inboxPane(page).getByTestId(`ask-${order[1]}`)).toBeVisible();
+  await shiftOOpens(
+    context,
+    page,
+    await ownerAddress(inboxPane(page).locator("header").first()),
+    "beside the reading pane"
+  );
+
+  // In card mode, `j` focuses the first row.
+  await page.setViewportSize(NARROW);
+  await page.goto("/");
+  await expect(rows).toHaveCount(2);
+  await page.locator("body").focus();
+  await page.keyboard.press("j");
+  const focused = page.locator("[data-inbox-row]:focus");
+  await expect(focused, "k-new-tab: in card mode, j focuses a row").toHaveCount(1);
+  await shiftOOpens(context, page, await ownerAddress(focused), "in card mode");
+
+  // In the drawer over a project page.
+  await page.setViewportSize(WIDE);
+  await page.goto("/projects/CORE");
+  await expect(page.getByRole("button", { exact: true, name: "Board" })).toBeVisible();
+  await page.locator("body").focus();
+  await page.keyboard.press("i");
+  await expect(drawer(page), "k-new-tab: i opens the drawer").toBeVisible();
+  await expect(drawer(page).locator("[data-inbox-row]")).toHaveCount(2);
+  await page.keyboard.press("j");
+  const inDrawer = drawer(page).locator("[data-inbox-row]:focus");
+  await expect(inDrawer, "k-new-tab: in the drawer, j focuses a row").toHaveCount(1);
+  await shiftOOpens(context, page, await ownerAddress(inDrawer), "in the drawer");
+  await expect(drawer(page), "k-new-tab: the drawer stays open").toBeVisible();
 });

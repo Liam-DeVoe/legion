@@ -80,7 +80,9 @@ export interface ReadingPaneHeadProps {
  * row (`hand()` returns the column in `Inbox.tsx`), and the short row beside it draws no Snooze
  * and no copy-ref control at all. So this head draws the same three controls the card row draws
  * — `[data-inbox-snooze]`, `[data-inbox-owner]` and the copy-ref control — and the keys find
- * them here.
+ * them here. The `<header>` of this head and of the thread's (`ThreadPaneHead`) carries
+ * `data-inbox-pane-head`, so a key that looks for a control of the head alone finds it there and
+ * never a control of the same kind inside the document the column draws under it.
  */
 export function ReadingPaneHead({
   artifact,
@@ -108,7 +110,7 @@ export function ReadingPaneHead({
     approvalState !== undefined && approvalState !== "draft" && approvalState !== "approved";
 
   return (
-    <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
+    <header className="flex flex-wrap items-center gap-x-2 gap-y-1" data-inbox-pane-head="">
       <InboxOwnerLink ask={ask} rowOwner />
       {page === undefined ? null : (
         <Link className={`text-sm ${linkText} ${linkHoverText}`} to={page}>
@@ -184,7 +186,7 @@ export function ThreadPaneHead({
   const page =
     sectionBlockId === undefined ? thread.ref : `${thread.ref}${blockFragment(sectionBlockId)}`;
   return (
-    <header className="flex flex-wrap items-center gap-x-2 gap-y-1">
+    <header className="flex flex-wrap items-center gap-x-2 gap-y-1" data-inbox-pane-head="">
       <ThreadOwnerLine
         className={`min-w-0 truncate text-sm font-semibold ${textMutedOnCanvas}`}
         thread={thread}

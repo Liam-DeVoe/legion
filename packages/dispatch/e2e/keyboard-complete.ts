@@ -401,11 +401,12 @@ export interface SeededApproval {
 }
 
 /** Three approval requests, each of its own issue's tall spec in `project`, which must exist,
- *  in the order the Inbox lists them: the issues stand at P1, P2 and P3. */
+ *  in the order the Inbox lists them: the issues stand at P1, P2 and P3. The three specs share
+ *  most of their words, so each issue is made past the server's duplicate check (`force`). */
 export async function seedTallAsks(project: string): Promise<SeededApproval[]> {
   const seeded: SeededApproval[] = [];
   for (const [index, title] of ["Ledger handover", "Mirror replay", "Clock audit"].entries()) {
-    const issue = await createIssue({ project, spec: tallSpec(title), title });
+    const issue = await createIssue({ force: true, project, spec: tallSpec(title), title });
     await patchIssue(issue.key, { priority: index + 1 });
     const requested = withOpenedAsk(
       await requestApproval(issue.primary_artifact_id, { summary: `The ${title} draft.` }, asker)

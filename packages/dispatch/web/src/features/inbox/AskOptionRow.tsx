@@ -4,6 +4,7 @@ import type { AskOptionWithTrees } from "../../api/types";
 import {
   borderDefault,
   cardHoverBorder,
+  kbdHint,
   linkText,
   selectedCardBg,
   selectedCardBorder,
@@ -11,6 +12,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { type OptionDigit, ROW_IN_HAND_CLASS } from "./option-digits";
 
 const ROW_CLASS = `flex min-h-11 items-start gap-3 rounded-lg border px-3 py-2 text-sm ${borderDefault}`;
 
@@ -38,12 +40,15 @@ function OptionText({ option }: { option: AskOptionWithTrees }): ReactNode {
 }
 
 /** A choosable option: a radio or checkbox row. The `name` groups radios per ask. `hotkey` marks
- * the input `data-ask-option` so the Inbox's number keys 1–9 pick it (the real options of the
- * focused ask, not Other). `held` while the card's answer is out: the input keeps the focus and
- * its Tab stop, and a pick made then changes nothing (`heldPress`). */
+ * the input `data-ask-option` so the Inbox's digit keys pick it - every option of the ask in hand,
+ * Other included as the digit after the last real option - and `digit` is the key the row draws
+ * for that, beside its text and hidden from assistive tech, whose name for the option stays its
+ * label (`option-digits.ts`). `held` while the card's answer is out: the input keeps the focus
+ * and its Tab stop, and a pick made then changes nothing (`heldPress`). */
 export function AskChoiceRow({
   checked,
   className = "",
+  digit,
   held = false,
   hotkey = false,
   multiple,
@@ -53,6 +58,7 @@ export function AskChoiceRow({
 }: {
   checked: boolean;
   className?: string;
+  digit?: OptionDigit;
   held?: boolean;
   hotkey?: boolean;
   multiple: boolean;
@@ -78,6 +84,15 @@ export function AskChoiceRow({
         type={multiple ? "checkbox" : "radio"}
       />
       <OptionText option={option} />
+      {/* The digit is for the eye: the option's name stays its label. */}
+      {digit === undefined ? null : (
+        <span
+          aria-hidden="true"
+          className={`ml-auto shrink-0 ${digit.whileRowInHand ? ROW_IN_HAND_CLASS : ""}`}
+        >
+          <kbd className={`rounded px-1.5 font-mono text-xs ${kbdHint}`}>{digit.key}</kbd>
+        </span>
+      )}
     </label>
   );
 }

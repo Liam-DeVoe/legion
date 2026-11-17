@@ -84,6 +84,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
+import { useOptionDigits } from "./option-digits";
 import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
@@ -460,6 +461,21 @@ export function AskCard({
       answerFieldRef.current?.focus();
     }
   }, [ownWordsOpen]);
+  // A pick of Other is a move into the box its words go in, by a click or by the Inbox's digit,
+  // which presses the same input (R17). The box stands under the options in the full card, and
+  // behind the note disclosure in the compact one, which the pick opens and whose render the
+  // field waits for (the effect above).
+  const focusAnswerField = () => {
+    const field = answerFieldRef.current;
+    if (field !== null) {
+      field.focus();
+      return;
+    }
+    focusNoteOnOpen.current = true;
+    setOwnWordsOpen(true);
+  };
+  // The digit each option row draws where an Inbox holds this card in hand (`option-digits.ts`).
+  const digitOf = useOptionDigits(displayedAsk.id);
   // A control that disables itself under the reader's focus - Ask back once its text is sent,
   // since a send that is out only holds it - would have the browser drop focus to the document
   // body (in the Inbox, out of the row, which then lets the row go) with nothing the card could
@@ -892,9 +908,10 @@ export function AskCard({
         {(displayedAsk.options ?? []).length === 0 ? null : (
           <fieldset className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {(displayedAsk.options ?? []).map((option) => (
+            {(displayedAsk.options ?? []).map((option, index) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
+                digit={digitOf(index)}
                 held={held}
                 hotkey
                 key={option.label}
@@ -911,12 +928,15 @@ export function AskCard({
             {isApproval ? null : (
               <AskChoiceRow
                 checked={otherSelected}
+                digit={digitOf((displayedAsk.options ?? []).length)}
                 held={held}
+                hotkey
                 multiple={displayedAsk.multiple}
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
                   toggleOther();
-                  if (isCompact && !otherSelected) setOwnWordsOpen(true);
+                  // A multiple-choice Other turned off asks for no words, so it moves nobody.
+                  if (!otherSelected) focusAnswerField();
                 }}
                 option={{ label: "Other" }}
               />

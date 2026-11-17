@@ -30,6 +30,7 @@ import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
+import { PANE_READER_MOVE } from "./pane-placement";
 import { ReadingPane } from "./ReadingPane";
 
 installInboxApiMocks();
@@ -389,6 +390,37 @@ test("a decision block before any heading sits in no section, so no bar is drawn
   }
 });
 
+// R3: the placement is armed as the question opens, so a move of the reader's before its document
+// is read - here the list's own keys, which say so on the column (`PANE_READER_MOVE`) - lets go
+// of the column before the placement ever writes it.
+test("a decision block's column the reader moves before its document is read stays where they moved it", async () => {
+  const { runtime, view } = renderPane({
+    ask: decisionAsk(),
+    createEditor: drawBlocks(
+      '<p data-block-id="context">How it goes out.</p>' +
+        '<section data-block-id="ship_it">Ship behind a flag?</section>'
+    ),
+    seed: (client) => seedDocument(client, document()),
+  });
+
+  try {
+    const scroller = screen.getByTestId("inbox-pane-scroller");
+    // Before the column has settled on the document, so before it reads anything of it.
+    expect(runtime.connections).toHaveLength(0);
+    scroller.scrollTop = 240;
+    scroller.dispatchEvent(new Event(PANE_READER_MOVE));
+
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    runtime.sync();
+    // The head offers Skip to the answer once the block is drawn, which is the pass that would
+    // have put the column at the document's start, the block standing before any heading.
+    expect(await screen.findByRole("button", { name: "Skip to the answer" })).toBeDefined();
+    expect(scroller.scrollTop).toBe(240);
+  } finally {
+    view.unmount();
+  }
+});
+
 test("an approval draws the latest version marked against the version it follows", async () => {
   await warmMarkdownRenderer();
   const baseline = "# Plan\n\nThe plan ships behind a flag today.\n\nThe old note.\n";
@@ -409,8 +441,12 @@ test("an approval draws the latest version marked against the version it follows
   });
 
   try {
-    expect(await screen.findByRole("button", { name: "Approve" })).toBeDefined();
+    const approve = await screen.findByRole("button", { name: "Approve" });
     expect(screen.getByRole("button", { name: "Request changes" })).toBeDefined();
+    // Both are the head's, which a key finds them in, never a control the document draws.
+    const head = screen.getByTestId("inbox-pane").querySelector("[data-inbox-pane-head]");
+    expect(head?.contains(approve)).toBe(true);
+    expect(head?.contains(screen.getByRole("button", { name: "Request changes" }))).toBe(true);
     // The latest version, which is the version Approve approves.
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
     await waitFor(() => expect(drawn).toHaveLength(1));
@@ -1248,6 +1284,12 @@ test("a comment thread on an issue shows the issue and the thread, with no docum
       "href",
       "/issues/CORE-1?comment=comment-1"
     );
+    // The link is the head's, which carries the mark the Inbox's keys look for its controls by.
+    expect(
+      pane
+        .querySelector("[data-inbox-pane-head]")
+        ?.contains(within(pane).getByRole("link", { name: "Open page" }))
+    ).toBe(true);
     await waitFor(() => expect(listComments).toHaveBeenCalled());
   } finally {
     view.unmount();

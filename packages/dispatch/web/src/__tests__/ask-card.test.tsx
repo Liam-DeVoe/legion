@@ -862,7 +862,7 @@ test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
   }
 });
 
-test("AskCard submits a selected Other option with free text", async () => {
+test("AskCard submits a selected Other option with free text, its pick putting the caret in the box", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
@@ -882,7 +882,8 @@ test("AskCard submits a selected Other option with free text", async () => {
     const other = await view.findByRole("radio", { name: "Other" });
     await user.click(other);
     expect(submit.hasAttribute("disabled")).toBe(true);
-    await user.click(view.getByLabelText("Your answer"));
+    // The pick of Other is a move into the box its words go in (R17).
+    expect(view.getByLabelText("Your answer")).toHaveFocus();
     await user.paste("Try a hybrid");
     expect(submit).not.toHaveAttribute("disabled");
     await user.click(submit);
@@ -1328,7 +1329,7 @@ test("AskCard submits selected options alongside a typed note", async () => {
   }
 });
 
-test("AskCard requires text when Other is selected with real multiple options", async () => {
+test("AskCard requires text when Other is selected with real multiple options, and only Other turned on moves the caret", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
@@ -1344,11 +1345,20 @@ test("AskCard requires text when Other is selected with real multiple options", 
   );
 
   try {
-    await user.click(await view.findByRole("checkbox", { name: "Docs" }));
-    await user.click(view.getByRole("checkbox", { name: "Other" }));
+    const docs = await view.findByRole("checkbox", { name: "Docs" });
+    await user.click(docs);
+    expect(docs).toHaveFocus();
+    const other = view.getByRole("checkbox", { name: "Other" });
+    await user.click(other);
+    const field = view.getByLabelText("Your answer");
+    expect(field).toHaveFocus();
+    // Turned off, Other asks for no words: the reader stays on the box they pressed.
+    await user.click(other);
+    expect(other).toHaveFocus();
+    await user.click(other);
+    expect(field).toHaveFocus();
     const answer = view.getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
-    await user.click(view.getByLabelText("Your answer"));
     await user.paste("Also update the guide.");
     expect(answer).not.toHaveAttribute("disabled");
     await user.click(answer);
@@ -2454,6 +2464,39 @@ test("the compact card's note disclosure leaves the reader in the field it revea
     expect(ship).toHaveFocus();
   } finally {
     view.unmount();
+  }
+});
+
+// R17 on every surface that draws the compact card (the margin, a decision block): the pick of
+// Other opens the box its words go in and puts the caret there, and a box the reader already
+// opened takes the caret at once, since no opening of the disclosure is left to move it.
+test("the compact card's Other puts the caret in the note box, whether the box was shut or open", async () => {
+  const user = userEvent.setup();
+  const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
+  const shut = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+  try {
+    const card = shut.view.getByTestId("ask-ask-1");
+    await user.click(await within(card).findByRole("radio", { name: "Other" }));
+    expect(await within(card).findByLabelText("Your answer")).toHaveFocus();
+  } finally {
+    shut.view.unmount();
+  }
+
+  const open = renderCard(
+    <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
+  );
+  try {
+    const card = open.view.getByTestId("ask-ask-1");
+    await user.click(
+      await within(card).findByRole("button", { name: "Add a note or answer in your own words" })
+    );
+    const field = within(card).getByLabelText("Your answer");
+    await user.click(within(card).getByRole("radio", { name: "Other" }));
+    expect(field).toHaveFocus();
+  } finally {
+    open.view.unmount();
   }
 });
 

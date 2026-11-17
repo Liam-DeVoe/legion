@@ -220,6 +220,36 @@ test("Escape with a row focused backs out of the row first; only a second Escape
   }
 });
 
+// R20: the drawer's `o` has its new-tab form too, and the page under the drawer keeps its address.
+test("Shift+O on a row of the drawer opens what o opens in a new tab, and the drawer and the page stay", async () => {
+  const user = userEvent.setup();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([issueAsk()]);
+  const getAsk = mockAskReads([issueAsk()]);
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const view = renderDrawer();
+  try {
+    await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    const dialog = await screen.findByRole("dialog", { name: "Inbox" });
+    const row = within(dialog).getByTestId("ask-ask-a").closest<HTMLElement>("[data-inbox-row]");
+    if (row === null) throw new Error("ask-a row missing");
+    const owner = row.querySelector<HTMLAnchorElement>("[data-inbox-owner]");
+    if (owner === null) throw new Error("the ask-a row draws no owner link");
+    row.focus();
+
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(owner.href, "_blank", "noopener");
+    expect(screen.getByRole("dialog", { name: "Inbox" })).toBe(dialog);
+    expect(screen.getByTestId("location").textContent).toBe("");
+    expect(row).toHaveFocus();
+  } finally {
+    view.unmount();
+    open.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("at 1440 px the drawer is still today's Inbox: the card in the row, no reading pane", async () => {
   const user = userEvent.setup();
   // A peek is a strip over the page it covers, so `Inbox pane={false}` holds at every width;

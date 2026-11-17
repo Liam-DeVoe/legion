@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter, Space and `r` presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -39,6 +39,7 @@ import {
   withWaitingOnPerson,
 } from "./inbox-fixture";
 import type { InboxRoute } from "./inbox-route";
+import { ROW_IN_HAND_CLASS } from "./option-digits";
 
 const mocks = installInboxApiMocks();
 
@@ -4351,7 +4352,10 @@ test("a k taken from inside the column drops the record: Escape lands on the que
   }
 });
 
-test("Enter pressed inside the column belongs to the control holding it, and still leaves the list for the answer box", async () => {
+// R18: Enter carries the reader into the answer box from wherever they stand at the item in hand
+// - its row, the page body, the column's scroller after `l`, an option of its card after a click
+// - and a button keeps its own Enter.
+test("Enter on an option of the card in hand, or on the column's scroller, puts the caret in its answer box", async () => {
   const user = userEvent.setup();
   const narrow = widenToReadingPane();
   const rows = [
@@ -4366,18 +4370,37 @@ test("Enter pressed inside the column belongs to the control holding it, and sti
 
   try {
     const pane = await screen.findByTestId("inbox-pane");
-    // A control inside the card, holding the focus the card gave it: Enter is that control's,
-    // and the Inbox's own binding - which would move the focus to the answer box and swallow
-    // the key with `preventDefault` - stands down.
-    const option = within(pane).getByRole("radio", { name: "Ship" });
-    option.focus();
-    await user.keyboard("{Enter}");
+    const answerBox = () => pane.querySelector("[data-ask-answer]");
+    // A click on an option leaves the focus on its radio, which has no Enter of its own: the key
+    // is the reader's way on from the pick into the box, and the pick stands.
+    const option = await within(pane).findByRole("radio", { name: "Ship" });
+    await user.click(option);
     expect(option).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(answerBox()).toHaveFocus();
+    expect((option as HTMLInputElement).checked).toBe(true);
+
+    // From the column's own scroller, where `l` puts the reader.
+    shortRow("ask-a").focus();
+    await user.keyboard("l");
+    expect(screen.getByTestId("inbox-pane-scroller")).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(answerBox()).toHaveFocus();
 
     // From the list it does its own job: the row hands the focus to the column's answer box.
     shortRow("ask-a").focus();
     await user.keyboard("{Enter}");
-    expect(pane.querySelector("[data-ask-answer]")).toHaveFocus();
+    expect(answerBox()).toHaveFocus();
+
+    // A button of the column is no place Enter starts from: the press is the button's - the
+    // head's Copy reference here, beside the card's own.
+    const head = pane.querySelector<HTMLElement>("[data-inbox-pane-head]");
+    if (head === null) throw new Error("the column drew no head");
+    const copy = within(head).getByRole("button", { name: /^Copy reference/ });
+    copy.focus();
+    // user-event sends no event whose survival a test can read; only fireEvent returns it.
+    expect(fireEvent.keyDown(copy, { key: "Enter" })).toBe(true);
+    expect(copy).toHaveFocus();
   } finally {
     unmount();
     narrow();
@@ -4427,6 +4450,336 @@ test("with the column on, Enter is the link's or the button's wherever the reade
   } finally {
     unmount();
     narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+/** The column's scroller with the measures a browser lays out and happy-dom does not: a column
+ *  `clientHeight` tall over a document `scrollHeight` tall. */
+function measuredScroller(clientHeight: number, scrollHeight: number): HTMLElement {
+  const scroller = screen.getByTestId("inbox-pane-scroller");
+  Object.defineProperty(scroller, "clientHeight", { configurable: true, value: clientHeight });
+  Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: scrollHeight });
+  return scroller;
+}
+
+/** The digits a card's option rows draw, in their order. */
+function digitsOf(card: HTMLElement): (string | null)[] {
+  return [...card.querySelectorAll("kbd")].map((digit) => digit.textContent);
+}
+
+// R3: the open document has keys of its own, which the reader presses from the list while the
+// focus and the selection stay where they are.
+test("Space, Shift+Space, g g and Shift+G scroll the column from the list, moving neither the selection nor the focus", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    const scroller = measuredScroller(400, 4000);
+    const row = shortRow("ask-a");
+    row.focus();
+
+    // A page is 87.5% of the column's height, the step Chromium pages by.
+    await user.keyboard("[Space]");
+    expect(scroller.scrollTop).toBe(350);
+    await user.keyboard("{Shift>}[Space]{/Shift}");
+    expect(scroller.scrollTop).toBe(0);
+    await user.keyboard("{Shift>}G{/Shift}");
+    expect(scroller.scrollTop).toBe(4000);
+    await user.keyboard("gg");
+    expect(scroller.scrollTop).toBe(0);
+    expect(row).toHaveFocus();
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    // With the focus on nothing, where a reader who has pressed no key yet stands, as on a row.
+    act(() => row.blur());
+    expect(document.body).toHaveFocus();
+    await user.keyboard("[Space]");
+    expect(scroller.scrollTop).toBe(350);
+    expect(document.body).toHaveFocus();
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    // Inside the column the keys are the browser's own, on whatever there holds the focus: the
+    // scroller `l` hands the reader pages itself, so the registry leaves its Space alone.
+    await user.keyboard("l");
+    expect(scroller).toHaveFocus();
+    // user-event sends no event whose survival a test can read; only fireEvent returns it.
+    expect(fireEvent.keyDown(scroller, { code: "Space", key: " " })).toBe(true);
+    expect(scroller.scrollTop).toBe(350);
+  } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("Space and Shift+Space leave a button, a link, a summary, a checkbox, a radio and a menu trigger their own press", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox();
+  // One control of each kind a press of Space works itself, put in the list beside the rows,
+  // where the document's keys are pressed from.
+  const controls = document.createElement("div");
+  controls.innerHTML =
+    '<button type="button">A button</button><a href="/elsewhere">A link</a>' +
+    "<details><summary>A summary</summary></details>" +
+    '<input aria-label="A checkbox" type="checkbox"><input aria-label="A radio" type="radio">' +
+    '<span aria-haspopup="menu" role="button" tabindex="0">A menu trigger</span>';
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    const scroller = measuredScroller(400, 4000);
+    const list = screen.getByTestId("inbox-list").firstElementChild;
+    if (list === null) throw new Error("the list drew no rows' root");
+    list.append(controls);
+    for (const control of controls.querySelectorAll<HTMLElement>(
+      "button, a, summary, input, [aria-haspopup]"
+    )) {
+      control.focus();
+      expect(control).toHaveFocus();
+      for (const shiftKey of [false, true]) {
+        // user-event sends no event whose survival a test can read; only fireEvent returns it.
+        expect(fireEvent.keyDown(control, { code: "Space", key: " ", shiftKey })).toBe(true);
+      }
+      expect(scroller.scrollTop).toBe(0);
+    }
+
+    // A row's own checkbox ticks on Space, as the reader asked, and the column stays put.
+    const mark = within(shortRow("ask-a")).getByRole("checkbox");
+    mark.focus();
+    await user.keyboard("[Space]");
+    expect((mark as HTMLInputElement).checked).toBe(true);
+    expect(scroller.scrollTop).toBe(0);
+
+    // `g g` and Shift+G are no control's own press, so they scroll from a control as from a row.
+    await user.keyboard("{Shift>}G{/Shift}");
+    expect(scroller.scrollTop).toBe(4000);
+    expect(mark).toHaveFocus();
+  } finally {
+    controls.remove();
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// R17: the digit after the last real option is Other's, and the card in hand draws each digit.
+test("the digit after a question's last option picks Other and puts the caret in its box, and the selected card shows each digit", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const three = inboxIssue("ask-a", "CORE-1", "Which approach?", {
+    options: [{ label: "Ship" }, { label: "Hold" }, { label: "Drop" }],
+  });
+  const nine = inboxIssue("ask-b", "CORE-2", "Which day?", {
+    options: Array.from({ length: 9 }, (_, index) => ({ label: `Day ${index + 1}` })),
+  });
+  const rows = [three, nine];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const first = renderInbox("/?item=ask-a");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    const card = await within(pane).findByTestId("ask-ask-a");
+    expect(digitsOf(card)).toEqual(["1", "2", "3", "4"]);
+    // Drawn for the eye: each option's name is still its label alone.
+    expect(within(card).getByRole("radio", { name: "Other" })).toBeTruthy();
+    shortRow("ask-a").focus();
+    await user.keyboard("4");
+    expect(within(card).getByRole("radio", { name: "Other" })).toBeChecked();
+    expect(card.querySelector("[data-ask-answer]")).toHaveFocus();
+  } finally {
+    first.unmount();
+  }
+
+  // The tenth option is `0`, so a question of nine options takes its Other on `0`.
+  const second = renderInbox("/?item=ask-b");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    const card = await within(pane).findByTestId("ask-ask-b");
+    expect(digitsOf(card)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]);
+    shortRow("ask-b").focus();
+    await user.keyboard("0");
+    expect(within(card).getByRole("radio", { name: "Other" })).toBeChecked();
+    expect(card.querySelector("[data-ask-answer]")).toHaveFocus();
+  } finally {
+    second.unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// R17 and R18 below the column's width: the card in hand is the row holding the focus, itself or
+// on one of its options, and only that row shows its digits.
+test("below the column's width a card's digits show for its row in hand, and the keys act on the card around a focused option", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+    }),
+    inboxIssue("ask-b", "CORE-2", "Which name?", {
+      options: [{ label: "Rename" }, { label: "Keep" }],
+    }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const { unmount } = renderInbox();
+
+  try {
+    const first = await screen.findByTestId("ask-ask-a");
+    const second = screen.getByTestId("ask-ask-b");
+    expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
+    for (const card of [first, second]) {
+      expect(digitsOf(card)).toEqual(["1", "2", "3"]);
+      for (const digit of card.querySelectorAll("kbd")) {
+        expect(digit.parentElement?.className).toContain(ROW_IN_HAND_CLASS);
+      }
+    }
+
+    // A click on an option leaves the focus there, and Enter carries the reader on into that
+    // card's answer box.
+    await user.click(within(second).getByRole("radio", { name: "Rename" }));
+    await user.keyboard("{Enter}");
+    expect(second.querySelector("[data-ask-answer]")).toHaveFocus();
+
+    // The digits act on the card around the focused option, and its Other's pick moves the
+    // caret into that card's box; the other card keeps its pick.
+    const ship = within(first).getByRole("radio", { name: "Ship" });
+    await user.click(ship);
+    await user.keyboard("2");
+    expect(within(first).getByRole("radio", { name: "Hold" })).toBeChecked();
+    expect(ship).toHaveFocus();
+    await user.keyboard("3");
+    expect(within(first).getByRole("radio", { name: "Other" })).toBeChecked();
+    expect(first.querySelector("[data-ask-answer]")).toHaveFocus();
+    expect(within(second).getByRole("radio", { name: "Rename" })).toBeChecked();
+  } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// R18: `r` is the reply box of the thread in hand, where it has one.
+test("r puts the caret in the reply box of the thread in hand, and does nothing on a question", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const open = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const answered = issueAsk({
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    id: "ask-done",
+    issue: { assignee: "alice", key: "CORE-2", title: "Build question" },
+    issue_key: "CORE-2",
+    question: "Which build?",
+    state: "answered",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([open]);
+  const getAsk = mockAskReads([open, answered]);
+  const getIssue = mockIssueReads();
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: [
+      replyRow("ask-done", {
+        issue: { key: "CORE-2", title: "Build question" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-done",
+        subject: "Which build?",
+      }),
+    ],
+    total: 1,
+  });
+  const { unmount } = renderInbox("/?item=ask-a");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await within(pane).findByTestId("ask-ask-a");
+    // An open question takes its answer, not a reply, and draws no reply box: the key is not
+    // the Inbox's there.
+    shortRow("ask-a").focus();
+    // user-event sends no event whose survival a test can read; only fireEvent returns it.
+    expect(fireEvent.keyDown(shortRow("ask-a"), { key: "r" })).toBe(true);
+    expect(shortRow("ask-a")).toHaveFocus();
+
+    const thread = await waitFor(() => shortRow("reply:ask-done"));
+    await user.click(thread);
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:ask-done"]));
+    // The thread's column is another frame than the question's, so it is read afresh.
+    const box = await waitFor(() => {
+      const found = screen
+        .getByTestId("inbox-pane")
+        .querySelector<HTMLElement>("[data-inbox-thread-body] [data-reply-box]");
+      if (found === null) throw new Error("the thread drew no reply box");
+      return found;
+    });
+    thread.focus();
+    await user.keyboard("r");
+    expect(box).toHaveFocus();
+  } finally {
+    unmount();
+    narrow();
+    listMyReplies.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// R20: Shift+O is `o` in a new tab, and this one keeps its address.
+test("Shift+O opens what o opens in a new tab and leaves the Inbox where it is", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const open = spyOn(window, "open").mockImplementation(() => null);
+  const { unmount } = renderInbox("/?item=ask-b");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await within(pane).findByTestId("ask-ask-b");
+    const owner = pane.querySelector<HTMLAnchorElement>("[data-inbox-owner]");
+    if (owner === null) throw new Error("the column's head drew no owner link");
+    shortRow("ask-b").focus();
+    await user.keyboard("{Shift>}O{/Shift}");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith(owner.href, "_blank", "noopener");
+    expect(address()).toBe("/?item=ask-b");
+    expect(shortRow("ask-b")).toHaveFocus();
+  } finally {
+    unmount();
+    narrow();
+    open.mockRestore();
     getAsk.mockRestore();
     getInbox.mockRestore();
     getIssue.mockRestore();
@@ -4535,6 +4888,9 @@ test("the answer keys act on the selected decision block, not the first one in t
     });
     const selectedCard = await within(pane).findByTestId("ask-ask-b");
     const firstCard = within(pane).getByTestId("ask-ask-a");
+    // Only the selected question's card draws the digits: the keys pick nothing on the other.
+    expect(digitsOf(selectedCard)).toEqual(["1", "2", "3"]);
+    expect(digitsOf(firstCard)).toEqual([]);
 
     // `1` is the selected question's first option, not the first block's.
     await user.keyboard("1");
@@ -4747,6 +5103,111 @@ test("opening another question arms a placement of its own", async () => {
     unmount();
     narrow();
     reads.restore();
+  }
+});
+
+// R3: a scroll by the document's keys from the list is the reader moving the column, as a press
+// in it is, so the placement lets go of it - pressed before the document is read as much as
+// after, since the browser row presses Space while the reads are still out.
+for (const [name, keys] of [
+  ["Space", "[Space]"],
+  ["Shift+Space", "{Shift>}[Space]{/Shift}"],
+  ["g g", "gg"],
+  ["Shift+G", "{Shift>}G{/Shift}"],
+] as const) {
+  test(`${name} from the list while the question's document opens lets its placement go`, async () => {
+    const user = userEvent.setup();
+    const narrow = widenToReadingPane();
+    const ask = decisionRow("ask-a", "block-a", "Ship behind a flag?");
+    const fake = fakeDocumentRuntime({ text: "The live document" });
+    const reads = mockDocumentColumnReads([ask]);
+    const { unmount } = renderInbox("/?item=ask-a", { runtime: fake.runtime });
+
+    try {
+      await screen.findByTestId("inbox-pane");
+      const scroller = screen.getByTestId("inbox-pane-scroller");
+      shortRow("ask-a").focus();
+      await user.keyboard(keys);
+      // Where the reader read down to. A placement still holding the column would put it back
+      // at the start of the block's section, which is the document's start (`decisionRow`).
+      scroller.scrollTop = 240;
+      await waitFor(() => expect(fake.connections).toHaveLength(1));
+      act(() => fake.sync());
+      await waitFor(() => expect(fake.editors).toHaveLength(1));
+      const editor = fake.editors[0];
+      if (editor === undefined) throw new Error("the column mounted no editor");
+      drawAskBlock(editor, "block-a", ask.question);
+      await within(screen.getByTestId("inbox-pane")).findByTestId("ask-ask-a");
+      expect(scroller.scrollTop).toBe(240);
+      expect(shortRow("ask-a")).toHaveFocus();
+    } finally {
+      unmount();
+      narrow();
+      reads.restore();
+    }
+  });
+}
+
+// R18: a decision block folds its thread's reply box behind its own "Write a reply", and `r`
+// presses that for the reader before it puts the caret in the box it draws. The column draws the
+// block's whole document, so the control is the one that names the thread's own ask.
+test("r on the thread of a decision block presses its Write a reply and puts the caret in the box", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const done: InboxRow = {
+    ...decisionRow("ask-done", "block-a", "Ship behind a flag?"),
+    answer: { at: "2026-09-11T03:00:00Z", selected: [], text: "Ship it.", user: "alice" },
+    state: "answered",
+  };
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const spies = [
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    mockAskReads([done]),
+    mockIssueReads(),
+    spyOn(api, "getArtifact").mockResolvedValue(SPEC_DOCUMENT),
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([{ ...done, last_reply: null }]),
+    spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
+      limit: 200,
+      offset: 0,
+      rows: [
+        replyRow("ask-done", {
+          kind: "ask",
+          ref: "/issues/CORE-1/asks/ask-done",
+          subject: "Ship behind a flag?",
+        }),
+      ],
+      total: 1,
+    }),
+  ];
+  const { unmount } = renderInbox("/?item=reply%3Aask-done", { runtime: fake.runtime });
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(fake.connections).toHaveLength(1));
+    act(() => fake.sync());
+    await waitFor(() => expect(fake.editors).toHaveLength(1));
+    const editor = fake.editors[0];
+    if (editor === undefined) throw new Error("the column mounted no editor");
+    drawAskBlock(editor, "block-a", done.question);
+    const opener = await within(screen.getByTestId("inbox-pane")).findByRole("button", {
+      name: "Write a reply",
+    });
+    expect(opener).toHaveAttribute("aria-expanded", "false");
+
+    shortRow("reply:ask-done").focus();
+    await user.keyboard("r");
+    expect(opener).toHaveAttribute("aria-expanded", "true");
+    expect(document.activeElement?.matches("[data-reply-box]")).toBe(true);
+    expect(document.getElementById(opener.getAttribute("aria-controls") ?? "")).toContainElement(
+      document.activeElement as HTMLElement
+    );
+  } finally {
+    unmount();
+    narrow();
+    for (const spy of spies) spy.mockRestore();
   }
 });
 

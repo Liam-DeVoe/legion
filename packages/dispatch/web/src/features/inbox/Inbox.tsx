@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { Link } from "react-router-dom";
 
 import { inboxQuery, usersQuery, whoAmIQuery } from "../../api/queries";
@@ -67,6 +68,7 @@ import {
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type KeymapScope, PANEL_ATTRIBUTE, useKeymap, useKeymapScope } from "../shell/keymap";
+import { linkHref, openInNewTab } from "../shell/new-tab";
 import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
@@ -109,7 +111,9 @@ import {
 } from "./list-row";
 import { MARK_ALL_REFUSED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
+import { OptionDigitsContext } from "./option-digits";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
+import { PANE_READER_MOVE } from "./pane-placement";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
 import { questionLine } from "./question-line";
@@ -234,6 +238,24 @@ const PANE_SCROLLER_SELECTOR = '[data-testid="inbox-pane-scroller"]';
  *  column shows for a question written as one - while it is still shut. The card carries the
  *  handle (`AskCard.tsx`), as it carries `data-ask-answer` and `data-ask-option`. */
 const NOTE_DISCLOSURE_SELECTOR = '[data-ask-note-disclosure][aria-expanded="false"]';
+
+/** An option of an ask card, Other included: the inputs the digits pick (`AskOptionRow.tsx`). */
+const OPTION_SELECTOR = "[data-ask-option]";
+
+/** How far the document's Space and Shift+Space scroll the column, as a part of its height: the
+ *  step Chromium takes for a page itself (`kMinFractionToStepWhenPaging`, in Chromium's
+ *  `cc/input/scroll_utils.h`). */
+const PAGE_STEP = 0.875;
+
+/** The controls a press of Space works itself: a button, a link, a disclosure's summary, a
+ *  checkbox, a radio and a menu's trigger. With one of them holding the focus the document's
+ *  Space and Shift+Space stand down (R3), since the registry calls `preventDefault` for every
+ *  binding that fires and would take the press from the control. */
+const OWN_SPACE_SELECTOR =
+  'button, a[href], summary, input[type="checkbox"], input[type="radio"], [aria-haspopup]';
+
+/** A thread's reply box (`MentionComposer`, `AskReplyComposer`): where `r` puts the caret. */
+const REPLY_BOX_SELECTOR = "[data-reply-box]";
 
 /** The row that holds keyboard focus itself — not one merely containing a focused control. */
 function focusedRow(): HTMLElement | null {
@@ -1268,15 +1290,17 @@ export function Inbox({
    *  is rendered. */
   const paneScroller = () =>
     paneRef.current?.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR) ?? null;
-  /** Where the answer keys - Enter and 1-9 - act: the selected question's own card, not the
-   *  whole column. The column of a question written as a decision block draws the whole live
+  /** Where the answer keys - Enter and the digits - act: the selected question's own card, not
+   *  the whole column. The column of a question written as a decision block draws the whole live
    *  document, and `ProofDocument` hosts an answerable card for every open block of it
    *  (`ProofDocument.tsx`), so the first `[data-ask-option]` under the column is the first open
    *  block's, which is another question than the one the reader selected. Null where the
    *  selected row has no card drawn for it: an approval, whose column is the document's
    *  version and whose answer is the head's own Approve, a document whose block has not
-   *  mounted its card yet, and every thread row, which asks nothing. Outside the column the
-   *  keys act on the focused row, as all of them do. */
+   *  mounted its card yet, and every thread row, which asks nothing. Below the column's width
+   *  the keys act on the row holding the focus, itself or on one of its card's options (R18):
+   *  a click on an option leaves the focus on its input, and the card it is in is the one in
+   *  hand. */
   const answerHand = () =>
     paneShown
       ? paneSelection.id === undefined
@@ -1284,9 +1308,62 @@ export function Inbox({
         : (paneRef.current?.querySelector<HTMLElement>(
             `[data-ask-card="${CSS.escape(paneSelection.id)}"]`
           ) ?? null)
-      : focusedRow();
+      : (focusedRow() ??
+        (document.activeElement?.matches(OPTION_SELECTOR) === true
+          ? rowAround(document.activeElement)
+          : null));
   const inAnswerHand = (selector: string) =>
     answerHand()?.querySelector<HTMLElement>(selector) ?? null;
+  /** Whether the focus stands where Enter and `r` carry the reader into the item in hand (R18):
+   *  on a row, on nothing (`document.body`, where a reader who has pressed no key yet stands),
+   *  on the column's scroller, where `l` puts them, or on an option of the card in hand.
+   *  Everywhere else the key is the focused control's own - a button, a link, a text field, a
+   *  band's fold, an option of another card the column's document draws - and the registry's
+   *  handler calls `preventDefault` for every binding that fires, so a binding that claimed it
+   *  there would press nothing. */
+  const atItem = (): boolean => {
+    const active = document.activeElement;
+    if (focusedRow() !== null || active === document.body) return true;
+    if (active === null) return false;
+    if (paneShown && active === paneScroller()) return true;
+    return active.matches(OPTION_SELECTOR) && answerHand()?.contains(active) === true;
+  };
+  /** Where `r` takes the reader (R18): the reply box of the thread in hand, or the "Write a
+   *  reply" its box is folded behind - a thread row's alone. An ask row waits on the reader's
+   *  answer, and an open ask takes no reply (`AskThread`), so the key stands down on one; the
+   *  other blocks a decision's document draws in the column are other asks', whose boxes are
+   *  not the row's. A thread's body is marked wherever it is drawn (`data-inbox-thread-body`):
+   *  in the column, in a card, and under its block in a document. The one thread drawn without
+   *  it is an ask written as a decision block, whose block folds its box behind its own "Write
+   *  a reply", which names the ask (`data-reply-opener`, `AskThreadDisclosure`). */
+  const replyTarget = (): HTMLElement | null => {
+    const row = handRow();
+    if (row?.kind !== "thread") return null;
+    return (
+      inHand(`[data-inbox-thread-body] ${REPLY_BOX_SELECTOR}`) ??
+      inHand(`[data-reply-opener="${CSS.escape(row.thread.thread_id)}"]`)
+    );
+  };
+  /** Where the document's own keys act from (R3): beside the column, with the focus on a row,
+   *  elsewhere in the list or on nothing at all. Inside the column the browser's own scrolling
+   *  keys are the reader's, on whatever there holds the focus, which `l` hands them. */
+  const scrollsFromList = () =>
+    paneShown &&
+    paneScroller() !== null &&
+    (focusInList() || document.activeElement === document.body);
+  /** Space and Shift+Space: from the same places, but not on a control the press works itself. */
+  const pagesFromList = () =>
+    scrollsFromList() && document.activeElement?.matches(OWN_SPACE_SELECTOR) !== true;
+  /** Moves the column to `top`, worked out from the column itself, and moves no focus: the
+   *  selection and the reader's place in the list stay where they are. The move says so on the
+   *  column first (`PANE_READER_MOVE`), so a placement still holding the column at its section
+   *  lets it go rather than putting it back (`pane-placement.ts`). */
+  const scrollColumn = (top: (column: HTMLElement) => number) => {
+    const column = paneScroller();
+    if (column === null) return;
+    column.dispatchEvent(new Event(PANE_READER_MOVE));
+    column.scrollTop = top(column);
+  };
   // The bar is reached through its own ref, which holds wherever the header draws it.
   const bulkPicker = () => bulkBarRef.current?.querySelector<HTMLElement>(BULK_PICKER_SELECTOR);
   useKeymapScope(keymapScope);
@@ -1300,6 +1377,28 @@ export function Inbox({
       action: "inbox.arrows",
       run: (event) => move(event.key === "ArrowDown" ? 1 : -1),
       when: arrowsMove,
+    },
+    // The open document's own keys (R3), the pages of a reader who reads the column while the
+    // list keeps the focus: Space and Shift+Space by a page, `g g` and Shift+G to its ends.
+    {
+      action: "inbox.scroll-down",
+      run: () => scrollColumn((column) => column.scrollTop + column.clientHeight * PAGE_STEP),
+      when: pagesFromList,
+    },
+    {
+      action: "inbox.scroll-up",
+      run: () => scrollColumn((column) => column.scrollTop - column.clientHeight * PAGE_STEP),
+      when: pagesFromList,
+    },
+    {
+      action: "inbox.scroll-top",
+      run: () => scrollColumn(() => 0),
+      when: scrollsFromList,
+    },
+    {
+      action: "inbox.scroll-end",
+      run: () => scrollColumn((column) => column.scrollHeight),
+      when: scrollsFromList,
     },
     {
       action: "inbox.answer",
@@ -1316,33 +1415,57 @@ export function Inbox({
         }
         box?.focus();
       },
-      // Enter is the list's key: it carries the reader from the row they are on into the
-      // column's answer box. Everywhere else the key belongs to the control that holds the
-      // focus - the card's own `Ask back instead` or an option inside the column, a row's owner
-      // link, a band's fold, the bulk-snooze bar, a filter control - and the registry's handler
-      // calls `preventDefault` for every binding that fires, so a binding that claimed the key
-      // there would press nothing. It fires from a row itself, and with the focus on nothing
-      // (`document.body`), where a reader who has pressed no key yet stands. `h` stands down
-      // inside an ask card for the same reason (`outsideAskCard`).
+      // Enter carries the reader from where they stand at the item into its answer box: the
+      // row, the page body, the column after `l`, an option of its card (`atItem`). Everywhere
+      // else the key belongs to the control that holds the focus - the card's own `Ask back
+      // instead`, a row's owner link, a band's fold, the bulk-snooze bar, a filter control.
       when: () =>
-        paneShown
-          ? (focusedRow() !== null || document.activeElement === document.body) &&
-            (inAnswerHand("[data-ask-answer]") !== null ||
-              inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
-          : inAnswerHand("[data-ask-answer]") !== null,
+        atItem() &&
+        (inAnswerHand("[data-ask-answer]") !== null ||
+          (paneShown && inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)),
     },
     {
-      // `0` is the tenth option.
+      // `0` is the tenth option, and Other is the digit after the last real option: the card
+      // marks it last among its options (`AskCard`).
       action: "inbox.option",
       run: (event) => {
-        const options = answerHand()?.querySelectorAll<HTMLElement>("[data-ask-option]");
+        const options = answerHand()?.querySelectorAll<HTMLElement>(OPTION_SELECTOR);
         options?.[event.key === "0" ? 9 : Number(event.key) - 1]?.click();
       },
-      when: () => inAnswerHand("[data-ask-option]") !== null,
+      when: () => inAnswerHand(OPTION_SELECTOR) !== null,
+    },
+    {
+      // The thread in hand's reply box (R18), from where Enter would start.
+      action: "inbox.reply",
+      run: () => {
+        const target = replyTarget();
+        if (target === null || target.matches(REPLY_BOX_SELECTOR)) {
+          target?.focus();
+          return;
+        }
+        // "Write a reply" draws its box under it as it is pressed: the press is flushed here,
+        // so the box stands in the page when the panel the control names is read.
+        if (target.getAttribute("aria-expanded") !== "true") flushSync(() => target.click());
+        document
+          .getElementById(target.getAttribute("aria-controls") ?? "")
+          ?.querySelector<HTMLElement>(REPLY_BOX_SELECTOR)
+          ?.focus();
+      },
+      when: () => atItem() && replyTarget() !== null,
     },
     {
       action: "inbox.open",
       run: () => inHand("[data-inbox-owner]")?.click(),
+      when: () => inHand("[data-inbox-owner]") !== null,
+    },
+    {
+      // What `o` opens, in a new tab of the browser rather than this one, which keeps its
+      // address (R20): the page's own Inbox and its drawer alike.
+      action: "inbox.open-new-tab",
+      run: () => {
+        const href = linkHref(inHand("[data-inbox-owner]"));
+        if (href !== null) openInNewTab(href);
+      },
       when: () => inHand("[data-inbox-owner]") !== null,
     },
     {
@@ -2014,56 +2137,65 @@ export function Inbox({
           show,
         }}
       >
-        {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
-            rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
-        {selectionBar}
-        <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
-          {header}
-          {paneShown ? (
-            // The two columns are a grid of two fractions, so the share the reader dragged the
-            // divider to is exactly the share the pane takes, at any width; the divider is the
-            // column between them and takes its own.
-            //
-            // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller column,
-            // so a long document in the pane would make the row - and with it both columns'
-            // boxes - taller than the page, and neither column would scroll in itself. The page
-            // would scroll instead, which is how the pane came to show a document's top however
-            // far down it the reader's section sat.
-            <div
-              className="grid min-h-0 flex-1"
-              ref={columnsRef}
-              style={{
-                gridTemplateColumns:
-                  subject === undefined
-                    ? "minmax(0, 1fr)"
-                    : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
-                gridTemplateRows: "minmax(0, 1fr)",
-              }}
-            >
-              {listColumn}
-              {subject === undefined ? null : (
-                <>
-                  <PaneDivider
-                    columns={columnsRef}
-                    onWidthChange={setPaneWidth}
-                    width={paneWidth}
-                  />
-                  {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                  <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
-                    <ReadingPane
-                      onAnswered={recordAnswered}
-                      onSnoozeLive={onSnoozeLive}
-                      row={subject}
-                      viewer={viewer}
+        {/* Every card this list draws shows the digits that pick its options while it is the
+            item in hand (R17, `option-digits.ts`): beside the column, the selected question's
+            card; below its width, the card of the row the reader holds. */}
+        <OptionDigitsContext
+          value={
+            paneShown ? { askId: paneSelection.id, kind: "selected" } : { kind: "focused-row" }
+          }
+        >
+          {/* Outside the layout box above, because it is `fixed`: the bar is drawn over the list
+              rather than in it, so the first mark moves no row (INFRA-3135, R4). */}
+          {selectionBar}
+          <div className={paneShown ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}>
+            {header}
+            {paneShown ? (
+              // The two columns are a grid of two fractions, so the share the reader dragged the
+              // divider to is exactly the share the pane takes, at any width; the divider is the
+              // column between them and takes its own.
+              //
+              // One row, `minmax(0, 1fr)`: an implicit `auto` row is as tall as the taller
+              // column, so a long document in the pane would make the row - and with it both
+              // columns' boxes - taller than the page, and neither column would scroll in itself.
+              // The page would scroll instead, which is how the pane came to show a document's
+              // top however far down it the reader's section sat.
+              <div
+                className="grid min-h-0 flex-1"
+                ref={columnsRef}
+                style={{
+                  gridTemplateColumns:
+                    subject === undefined
+                      ? "minmax(0, 1fr)"
+                      : `minmax(0, ${1 - paneWidth}fr) auto minmax(0, ${paneWidth}fr)`,
+                  gridTemplateRows: "minmax(0, 1fr)",
+                }}
+              >
+                {listColumn}
+                {subject === undefined ? null : (
+                  <>
+                    <PaneDivider
+                      columns={columnsRef}
+                      onWidthChange={setPaneWidth}
+                      width={paneWidth}
                     />
-                  </div>
-                </>
-              )}
-            </div>
-          ) : (
-            listColumn
-          )}
-        </div>
+                    {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
+                    <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                      <ReadingPane
+                        onAnswered={recordAnswered}
+                        onSnoozeLive={onSnoozeLive}
+                        row={subject}
+                        viewer={viewer}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
+              listColumn
+            )}
+          </div>
+        </OptionDigitsContext>
       </RowDismissContext>
     </AskHandOnLiveContext>
   );

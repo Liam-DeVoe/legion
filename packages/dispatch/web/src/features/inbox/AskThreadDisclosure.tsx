@@ -85,6 +85,8 @@ export function AskThreadDisclosure({
           aria-controls={composerId}
           aria-expanded={composerOpen}
           className={`mt-3 min-h-11 text-sm font-medium ${linkText} ${linkHoverText}`}
+          // The ask whose box this unfolds, which the Inbox's `r` finds it by (`Inbox.tsx`).
+          data-reply-opener={ask.id}
           onClick={() => setComposerOpen((open) => !open)}
           type="button"
         >
