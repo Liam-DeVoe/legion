@@ -5,20 +5,18 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"slices"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// projectKey is a project key as contracts.ProjectKeyPattern spells one.
-var projectKey = regexp.MustCompile(contracts.ProjectKeyPattern)
 
 // privateProjectsSetting reads DISPATCH_PRIVATE_PROJECTS: the comma-separated keys of the projects
 // this deployment has provisioned as private (agent-infra's legion.PrivateProjects), each entry
@@ -32,7 +30,7 @@ func privateProjectsSetting(value string) ([]string, error) {
 		if entry == "" {
 			continue
 		}
-		if !projectKey.MatchString(entry) {
+		if !contracts.ValidProjectKey(entry) {
 			return nil, fmt.Errorf("DISPATCH_PRIVATE_PROJECTS names project keys; %q is not a project key: %s", entry, contracts.ProjectKeyRule)
 		}
 		keys = append(keys, entry)
@@ -71,20 +69,26 @@ const privateProjectsReadInterval = 30 * time.Second
 
 // privateProjectsState is the one cached read of the projects the database holds private, behind
 // the Dispatch-Private-Projects header every response carries (privateProjectsHeader), /healthz's
-// degraded reason (never a key: unprovisionedPrivateProjectReason) and the boot's report, whose
-// ERROR line is the one place the keys appear. Its first read runs at boot, after the
-// database's open and migrate and before the first loop and the repository seed, and a failure of
-// it stops the boot (startPrivateProjectsState); it then reads every privateProjectsReadInterval
-// in a goroutine of its own (run), where a failure counts as a private project. A nil state reads
-// nothing and names no project.
+// degraded reason (never a key: unprovisionedPrivateProjectReason) and the boot's report. The keys
+// appear in two places only, both the operator's log: the boot's report and each pass of the
+// maintenance loop (api.RunMaintenanceSweep), which reads them itself. Its first read runs at boot,
+// after the database's open and migrate and before the first loop and the repository seed, and a
+// failure of it stops the boot (startPrivateProjectsState); it then reads every
+// privateProjectsReadInterval in a goroutine of its own (run), where a failure counts as a private
+// project. Unprovisioned answers a nil state as naming no project, which /healthz reads for a
+// handler built with none; every other method needs the state main builds.
 type privateProjectsState struct {
 	querier access.Querier
 	list    []string
+	// last is the last read, published whole, so a response's header reads it without a lock.
+	last atomic.Pointer[privateProjectsRead]
+}
 
-	mu         sync.Mutex
+// privateProjectsRead is one read of the private projects: whether it found one or failed, and
+// every key it found private, sorted; nil after a failed read.
+type privateProjectsRead struct {
 	anyPrivate bool
-	// private is every key the last read found private, sorted; nil after a failed read.
-	private []string
+	private    []string
 }
 
 // startPrivateProjectsState makes the state's first read through q and, once it has answered,
@@ -97,7 +101,7 @@ func startPrivateProjectsState(ctx context.Context, q access.Querier, list []str
 	if err != nil {
 		return nil, err
 	}
-	s.anyPrivate, s.private = len(private) > 0, private
+	s.last.Store(&privateProjectsRead{anyPrivate: len(private) > 0, private: private})
 	go s.run(ctx)
 	return s, nil
 }
@@ -106,14 +110,12 @@ func startPrivateProjectsState(ctx context.Context, q access.Querier, list []str
 // project, and counts as a private project, the closed direction.
 func (s *privateProjectsState) read(ctx context.Context) {
 	private, err := s.privateProjects(store.WithTransactionTracking(ctx))
-	anyPrivate := len(private) > 0
 	if err != nil {
 		slog.Warn("dispatch: read of the private projects failed; every response says one is private", "error", err)
-		anyPrivate, private = true, nil
+		s.last.Store(&privateProjectsRead{anyPrivate: true})
+		return
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.anyPrivate, s.private = anyPrivate, private
+	s.last.Store(&privateProjectsRead{anyPrivate: len(private) > 0, private: private})
 }
 
 // privateProjects reads, in one statement, the keys of the projects the database holds private,
@@ -123,16 +125,8 @@ func (s *privateProjectsState) privateProjects(ctx context.Context) ([]string, e
 	if err != nil {
 		return nil, fmt.Errorf("read the private projects: %w", err)
 	}
-	defer rows.Close()
-	var private []string
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, fmt.Errorf("read the private projects: %w", err)
-		}
-		private = append(private, key)
-	}
-	if err := rows.Err(); err != nil {
+	private, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return nil, fmt.Errorf("read the private projects: %w", err)
 	}
 	return private, nil
@@ -141,11 +135,10 @@ func (s *privateProjectsState) privateProjects(ctx context.Context) ([]string, e
 // provisionedNotPrivate answers the keys on the list that the last read did not find private: a key
 // of no project, or of a public one.
 func (s *privateProjectsState) provisionedNotPrivate() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	last := s.last.Load()
 	var keys []string
 	for _, key := range s.list {
-		if _, found := slices.BinarySearch(s.private, key); !found {
+		if _, found := slices.BinarySearch(last.private, key); !found {
 			keys = append(keys, key)
 		}
 	}
@@ -169,12 +162,7 @@ func (s *privateProjectsState) run(ctx context.Context) {
 // header is the Dispatch-Private-Projects value: 1 when the list names a project, without a read,
 // or the last read found a private project or failed; 0 otherwise.
 func (s *privateProjectsState) header() string {
-	if len(s.list) > 0 {
-		return "1"
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.anyPrivate {
+	if len(s.list) > 0 || s.last.Load().anyPrivate {
 		return "1"
 	}
 	return "0"
@@ -192,10 +180,8 @@ func (s *privateProjectsState) Unprovisioned() []string {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	var keys []string
-	for _, key := range s.private {
+	for _, key := range s.last.Load().private {
 		if _, listed := slices.BinarySearch(s.list, key); !listed {
 			keys = append(keys, key)
 		}

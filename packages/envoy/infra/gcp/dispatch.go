@@ -1413,15 +1413,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	return s, nil
 }
 
-// projectKeyRule is a project key as Dispatch spells one (contracts.ProjectKeyPattern).
-var projectKeyRule = regexp.MustCompile(contracts.ProjectKeyPattern)
-
 // dispatchPrivateProjects is privateProjects as DISPATCH_PRIVATE_PROJECTS renders it: sorted and
 // each key once. A key that is not a project key is an input error naming it, raised at preview,
 // since Dispatch refuses to start on it.
 func dispatchPrivateProjects(keys []string) ([]string, error) {
 	for i, key := range keys {
-		if !projectKeyRule.MatchString(key) {
+		if !contracts.ValidProjectKey(key) {
 			return nil, core.InputErrorf("privateProjects", "privateProjects[%d] %q is not a project key: %s", i, key, contracts.ProjectKeyRule)
 		}
 	}
