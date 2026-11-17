@@ -193,11 +193,14 @@ func TestAStepRecordRetriesUntilDispatchHasTheRoute(t *testing.T) {
 // publication copies them one by one (publishStepRecord), since the dispatch package imports no
 // record of the daemon's. A field added to both types and left out of the copy compiles and drops
 // that field from every write. So the two types are held to one set of fields, each of the same
-// type under the same JSON name; the fixtures, the two writes production makes, to a value in
-// every field between them, which a new field must get in the write that carries it: the end of a
-// step carries every field but the rating and its reason, and the retro's rating (workflow's
-// rateRetro) carries the step's identity, the rating and its reason; and each write to its own
-// record's value of each field.
+// type under the same JSON name, but for a struct of the record's that the write holds as its
+// mirror in dispatch (record.PlanRating and dispatch.PlanRating), which the copy converts: the two
+// structs have the same fields, each of the same type under the same JSON name, so a field added
+// to one alone fails here or stops the build; the fixtures, the two writes production makes, to a
+// value in every field between them, which a new field must get in the write that carries it: the
+// end of a step carries every field but the rating and its reason, and the retro's rating
+// (workflow's rateRetro) carries the step's identity, the rating and its reason; and each write to
+// its own record's value of each field, a mirrored struct's converted to the write's type.
 func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 	recordType, writeType := reflect.TypeFor[record.StepRecord](), reflect.TypeFor[dispatch.StepWrite]()
 	recordFields := map[string]reflect.StructField{}
@@ -211,10 +214,31 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 		t.Errorf("record.StepRecord has %d fields beside its ID, dispatch.StepWrite %d: a field of one is not a field of the other",
 			len(recordFields), writeType.NumField())
 	}
+	recordPackage, writePackage := recordType.PkgPath(), writeType.PkgPath()
+	// mirrored is whether the write's field of type write mirrors the record's of type rec: the
+	// same struct name in the two packages, or pointers to such, with the same fields, each of the
+	// same type under the same JSON name, so the record's converts to the write's.
+	mirrored := func(write, rec reflect.Type) bool {
+		if write.Kind() == reflect.Pointer && rec.Kind() == reflect.Pointer {
+			write, rec = write.Elem(), rec.Elem()
+		}
+		if write.Kind() != reflect.Struct || rec.Kind() != reflect.Struct || write.PkgPath() != writePackage ||
+			rec.PkgPath() != recordPackage || write.Name() != rec.Name() || write.NumField() != rec.NumField() {
+			return false
+		}
+		for i := range write.NumField() {
+			w, r := write.Field(i), rec.Field(i)
+			if w.Name != r.Name || w.Type != r.Type || w.Tag.Get("json") != r.Tag.Get("json") {
+				return false
+			}
+		}
+		return true
+	}
 	for i := range writeType.NumField() {
 		field := writeType.Field(i)
 		mirror, ok := recordFields[field.Name]
-		if !ok || mirror.Type != field.Type || mirror.Tag.Get("json") != field.Tag.Get("json") {
+		sameType := ok && (mirror.Type == field.Type || mirrored(field.Type, mirror.Type) && mirror.Type.ConvertibleTo(field.Type))
+		if !sameType || mirror.Tag.Get("json") != field.Tag.Get("json") {
 			t.Errorf("dispatch.StepWrite's %s is %s %q; record.StepRecord's is %s %q (present: %t)", field.Name,
 				field.Type, field.Tag.Get("json"), mirror.Type, mirror.Tag.Get("json"), ok)
 		}
@@ -262,6 +286,9 @@ func TestAStepRecordReachesDispatchWithEveryField(t *testing.T) {
 			for i := range writeType.NumField() {
 				field := writeType.Field(i)
 				got, want := written.Field(i), value.FieldByName(field.Name)
+				if want.Type() != got.Type() {
+					want = want.Convert(got.Type())
+				}
 				if !reflect.DeepEqual(got.Interface(), want.Interface()) {
 					t.Errorf("the write's %s = %v, want the record's %v", field.Name, shown(got), shown(want))
 				}

@@ -77,9 +77,9 @@ func planRecordOf() record.PlanRecord {
 
 // ratingRecordOf is the write that rates the plan on the record of the issue's retro.
 func ratingRecordOf() record.StepRecord {
-	rating, reason := 2, "The plan put the tests after the review."
 	return record.StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
-		Agent: "legion-legion-legion-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}
+		Agent: "legion-legion-legion-1-implementer", Generation: 2,
+		PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}
 }
 
 // recordRig is one issue's row of the record lane, drained by hand (RunOnce) on a clock the test
@@ -161,9 +161,9 @@ func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 		t.Fatalf("rows left after Dispatch took the rating = %d, want none", left)
 	}
 	_, steps := rig.client.received()
-	rating, reason := 2, "The plan put the tests after the review."
 	want := stepPut{Issue: stepIssue, ID: stepRecordID, Write: dispatch.StepWrite{Task: "default", Step: 0, Kind: "retro",
-		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}}
+		Role: "implementer", Agent: "legion-legion-legion-1-implementer", Generation: 2,
+		PlanRating: &dispatch.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}}}
 	if len(steps) != 1 || !reflect.DeepEqual(steps[0], want) {
 		t.Fatalf("Dispatch received %+v, want the one rating %+v", steps, want)
 	}

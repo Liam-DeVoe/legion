@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -88,7 +89,7 @@ func defaultPlan(issue record.Issue) record.PlanRecord {
 // reason. It carries no moment and no result, which are the end's. Dispatch sets each field once,
 // so the end and the rating merge in either order. A record key that is no issue key writes nothing
 // (recordsSteps).
-func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating int, reason string) error {
+func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, rating intake.PlanRating) error {
 	place, role, typ, _ := stepOf(phase.Retro)
 	if !recordsSteps(issue) {
 		return nil
@@ -98,6 +99,6 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 		return err
 	}
 	write := stepWrite(issue, place, role, typ, start.Agent, start.Starts)
-	write.Rating, write.RatingReason = new(rating), new(reason)
+	write.PlanRating = &record.PlanRating{Rating: rating.Score, Reason: rating.Reason}
 	return e.enqueue(ctx, tx, issue.Key, write)
 }

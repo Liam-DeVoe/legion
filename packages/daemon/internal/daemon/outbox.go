@@ -1189,7 +1189,7 @@ func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, pa
 	write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
 		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
 		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
-		ReturnedTo: payload.ReturnedTo, Report: payload.Report, Rating: payload.Rating, RatingReason: payload.RatingReason}
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report, PlanRating: (*dispatch.PlanRating)(payload.PlanRating)}
 	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
 		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
 	}

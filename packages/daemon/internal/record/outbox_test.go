@@ -284,7 +284,7 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 	started := time.Date(2026, 11, 16, 23, 0, 0, 123456789, time.UTC)
 	ended := started.Add(time.Hour)
 	session, model, result, report := "ses-1", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
-	returnedTo, retro, rating, reason := 2, 0, 4, "The plan fit the work."
+	returnedTo, retro := 2, 0
 	for _, tc := range []struct {
 		name    string
 		record  StepRecord
@@ -316,7 +316,7 @@ func TestAStepRecordKeepsWhatItOmitsApartFromWhatItWritesEmpty(t *testing.T) {
 		{
 			name: "the rating of a retro, which knows no moment and no result",
 			record: StepRecord{ID: stepRecordID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason},
+				Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan fit the work."}},
 			absent:  []string{"session", "model", "started_at", "ended_at", "result", "returned_to", "report"},
 			present: map[string]string{"rating": "4", "rating_reason": `"The plan fit the work."`, "type": `""`, "step": "0"},
 		},
@@ -399,9 +399,13 @@ func stepRecordFields(r StepRecord) string {
 		}
 		return fmt.Sprint(*value)
 	}
-	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s rating_reason %s}",
+	rating := "<absent>"
+	if r.PlanRating != nil {
+		rating = fmt.Sprintf("%d %q", r.PlanRating.Rating, r.PlanRating.Reason)
+	}
+	return fmt.Sprintf("{id %s task %q step %d kind %q role %q type %q agent %q generation %d session %s model %s started %s ended %s result %s returned_to %s report %s rating %s}",
 		r.ID, r.Task, r.Step, r.Kind, r.Role, r.Type, r.Agent, r.Generation, text(r.Session), text(r.Model),
-		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), number(r.Rating), text(r.RatingReason))
+		at(r.StartedAt), at(r.EndedAt), text(r.Result), number(r.ReturnedTo), text(r.Report), rating)
 }
 
 // A record the workflow builds without its id or its identity is a defect of the daemon, refused
@@ -448,7 +452,7 @@ func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
 	identity := `{"id":"` + stepRecordID + `","task":"default","step":0,"kind":"retro","role":"implementer","type":"",` +
 		`"agent":"legion-leg-leg-1-implementer","generation":1`
 	rated := retro
-	rated.Rating, rated.RatingReason = new(3), new("The plan put the tests after the review.")
+	rated.PlanRating = &PlanRating{Rating: 3, Reason: "The plan put the tests after the review."}
 	for _, tc := range []struct {
 		name   string
 		record StepRecord
@@ -480,8 +484,8 @@ func TestARetrosRatingIsTakenWithItsReasonOrNotAtAll(t *testing.T) {
 		name   string
 		change func(*StepRecord)
 	}{
-		{name: "a reason without its rating", change: func(r *StepRecord) { r.RatingReason = new("The plan put the tests after the review.") }},
-		{name: "a rating without its reason", change: func(r *StepRecord) { r.Rating = new(3) }},
+		{name: "a reason without its rating", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Reason: "The plan put the tests after the review."} }},
+		{name: "a rating without its reason", change: func(r *StepRecord) { r.PlanRating = &PlanRating{Rating: 3} }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := retro

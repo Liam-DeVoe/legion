@@ -427,9 +427,8 @@ func TestPutStepWritesARatingOnTheRatingRoute(t *testing.T) {
 	}))
 	defer server.Close()
 
-	rating, reason := 4, "The plan put the tests after the review."
 	write := StepWrite{Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-		Agent: "legion-leg-leg-1-implementer", Generation: 2, Rating: &rating, RatingReason: &reason}
+		Agent: "legion-leg-leg-1-implementer", Generation: 2, PlanRating: &PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}
 	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
 		t.Fatalf("write the rating: %v", err)
 	}

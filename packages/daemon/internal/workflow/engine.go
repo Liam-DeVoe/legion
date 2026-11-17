@@ -910,7 +910,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.rateRetro(ctx, tx, *issue, fact.PlanRating.Score, fact.PlanRating.Reason)
+		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
 	}
 	return intake.Result{}, nil
 }

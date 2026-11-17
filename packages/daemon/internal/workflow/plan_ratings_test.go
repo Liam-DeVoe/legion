@@ -192,7 +192,7 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 				if write.Kind == "retro" && isEnd(write) {
 					end = &write
 				}
-				if write.Rating != nil || write.RatingReason != nil {
+				if write.PlanRating != nil {
 					rated = append(rated, write)
 				}
 			}
@@ -214,10 +214,10 @@ func TestTheRetrosRatingReachesItsRecord(t *testing.T) {
 			}
 			rating := rated[0]
 			want := record.StepRecord{ID: end.ID, Task: "default", Step: 0, Kind: "retro", Role: "implementer", Type: "",
-				Agent: end.Agent, Generation: 1, Rating: new(tc.rating.Score), RatingReason: new(tc.rating.Reason)}
+				Agent: end.Agent, Generation: 1, PlanRating: &record.PlanRating{Rating: tc.rating.Score, Reason: tc.rating.Reason}}
 			if !reflect.DeepEqual(rating, want) {
-				t.Fatalf("the rating = %+v (rating %v, reason %v), want %+v on the retro's record %s", rating, deref(rating.Rating),
-					deref(rating.RatingReason), want, end.ID)
+				t.Fatalf("the rating = %+v (rating %v), want %+v on the retro's record %s", rating, deref(rating.PlanRating),
+					want, end.ID)
 			}
 			if wantID := StepID(root.Key, 1, record.StepPlace{Task: "default", Kind: "retro"}, 1); rating.ID != wantID {
 				t.Fatalf("the rating's id = %s, want %s, the first run of the retro", rating.ID, wantID)
@@ -263,24 +263,24 @@ func TestASecondRetroOfARunRatesItsOwnRecord(t *testing.T) {
 		if write.Kind == "retro" && isEnd(write) {
 			ends = append(ends, write)
 		}
-		if write.Rating != nil || write.RatingReason != nil {
+		if write.PlanRating != nil {
 			rated = append(rated, write)
 		}
 	}
 	agent := treeRoleToken(t, root.Key, claim.RoleImplementer)
 	want := []record.StepRecord{
 		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 1), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
-			Generation: 3, Rating: new(2), RatingReason: new("The plan put the tests after the review.")},
+			Generation: 3, PlanRating: &record.PlanRating{Rating: 2, Reason: "The plan put the tests after the review."}},
 		{ID: StepID(root.Key, 3, record.StepPlace{Task: "default", Kind: "retro"}, 2), Task: "default", Kind: "retro", Role: "implementer", Agent: agent,
-			Generation: 3, Rating: new(4), RatingReason: new("The plan left the migration to its last step.")},
+			Generation: 3, PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan left the migration to its last step."}},
 	}
 	if len(ends) != 2 || len(rated) != 2 {
 		t.Fatalf("two retros wrote the retro ends %+v and the ratings %+v, want two of each", ends, rated)
 	}
 	for i := range want {
 		if !reflect.DeepEqual(rated[i], want[i]) || rated[i].ID != ends[i].ID {
-			t.Errorf("rating %d = %+v (rating %v, reason %v), want %+v on the record of retro %d, whose end is %s", i+1, rated[i],
-				deref(rated[i].Rating), deref(rated[i].RatingReason), want[i], i+1, ends[i].ID)
+			t.Errorf("rating %d = %+v (rating %v), want %+v on the record of retro %d, whose end is %s", i+1, rated[i],
+				deref(rated[i].PlanRating), want[i], i+1, ends[i].ID)
 		}
 	}
 }

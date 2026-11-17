@@ -66,7 +66,7 @@ func planRatingsWayBack(t *testing.T) string {
 
 // stepRecordBeforeTheRating is record.StepRecord as the release that records each step declares
 // it (commit aa36bcbe4e), the release this rollback goes back to: every field of this release's
-// shape but Rating and RatingReason. It is a copy because that release's type is not in the tree.
+// shape but PlanRating. It is a copy because that release's type is not in the tree.
 // That release decodes a step_record row strictly (record.DecodeOutboxPayload,
 // DisallowUnknownFields), so a row this shape refuses is a row it fails at every attempt.
 type stepRecordBeforeTheRating struct {
@@ -135,7 +135,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		{name: "the start of a step", kept: true, payload: record.StepRecord{ID: step, Task: "default", Step: 2, Kind: "step",
 			Role: "implementer", Type: "implementation", Agent: agent, Generation: 2, Session: new("s1"), StartedAt: &started}},
 		{name: "the retro's rating", payload: record.StepRecord{ID: retro, Task: "default", Step: 0, Kind: "retro", Role: "implementer",
-			Agent: agent, Generation: 2, Rating: new(4), RatingReason: new("The plan put the tests after the review.")}},
+			Agent: agent, Generation: 2, PlanRating: &record.PlanRating{Rating: 4, Reason: "The plan put the tests after the review."}}},
 		{name: "the end of a step", kept: true, payload: record.StepRecord{ID: step, Task: "default", Step: 2, Kind: "step",
 			Role: "implementer", Type: "implementation", Agent: agent, Generation: 2, Session: new("s1"), Model: new("first/model"),
 			StartedAt: &started, EndedAt: &ended, Result: new("passed")}},
@@ -157,7 +157,7 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 			continue
 		}
 		write, _ := q.payload.(record.StepRecord)
-		if err := decodedBeforeTheRating(row.Payload); (write.Rating != nil) != (err != nil) {
+		if err := decodedBeforeTheRating(row.Payload); (write.PlanRating != nil) != (err != nil) {
 			t.Fatalf("the release before's decode of %s = %v; the control wants it to refuse the rating row alone, or this test cannot see the row the way back exists for",
 				q.name, err)
 		}
