@@ -2568,6 +2568,101 @@ for answer in 'Dispatch at http://127.0.0.1:1 is unreachable' 'UNAUTHORIZED: the
     fi
 done
 
+# 99. A row that compares the two backends reads the model's verdicts from a run in which
+# the model loaded (test round 31). At 9a8d707031 s-backends-disagree claims that the two
+# backends return different verdict words for p4, p5 and p6, and its command runs
+# similarity.py without ACCORD_MODEL_DIR, so the model backend never loads and prints
+# model=n/a model_verdict=n/a for every pair. Its predicate, widened to the whole of what
+# the command prints, holds 'p1 p2 p3 p4 p5 p6 p7 p8 p9 ', the output of that run, which the
+# claim contradicts; with the model loaded the command prints 'p4 p5 p6 ' and the row fails.
+# s-sum-model's note records the same lost assignment, fixed there. The case runs the row as
+# claims.jsonl holds it, its command and its predicate, over a fixture whose $IOC_PY is a
+# stub of the case's own that prints similarity.py's pair lines as measured on 2026-11-17 in
+# this tree's replay environment: one with the model loaded, over which the row must pass,
+# and one with no model, over which it must fail. The old form, at f63516e5db, contains
+# 'p4 p5 p6', passes the stub with no model.
+BACKENDS="$WORK/backends"
+mkdir -p "$BACKENDS/loaded" "$BACKENDS/unloaded"
+cat >"$BACKENDS/loaded/python" <<'STUB'
+#!/bin/sh
+cat <<'OUT'
+p1 truth=differs by 100x difflib=0.923077 difflib_verdict=agreed model=0.794183 model_verdict=agreed from=named in the task
+p2 truth=differs by 1000x difflib=0.897959 difflib_verdict=agreed model=0.936863 model_verdict=agreed from=named in the task
+p3 truth=inverted difflib=0.901961 difflib_verdict=agreed model=0.944179 model_verdict=agreed from=named in the task
+p4 truth=different acts difflib=0.579710 difflib_verdict=clarify model=0.757076 model_verdict=agreed from=named in the task
+p5 truth=the same difflib=0.466667 difflib_verdict=flagged model=0.950298 model_verdict=agreed from=named in the task
+p6 truth=different events difflib=0.458333 difflib_verdict=flagged model=0.660460 model_verdict=clarify from=ours: skills/dispatch/SKILL.md:45 against skills/legion-controller/SKILL.md:50-51
+p7 truth=inverted difflib=0.781609 difflib_verdict=agreed model=0.906882 model_verdict=agreed from=ours: skills/envoy/SKILL.md:49
+p8 truth=inverted difflib=0.785714 difflib_verdict=agreed model=0.852597 model_verdict=agreed from=ours: skills/legion-architect/SKILL.md:45
+p9 truth=inverted difflib=0.411765 difflib_verdict=flagged model=0.480545 model_verdict=flagged from=ours: skills/envoy/SKILL.md:35
+p5 is the same pair: difflib verdict flagged, model verdict agreed
+OUT
+STUB
+cat >"$BACKENDS/unloaded/python" <<'STUB'
+#!/bin/sh
+cat <<'OUT'
+p1 truth=differs by 100x difflib=0.923077 difflib_verdict=agreed model=n/a model_verdict=n/a from=named in the task
+p2 truth=differs by 1000x difflib=0.897959 difflib_verdict=agreed model=n/a model_verdict=n/a from=named in the task
+p3 truth=inverted difflib=0.901961 difflib_verdict=agreed model=n/a model_verdict=n/a from=named in the task
+p4 truth=different acts difflib=0.579710 difflib_verdict=clarify model=n/a model_verdict=n/a from=named in the task
+p5 truth=the same difflib=0.466667 difflib_verdict=flagged model=n/a model_verdict=n/a from=named in the task
+p6 truth=different events difflib=0.458333 difflib_verdict=flagged model=n/a model_verdict=n/a from=ours: skills/dispatch/SKILL.md:45 against skills/legion-controller/SKILL.md:50-51
+p7 truth=inverted difflib=0.781609 difflib_verdict=agreed model=n/a model_verdict=n/a from=ours: skills/envoy/SKILL.md:49
+p8 truth=inverted difflib=0.785714 difflib_verdict=agreed model=n/a model_verdict=n/a from=ours: skills/legion-architect/SKILL.md:45
+p9 truth=inverted difflib=0.411765 difflib_verdict=flagged model=n/a model_verdict=n/a from=ours: skills/envoy/SKILL.md:35
+p5 is the same pair: difflib verdict flagged
+OUT
+STUB
+chmod +x "$BACKENDS/loaded/python" "$BACKENDS/unloaded/python"
+# backends_run <name> <loaded|unloaded> <command> <predicate>; plants the form into a fresh
+# fixture, with the similarity directory its command enters, and sets BACKENDS_OUT to its
+# --replay with that stub as $IOC_PY.
+backends_run() {
+    local dir
+    dir="$(fresh "backends-$1-$2")"
+    mkdir -p "$dir/repo/docs/research/internet-of-cognition/similarity"
+    plant_behaviour "$dir" "$3" "$4"
+    BACKENDS_OUT="$(IOC_PY="$BACKENDS/$2/python" fixture_run "$dir" --replay)"
+}
+BACKENDS_COMMAND="$(jq -r 'select(.id == "s-backends-disagree") | .command' "$HERE/claims.jsonl")"
+BACKENDS_PREDICATE="$(jq -c 'select(.id == "s-backends-disagree") | .expect' "$HERE/claims.jsonl")"
+backends_run row loaded "$BACKENDS_COMMAND" "$BACKENDS_PREDICATE"
+honest_result "s-backends-disagree as claims.jsonl holds it passes over similarity.py's output with the model loaded" replay-command "$BACKENDS_OUT"
+backends_run row unloaded "$BACKENDS_COMMAND" "$BACKENDS_PREDICATE"
+case_result "s-backends-disagree as claims.jsonl holds it fails over similarity.py's output with no model loaded" replay-command "$BACKENDS_OUT"
+backends_run old unloaded "$BACKENDS_COMMAND" '{"contains":"p4 p5 p6"}'
+honest_result "the old form of s-backends-disagree, contains p4 p5 p6, passes similarity.py's output with no model loaded" replay-command "$BACKENDS_OUT"
+
+# 100. A row's verdict does not turn on what the reader's own python holds (test round 31).
+# At 9a8d707031 m-rt-no-execution claims that their runtime could not be run in the pod of
+# the reading, because pydantic was absent and its install failed, and its command imports
+# pydantic in the reader's own python3. That reads the machine that replays the row, not the
+# pod the claim is about. A reader whose python3 finds pydantic, as one installed under
+# ~/.local does, fails the row though nothing the reading recorded changed; and the replay's
+# own IOC_MASLAB_VENV installs pydantic 2.14.3 from tm-constraints.txt and runs mas-lab's
+# code through it, so the import no longer tests what the claim is about. The case runs the
+# row as claims.jsonl holds it, its command and its predicate, over the fixture twice: with
+# HOME at a directory whose ~/.local holds a module named pydantic, over which the row must
+# pass, and with HOME at an empty directory.
+PYDANTIC_HOME="$WORK/pydantic-home"
+PYDANTIC_SITE="$PYDANTIC_HOME/.local/lib/python$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')/site-packages/pydantic"
+mkdir -p "$PYDANTIC_SITE" "$WORK/empty-home"
+printf 'VERSION = "2.14.3"\n' >"$PYDANTIC_SITE/__init__.py"
+(HOME="$PYDANTIC_HOME" python3 -c 'import pydantic') 2>/dev/null || {
+    printf 'FAIL the case could not give python3 a pydantic under ~/.local\n'
+    exit 1
+}
+pydantic_run() {
+    local dir
+    dir="$(fresh "pydantic-$1")"
+    plant_behaviour "$dir" "$(jq -r 'select(.id == "m-rt-no-execution") | .command' "$HERE/claims.jsonl")" "$(jq -c 'select(.id == "m-rt-no-execution") | .expect' "$HERE/claims.jsonl")"
+    PYDANTIC_OUT="$(HOME="$2" fixture_run "$dir" --replay)"
+}
+pydantic_run reader-has-it "$PYDANTIC_HOME"
+honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader whose python3 finds pydantic under ~/.local" replay-command "$PYDANTIC_OUT"
+pydantic_run reader-lacks-it "$WORK/empty-home"
+honest_result "m-rt-no-execution as claims.jsonl holds it passes for a reader whose python3 finds no pydantic" replay-command "$PYDANTIC_OUT"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
