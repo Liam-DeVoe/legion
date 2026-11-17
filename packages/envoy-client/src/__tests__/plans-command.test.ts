@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import type { FinishedIssue, ProjectPlans } from "@legion/contracts";
+import { type FinishedIssue, PROJECT_KEY_RULE, type ProjectPlans } from "@legion/contracts";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
@@ -317,5 +317,16 @@ describe("dispatch plans on the command line", () => {
         "INFRA-11 closed 2026-11-15T08:00:00Z plan owner (2 tasks: implementer reviewer) ratings none time 1h2m failed steps 0",
       ].join("\n")
     );
+  });
+
+  // The command names a project and never an issue, so no owner is read from the checkout, and a
+  // key that is not one is refused once, naming its one problem, with nothing sent.
+  test("a project that is not a key is refused once, sending nothing, exit 2", async () => {
+    const { code, stdout } = await run(["plans", "--project", "infra"]);
+
+    expect(code).toBe(2);
+    expect(requests).toEqual([]);
+    expect(stdout).toContain("dispatch plans was not called: 1 problem\n");
+    expect(stdout.split(`project is not a project key: ${PROJECT_KEY_RULE}`)).toHaveLength(2);
   });
 });
