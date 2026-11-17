@@ -607,6 +607,9 @@ jobs:
           # is its own subshell, so a variable set in the left-hand one does not survive it; the
           # `||` is what keeps `sh -e` from ending the subshell before the status is written.
           rm -f "$RUNNER_TEMP/suite-status"
+          # $projects and $lane_grep are split on purpose: the first is one --project= argument
+          # per project, the second one --grep= argument or none, and neither holds a glob.
+          # shellcheck disable=SC2086
           { bunx playwright test --config e2e/playwright.config.ts $projects $lane_grep --shard=${{ matrix.shard }}/4 --workers 4 --reporter=list,blob,./e2e/failure-reporter.ts 2>&1 ||
               echo "$?" > "$RUNNER_TEMP/suite-status"; } | tee "$RUNNER_TEMP/playwright-log.txt"
           status=0
@@ -714,8 +717,9 @@ jobs:
     # while it measures. The full lane alone: a pull request runs no clock row, since a shard
     # job's machine cannot hold one still enough to measure.
     #
-    # Its steps are the shard job's, with three differences - one worker rather than four, the
-    # Playwright command below, and no file store on the machine - and their commands are kept
+    # Its steps are the shard job's, with four differences - one worker rather than four, the
+    # Playwright command below, no file store on the machine, and the chromium-alone leg's test
+    # of the Postgres binaries provider - and their commands are kept
     # the same everywhere else, so the two can be diffed; the two bodies that are really shared
     # are scripts both jobs call, the sampler and the PostgreSQL reading, which is part of what
     # keeps them so. They are not one composite action for the reason this file's head gives.
@@ -789,9 +793,15 @@ jobs:
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 137 s:
-    # 180 + 137 = 317 s, 5 min 17 s, rounded up to the 6 minutes below. It is a backstop above
+    # 180 + 137 = 317 s, 5 min 17 s, rounded up to 6 minutes. It is a backstop above
     # the sum of the step budgets, as this file's head says a job budget is.
-    timeout-minutes: 6
+    #
+    # The chromium-alone leg also runs the binaries row of harness-postgres-leftover.test.ts,
+    # which came after every run above and no run has measured here. Its step takes the rule's
+    # floor, two minutes, until runs of it give a maximum, and the job budget, one figure for the
+    # three legs, carries it: 180 + 120 + 137 = 437 s, 7 min 17 s, rounded up to the 8 minutes
+    # below.
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:
@@ -834,6 +844,24 @@ jobs:
       # four, since this job runs one worker.
       - name: Read the lanes' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
+      # The binaries row of e2e/__tests__/harness-postgres-leftover.test.ts: the next start of a
+      # stack removes the postmaster of a stack killed hard, with its data and socket directories,
+      # and no postmaster of a stack that runs. It needs DISPATCH_E2E_PG_BIN naming a PostgreSQL
+      # with pgvector, which this image is and no runner job has, and it never skips in CI
+      # (e2e/__tests__/postgres-provider.ts); the dispatch-ui job, which names no provider,
+      # leaves the file out of its run, and the visual job runs its image row. One leg is enough
+      # for a row that reads no clock, and chromium-alone is the one. It runs before the browser
+      # step, so that step starts no stack on a provider this row has just failed. TMPDIR and the
+      # provider are exported on the command line for the reason the shard job's head gives.
+      - name: Test the stacks' Postgres binaries provider
+        if: matrix.project == 'chromium-alone'
+        timeout-minutes: 2
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          bun test -t '^binaries provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
+        working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
         # Calling Playwright directly reuses the "Build dispatch dashboard" step's dist above and
@@ -1045,7 +1073,15 @@ jobs:
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
     # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 13
+    #
+    # The two-stack test's two steps came after those runs, so none of them measured either. The
+    # test took 39 s on a shared Linux machine under a load of about 200 (2026-11-17), with the
+    # Go build cache warm and the image present, as they are here: the go-envoy-test restore and
+    # the server build above warm the one, and the service pulls the other. So its step takes the
+    # rule's floor, two minutes, until runs of it give a maximum; the connections read is one
+    # `go run` from that same cache and takes no budget of its own. The job budget is the four
+    # step budgets, 12 min, plus the 135 s above and a minute for the read, rounded up: 15 min.
+    timeout-minutes: 15
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1142,6 +1178,34 @@ jobs:
         # step before built the dashboard; B serves A's build, which this spec does not tell apart.
         timeout-minutes: 2
         run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+        working-directory: packages/dispatch
+      # The stacks' connection limit, read outside the two-stack test's budget, where
+      # e2e/harness-postgres.ts would otherwise compile it inside the test's child
+      # (DISPATCH_E2E_PG_CONNECTIONS). The visual job's step of the same script says the rest.
+      - name: Read the connections the two-stack test's Postgres must allow
+        id: connections
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
+      # e2e/__tests__/second-global-setup.test.ts: a second globalSetup in one process starts a
+      # Postgres of its own rather than reading the first's. Its child runs the hook twice, two
+      # whole stacks, so it needs what this job and no other job on the runner has together: the
+      # Chromium the hook refuses to start without (the install step above; the visual job's
+      # browsers are in its container), the Go toolchain run-server.sh builds the server with,
+      # warm from the build step above, and Docker with the image provider's digest, which is the
+      # image this job's service already pulled. It never skips in CI
+      # (e2e/__tests__/postgres-provider.ts), and the dispatch-ui job, which names no provider,
+      # leaves it out of its run. The variables are exported on the command line, not in an
+      # `env:`, for the reason the shard job's head gives.
+      - name: Test a second globalSetup in one process
+        timeout-minutes: 2
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun test e2e/__tests__/second-global-setup.test.ts
         working-directory: packages/dispatch
       # `if: failure()`, which this job can afford where the shard job cannot: its project sets
       # `retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this
@@ -1322,9 +1386,11 @@ jobs:
   # The image provider's step came after those runs, so none of them measured it. Its two test
   # files took 13 s and 11 s in two runs on a Linux machine with a local Docker daemon that held
   # the image already, and the runner pulls the image in that step, a pull the browser step paid
-  # before and no run has timed apart. So that step takes the rule's floor, two minutes, until
-  # runs of it give a maximum, and the job budget is the browser step's 240 s plus that step's
-  # 120 s plus the same 314 s: 674 s -> 12 min.
+  # before and no run has timed apart. The image row of harness-postgres-leftover.test.ts, added
+  # to that step since, took about 20 s on a shared machine under a load of about 300, by its own
+  # comment. So that step takes the rule's floor, two minutes, until runs of it give a maximum,
+  # and the job budget is the browser step's 240 s plus that step's 120 s plus the same 314 s:
+  # 674 s -> 12 min.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -1383,12 +1449,17 @@ jobs:
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       # The image provider's own tests: e2e/__tests__/harness-postgres-image-port.test.ts holds it
-      # to a host port it never takes, and harness-postgres-image-mount.test.ts to run directories
-      # whose path holds a `:`, a `"` or a `,`. Both skip wherever DISPATCH_E2E_PG_IMAGE is unset,
-      # as it is in the dispatch-ui job, which runs e2e/__tests__; this job sets it for its own
-      # stack. They run here on the runner, with the browser step's TMPDIR, image digest and
-      # connections, and before that step, so it starts no stack on a provider these tests have
-      # just failed. The variables are exported on the command line for the reason the job's
+      # to a host port it never takes, harness-postgres-image-mount.test.ts to run directories
+      # whose path holds a `:`, a `"` or a `,`, and the image row of
+      # harness-postgres-leftover.test.ts to removing the container of a stack killed hard and
+      # no container of a stack that runs. None of them skips in CI
+      # (e2e/__tests__/postgres-provider.ts), and the dispatch-ui job, which runs e2e/__tests__
+      # with no provider, leaves them out of its run; this job sets the image for its own stack.
+      # The leftover file's binaries row runs in the alone job's chromium-alone leg, whose
+      # container has the binaries and no Docker; `-t` selects each provider's rows by the title
+      # that names it. They run here on the runner, with the browser step's TMPDIR, image digest
+      # and connections, and before that step, so it starts no stack on a provider these tests
+      # have just failed. The variables are exported on the command line for the reason the job's
       # head gives.
       - name: Test the stacks' Postgres image provider
         timeout-minutes: 2
@@ -1397,6 +1468,7 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts
+          bun test -t '^image provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 4

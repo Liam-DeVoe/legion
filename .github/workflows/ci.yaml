@@ -2275,6 +2275,10 @@ jobs:
             dispatch_ui:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
+              # e2e/__tests__/postgres-provider.test.ts reads every step of it: each test that
+              # starts a stack's Postgres, which this job's lane leaves out, must be run by a step
+              # there that names a provider.
+              - '.github/workflows/dispatch-browser.yaml'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
@@ -4874,7 +4878,8 @@ jobs:
   # They were split out of the browser suite (dispatch-browser below), whose full lane - the one
   # the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
   # nine suites that label holds back, while these checks must come back on every push.
-  # No Postgres service and no Go, but contracts is built
+  # A Postgres service, for the suites' database cases (ci-job-dispatch-ui.yaml says which), and
+  # no Go, but contracts is built
   # before the suites: one case of the dashboard's test run spawns Playwright, whose own
   # resolution reads contracts' built dist/ (the step below says what failed without it). tsc and
   # bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's

@@ -87,9 +87,13 @@
  * not total). A hung child of either fails at its own 60 s bound; the row's limit fires only
  * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
  * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
- * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips
- * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of
- * `ci.yaml` names either.
+ * two-stack row's 1 830 000 ms is longer than that job, and that job does not run the row: it
+ * names no Postgres provider, so the package's `test` script leaves the row's file out of the
+ * lane (`e2e/__tests__/postgres-provider.test.ts`). The `multiprocess` job of
+ * `.github/workflows/dispatch-browser.yaml` runs it, with the Go build cache warm, in a step whose
+ * budget is two minutes, so there a stuck child fails at that budget, which names the step, long
+ * before its own bound. The row read 39 s warm on a shared Linux machine on 2026-11-17; the bound
+ * stands for the cold build above.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";

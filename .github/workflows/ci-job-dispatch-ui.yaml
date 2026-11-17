@@ -24,6 +24,26 @@ jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The server the database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts
+    # and replace-blocks-guard.test.ts make their own databases on, through LEGION_TEST_PG_DSN in
+    # the test step below. Those cases never skip in CI (e2e/__tests__/postgres-provider.ts): a
+    # job that runs them without a server fails them, naming the variable. The image is the one
+    # .github/workflows/ci-job-sessions-script.yaml's service runs, for the same kind of suite:
+    # one pinned Postgres for the workflow rather than a second digest to bump. A service and not
+    # a `docker run` in a step: GitHub pulls it and waits on its health check before the first
+    # step, which is the readiness wait a step-level container of this image once timed out on.
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml).
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,19 +85,19 @@ jobs:
       # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
-      # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip
-      # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
-      # has no `postgres:` service, as this job's head says. A container of the pinned image for
-      # this step alone was tried and taken out again, in the job these tests ran in before this
-      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on one
-      # runner in three. What those cases prove - that a worker's psql reads its own stack's
-      # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
-      # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
-      # psql-session makes a database of its own there), and the stack contract they guard is also
-      # covered end to end by every multi-worker run of the browser suite itself.
+      # The database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts and
+      # replace-blocks-guard.test.ts make a database of their own on the server LEGION_TEST_PG_DSN
+      # names, this job's service, and drop it again; the login is the image's superuser, since
+      # each of them starts with a CREATE DATABASE. The tests that start a stack's own Postgres
+      # need DISPATCH_E2E_PG_IMAGE or DISPATCH_E2E_PG_BIN, which this job names neither of, so the
+      # package's `test` script leaves those files out of this run (one --path-ignore-patterns
+      # each, held to the files by e2e/__tests__/postgres-provider.test.ts), and the jobs of
+      # .github/workflows/dispatch-browser.yaml that name a provider run them.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard

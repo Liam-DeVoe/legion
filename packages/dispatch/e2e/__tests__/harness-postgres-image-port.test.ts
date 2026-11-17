@@ -15,8 +15,11 @@
  *
  *  The row finds Docker's last choice with a probe container, holds the next 64 loopback ports
  *  as any other program could, and starts one stack's Postgres from the image. It must serve.
- *  Skipped without DISPATCH_E2E_PG_IMAGE, as the other provider rows are; the `visual` job of
- *  .github/workflows/dispatch-browser.yaml runs it with that job's image. */
+ *  A developer's run without DISPATCH_E2E_PG_IMAGE skips it and says so on one line; a CI run
+ *  never skips it, and fails naming the variable where the job sets none
+ *  (`e2e/__tests__/postgres-provider.ts`). The `visual` job of
+ *  .github/workflows/dispatch-browser.yaml runs it with that job's image, and the `dispatch-ui`
+ *  job, which runs this directory with no provider, leaves it out (`postgres-provider.test.ts`). */
 
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
@@ -24,13 +27,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { stackPostgres } from "../harness-postgres";
+import { pgImageVariable, stackPostgres } from "../harness-postgres";
+import { requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
-const image = (process.env.DISPATCH_E2E_PG_IMAGE ?? "").trim();
-
-test.skipIf(image === "")(
+test.skipIf(
+  skipsWithoutPostgres("e2e/__tests__/harness-postgres-image-port.test.ts", [pgImageVariable])
+)(
   "the image provider's Postgres serves though another program holds the ports just past Docker's last choice",
   async () => {
+    const { value: image } = requirePostgres([pgImageVariable]);
     const probe = `dispatch-e2e-pg-port-probe-${process.pid}`;
     execFileSync("docker", [
       "run",
@@ -89,5 +94,10 @@ test.skipIf(image === "")(
       rmSync(dir, { recursive: true, force: true });
     }
   },
+  // The row drives two `docker run`s, the probe's and the provider's, the provider's readiness
+  // wait, one psql and the stop. That wait gives up at 120 s (`readyMs`,
+  // e2e/harness-postgres.ts), and the probe on a runner pulls the image too, which the `visual`
+  // job's runs have not timed apart; 300 s holds both with room to spare. The row read 5.6 s with
+  // the image present, on a shared Linux machine under a load of about 200, on 2026-11-17.
   300_000
 );
