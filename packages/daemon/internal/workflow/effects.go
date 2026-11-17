@@ -400,7 +400,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
-		task = ResumePhaseTask(issue)
+		task = ResumePhaseTask(issue, reviewedPart(role, issue.Phase, row))
 	}
 	marks.reasserts = true
 	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
@@ -418,7 +418,11 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // (record.SuperviseRequest.ResumeTask). The entry it raises is of no move back: the promotion
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	task := ResumePhaseTask(issue)
+	reviewed, err := e.reviewedPartFor(ctx, tx, issue, role)
+	if err != nil {
+		return err
+	}
+	task := ResumePhaseTask(issue, reviewed)
 	entry, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
@@ -775,7 +779,10 @@ func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issu
 // a phase completion (api/handoff.go, VERDICT_ROLE_FORBIDDEN; the implementer's check report is no
 // phase completion and starts nobody), so the line names the tester: the reviewer it starts on a
 // pass reads it as the tester's report, never as a field of its own completion.
-func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reason string) string {
+// reviewed is the part that names the commit the reviewer's last deciding review read
+// (reviewedPart), "" for every start but a later review round's, placed after the pull request
+// and before the reason.
+func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, reviewed, reason string) string {
 	text := continueLine(issue)
 	if handoff.HandoffRecord != "" {
 		word := handoffWord(handoff.Role)
@@ -790,10 +797,46 @@ func task(issue record.Issue, handoff record.PhaseRow, pr *record.PullRequest, r
 	if pr != nil && pr.Number != 0 {
 		text += fmt.Sprintf(" Pull request: #%d.", pr.Number)
 	}
+	text += reviewed
 	if reason != "" {
 		text += " Reason: " + reason + "."
 	}
 	return text
+}
+
+// reviewedPart is the part of a start's task that names the commit the reviewer's own newest
+// deciding review read (record.PhaseRow.ReviewedHead, which review writes), so the reviewer can
+// read the difference from that commit to the head. It is read from reviewer, the reviewer's
+// phases row: " Last reviewed commit: <sha>." for the reviewer started in reviewing while the row
+// holds a commit, and "" in every other case — any other role or phase, and the first review of a
+// generation, whose row holds none. It is the one writer of the part: every start that hands the
+// reviewer a review round builds its task through task or ResumePhaseTask, and each takes the
+// part from here.
+func reviewedPart(role claim.Role, at phase.Phase, reviewer record.PhaseRow) string {
+	if !startsReviewRound(role, at) || reviewer.ReviewedHead == "" {
+		return ""
+	}
+	return " Last reviewed commit: " + reviewer.ReviewedHead + "."
+}
+
+// startsReviewRound says whether a start of role in phase at hands the reviewer a review round,
+// the one start whose task can name a reviewed commit (reviewedPart).
+func startsReviewRound(role claim.Role, at phase.Phase) bool {
+	return role == claim.RoleReviewer && at == phase.Reviewing
+}
+
+// reviewedPartFor is reviewedPart for a start of role on issue, in the phase the issue stands in,
+// whose caller holds no phases row of that role: the transition's start and the promotion's. It
+// reads the reviewer's row only for a review round, so no other start reads the record for it.
+func (e *Engine) reviewedPartFor(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
+	if !startsReviewRound(role, issue.Phase) {
+		return "", nil
+	}
+	reviewer, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
+		return "", err
+	}
+	return reviewedPart(role, issue.Phase, reviewer), nil
 }
 
 func continueLine(issue record.Issue) string {
@@ -813,9 +856,12 @@ func handoffWord(role claim.Role) string {
 
 // ResumePhaseTask is what a worker started for a phase already under way is told. No handoff
 // begins that phase — the run that did is over — so the task names the phase and says to carry
-// the work on, which is what a resumed session needs to tell this phase from its last.
-func ResumePhaseTask(issue record.Issue) string {
-	return continueLine(issue) + " Resume the existing phase work."
+// the work on, which is what a resumed session needs to tell this phase from its last. reviewed is
+// the part that names the commit the reviewer's last deciding review read (reviewedPart), placed
+// after the continue line and before the closing sentence: a reviewer resumed in a fresh session
+// has no earlier task to read it from. It is "" for every other start.
+func ResumePhaseTask(issue record.Issue, reviewed string) string {
+	return continueLine(issue) + reviewed + " Resume the existing phase work."
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

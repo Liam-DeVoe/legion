@@ -553,6 +553,18 @@ type PhaseRow struct {
 	// one (workflow's DecidesRound), kept until the round ends, since the reviewer's completion can
 	// come after the review it posted. Nil until a review decides.
 	Decision *ReviewDecision
+	// ReviewedHead is the commit the reviewer's own newest deciding review read: the head named in
+	// the Legion footer of a review that approved or requested changes, submitted from the review
+	// App session of the reviewer's claim (workflow's review, byReviewer). Only the reviewer's row
+	// holds it. A person's review does not move it, since the reviewer did not read that commit, and
+	// neither does a review that decides nothing. Unlike Decision it outlives its round: no entry
+	// into a phase clears it (workflow's clearHandoff, whose list of fields does not hold it), so
+	// the task of the reviewer's next round names it (workflow's reviewedPart) and the reviewer
+	// reads the difference from it to the head. A new generation clears it (ClearGeneration), so
+	// the first review of a re-admitted root, of a child run again and of an adopted member reads
+	// the whole change; a carried hand-over keeps its rows, and the commit with them. Empty until
+	// such a review, and on every row the release before the column wrote.
+	ReviewedHead string
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
 	// reviewersAnswer and answerSkew), and is read only for a completed round (Completed). It can

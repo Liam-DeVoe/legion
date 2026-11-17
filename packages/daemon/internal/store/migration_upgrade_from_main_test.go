@@ -61,6 +61,9 @@ import (
 // sent again as written (20261114061900) are named here too: an upgrade of a database main
 // migrated takes each of them in version order with the rest, the upgrade after the phase entry
 // whose columns it fills, and none of them touches outbox_kind_check.
+// The reviewer's reviewed commit (20261116234034, `phases.reviewed_head`) is named here for the
+// same reason: it adds one column at its default, which every row it finds reads as no commit
+// (migration_20261116234034_test.go), and it touches no outbox_kind_check.
 // cybermonklabs/legion#3575's experiment assignments (20261111045636, dispatch://INFRA-2566) are
 // named here as well, though that version stands below main's newest: the migration was written
 // after main recorded its newest, so a database main migrated has not recorded it, and the loop
@@ -80,7 +83,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261117000528, 20261117004117,
+	20261114061900, 20261116234034, 20261117000528, 20261117004117,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -89,10 +92,10 @@ var thisBranchsMigrations = []int{
 // INFRA-3036's 20261111214351, the phase entry's 20261111225552, dispatch://INFRA-3027's
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
-// 20261113090512, dispatch://INFRA-3274's 20261114031356, and dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, which is why the loop below
-// holds the list rather than counting it, so that a version added above any of them is named here
-// rather than read as main's.
+// 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, and the reviewer's reviewed
+// commit, 20261116234034, which is why the loop below holds the list rather than counting it, so
+// that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

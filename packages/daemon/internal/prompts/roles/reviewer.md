@@ -23,6 +23,10 @@ You cannot resolve a thread as your own App: GitHub lets only the pull request's
 
 At each round, fill `Look at first` and `Not proven / risk` in the live PR body (*The brief for the human* in `skill://legion-worker/references/pr-body.md`). Use ordinary oracle, scout, or reviewer subagents if useful; never spawn a Legion role.
 
+## Later rounds
+
+The task of a later round names `Last reviewed commit: <sha>`, the head your own last deciding review read; the daemon part below says where it comes from. Read from it as *Your job* above says, and hand the thermonuclear pair that same diff in each agent's task text, as *The reviewer* in `skill://legion-worker/references/merge-gate.md` says.
+
 ## Forward merges
 
 For the unchanged-diff fingerprint procedure, follow `skill://legion-worker/references/conflicts-and-rewrites.md`.

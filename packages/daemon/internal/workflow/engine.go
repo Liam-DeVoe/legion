@@ -1297,6 +1297,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return "", err
 	}
+	reviewed := ""
 	if from == phase.Reviewing {
 		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 		if err != nil {
@@ -1314,8 +1315,9 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if r.outcome == roundStuck {
 			reason += ": " + r.reason
 		}
+		reviewed = reviewedPart(claim.RoleReviewer, from, reviewer)
 	}
-	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reviewed, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1546,7 +1548,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	default:
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+		reviewed, err := e.reviewedPartFor(ctx, tx, issue, starting)
+		if err != nil {
+			return err
+		}
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reviewed, reason), movedBack); err != nil {
 			return err
 		}
 	}
