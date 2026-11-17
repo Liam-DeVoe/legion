@@ -20,6 +20,7 @@ import { NodeGlyph } from "../NodeGlyph";
 import {
   AskAnswer,
   BodyAuthor,
+  KeepOpen,
   MoreWords,
   NODE_ROW_LAYOUT,
   NodeOptions,
@@ -351,21 +352,7 @@ export function DecisionsRow({
               data-pinned={pinned ? "" : undefined}
             >
               <BodyAuthor author={author} />
-              <p>
-                {/* A press moves no focus: the body this closes would take it to the page. G's
-                    `KeepOpen` has no such guard yet, so this row keeps its own button until
-                    decision 141 gives G's one and that change is under this row. */}
-                <button
-                  className={`dispatch-inline-link text-xs leading-6 font-medium ${pageQuietText}`}
-                  onClick={onPin}
-                  onMouseDown={(event) => event.preventDefault()}
-                  tabIndex={-1}
-                  type="button"
-                  {...pageChrome}
-                >
-                  {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
-                </button>
-              </p>
+              <KeepOpen onPin={onPin} pinned={pinned} tabStops={false} />
             </div>
           ) : null}
           {focused && writer !== undefined ? (

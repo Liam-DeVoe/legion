@@ -30,6 +30,7 @@ import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, DECISIONS_WORDS, isReader, PRESET_NAMES } from "../page-words";
+import { usePressFocus } from "../press-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
@@ -227,53 +228,13 @@ export function DecisionsFilterBody({
   // a cut answer or decision of the pressed row would be drawn whole and push down what stands
   // under its words, and the click that ends the press would land on something else, so a link
   // or a control of a row the reader was not on would never fire. So the focus a press gives a
-  // row is taken once the press is over - after its mouseup and the click that follows it, in a
-  // task of its own - and only while that row still holds the focus, as the outline takes it
-  // (`IssueTree.tsx`'s `focusRow`); a key's move takes it at once. The press is marked on the
-  // whole list, since the foot's rows stand outside the tree element. The latest `takeFocus`
-  // takes it, so a render that makes a new one while a press is held does not drop its end.
-  // This is a copy of part I's press logic in `IssueTree.tsx`, with that file's private
-  // `PRESS_ENDS` (below), which decisions 94 and 141 allow only until part I exports the hook
-  // for a press's focus and its `PRESS_ENDS`: once both are under this part's base, this file
-  // imports them and deletes its copy.
-  const press = useRef<{
-    ending?: number;
-    focus: DecisionsEntry | NamedEntry | undefined;
-    held: boolean;
-  }>({ focus: undefined, held: false });
-  const takePressed = useRef(takeFocus);
-  takePressed.current = takeFocus;
-  const focusRow = useCallback(
-    (entry: DecisionsEntry | NamedEntry) => {
-      if (press.current.held) press.current.focus = entry;
-      else takeFocus(entry);
-    },
-    [takeFocus]
+  // row is taken once the press is over, and only while that row still holds the focus, which
+  // `usePressFocus` does for the outline and this list alike; a key's move takes it at once. The
+  // press is marked on the whole list, since the foot's rows stand outside the tree element.
+  const press = usePressFocus<DecisionsEntry | NamedEntry>(
+    takeFocus,
+    (entry) => rowOf(body.current, entry.node.id)?.contains(document.activeElement) === true
   );
-  useEffect(() => {
-    const held = press.current;
-    const end = () => {
-      held.held = false;
-      const pending = held.focus;
-      held.focus = undefined;
-      if (pending === undefined) return;
-      if (rowOf(body.current, pending.node.id)?.contains(document.activeElement) === true)
-        takePressed.current(pending);
-    };
-    const ended = () => {
-      if (!held.held) return;
-      window.clearTimeout(held.ending);
-      held.ending = window.setTimeout(end, 0);
-    };
-    const listening = new AbortController();
-    for (const type of PRESS_ENDS) {
-      window.addEventListener(type, ended, { capture: true, signal: listening.signal });
-    }
-    return () => {
-      listening.abort();
-      window.clearTimeout(held.ending);
-    };
-  }, []);
   // The focus leaving the list with no press under way, by Tab or a script, lets go at once of
   // what the row opened, what a key reported and the reader's own review. A press on another
   // control of the page keeps them until that press has ended and its click has landed, or until
@@ -523,7 +484,7 @@ export function DecisionsFilterBody({
         isClosed={isClosed}
         key={id}
         level={part === "agents" ? 2 : 1}
-        onFocus={() => focusRow(entry)}
+        onFocus={() => press.focus(entry)}
         onPin={() => pin(id)}
         // A Keep pressed or a Change sent is the press over: its click has landed, so the row
         // takes the focus at once rather than once the press's end comes, which the write's
@@ -554,11 +515,8 @@ export function DecisionsFilterBody({
       className="mx-auto mt-3.5 mb-[120px] flex w-full max-w-[960px] min-w-0 flex-col max-[761px]:mt-2.5"
       data-decisions-body=""
       onBlur={releaseFocus}
-      // A press in the list, whose focus a row takes once the press is over (`focusRow`).
-      onMouseDown={() => {
-        window.clearTimeout(press.current.ending);
-        press.current.held = true;
-      }}
+      // A press in the list, whose focus a row takes once the press is over (`press`).
+      onMouseDown={press.onMouseDown}
       ref={body}
     >
       {/* The foot's rows stand after its control, outside this element, and are this tree's
@@ -632,7 +590,7 @@ export function DecisionsFilterBody({
               the tab order, as the prototype's is, so Tab reaches it where the foot is all the
               list holds; the key that cycles how much is drawn unfolds it too. A press of it
               moves no focus until the click lands: it is no row, so the list does not hold its
-              focus until the press is over (`focusRow`), and the focus coming here closes the
+              focus until the press is over (`press`), and the focus coming here closes the
               open body of the row that held it, so the control would move up from under the
               pointer before the release, and the click would be lost. */}
           <div className="mt-[22px] mb-1 flex min-w-0 max-[761px]:mt-[18px]" data-decisions-foot="">
@@ -696,14 +654,6 @@ function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
     null
   );
 }
-
-/** What ends a press in the list, as it ends one in the outline: a copy of `IssueTree.tsx`'s
- *  own `PRESS_ENDS`, which that file keeps to itself until part I exports it (decisions 94 and
- *  141). Its mouseup, which the click follows in the same task; the drag a press on a picture
- *  or a link starts instead, which sends no mouseup; a pointer the browser cancelled; and a
- *  key, since a press released outside the window sends no mouseup, and a key's move must
- *  never wait on a press that is over. */
-const PRESS_ENDS = ["mouseup", "dragend", "pointercancel", "keydown"] as const;
 
 /** The entry that stood after `id` in `part` as `before` drew the list, else the one before
  *  it, of those that stand in `part` still (`now`); undefined where none does. Each map holds
