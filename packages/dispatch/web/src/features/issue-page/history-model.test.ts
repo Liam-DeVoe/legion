@@ -13,8 +13,8 @@ import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
 /**
  * The issue's history as the panel draws it: every event that is no row of the outline, newest
- * first, by day, with one author's uploads within a minute as one entry and the threads agents
- * wrote among themselves drawn whole.
+ * first, by day, with one author's uploads, each within a minute of the one before it, as one
+ * entry and the threads agents wrote among themselves drawn whole.
  */
 
 const KEY = "CORE-1";
@@ -137,6 +137,42 @@ test("the history keeps the events of an approval request, which the outline dra
   expect(kept).toEqual([4, 3]);
 });
 
+// A follower's event names its ask and not the ask's kind, so the history reads that kind from
+// the issue's asks: an approval request's followers added and removed are its lines, as its other
+// events are, and those of a question, or of an ask the issue's asks do not hold, are not.
+test("the history keeps an approval request's followers added and removed", () => {
+  seq = 0;
+  const follower = (type: string, at: string, askId: string) =>
+    event(type, at, { ask_id: askId, by: AGENT, session_id: "reviewer" });
+  const events = [
+    event("ask.opened", "2026-11-15T09:00:00Z", { id: "a1", kind: "approval" }),
+    follower("ask.follower_added", "2026-11-15T09:01:00Z", "a1"),
+    follower("ask.follower_added", "2026-11-15T09:02:00Z", "q1"),
+    follower("ask.follower_added", "2026-11-15T09:03:00Z", "unheld"),
+    follower("ask.follower_removed", "2026-11-15T09:04:00Z", "a1"),
+  ];
+  const kept = flat(
+    buildHistory({
+      artifacts: [],
+      asks: [
+        { id: "a1", kind: "approval" },
+        { id: "q1", kind: "question" },
+      ],
+      comments: [],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) => (entry.kind === "event" ? [[entry.event.seq, entry.event.type]] : []));
+
+  expect(kept, "the approval request's followers are not lines of the history").toEqual([
+    [5, "ask.follower_removed"],
+    [2, "ask.follower_added"],
+    [1, "ask.opened"],
+  ]);
+});
+
 test("one author's uploads within a minute are one entry that opens each file", () => {
   seq = 0;
   const shots = [1, 2, 3].map((at) => file(`shot-${at}`, "image", `shot-${at}.png`));
@@ -175,6 +211,82 @@ test("one author's uploads within a minute are one entry that opens each file", 
     runOf(history([...uploads.slice(1), later])),
     "an older page that extends a run of uploads renamed the run"
   ).toBe(runOf(entries));
+});
+
+/** An upload of the image `name` by `actor` at 2026-11-15 `time` UTC. */
+function shot(time: string, name: string, actor: Actor = PERSON): DispatchEvent {
+  return event(
+    "artifact.created",
+    `2026-11-15T${time}Z`,
+    { artifact: file(name, "image", `${name}.png`) },
+    actor
+  );
+}
+
+/** The runs of uploads the history of `events` draws, newest first: each run's id and its
+ *  files' uploads, newest first. */
+function uploadRuns(events: readonly DispatchEvent[]): { files: number[]; id: string }[] {
+  return flat(
+    buildHistory({
+      artifacts: [],
+      asks: [],
+      comments: [],
+      events,
+      lastReadSeq: 0,
+      messages: [],
+      today: "2026-11-15",
+    })
+  ).flatMap((entry) =>
+    entry.kind === "uploads" ? [{ files: entry.files.map((one) => one.id), id: entry.id }] : []
+  );
+}
+
+// The minute that joins one author's uploads is counted from the upload before each, so an older
+// page only lengthens the oldest run drawn or adds runs under it. Counted from a run's first
+// upload, it split runs: of four uploads at :00, :50, 1:20 and 2:00, a first page holding the
+// last three drew a run of :50 and 1:20 under one of 2:00, and the older page moved 1:20 up into
+// the run of 2:00.
+test("an older page that extends the oldest run of uploads moves no file of a run drawn", () => {
+  seq = 999;
+  const uploads = [
+    shot("09:00:00", "first"),
+    shot("09:00:50", "second"),
+    shot("09:01:20", "third"),
+    shot("09:02:00", "fourth"),
+  ];
+  const firstPage = uploadRuns(uploads.slice(1));
+  const whole = uploadRuns(uploads);
+
+  for (const run of firstPage) {
+    const holders = new Set(run.files.map((id) => whole.find((one) => one.files.includes(id))?.id));
+    expect([...holders], `the older page moved a file of ${run.id} to another run`).toEqual([
+      run.id,
+    ]);
+  }
+  expect(
+    whole.find((run) => run.files.includes(1001))?.files,
+    "the older page parted the uploads at :50 and 1:20, drawn as one run"
+  ).toContain(1002);
+  expect(whole).toEqual([{ files: [1003, 1002, 1001, 1000], id: "uploads:1003" }]);
+});
+
+// The live feed adds a newer upload above every entry: within a minute of the newest run's newest
+// upload, it lengthens that run, however long before the run began, and no run under it changes.
+test("a newer upload within a minute of the newest run extends that run and no other", () => {
+  seq = 0;
+  const drawn = [
+    shot("09:00:00", "early"),
+    shot("09:00:20", "agents", AGENT),
+    shot("09:00:40", "first"),
+    shot("09:01:20", "second"),
+  ];
+  const before = uploadRuns(drawn);
+  expect(before.map((run) => run.files)).toEqual([[4, 3], [2], [1]]);
+
+  const after = uploadRuns([...drawn, shot("09:02:00", "third")]);
+
+  expect(after[0]?.files, "the newer upload did not join the newest run").toEqual([5, 4, 3]);
+  expect(after.slice(1), "a newer upload changed a run under the newest").toEqual(before.slice(1));
 });
 
 test("a thread agents wrote among themselves is one entry with its replies, until a person writes", () => {
@@ -324,6 +436,46 @@ test("a thread that began before the oldest event read so far waits for its page
   expect(roots("2026-11-14T09:00:00Z")).toEqual(["recent"]);
   // The whole log is in: nothing waits.
   expect(roots(undefined)).toEqual(["recent", "old"]);
+});
+
+// Only a thread waits for the page that reaches back to it, so the day the pages read so far end
+// in holds as many of its entries as those pages do: a day of five claims, two of them on the
+// first page, was counted two until Load older counted it five. That day is partial while older
+// pages remain, and a day after it is whole.
+test("the day the pages of the log read so far end in is partial until the log is in", () => {
+  seq = 0;
+  const older = ["12:01", "12:02", "12:03"].map((time) =>
+    event("issue.claimed", `2026-11-13T${time}:00Z`, {})
+  );
+  const read = [
+    event("issue.claimed", "2026-11-13T12:04:00Z", {}),
+    event("issue.claimed", "2026-11-13T12:05:00Z", {}),
+    event("issue.claimed", "2026-11-14T12:00:00Z", {}),
+  ];
+  const days = (events: readonly DispatchEvent[], loadedFrom: string | undefined) =>
+    buildHistory({
+      artifacts: [],
+      asks: [],
+      comments: [],
+      events,
+      lastReadSeq: 0,
+      ...(loadedFrom === undefined ? {} : { loadedFrom }),
+      messages: [],
+      today: "2026-11-15",
+    }).map((day) => [day.date, day.partial, day.entries.length]);
+
+  expect(
+    days(read, "2026-11-13T12:04:00Z"),
+    "the day the first page ends in is drawn as whole"
+  ).toEqual([
+    ["2026-11-14", false, 1],
+    ["2026-11-13", true, 2],
+  ]);
+  // The whole log is in: no day is partial.
+  expect(days([...older, ...read], undefined)).toEqual([
+    ["2026-11-14", false, 1],
+    ["2026-11-13", false, 5],
+  ]);
 });
 
 // What happened to a thread agents wrote among themselves is no row's of the outline, so it is

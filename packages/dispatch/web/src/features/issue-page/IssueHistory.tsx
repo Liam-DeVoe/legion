@@ -74,12 +74,14 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
 
 /**
  * The issue's history, a list in the panel (`history-model.ts`):
- * newest first, each day before today folded to one line with its count, which opens it. An
- * event is one line with its pin; one author's uploads within a minute are one entry that opens
- * each file, each with its own upload's pin; a thread agents wrote among themselves is drawn
- * whole, each turn's words with its Reply, which sets the line at the foot of the outline to
- * reply to it - and once a person has replied in a thread, the outline draws it and this list no
- * longer does.
+ * newest first, each day before today folded to one line with its count, which opens it - the
+ * day the pages of the log read so far end in with no count, as its entries are not all read
+ * yet (`HistoryDay.partial`). An event is one line with its pin; one author's uploads, each
+ * within a minute of the one before it, are one entry that opens each file, each with its own
+ * upload's pin, drawn under one key however the run grows (`runKeys`); a thread agents wrote
+ * among themselves is drawn whole, each turn's words with its Reply, which sets the line at the
+ * foot of the outline to reply to it - and once a person has replied in a thread, the outline
+ * draws it and this list no longer does.
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
  * at `/activity` the heading is brought into Details' view once for each arrival, except a
@@ -196,6 +198,10 @@ export function IssueHistory({
       visitMark,
     ]
   );
+  // The key each run of uploads is drawn under, held from one render to the next by its files'
+  // uploads (`runKeys`), so a run a newer upload extends is drawn on, not drawn anew.
+  const runKeyOfUpload = useRef(new Map<number, string>());
+  const drawnIds = useMemo(() => runKeys(days, runKeyOfUpload.current), [days]);
   // The days before today the reader opened; the day the address's entry is in is opened as
   // the address names it, and the reader's own press closes it again like any other.
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
@@ -435,21 +441,33 @@ export function IssueHistory({
                       }
                       type="button"
                     >
-                      {day.label} <span className={`font-medium ${pageQuietText}`}>· {count}</span>
+                      {day.label}
+                      {/* The day the pages read so far end in holds entries not read yet
+                          (`HistoryDay.partial`): its name alone, which still opens it. */}
+                      {day.partial ? null : (
+                        <>
+                          {" "}
+                          <span className={`font-medium ${pageQuietText}`}>· {count}</span>
+                        </>
+                      )}
                     </button>
                   )}
                   {open ? (
                     <ol className="flex min-w-0 flex-col">
-                      {day.entries.map((entry) => (
-                        <Entry
-                          entry={entry}
-                          issueKey={issueKey}
-                          item={item}
-                          key={entry.id}
-                          onPin={togglePin}
-                          pinned={(id) => isPinnedEvent(issueState.dismissed ?? [], id)}
-                        />
-                      ))}
+                      {day.entries.map((entry) => {
+                        const drawnId = drawnIds.get(entry.id) ?? entry.id;
+                        return (
+                          <Entry
+                            drawnId={drawnId}
+                            entry={entry}
+                            issueKey={issueKey}
+                            item={item}
+                            key={drawnId}
+                            onPin={togglePin}
+                            pinned={(id) => isPinnedEvent(issueState.dismissed ?? [], id)}
+                          />
+                        );
+                      })}
                     </ol>
                   ) : null}
                 </li>
@@ -504,14 +522,52 @@ function dayOf(days: readonly HistoryDay[], item: string): string | undefined {
   )?.date;
 }
 
+/**
+ * The key each run of uploads among `days` is drawn under, by the run's id. The model names a
+ * run by its newest upload (`HistoryEntry`), so a newer upload that joins a run renames it;
+ * drawn under that name, the run would be mounted anew, and a focus on one of its files' links
+ * or Pins would fall to the page. So a run keeps the key it was first drawn under: the key one
+ * of its files was drawn under (`held`, by each file's upload) unless another run here took it,
+ * else its own id, with a count where that is taken too, as it can be once something other than
+ * more of the log splits a run drawn before. Every file of the run is then held under its key.
+ */
+function runKeys(
+  days: readonly HistoryDay[],
+  held: Map<number, string>
+): ReadonlyMap<string, string> {
+  const keys = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const day of days) {
+    for (const entry of day.entries) {
+      if (entry.kind !== "uploads") continue;
+      let key = entry.id;
+      for (const file of entry.files) {
+        const kept = held.get(file.id);
+        if (kept !== undefined && !taken.has(kept)) {
+          key = kept;
+          break;
+        }
+      }
+      for (let count = 1; taken.has(key); count += 1) key = `${entry.id}:${count}`;
+      taken.add(key);
+      keys.set(entry.id, key);
+      for (const file of entry.files) held.set(file.id, key);
+    }
+  }
+  return keys;
+}
+
 /** One entry of the history (`HistoryEntry`). */
 function Entry({
+  drawnId,
   entry,
   issueKey,
   item,
   onPin,
   pinned,
 }: {
+  /** The id the entry is drawn under: its own, or a run's key (`runKeys`). */
+  drawnId: string;
   entry: HistoryEntry;
   issueKey: string;
   item: string | undefined;
@@ -546,7 +602,7 @@ function Entry({
       <li
         className={`${ENTRY} flex min-w-0 flex-wrap items-baseline gap-x-2`}
         data-event-seq={entry.seq}
-        data-history-entry={entry.id}
+        data-history-entry={drawnId}
       >
         <span className="min-w-40 flex-1 break-words">
           {head}
@@ -580,7 +636,7 @@ function Entry({
       <li
         className={`${ENTRY} flex min-w-0 flex-col`}
         data-event-seq={entry.seq}
-        data-history-entry={entry.id}
+        data-history-entry={drawnId}
         data-history-uploads={entry.files.length}
       >
         <span className="min-w-0 break-words">
@@ -622,7 +678,7 @@ function Entry({
     );
   }
   return (
-    <li className="flex min-w-0 flex-col" data-event-seq={entry.seq} data-history-entry={entry.id}>
+    <li className="flex min-w-0 flex-col" data-event-seq={entry.seq} data-history-entry={drawnId}>
       <Turn issueKey={issueKey} marked={item === entry.root.id} turn={entry.root} />
       {entry.replies.length === 0 ? null : (
         <ol className="ml-3.5 flex min-w-0 flex-col">

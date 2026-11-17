@@ -9,7 +9,7 @@ import { api } from "../../api/client";
 import { prependEventToLog } from "../../api/event-feed";
 import type { Artifact, DispatchEvent, IssueDetails, MessageRead } from "../../api/types";
 import { linkText, pageInkText } from "../../theme/classes";
-import { dateKey } from "../activity/activity-model";
+import { dateKey, dayLabel } from "../activity/activity-model";
 import { IssueHistory } from "./IssueHistory";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
 import { CONTROL_LABELS } from "./page-words";
@@ -550,6 +550,117 @@ test("the entry of one author's uploads has Pin, as every other line of the hist
   } finally {
     unmount?.();
     restoreReads();
+  }
+});
+
+// The model names a run of uploads by its newest upload, so a newer upload by the same author
+// within the minute renames the run it joins. Drawn under that name, the run was unmounted and
+// mounted anew, and a focus on one of its files' Pins fell to the page; the panel draws the run
+// on under the key it first drew it with.
+test("a newer upload that joins a run drawn keeps the run's Pin and the focus on it", async () => {
+  const restoreReads = stubHistoryReads([
+    upload(3, 10, "a.png"),
+    upload(2, 20, "b.png"),
+    claimAgo(1, 120),
+  ]);
+  const pinOfOlderFile = () =>
+    document.querySelector<HTMLElement>('[data-history-entry="file:2"] button');
+  let unmount: (() => void) | undefined;
+
+  try {
+    const drawn = drawHistory(undefined);
+    unmount = drawn.unmount;
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-uploads="2"]')).not.toBeNull()
+    );
+    const pin = pinOfOlderFile();
+    if (pin === null) throw new Error("the run's older file draws no Pin");
+    pin.focus();
+    expect(document.activeElement).toBe(pin);
+
+    act(() => {
+      prependEventToLog(drawn.queryClient, upload(4, 5, "c.png"));
+    });
+    await waitFor(() =>
+      expect(document.querySelector('[data-history-uploads="3"]')).not.toBeNull()
+    );
+
+    expect(pin.isConnected, "the run the newer upload joined was drawn anew").toBe(true);
+    expect(pinOfOlderFile()).toBe(pin);
+    expect(document.activeElement, "the focus on the run's Pin fell to the page").toBe(pin);
+  } finally {
+    unmount?.();
+    restoreReads();
+  }
+});
+
+// Only a thread waits for the page that reaches back to it, so the day the pages read so far end
+// in counted the entries of those pages alone: five claims of one day, two of them on the first
+// page, drew "<day> · 2" until Load older drew "<day> · 5". While older pages remain, that day's
+// line is its name alone, which still opens it; a day after it keeps its count.
+test("the day the pages of the log read so far end in draws no count until the log is in", async () => {
+  // `seconds` before noon of the day `back` days before today, in the reader's own time.
+  const beforeNoon = (back: number, seconds: number) => {
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    noon.setDate(noon.getDate() - back);
+    return new Date(noon.getTime() - seconds * 1000).toISOString();
+  };
+  const claimOn = (seq: number, back: number, seconds: number) => ({
+    ...claim(seq),
+    created_at: beforeNoon(back, seconds),
+  });
+  const firstPage = [
+    ...Array.from({ length: 198 }, (_, index) => claimOn(400 - index, 2, index)),
+    claimOn(202, 3, 0),
+    claimOn(201, 3, 1),
+  ];
+  const olderPage = [claimOn(10, 3, 2), claimOn(9, 3, 3), claimOn(8, 3, 4)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  const today = dateKey(new Date().toISOString());
+  const lineOf = (back: number) => {
+    const date = dateKey(beforeNoon(back, 0));
+    return {
+      element: () => document.querySelector<HTMLElement>(`[data-history-day="${date}"] > button`),
+      label: dayLabel(date, today),
+    };
+  };
+  const cut = lineOf(3);
+  const after = lineOf(2);
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined).unmount;
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    const line = await waitFor(() => {
+      const element = cut.element();
+      if (element === null) throw new Error("the day the first page ends in draws no line");
+      return element;
+    });
+    expect(line.textContent, "the day the first page ends in counts that page's entries").toBe(
+      cut.label
+    );
+    expect(after.element()?.textContent).toBe(`${after.label} · 198`);
+    await userEvent.click(line);
+    expect(line.getAttribute("aria-expanded")).toBe("true");
+    expect(document.querySelectorAll("[data-history-day] > ol > li")).toHaveLength(2);
+
+    await userEvent.click(older);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+
+    expect(cut.element()?.textContent).toBe(`${cut.label} · 5`);
+  } finally {
+    unmount?.();
+    for (const read of reads) read.mockRestore();
   }
 });
 
