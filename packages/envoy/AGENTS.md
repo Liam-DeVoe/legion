@@ -364,7 +364,8 @@ Each item below names a task and where its code is, then notes on it.
   the first write of a run names its task, step, kind, role and generation (`400 STEP_INPUT`, as every value outside its form, the message naming the field).
   An id whose record is a run of another issue is `409 STEP_OTHER_ISSUE`, and an issue Dispatch does not hold `404 ISSUE_NOT_FOUND`, which the daemon tells from the router's `NOT_FOUND` of a Dispatch older than the route.
   The write reads the issue `for key share` with no open check, so the merge that closes an issue still records its step, and it appends no issue event.
-  `GET /api/v1/issues/{key}/steps` answers every run task by task, in the order of each task's first run, each with its attempt, which the read computes and no write stores, and a retro's rating with its reason (both null where none);
+  `GET /api/v1/issues/{key}/steps` answers the tasks of the issue's newest plan node first, in the plan's order, each with its `needs` as the node records them (null where a daemon of the release before wrote none) and each planned step with its `state`, read from the records of the plan's own generation alone (`not started`, `running`, or the newest run's result), then each other task with a run, by its first run; it reads no document.
+  Each task's runs come with their attempt, which the read computes and no write stores, and a retro's rating with its reason (both null where none);
   a key no issue carries reads as an issue with no task, as its handoffs read, and a read-only token may call it (`readScopeRoutes`).
   Beside the step records, three routes write and read the plans the runs ran from and the ratings the retros gave them:
 
