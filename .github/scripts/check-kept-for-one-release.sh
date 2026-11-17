@@ -86,13 +86,12 @@ fi
 # under an ignored path, which the plain pass reads; a tracked file appears in both, so the rows
 # are deduplicated below. core.quotePath=false prints a non-ASCII path as it is, so the annotation
 # names a real file.
-pattern="$words: ${id_shape}[[:blank:]"$'\r'"]*\$"
-run git -c core.quotePath=false grep -n -I -E --untracked -e "$pattern" -- . ":(exclude)$list"
-run git -c core.quotePath=false grep -n -I -E -e "$pattern" -- . ":(exclude)$list"
+marker_regex="$words: ($id_shape)[[:blank:]"$'\r'"]*\$"
+run git -c core.quotePath=false grep -n -I -E --untracked -e "$marker_regex" -- . ":(exclude)$list"
+run git -c core.quotePath=false grep -n -I -E -e "$marker_regex" -- . ":(exclude)$list"
 
 declare -A marked=()
 markers=0
-marker_regex="$words: ($id_shape)[[:blank:]"$'\r'"]*\$"
 while IFS= read -r hit; do
   path=${hit%%:*}
   rest=${hit#*:}
@@ -101,7 +100,7 @@ while IFS= read -r hit; do
   [[ $text =~ $marker_regex ]] || continue
   id=${BASH_REMATCH[1]}
   markers=$((markers + 1))
-  marked[$id]=$((${marked[$id]:-0} + 1))
+  marked[$id]=1
   if [ -z "${listed[$id]:-}" ]; then
     printf '%s:%s: a marker names the id "%s", which %s does not list\n' "$path" "$line" "$id" "$list" >> "$findings"
   fi

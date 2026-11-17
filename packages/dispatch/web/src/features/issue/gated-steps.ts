@@ -57,13 +57,13 @@ export function gatedStepEntries(
     return [];
   }
   return steps
-    .filter(isGatedStep)
+    .filter(isDesignGateStep)
     .map((step) => ({ step, label: STEP_LABELS[step], document: stepDocument(issue, step) }));
 }
 
 /** Whether this build draws a step word. `Project.gated_steps` is a list of plain strings in the
  *  generated document, because a Dispatch newer than this build may gate another step, so this is
  *  where one it does not draw is left out rather than drawn without a name. */
-function isGatedStep(step: string): step is DesignGateStep {
+function isDesignGateStep(step: string): step is DesignGateStep {
   return (DESIGN_GATE_STEPS as readonly string[]).includes(step);
 }

@@ -49,13 +49,13 @@ function stateActions(page: Page): Locator {
 test("a root issue of a project gating both steps reads each step's own document: approved and changed since, and awaiting @pr", async ({
   browser,
 }) => {
-  await createProject({ key: "GATETHREE", name: "Both steps" });
-  expect(await setGatedSteps("GATETHREE", ["criteria", "spec"])).toEqual({
-    project: "GATETHREE",
+  await createProject({ key: "GATESTEPS", name: "Both steps" });
+  expect(await setGatedSteps("GATESTEPS", ["criteria", "spec"])).toEqual({
+    project: "GATESTEPS",
     steps: ["criteria", "spec"],
   });
   const issue = await createIssue({
-    project: "GATETHREE",
+    project: "GATESTEPS",
     spec: "The plan.",
     title: "Design gate",
   });

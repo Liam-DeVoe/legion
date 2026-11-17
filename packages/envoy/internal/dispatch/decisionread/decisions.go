@@ -693,7 +693,7 @@ func (w *walker) changed(ctx context.Context, node heldNode, typ string) (change
 func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, bool) {
 	var found *pmdoc.Node
 	pmdoc.Walk(tree, func(block *pmdoc.Node) bool {
-		if id, _ := block.Attrs[pmdoc.BlockIDAttr].(string); block.Type == typ && strings.ReplaceAll(id, "\x00", "\uFFFD") == blockID {
+		if block.Type == typ && refs.TypedBlockID(block) == blockID {
 			found = block
 		}
 		return found == nil

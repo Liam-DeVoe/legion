@@ -92,22 +92,30 @@ type issueDocument struct {
 
 // readIssueDocument reads the issue's document query answers, by id, in tx.
 func readIssueDocument(ctx context.Context, tx pgx.Tx, query string, args ...any) (issueDocument, bool, error) {
-	var document issueDocument
-	var issueKey, session *string
-	var project, slug, kind string
-	var primary bool
-	err := tx.QueryRow(ctx, query, args...).Scan(&document.id, &document.refKey, &issueKey, &project, &session, &slug, &kind, &primary, &document.name)
+	document, err := scanIssueDocument(tx.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueDocument{}, false, nil
 	}
 	if err != nil {
 		return issueDocument{}, false, err
 	}
-	document.address = refs.ArtifactRef(issueKey, project, session, slug, kind, primary)
 	return document, true, nil
 }
 
-// issueDocumentColumns are the columns readIssueDocument scans, off artifacts a.
+// scanIssueDocument scans one row of issueDocumentColumns.
+func scanIssueDocument(row pgx.Row) (issueDocument, error) {
+	var document issueDocument
+	var issueKey, session *string
+	var project, slug, kind string
+	var primary bool
+	if err := row.Scan(&document.id, &document.refKey, &issueKey, &project, &session, &slug, &kind, &primary, &document.name); err != nil {
+		return issueDocument{}, err
+	}
+	document.address = refs.ArtifactRef(issueKey, project, session, slug, kind, primary)
+	return document, nil
+}
+
+// issueDocumentColumns are the columns scanIssueDocument scans, off artifacts a.
 const issueDocumentColumns = `a.id::text, a.ref_key, a.issue_key, coalesce(a.project_key, ''), a.session_id, a.slug, a.kind, a.is_primary, a.name`
 
 // restoredBlock is one answered ask the restore writes into the spec: the work the finder read
@@ -409,15 +417,11 @@ func (r *issueRestore) readState(ctx context.Context) error {
 	}
 	r.documents = map[string]issueDocument{}
 	for documents.Next() {
-		var document issueDocument
-		var issueKey, session *string
-		var project, slug, kind string
-		var primary bool
-		if err := documents.Scan(&document.id, &document.refKey, &issueKey, &project, &session, &slug, &kind, &primary, &document.name); err != nil {
+		document, err := scanIssueDocument(documents)
+		if err != nil {
 			documents.Close()
 			return fmt.Errorf("read a document of %s: %w", r.issue, err)
 		}
-		document.address = refs.ArtifactRef(issueKey, project, session, slug, kind, primary)
 		r.documents[document.id] = document
 	}
 	documents.Close()
@@ -618,7 +622,7 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 			return err
 		}
 		left, _ := withoutBlocks(tree, dropped)
-		r.decisionsHoldAsks = holdsAskBlock(left)
+		r.decisionsHoldAsks = pmdoc.HoldsAskBlock(left)
 		if len(drop) == 0 {
 			return nil
 		}
@@ -758,7 +762,7 @@ func (r *issueRestore) planSection(ctx context.Context, converted *convertedSect
 		}
 		body = append(body, block)
 	}
-	if holdsAskBlock(&pmdoc.Node{Type: "doc", Children: body}) {
+	if slices.ContainsFunc(body, pmdoc.HoldsAskBlock) {
 		converted.fate = r.leftUnlessRestoring(held)
 		return nil
 	}
@@ -999,11 +1003,7 @@ func (r *issueRestore) sectionAuthors(ctx context.Context, tree *pmdoc.Node, sec
 	versions := make([]int, len(sections))
 	wanted := map[int]bool{}
 	for index, section := range sections {
-		for _, id := range section.blockIDs() {
-			if change, held := changes[id]; held && change.Version > versions[index] {
-				versions[index] = change.Version
-			}
-		}
+		versions[index] = sectionChangedVersion(changes, section.blockIDs())
 		if versions[index] > 0 {
 			wanted[versions[index]] = true
 		}
@@ -1095,30 +1095,14 @@ func (r *issueRestore) sectionKeeps(ctx context.Context, tree *pmdoc.Node, secti
 	if err != nil {
 		return nil, err
 	}
-	ranges := make(map[string][2]int, len(offsets))
-	for _, offset := range offsets {
-		ranges[offset.ID] = [2]int{offset.From, offset.To}
-	}
+	ranges := blockRanges(offsets)
 	for _, section := range sections {
 		keep, kept := held[section.headingID()]
 		if !kept {
 			continue
 		}
-		start, end := -1, -1
-		for _, id := range section.blockIDs() {
-			span, found := ranges[id]
-			if !found {
-				continue
-			}
-			if start < 0 || span[0] < start {
-				start = span[0]
-			}
-			if span[1] > end {
-				end = span[1]
-			}
-		}
-		matches := start >= 0 && end <= len(markdown) && start <= end &&
-			decisionread.TextSum(markdown[start:end]) == keep.sum
+		text, found := sectionText(markdown, ranges, section.blockIDs())
+		matches := found && decisionread.TextSum(text) == keep.sum
 		keeps[section.headingID()] = &sectionKeep{keptBy: keep.keptBy, keeper: keep.keeper, keptAt: keep.keptAt, matches: matches}
 	}
 	return keeps, nil
@@ -1169,7 +1153,6 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 			return fmt.Errorf("the spec of %s is outside the Proof schema, so the decisions step cannot write into it", r.issue)
 		}
 		_, err := rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
-			changed := false
 			for _, block := range added {
 				id, _ := block.Attrs[pmdoc.BlockIDAttr].(string)
 				if blockIDHeld(live, id) {
@@ -1177,7 +1160,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 					return false
 				}
 			}
-			changed = r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds)
+			changed := r.writePresent(r.spec.id, live, r.present[r.spec.id], twoBuilds)
 			pointerLine = ""
 			if len(added) > 0 {
 				var line *pmdoc.Node

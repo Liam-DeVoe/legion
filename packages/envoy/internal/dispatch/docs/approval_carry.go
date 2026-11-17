@@ -625,60 +625,25 @@ func attributesOf(node *pmdoc.Node) *pmdoc.Node {
 // withoutAskServerAttributes is attributeRemovalCase's neutral: a copy of tree with every ask
 // block's server-owned attributes (askServerAttributeNames) taken off, and whether any block held
 // one. Each container on the way and each such block is a fresh node; every other node is the
-// tree's own, which nothing here changes.
+// tree's own, which nothing here changes (withAskBlocksChanged).
 func withoutAskServerAttributes(tree *pmdoc.Node) (*pmdoc.Node, bool) {
-	if tree.Type == "ask" {
+	return withAskBlocksChanged(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
 		var stripped pmdoc.Attrs
 		for _, name := range askServerAttributeNames {
-			if _, held := tree.Attrs[name]; held {
+			if _, held := node.Attrs[name]; held {
 				if stripped == nil {
-					stripped = maps.Clone(tree.Attrs)
+					stripped = maps.Clone(node.Attrs)
 				}
 				delete(stripped, name)
 			}
 		}
-		children, took := withoutAskServerAttributesBelow(tree)
-		if stripped == nil && !took {
-			return tree, false
+		if stripped == nil {
+			return node, false
 		}
-		shown := *tree
-		if stripped != nil {
-			shown.Attrs = stripped
-		}
-		shown.Children = children
+		shown := *node
+		shown.Attrs = stripped
 		return &shown, true
-	}
-	children, took := withoutAskServerAttributesBelow(tree)
-	if !took {
-		return tree, false
-	}
-	copied := *tree
-	copied.Children = children
-	return &copied, true
-}
-
-// withoutAskServerAttributesBelow is the children of tree each taken through
-// withoutAskServerAttributes, and whether any held a server-owned ask attribute: tree's own
-// children where none did.
-func withoutAskServerAttributesBelow(tree *pmdoc.Node) ([]*pmdoc.Node, bool) {
-	if tree.Type == "text" || len(tree.Children) == 0 {
-		return tree.Children, false
-	}
-	var children []*pmdoc.Node
-	for index, child := range tree.Children {
-		next, took := withoutAskServerAttributes(child)
-		if !took {
-			continue
-		}
-		if children == nil {
-			children = slices.Clone(tree.Children)
-		}
-		children[index] = next
-	}
-	if children == nil {
-		return tree.Children, false
-	}
-	return children, true
+	})
 }
 
 // withoutReadings is readingCase's neutral: a copy of tree with the readings left out that each

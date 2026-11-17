@@ -135,10 +135,8 @@ sign_in() {
   grep -q $'\t' "$work/jar" || fail "$1" "sign $seed_person in at $server" "the dev sign-in set no cookie"
 }
 
-actor() { jq -cn --arg s "$seed_session" '{kind: "session", id: $s}'; }
-
 # dispatch_command NAME ARGS…: this head's `envoy-dispatch ARGS` over the database, in an
-# environment holding only PATH, a home of this run's and DATABASE_URL, its output in
+# environment holding only PATH, a home and a TMPDIR of this run's and DATABASE_URL, its output in
 # $work/NAME.out and its exit in $command_code.
 dispatch_command() {
   local name="$1"
@@ -311,7 +309,7 @@ declare -A section_heading=([ask_doc_plain]="Which reader reads the corpus first
 declare -A collides=([ask_left_store]=1 [ask_doc_collide]=1)
 
 # The closed issue: D, whose answered ask left its spec.
-send agent PATCH "/api/v1/issues/$issue_d" "$(jq -cn --argjson a "$(actor)" '{status: "done", actor: $a}')"
+send agent PATCH "/api/v1/issues/$issue_d" "$(jq -cn --argjson a "$(seed_actor)" '{status: "done", actor: $a}')"
 want_status 200 capture "close issue $issue_d through the base release"
 expect capture "issue $issue_d is closed" '"done"' '.status'
 
@@ -665,7 +663,7 @@ latest_markdown refusal "$spec_a"
 kept_version="$version"
 cp "$work/latest.md" "$work/spec-before-refusals.md"
 send agent POST "/api/v1/artifacts/$spec_a/edits" \
-  "$(jq -cn --argjson a "$(actor)" '{ops: [{op: "delete", block: "q-kept"}], actor: $a}')"
+  "$(jq -cn --argjson a "$(seed_actor)" '{ops: [{op: "delete", block: "q-kept"}], actor: $a}')"
 refused "an agent's delete of q-kept"
 # without_block ID FILE: FILE without the ask block ID and the blank line after it.
 without_block() {
@@ -682,10 +680,10 @@ without_block() {
 }
 without_block q-kept "$work/spec-before-refusals.md" >"$work/replacement.md"
 send agent POST "/api/v1/issues/$issue_a/artifacts" \
-  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --argjson a "$(actor)" '{name: $n, content: $c, actor: $a}')"
+  "$(jq -cn --arg n "$spec_name" --rawfile c "$work/replacement.md" --argjson a "$(seed_actor)" '{name: $n, content: $c, actor: $a}')"
 refused "an agent's whole-document replacement without q-kept"
 send agent POST "/api/v1/artifacts/$spec_a/edits" \
-  "$(jq -cn --argjson a "$(actor)" '{ops: [{op: "retype", block: "q-kept", type: "callout", attributes: {kind: "note", title: ""}}], actor: $a}')"
+  "$(jq -cn --argjson a "$(seed_actor)" '{ops: [{op: "retype", block: "q-kept", type: "callout", attributes: {kind: "note", title: ""}}], actor: $a}')"
 refused "an agent's retype of q-kept"
 [[ "$message" == *retype* ]] || fail refusal "the retype's refusal says it retypes the block" "$message"
 

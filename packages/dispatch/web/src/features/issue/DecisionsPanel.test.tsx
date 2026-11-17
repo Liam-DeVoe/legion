@@ -11,6 +11,7 @@ import type {
   Artifact,
   AskRead,
   Comment,
+  DecisionEntry,
   DecisionKeep,
   DecisionLink,
   DisplayTree,
@@ -19,8 +20,6 @@ import type {
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionsPanel } from "./DecisionsPanel";
-
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const askId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";

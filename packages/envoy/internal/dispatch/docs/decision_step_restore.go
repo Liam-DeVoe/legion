@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -72,7 +71,7 @@ func (s *DecisionStep) RestoreAndConvert(ctx context.Context, project string, co
 			return nil, nil, fmt.Errorf("list the decisions documents: %w", err)
 		}
 		for _, issue := range documents {
-			if !slices.Contains(keys, issue) {
+			if _, listed := byIssue[issue]; !listed {
 				keys = append(keys, issue)
 			}
 		}

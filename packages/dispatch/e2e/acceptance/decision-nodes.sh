@@ -141,8 +141,6 @@ sign_in() {
   grep -q $'\t' "$work/jar" || fail "$1" "sign $seed_person in at $server" "the dev sign-in set no cookie"
 }
 
-actor() { jq -cn --arg s "$seed_session" '{kind: "session", id: $s}'; }
-
 # commit_of SECTION: the commit $server registers, from its /healthz, in $value; it must be one.
 commit_of() {
   send agent GET /healthz
@@ -151,7 +149,7 @@ commit_of() {
 }
 
 # dispatch_command NAME ARGS…: this head's `envoy-dispatch ARGS` over the database, in an
-# environment holding only PATH, a home of this run's and DATABASE_URL, its output in
+# environment holding only PATH, a home and a TMPDIR of this run's and DATABASE_URL, its output in
 # $work/NAME.out and its exit in $command_code.
 dispatch_command() {
   local name="$1"
@@ -253,12 +251,12 @@ readonly decisions_a="${seed_ids[decisions_a]}" decisions_b="${seed_ids[decision
 
 # An ask the base writes on a project document, so an asks row it wrote names an owner.
 send agent POST "/api/v1/projects/$project/artifacts" \
-  "$(jq -cn --argjson a "$(actor)" '{name: "project-notes.md", content: "# Project notes\n\nThe corpus has one owner.\n", actor: $a}')"
+  "$(jq -cn --argjson a "$(seed_actor)" '{name: "project-notes.md", content: "# Project notes\n\nThe corpus has one owner.\n", actor: $a}')"
 want_status 201 capture "upload a project document through the base release"
 field capture "the project document's id" '.artifact.id // .id'
 readonly project_document="$value"
 send agent POST "/api/v1/artifacts/$project_document/asks" \
-  "$(jq -cn --argjson a "$(actor)" '{question: "Who owns the corpus?", actor: $a}')"
+  "$(jq -cn --argjson a "$(seed_actor)" '{question: "Who owns the corpus?", actor: $a}')"
 want_status 201 capture "open an ask on the project document through the base release"
 field capture "the project document's ask" '.id // .ask.id'
 readonly owned_ask="$value"
@@ -386,10 +384,10 @@ pass edges "the census's class of unmarked rows reads zero after the backfill"
 # ---------------------------------------------------------------------------------------------
 # This head writes its half.
 # ---------------------------------------------------------------------------------------------
-send agent POST /api/v1/projects "$(jq -cn --arg k "$nodes_project" --arg p "$seed_person" --argjson a "$(actor)" \
+send agent POST /api/v1/projects "$(jq -cn --arg k "$nodes_project" --arg p "$seed_person" --argjson a "$(seed_actor)" \
   '{key: $k, name: "This head'"'"'s half", default_assignee: $p, actor: $a}')"
 want_status 201 half "create the project $nodes_project at this head"
-send agent POST /api/v1/issues "$(jq -cn --arg p "$nodes_project" --argjson a "$(actor)" '{project: $p,
+send agent POST /api/v1/issues "$(jq -cn --arg p "$nodes_project" --argjson a "$(seed_actor)" '{project: $p,
   title: "The decision nodes this head writes",
   spec: ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n\n:::requirement{#r3}\nThree.\n:::\n\n:::requirement{#r4}\nFour.\n:::\n",
   actor: $a}')"
@@ -399,7 +397,7 @@ readonly issue_n="$value"
 field half "the issue's spec" '.primary_artifact_id'
 readonly spec_n="$value"
 pointer() { printf 'dispatch://%s/spec#b-%s' "$issue_n" "$1"; }
-send agent POST "/api/v1/artifacts/$spec_n/edits" "$(jq -cn --arg s "$(pointer r1) $(pointer r4)" --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+send agent POST "/api/v1/artifacts/$spec_n/edits" "$(jq -cn --arg s "$(pointer r1) $(pointer r4)" --argjson a "$(seed_actor)" '{ops: [{op: "insert", after: "end",
   markdown: (":::ask{#a-answered urgency=\"med\" shaped=\"" + $s + "\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n:::ask{#a-open urgency=\"low\"}\nWhich region?\n:::\n\n:::ask{#a-declined urgency=\"low\"}\nWhich colour?\n:::")}], actor: $a}')"
 want_status 200 half "write the three asks into the spec of $issue_n"
 wait_ask half "$issue_n" a-answered
@@ -416,10 +414,10 @@ send agent PUT "/api/v1/asks/$answered_n/followers/ses_decision_nodes_follower" 
 [[ "$status" =~ ^20[04]$ ]] || fail half "a session follows a-answered" "HTTP $status: $(body)"
 wait_settled half
 send agent POST "/api/v1/artifacts/$spec_n/edits" "$(jq -cn --arg s "$(pointer r1) $(pointer r2) $(pointer r3)" \
-  --arg f "dispatch://$issue_n/ask/$answered_n" --argjson a "$(actor)" '{ops: [{op: "insert", after: "end",
+  --arg f "dispatch://$issue_n/ask/$answered_n" --argjson a "$(seed_actor)" '{ops: [{op: "insert", after: "end",
   markdown: ("::::decision{#d1 uncertainty=\"medium\" uncertainty_reason=\"a second region would change it\" shaped=\"" + $s + "\" from_ask=\"" + $f + "\"}\nREST for every service this quarter.\n\n:::reading{#g1}\nThe agent reads it so.\n:::\n::::")}], actor: $a}')"
 want_status 200 half "an agent writes the decision d1, which shapes three requirements, into the spec"
-send agent POST "/api/v1/issues/$issue_n/artifacts" "$(jq -cn --argjson a "$(actor)" '{name: "choices.md",
+send agent POST "/api/v1/issues/$issue_n/artifacts" "$(jq -cn --argjson a "$(seed_actor)" '{name: "choices.md",
   content: ":::ask{#a-second urgency=\"low\"}\nWhich queue?\n:::\n\n:::ask{#a-answered urgency=\"med\" multiple=\"false\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n\n:::decision{#d1}\nA second decision under the spec decision'"'"'s block id.\n:::\n",
   actor: $a}')"
 want_status 201 half "an agent writes a second document holding an ask, a copy of a-answered and a decision d1"
@@ -496,7 +494,7 @@ rows "select p.key,
 while IFS='|' read -r key asks followers typed readings; do
   printf 'half %s: asks=%s ask_followers=%s block_refs(shaped, from_ask, decided_by)=%s readings_with_a_parent=%s\n' \
     "$key" "$asks" "$followers" "$typed" "$readings"
-  [[ "$asks" -gt 0 && "$followers" -gt 0 && "$typed" -gt 0 && $((asks + followers + typed + readings)) -gt 0 ]] ||
+  [[ "$asks" -gt 0 && "$followers" -gt 0 && "$typed" -gt 0 ]] ||
     fail halves "the half of $key holds rows of every projection" "asks=$asks ask_followers=$followers block_refs=$typed"
 done <"$work/rows"
 [[ "$(wc -l <"$work/rows")" == 2 ]] || fail halves "both halves are read" "$(<"$work/rows")"
@@ -711,7 +709,7 @@ beside_pid="$baseline_boot_pid"
 server="$baseline_boot_url"
 readonly base_url="$server"
 sign_in catchup
-send agent POST "/api/v1/issues/$issue_c/artifacts" "$(jq -cn --argjson a "$(actor)" '{name: "decisions.md",
+send agent POST "/api/v1/issues/$issue_c/artifacts" "$(jq -cn --argjson a "$(seed_actor)" '{name: "decisions.md",
   content: "# Decisions\n\n## The corpus stays on one server\n\nOne server writes the corpus.\n", actor: $a}')"
 want_status 201 catchup "the base release writes a decisions.md on $issue_c"
 seed_wait_settled "the decisions.md of $issue_c settles"
@@ -730,7 +728,7 @@ commit_of catchup
 pass catchup "this head ($head_commit, unheld) and the base ($base_commit) serve one database, both stamped"
 server="$head_url"
 send agent POST "/api/v1/issues/$issue_n/asks" \
-  "$(jq -cn --argjson a "$(actor)" '{question: "Which day does the corpus refresh?", options: [{label: "Monday"}, {label: "Friday"}], actor: $a}')"
+  "$(jq -cn --argjson a "$(seed_actor)" '{question: "Which day does the corpus refresh?", options: [{label: "Monday"}, {label: "Friday"}], actor: $a}')"
 want_status 201 catchup "this head opens an ask"
 field catchup "the ask's id" '.id // .ask.id'
 readonly catchup_ask="$value"

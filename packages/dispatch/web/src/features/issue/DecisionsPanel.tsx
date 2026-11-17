@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import type {
   Artifact,
   Decision,
+  DecisionEntry,
   DecisionLink,
   DisplayTree,
   IssueDecisions,
@@ -93,9 +94,9 @@ function wordsOf(node: DisplayTree): string {
 }
 
 /** Whether a block is the decision's doubt: a paragraph whose markdown starts `Unsure:` and
- *  nothing else. In the reading
- *  of such a paragraph the word stands in a first child that is plain text, since a mark over
- *  it - strong, a code span, a link - would have written its own characters first. */
+ *  nothing else. In the reading of such a paragraph the word stands in a first child that is
+ *  plain text, since a mark over it - strong, a code span, a link - would have written its own
+ *  characters first. */
 function isUnsureBlock(node: DisplayTree): boolean {
   if (node.type !== "paragraph" || !Array.isArray(node.content)) {
     return false;
@@ -154,9 +155,6 @@ function readDecisionBlocks(decision: Decision): readonly DecisionBlock[] {
       unsure: isUnsureBlock(node),
     }));
 }
-
-/** One entry of the Decisions read (`entries`). */
-type DecisionEntry = NonNullable<IssueDecisions["entries"]>[number];
 
 /** A decision's text reads as its one `decision` block; what a card draws is that block's own
  *  content. */

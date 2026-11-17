@@ -223,7 +223,7 @@ func reconcileBlockParents(
 		if parents[index] >= 0 {
 			parentIDs[index] = &nodes[parents[index]].ID
 		}
-		if ask, held := askParents[blockIDs[index]]; held && askIDs != nil {
+		if ask, held := askParents[blockIDs[index]]; held {
 			askIDs[index] = &ask
 		}
 	}

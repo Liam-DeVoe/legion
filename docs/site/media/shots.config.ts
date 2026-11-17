@@ -29,12 +29,12 @@ async function inboxCardsReady(page: Page): Promise<void> {
   await expect(page.getByRole("button", { name: /^Later \(1\)/ })).toBeVisible();
 }
 
-/** The row of the spec's decision block, which both Inbox shots are of. */
+/** The row of the spec's ask block, which both Inbox shots are of. */
 function signInRow(page: Page): Locator {
   return page.locator("[data-inbox-row]").filter({ hasText: "Which sign-in path?" });
 }
 
-/** The spec is live in the editor with its decision block hosted and the margin filled. */
+/** The spec is live in the editor with its ask block hosted and the margin filled. */
 async function specReady(page: Page, seeded: DispatchWorkspace): Promise<void> {
   const editor = page.getByRole("textbox", { name: "Document editor" });
   await expect(editor).toContainText("Local testing workflow");

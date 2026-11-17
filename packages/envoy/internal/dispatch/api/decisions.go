@@ -542,9 +542,9 @@ func (entry decisionEntry) before(other decisionEntry) bool {
 	if open != otherOpen {
 		return open
 	}
-	at, otherAt := entry.at(), other.at()
-	if open {
-		at, otherAt = entry.openedAt, other.openedAt
+	at, otherAt := entry.openedAt, other.openedAt
+	if !open {
+		at, otherAt = entry.at(), other.at()
 	}
 	if !at.Equal(otherAt) {
 		return at.Before(otherAt)

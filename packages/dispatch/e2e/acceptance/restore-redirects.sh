@@ -139,10 +139,8 @@ field() {
   value="$(jq -er "$3" "$work/body" 2>/dev/null)" || fail "$1" "$2" "no $3 in: $(body)"
 }
 
-actor() { jq -cn --arg s "$seed_session" '{kind: "session", id: $s}'; }
-
 # dispatch_command NAME ARGS…: this head's `envoy-dispatch ARGS` over the database, in an
-# environment holding only PATH, a home of this run's and DATABASE_URL, its output in
+# environment holding only PATH, a home and a TMPDIR of this run's and DATABASE_URL, its output in
 # $work/NAME.out and its exit in $command_code.
 dispatch_command() {
   local name="$1"
@@ -272,7 +270,7 @@ readonly returning_node="$issue_a/spec#q-left-format"
 
 # One more citation of the moved address, from another issue, whose closure the third leg reads.
 send agent POST "/api/v1/issues/$issue_c/comments" \
-  "$(jq -cn --arg b "Issue C reads the answer of $moved_address." --argjson a "$(actor)" '{body: $b, actor: $a}')"
+  "$(jq -cn --arg b "Issue C reads the answer of $moved_address." --argjson a "$(seed_actor)" '{body: $b, actor: $a}')"
 want_status 201 capture "a comment on $issue_c cites $moved_address through the base release"
 field capture "the comment's id" '.id'
 readonly comment_c="$value"

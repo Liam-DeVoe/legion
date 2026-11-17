@@ -286,7 +286,7 @@ type Project struct {
 // each one a document of the root issue: its Verification document and its primary document.
 // GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
 // list against. The `decisions` step is gone (dispatch://INFRA-1150 R11): no write of this build
-// stores it, and a stored list that holds it reads without it (api's readGatedSteps).
+// stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
 	GatedStepCriteria = "criteria"
 	GatedStepSpec     = "spec"

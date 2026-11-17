@@ -643,10 +643,10 @@ RULES = {
          ":497 os.ReadFile of each .md file it lists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json",
          "cmd/dispatch/twobuild_documents_test.go:72 the current build's reference fixtures, read by "
-         "referencesMarkdown through readFixture :713 os.ReadFile"),
+         "referencesMarkdown through readFixture :716 os.ReadFile"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
          "cmd/dispatch/twobuild_documents_test.go:72 the current build's reference fixtures, read by "
-         "referencesMarkdown and hrefsReadApart through hrefTable and readFixture :713 os.ReadFile")),
+         "referencesMarkdown and hrefsReadApart through hrefTable and readFixture :716 os.ReadFile")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),

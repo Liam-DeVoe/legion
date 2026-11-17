@@ -34,9 +34,9 @@ export function agent(key: string, role: AgentRole) {
 export interface Example {
   readonly title: string;
   readonly spec: string;
-  /** The design the architect adds to the spec, with one decision block. */
+  /** The design the architect adds to the spec, with one ask block. */
   readonly design: string;
-  /** The decision block's id and the option the human picks. */
+  /** The ask block's id and the option the human picks. */
   readonly decision: { readonly id: string; readonly pick: string };
   readonly approvalSummary: string;
   readonly pullRequest: { readonly number: number; readonly url: string };
@@ -168,7 +168,7 @@ export async function admit(issue: Tracked): Promise<void> {
   await api.claimIssue(issue.key, agent(issue.key, "architect"));
 }
 
-/** The architect writes its design, with one decision block, into the spec; the block becomes an
+/** The architect writes its design, with one ask block, into the spec; the block becomes an
  *  ask once the document service settles the edit. */
 export async function writeDesign(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
@@ -180,8 +180,8 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
   await expect.poll(async () => (await api.getIssue(issue.key)).open_asks?.length ?? 0).toBe(1);
 }
 
-/** Waits until the ask of the example's decision block reads answered with the example's pick,
- *  which is what the block's card reads to show the answer. A person's answer is held on the ask
+/** Waits until the ask of the example's block reads answered with the example's pick, which is
+ *  what the block's card reads to show the answer. A person's answer is held on the ask
  *  alone and writes no version of the spec, so an approval asked for next is asked of the version
  *  the architect wrote. */
 export async function decisionAnswered(issue: Tracked, example: Example): Promise<void> {
@@ -196,7 +196,7 @@ export async function decisionAnswered(issue: Tracked, example: Example): Promis
     .toEqual({ selected: [example.decision.pick], state: "answered" });
 }
 
-/** The human answers the decision block. */
+/** The human answers the ask block. */
 export async function answerDecision(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   const [decision] = (await api.getIssue(issue.key)).open_asks ?? [];

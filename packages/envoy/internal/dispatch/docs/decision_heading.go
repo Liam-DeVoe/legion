@@ -56,35 +56,18 @@ func (s *Service) DecisionHeading(ctx context.Context, q graphstore.Queryer, art
 	if err != nil {
 		return HeadingDecision{}, false, err
 	}
-	ranges := make(map[string][2]int, len(offsets))
-	for _, offset := range offsets {
-		ranges[offset.ID] = [2]int{offset.From, offset.To}
-	}
 	changes, err := refs.BlockChanges(ctx, q, artifactID)
 	if err != nil {
 		return HeadingDecision{}, false, err
 	}
-	start, end := -1, -1
-	decision := HeadingDecision{}
-	for _, id := range section.blockIDs() {
-		if change, found := changes[id]; found && change.Version > decision.ChangedVersion {
-			decision.ChangedVersion = change.Version
-		}
-		span, found := ranges[id]
-		if !found {
-			continue
-		}
-		if start < 0 || span[0] < start {
-			start = span[0]
-		}
-		if span[1] > end {
-			end = span[1]
-		}
-	}
-	if start < 0 || end > len(markdown) || start > end {
+	ids := section.blockIDs()
+	text, found := sectionText(markdown, blockRanges(offsets), ids)
+	if !found {
 		return HeadingDecision{}, false, nil
 	}
-	decision.Text = markdown[start:end]
-	decision.TextSHA256 = decisionread.TextSum(decision.Text)
-	return decision, true, nil
+	return HeadingDecision{
+		Text:           text,
+		TextSHA256:     decisionread.TextSum(text),
+		ChangedVersion: sectionChangedVersion(changes, ids),
+	}, true, nil
 }

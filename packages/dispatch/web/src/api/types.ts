@@ -93,6 +93,7 @@ export type {
   CredentialPendingRow,
   CredentialSession,
   Decision,
+  DecisionEntry,
   DecisionKeep,
   DecisionLink,
   DecisionResponse,

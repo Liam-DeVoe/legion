@@ -233,7 +233,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 		if node.Type != decisionType && node.Type != askType {
 			return true
 		}
-		id := typedBlockID(node)
+		id := TypedBlockID(node)
 		if _, repeated := seen[id]; repeated || id == "" || types[id] != node.Type {
 			return true
 		}
@@ -247,7 +247,7 @@ func DecisionFacts(ctx context.Context, tx pgx.Tx, artifactID string, version in
 		_, admitted := pmdoc.TypedContent(node)
 		holds := false
 		for _, child := range admitted {
-			reading := typedBlockID(child)
+			reading := TypedBlockID(child)
 			if _, repeated := seen[reading]; child.Type != readingType || repeated || reading == "" || types[reading] != readingType {
 				continue
 			}
@@ -333,9 +333,9 @@ func DecisionWords(decision *pmdoc.Node) (string, error) {
 	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
 }
 
-// typedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
+// TypedBlockID is a typed block's id as the block index keys it: a U+0000 reads as U+FFFD, as the
 // rendering writes it (pmdoc.BlockPointers).
-func typedBlockID(node *pmdoc.Node) string {
+func TypedBlockID(node *pmdoc.Node) string {
 	id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 	return strings.ReplaceAll(id, "\x00", "\uFFFD")
 }
@@ -716,13 +716,14 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	var tuples []graphstore.Tuple
 	// Each author's node and the aliases the server proved of it are stated once however many
 	// blocks name it, since one write of the store takes each node once.
-	authors := map[string]struct{}{}
+	authors := map[Target]struct{}{}
 	author := func(address string, actor model.Actor) []graphstore.Tuple {
 		authorNodes, stated, named := graphstore.AuthorFacts(BlockNodeKind, address, actor, versionAt, graphstore.NoEvent)
 		if !named {
 			return nil
 		}
-		if key := authorNodes[0].Kind + ":" + authorNodes[0].ID; !mapHas(authors, key) {
+		key := Target{Kind: authorNodes[0].Kind, ID: authorNodes[0].ID}
+		if _, written := authors[key]; !written {
 			authors[key] = struct{}{}
 			nodes = append(nodes, authorNodes...)
 			tuples = append(tuples, stated[1:]...)
@@ -775,12 +776,6 @@ func IndexDecisionNodes(ctx context.Context, tx pgx.Tx, artifactID string, versi
 	}
 	write.Tuples = append(write.Tuples, links...)
 	return moved, write, nil
-}
-
-// mapHas reports whether set holds key.
-func mapHas(set map[string]struct{}, key string) bool {
-	_, held := set[key]
-	return held
 }
 
 // unheldTypedNodes is the node of each decision and reading the store places live in document
@@ -897,6 +892,9 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versi
 			opened[block] = struct{}{}
 		}
 	}
+	if len(opened) == 0 {
+		return nil, graphstore.Uncaused{}, nil
+	}
 	var pairs []blockPair
 	for _, pair := range facts.typedPairs() {
 		if _, own := opened[pair.blockID]; own && pair.kind == TupleShaped {
@@ -904,9 +902,6 @@ func IndexOpenedAskTies(ctx context.Context, tx pgx.Tx, artifactID string, versi
 		}
 	}
 	scope := &pairScope{kinds: []string{TupleShaped}, blocks: slices.Sorted(maps.Keys(opened))}
-	if len(scope.blocks) == 0 {
-		return nil, graphstore.Uncaused{}, nil
-	}
 	moved, tuples, err := replaceBlockRefs(ctx, tx, artifactID, facts.document.refKey, version, at, facts.document.writer, false, pairs, scope)
 	if err != nil {
 		return nil, graphstore.Uncaused{}, err
