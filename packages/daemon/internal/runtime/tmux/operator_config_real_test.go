@@ -1,13 +1,12 @@
 package tmux
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The daemon's private server reads no tmux configuration of the operator's. tmux holds the client
@@ -16,8 +15,7 @@ import (
 // the first launch's new-session, and its options and commands on the daemon's server.
 func TestRealTmuxThePrivateServerReadsNoTmuxConfigOfTheOperators(t *testing.T) {
 	r := newRig(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx := testwait.Context(t)
 	home := filepath.Join(r.dir, "operator")
 	ran := filepath.Join(r.dir, "operator-config-ran")
 	if err := os.MkdirAll(home, 0o700); err != nil {
