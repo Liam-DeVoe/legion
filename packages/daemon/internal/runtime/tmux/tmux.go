@@ -138,10 +138,11 @@ type Options struct {
 	RoleConfigFiles map[claim.Role][]string
 	// LeakCheckSHA256 is the checker of the deployment's shared public leak check
 	// (leakguard.Setting.CheckerSHA256, config's leak_check), which every pane is told as
-	// leakguard.CheckerVar (panePairs): a pane's `legion gh` trusts its read rule under a check
-	// whose program hashes to it, and its guard refuses a write for want of a check only where it
-	// is told one. "" is a deployment that runs no shared leak check, whose panes are told nothing
-	// of it and refuse no write for its absence.
+	// leakguard.CheckerVar (panePairs): it is the sign that the deployment runs a check, under
+	// which a pane's guard refuses a write for want of a check. A pane's `legion gh` trusts its
+	// read rule under the program that rule was proven against, whose digest it compiles in, and
+	// not under this checker. "" is a deployment that runs no shared leak check, whose panes are
+	// told nothing of it and refuse no write for its absence.
 	LeakCheckSHA256 string
 	// ExperimentVariants is every arm of every experiment the project declares
 	// (config.Project.ExperimentsDeclared), in the order the file declares the experiments and,

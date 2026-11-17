@@ -1495,11 +1495,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// is the installed copy, under the scratch the roles of this pod share. The path is the
 	// installer's own constant, so the path a role is told and the path the install writes are
 	// one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls). The checker is
-	// the sha256 of the check's public_leak_check.py the deployment names, which `legion gh`
-	// trusts its read rule under (leakguard.GhRequest.ProvenCheck) and which is the sign, to the
-	// shim and the guard, that the deployment runs a check at all. A deployment that names none
-	// (Options.LeakCheckSetting) tells neither: its pods are pushed no check, and its roles start
-	// without one and refuse no write for its absence.
+	// the sha256 of the check's public_leak_check.py the deployment names. It is the sign, to the
+	// shim and the guard, that the deployment runs a check at all; `legion gh` trusts its read
+	// rule under the program that rule was proven against, whose digest it compiles in, and not
+	// under this checker. A deployment that names none (Options.LeakCheckSetting) tells neither:
+	// its pods are pushed no check, and its roles start without one and refuse no write for its
+	// absence.
 	if r.leakCheck.Configured() {
 		add(leakguard.CheckVar, leakguard.InstalledCheck)
 		add(leakguard.CheckerVar, r.leakCheck.CheckerSHA256)

@@ -500,10 +500,11 @@ func TestRuntimeOwnedIsWhatEveryPaneIsToldByTheRuntime(t *testing.T) {
 }
 
 // A pane is told the deployment's checker (leakguard.CheckerVar) exactly where the deployment
-// names a shared leak check, once and with the setting's own value: under it a pane with no check
-// refuses its public writes and a pane's `legion gh` names it as the checker its read rule was
-// proven against. A deployment that names none tells its panes nothing of it, so they refuse no
-// write for the check's absence.
+// names a shared leak check, once and with the setting's own value: it is the sign that the
+// deployment runs a check, under which a pane with no check refuses its public writes. A pane's
+// `legion gh` trusts its read rule under the program that rule was proven against, not under this
+// checker. A deployment that names none tells its panes nothing of it, so they refuse no write for
+// the check's absence.
 func TestAPaneIsToldTheDeploymentsCheckerOnlyWhereItNamesOne(t *testing.T) {
 	checker := strings.Repeat("5e", 32)
 	for _, tc := range []struct {
