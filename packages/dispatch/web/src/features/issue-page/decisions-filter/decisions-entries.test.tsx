@@ -71,14 +71,14 @@ async function mountEntries(
   return { client, hook };
 }
 
-/** The seam's parts over the reads `mountEntries` is handed, read once. */
+/** The seam's answer over the reads `mountEntries` is handed, read once. */
 async function entriesOf(
   ...reads: Parameters<typeof mountEntries>
-): Promise<ReturnType<typeof useDecisionsEntries>["parts"]> {
+): Promise<ReturnType<typeof useDecisionsEntries>> {
   const { hook } = await mountEntries(...reads);
-  const { parts } = hook.result.current;
+  const entries = hook.result.current;
   hook.unmount();
-  return parts;
+  return entries;
 }
 
 /** The decisions document's blocks as the blocks read answers them, in document order: each
@@ -198,7 +198,7 @@ test("the seam gives four parts from today's reads and makes no request", async 
   // Any request at all, past the reads the page's tree makes.
   const request = spyOn(globalThis, "fetch");
   try {
-    const parts = await entriesOf(
+    const { parts } = await entriesOf(
       children,
       decisionsRead(made),
       asks,
@@ -260,10 +260,10 @@ test("an empty decisions member gives the questions alone and no error", async (
     ["no member", missing],
   ] as const) {
     const drawn = entriesOf(children, decisions);
-    // The hook throws nothing on this read: the promise of its parts settles with them.
+    // The hook throws nothing on this read: the promise of its answer settles with it.
     await expect(drawn).resolves.toBeDefined();
     const entries = await drawn;
-    expect({ parts: idsOf(entries), read, readsHeld: entries.readsHeld }).toEqual({
+    expect({ parts: idsOf(entries.parts), read, readsHeld: entries.readsHeld }).toEqual({
       parts: {
         agents: [],
         named: [],
@@ -318,7 +318,7 @@ test("an empty decisions member gives the questions alone and no error", async (
       const reading = () => ({
         open_questions: idsOf(hook.result.current.parts).open_questions,
         read,
-        readsHeld: hook.result.current.parts.readsHeld,
+        readsHeld: hook.result.current.readsHeld,
       });
       expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: heldWhileOut });
       expect(started).toHaveBeenCalledTimes(1);
@@ -333,7 +333,9 @@ test("an empty decisions member gives the questions alone and no error", async (
   // Each of the two reads that say which entries there are is refused in turn before it first
   // answers, with the other read in the cache. The refused read holds no answer, so the seam
   // says it is unreadable and the reads do not hold; its retry asks that read again, which is
-  // refused again, and asks the other read nothing.
+  // refused again, and asks the other read nothing. The read stops being refused while the
+  // retry runs and is refused once more, and no entry moves, so the parts are the very object
+  // they were before the retry.
   const refused = [
     {
       mount: () => mountEntries(children, null),
@@ -355,15 +357,17 @@ test("an empty decisions member gives the questions alone and no error", async (
       const { hook } = await mount();
       const reading = () => ({
         read,
-        readsHeld: hook.result.current.parts.readsHeld,
-        unreadable: hook.result.current.parts.unreadable,
+        readsHeld: hook.result.current.readsHeld,
+        unreadable: hook.result.current.unreadable,
       });
       const unreadable = { read, readsHeld: false, unreadable: [read] };
       await waitFor(() => expect(reading()).toEqual(unreadable));
       expect(asked).toHaveBeenCalledTimes(1);
-      await act(async () => hook.result.current.parts.retry(read));
+      const before = hook.result.current.parts;
+      await act(async () => hook.result.current.retry(read));
       await waitFor(() => expect(asked).toHaveBeenCalledTimes(2));
       await waitFor(() => expect(reading()).toEqual(unreadable));
+      expect(hook.result.current.parts).toBe(before);
       expect(notAsked).not.toHaveBeenCalled();
       hook.unmount();
     } finally {
@@ -388,14 +392,14 @@ test("an empty decisions member gives the questions alone and no error", async (
       const { client, hook } = await mountEntries(children, noDecision);
       const reading = () => ({
         read,
-        readsHeld: hook.result.current.parts.readsHeld,
+        readsHeld: hook.result.current.readsHeld,
         retrying: hook.result.current.retrying,
-        unreadable: hook.result.current.parts.unreadable,
+        unreadable: hook.result.current.unreadable,
       });
       const held = { read, readsHeld: true, retrying: [], unreadable: [] };
       expect(reading()).toEqual(held);
       const before = hook.result.current.parts;
-      await act(async () => hook.result.current.parts.retry(read));
+      await act(async () => hook.result.current.retry(read));
       await waitFor(() => expect(reading()).toEqual({ ...held, retrying: [read] }));
       expect(hook.result.current.parts).toBe(before);
       await act(async () => {

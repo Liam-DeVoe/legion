@@ -33,25 +33,31 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * under the reader's decisions, with that person's name on its row, so the model's `others` is
  * put in `yours`, newest first, and `others` is left empty.
  *
- * The seam says too whether the reads that say which questions and decisions there are, the
- * decisions read and the asks, hold their answers (`readsHeld`), which the outline's keys
- * (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with no question
- * or no decision to go to may be one whose questions and decisions have not arrived, so `q` and
- * `w` with nowhere to go say nothing rather than that there is none, and the body draws no line
- * that the issue holds nothing, as the outline does (`slots/body.tsx`). The comments and the
- * blocks are not waited for: they say of no entry whether it is there, only whether a decision
- * stands in the review list or in the reader's own, so a failed read of either still lets an
- * issue that holds nothing say so.
+ * The seam says too, beside the parts, whether the reads that say which questions and decisions
+ * there are, the decisions read and the asks, hold their answers (`readsHeld`), which the
+ * outline's keys (`useTreeKeymap.ts`) and the body's empty line read. Until they do, a view with
+ * no question or no decision to go to may be one whose questions and decisions have not arrived,
+ * so `q` and `w` with nowhere to go say nothing rather than that there is none, and the body
+ * draws no line that the issue holds nothing, as the outline does (`slots/body.tsx`). The
+ * comments and the blocks are not waited for: they say of no entry whether it is there, only
+ * whether a decision stands in the review list or in the reader's own, so a failed read of
+ * either still lets an issue that holds nothing say so.
  *
- * The seam says too which of those two reads was refused before it first answered
- * (`unreadable`), which of them is being read now (`retrying`), and asks one of them alone again
- * (`retry`). The body draws a line with a Retry for each refused read, in place of the entries
- * that read would give, and a Retry pressed while its read runs again asks nothing more. How a
- * read stands and how it is asked again belong to the read, and only this module names one, so
- * they are read here and the body knows a read only by the word its line is drawn for. A read
- * whose refetch fails over an answer it already holds keeps that answer, which the view still
- * draws from, so it is not among the refused; nor are the comments and the blocks, which only
- * move a decision between parts.
+ * The seam says too, beside the parts, which of those two reads was refused before it first
+ * answered (`unreadable`), which of them is being read now (`retrying`), and asks one of them
+ * alone again (`retry`). The body draws a line with a Retry for each refused read, in place of
+ * the entries that read would give, and a Retry pressed while its read runs again asks nothing
+ * more. How a read stands and how it is asked again belong to the read, and only this module
+ * names one, so they are read here and the body knows a read only by the word its line is drawn
+ * for. A read whose refetch fails over an answer it already holds keeps that answer, which the
+ * view still draws from, so it is not among the refused; nor are the comments and the blocks,
+ * which only move a decision between parts.
+ *
+ * These four stand beside the parts and not in them, so the parts are worked out from the
+ * reads' answers and the tree alone. A fetch that starts or ends, a refetch the page makes in
+ * the background too, or a read refused before it holds an answer leaves every entry where it
+ * stood, so the parts keep their identity and nothing the body works out from them is worked
+ * out again.
  *
  * The hook is the module's one export and its answer's type is its own, so the read that
  * replaces this module has one name to give the view and nothing else of it to keep.
@@ -61,9 +67,14 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  *  was refused. */
 type DecisionsRead = "decisions" | "asks";
 
-/** The Decisions view's parts, whether the reads that say which entries there are hold their
- *  answers, and which of them was refused and how to ask it again. */
-interface ViewParts extends DecisionsParts {
+/** The seam's answer: the view's parts, and beside them whether the reads that say which
+ *  entries there are hold their answers, which of them was refused and which runs now, and how
+ *  to ask one again. The parts alone are worked out from the reads' answers and the tree, so
+ *  they keep their identity while only how a read stands changes. */
+interface DecisionsEntries {
+  /** Which entry stands in which part, each part in the order it is drawn. Another person's
+   *  decisions stand in `yours`, so `others` is empty. */
+  readonly parts: DecisionsParts;
   /** Whether the decisions read and the asks each hold an answer: the reads that say which
    *  questions and decisions there are. The comments and the decisions document's blocks only
    *  move a decision between the review list and the reader's own, so they are not waited for.
@@ -71,24 +82,16 @@ interface ViewParts extends DecisionsParts {
   readonly readsHeld: boolean;
   /** Asks `read` alone again, by its own query's refetch. */
   readonly retry: (read: DecisionsRead) => void;
+  /** Each of the decisions read and the asks, in that order, that is being read now, a first
+   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
+  readonly retrying: readonly DecisionsRead[];
   /** Each of the decisions read and the asks, in that order, that was refused before it first
    *  answered: it holds no answer and is in error. */
   readonly unreadable: readonly DecisionsRead[];
 }
 
-/** The seam's answer: the view's parts, and beside them which read runs now. A read starts and
- *  ends on every fetch, a refetch the page makes in the background too, so `retrying` stands
- *  outside `parts`: the parts keep their identity while only a fetch starts or ends, and nothing
- *  the body works out from them is worked out again. */
-interface DecisionsEntries {
-  readonly parts: ViewParts;
-  /** Each of the decisions read and the asks, in that order, that is being read now, a first
-   *  read, a Retry's or any other (TanStack Query's `isFetching`). */
-  readonly retrying: readonly DecisionsRead[];
-}
-
-/** The Decisions view's parts, from the issue, the reader's login, the whole tree and the tree
- *  as the Decisions view leaves it (`presetView`). */
+/** The Decisions view's parts and how the reads they come from stand, from the issue, the
+ *  reader's login, the whole tree and the tree as the Decisions view leaves it (`presetView`). */
 export function useDecisionsEntries({
   issue,
   reader,
@@ -171,7 +174,9 @@ export function useDecisionsEntries({
   // `shaped` tie resolves to the node it names (`tree-drafts.ts`). `nodeIdOf` names no block by
   // a line, so the line rule it is handed is the reading's words, as G's tests hand it.
   const nodeIdOf = useMemo(() => treeContext({ issue }, wordsOf).nodeIdOf, [issue]);
-  const parts = useMemo<ViewParts>(() => {
+  // From the model's inputs alone: how a read stands is no input of the model, and the parts
+  // keep their identity while only that changes.
+  const parts = useMemo<DecisionsParts>(() => {
     const model = decisionsParts({
       asks,
       changes,
@@ -185,28 +190,13 @@ export function useDecisionsEntries({
     return {
       ...model,
       others: [],
-      readsHeld,
-      retry,
-      unreadable,
       yours:
         model.others.length === 0
           ? model.yours
           : newestFirst([...model.yours, ...model.others], root),
     };
-  }, [
-    asks,
-    changes,
-    decisions,
-    issue.key,
-    nodeIdOf,
-    reader,
-    readsHeld,
-    retry,
-    root,
-    unreadable,
-    view,
-  ]);
-  return { parts, retrying };
+  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
+  return { parts, readsHeld, retry, retrying, unreadable };
 }
 
 /**

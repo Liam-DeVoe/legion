@@ -157,7 +157,12 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { parts, retrying } = useDecisionsEntries({ issue, reader, root, view });
+  const { parts, readsHeld, retry, retrying, unreadable } = useDecisionsEntries({
+    issue,
+    reader,
+    root,
+    view,
+  });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -377,12 +382,12 @@ export function DecisionsFilterBody({
   // rows stand after the tree element and are its rows all the same (`aria-owns`).
   const placeFoot = useCallback((): boolean => {
     const control = footControl.current;
-    if (!parts.readsHeld || control === null) return false;
+    if (!readsHeld || control === null) return false;
     if (body.current?.querySelector(STOP_ROW) != null) return false;
     control.focus();
     footPlaced.current = document.activeElement === control;
     return true;
-  }, [parts.readsHeld]);
+  }, [readsHeld]);
   // The tree element takes the focus only to pass it on: to the list's tab stop, else to the
   // foot's control where `placeFoot` lets it take it. `t d` focuses the tree where it finds no
   // tab stop in it (`useIssueKeymap.ts`), and a list that holds only the foot has none. Where
@@ -585,7 +590,7 @@ export function DecisionsFilterBody({
     onReveal: goToOrOpen,
     onZoom: NOTHING,
     oneNodeAtATime: false,
-    readsHeld: parts.readsHeld,
+    readsHeld,
     rows,
     root: keyOrder,
     writer,
@@ -654,11 +659,11 @@ export function DecisionsFilterBody({
           of the entries the read would give: the tree is built from the same reads
           (`useIssueTree.ts`), so a read that holds nothing gives the list no entry of its own,
           and no part is drawn for it. */}
-      {parts.unreadable.map((read) => (
+      {unreadable.map((read) => (
         <FailedReadLine
           key={read}
           message={REFUSED_READ_WORDS[read]}
-          onRetry={() => parts.retry(read)}
+          onRetry={() => retry(read)}
           retrying={retrying.includes(read)}
         />
       ))}
@@ -782,7 +787,7 @@ export function DecisionsFilterBody({
           (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
           arrived, or whose read was refused and says so in its own line, so no line says the
           issue holds nothing, as the outline draws none then (`slots/body.tsx`). */}
-      {parts.readsHeld &&
+      {readsHeld &&
       parts.open_questions.length === 0 &&
       parts.review.length === 0 &&
       parts.yours.length === 0 &&
@@ -819,7 +824,7 @@ function neighbourOf(
 }
 
 /** The two reads the seam says may be refused, by the names it gives them. */
-type DecisionsRead = ReturnType<typeof useDecisionsEntries>["parts"]["unreadable"][number];
+type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number];
 
 /** What the body says of each read refused before it first answered, in the page's words: the
  *  decisions for the decisions read, and the questions for the asks. A read the seam adds fails

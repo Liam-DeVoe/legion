@@ -337,26 +337,13 @@ const REFUSED_READ_WORDS = {
 
 /** The page's line for a failed read that the body draws for `read`, found by what it says, as
  *  a reader finds it; null where the body draws none for `read`. */
-function lineOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): Element | null {
-  return (
-    [...drawn.container.querySelectorAll("[data-failed-read]")].find(
-      (line) => words(line.querySelector("p")) === REFUSED_READ_WORDS[read]
-    ) ?? null
-  );
-}
-
-/** The line a refused read draws over the list, read as a reader reads it: what it says, and
- *  its Retry; null where the body draws none for `read`. */
-function failedLine(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS) {
-  const line = lineOf(drawn, read);
-  return line === null
-    ? null
-    : { retry: words(line.querySelector("button")), says: words(line.querySelector("p")) };
+function failedLine(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): Element | null {
+  return drawn.queryByText(REFUSED_READ_WORDS[read])?.closest("[data-failed-read]") ?? null;
 }
 
 /** The Retry of the line a refused read draws, or null where the body draws none for `read`. */
 function retryOf(drawn: RenderResult, read: keyof typeof REFUSED_READ_WORDS): HTMLElement | null {
-  return lineOf(drawn, read)?.querySelector<HTMLElement>("button") ?? null;
+  return failedLine(drawn, read)?.querySelector<HTMLElement>("button") ?? null;
 }
 
 function rowOf(view: RenderResult, id: string): HTMLElement {
@@ -589,12 +576,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   );
   try {
     const failed = renderBody({ children: [statement("s1")], made: null }, {}, { stage: true });
-    await waitFor(() =>
-      expect(failedLine(failed, "decisions")).toEqual({
-        retry: "Retry",
-        says: ANSWER_LINES.decisions_unreadable,
-      })
-    );
+    await waitFor(() => expect(failedLine(failed, "decisions")).not.toBeNull());
+    expect(words(retryOf(failed, "decisions"))).toBe("Retry");
     expect(failedLine(failed, "asks")).toBeNull();
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
@@ -625,12 +608,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   const refusedAsks = spyOn(api, "listIssueAsks").mockRejectedValue(new Error("refused"));
   try {
     const failed = renderBody({ asks: null, children: [statement("s1")] }, {}, { stage: true });
-    await waitFor(() =>
-      expect(failedLine(failed, "asks")).toEqual({
-        retry: "Retry",
-        says: ANSWER_LINES.questions_unreadable,
-      })
-    );
+    await waitFor(() => expect(failedLine(failed, "asks")).not.toBeNull());
+    expect(words(retryOf(failed, "asks"))).toBe("Retry");
     expect(failedLine(failed, "decisions")).toBeNull();
     expect(failed.container.querySelectorAll("[data-decisions-part]").length).toBe(0);
     expect(failed.queryByText(EMPTY_LINE)).toBeNull();
@@ -676,7 +655,8 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
   // that holds only the foot with both reads held, so the focus goes on from the tree to the
   // foot's control; a later read that adds a question takes it from there to the question's
   // row, as the foot hands it on. Where the read's answer brings the question with it, drawn
-  // in the one render, the stage puts the focus on the question's row itself.
+  // in the one render, the focus goes to the question's row, and the foot's control takes it at
+  // no point on the way.
   const footOnly = { asks: null, children: [decisionNode("minor")], made: [decision("minor")] };
   const footControl = (drawn: RenderResult) =>
     drawn.container.querySelector('[data-decisions-part="agents"] button');
@@ -729,16 +709,27 @@ test("a part that holds nothing is not drawn, and an empty issue says so once", 
     await waitFor(() =>
       expect(document.activeElement).toBe(answered.getByRole("tree", { name: CONTROL_LABELS.tree }))
     );
-    await act(async () => {
-      // The tree grows first and its render waits for the act, so the read's answer, taken
-      // before the act ends, is drawn in the one render with the question, as the page's tree
-      // built from that answer draws them.
-      answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
-      answer.resolve([]);
-      const settled = Promise.withResolvers<void>();
-      setTimeout(settled.resolve, 0);
-      await settled.promise;
-    });
+    // Each element that takes the focus while the tree grows and the read answers.
+    const tookFocus: (EventTarget | null)[] = [];
+    const recordFocus = (event: Event) => {
+      tookFocus.push(event.target);
+    };
+    document.addEventListener("focusin", recordFocus);
+    try {
+      await act(async () => {
+        // The tree grows first and its render waits for the act, so the read's answer, taken
+        // before the act ends, is drawn in the one render with the question, as the page's
+        // tree built from that answer draws them.
+        answered.again({ children: [openAsk("q-open"), decisionNode("minor")] });
+        answer.resolve([]);
+        const settled = Promise.withResolvers<void>();
+        setTimeout(settled.resolve, 0);
+        await settled.promise;
+      });
+    } finally {
+      document.removeEventListener("focusin", recordFocus);
+    }
+    expect(tookFocus).not.toContain(footControl(answered));
     await waitFor(() => expect(focusedRow(answered)).toBe("q-open"));
     answered.unmount();
   } finally {
