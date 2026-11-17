@@ -72,12 +72,20 @@ const unrated: FinishedIssue = {
   failed_steps: 0,
 };
 
-/** Two retros, so two ratings, one reason holding a quotation mark and a line break. */
-const ratedTwice: FinishedIssue = {
+/** Three retros, so three ratings, in the order the retros ran: neither by score (4, 2, 5) nor by
+ *  step id (9e…, 1a…, 5c…), either way up, and the two sorts disagree, so a list sorted on either
+ *  reads differently. One reason holds a quotation mark and a line break. */
+const ratedThrice: FinishedIssue = {
   ...ratedOnce,
   issue: "INFRA-13",
   closed_at: "2026-11-17T09:00:00Z",
   ratings: [
+    {
+      rating: 4,
+      reason: "The plan fit the first merge.",
+      step_id: "9e0f1a2b-3c4d-5e6f-8a7b-9c0d1e2f3a4b",
+      ended_at: "2026-11-17T05:10:00Z",
+    },
     {
       rating: 2,
       reason: "The plan had no test step.",
@@ -87,7 +95,7 @@ const ratedTwice: FinishedIssue = {
     {
       rating: 5,
       reason: 'It said "ship it"\nand it shipped.',
-      step_id: "2b3c4d5e-6f7a-5b8c-9d0e-1f2a3b4c5d6e",
+      step_id: "5c6d7e8f-9a0b-5c1d-8e2f-3a4b5c6d7e8f",
       ended_at: "2026-11-17T08:55:00Z",
     },
   ],
@@ -178,14 +186,14 @@ describe("dispatch plans", () => {
     expect(result.details).toEqual({ project: "INFRA", issues: [ratedOnce, unrated] });
   });
 
-  test("an issue with two ratings lists both in order, each reason one JSON string", async () => {
-    const answer: ProjectPlans = { project: "INFRA", issues: [ratedTwice] };
+  test("an issue with three ratings lists each in the order the retros ran, each reason one JSON string", async () => {
+    const answer: ProjectPlans = { project: "INFRA", issues: [ratedThrice] };
 
     const result = await readPlans({ project: "INFRA" }, answering([], answer));
 
     expect(result.text.split("\n")).toEqual([
       "INFRA: 1 finished issues",
-      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 1h30m failed steps 0',
+      'INFRA-13 closed 2026-11-17T09:00:00Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 "The plan fit the first merge.", 2/5 "The plan had no test step.", 5/5 "It said \\"ship it\\"\\nand it shipped." time 1h30m failed steps 0',
     ]);
   });
 
