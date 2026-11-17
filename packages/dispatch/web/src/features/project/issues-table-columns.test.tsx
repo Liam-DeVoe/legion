@@ -678,12 +678,14 @@ test("each measure header's sort tooltip gives its method, then the sort hint on
     ["Time in Legion phase", "time_in_phase"],
   ] as const) {
     const sort = within(table).getByRole("button", { name: header });
+    const method = MEASURE_METHODS[id];
+    if (method === undefined) throw new Error(`${header} has no method`);
     expect(sort).not.toHaveAttribute("title");
     await user.hover(sort);
-    expect(lines()).toEqual([MEASURE_METHODS[id], SORT_HINT]);
+    expect(lines()).toEqual([method, SORT_HINT]);
     await user.unhover(sort);
     act(() => sort.focus());
-    expect(lines()).toEqual([MEASURE_METHODS[id], SORT_HINT]);
+    expect(lines()).toEqual([method, SORT_HINT]);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("tooltip")).toBeNull();
   }
@@ -716,9 +718,8 @@ test("Time per phase opens on Share, its header's control switches to Hours agai
   const table = await screen.findByRole("table", { name: "Issues" });
   const control = within(table).getByRole("group", { name: "Time per phase as" });
   // In the column's header, outside its sort button.
-  expect(control.closest("th")).toBe(
-    within(table).getByRole("columnheader", { name: /Time per phase/ })
-  );
+  const cell: HTMLElement | null = control.closest("th");
+  expect(cell).toBe(within(table).getByRole("columnheader", { name: /Time per phase/ }));
   expect(within(table).getByRole("button", { name: "Time per phase" })).not.toContainElement(
     control
   );

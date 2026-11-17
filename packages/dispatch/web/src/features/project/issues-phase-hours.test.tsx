@@ -57,7 +57,8 @@ const segments = () =>
 
 test("each phase has the Design's fixed colour, no two the same, and Queue has none", () => {
   expect(Object.keys(legionPhaseFill)).toEqual([...WORK_PHASES]);
-  expect({ ...legionPhaseFill }).toEqual(DESIGN_COLOURS);
+  const fills: Readonly<Record<string, string>> = legionPhaseFill;
+  expect({ ...fills }).toEqual(DESIGN_COLOURS);
   expect(new Set(Object.values(legionPhaseFill)).size).toBe(WORK_PHASES.length);
   expect(Object.keys(legionPhaseFill)).not.toContain("queue");
 });

@@ -818,7 +818,8 @@ test("a column's own control stands in its header beside the filter, outside the
 
   const table = await screen.findByRole("table", { name: "Deploys deploys" });
   const control = within(table).getByRole("button", { name: "Bars" });
-  expect(control.closest("th")).toBe(within(table).getByRole("columnheader", { name: /Service/ }));
+  const cell: HTMLElement | null = control.closest("th");
+  expect(cell).toBe(within(table).getByRole("columnheader", { name: /Service/ }));
   expect(within(table).getByRole("button", { name: "Service" })).not.toContainElement(control);
   expect(control.parentElement).toContainElement(
     within(table).getByRole("button", { name: "Filter Service" })
