@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -585,5 +586,180 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	}
 	if reviews, approvals := run(t, true); reviews != 1 || approvals != 0 {
 		t.Fatalf("with the repeat: reviews = %d, artifact.approved events = %d; want alice's approval of version 1 alone and no event", reviews, approvals)
+	}
+}
+
+// On a fleet of one build, a version a write takes without settling the document first - a named
+// version, and the version an agent's edit takes at once - stores none of the seven attributes a
+// version can store, though the live tree still holds what the release before wrote into an ask
+// block: here state="open" on an ask bob has answered since, which the answer leaves in place,
+// since on one build it changes no byte of the document (dispatch://INFRA-1150 R3). The named
+// version differs from the one alice approved, which the release before's settlement wrote with
+// that state, in those attributes alone, and every ask of it agrees with its node, so her approval
+// is carried to it by the case that compares the two without them (attributeRemovalCase, R10).
+// Stored with the stale state, the version's block disagreed with its answered ask and carried
+// nothing.
+func TestOnOneBuildAVersionTakenBeforeSettlementStoresNoAskAttributeAndCarriesTheApproval(t *testing.T) {
+	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	for _, write := range []struct {
+		name    string
+		version func(ctx context.Context, service *Service, artifactID string) error
+		carries bool
+	}{
+		{"a named version", func(ctx context.Context, service *Service, artifactID string) error {
+			_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", agent)
+			return err
+		}, true},
+		{"an edit's version", func(ctx context.Context, service *Service, artifactID string) error {
+			if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Context", With: "Context, edited"}}, agent, nil); err != nil {
+				return err
+			}
+			_, err := service.SnapshotVersion(ctx, artifactID, agent)
+			return err
+		}, false},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			// The release before serves beside this build while the ask opens, and its settlement
+			// writes the ask's state into the block, as this build's does for it.
+			serveTwoBuilds(t, service.store)
+			seedServiceText(t, service, artifactID, spec)
+			settleCurrentGeneration(t, service, artifactID)
+			approved := latestVersionMarkdown(t, service, artifactID)
+			if !strings.Contains(approved, `#ask-1 urgency="med" multiple="false" state="open"}`) {
+				t.Fatalf("the version written while the release before serves = %q, want the ask's block holding its open state", approved)
+			}
+			var number int
+			if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
+				t.Fatal(err)
+			}
+			approveStoredVersion(t, service.store, artifactID, number, "alice")
+
+			// The release before's last process leaves: the fleet is one build.
+			if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+				t.Fatalf("remove the release before's process: %v", err)
+			}
+			bob := model.Actor{Kind: "user", ID: "bob"}
+			at := time.Now().UTC()
+			change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
+			change.Who, change.At = bob, at
+			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+			if state := firstAsk(liveTree(t, service, artifactID)).Attrs["state"]; state != "open" {
+				t.Fatalf("the live block after bob's answer holds state %v, want the release before's open state still there", state)
+			}
+
+			if err := joinedWrite(service, func(ctx context.Context) error { return write.version(ctx, service, artifactID) }); err != nil {
+				t.Fatalf("write the version: %v", err)
+			}
+			var written int
+			if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&written); err != nil {
+				t.Fatal(err)
+			}
+			if written != number+1 {
+				t.Fatalf("the latest version is %d after the write, want the one it wrote, %d", written, number+1)
+			}
+			version := latestVersionMarkdown(t, service, artifactID)
+			for _, name := range storedAskAttributes() {
+				if strings.Contains(version, " "+name+`="`) {
+					t.Fatalf("the version taken before settlement = %q, want no %s attribute on a fleet of one build", version, name)
+				}
+			}
+			if !write.carries {
+				return
+			}
+			if reviews, approvals := carriedReviews(t, service.store, artifactID); reviews != 2 || approvals != 1 {
+				t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval carried to the named version", reviews, approvals)
+			}
+			var reason string
+			if err := service.store.Pool.QueryRow(context.Background(), `
+				select coalesce(reason, '') from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+			`, artifactID, number+1).Scan(&reason); err != nil {
+				t.Fatalf("read the carried review: %v", err)
+			}
+			if !strings.Contains(reason, attributeRemovalCase.change) {
+				t.Fatalf("the carried review's reason = %q, want the server-owned ask attributes' case %q", reason, attributeRemovalCase.change)
+			}
+		})
+	}
+}
+
+// A carried approval is carried again by the next version it holds, and that carry's review names
+// the version the person approved, not the carried version between: alice approves the version
+// the release before's settlement wrote with the ask's open state; once the fleet is one build and
+// bob has answered, a named version drops the state and carries her approval (the server-owned
+// attributes' case), and a reading added under bob's answer carries it again (the reading case).
+// Each carry's reason opens with alice's own version, the one she approved (approvalOrigin), as
+// the Legion daemon's intake reads a carry by that opening (intake.CarriedApprovalReasonPrefix).
+func TestACarryOfACarriedApprovalNamesTheVersionThePersonApproved(t *testing.T) {
+	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	serveTwoBuilds(t, service.store)
+	seedServiceText(t, service, artifactID, spec)
+	settleCurrentGeneration(t, service, artifactID)
+	latest := func() int {
+		t.Helper()
+		var number int
+		if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
+			t.Fatal(err)
+		}
+		return number
+	}
+	approved := latest()
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+		t.Fatalf("remove the release before's process: %v", err)
+	}
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	at := time.Now().UTC()
+	change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
+	change.Who, change.At = bob, at
+	settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+	named := func(summary string) {
+		t.Helper()
+		if err := joinedWrite(service, func(ctx context.Context) error {
+			_, err := service.NamedVersion(ctx, artifactID, summary, agent)
+			return err
+		}); err != nil {
+			t.Fatalf("name %q: %v", summary, err)
+		}
+	}
+	carriedReason := func(number int) string {
+		t.Helper()
+		var reason string
+		if err := service.store.Pool.QueryRow(context.Background(), `
+			select coalesce(reason, '') from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+		`, artifactID, number).Scan(&reason); err != nil {
+			t.Fatalf("read the review carried to version %d: %v", number, err)
+		}
+		return reason
+	}
+	want := fmt.Sprintf(carriedReasonPrefix, approved)
+
+	named("The state dropped")
+	dropped := latest()
+	if reason := carriedReason(dropped); reason != want+attributeRemovalCase.change+carriedReasonEnd {
+		t.Fatalf("the review carried to version %d reads %q, want %q", dropped, reason, want+attributeRemovalCase.change+carriedReasonEnd)
+	}
+	withReading, err := pmdoc.Parse("::::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n\n:::reading{#ask-1-r1}\nThe agent reads it as now.\n:::\n::::\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		ask := firstAsk(tree)
+		answer := withReading.Children[0]
+		ask.Children = append(ask.Children, answer.Children[len(answer.Children)-1])
+		return tree
+	})
+	named("A reading under bob's answer")
+	read := latest()
+	if read != dropped+1 {
+		t.Fatalf("the latest version is %d after the reading, want %d", read, dropped+1)
+	}
+	if reason := carriedReason(read); reason != want+readingCase.change+carriedReasonEnd {
+		t.Fatalf("the review carried to version %d, over the carry to version %d, reads %q, want %q: it names the version alice approved", read, dropped, reason, want+readingCase.change+carriedReasonEnd)
 	}
 }

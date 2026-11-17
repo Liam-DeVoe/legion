@@ -66,13 +66,15 @@ import (
 // approval was superseded by it.
 
 // restoreReason is the reason a review carried to a version restoring the approved text records,
-// naming the approval it follows. It opens as every carried reason does, which is how the Legion
-// daemon tells a carry from a person's own approval (intake.CarriedApprovalReasonPrefix).
+// naming the version of the approval it stands for (approvalOrigin). It opens as every carried
+// reason does, which is how the Legion daemon tells a carry from a person's own approval
+// (intake.CarriedApprovalReasonPrefix).
 const restoreReason = "Carried forward from the approval of version %d: this version's text is that version's, unchanged."
 
-// carriedReasonPrefix opens the reason of every review a carry case records, naming the approval
-// it follows: the daemon's intake.CarriedApprovalReasonPrefix and the version. The changes of the
-// cases that carried follow it, joined, and carriedReasonEnd closes it.
+// carriedReasonPrefix opens the reason of every review a carry case records, naming the version
+// of the approval it stands for (approvalOrigin): the daemon's intake.CarriedApprovalReasonPrefix
+// and the version. The changes of the cases that carried follow it, joined, and carriedReasonEnd
+// closes it.
 const carriedReasonPrefix = "Carried forward from the approval of version %d: "
 
 // carriedReasonEnd closes a carried reason after the changes it names (carryVerdict).
@@ -196,7 +198,7 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 		return nil, err
 	}
 	if restored {
-		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), serverURL)
+		return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(restoreReason, approvalOrigin(newest)), serverURL)
 	}
 	if len(shown.nodes) == 0 && !holdsDecision(tree) {
 		return nil, nil
@@ -216,7 +218,26 @@ func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, 
 	if !carried {
 		return nil, nil
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, newest.Version)+change, serverURL)
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(carriedReasonPrefix, approvalOrigin(newest))+change, serverURL)
+}
+
+// approvalOrigin is the version of the approval newest, an approval the document carries to a
+// later version, stands for, which the carried reason names: newest's own version where a person,
+// or a plan review, gave it; and where newest is itself a carry - its reason opens as every
+// carried reason does (carriedReasonPrefix) - the version that reason names. So a carry of a
+// carried approval names the version the person approved however many carries stand between, as
+// c-attribute-removal reads it ("The carried review records the version the person approved").
+// The comparison itself is with newest's own version, whose text the carry stands on
+// (restoresApprovedText, approvedVersion). The Legion daemon reads a carried reason's opening
+// alone (intake.CarriedApprovalReasonPrefix), never its number.
+func approvalOrigin(newest model.ArtifactReview) int {
+	var origin int
+	if newest.Reason != nil {
+		if _, err := fmt.Sscanf(*newest.Reason, carriedReasonPrefix, &origin); err == nil && origin > 0 {
+			return origin
+		}
+	}
+	return newest.Version
 }
 
 // versionAsks is what asksAgreeWithTheirNodes read of a version's ask blocks: each one by block id

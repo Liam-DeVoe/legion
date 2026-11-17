@@ -8539,11 +8539,16 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 		t.Fatalf("after B shut down: serving %q, live %q; want %q alone", serving, live, entryA)
 	}
 
-	// A process on B's build that is beating, and then one whose last heartbeat left the window.
+	// A process on B's build that is beating, and then one whose last heartbeat left the window. It
+	// serves this tree's binary, so its row carries this build's schema numbers, as
+	// processes.Register writes them: a row without them reads as a build that predates the fleet
+	// columns, which every document socket's admission and the ask attributes' fleet guard read
+	// as another build.
 	var instance string
 	if err := pair.database.Pool.QueryRow(ctx, `
-		insert into server_processes (instance, dashboard_build, signing_keys) values (gen_random_uuid(), $1, '{fingerprint}')
-		returning instance::text`, routes.DashboardBuild(buildB.dir)).Scan(&instance); err != nil {
+		insert into server_processes (instance, dashboard_build, signing_keys, schema_version, schema_creatable)
+		values (gen_random_uuid(), $1, '{fingerprint}', $2, $3)
+		returning instance::text`, routes.DashboardBuild(buildB.dir), pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&instance); err != nil {
 		t.Fatal(err)
 	}
 	if _, live := dashboardBuildsOf(t, a); !slices.Equal(live, []string{entryA, entryB}) {

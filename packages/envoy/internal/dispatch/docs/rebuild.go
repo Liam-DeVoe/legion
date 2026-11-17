@@ -198,13 +198,21 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	// in the history this replaces. So the close's final sweep is written into the tree here
 	// (closedIssueAskState): every resolved ask's block and copy, and every answered ask's copy,
 	// from the rows as they stand under the issue's row this transaction holds, and every readable
-	// ask block with no ask row marked resolved. The ask rows are taken before RebuildTx takes the
-	// document's advisory lock, the order the close's own write takes them in
-	// (WriteIssueAskStates). Once this transaction commits, the rebuilt document reads as the
-	// issue's other documents do.
+	// ask block with no ask row marked resolved. The sweep is written as the fleet stands
+	// (anotherBuildServes), as the close writes it: while another build serves, each block gets the
+	// attributes that build's pages read its state from; once the fleet is one build, every reader
+	// reads the state from the store, and each such block has the seven attributes a version can
+	// store taken off instead, so the rebuilt document holds none (readIssueAskStateWrites). The ask
+	// rows are taken before RebuildTx takes the document's advisory lock, the order the close's own
+	// write takes them in (WriteIssueAskStates). Once this transaction commits, the rebuilt document
+	// reads as the issue's other documents do.
 	var closedStates *issueAskStateWrites
 	if !open {
-		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true)
+		twoBuilds, err := anotherBuildServes(ctx, tx)
+		if err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		closedStates, err = readIssueAskStateWrites(ctx, tx, artifactID, owner, tree, closedIssueAskState, true, twoBuilds)
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}

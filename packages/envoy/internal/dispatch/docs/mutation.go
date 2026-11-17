@@ -2185,11 +2185,48 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	if fromStore {
 		capture = capture.withoutInflight(actor)
 	}
+	if tree, err = storableVersionTree(ctx, tx, tree); err != nil {
+		return renderedTree{}, authorCapture{}, err
+	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
 	return renderedTree{tree: tree, markdown: markdown, offsets: offsets}, capture, nil
+}
+
+// storableVersionTree is tree, the document a version write takes without settling it first
+// (NamedVersion, SnapshotVersion and so the edit route's version, captureLiveTextAndAuthors and
+// captureWrite), as a version stores it: once the fleet is one build (anotherBuildServes), each
+// ask block holding any of the seven attributes a version can store (storedAskAttributes) has
+// them taken off, as the document's next settlement takes them off the live tree
+// (askReadableWrite). Until that settlement runs, the live tree can still hold what the release
+// before wrote into a block - state="open" on an ask answered since, which an answer on one build
+// leaves in place, since it changes no byte of the document (KeepAskBlockInStep) - and a version
+// rendered from it as it stands would store a stale state, which disagrees with the ask's node, so
+// it would carry no approval (askAgreesWithItsNode) and read open to every reader of the version.
+// Each container on the way to such a block and each such block is a fresh node, and tree itself
+// is left as it is. It is tree where no ask block holds one, and where another build serves, whose
+// pages read the attributes, which settlement keeps in step with each ask meanwhile. The fleet is
+// read only for a tree holding one.
+func storableVersionTree(ctx context.Context, tx pgx.Tx, tree *pmdoc.Node) (*pmdoc.Node, error) {
+	stripped := withAskBlocks(tree, func(node *pmdoc.Node) (*pmdoc.Node, bool) {
+		taken := attributesOf(node)
+		if !withoutStoredAskAttributes(taken) {
+			return node, false
+		}
+		copied := *node
+		copied.Attrs = taken.Attrs
+		return &copied, true
+	})
+	if stripped == tree {
+		return tree, nil
+	}
+	twoBuilds, err := anotherBuildServes(ctx, tx)
+	if err != nil || twoBuilds {
+		return tree, err
+	}
+	return stripped, nil
 }
 
 // captureWrite is captureLiveTextAndAuthors for a transaction with a write of its own to room: the
@@ -2232,13 +2269,24 @@ func (s *Service) captureWrite(ctx context.Context, tx pgx.Tx, room string, writ
 		capture = capture.withoutInflight(actor)
 	}
 	if rendering, reused := s.reuseRendering(write, fork, "capture"); reused {
-		return rendering, capture, nil
+		tree, err := storableVersionTree(ctx, tx, rendering.tree)
+		if err != nil || tree == rendering.tree {
+			return rendering, capture, err
+		}
+		markdown, offsets, err := documentMarkdownWithOffsets(tree)
+		if err != nil {
+			return renderedTree{}, authorCapture{}, err
+		}
+		return renderedTree{tree: tree, markdown: markdown, offsets: offsets}, capture, nil
 	}
 	valid, err := s.readForkTree(fork)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err
 	}
-	tree := valid.Node()
+	tree, err := storableVersionTree(ctx, tx, valid.Node())
+	if err != nil {
+		return renderedTree{}, authorCapture{}, err
+	}
 	markdown, offsets, err := documentMarkdownWithOffsets(tree)
 	if err != nil {
 		return renderedTree{}, authorCapture{}, err

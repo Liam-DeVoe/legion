@@ -812,7 +812,9 @@ func requireTheAnnouncementListsTheArmsKinds(t *testing.T, database *store.Store
 	if _, err := database.Pool.Exec(ctx, `insert into server_build_announcements (commit) values ($1)`, previousBuild); err != nil {
 		t.Fatalf("announce the previous release's build as it announces itself: %v", err)
 	}
-	registration, err := processes.Register(ctx, database.Pool, processes.Instance{Commit: thisBuild, SigningKeys: []string{"graph-edges-test-key"}})
+	registration, err := processes.Register(ctx, database.Pool, processes.Instance{
+		Commit: thisBuild, SigningKeys: []string{"graph-edges-test-key"}, SchemaVersion: pmdoc.SchemaVersion(), SchemaCreatable: pmdoc.SchemaCreatable(),
+	})
 	if err != nil {
 		t.Fatalf("register a process serving this build: %v", err)
 	}

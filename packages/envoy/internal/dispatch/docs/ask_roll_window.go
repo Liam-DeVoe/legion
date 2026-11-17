@@ -24,13 +24,24 @@ import (
 // tree for the ask card to read (G1). The first version a document writes without them carries
 // its approval (R10, carryVerdict).
 
-// anotherBuildServes reports whether processes.Live, read through q, lists processes of more
-// than one build: two commits, an unstamped build's empty commit being one build with every other
-// empty commit, as the decisions step reads the fleet (DecisionStep.anotherBuildLive). It compares
-// the live processes' commits among themselves and needs no commit of this process's own, which
-// the document service is not given: every process registers in server_processes before it serves
-// (processes.Register), and its row stays live while it heartbeats, so this process is among the
-// processes listed, and a list of one commit is this build alone. A database no process registers
+// anotherBuildServes reports whether processes.Live, read through q, lists a process of a build
+// that still reads an ask's state and answer from the attributes of its block: one whose
+// registered schema version is below this build's (pmdoc.SchemaVersion). The release before this
+// one reads schema version 4 and this release 5, so a process of it makes two builds, and so does
+// a process of a build older still, which registers no schema number at all and whose row holds
+// the column's default, 0 (processes.Process.PredatesFleetColumns). A process at this build's
+// version or past it reads every answer from the server, as this build does, so to this guard the
+// fleet is one build however many commits it serves.
+//
+// The rule reads the schema numbers, never the commits among themselves, for two reasons. This
+// process writes documents before it registers - main restores the decided wordings, repairs the
+// issues' asks and starts settlement's resumption before joinRegistry - and after a lapsed
+// heartbeat drops its row from the live window, and a fleet of base processes alone lists one
+// commit then, though the base's pages read every block's attributes. And a later release deployed
+// over this one lists two commits while both read answers from the server, so comparing commits
+// would open a roll window that serves no page. The decisions step compares commits with its own
+// (DecisionStep.anotherBuildLive), since any other build, whatever schema it reads, can write a
+// row without its node; this guard is the ask attributes' alone. A database no process registers
 // in, as a docs test's is, lists none and holds no other build either.
 func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) {
 	live, err := processes.Live(ctx, q)
@@ -38,7 +49,7 @@ func anotherBuildServes(ctx context.Context, q processes.Querier) (bool, error) 
 		return false, err
 	}
 	for _, process := range live {
-		if process.Commit != live[0].Commit {
+		if process.SchemaVersion < pmdoc.SchemaVersion() {
 			return true, nil
 		}
 	}

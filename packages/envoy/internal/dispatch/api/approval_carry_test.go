@@ -554,13 +554,16 @@ func TestARewordOfAnAnsweredBlockDoesNotCarryAndTheDecidedWordingWrittenBackDoes
 // the document before. The human answered the first block, which writes no version (R3); the
 // agent added a second, and the human approved that version and answered the second block, which
 // writes none either. A browser's socket edit then puts a value on the first block, and the agent
-// names a version, in the route's own transaction, before settlement runs. That version's block
-// shows a state its row does not hold, so it does not agree with its node and nothing is carried
-// (R10: "Every ask of the document must still agree with its node"). Settlement then takes the
-// forgery off the block, as it takes each of the seven off a block once the fleet is one build,
-// and that version is the one he approved byte for byte, which carries his approval
-// (docs.restoresApprovedText); for `invalid`, which no rendering writes, settlement's repair
-// changes no markdown and versions nothing, so the approval stays stale.
+// names a version, in the route's own transaction, before settlement runs, while a process of the
+// release before serves: the one fleet whose version writes keep the attributes a version can
+// store, since on a fleet of one build a version written before settlement takes them off (docs'
+// storableVersionTree). That version's block shows a state its row does not hold, so it does not
+// agree with its node and nothing is carried (R10: "Every ask of the document must still agree
+// with its node"). Once the release before's process has left, settlement takes the forgery off
+// the block, as it takes each of the seven off a block once the fleet is one build, and that
+// version is the one he approved byte for byte, which carries his approval
+// (docs.restoresApprovedText); for `invalid`, which no rendering writes and no version write takes
+// off, settlement's repair changes no markdown and versions nothing, so the approval stays stale.
 func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		attribute string
@@ -589,10 +592,12 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 
 			answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "", nil)
 			setLiveBlockAttributes(t, documents, issue.PrimaryArtifactID, "region", map[string]any{tc.attribute: tc.forged})
-			named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
-			if named.Code != http.StatusCreated {
-				t.Fatalf("name the version holding the forged %s: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
-			}
+			whileTheReleaseBeforeServes(t, database, func() {
+				named := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/versions", map[string]any{"summary": "Name the forged " + tc.attribute, "actor": sessionActor()})
+				if named.Code != http.StatusCreated {
+					t.Fatalf("name the version holding the forged %s: status=%d body=%s", tc.attribute, named.Code, named.Body.String())
+				}
+			})
 			waitForArtifactVersion(t, handler, issue.PrimaryArtifactID, 3)
 			markdown := versionMarkdown(t, handler, issue.PrimaryArtifactID, 3)
 			if !strings.Contains(markdown, "How many regions take the first wave?") {
