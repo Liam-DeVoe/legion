@@ -69,6 +69,15 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 	if got := cfg.Projects["DEMO"].RunsByDefault(); !reflect.DeepEqual(got, todaysSteps(t)) {
 		t.Fatalf("DEMO, which names none, runs %+v, want today's line", got)
 	}
+	// A step's key names the agent that does it, and the steps of one key are one agent, so a
+	// key is taken; the key owner is the owner's alone, refused below on a role but acceptance.
+	keyed, err := Load(writeConfigFile(t, defaultStepsFile("{default_steps: [implementer, reviewer:r]}")), noEnv)
+	if err != nil {
+		t.Fatalf("Load of a key: %v", err)
+	}
+	if got, want := keyed.Projects["ACME"].DefaultSteps, []plan.Step{{Role: "implementer"}, {Role: "reviewer", Key: "r"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("DefaultSteps of a key = %+v, want %+v", got, want)
+	}
 
 	const yet = " This release of Legion does not carry it out yet."
 	for _, tc := range []struct {
@@ -82,8 +91,8 @@ func TestDefaultStepsAreReadAndRefused(t *testing.T) {
 		{name: "a cause of each check", value: "[checker, reviewer]",
 			refusal: "projects.ACME.default_steps: task default has no step implementer." + yet +
 				" step 1 of task default names the role checker, which neither the deployment nor the plan defines."},
-		{name: "a key", value: "[implementer, reviewer:r]",
-			refusal: "projects.ACME.default_steps: step 2 of task default names the key r." + yet},
+		{name: "the key owner on a role but acceptance", value: "[implementer:owner, reviewer]",
+			refusal: "projects.ACME.default_steps: step 1 of task default names the key owner." + yet},
 		{name: "a word outside the grammar", value: "[implementer, Reviewer]",
 			refusal: `projects.ACME.default_steps: the step "Reviewer" is neither a role nor a role:key, where each matches [a-z][a-z0-9-]*`},
 		{name: "two steps in one entry", value: `["implementer reviewer"]`,
