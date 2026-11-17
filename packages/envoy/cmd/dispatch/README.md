@@ -3291,8 +3291,7 @@ Every default keeps each change to a text off.
 - `DISPATCH_REVIEWER_DECISION_BLOCKS`: `off`, `after` or `hold` (default `off`); `hold` shows the block in its document and keeps it out of every person's Inbox, counts and notices until the review ends.
   A choice other than `off` of any of these six needs the reviewer's model group, and refuses the boot without it.
 
-- `DISPATCH_REVIEWER_RULES`: a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `pointers`, `structure` and `detector` (default `noslop,phrases,reader_words,ask_parts`).
-  Under `pointers`, a pointer at an issue, a pull request, a comment, an ask, a message or a document must say in plain words what that thing delivers or says, with its link beside those words.
+- `DISPATCH_REVIEWER_RULES`: a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` (default `noslop,phrases,reader_words,ask_parts`).
   `structure` and `detector` are the writing check's structure rules and phrase detector (Writing check, below).
 
 - `DISPATCH_REVIEWER_TIMEOUT` (default `120s`) and `DISPATCH_REVIEWER_WRITER_WINDOW` (default `5m`): positive Go durations, the bound on a review, every try of its model call included, and the time a writer session has to act on a held text.
@@ -3302,7 +3301,7 @@ Every default keeps each change to a text off.
 - `DISPATCH_WORD_RECORDS`: `on` (default) or `off`; the records job runs only while its model group is set.
   `DISPATCH_WORD_RECORDS_FROM`: an RFC 3339 time (default `2026-10-16T00:00:00Z`), the first event the job's backfill reads.
 
-- `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words`, `ask_parts` and `pointers` the refusal shows beside the written rules (default none).
+- `DISPATCH_WRITING_RULES_REFUSAL`: `on` or `off` (default `off`); and `DISPATCH_WRITING_RULES_EXTRA`, a comma list of `reader_words` and `ask_parts` the refusal shows beside the written rules (default none).
 
 ### The reviewer
 
@@ -3392,7 +3391,7 @@ The setting is read on the server, so one change applies to every session:
   The command keeps the answer in the session's state file for 10 minutes, and a server without the route refuses nothing.
 
 - `POST /api/v1/writing-rules` takes `{route, body}` of a write the command has not sent, `route` being `"<method> <path>"`, and answers `{reader, text}`: the person who reads that write, decided as the writing check decides it (`writing_check_reader.go`), and the rules text.
-  `reader_words` adds the words that person asked about before (The word records, below), `ask_parts` adds the five parts of an ask to an ask's rules, and `pointers` adds to every write's rules that a pointer at an issue, a pull request, a comment, an ask, a message or a document says in plain words what that thing delivers or says, with its link beside those words.
+  `reader_words` adds the words that person asked about before (The word records, below), and `ask_parts` adds the five parts of an ask to an ask's rules.
 
 The server embeds the skill from `internal/dispatch/writingcheck/plainwords/skill/`, a copy that `go generate ./internal/dispatch/writingcheck/plainwords` makes; `TestTheCopyIsTheSkill` fails while the copy and `skills/plain-words` differ.
 
@@ -4137,7 +4136,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/settings/writing-rules` (GET; cookie, trusted header, or bearer)
 
-  The refusal of the written rules as `DISPATCH_WRITING_RULES_REFUSAL` and `DISPATCH_WRITING_RULES_EXTRA` set it: `{refusal, extra}`, `refusal` being `"on"` or `"off"` and `extra` the rule sets the refusal shows after the written rules (`reader_words`, `ask_parts`, `pointers`), `[]` for none.
+  The refusal of the written rules as `DISPATCH_WRITING_RULES_REFUSAL` and `DISPATCH_WRITING_RULES_EXTRA` set it: `{refusal, extra}`, `refusal` being `"on"` or `"off"` and `extra` the rule sets the refusal shows after the written rules (`reader_words`, `ask_parts`), `[]` for none.
   The `dispatch` command reads it before an agent's write of an ask, an issue, a comment or a message (The written rules' refusal, above).
 
 - `/api/v1/writing-rules` (POST; cookie, trusted header, or bearer)

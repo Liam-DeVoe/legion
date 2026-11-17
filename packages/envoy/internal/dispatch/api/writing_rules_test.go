@@ -95,25 +95,6 @@ func TestTheWritingRulesAnswerTheSkillForTheWritesReader(t *testing.T) {
 	}
 }
 
-// The rule set of pointers comes after the skill's text for every write, a comment's among them,
-// where the deployment names it; the test above reads a comment's rules where it does not.
-func TestTheWritingRulesShowPointersWhereTheDeploymentNamesThem(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{writingRules: WritingRulesConfig{
-		Refusal: true, Extra: []string{WritingRulesPointers},
-	}})
-	key := createTestIssue(t, handler, "RUL", "The written rules")
-	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/writing-rules", map[string]any{
-		"route": "POST /api/v1/issues/" + key + "/comments", "body": map[string]any{"body": "The deploy finished."},
-	}, "alice")
-	if answer.Code != http.StatusOK {
-		t.Fatalf("rules for a comment: status=%d body=%s", answer.Code, answer.Body.String())
-	}
-	text := decodeBody[writingRulesResponse](t, answer).Text
-	if !strings.HasPrefix(text, plainwords.Rules) || !strings.Contains(text[len(plainwords.Rules):], "## Pointers") {
-		t.Fatalf("a comment's rules with pointers on = %q after the skill's text, want the pointers", strings.TrimPrefix(text, plainwords.Rules))
-	}
-}
-
 // A route that is no write whose text a person may read, or a body that is not the JSON a write to
 // the route sends, is refused, naming what was wrong; the settings off do not change the answer.
 func TestTheWritingRulesRefuseAWriteNoReaderRuleServes(t *testing.T) {

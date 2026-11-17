@@ -37,10 +37,6 @@ const (
 	// RuleAskParts is an ask's five parts: the decision, why it is needed now, the facts, a
 	// recommendation, and what each option causes. It applies to an ask and a decision block.
 	RuleAskParts RuleSet = "ask_parts"
-	// RulePointers is each pointer at an issue, a pull request, a comment, an ask, a message or a
-	// document that does not say in plain words what the thing delivers or says: a key or a link
-	// in place of those words, or neither those words nor a link.
-	RulePointers RuleSet = "pointers"
 	// RuleStructure is writingcheck's structure rules (writingcheck.EnabledRules), which run
 	// before the model call; their findings are an input of the call.
 	RuleStructure RuleSet = "structure"
@@ -50,7 +46,7 @@ const (
 )
 
 // AllRuleSets is every rule set, in the order DISPATCH_REVIEWER_RULES's description names them.
-var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts, RulePointers, RuleStructure, RuleDetector}
+var AllRuleSets = []RuleSet{RuleNoslop, RulePhrases, RuleReaderWords, RuleAskParts, RuleStructure, RuleDetector}
 
 // phrasesHeading is the heading of skills/plain-words' section of the six phrases.
 const phrasesHeading = "## The phrases to stop"

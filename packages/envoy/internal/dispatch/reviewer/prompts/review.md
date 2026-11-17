@@ -12,7 +12,7 @@ Do these steps:
 ## How to write a finding
 
 - In "rule_set", write the name of the rule set that the text breaks.
-- In "quote", copy the words of the text that break the rule. Copy them exactly. If the rule needs a part that the text does not have, copy the first sentence of the text.
+- In "quote", copy the words of the text that break the rule. Copy them exactly. A sentence that only the record holds is not in the text. Write no finding for it. If the rule needs a part that the text does not have, copy the first sentence of the text.
 - In "why", say in one sentence why the words break the rule.
 - In "fix", write the words that the text must have in place of the quote. Use only facts that the record holds. If the reader needs a fact that the record does not hold, say which fact is missing. Do not guess a fact.
 - Write one finding for each place. Do not write two findings for the same words.

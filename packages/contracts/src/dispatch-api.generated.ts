@@ -2983,7 +2983,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The refusal of the written rules as this deployment set it (DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA): {refusal, extra}. refusal is "on" when the dispatch command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction, to show the written rules (POST /api/v1/writing-rules); it is "off" when the command refuses no write. extra is the rule sets the refusal shows after the written rules, of reader_words, ask_parts and pointers, [] for none. */
+    /** @description The refusal of the written rules as this deployment set it (DISPATCH_WRITING_RULES_REFUSAL, DISPATCH_WRITING_RULES_EXTRA): {refusal, extra}. refusal is "on" when the dispatch command refuses, once, an agent session's first write of an ask, an issue, a comment or a message, and its first such write after each compaction, to show the written rules (POST /api/v1/writing-rules); it is "off" when the command refuses no write. extra is the rule sets the refusal shows after the written rules, reader_words and ask_parts, [] for none. */
     get: operations["getApiV1SettingsWritingRules"];
     put?: never;
     post?: never;
@@ -3121,7 +3121,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description The written rules for one write that the caller did not send yet {route, body}: route is "<method> <path>" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and "" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), the parts of an ask for the write of an ask (ask_parts), and for every write that a pointer says in plain words what the thing it points at delivers or says, with its link beside those words (pointers). The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY. */
+    /** @description The written rules for one write that the caller did not send yet {route, body}: route is "<method> <path>" of a route whose text a person may read, and body is the JSON that the write would send. Answers {reader, text}. reader is the login of the person who reads the write, as the writing check decides it, and "" for none. text is skills/plain-words (ce-noslop's tests, its pattern catalog and its terminology, and the six phrases to stop), then each rule set of DISPATCH_WRITING_RULES_EXTRA that applies: the words that the reader asked about before (reader_words), and the parts of an ask for the write of an ask (ask_parts). The route writes nothing. A route that is no such write is 400 INVALID_BODY, and a body that is not the JSON of a write to that route is 400 INVALID_BODY. */
     post: operations["postApiV1WritingRules"];
     delete?: never;
     options?: never;

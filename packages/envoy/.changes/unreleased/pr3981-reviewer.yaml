@@ -21,9 +21,7 @@ body: |-
   again, two more times at most, inside that same bound. On an `azure` model group each call sends
   its schema in strict mode. A finding whose quote is not in the text is dropped.
   `DISPATCH_REVIEWER_RULES` names the rule sets the reviewer applies, from `noslop`, `phrases`,
-  `reader_words`, `ask_parts`, `pointers`, `structure` and `detector`. `pointers` asks that a
-  pointer at an issue, a pull request, a comment, an ask, a message or a document say in plain
-  words what that thing delivers or says, with its link beside those words. The default is
+  `reader_words`, `ask_parts`, `structure` and `detector`. The default is
   `noslop,phrases,reader_words,ask_parts`.
   A value other than `off` needs the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`): without
   it the server refuses to start.

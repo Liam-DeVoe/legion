@@ -23,7 +23,6 @@ var ruleSetMarkers = map[RuleSet][]string{
 	RulePhrases:     {`### Rule set "phrases"`, "| land the change, land the PR |"},
 	RuleReaderWords: {`### Rule set "reader_words"`, "<reader_words>\n- store\n</reader_words>"},
 	RuleAskParts:    {`### Rule set "ask_parts"`, "2. Why the decision is necessary now."},
-	RulePointers:    {`### Rule set "pointers"`, "take each key and each link out of its sentence"},
 	RuleStructure:   {`### Rule set "structure"`, "<structure_findings>", "Rule phrasal-verb."},
 	RuleDetector:    {`### Rule set "detector"`, "<detector_findings>", "Rule vacuous-verb-phrase."},
 }
@@ -185,18 +184,18 @@ func TestAFindingWhoseQuoteIsNotInTheTextIsDropped(t *testing.T) {
 		})
 	}
 	ofText := Finding{RuleSet: RuleNoslop, Quote: "we  **spin up**\nthe node.", Why: "A phrasal verb.", Fix: "We start the node."}
-	ofRecord := Finding{RuleSet: RulePointers, Quote: "The store keeps rows.", Why: "It says no more.", Fix: "The store keeps each row."}
-	empty := Finding{RuleSet: RulePointers, Quote: " ", Why: "It says no more.", Fix: "The store."}
+	ofRecord := Finding{RuleSet: RulePhrases, Quote: "The store keeps rows.", Why: "It says no more.", Fix: "The store keeps each row."}
+	empty := Finding{RuleSet: RulePhrases, Quote: " ", Why: "It says no more.", Fix: "The store."}
 	stand := modeltest.New(t,
 		modeltest.Rule{Contains: reviewMarker, Once: true, Reply: modeltest.Reply{Text: reply(ofRecord, ofText, empty)}},
 		modeltest.Rule{Contains: reviewMarker, Once: true, Reply: modeltest.Reply{Text: reply(ofRecord)}},
 	)
-	rules := []RuleSet{RuleNoslop, RulePointers}
+	rules := []RuleSet{RuleNoslop, RulePhrases}
 	reviewed, err := Review(t.Context(), chatModel(stand.URL, "reviewer"), rules, askRecord())
 	if err != nil {
 		t.Fatal(err)
 	}
-	dropped := []DroppedFinding{{RuleSet: RulePointers, Quote: ofRecord.Quote}, {RuleSet: RulePointers, Quote: empty.Quote}}
+	dropped := []DroppedFinding{{RuleSet: RulePhrases, Quote: ofRecord.Quote}, {RuleSet: RulePhrases, Quote: empty.Quote}}
 	if !reflect.DeepEqual(reviewed.Findings, []Finding{ofText}) || !slices.Equal(reviewed.Dropped, dropped) {
 		t.Errorf("findings %+v, dropped %+v; want the text's finding kept and the two others dropped with their quotes", reviewed.Findings, reviewed.Dropped)
 	}

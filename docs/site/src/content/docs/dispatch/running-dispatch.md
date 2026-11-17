@@ -311,11 +311,11 @@ you turn it on:
 | `DISPATCH_REVIEWER_WRITER_WINDOW`: how long a writer has to act on a held text | a Go duration | `5m` |
 | `DISPATCH_REVIEWER_UNEDITED`: what posts when the writer does not act in time | `rewrite` or `as_written` | `rewrite` |
 | `DISPATCH_REVIEWER_TIMEOUT`: past it, a held text posts as written | a Go duration | `120s` |
-| `DISPATCH_REVIEWER_RULES` | a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `pointers`, `structure` and `detector` | `noslop,phrases,reader_words,ask_parts` |
+| `DISPATCH_REVIEWER_RULES` | a comma list of `noslop`, `phrases`, `reader_words`, `ask_parts`, `structure` and `detector` | `noslop,phrases,reader_words,ask_parts` |
 | `DISPATCH_WORD_RECORDS`: the records job, while its model group is set | `on` or `off` | `on` |
 | `DISPATCH_WORD_RECORDS_FROM`: the first event the records job reads | an RFC 3339 time | `2026-10-16T00:00:00Z` |
 | `DISPATCH_WRITING_RULES_REFUSAL` | `on` or `off` | `off` |
-| `DISPATCH_WRITING_RULES_EXTRA`: what the written rules add | a comma list of `reader_words`, `ask_parts` and `pointers` | none |
+| `DISPATCH_WRITING_RULES_EXTRA`: what the written rules add | a comma list of `reader_words` and `ask_parts` | none |
 
 Each part that calls a model has a model group of its own: `DISPATCH_REVIEWER_MODEL_*`,
 `DISPATCH_REWRITE_DEFINE_MODEL_*` and `DISPATCH_WORD_RECORDS_MODEL_*`. Each group takes `_KIND`

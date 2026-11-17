@@ -416,9 +416,6 @@ func writingSettingCases() map[string]func(t *testing.T) {
 			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": " detector, structure,,detector "}).Writing.ReviewerRules; !slices.Equal(got, []string{"detector", "structure"}) {
 				t.Errorf("ReviewerRules = %v, want detector and structure, each once", got)
 			}
-			if got := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": "noslop,pointers"}).Writing.ReviewerRules; !slices.Equal(got, []string{"noslop", "pointers"}) {
-				t.Errorf("ReviewerRules = %v, want noslop and pointers", got)
-			}
 			refusedWith(t, map[string]string{"DISPATCH_REVIEWER_RULES": "noslop,passive-voice"}, `DISPATCH_REVIEWER_RULES names "passive-voice"`)
 		},
 		"DISPATCH_REVIEWER_TIMEOUT":       durationCase("DISPATCH_REVIEWER_TIMEOUT", 120*time.Second, func(w writingSettings) time.Duration { return w.ReviewerTimeout }),
@@ -460,10 +457,10 @@ func writingSettingCases() map[string]func(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_WRITING_RULES_REFUSAL": "yes"}, `DISPATCH_WRITING_RULES_REFUSAL="yes" (expected on or off)`)
 		},
 		"DISPATCH_WRITING_RULES_EXTRA": func(t *testing.T) {
-			if got := resolveWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "ask_parts, reader_words, pointers"}).Writing.WritingRulesExtra; !slices.Equal(got, []string{"ask_parts", "reader_words", "pointers"}) {
+			if got := resolveWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "ask_parts, reader_words"}).Writing.WritingRulesExtra; !slices.Equal(got, []string{"ask_parts", "reader_words"}) {
 				t.Errorf("WritingRulesExtra = %v", got)
 			}
-			refusedWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "noslop"}, `DISPATCH_WRITING_RULES_EXTRA names "noslop", which is not one of reader_words, ask_parts, pointers`)
+			refusedWith(t, map[string]string{"DISPATCH_WRITING_RULES_EXTRA": "noslop"}, `DISPATCH_WRITING_RULES_EXTRA names "noslop", which is not one of reader_words, ask_parts`)
 		},
 		"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": func(t *testing.T) {
 			got := resolveWith(t, map[string]string{"DISPATCH_MODEL_DEPLOYMENT_QUOTAS": " grok-4.7=600000 , claude-haiku-4-5-20251001 = 400000,"}).Writing.DeploymentQuotas

@@ -511,7 +511,7 @@ func TestChangeFourPostsTheReviewersRewrite(t *testing.T) {
 // it dropped with its rule set and quote, and the rewrite that was not applied beside the reason.
 func TestACaseLineHoldsItsTextAndWhatTheReviewReturned(t *testing.T) {
 	finding := []reviewer.Finding{{RuleSet: reviewer.RuleNoslop, Quote: "spin up", Why: "A phrasal verb.", Fix: "start"}}
-	dropped := []reviewer.DroppedFinding{{RuleSet: reviewer.RulePointers, Quote: "The store keeps … rows."}}
+	dropped := []reviewer.DroppedFinding{{RuleSet: reviewer.RulePhrases, Quote: "The store keeps … rows."}}
 	fake := newFakeDispatch(t,
 		draftAnswer{Findings: finding, Dropped: dropped, Rewrite: &wording{Body: "Lost the first line."}, NotApplied: "it drops the first line"},
 		draftAnswer{},
