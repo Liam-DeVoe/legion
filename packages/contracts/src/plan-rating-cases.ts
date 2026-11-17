@@ -8,7 +8,10 @@ import { z } from "zod";
  * contract's request schema (`./legion-api.test.ts`) and the `legion` tool
  * (`packages/pi-shared/src/legion-phase-ops.test.ts`), so a case of another shape, a member of
  * another type or a member the schema does not name fails both, rather than one test reading it
- * through a cast.
+ * through a cast. So does a golden that could not tell a reader from the daemon: one with no
+ * accepted case or no refused one, which a reader that takes every case or none would pass, or one
+ * that lacks a reason of either character alone on which JavaScript's trim and Go's
+ * strings.TrimSpace differ (`./go-blank.ts`), which a reader that read blank by `trim` would pass.
  */
 export const PlanRatingCases = z.strictObject({
   cases: z
@@ -20,5 +23,15 @@ export const PlanRatingCases = z.strictObject({
         verdict: z.union([z.literal("accepted"), z.string().startsWith("PLAN_RATING_")]),
       })
     )
-    .min(1),
+    .min(1)
+    .refine((cases) => cases.some((c) => c.verdict === "accepted"), {
+      error: "the cases hold no rating the daemon accepted",
+    })
+    .refine((cases) => cases.some((c) => c.verdict !== "accepted"), {
+      error: "the cases hold no rating the daemon refused",
+    })
+    .refine(
+      (cases) => ["\u0085", "\uFEFF"].every((blank) => cases.some((c) => c.planReason === blank)),
+      { error: "the cases hold no reason of U+0085 alone, or none of U+FEFF alone" }
+    ),
 });

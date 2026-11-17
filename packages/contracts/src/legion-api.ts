@@ -1617,16 +1617,35 @@ export const LEGION_PLAN_RATING_MOST = 5;
  * retro takes one to 2,000. */
 export const LEGION_PLAN_REASON_MAX = 2000;
 
-/** `planReason`: why the retro rated the plan as it did, one to `LEGION_PLAN_REASON_MAX`
- * characters that are not all blank, blank as the daemon's strings.TrimSpace reads it
- * (`goBlankPattern`), which is not JavaScript's trim. A string's `length` counts UTF-16 units, so
- * the bound counts code points. */
-const legionPlanReason = z
-  .string()
-  .refine((reason) => !goBlankPattern.test(reason), { message: "planReason says why" })
-  .refine((reason) => [...reason].length <= LEGION_PLAN_REASON_MAX, {
-    message: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
-  });
+/** A plan rating's scale on `rating`, a number schema of the reader's: a whole number from
+ * `LEGION_PLAN_RATING_LEAST` to `LEGION_PLAN_RATING_MOST`, each check refused with `refusal` where
+ * one is given. The request schema below and the `legion` tool's `plan_rating` both build theirs
+ * with it, so the scale is written once. */
+export function legionPlanRatingScale(rating: z.ZodNumber, refusal?: string): z.ZodNumber {
+  const error = refusal === undefined ? undefined : { error: refusal };
+  return rating.int(error).min(LEGION_PLAN_RATING_LEAST, error).max(LEGION_PLAN_RATING_MOST, error);
+}
+
+/** A plan rating's reason on `reason`, a string schema of the reader's: not blank as the daemon's
+ * strings.TrimSpace reads it (`goBlankPattern`), which is not JavaScript's trim, and at most
+ * `LEGION_PLAN_REASON_MAX` characters counted as code points, as the daemon counts them, never as
+ * a string's UTF-16 `length`. A blank reason is refused with `refusals.blank` alone, a longer one
+ * with `refusals.long`. The request schema below and the `legion` tool's `plan_reason` both build
+ * theirs with it, so the two rules are written once. */
+export function legionPlanReasonRules(
+  reason: z.ZodString,
+  refusals: { readonly blank: string; readonly long: string }
+): z.ZodString {
+  return reason
+    .refine((text) => !goBlankPattern.test(text), { error: refusals.blank, abort: true })
+    .refine((text) => [...text].length <= LEGION_PLAN_REASON_MAX, { error: refusals.long });
+}
+
+/** `planReason`: why the retro rated the plan as it did (`legionPlanReasonRules`). */
+const legionPlanReason = legionPlanReasonRules(z.string(), {
+  blank: "planReason says why",
+  long: `planReason holds at most ${LEGION_PLAN_REASON_MAX} characters`,
+});
 
 /** `api.HandoffCompleteRequest`, the observation one worker reports to the workflow: a phase
  * completion, or the checking role's report on a look of its closed issue's production check.
@@ -1668,12 +1687,7 @@ export const LegionHandoffCompleteRequest = z
     handoffId: nonEmptyString.optional(),
     handoffVersion: z.number().int().positive().optional(),
     wakeAt: LegionInstant.optional(),
-    planRating: z
-      .number()
-      .int()
-      .min(LEGION_PLAN_RATING_LEAST)
-      .max(LEGION_PLAN_RATING_MOST)
-      .optional(),
+    planRating: legionPlanRatingScale(z.number()).optional(),
     planReason: legionPlanReason.optional(),
   })
   .refine((request) => (request.planRating === undefined) === (request.planReason === undefined), {
