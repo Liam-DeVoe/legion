@@ -108,7 +108,7 @@ Each `bun install --frozen-lockfile` step is named for the command it runs, whic
 Two jobs below prove all of it against the fault it answers, rather than by reading:
 download-retry runs each of those sites — a curl of a release asset, `mise install`, `bun add`, `bun install --frozen-lockfile`, `go mod download`, `bunx playwright install` and a `gh api` read
 — behind .github/scripts/ci-fault-proxy.py, once with the proxy refusing for 60 s and then serving, where every site must recover, and once with it accepting the connection and sending nothing, where every site must end at its own bound instead of hanging;
-download-retry-images does the same for the inline retries of the three Dockerfiles.
+download-retry-images does the same for the inline retries of the four Dockerfiles.
 Their filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose own downloads run under that fault, and nothing those downloads read:
 a manifest, a lockfile, a pin or a module file moves what comes down the wire, not whether it survives a faulting host, so a change that touches none of those files selects neither job.
 So the download_retry filter holds no bun_install and no go_workspace anchor, no pin and no worker Dockerfile:
@@ -472,7 +472,7 @@ it differed by how many of the two ladders the drive ran.
 
 ## The download-retry-images job's rig
 
-The same recovering fault, inside the three Dockerfiles whose network RUN lines carry the inline retry (dispatch://INFRA-1545, T7, check #23856666).
+The same recovering fault, inside the four Dockerfiles whose network RUN lines carry the inline retry (dispatch://INFRA-1545, T7, check #23856666).
 A build reads none of the runner's environment, so each one is passed the proxy as http_proxy and https_proxy build arguments:
 those are Docker's own predefined build arguments, which BuildKit sets as environment variables of every RUN and keeps out of the cache key, so no Dockerfile names a proxy anywhere.
 
@@ -485,11 +485,11 @@ Each faulted build is --no-cache, since a reused layer fetches nothing and would
 nothing is pushed, and no registry credential is held.
 
 The builds are run through .github/scripts/download-retry-proof.sh rather than written into these steps, because .github/scripts/check-image-trigger-paths.sh refuses any image build it can read in a run step and cannot be told otherwise, and docker/build-push-action
-— the one form it reads — would hold this job's trigger paths to everything the three builds read, which is the wide filter this narrow gate exists to avoid.
-That check still proves the triggers of the builds that publish: worker-image.yaml's and the envoy-smoke job's.
+— the one form it reads — would hold this job's trigger paths to everything the four builds read, which is the wide filter this narrow gate exists to avoid.
+That check still proves the triggers of the builds that publish: worker-image.yaml's, browser-image.yaml's and the envoy-smoke job's.
 
-The filter names the three Dockerfiles, the retry, the fault and the rig, and no source file of anything the builds compile:
-worker-image and envoy-smoke prove the builds, this job proves the retry inside them, and no source file changes that behaviour.
+The filter names the four Dockerfiles, the retry, the fault and the rig, and no source file of anything the builds compile:
+worker-image, browser-image and envoy-smoke prove the builds, this job proves the retry inside them, and no source file changes that behaviour.
 
 Each build's proxy is probed before the build runs, in the step that starts it, as the download-retry job's sites are:
 a request to a host the fault names must be refused and one to that host under the reserved `.invalid` suffix must be answered by the proxy itself, and the step fails naming which reading was wrong.

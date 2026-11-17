@@ -3199,7 +3199,7 @@ GATES = [
 
     # The two jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
     # download-retry runs each real site under .github/scripts/ci-fault-proxy.py, and
-    # download-retry-images builds the three Dockerfiles under the same fault. Each gate declares
+    # download-retry-images builds the four Dockerfiles under the same fault. Each gate declares
     # the machinery alone — the retry loop, the fault, the rig, and the composite actions or
     # Dockerfiles whose own downloads run under it — and nothing those downloads read. A
     # manifest, a lockfile, a pin or a module file moves the bytes that come down the wire; what
@@ -3207,8 +3207,8 @@ GATES = [
     # change. So this gate declares none of them, and the filter beside it names none either:
     # between them the bun install set, the Go workspace and the two tool pins made an ordinary
     # dependency bump select a job of about two hours. The job that proves a version is the one
-    # that builds with it — worker-image and envoy-smoke for the images, every Bun and Go job for
-    # the rest.
+    # that builds with it — worker-image, browser-image and envoy-smoke for the images, every Bun
+    # and Go job for the rest.
     gate("download_retry", "download-retry", reads=reads(
         (CI_RETRY, f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
                    f"source it and call retry_fetch"),
@@ -3227,6 +3227,7 @@ GATES = [
         (f"{ENVOY}/docker/Dockerfile", f"{at(IMAGES_JOB, 'Build the Envoy image under the recovering fault')} builds it, and "
                                        f"{at(IMAGES_JOB, 'Build the smoke image the held-port wrapper takes as its base, with no proxy')} builds it unfaulted first"),
         (f"{ENVOY}/infra/host/heldportwrapper/Dockerfile", f"{at(IMAGES_JOB, 'Build the held-port image under the recovering fault')} builds it"),
+        (".github/docker/browser.Dockerfile", f"{at(IMAGES_JOB, 'Build the browser image under the recovering fault')} builds it"),
         (FAULT_PROXY, f"{at(IMAGES_JOB, 'Start the recovering fault for the worker image build')} runs it, bound to the docker bridge"),
         (RETRY_RIG, f"{at(IMAGES_JOB, IMAGES_WORKER_STEP)} builds through it"),
     )),

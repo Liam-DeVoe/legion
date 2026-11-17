@@ -23,12 +23,12 @@
 #       The build is here, in a script, rather than in the job's `run:` because
 #       .github/scripts/check-image-trigger-paths.sh refuses any image build it can read in a
 #       run step and cannot be told otherwise, and docker/build-push-action — the one form it
-#       reads — would then hold this job's trigger paths to everything the three builds read,
+#       reads — would then hold this job's trigger paths to everything the four builds read,
 #       which is the wide filter the narrow gating exists to avoid. Nothing here pushes, logs in
 #       to a registry or tags for one: every build is `--load`, into the runner's own daemon,
-#       and the runner is discarded. worker-image.yaml and ci.yaml's envoy-smoke job are where
-#       these images are built for real, through that action, and their triggers are what
-#       check-image-trigger-paths.sh proves.
+#       and the runner is discarded. worker-image.yaml, browser-image.yaml and ci.yaml's
+#       envoy-smoke job are where these images are built for real, through that action, and
+#       their triggers are what check-image-trigger-paths.sh proves.
 #
 #   probe <name>
 #       Two requests through that proxy, made before the site's own fetch and printed as the

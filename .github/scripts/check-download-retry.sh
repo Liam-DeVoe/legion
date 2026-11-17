@@ -44,18 +44,19 @@
 #      attempts against the step's budget, so a curl's floor and its arithmetic are one
 #      computation rather than two that can drift apart.
 #   3. inside a Dockerfile, one canonical inline `retry()` definition, the same text in every
-#      network `RUN` of the three files. A Dockerfile carries the loop inline because it can hold
+#      network `RUN` of the four files. A Dockerfile carries the loop inline because it can hold
 #      no new file above a layer whose order its own comments set on purpose, and a COPY of a
 #      helper there would throw that layer's cache away on every edit of the helper.
 #
 # WHAT IT READS: every file under .github/workflows/, every action.yml (or action.yaml) under
-# .github/actions/, every *.sh under .github/scripts/ but the `.test.sh` harnesses, and the three
+# .github/actions/, every *.sh under .github/scripts/ but the `.test.sh` harnesses, and the four
 # Dockerfiles a CI job builds (DOCKERFILES below; a missing one fails this check, so a rename is
-# seen). Files are discovered by walking the tree, not by asking git, so an unsnapshotted change
-# cannot read green locally. Workflows and actions are parsed as YAML, never grepped, and only a
-# step's `run:` is read. This check reads its own file like any other script, which is why the
-# comments here write no heredoc operator of their own: an operator no line of this file closes
-# would blank every line after it for this file's own reading.
+# seen, and a step building a Dockerfile it does not name is refused, so a fifth is seen too:
+# rule 10). Files are discovered by walking the tree, not by asking git, so an unsnapshotted
+# change cannot read green locally. Workflows and actions are parsed as YAML, never grepped, and
+# only a step's `run:` is read for its fetches. This check reads its own file like any other
+# script, which is why the comments here write no heredoc operator of their own: an operator no
+# line of this file closes would blank every line after it for this file's own reading.
 #
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
@@ -322,6 +323,11 @@
 #      retry loop of its own text is refused. A Dockerfile is judged against the floor alone:
 #      rule 2 does not read one, because the canonical definition is itself a loop and because a
 #      `RUN` iterating a list is how a Dockerfile writes what a script would write as a function.
+#      A `RUN` is read as Docker reads it: a comment line or a blank line inside its continuation
+#      is dropped and the `RUN` reads on, so a fetch written below a comment is a fetch of that
+#      `RUN` (dispatch://INFRA-1545, round 37). What holds the key of the step building a
+#      Dockerfile is rule 10: above the longest single ladder of its RUN lines, since a build
+#      meets a fault window through one fetch and pays one ladder for it.
 #   4. An attempt with no time bound is refused: a curl with no `--max-time`, or a retried fetch
 #      of any other verb that no `timeout` and no helper bounds. A bound of 0 is none, as
 #      timeout(1) and curl read it: `timeout 0` and `--max-time 0` set no limit
@@ -639,6 +645,42 @@
 #      sentence is appended to that site's own refusal, so a reader counts one refused site
 #      rather than two annotations on one line of one file.
 #
+#  10. A step that builds a Dockerfile names one of DOCKERFILES. Two shapes are read, in a
+#      workflow step and in a composite action's step alike: a `docker/build-push-action` step's
+#      `file:`, and a `docker build` or `docker buildx build` in a step's `run:`, whose file is
+#      the word after `--file` or `-f` or the value of a `--file=`. A file DOCKERFILES does not
+#      name is refused, naming it and saying to add it there: this check reads no Dockerfile it
+#      does not name, so that file's RUN lines are held to nothing, and that is how
+#      .github/docker/browser.Dockerfile came to be built by CI with a bare curl and a bare
+#      `apt-get update` while DOCKERFILES named three files (dispatch://INFRA-1545, round 37). A
+#      build whose file this check cannot read as a path is refused by name too, since it could
+#      be building any file at all: a `file:` or a `--file` written as an expression or a
+#      variable, and a build naming no file, which builds its context's own `Dockerfile`. A path
+#      is read from the repository's root, as every build of this tree writes it. Not read: a
+#      build written inside a script a step runs (download-retry-proof.sh's `docker buildx build
+#      --file "$file"`), a `docker` command with a global option before its subcommand or in any
+#      other spelling, and a `working-directory:` the step runs in.
+#
+#      And the key that holds such a build strictly exceeds the longest single ladder of the
+#      Dockerfile it builds: the step's own `timeout-minutes` where it writes one, and its job's,
+#      which is GitHub's 360 minutes where the job writes none. A ladder is one `retry` call's
+#      5 x <bound> + 150 s, or one curl's own ladder as rule 1 computes it, each read once
+#      whatever loop or function runs it; a key at or under it is refused naming both figures.
+#      The reasoning, which is why one ladder and not the sum of them (dispatch://INFRA-1545,
+#      round 37): a Dockerfile build runs its fetches one after another, so a fault window on
+#      one host is paid once, through the first fetch that meets it, and every later fetch
+#      meets a healthy host. Two hosts down together are still one window. A fetch that
+#      exhausts its ladder fails the build whatever the key is, so a key above one ladder is
+#      what lets that fetch's last attempt name itself rather than GitHub's bare timeout line
+#      cutting it. What it does not cover:
+#      two separate fault windows in one build, on two hosts at different times, each needing a ladder of its own.
+#      The comparison is the one half a check can make: the build's measured duration is no
+#      figure this check can read, so the price comment above the key carries both terms, the
+#      measured build and the ladder, and the key is priced at their sum. This is no change to
+#      rule 8, which still sums every ladder of a workflow step's own calls and charges a
+#      Dockerfile's to none. A composite action's step is read for its file and not for a key,
+#      since GitHub takes none there.
+#
 # THE EXCEPTIONS, which are R2's four, one of them gone with the site it named, and no others.
 # Each is a site this repository refuses to
 # retry on purpose. Each one written out as an entry of EXEMPTIONS below must match something: an
@@ -648,14 +690,14 @@
 #   a. A `ghcr.io` pull of a package this repository publishes. A failed pull there is a fault of
 #      this repository's own package, and it must be seen rather than retried over. R2 named two
 #      sites, .github/actions/pull-test-images and the `envoy-client` job's pull; T7's
-#      `download-retry-images` job added a third, the pull of the base images of the three
+#      `download-retry-images` job added a third, the pull of the base images of the four
 #      Dockerfiles, which is the same package and the same reasoning. The browser lane's visual
 #      job holds two more, its pulls of the pinned Playwright copy and of its stack's Postgres
 #      copy, each made before its timed browser step (dispatch://INFRA-1545, round 37).
 #   b. A `uses:` reference, and anything inside a third-party action. This needs no entry: only a
-#      step's `run:` is read, and no third-party action's source is in this tree. A composite
-#      action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun runtime with a
-#      restored cache rather than with a retry.
+#      step's `run:` is read for its fetches, and no third-party action's source is in this tree.
+#      A composite action cannot wrap a `uses:` step in a loop, which is why R4 answers the Bun
+#      runtime with a restored cache rather than with a retry.
 #   c. Gone with its site, and the letter is kept so that R2's own lettering still reads. It was
 #      the apt phase of .github/scripts/playwright-install.sh, which dispatch://INFRA-1443
 #      owned: that phase had an `attempts()` loop of its own, which switched origin after two
@@ -807,10 +849,13 @@ def _mapping_with_line(loader, node):
 
 LineLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_with_line)
 
-# The three Dockerfiles a CI job builds. Named rather than discovered: a Dockerfile elsewhere in
+# The four Dockerfiles a CI job builds. Named rather than discovered: a Dockerfile elsewhere in
 # the tree is not built by CI, and a rename of one of these must fail here rather than pass by
-# matching nothing.
+# matching nothing. A step's build of a Dockerfile no entry here names is refused (rule 10, which
+# says the shapes it reads): the fourth, the browser image's, came with main's #2938 while this
+# list named three, and nothing said so (dispatch://INFRA-1545, round 37).
 DOCKERFILES = (
+    ".github/docker/browser.Dockerfile",
     "packages/daemon/docker/worker.Dockerfile",
     "packages/envoy/docker/Dockerfile",
     "packages/envoy/infra/host/heldportwrapper/Dockerfile",
@@ -2812,7 +2857,7 @@ EXEMPTIONS = [
     Exemption(".github/workflows/ci-job-envoy-client.yaml", "envoy-client",
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci-job-download-retry-images.yaml", "download-retry-images",
-              "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
+              "Pull every base image the four builds read", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
               "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/dispatch-browser.yaml", "visual",
@@ -3158,7 +3203,7 @@ scripts = [
 for dockerfile in DOCKERFILES:
     if dockerfile not in files:
         problem(SELF, 1,
-                f"{dockerfile} is one of the three Dockerfiles a CI job builds and this check "
+                f"{dockerfile} is one of the Dockerfiles a CI job builds and this check "
                 "reads, and the tree does not hold it. Point DOCKERFILES at where it moved, or "
                 "drop it if CI no longer builds it.")
 
@@ -3238,6 +3283,10 @@ unread_shapes: list[tuple[str, int, str, str, bool, set[str]]] = []
 # body, loops, sites, recognised calls), the step's Budget or None).
 body_reads: list[tuple[str, str, tuple, "Budget | None"]] = []
 script_files = set(scripts)
+# Each Dockerfile a workflow step builds in one of rule 10's shapes and DOCKERFILES names, as
+# (workflow, what a refusal calls the step, the Dockerfile, the step, its job's name, the job),
+# for the key that holds the build once the Dockerfiles are read.
+dockerfile_built: list[tuple[str, str, str, Mapping, str | None, object]] = []
 
 
 def local_action(uses: object) -> str | None:
@@ -3303,6 +3352,78 @@ def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mappin
     return found
 
 
+# Rule 10's two shapes of a build: the action, and the two `docker` subcommands, each written as
+# the words after `docker` that name it.
+BUILD_ACTION = "docker/build-push-action"
+DOCKER_BUILDS = (("build",), ("buildx", "build"))
+
+
+def dockerfile_builds(step: Mapping,
+                      commands: list[Command]) -> list[tuple[int, str, str | None]]:
+    """Each Dockerfile this step builds in one of rule 10's two shapes, as the line naming it,
+    the shape, and what the step writes for the file, None where it writes none. `commands` are
+    the simple commands of the step's `run:` as sites_of read them, so a GitHub expression in
+    them reads as EXPR there."""
+    found: list[tuple[int, str, str | None]] = []
+    uses = step.get("uses")
+    if isinstance(uses, str) and uses.split("@", 1)[0] == BUILD_ACTION:
+        options = step.get("with")
+        written = options.get("file") if isinstance(options, Mapping) else None
+        line = (options.lines.get("file", step.lines.get("uses", 0))
+                if isinstance(options, Mapping) else step.lines.get("uses", 0))
+        found.append((line, f"{BUILD_ACTION}'s `file:`",
+                      None if written is None else str(written)))
+    for command in commands:
+        words = reduce_words(command.words)[0]
+        if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] != "docker":
+            continue
+        shape = next((shape for shape in DOCKER_BUILDS
+                      if tuple(words[1:1 + len(shape)]) == shape), None)
+        if shape is None:
+            continue
+        written = None
+        rest = words[1 + len(shape):]
+        for at, word in enumerate(rest):
+            if word in ("--file", "-f"):
+                written = rest[at + 1] if at + 1 < len(rest) else ""
+            elif word.startswith("--file="):
+                written = word[len("--file="):]
+        found.append((command.line, f"`docker {' '.join(shape)}`'s `--file`", written))
+    return found
+
+
+def refuse_unnamed_builds(path: str, who: str, step: Mapping,
+                          commands: list[Command]) -> list[str]:
+    """Rule 10: each Dockerfile this step builds is one of DOCKERFILES, and is written as a path
+    this check can read. Returns the ones that are, for the key that holds the build."""
+    named = []
+    for line, shape, written in dockerfile_builds(step, commands):
+        readable = (written is not None and "EXPR" not in written
+                    and not written.startswith("-") and LITERAL_WORD.fullmatch(written))
+        if not readable:
+            shown = ("no file at all, so it builds its context's own `Dockerfile`"
+                     if written is None else f"`{written}`")
+            problem(path, line,
+                    f"{who} builds a Dockerfile ({shape}) and names it as {shown}, which this "
+                    "check cannot read as a path, so it cannot tell whether that file is one of "
+                    "DOCKERFILES, and a Dockerfile this check does not name has its RUN lines "
+                    "held to nothing (rule 10; dispatch://INFRA-1545, round 37). Write the "
+                    "Dockerfile's own path, from the repository's root, and add it to DOCKERFILES "
+                    "in .github/scripts/check-download-retry.sh if it is not there.")
+            continue
+        target = os.path.normpath(written)
+        if target in DOCKERFILES:
+            named.append(target)
+            continue
+        problem(path, line,
+                f"{who} builds {target} ({shape}), and DOCKERFILES does not name it, so this "
+                "check never reads its RUN lines and holds the downloads in them to nothing: that "
+                "is how .github/docker/browser.Dockerfile came to be built by CI with a bare curl "
+                "and a bare `apt-get update` (rule 10; dispatch://INFRA-1545, round 37). Add "
+                f"{target} to DOCKERFILES in .github/scripts/check-download-retry.sh.")
+    return named
+
+
 # The 1-based lines of each workflow's job ids, by file. The priced-comment clause of rule 8 stops
 # a block's reach at another job's id, so a step comment at the end of one job never prices the
 # next job's key.
@@ -3334,6 +3455,9 @@ for path in workflows + actions:
         called: list[Occurrence] = []
         blocked: list[Uncounted] = []
         body_read = None
+        commands: list[Command] = []
+        who = (f"step '{name}' of job '{job}'" if job is not None
+               else f"step '{name}' of {path}")
         if isinstance(step.get("run"), str):
             # The line the body's first line is written on: a block scalar's text starts on the
             # line after its `run:` key, and a plain scalar's on the key's own line. Every line
@@ -3348,11 +3472,10 @@ for path in workflows + actions:
                 first_line += 1
             found, loops_read = sites_of(path, step["run"], first_line, name,
                                          sets_pipefail(shell))
+            commands = loops_read.commands
             occurrences = occurrences_of(step["run"], first_line, loops_read)
             called = recognised(occurrences)
             blocked = uncounted_of(found) + blocked_calls(path, called)
-            who = (f"step '{name}' of job '{job}'" if job is not None
-                   else f"step '{name}' of {path}")
             unread_calls += [(path, occurrence.shown, who, occurrence)
                              for occurrence in occurrences if occurrence.kind == CALL_UNREAD]
             unread_shapes.extend(
@@ -3382,6 +3505,9 @@ for path in workflows + actions:
             # A `uses:` of a local composite action runs that action once, as a step's shell
             # runs a script.
             called.append(Occurrence(uses, CALL_RUN, step.lines.get("uses", 0)))
+        for target in refuse_unnamed_builds(path, who, step, commands):
+            if path not in action_files:
+                dockerfile_built.append((path, who, target, step, job, holder))
         if path in action_files:
             action_cost[path] = added(action_cost.get(path, 0), cost)
             action_shells.setdefault(path, []).append(called)
@@ -3478,8 +3604,14 @@ for path in scripts:
 
 def instructions(text: str) -> list[tuple[int, str, str]]:
     """Each instruction of a Dockerfile as (line, keyword, the text after the keyword) with its
-    backslash continuations and the comment lines between them kept, so a scan of that text reads
-    the same lines the build runs."""
+    backslash continuations joined as Docker joins them, so a scan of that text reads the lines
+    the build runs. A comment line or a blank line inside a continuation is no part of the
+    instruction: Docker drops it and reads on to the next line. Each is kept as a lone backslash,
+    which continues the text the same way and leaves every later line on its own number. Until
+    round 37 such a line ended the instruction here, so a RUN writing a comment after its first
+    line was read no further than that comment: .github/docker/browser.Dockerfile, added to
+    DOCKERFILES alone, read as a RUN with no fetch in it, its curl and its apt-get each written
+    below such a comment (dispatch://INFRA-1545, round 37)."""
     found = []
     lines = text.split("\n")
     index = 0
@@ -3493,7 +3625,8 @@ def instructions(text: str) -> list[tuple[int, str, str]]:
         body = [line]
         while body[-1].rstrip().endswith("\\") and index + 1 < len(lines):
             index += 1
-            body.append(lines[index])
+            following = lines[index].strip()
+            body.append("\\" if not following or following.startswith("#") else lines[index])
         index += 1
         whole = "\n".join(body)
         keyword, _, rest = whole.partition(" ")
@@ -3523,14 +3656,57 @@ for path in DOCKERFILES:
         opens = flat.startswith(CANONICAL)
         if "retry()" in flat and not opens:
             problem(path, line,
-                    "this RUN defines a retry loop of its own text. Every network RUN of the three "
-                    "Dockerfiles opens with one canonical definition, byte for byte, so a reader "
-                    "sees one loop and not a family of them. The text is in "
+                    "this RUN defines a retry loop of its own text. Every network RUN of the "
+                    "Dockerfiles this check reads opens with one canonical definition, byte for "
+                    "byte, so a reader sees one loop and not a family of them. The text is in "
                     ".github/scripts/check-download-retry.sh's CANONICAL.")
         elif not opens and any(site.retry == "retry" for site in found):
             problem(path, line,
                     "this RUN calls `retry` and does not open with the canonical definition of it. "
                     "The text is in .github/scripts/check-download-retry.sh's CANONICAL.")
+
+# Rule 10, the key that holds a build: above the longest single ladder of the Dockerfile it
+# builds. A build runs its fetches one after another, so a fault window is paid once, through
+# the first fetch that meets it, and one ladder is what the build can wait for above its measured
+# duration, which no figure here reads; the header's rule 10 says what this does not cover.
+def ladder_of(site: Site) -> int:
+    """One ladder of a Dockerfile's fetch, read once whatever runs it: a `retry` call's
+    5 x <bound> + 150 s, or the ladder of a curl making its own attempts."""
+    if site.retry == "retry":
+        return ATTEMPT_FLOOR * site.bound + HELPER_WAIT
+    return one_call(site) or 0
+
+
+longest_ladder: dict[str, tuple[int, Site]] = {}
+for site in sites:
+    if site.path in DOCKERFILES and (site.path not in longest_ladder
+                                     or ladder_of(site) > longest_ladder[site.path][0]):
+        longest_ladder[site.path] = (ladder_of(site), site)
+held_keys: set[tuple[str, int]] = set()
+for path, who, target, step, job, holder in dockerfile_built:
+    if target not in longest_ladder or not isinstance(holder, Mapping):
+        continue
+    ladder, longest = longest_ladder[target]
+    keys = []
+    if written_minutes(step) is not None:
+        keys.append((written_minutes(step), step.lines["timeout-minutes"], who, "it"))
+    keys.append((written_minutes(holder) or JOB_DEFAULT_MINUTES,
+                 holder.lines.get("timeout-minutes", min(holder.lines.values(), default=0)),
+                 f"job '{job}'", who))
+    for minutes, key_line, owner, builder in keys:
+        if 60 * minutes > ladder or (path, key_line) in held_keys:
+            continue
+        held_keys.add((path, key_line))
+        problem(path, key_line,
+                f"{owner} carries `timeout-minutes: {minutes}`, {60 * minutes} s, and {builder} "
+                f"builds {target}, whose longest single ladder is {ladder} s, the "
+                f"`{longest.verb}` at {target}:{longest.line}. A Dockerfile build runs its "
+                "fetches one after another, so a fault window is paid once, through the first "
+                "fetch that meets it, and that one ladder is what the build can wait for above "
+                "its measured duration: a key at or under it cuts that fetch before its last "
+                "attempt can name it (rule 10; dispatch://INFRA-1545, round 37). Price the key "
+                f"as the build's measured duration plus {ladder} s, both terms in the comment "
+                "above it, and write the whole minute strictly above their sum.")
 
 # ---------------------------------------------------------------- the verdict
 

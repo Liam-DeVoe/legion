@@ -258,16 +258,24 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     # Budget (the Budgets note of .github/ci-budgets.md): 4800 s, the 80 minutes
-    # this job carried, plus its slowest retried step alone — `Check this job holds no
-    # credential (tripwire)`, which runs .github/scripts/release-push.sh and so holds that
-    # script's leak-guard fetch at every one of its call sites, 6 call sites of one 450 s
+    # this job carried, which holds its builds (over both legs of this workflow's 15 runs from
+    # run 43834530574 to run 43983059481 the smoke build took 134 to 234 s and the publish
+    # build 7 to 11 s), plus its slowest retried step alone — the smoke image's build, priced
+    # at the longest single ladder of the Dockerfile it builds, since a build runs its fetches
+    # one after another and pays a fault window once, through the first fetch that meets it
+    # (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the `go mod
+    # download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each. The
+    # publish build after it reuses that build's layers from the same builder, so its RUN lines
+    # fetch nothing again. That is above `Check this job
+    # holds no credential (tripwire)`, which runs .github/scripts/release-push.sh and so holds
+    # that script's leak-guard fetch at every one of its call sites, 6 call sites of one 450 s
     # fetch = 2700 s, as the `build` job of this file words it, above setup-bun's two
     # `ci_tools_fetch` calls at 2562 s and above the Go module download and the workspace
-    # install at 5 x 180 + 150 = 1050 s each. 4800 + 2700 = 7500 s -> 126 min.
+    # install at 5 x 180 + 150 = 1050 s each. 4800 + 3150 = 7950 s -> 133 min.
     # THE REVIEWER'S EIGHT DID NOT HOLD THIS ONE: rule 8's job-derivation clause found it,
     # because it reads the step arithmetic this check computes rather than the figures a
     # comment names (dispatch://INFRA-1545, round 28).
-    timeout-minutes: 126
+    timeout-minutes: 133
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
     permissions:
       contents: read

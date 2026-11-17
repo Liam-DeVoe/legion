@@ -358,12 +358,13 @@ IMAGE_FROM = {
         "above, and this check reads the references in them"
     ),
     (".github/workflows/ci-job-download-retry-images.yaml", "image"): (
-        "the download-retry-images job's \"Pull every base image the three builds read\" step "
+        "the download-retry-images job's \"Pull every base image the four builds read\" step "
         "reads one name a line from the file it wrote immediately above, which holds every FROM "
-        "of packages/daemon/docker/worker.Dockerfile, packages/envoy/docker/Dockerfile and "
-        "packages/envoy/infra/host/heldportwrapper/Dockerfile that names an image rather than a "
-        "build argument or an earlier stage; all three files are in the reach above, and this "
-        "check reads the references in them"
+        "of packages/daemon/docker/worker.Dockerfile, packages/envoy/docker/Dockerfile, "
+        "packages/envoy/infra/host/heldportwrapper/Dockerfile and "
+        ".github/docker/browser.Dockerfile that names an image rather than a build argument or an "
+        "earlier stage; all four files are in the reach above, and this check reads the "
+        "references in them"
     ),
     (".github/workflows/ci-job-envoy-smoke.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (the job sets it to "

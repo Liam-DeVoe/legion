@@ -3888,16 +3888,17 @@ jobs:
               - '.github/actions/install-changie/**'
               - '.github/actions/install-claude-code/**'
               - '.github/actions/install-omp/**'
-            # ci.yaml's download-retry-images job: the three Dockerfiles whose network RUN lines
+            # ci.yaml's download-retry-images job: the four Dockerfiles whose network RUN lines
             # carry the inline retry, the fault and the rig. Not what the builds compile:
-            # worker-image and envoy-smoke prove the builds. Not ci-retry.sh either: each
-            # Dockerfile carries its own inline copy of the loop.
+            # worker-image, envoy-smoke and browser-image prove the builds. Not ci-retry.sh
+            # either: each Dockerfile carries its own inline copy of the loop.
             download_retry_images:
               - *ci_router
               - '.github/workflows/ci-job-download-retry-images.yaml'
               - 'packages/daemon/docker/worker.Dockerfile'
               - 'packages/envoy/docker/Dockerfile'
               - 'packages/envoy/infra/host/heldportwrapper/Dockerfile'
+              - '.github/docker/browser.Dockerfile'
               - '.github/scripts/ci-fault-proxy.py'
               - '.github/scripts/download-retry-proof.sh'
 
@@ -5173,7 +5174,7 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The same recovering fault, inside the three Dockerfiles whose network RUN lines carry the
+  # The same recovering fault, inside the four Dockerfiles whose network RUN lines carry the
   # inline retry; the steps and their budget are in the called file, and the rig is
   # .github/ci-budgets.md, "The download-retry-images job's rig".
   download-retry-images:

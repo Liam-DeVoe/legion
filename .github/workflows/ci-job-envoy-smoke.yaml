@@ -33,12 +33,18 @@ jobs:
   envoy-smoke:
     runs-on: ubuntu-24.04
     # Budget (ci-budgets.md's Budgets note): 1200 s, the 20 minutes this job carried, above its
-    # 691 s measured maximum, plus its slowest retried step alone — the ci-ok report, 2160 s
-    # (ci-budgets.md's Budgets note, "The ci-ok report"), above the Go module download, whose
-    # two calls for packages/envoy and packages/envoy/infra are 2 x (5 x 180 + 150) = 2100 s,
-    # install-pulumi's 1281 s and the docker provider plugin's 1281 s. 1200 + 2160 = 3360 s, a
-    # whole number of minutes, so the budget is the next one strictly above it -> 57 min.
-    timeout-minutes: 57
+    # 691 s measured maximum, which holds its two image builds (203 s and 11 s in job
+    # 133743044741), plus its slowest retried step alone. That is the listener image's build
+    # step, priced at the longest single ladder of the Dockerfile it builds, since a build runs
+    # its fetches one after another and pays a fault window once, through the first fetch that
+    # meets it (.github/scripts/check-download-retry.sh, rule 10): the `bun install` and the
+    # `go mod download` of packages/envoy/docker/Dockerfile, at 5 x 600 + 150 = 3150 s each;
+    # the held-port image's `go mod download` is the same 3150 s. Both are above the ci-ok
+    # report, 2160 s (ci-budgets.md's Budgets note, "The ci-ok report"), the Go module
+    # download, whose two calls for packages/envoy and packages/envoy/infra are
+    # 2 x (5 x 180 + 150) = 2100 s, install-pulumi's 1281 s and the docker provider plugin's
+    # 1281 s. 1200 + 3150 = 4350 s -> 73 min.
+    timeout-minutes: 73
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.

@@ -13,7 +13,7 @@
 # same baseline: every exception that still has a site, each at the file, job and step name the
 # check's exception
 # list holds, the loops its DECLARED_LOOPS list declares the arithmetic of, each at the file,
-# step and verb that list holds, and the three Dockerfiles it reads. Both lists fail the check
+# step and verb that list holds, and the four Dockerfiles it reads. Both lists fail the check
 # when an entry matches nothing, which is why the baseline carries one site for each. A case
 # that proves a refusal adds a workflow, an action or a Dockerfile of its own beside that
 # baseline, so a refusal is the case's own and not a hole in the baseline, and the baseline's
@@ -37,8 +37,8 @@ source "$script_dir/test-lib.sh"
 PIN=fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 DIGEST=sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
 
-# The canonical inline retry every network RUN of the three Dockerfiles opens with. A fixture
-# that means to pass writes this text; a fixture that means to be refused writes another.
+# The canonical inline retry every network RUN of the Dockerfiles the gate reads opens with. A
+# fixture that means to pass writes this text; a fixture that means to be refused writes another.
 read -r -d '' CANONICAL <<'TEXT' || true
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
@@ -58,12 +58,14 @@ fixture() {
     return 1
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" \
-    "$root/.github/actions/pull-test-images" \
+    "$root/.github/actions/pull-test-images" "$root/.github/docker" \
     "$root/packages/daemon/docker" "$root/packages/envoy/docker" \
     "$root/packages/envoy/infra/host/heldportwrapper"
   ln -s "$check_script" "$root/.github/scripts/check-download-retry.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
+  # The four Dockerfiles DOCKERFILES names, each of which the check refuses a tree for lacking.
   for dockerfile in \
+    "$root/.github/docker/browser.Dockerfile" \
     "$root/packages/daemon/docker/worker.Dockerfile" \
     "$root/packages/envoy/docker/Dockerfile" \
     "$root/packages/envoy/infra/host/heldportwrapper/Dockerfile"; do
@@ -110,7 +112,7 @@ jobs:
   download-retry-images:
     runs-on: ubuntu-24.04
     steps:
-      - name: Pull every base image the three builds read
+      - name: Pull every base image the four builds read
         run: |
           for image in \$images; do docker pull "\$image"; done
 YAML
@@ -759,6 +761,51 @@ DOCKER
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# A comment line or a blank line inside a RUN's continuation is dropped by Docker, which reads
+# on to the next line. Until round 37 the gate ended the RUN there, so a fetch below such a
+# comment was no site at all: .github/docker/browser.Dockerfile, read that way, was a RUN with no
+# fetch in it (dispatch://INFRA-1545, round 37).
+echo "case: a Dockerfile RUN's bare fetches written below comment and blank lines of its continuation are refused"
+root=$(fixture dockerfile-comment-continuation)
+cat > "$root/packages/daemon/docker/worker.Dockerfile" <<'DOCKER'
+FROM debian:trixie-slim AS build
+RUN set -eu; \
+    # The key, fetched bare.
+    curl -fsSL -o /tmp/key.asc https://example.com/key.asc; \
+    # The index, read bare below a blank line.
+
+    apt-get update -o APT::Update::Error-Mode=any
+DOCKER
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the curl below the first comment, on its own line" \
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=4::.curl. fetches without the floor')"
+check "names the apt-get update below the blank line, on its own line" \
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=7::.apt-get update. fetches inside a Dockerfile RUN with no retry around it')"
+
+echo "case: a retried fetch whose own words run on past a comment line of its continuation passes"
+root=$(fixture dockerfile-comment-in-words)
+{
+  echo 'FROM debian:trixie-slim AS build'
+  printf '%s\n' "$CANONICAL"
+  cat <<'DOCKER'
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends \
+      # curl, for the key a later RUN reads.
+      curl \
+      # Its certificates, for that read's TLS.
+      ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+} > "$root/packages/envoy/docker/Dockerfile"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the install is one site, on the line it starts" \
+  "$(contains "$out" '^packages/envoy/docker/Dockerfile	6	apt-get install	-$')"
+check "the package named below a comment is no command of its own" \
+  "$(is "$(contains "$out" '^packages/envoy/docker/Dockerfile	[0-9]*	curl')" false)"
+
 echo "case: a workflow that wraps a mise x in a retry"
 root=$(fixture retried-mise-x)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -1112,13 +1159,185 @@ check "exits 1" "$(is "$status" 1)"
 check "names the exception and what it no longer covers" \
   "$(contains "$out" 'the exception for .github/actions/pull-test-images/action.yml matches no fetch')"
 
-echo "case: one of the three Dockerfiles missing fails"
+echo "case: one of the Dockerfiles DOCKERFILES names missing fails"
 root=$(fixture missing-dockerfile)
 rm "$root/packages/daemon/docker/worker.Dockerfile"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the file" \
-  "$(contains "$out" 'packages/daemon/docker/worker.Dockerfile is one of the three Dockerfiles')"
+  "$(contains "$out" 'packages/daemon/docker/worker.Dockerfile is one of the Dockerfiles a CI job builds')"
+
+echo "case: the browser image's Dockerfile missing fails, as the other three do"
+root=$(fixture missing-browser-dockerfile)
+rm "$root/.github/docker/browser.Dockerfile"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file" \
+  "$(contains "$out" '.github/docker/browser.Dockerfile is one of the Dockerfiles a CI job builds')"
+
+# Rule 10 (dispatch://INFRA-1545, round 37): a step that builds a Dockerfile names one of
+# DOCKERFILES, in the two shapes the gate reads, and the key holding it strictly exceeds the
+# longest single ladder of that Dockerfile. Main's #2938 added a fourth Dockerfile CI builds,
+# .github/docker/browser.Dockerfile, with a bare curl and a bare apt-get, while DOCKERFILES
+# named three, and the gate said nothing; its build step's key was 2 minutes, under the 1650 s
+# ladder of the package set its RUN now retries.
+echo "case: a workflow step building a Dockerfile DOCKERFILES does not name is refused, naming it"
+root=$(fixture build-unnamed-dockerfile)
+cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on: [push]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the other image
+        uses: docker/build-push-action@$PIN
+        with:
+          context: .
+          file: docker/other.Dockerfile
+      - name: Build it again by hand
+        run: docker buildx build --load -f ./docker/other.Dockerfile .
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the action's file, the step and the line" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=11::step 'Build the other image' of job 'image' builds docker/other.Dockerfile (docker/build-push-action's .file:.), and DOCKERFILES does not name it")"
+check "names the run step's file, read from the repository's root" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=13::step 'Build it again by hand' of job 'image' builds docker/other.Dockerfile (.docker buildx build.'s .--file.)")"
+check "says to add it to DOCKERFILES" \
+  "$(contains "$out" 'Add docker/other.Dockerfile to DOCKERFILES in .github/scripts/check-download-retry.sh')"
+check "counts the two refusals" "$(contains "$out" '2 download(s) outside the one retry rule')"
+
+echo "case: a build of a Dockerfile DOCKERFILES names passes, in either shape and in an action"
+root=$(fixture build-named-dockerfile)
+mkdir -p "$root/.github/actions/build-images"
+cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on: [push]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the browser image
+        uses: docker/build-push-action@$PIN
+        with:
+          context: .github/docker
+          file: .github/docker/browser.Dockerfile
+      - name: Build the worker image by hand
+        run: |
+          docker build --file=packages/daemon/docker/worker.Dockerfile .
+          sudo docker buildx build --load -f ./packages/envoy/docker/Dockerfile .
+      - uses: ./.github/actions/build-images
+YAML
+cat > "$root/.github/actions/build-images/action.yml" <<'YAML'
+name: Build the held-port image
+description: Builds one image.
+runs:
+  using: composite
+  steps:
+    - name: Build the held-port image
+      shell: bash
+      run: docker buildx build --load --file packages/envoy/infra/host/heldportwrapper/Dockerfile .
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "reads four Dockerfiles" "$(contains "$out" 'and 4 Dockerfile(s)')"
+
+echo "case: a build whose Dockerfile the gate cannot read as a path is refused by name"
+root=$(fixture build-unreadable-dockerfile)
+mkdir -p "$root/.github/actions/build-images"
+cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on: [push]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build the chosen image
+        uses: docker/build-push-action@$PIN
+        with:
+          context: .
+          file: \${{ inputs.dockerfile }}
+      - name: Build the context's own Dockerfile
+        uses: docker/build-push-action@$PIN
+        with:
+          context: .
+      - name: Build the chosen image by hand
+        run: docker build -f "\$DOCKERFILE" .
+      - uses: ./.github/actions/build-images
+YAML
+cat > "$root/.github/actions/build-images/action.yml" <<'YAML'
+name: Build an image
+description: Builds one image.
+runs:
+  using: composite
+  steps:
+    - name: Build the image here
+      shell: bash
+      run: docker buildx build --load .
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the expression as written" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=11::step 'Build the chosen image' of job 'image' builds a Dockerfile (docker/build-push-action's .file:.) and names it as .\${{ inputs.dockerfile }}., which this check cannot read as a path")"
+check "names an action step that writes no file" \
+  "$(contains "$out" "step 'Build the context's own Dockerfile' of job 'image' builds a Dockerfile (docker/build-push-action's .file:.) and names it as no file at all, so it builds its context's own .Dockerfile.")"
+check "names a variable as written" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=17::step 'Build the chosen image by hand' of job 'image' builds a Dockerfile (.docker build.'s .--file.) and names it as .\$DOCKERFILE.")"
+check "names a composite action's build that writes no --file" \
+  "$(contains "$out" "file=.github/actions/build-images/action.yml,line=8::step 'Build the image here' of .github/actions/build-images/action.yml builds a Dockerfile (.docker buildx build.'s .--file.) and names it as no file at all")"
+check "says to write the path and name it in DOCKERFILES" \
+  "$(contains "$out" "Write the Dockerfile's own path, from the repository's root, and add it to DOCKERFILES")"
+check "counts the four refusals" "$(contains "$out" '4 download(s) outside the one retry rule')"
+
+# The browser image's shape: one installing RUN whose longest ladder is the package set's
+# `apt-get install`, 5 x 300 + 150 = 1650 s, built by a step under the 2-minute key it carried.
+build_key_fixture() {
+  local root=$1 step_minutes=$2 job_minutes=$3
+  {
+    echo 'FROM debian:trixie-slim AS build'
+    printf '%s\n' "$CANONICAL"
+    cat <<'DOCKER'
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+  } > "$root/.github/docker/browser.Dockerfile"
+  cat > "$root/.github/workflows/image.yaml" <<YAML
+name: Image
+on: [push]
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: $job_minutes
+    steps:
+      - name: Build and push
+        timeout-minutes: $step_minutes
+        uses: docker/build-push-action@$PIN
+        with:
+          context: .github/docker
+          file: .github/docker/browser.Dockerfile
+YAML
+}
+
+echo "case: a build step and its job keyed at or under the Dockerfile's longest single ladder are refused, naming both figures"
+root=$(fixture build-key-under-ladder)
+build_key_fixture "$root" 2 27
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step's key and the ladder" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=9::step 'Build and push' of job 'image' carries .timeout-minutes: 2., 120 s, and it builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s, the .apt-get install. at .github/docker/browser.Dockerfile:6")"
+check "names the job's key, at the ladder's own minute, and the ladder" \
+  "$(contains "$out" "file=.github/workflows/image.yaml,line=6::job 'image' carries .timeout-minutes: 27., 1620 s, and step 'Build and push' of job 'image' builds .github/docker/browser.Dockerfile, whose longest single ladder is 1650 s")"
+check "says why one ladder" \
+  "$(contains "$out" 'a fault window is paid once, through the first fetch that meets it')"
+check "counts the two refusals" "$(contains "$out" '2 download(s) outside the one retry rule')"
+
+echo "case: a build step and its job keyed above the Dockerfile's longest single ladder pass"
+root=$(fixture build-key-above-ladder)
+build_key_fixture "$root" 28 29
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
 
 echo "case: a workflow that cannot be parsed as YAML"
 root=$(fixture bad-yaml)
@@ -9984,6 +10203,8 @@ repository=$(cd "$script_dir/../.." && pwd)
 tree="$work/real-tree"
 mkdir -p "$tree/packages/daemon/docker" "$tree/packages/envoy/docker" \
   "$tree/packages/envoy/infra/host/heldportwrapper"
+# The copy of .github brings the fourth Dockerfile DOCKERFILES names,
+# .github/docker/browser.Dockerfile, with it; the other three live under packages/.
 cp -R "$repository/.github" "$tree/.github"
 for dockerfile in packages/daemon/docker/worker.Dockerfile packages/envoy/docker/Dockerfile \
   packages/envoy/infra/host/heldportwrapper/Dockerfile; do

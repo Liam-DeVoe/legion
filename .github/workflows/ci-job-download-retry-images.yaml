@@ -30,24 +30,38 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  # The same recovering fault, inside the three Dockerfiles whose network RUN lines carry the
-  # inline retry. The rig: .github/ci-budgets.md, "The download-retry-images job's rig".
+  # The same recovering fault, inside the four Dockerfiles whose network RUN lines carry the
+  # inline retry. The rig: .github/ci-budgets.md, "The download-retry-images job's rig". It
+  # drives one fault at a time — one proxy, one window of about a minute, met through the first
+  # fetch of the build it is in front of — so it proves the model a build's key is priced by
+  # (.github/scripts/check-download-retry.sh, rule 10): a build runs its fetches one after
+  # another, pays a fault window once, through the first fetch that meets it, and every later
+  # fetch meets a healthy host.
   #
   # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
   # when nothing outside its own injected faults goes wrong — 300 s for the base image pulls,
-  # 900 s for the unfaulted smoke build, the three faulted builds at the budgets their report
-  # steps enforce, 2720 + 920 + 500 s, and about 200 s of checkout, bypass clearing and rig
-  # steps, which is 5540 s — and the rule adds its single slowest retried step. That step is the
-  # ci-ok report, the one download of this job that is not a faulted build: its `gh api` read
-  # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, and two calls of
-  # runner-shutdown.sh's check-run read and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s
-  # together (ci-budgets.md's Budgets note, "The ci-ok report").
-  # So 5540 + 2160 = 7700 s -> 129 min. Each build's budget
+  # 900 s for the unfaulted smoke build, the four faulted builds at the budgets their report
+  # steps enforce, 2720 + 920 + 500 + 384 s, and about 200 s of checkout, bypass clearing and rig
+  # steps, which is 5924 s — and the rule adds its single slowest retried step. That step is a
+  # build, priced at the longest single ladder of the Dockerfiles this job builds: a fault
+  # window of its own, outside the injected one, is paid once, through one build's first fetch
+  # that meets it, and the longest such ladder is the worker image's `go mod download`,
+  # 5 x 900 + 150 = 4650 s, above the Envoy and held-port images' 5 x 600 + 150 = 3150 s, the
+  # browser image's package set at 5 x 300 + 150 = 1650 s, and the ci-ok report, the one
+  # download of this job that is not a faulted build: its `gh api` read and the POST of the
+  # check run, 2 x (5 x 30 + 150) = 600 s, and two calls of runner-shutdown.sh's check-run read
+  # and annotations loop, 2 x (300 + 480) = 1560 s, 2160 s together (ci-budgets.md's Budgets
+  # note, "The ci-ok report"). So 5924 + 4650 = 10574 s -> 177 min. Each build's budget
   # carries 20 s more than it did before the probe, for the two 10 s bounded requests the probe
   # makes between the proxy's start and the build, which `report` measures from the former.
+  # The pulls' 300 s still holds the browser image's two bases, the Playwright copy among them,
+  # 990,220,611 bytes: the three images' pulls took 16 to 24 s in this job's ten runs from run
+  # 43761695707 to run 43987988192, and the browser image's whole build, which fetches those
+  # bases inside BuildKit, took 66 s at most over its 33 builds measured in
+  # browser-image.yaml's own job (dispatch://INFRA-1545, round 37).
   download-retry-images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 129
+    timeout-minutes: 177
     env:
       SMOKE_IMAGE: legion-envoy-smoke:download-retry
     steps:
@@ -62,17 +76,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Every FROM of the three files that names an image rather than a build argument or a
+      # Every FROM of the four files that names an image rather than a build argument or a
       # stage of the file it is in. Pulled before any proxy exists, for the reason the job's
       # comment gives. A FROM naming an earlier stage (`FROM runtime-base AS debian-packages`)
       # is no registry reference, and `docker pull` of one is refused as a repository that does
       # not exist, which is how this step first failed: run 42372090039's job 128402159563 ended
       # at `pull access denied for runtime-base`.
-      - name: Pull every base image the three builds read
+      - name: Pull every base image the four builds read
         run: |
           for file in packages/daemon/docker/worker.Dockerfile \
                       packages/envoy/docker/Dockerfile \
-                      packages/envoy/infra/host/heldportwrapper/Dockerfile; do
+                      packages/envoy/infra/host/heldportwrapper/Dockerfile \
+                      .github/docker/browser.Dockerfile; do
             awk '
               $1 == "FROM" && $2 !~ /^[$]/ && !($2 in stage) { print $2 }
               $1 == "FROM" && toupper($3) == "AS" { stage[$4] = 1 }
@@ -157,6 +172,37 @@ jobs:
           .github/scripts/download-retry-proof.sh report heldport
           --what "the held-port image (packages/envoy/infra/host/heldportwrapper/Dockerfile)"
           --outcome ${{ steps.heldport-build.outcome }} --attempts 5 --floor 0 --budget 500
+
+      # The browser image: Ubuntu's apt mirror, which its base's sources name, and PostgreSQL's
+      # signing key and apt repository, each behind one of the Dockerfile's inline retries.
+      # Its report's budget: the recovering fault lets the first attempt through no later than
+      # 100 s after the proxy starts — a first attempt just under 30 s in, its next three after
+      # the loop's sleeps of 10, 20 and 40 s, the last of them past the 60 s window — and the
+      # probe's 20 s, as every build here carries, plus 4 x 66 = 264 s for the build itself:
+      # 66 s is the slowest of the image's 33 bare builds measured in browser-image.yaml's own
+      # job (job 128991520632 of run 42565616054), and four times it is about the margin the
+      # Envoy image's 920 s keeps over its 239 s faulted build in job 133724372176, since this
+      # build runs on the runner's default builder with no cache rather than on that job's.
+      # 100 + 20 + 264 = 384 s.
+      - name: Start the recovering fault for the browser image build
+        id: browser-proxy
+        run: |
+          .github/scripts/download-retry-proof.sh start browser --mode recover --recover-after 60 \
+            --bind docker-bridge \
+            --hosts postgresql.org,ubuntu.com
+          .github/scripts/download-retry-proof.sh probe browser
+      - name: Build the browser image under the recovering fault
+        id: browser-build
+        continue-on-error: true
+        run: >-
+          .github/scripts/download-retry-proof.sh build browser
+          --tag legion-browser:download-retry
+          --file .github/docker/browser.Dockerfile
+      - name: What the browser image build did under the recovering fault
+        run: >-
+          .github/scripts/download-retry-proof.sh report browser
+          --what "the browser image (.github/docker/browser.Dockerfile)"
+          --outcome ${{ steps.browser-build.outcome }} --attempts 5 --floor 0 --budget 384
 
       # As the download-retry job: the proxy was never this job's environment, and this is where
       # that is checked rather than assumed.
