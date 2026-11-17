@@ -146,6 +146,7 @@ function Deploys({
   pager = DEPLOY_PAGER,
   renderFilter,
   rows = DEPLOYS,
+  serverPage,
   stackColumn,
   trailingWidth,
 }: {
@@ -167,6 +168,8 @@ function Deploys({
   pager?: PagerOptions | null;
   renderFilter?: ColumnFilterRenderer<Deploy>;
   rows?: Deploy[];
+  /** The rows are one page a server answered, of this many rows in all. */
+  serverPage?: { readonly rowCount: number };
   stackColumn?: string;
   /** The width of the action cell each row draws after its columns. */
   trailingWidth?: number;
@@ -199,6 +202,7 @@ function Deploys({
     onPaginationChange: setPagination,
     onSortingChange: setSorting,
     rows,
+    serverPage,
     state,
     viewKey: JSON.stringify(state),
   });
@@ -355,6 +359,31 @@ test("pages its rows and moves to the next page", async () => {
 
   expect(listed(table)).toEqual(["d11", "d12"]);
   expect(screen.getByText("Page 2 of 2")).toBeInTheDocument();
+});
+
+// A server's page: the rows are the page on screen, so the table slices none of them and counts
+// its pages by the server's row count; a step asks the caller for the next page.
+test("a server's page is drawn whole and paged by the server's row count", async () => {
+  const user = userEvent.setup();
+  const rows = Array.from({ length: 10 }, (_, index) => ({
+    id: `d${index + 1}`,
+    minutes: index,
+    region: "eu",
+    service: `service ${index + 1}`,
+    state: "live",
+  }));
+  // Pages of 10 rows: the server holds 23, so 3 pages, and it answered the first.
+  draw(<Deploys pageSize={10} rows={rows} serverPage={{ rowCount: 23 }} />);
+
+  const table = await screen.findByRole("table", { name: "Deploys deploys" });
+  expect(listed(table)).toHaveLength(10);
+  expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Next ›" }));
+
+  // The page index moved; the rows are the caller's until it hands the next page in.
+  expect(screen.getByText("Page 2 of 3")).toBeInTheDocument();
+  expect(listed(table)).toEqual(rows.map((row) => row.id));
 });
 
 // The press that reaches the last page, or the first, leaves the reader on the button they

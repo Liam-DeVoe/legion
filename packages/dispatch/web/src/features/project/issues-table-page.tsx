@@ -26,6 +26,7 @@ import { issueStatuses, statusLabel } from "./board-model";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
+  COLUMNS,
   defaultView,
   type Item,
   isDefaultStatus,
@@ -105,17 +106,33 @@ type ToolbarPanel = "flags" | "view";
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
  * narrow no column of the table, the chips of every narrowing that is on - the issues a link
  * names (`only=`), the flags, and every column's filter - **Clear filters** (which the row
- * draws), the columns menu, and the display menu carrying the grouping (INFRA-3135, R1 and R3).
- * A column's filter is set on that column's header, where `ColumnFilter` draws it, and its chip
- * is drawn here as well, so a column the reader hid keeps its narrowing in sight.
+ * draws), the page's own controls (the columns menu where the page gives none), and the display
+ * menu carrying the grouping (INFRA-3135, R1 and R3). A column's filter is set on that column's
+ * header, where `ColumnFilter` draws it, and its chip is drawn here as well, so a column the
+ * reader hid keeps its narrowing in sight.
  */
 export function IssueTableToolbar({
+  clear,
+  controls,
+  displayLabel = "View",
+  ownStatuses,
   searchRef,
   selection,
   stateKey,
   table,
   unclaimedUnchecked,
 }: {
+  /** The Issues tab's **Clear filters**: shown while `on`, the view's own narrowings back.
+   *  Unset, the row clears by the table's own rule: back to the open statuses, with no search
+   *  and no flag. */
+  clear?: { readonly on: boolean; readonly run: () => void };
+  /** The page's own controls, in the place of the columns menu the row draws by itself. */
+  controls?: ReactNode;
+  /** The display menu's name: Group by on the Issues tab. */
+  displayLabel?: string;
+  /** The statuses the view lists by itself, which draw no chip and which taking the Status
+   *  chip off goes back to: the open statuses where unset. */
+  ownStatuses?: readonly string[];
   /** The search box, which the selection bar hands the focus to when no row is left for it. */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
@@ -166,13 +183,15 @@ export function IssueTableToolbar({
   const columned = table.getAllLeafColumns().flatMap((column) => {
     const picks = columnFilterPicks(column.getFilterValue());
     if (column.id === "status") {
-      return picks.length === 0 || isDefaultStatus(picks)
+      const own = ownStatuses === undefined ? defaultView.filters[0]?.value : [...ownStatuses];
+      const isOwn =
+        ownStatuses === undefined
+          ? isDefaultStatus(picks)
+          : picks.length === ownStatuses.length &&
+            ownStatuses.every((status) => picks.includes(status));
+      return picks.length === 0 || isOwn
         ? []
-        : [
-            columnFilterChip(column, picks, () =>
-              column.setFilterValue(defaultView.filters[0]?.value)
-            ),
-          ];
+        : [columnFilterChip(column, picks, () => column.setFilterValue(own))];
     }
     if (column.id === "claim") {
       const named = picks.filter((value) => value !== UNCLAIMED_FACET);
@@ -226,7 +245,7 @@ export function IssueTableToolbar({
         chips={chips}
         display={
           <DisplayMenu
-            label="View"
+            label={displayLabel}
             onOpenChange={(open) => setOpenPanel(open ? "view" : undefined)}
             open={openPanel === "view"}
             sections={[
@@ -239,13 +258,17 @@ export function IssueTableToolbar({
                 },
                 options: [
                   { label: "Nothing", value: "" },
+                  // In the registry's order, whatever order the columns are drawn in.
                   ...table
                     .getAllLeafColumns()
                     .filter((column) => column.getCanGroup())
                     .map((column) => ({
                       label: String(column.columnDef.header),
+                      place: COLUMNS.findIndex(({ id }) => id === column.id),
                       value: column.id,
-                    })),
+                    }))
+                    .sort((a, b) => a.place - b.place)
+                    .map(({ label, value }) => ({ label, value })),
                 ],
                 value: grouping[0] ?? "",
               },
@@ -253,7 +276,15 @@ export function IssueTableToolbar({
             size="compact"
           />
         }
-        onClear={narrowed ? clearFilters : undefined}
+        onClear={
+          clear === undefined
+            ? narrowed
+              ? clearFilters
+              : undefined
+            : clear.on
+              ? clear.run
+              : undefined
+        }
         search={
           <SearchBox
             className="w-full"
@@ -286,7 +317,7 @@ export function IssueTableToolbar({
           </PanelTrigger>
         }
       >
-        <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />
+        {controls ?? <ColumnsMenu columns={table.getAllLeafColumns()} size="compact" />}
       </ControlRow>
       <UnclaimedUnchecked reason={unclaimedUnchecked} />
     </>

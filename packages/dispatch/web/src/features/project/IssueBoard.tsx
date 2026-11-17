@@ -311,10 +311,14 @@ const BoardLaneRow = memo(function BoardLaneRow({
 });
 
 export function IssueBoard({
+  controls: pageControls,
   project,
   showEdges = false,
   lanes = false,
 }: {
+  /** The page's own controls in the Board's control row: the layout switch and the Board's
+   *  toggles, before the display menu. */
+  controls?: ReactNode;
   project: string;
   /** Render Icebox and Done as full columns instead of collapsed rails. */
   showEdges?: boolean;
@@ -770,7 +774,9 @@ export function IssueBoard({
             )}
           </PanelTrigger>
         }
-      />
+      >
+        {pageControls}
+      </ControlRow>
       <UnclaimedUnchecked reason={filters.unclaimedUnchecked} />
     </>
   );
