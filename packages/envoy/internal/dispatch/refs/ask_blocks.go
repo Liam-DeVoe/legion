@@ -175,12 +175,13 @@ func askPartPairs(parts []itemblocks.Block, ids []string, r *Reader) []blockPair
 // The parts are the rest of the ask's text beside its question, so this is where any write of an
 // ask settles what the forms queue holds for it (RefsFormsOwed), after the parts' own delete from
 // ask_block_refs, which owes that queue the ask (migration 20261117025910): a write that
-// reconciled the question through r settles that queue alone here, and one that did not - an
-// answer, a resolution, a restoration, the block index of an owed ask - reconciles the question's
-// own references here as well, dating a new edge `at`, and settles both queues after both
-// deletes (replaceRefs). Either way the ask is left owing nothing once this build has indexed its
-// whole text, and no write of it leaves the question's references to a build that read the ask
-// with another grammar.
+// reconciled the question through r settles that queue alone, in the state update that ends the
+// parts' index (itemBlockSource.settleForms), so the settle costs the write no round trip of its
+// own; one that did not - an answer, a resolution, a restoration, the block index of an owed ask -
+// reconciles the question's own references here as well, dating a new edge `at`, and settles both
+// queues after both deletes (replaceRefs). Either way the ask is left owing nothing once this
+// build has indexed its whole text, and no write of it leaves the question's references to a
+// build that read the ask with another grammar.
 //
 // It returns the targets of the part mentions it moved, and of the question's references where it
 // reconciled them, which the caller's event counts.
@@ -235,14 +236,12 @@ func indexAskParts(ctx context.Context, tx pgx.Tx, ask model.Ask, parts []itembl
 		pairs: func(next []itemblocks.Block, ids []string) []blockPair {
 			return askPartPairs(next, ids, r)
 		},
+		settleForms: r.reconciled,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if r.reconciled {
-		if err := settleOwed(ctx, tx, string(ItemAsk), ask.ID, formsQueue); err != nil {
-			return nil, err
-		}
 		return moved, nil
 	}
 	changed, err := replaceRefs(ctx, tx, string(ItemAsk), ask.ID, text.Refs(r.Mentions(ask.Question)), &at, true)
