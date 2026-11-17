@@ -1594,13 +1594,13 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 }
 
 // phaseEnded publishes the message of a phase-ended row (record.PhaseEnded) to the Envoy topic of
-// the role whose phase a CI-red transition ended, the claim of that role on the row's issue, and to
-// nothing else. It is no architect notice: it carries one sentence of the daemon's own rather than
-// a Notice, waits behind no other row of its issue (its own lane, record.LaneRoleMessage), and its
-// recipient is the role the workflow named rather than whichever architect owns the issue. The
-// message stops nothing it reaches: pi-envoy hands it to an Oh My Pi session at its next model turn
-// and ends a running wait, the Claude Code bridge puts it in that session's inbox, and the role's
-// turn, jobs and process run on.
+// the role whose phase a CI-red transition ended, the claim of the worker on that role's step of
+// the row's issue (workerToken), and to nothing else. It is no architect notice: it carries one
+// sentence of the daemon's own rather than a Notice, waits behind no other row of its issue (its
+// own lane, record.LaneRoleMessage), and its recipient is the role the workflow named rather than
+// whichever architect owns the issue. The message stops nothing it reaches: pi-envoy hands it to an
+// Oh My Pi session at its next model turn and ends a running wait, the Claude Code bridge puts it
+// in that session's inbox, and the role's turn, jobs and process run on.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
 // holding it as an architect's notice is held: the role's next task from the daemon names its phase
@@ -1615,7 +1615,7 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("phase-ended executor has no Envoy publisher")
 	}
-	token, err := roleToken(r.project, row, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, "")
 	if err != nil {
 		return err
 	}
@@ -1630,21 +1630,21 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	}
 	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
 		"outbox phase-ended message finished undelivered: no live session holds the role",
-		"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To); err != nil {
+		"row", row.ID, "issue", row.Issue, "role", payload.Role, "claim", string(token), "from", payload.From, "to", payload.To); err != nil {
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, err)
 	}
 	return nil
 }
 
 // hookPrompt publishes the words of a hook-prompt row (record.HookPrompt) to the Envoy topic of
-// the role the deployment's hook named, the claim of that role on the row's issue, and to nothing
-// else. The row is the daemon's own facts of the firing — the hook, the move back and the counts —
-// and then the deployment's own words for the round that move back opened, unchanged
-// (record.HookPrompt.Message). It rides the role-message lane beside a phase-ended message
-// (record.LaneRoleMessage), so it waits behind no other row of its issue and reaches the role
-// while that round is the round the role works. It stops nothing it reaches, as a phase-ended
-// message stops nothing: the session takes it at its next model turn, and the role's turn, jobs
-// and process run on.
+// the role the deployment's hook named, the claim of the worker on that role's step of the row's
+// issue (workerToken), and to nothing else. The row is the daemon's own facts of the firing — the
+// hook, the move back and the counts — and then the deployment's own words for the round that move
+// back opened, unchanged (record.HookPrompt.Message). It rides the role-message lane beside a
+// phase-ended message (record.LaneRoleMessage), so it waits behind no other row of its issue and
+// reaches the role while that round is the round the role works. It stops nothing it reaches, as a
+// phase-ended message stops nothing: the session takes it at its next model turn, and the role's
+// turn, jobs and process run on.
 //
 // A topic with no live holder (notify.ErrNoHolder) ends the row with one log line rather than
 // holding it. The hook wrote its words for this round, and nothing repeats them: the move back
@@ -1663,7 +1663,7 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
 	}
-	token, err := roleToken(r.project, row, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, "")
 	if err != nil {
 		return err
 	}
@@ -1678,18 +1678,19 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	}
 	if _, err := r.publishToRole(ctx, row, notify.RoleTopicPrefix+string(token), payload.Message(row.Issue),
 		"outbox hook prompt finished undelivered: no live session holds the role",
-		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
+		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "claim", string(token), "count", payload.Count); err != nil {
 		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
 	return nil
 }
 
-// updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
-// row names, the claim of that role on the row's issue, and to nothing else. The text is the
-// sweep's, built for the round when it opened (supervise.UpdateTask), and it reaches a worker and
-// the issue's architect alike: every role whose process runs in the pod loses that process when
-// the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
-// waits behind no architect notice of its issue.
+// updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the claim the
+// round's sweep asked, which the row names (record.UpdateAsk.Claim), or, for a row that names
+// none, the claim of the worker on the row's role's step of its issue (workerToken); and to
+// nothing else. The text is the sweep's, built for the round when it opened (supervise.UpdateTask),
+// and it reaches a worker and the issue's architect alike: every role whose process runs in the
+// pod loses that process when the round replaces the pod. It rides the role-message lane
+// (record.LaneRoleMessage), so it waits behind no architect notice of its issue.
 //
 // It wakes nothing, where phaseEnded, hookPrompt and mergeQueueRemoval call wakeForDelivery
 // first. A role whose pod an idle release took is not brought back to be asked: its topic has no
@@ -1712,7 +1713,7 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if r.supervisor == nil {
 		return errors.New("update ask executor has no claim supervisor")
 	}
-	token, err := roleToken(r.project, row, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return err
 	}
@@ -1734,10 +1735,27 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	return nil
 }
 
-// roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
-// of the row is published to (publishToRole, under notify.RoleTopicPrefix).
-func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
-	token, err := claim.NewToken(project, row.Issue, role)
+// workerToken is the claim a row of role on the row's issue acts on, and whose Envoy topic a role
+// message of the row is published to (publishToRole, under notify.RoleTopicPrefix): held, the
+// claim the row's producer named, where it names one; otherwise the claim of the worker on role's
+// step (record.WorkerClaim) over the issue's phases rows as the record holds them when the row
+// runs. A step's agent can be the agent of a key, which works the step in the claim it started on
+// an earlier step of another role, so the role's own token would reach no agent or the wrong one.
+func (r *outbox) workerToken(ctx context.Context, row record.OutboxRow, role claim.Role, held claim.Token) (claim.Token, error) {
+	if held != "" {
+		return held, nil
+	}
+	rows, err := r.phaseRows(ctx, row.Issue)
+	if err != nil {
+		return "", err
+	}
+	return r.workerOf(row, role, rows)
+}
+
+// workerOf is the claim of the worker on role's step of the row's issue among rows, the issue's
+// phases rows (record.WorkerClaim).
+func (r *outbox) workerOf(row record.OutboxRow, role claim.Role, rows []record.PhaseRow) (claim.Token, error) {
+	token, err := record.WorkerClaim(r.project, row.Issue, role, rows)
 	if err != nil {
 		return "", fmt.Errorf("the %s of %s: %w", role, row.Issue, err)
 	}
@@ -1806,6 +1824,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	// row names — and its look (checkLookHolds) where a phase start is fenced on the generation and
 	// the phase.
 	var check *record.ProductionCheck
+	// The issue's phases rows, read at most once, for the entry fence below and for the claim the
+	// row acts on: rowsRead tells an issue whose record holds no row from rows not read yet.
+	var rows []record.PhaseRow
+	rowsRead := false
 	if payload.CheckLook > 0 {
 		if check, err = r.checkLookHolds(ctx, row, payload, issue); err != nil || check == nil {
 			return err
@@ -1838,11 +1860,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// a delivery of an entry it was already queued a task of queues no second one
 		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
-			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
-			if err != nil {
+			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
 				return err
 			}
-			if payload.Entry < entry {
+			rowsRead = true
+			if entry := record.PhaseRowOf(rows, payload.Role).Entry; payload.Entry < entry {
 				r.log.Info("outbox start serves an entry its role has left; finished without acting", "row", row.ID, "issue", issue.Key,
 					"phase", payload.Phase, "entry", payload.Entry, "current", entry, "role", payload.Role)
 				return nil
@@ -1852,9 +1874,19 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if payload.Tree != issue.Tree {
 		return fmt.Errorf("supervise row %d tree %s does not match issue %s tree %s", row.ID, payload.Tree, issue.Key, issue.Tree)
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
-	if err != nil {
-		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	// The claim the row acts on is the one it names, a row that stands for one stored claim of the
+	// issue, and otherwise the claim of the worker on its role's step, which can be the claim of a
+	// key's agent that started on an earlier step of another role (workerOf).
+	token := payload.Claim
+	if token == "" {
+		if !rowsRead {
+			if rows, err = r.phaseRows(ctx, row.Issue); err != nil {
+				return err
+			}
+		}
+		if token, err = r.workerOf(row, payload.Role, rows); err != nil {
+			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+		}
 	}
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
@@ -2338,7 +2370,7 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 	if !reserved {
 		return false, nil
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := r.workerToken(ctx, row, payload.Role, payload.Claim)
 	if err != nil {
 		return true, fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 	}
@@ -2978,24 +3010,23 @@ func (r *outbox) productionCheck(ctx context.Context, issue string) (*record.Pro
 	return check, nil
 }
 
-// phaseEntry is the phase entry role's phases row of issue names (record.PhaseRow.Entry), read in
-// a transaction of its own just before the executor acts on a row, and 0 for a role whose row
-// holds no entry and for one the record has no row of at all. The transition writes that number
-// in its own transaction before the start it queues can run (workflow.Engine.enter), so a start
-// reading a number above its own is reading a later entry of the same phase.
-func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) (int64, error) {
-	var entry int64
+// phaseRows is issue's phases rows as the record holds them, read in a transaction of its own just
+// before the executor acts on a row. A start reads its fence from them, the phase entry its role's
+// row names (record.PhaseRow.Entry, 0 for a role whose row holds no entry and for one the record
+// has no row of at all): the transition writes that number in its own transaction before the start
+// it queues can run (workflow.Engine.enter), so a start reading a number above its own is reading a
+// later entry of the same phase. A row of one role reads from them the claim of the worker on that
+// role's step (workerOf).
+func (r *outbox) phaseRows(ctx context.Context, issue string) ([]record.PhaseRow, error) {
+	var rows []record.PhaseRow
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		rows, err := r.records.Phases(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		entry = record.PhaseRowOf(rows, role).Entry
-		return nil
+		var err error
+		rows, err = r.records.Phases(ctx, tx, issue)
+		return err
 	}); err != nil {
-		return 0, fmt.Errorf("read the phase entry of %s's %s: %w", issue, role, err)
+		return nil, fmt.Errorf("read the phases rows of %s: %w", issue, err)
 	}
-	return entry, nil
+	return rows, nil
 }
 
 // issueBranch creates the issue's branch, legion/<KEY>, on GitHub at the repository's default

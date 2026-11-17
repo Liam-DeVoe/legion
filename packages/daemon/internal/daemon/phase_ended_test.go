@@ -167,7 +167,9 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 		To: phase.Implementing, Reason: "the head conflicts with main"}, time.Now())
 	row.ID = 61
 	publisher := &outboxPublisher{}
-	runner := &outbox{project: "legion", notices: publisher, log: quietLogger()}
+	// The row reads the claim of the tester's worker from the issue's phases rows, which the
+	// record holds none of here, so it is the tester's own claim.
+	runner := &outbox{project: "legion", pool: isolatedOutboxPool(t), records: record.NewStore(), notices: publisher, log: quietLogger()}
 	const denial = `envoy: the message bus denied the publish under this listener's own permissions: bus: NATS denied the publish to "notifications.agent.ses_t"`
 	for _, tc := range []struct {
 		name string

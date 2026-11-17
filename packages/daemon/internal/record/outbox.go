@@ -808,7 +808,11 @@ type SuperviseRequest struct {
 	Op   SuperviseOp `json:"op"`
 	Tree string      `json:"tree"`
 	Role claim.Role  `json:"role"`
-	Task string      `json:"task,omitempty"`
+	// Claim is the claim the request acts on where its producer holds it: a row that stands for
+	// one stored claim of the issue names it. A row that names none acts on the claim of the
+	// worker on Role's step (WorkerClaim), which is what a row the release before wrote reaches.
+	Claim claim.Token `json:"claim,omitempty"`
+	Task  string      `json:"task,omitempty"`
 	// Kept is what an architect start's Task named of the decisions its root keeps
 	// (workflow.Engine.ParkedDecisionTask). The start settles them once it has run (the outbox's
 	// settleKept): a task the root architect's claim queued forgets them
@@ -983,6 +987,10 @@ type IssueBundle struct {
 	Generation     uint64     `json:"generation"`
 	TreeGeneration uint64     `json:"treeGeneration"`
 	Role           claim.Role `json:"role"`
+	// Claim is the claim whose shim is asked, where the release names it. A row that names none
+	// asks the claim of the worker on Role's step (WorkerClaim), as a row the release before
+	// wrote does.
+	Claim claim.Token `json:"claim,omitempty"`
 }
 
 func (IssueBundle) OutboxKind() OutboxKind { return OutboxKindIssueBundle }
@@ -1315,10 +1323,13 @@ func (p HookPrompt) Message(issue string) string {
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
 // longer records finishes without a publish (the daemon's updateAsk).
 type UpdateAsk struct {
-	Role  claim.Role `json:"role"`
-	Round string     `json:"round"`
-	Pod   string     `json:"pod,omitempty"`
-	Text  string     `json:"text"`
+	Role claim.Role `json:"role"`
+	// Claim is the claim the round's sweep asked, which records the round. A row the release
+	// before wrote names none and reaches the claim of the worker on Role's step (WorkerClaim).
+	Claim claim.Token `json:"claim,omitempty"`
+	Round string      `json:"round"`
+	Pod   string      `json:"pod,omitempty"`
+	Text  string      `json:"text"`
 }
 
 func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
@@ -1642,6 +1653,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 || value.Role == "" {
 			return fmt.Errorf("a release's workspace save requires its tree, both workflow generations and the role whose shim is asked")
 		}
+		if err := namedClaim(value.Claim); err != nil {
+			return err
+		}
 	case IssueRelease:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("an issue release requires its tree and both workflow generations")
@@ -1715,6 +1729,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case SuperviseRequest:
 		if !validSuperviseOp(value.Op) {
 			return fmt.Errorf("unknown supervise operation %q", value.Op)
+		}
+		if err := namedClaim(value.Claim); err != nil {
+			return err
 		}
 		if value.Op == "start" && value.Tree == "" {
 			return fmt.Errorf("supervise start requires tree")
@@ -1827,6 +1844,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	case UpdateAsk:
 		if !claim.IsRole(value.Role) {
 			return fmt.Errorf("an update ask goes to a role whose process runs in the issue's pod, the architect among them; %q is no role", value.Role)
+		}
+		if err := namedClaim(value.Claim); err != nil {
+			return err
 		}
 		if value.Round == "" {
 			return fmt.Errorf("an update ask names the round it asks for")
@@ -1996,6 +2016,19 @@ func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	default:
 		return false
 	}
+}
+
+// namedClaim refuses a claim a row names that is no agent's claim token on an issue
+// (claim.Token.Cut), so such a row is never written rather than reaching no claim when it runs. A
+// row that names none passes: it acts on the claim of the worker on its role's step (WorkerClaim).
+func namedClaim(named claim.Token) error {
+	if named == "" {
+		return nil
+	}
+	if _, _, ok := named.Cut(); !ok {
+		return fmt.Errorf("a row names the claim it acts on by an agent's claim token on an issue; %q is none", named)
+	}
+	return nil
 }
 
 func validSuperviseOp(op SuperviseOp) bool {

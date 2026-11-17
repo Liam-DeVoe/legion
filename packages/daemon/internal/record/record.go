@@ -2303,9 +2303,9 @@ func ArchitectOfTree(ctx context.Context, store Store, tx pgx.Tx, architect clai
 // and holds no claim. Every reader of one role's row among an issue's picks it here — the state
 // the projection writes (projection.Project), the entry the admission pass weighs a claim against
 // (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
-// (internal/daemon's outbox), the completion route's position (api's handoffPosition) and the
-// engine's own read (workflow's phaseRow) — so that rule is stated once and read the same way by
-// all of them.
+// (internal/daemon's outbox), the completion route's position (api's handoffPosition), the claim
+// of a role's worker (WorkerClaim) and the engine's own read (workflow's phaseRow) — so that rule
+// is stated once and read the same way by all of them.
 func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 	for _, row := range rows {
 		if row.Role == role {
@@ -2313,6 +2313,24 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 		}
 	}
 	return PhaseRow{}
+}
+
+// WorkerClaim is the claim of the agent that works role's step of issue now, read from the record:
+// the claim role's row names (PhaseRow.Claim) while that row runs a step of the issue's plan
+// (StepTask set), which the step's entry writes. A step's agent can be the agent of a key, whose
+// claim is the one it started on an earlier step of another role, so a role's own token does not
+// name it. Every other row gives that token, claim.NewToken(project, issue, role): an issue with no
+// plan rows, a row a new generation cleared (ClearGeneration clears StepTask and keeps Claim), a
+// row no entry was raised on, and a row the release before wrote. project is the project's token,
+// as claim.NewToken takes it, and a role that is no role of Legion yields its refusal.
+//
+// Each derivation of the claim of a role's worker from an issue and a role calls it, so a row that
+// names a role reaches the agent that works that role's step when the row runs.
+func WorkerClaim(project, issue string, role claim.Role, rows []PhaseRow) (claim.Token, error) {
+	if row := PhaseRowOf(rows, role); row.StepTask != "" && row.Claim != "" {
+		return row.Claim, nil
+	}
+	return claim.NewToken(project, issue, role)
 }
 
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
