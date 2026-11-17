@@ -990,6 +990,14 @@ test.skipIf(skipBinaries)(
       const runs = leaveCluster(run, 0, bin, who.runs);
       const failing = leaveCluster(run, 1, bin, who.gone, { sockets: held });
       const gone = leaveCluster(run, 2, bin, who.gone);
+      // 20,000 files in the dead mark's data directory keep the first start that removes it busy
+      // long enough for the second start to find the directory still there: the race of the row.
+      for (let dir = 0; dir < 200; dir++) {
+        mkdirSync(join(gone.data, `d${dir}`));
+        for (let file = 0; file < 100; file++) {
+          writeFileSync(join(gone.data, `d${dir}`, `f${file}`), "");
+        }
+      }
 
       const env = childEnv(tmp, { variable: pgBinVariable, value: bin });
       const starts = await Promise.all([startPool(env), startPool(env)]);
@@ -1004,9 +1012,15 @@ test.skipIf(skipBinaries)(
         expect([runs.data, runs.mark].filter((path) => start.stderr.includes(path))).toEqual([]);
       }
       // Together the two starts say "removed" once of each directory of the dead mark: one start
-      // renamed it first and removed it, and the other says that another start removed it.
+      // renamed it first and removed it, and the other says that another start removed it. A line
+      // names what its start removed in the list between ": removed " and ", which", and what
+      // another start removed first after that list, or on a line with no such list.
       for (const path of [gone.data, gone.sockets]) {
-        const removed = starts.flatMap((start) => linesWith(start.stderr, `removed ${path}`));
+        const removed = starts.flatMap((start) =>
+          start.stderr
+            .split("\n")
+            .filter((line) => /: removed (.*?), which /.exec(line)?.[1]?.includes(path) === true)
+        );
         expect({ path, removed: removed.length }).toEqual({ path, removed: 1 });
       }
       // The removal that failed keeps its mark for the next start; the other leftover is gone.
@@ -1018,9 +1032,10 @@ test.skipIf(skipBinaries)(
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // The row drives two starts of the pool at once, each a `bun` child that reads three marks and
-  // removes what it finds dead. It read 0.04 to 0.09 s on a shared Linux machine under a load of
-  // about 300, on 2026-11-17; 300 s leaves a cold `bun` and a slow disk room.
+  // The row writes 20,000 files and drives two starts of the pool at once, each a `bun` child that
+  // reads three marks and removes what it finds dead. It read 0.6 to 0.9 s on a shared Linux
+  // machine under a load of about 300 to 400, on 2026-11-17; 300 s leaves a cold `bun` and a slow
+  // disk room.
   300_000
 );
 
