@@ -136,11 +136,56 @@ func TestAnEarlierOwnersPlanIsToldWithTheGroup(t *testing.T) {
 	if !reflect.DeepEqual(told, want) {
 		t.Fatalf("the plan-not-taken notices = %+v, want %+v", told, want)
 	}
-	for _, notice := range told {
-		if strings.Contains(notice.Reason, "register_plan") {
-			t.Fatalf("the notice %q tells the owner to call register_plan, which this issue's group refuses", notice.Reason)
+}
+
+// The first step of an issue whose group runs the project's default steps reads the plan of the
+// run's own generation and passes it over only where its owner gave it. An owner's plan stored at
+// that generation is one a release that reads no group took, during the roll back the migration
+// of the column `plan` describes: this release answers PLAN_NOT_TAKEN to the same registration, so
+// the test gives the plan before it writes the group's row. That plan is deleted, the run takes the
+// default steps, and the one notice of the group names it. The control is a plan of that
+// generation that no owner gave, the default a hand-over carried: it stands as it was, and nothing
+// is told.
+func TestTheGroupDefaultPassesOverOnlyAnOwnersPlanOfTheRunsGeneration(t *testing.T) {
+	t.Run("an owner's plan of the run's generation is passed over and told", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		mustTake(t, "version 1 at the run's generation", applyFacts(t, pool, engine)(planID(root.Key, root.Generation, 1),
+			ownersPlan(t, root.Key, root.Generation, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
+		drawnInto(t, pool, root.Key, "planning", "b", "default")
+
+		firstStep(t, pool, engine, root.Key)
+
+		assertDefaultPlan(t, planStandingOf(t, pool, engine, root.Key, root.Generation).plan, root.Key, root.Generation, todaysDefaultSteps)
+		if got := planRowsOf(t, pool, root.Key); got != [3]int{1, 1, len(todaysDefaultSteps)} {
+			t.Fatalf("the plan rows of %s = %v, want the default plan alone: the owner's plan deleted", root.Key, got)
 		}
-	}
+		want := []record.Notice{{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: "The first step of " + root.Key +
+			" took no plan: version 1 of document " + planArtifact + ", given by " + token(t, "LEGION-208", claim.RoleArchitect) +
+			". " + inPlanningB(root.Key)}}
+		if got := noticesOf(t, pool, root.Key, "plan-not-taken"); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the plan-not-taken notices = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("the control: a carried default of the run's generation stands and is not told", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := returnEngine()
+		root := stepRoot(t, pool, phase.Admitted)
+		seedDefaultPlan(t, pool, root.Key, root.Generation)
+		drawnInto(t, pool, root.Key, "planning", "b", "default")
+		before := planStandingOf(t, pool, engine, root.Key, root.Generation).plan.Version
+
+		firstStep(t, pool, engine, root.Key)
+
+		if after := planStandingOf(t, pool, engine, root.Key, root.Generation).plan.Version; !reflect.DeepEqual(after, before) {
+			t.Fatalf("the version in force of %s after its first step = %+v, want the carried default %+v as it stood", root.Key, after, before)
+		}
+		if got := noticesOf(t, pool, root.Key, "plan-not-taken"); len(got) != 0 {
+			t.Fatalf("the plan-not-taken notices = %+v, want none: no owner gave the carried default", got)
+		}
+	})
 }
 
 // planNotTakenOfB is the answer to a plan given for key, in the variant b of planning.
@@ -256,6 +301,26 @@ func TestPlanNotTakenStaysUnspent(t *testing.T) {
 		if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
 			t.Fatalf("after %s the plan rows of %s = %v, want none", attempt, root.Key, got)
 		}
+	}
+}
+
+// A plan given at generation 0 is the route's registration for an issue it found unrecorded. Where
+// the daemon records the issue, and draws it into the group that runs the project's default steps,
+// before the fact applies, the plan is answered PLAN_NOT_TAKEN and nothing is stored: it would
+// otherwise wait at generation 0 for a first step that passes it over. The registration stays
+// unspent, as every refusal of a plan.
+func TestAPlanGivenAtGenerationZeroForARecordedIssueOfTheGroupDefaultIsNotTaken(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	drawnInto(t, pool, root.Key, "planning", "b", "default")
+	before := planStandingOf(t, pool, engine, root.Key, root.Generation)
+	id := planID(root.Key, 0, 1)
+	given := ownersPlan(t, root.Key, 0, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
+
+	assertPlanRefusal(t, pool, engine, root.Key, root.Generation, id, applyFacts(t, pool, engine)(id, given), planNotTakenOfB(root.Key), before)
+	if got := planRowsOf(t, pool, root.Key); got != [3]int{} {
+		t.Fatalf("the plan rows of %s = %v, want none: a plan given at generation 0 for an issue of the group is stored nowhere", root.Key, got)
 	}
 }
 
