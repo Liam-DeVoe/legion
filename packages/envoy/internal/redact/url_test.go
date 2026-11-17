@@ -550,23 +550,31 @@ func TestErrorPrintsNoWordsACallerWrappedAroundTheFailure(t *testing.T) {
 	}
 }
 
-// vouched is a Printable of the test's own: its PrintableText is fixed words alone, and its Error
-// names a caller's typed id as well, which must never print.
+// vouched is a Printable of the test's own: its PrintableText is fixed words and its answer's
+// description, and its Error names a caller's typed id as well, which must never print.
 type vouched struct {
 	grant grantID
 	err   error
 }
 
-func (v *vouched) Error() string         { return "grant " + string(v.grant) + ": " + v.PrintableText() }
-func (v *vouched) PrintableText() string { return "the stand-in broker refused the grant" }
-func (v *vouched) Unwrap() error         { return v.err }
+func (v *vouched) Error() string { return "grant " + string(v.grant) + ": " + v.PrintableText() }
+func (v *vouched) PrintableText() string {
+	var re *oauth2.RetrieveError
+	if errors.As(v.err, &re) && re.ErrorDescription != "the grant has ended" {
+		return "the stand-in broker refused the grant: " + re.ErrorDescription
+	}
+	return "the stand-in broker refused the grant"
+}
+func (v *vouched) Unwrap() error { return v.err }
 
 // TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer: a Printable directly over the
 // broker's trusted answer prints its PrintableText, never its Error, alone, in a call and under a
 // caller's %w, and the id in its Error and in the caller's words prints nowhere. Over an answer
 // that is not trusted (it carries an error_uri) it prints as that answer's class, and over a
 // trusted answer it does not sit directly on it prints as that answer, since what it vouches for
-// is only the answer it unwraps to.
+// is only the answer it unwraps to. A PrintableText that holds a control character - a line
+// break from the answer's description, which would forge a line where it prints - prints as the
+// answer's own text, which x/oauth2 escapes.
 func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) {
 	const (
 		raw  = "http://127.0.0.1:1"
@@ -576,6 +584,8 @@ func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) 
 	)
 	status := &http.Response{StatusCode: http.StatusBadRequest}
 	trusted := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorDescription: "the grant has ended"}
+	forging := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorDescription: "ended\nagent-secrets: FORGED from the broker"}
+	escaping := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorDescription: "ended\x1b[2Kagent-secrets: FORGED"}
 	withURI := &oauth2.RetrieveError{Response: status, ErrorCode: "invalid_grant", ErrorURI: "https://docs.example.test/grants"}
 	inCall := func(cause error) error { return &url.Error{Op: "Post", URL: call, Err: cause} }
 	prefix := `Post "` + call + `": `
@@ -589,6 +599,8 @@ func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) 
 		{"under a caller's %w in a call", inCall(fmt.Errorf("grant %s: %w", id, &vouched{id, trusted})), prefix + text, text},
 		{"over an answer with an error_uri", &vouched{id, withURI}, "the broker answered HTTP 400", "the broker answered HTTP 400"},
 		{"over a trusted answer under a wrapper of its own", &vouched{id, fmt.Errorf("grant %s: %w", id, trusted)}, trusted.Error(), trusted.Error()},
+		{"with a line break from the answer", &vouched{id, forging}, forging.Error(), forging.Error()},
+		{"with an escape sequence from the answer, in a call", inCall(&vouched{id, escaping}), prefix + escaping.Error(), escaping.Error()},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			gotError, gotCause := Error(row.err, raw), Cause(row.err, raw)
@@ -601,6 +613,9 @@ func TestErrorPrintsAPrintablesTextOnlyDirectlyOverATrustedAnswer(t *testing.T) 
 			for _, got := range []error{gotError, gotCause} {
 				if strings.Contains(got.Error(), string(id)) {
 					t.Errorf("%q holds the caller's id %q", got, id)
+				}
+				if strings.ContainsAny(got.Error(), "\n\x1b") {
+					t.Errorf("%q holds a control character from the answer", got)
 				}
 				var reached *oauth2.RetrieveError
 				if !errors.As(got, &reached) {

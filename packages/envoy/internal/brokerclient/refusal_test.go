@@ -69,6 +69,37 @@ func TestARefusalPrintsItsSentenceAndNoneOfACallersWrapper(t *testing.T) {
 	}
 }
 
+// TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine: whoever answers at a clean broker
+// address writes the description, and a line break in it would start a line of its own where the
+// refusal prints, such as `legion controller start`'s stderr. redact prints such a refusal as
+// x/oauth2's own text of the answer, which quotes the code and the description, so the words are
+// all there on one line and the sentence is not.
+func TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine(t *testing.T) {
+	const base = "http://127.0.0.1:1"
+	for _, description := range []string{
+		"no entry lists this account\nagent-secrets: FORGED from the broker",
+		"no entry lists this account\r\nagent-secrets: FORGED",
+		"no entry lists this account\x1b[2Kagent-secrets: FORGED",
+	} {
+		refused := newRefusedError(400, "invalid_grant", description)
+		want := fmt.Sprintf("oauth2: %q %q", "invalid_grant", description)
+		inCall := &url.Error{Op: "Post", URL: base + "/v1/oauth/token", Err: refused}
+		for what, got := range map[string]string{
+			"redact.Error":           redact.Error(refused, base).Error(),
+			"redact.Cause":           redact.Cause(refused, base).Error(),
+			"redact.Error in a call": redact.Error(inCall, base).Error(),
+			"redact.Cause of a call": redact.Cause(inCall, base).Error(),
+		} {
+			if strings.ContainsAny(got, "\r\n\x1b") {
+				t.Errorf("%s of a description %q = %q, which holds a control character", what, description, got)
+			}
+			if !strings.HasSuffix(got, want) {
+				t.Errorf("%s of a description %q = %q, want it to end with the answer's own text %q", what, description, got, want)
+			}
+		}
+	}
+}
+
 // refusalBody is the broker's own words for the refusal that costs the most to diagnose: the
 // deployment's entry fixes no session, so a trade that names none mints nothing.
 const refusalBody = "the fleet example-fleet is listed with no session of its own, so the request names one"

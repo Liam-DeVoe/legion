@@ -36,6 +36,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 )
@@ -279,8 +281,12 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 // as a client's sentence around the broker's refusal. printable passes one at its own level of
 // the chain, as it passes that answer, and prints its PrintableText, never its Error. It passes
 // one only where the error it unwraps to is itself a trusted answer, so the fields it is built
-// from are ones printable would print anyway. A wrapper around it still prints nothing of its
-// own.
+// from are ones printable would print anyway, and only where that text holds no control
+// character: x/oauth2 quotes the answer's fields, and a sentence that does not would let a line
+// break or an escape sequence from the answer forge a line where it prints, so such a text
+// prints as the answer's own. A wrapper around it still prints nothing of its own. The trust is
+// by declaration: redact cannot read a Printable's words, so each one is held to this promise
+// where it is written.
 type Printable interface {
 	error
 	// PrintableText is the error's text built from fixed words and its trusted answer's fields
@@ -291,23 +297,49 @@ type Printable interface {
 // checked answers the text of err that may print and whether there is any: err's whole text where
 // the allow-list passes it, and otherwise the text of the first error down err's chain
 // (errors.Unwrap) that is itself a transport failure or the broker's trusted answer, its own
-// text, or a Printable directly over a trusted answer, its PrintableText. That error's text is
-// the one printed, not the text of err or of any error between the two, so no word a wrapper
-// added prints, whether a caller's fmt.Errorf with %w or an error type of its own. An error that
-// wraps several (errors.Join) ends the walk, since its text is no single error's.
+// text, or a Printable directly over a trusted answer whose PrintableText holds no control
+// character, that text. That error's text is the one printed, not the text of err or of any
+// error between the two, so the words of every wrapper above it drop, whoever wrote them: a
+// caller's fmt.Errorf with %w or an error type of its own, and net/http's own too, so a peer that
+// broke the connection mid-answer prints as `unexpected EOF` and not as `net/http: HTTP/1.x
+// transport connection broken: unexpected EOF`. An error that wraps several (errors.Join) ends
+// the walk, since its text is no single error's.
+//
+// The one way a caller's words still print is through what transport accepts by its type or its
+// method rather than by its value: a *net.OpError or *net.DNSError a caller built, which prints
+// its own fields and whatever error it wraps, and a caller's error type whose Timeout answers
+// true, which prints its whole text. redact cannot tell those from net's own, and net/http's
+// timeout types are unexported, so there is no list to hold them to. No caller builds either.
 func checked(err error) (string, bool) {
 	if text := err.Error(); clean(text) {
 		return text, true
 	}
 	for e := err; e != nil; e = errors.Unwrap(e) {
 		if p, ok := e.(Printable); ok && trustedAnswer(errors.Unwrap(e)) {
-			return p.PrintableText(), true
+			if text := p.PrintableText(); !hasControl(text) {
+				return text, true
+			}
+			continue
 		}
 		if transport(e) || trustedAnswer(e) {
 			return e.Error(), true
 		}
 	}
 	return "", false
+}
+
+// hasControl reports whether text holds a control character (C0, DEL or C1) or is not valid
+// UTF-8, either of which can start a line of its own or move the cursor where the text prints.
+func hasControl(text string) bool {
+	if !utf8.ValidString(text) {
+		return true
+	}
+	for _, r := range text {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
 }
 
 // transport reports whether err itself, not an error it wraps, is a failure class names from the
