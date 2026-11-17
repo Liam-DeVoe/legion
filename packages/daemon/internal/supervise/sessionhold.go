@@ -10,7 +10,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 )
 
 // errHoldUnanswered is a hold the store did not answer (holdRecorded): it says nothing about the
@@ -339,7 +338,7 @@ func (m *Machine) holdRecorded(ctx context.Context, session, sessionFile string)
 		}
 		m.warnRefusal("supervise: refused a session another claim recorded first",
 			"kind", h.Kind, "name", h.Name, "claim", m.claim.Token, "holder", named)
-		return &heldElsewhereError{holder: holder, err: fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))}
+		return &heldElsewhereError{hold: h, holder: holder, err: fmt.Errorf("%s as %s %s: %w", m.claim.Token, h.Kind, h.Name, claim.SessionHeldRefusal(h.Name))}
 	}
 	if m.heldNames == nil {
 		m.heldNames = map[Hold]bool{}
@@ -365,10 +364,11 @@ func firstHeldElsewhere(holds []Hold, holders []claim.Token, token claim.Token) 
 }
 
 // heldElsewhereError is holdRecorded's refusal of a name held for another claim, or for none
-// (holder empty), carrying that holder for a caller that names it to an operator (mayForget). Its
-// text and the claim.Refusal it wraps are the refusal's own, so a registration answers exactly
-// what it answered before.
+// (holder empty), carrying that name and its holder for a caller that names the holder to an
+// operator (mayForget). Its text and the claim.Refusal it wraps are the refusal's own, so a
+// registration answers exactly what it answered before.
 type heldElsewhereError struct {
+	hold   Hold
 	holder claim.Token
 	err    error
 }
@@ -383,17 +383,19 @@ func (e *heldElsewhereError) Unwrap() error { return e.err }
 // A claim that records a session it does not hold is the one the outbox withholds its role's
 // messages from (HoldsItsSession), and only while it records that session: once the session is
 // cleared, the claim holds what it records, and its role topic opens. The Envoy listener still
-// names the cleared session as the role's holder while any process registers that session id,
-// and where the name is held for another claim, as after a rollback, that claim's live process
-// does: the role claim reaper keeps a claim whose holder is alive. The role's messages would then
-// reach that process (review round 16 of #4220). So before such a claim clears its session, the
-// listener is asked once who holds the claim's role, and the clear is refused while the cleared
-// session does, live or unresponsive, since an unresponsive holder takes the role's messages
-// again once its heartbeats land. A role no claim names, one a gone holder's claim names, and one
-// another session holds are no such route, and the clear goes on. A listener that does not
-// answer refuses the clear: nothing says the route is closed. The remedy the refusal names is to
-// stop the process under that session first, through the daemon, since a pod or pane stopped by
-// hand is relaunched under the same id (Machine.died).
+// names the cleared session as the role's holder while its claim stands, and where the name is
+// held for another claim, as after a rollback, that claim's live process keeps the claim
+// standing: the role claim reaper keeps a claim whose holder's key the session bucket still
+// holds. The role's messages would then reach that process (review round 16 of #4220). So before
+// such a claim clears its session, the listener is asked once who holds the claim's role, and the
+// clear is refused while the listener names the cleared session, in any state: a holder it
+// reports unresponsive takes the role's messages again once its heartbeats land, and one it
+// reports gone still holds the claim until the reaper's next pass, so a process registering the
+// session again in between, the rightful holder's resumed or a stalled one, keeps the role
+// (review round 17). The clear goes on only once the listener names no holder, or another
+// session. A listener that does not answer refuses the clear: nothing says the route is closed.
+// The remedy the refusal names is to stop the process under that session first, through the
+// daemon, since a pod or pane stopped by hand is relaunched under the same id (Machine.died).
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
 // so nothing else of this claim waits behind it but the operator who asked.
@@ -421,17 +423,20 @@ func (m *Machine) mayForget(ctx context.Context, request string) error {
 			"%s records session %s, which it does not hold (%v), and the Envoy listener did not say which session holds its role, so clearing the session could let the role's messages reach another claim's process; try again once the listener answers: %w",
 			m.claim.Token, session, err, lookupErr)}
 	}
-	if holder != session || state == notify.StateGone {
+	if holder != session {
 		return nil
 	}
+	// The claim to suspend is the one holding the session id the listener names: a refusal of
+	// another name (the file's, or a transcript's id) is held by a claim whose process need not
+	// run under that id, and stopping it would change nothing at the listener.
 	whose := "the process registered under it"
 	var held *heldElsewhereError
-	if errors.As(err, &held) && held.holder != "" {
+	if errors.As(err, &held) && held.holder != "" && held.hold == (Hold{Kind: HoldSessionID, Name: session}) {
 		whose = fmt.Sprintf("the claim that holds it, %s (`legion claims suspend --claim %s`)", held.holder, held.holder)
 	}
 	return &RefusedError{State: m.claim.State, Request: request, Err: fmt.Errorf(
-		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first suspend %s, which stops that process through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once the listener names no holder of the role %s under %s (GET /v1/roles/%s)",
-		m.claim.Token, session, err, session, state, session, whose, m.claim.Token, session, m.claim.Token)}
+		"%s records session %s, which it does not hold (%v), and the Envoy listener names %s (%s) as the holder of its role, so with the session cleared the role's messages would reach the process under %s: first stop %s, through the daemon (a pod or pane stopped by hand is relaunched under the same id), then ask again once GET /v1/roles/%s answers 404 with no holder or names another session; after that process's last registration it takes at most the session bucket's maximum age plus one role claim reaper interval (ENVOY_SESSION_MAX_AGE + ENVOY_ROLE_CLAIM_REAP_INTERVAL, ten minutes with the defaults)",
+		m.claim.Token, session, err, session, state, session, whose, m.claim.Token)}
 }
 
 // admittedSession is a session and file every name of which the store last answered as this

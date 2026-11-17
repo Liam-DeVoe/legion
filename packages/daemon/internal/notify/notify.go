@@ -53,9 +53,6 @@ var ErrHolderUnresponsive = errors.New("the role's holder is unresponsive")
 const (
 	ReasonHolderLapsed = roleholder.HolderLapsed
 	StateUnresponsive  = "unresponsive"
-	// StateGone is the `holder_state` of a lapsed holder past the gone horizon, which no longer
-	// renews its claim: the role claim reaper frees the role at its next pass (RoleHolder).
-	StateGone = "gone"
 )
 
 // RoleRefusal is the body the listener writes when it refuses a role publish or a role lookup
@@ -370,14 +367,12 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 // RoleHolder reads the session the listener names as role's holder, with that holder's state (GET
 // /v1/roles/<role>, roleGetHandler and writeRoleHolderError in packages/envoy/cmd/listener): on the
 // 200 the live holder, its state `live`; on the 404 of a lapsed holder, that holder and its
-// `holder_state`, StateUnresponsive or StateGone, since the claim stands until the role claim
-// reaper takes it and an unresponsive holder takes the role's messages again once its heartbeats
-// land; on the 404 of a role no claim names (roleholder.Unclaimed), no holder at all. A lapsed
-// holder the listener names no state for is an older listener's, whose lapsed holder is no holder
-// at all (StateUnresponsive's comment), and is answered as none. Every other status, a body it
-// cannot read, and a listener it cannot reach are errors, which the caller reads as an answer it
-// does not have: the daemon's forget of a session its claim does not hold refuses on one
-// (supervise.Deps.RoleHolder).
+// `holder_state`, `unresponsive` or `gone`, since the claim stands until the role claim reaper
+// takes it, or `lapsed` where an older listener names no state; on the 404 of a role no claim names
+// (roleholder.Unclaimed), no holder at all. Every other status, a body it cannot read, and a
+// listener it cannot reach are errors, which the caller reads as an answer it does not have: the
+// daemon's forget of a session its claim does not hold refuses on one, and on every holder it
+// names that is that session (supervise.Deps.RoleHolder).
 func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, state string, err error) {
 	target := fmt.Sprintf("%s/v1/roles/%s", p.baseURL, url.PathEscape(role))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -408,8 +403,8 @@ func (p *HTTPPublisher) RoleHolder(ctx context.Context, role string) (holder, st
 		if readErr != nil || json.Unmarshal(body, &refusal) != nil {
 			return "", "", fmt.Errorf("look up the holder of role %s: the listener's 404 is unreadable: %s", role, strings.TrimSpace(string(body)))
 		}
-		if refusal.Reason == ReasonHolderLapsed && refusal.Holder != "" && refusal.HolderState != "" {
-			return refusal.Holder, refusal.HolderState, nil
+		if refusal.Holder != "" {
+			return refusal.Holder, cmp.Or(refusal.HolderState, "lapsed"), nil
 		}
 		return "", "", nil
 	}

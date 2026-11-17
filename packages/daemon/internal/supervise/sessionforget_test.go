@@ -10,34 +10,38 @@ import (
 )
 
 // A session a claim records but does not hold is cleared only once the Envoy listener no longer
-// names it as the claim's role holder (mayForget, review round 16 of #4220). The outbox withholds
-// the claim's role messages only while it records that session, and the listener keeps naming
-// the session as the role's holder while another claim's live process registers it, so a clear
-// made then would send the role's messages to that process. The listener is asked once per clear,
-// of the claim's own role; the clear is refused while the cleared session holds the role, live or
-// unresponsive, and while the listener gives no answer, and the refusal names the claim to
-// suspend. It goes on once no claim names the role, another session holds it, or its holder is
-// gone. A claim holding its own session forgets as before and asks nothing (R9).
+// names it as the claim's role holder (mayForget, review rounds 16 and 17 of #4220). The outbox
+// withholds the claim's role messages only while it records that session, and the listener keeps
+// naming the session as the role's holder while its claim stands, which another claim's live
+// process under the same id keeps standing, so a clear made then would send the role's messages
+// to that process. The listener is asked once per clear, of the claim's own role; the clear is
+// refused while the listener names the cleared session as the role's holder in any state (live,
+// unresponsive, gone, or lapsed with no state from an older listener), and while the listener
+// gives no answer, and the refusal names the claim to suspend, and how long the wait after it
+// takes. It names that claim only when the refused name is the session id the listener names: a
+// file name another claim holds says nothing of the process under the id. The clear goes on once
+// no claim names the role, or another session holds it. A claim holding its own session forgets
+// as before and asks nothing (R9).
 //
-// The control (the pull request records the run): mayForget admitting every clear, as today's
-// forget does; the refused rows clear the session while the listener names it.
+// The controls (the pull request records each run): mayForget admitting every clear, as today's
+// forget does, clears the session in every refused row; admitting a holder the listener reports
+// gone, as round 17 first did, clears it in the gone row; naming the holder of any refused name
+// names the file name's holder in the last refused row.
 func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	const holder = claim.Token("legion-legion-LEGION-209-tester")
 	type answer struct {
 		holder, state string
 		err           error
 	}
-	// processless is a claim suspended over session, which holder recorded first when held, its
-	// role lookup answering with a.
-	processless := func(t *testing.T, held bool, a answer) (*harness, *int) {
+	// processless is a claim suspended over session, each of whose names in elsewhere holder
+	// recorded first, its role lookup answering with a.
+	processless := func(t *testing.T, elsewhere []Hold, a answer) (*harness, *int) {
 		h := newHarness(t)
 		h.reach(StateIdle)
 		h.must(RequestStop{Claim: h.token})
 		h.wantState(StateRetired)
-		if held {
-			for _, name := range RecordedHolds(session, sessionFile) {
-				h.store.setHold(name, holder)
-			}
+		for _, name := range elsewhere {
+			h.store.setHold(name, holder)
 		}
 		asked := 0
 		h.deps.RoleHolder = func(_ context.Context, role string) (string, string, error) {
@@ -50,6 +54,14 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		h.restart()
 		return h, &asked
 	}
+	every := RecordedHolds(session, sessionFile)
+	var fileNameOnly []Hold
+	for _, name := range every {
+		if name.Kind == HoldFileName {
+			fileNameOnly = append(fileNameOnly, name)
+		}
+	}
+	const suspendHolder, theBound = "legion claims suspend --claim " + string(holder), "ENVOY_SESSION_MAX_AGE + ENVOY_ROLE_CLAIM_REAP_INTERVAL, ten minutes with the defaults"
 	clears := []struct {
 		name  string
 		event func(h *harness) Event
@@ -59,24 +71,28 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 	}
 	for _, clear := range clears {
 		for _, tc := range []struct {
-			name    string
-			a       answer
-			refused string
+			name      string
+			elsewhere []Hold
+			a         answer
+			refused   []string
+			unnamed   bool
 		}{
-			{"refused while the listener names the session as the role's live holder", answer{session, "live", nil}, "legion claims suspend --claim " + string(holder)},
-			{"refused while that holder is unresponsive", answer{session, "unresponsive", nil}, "legion claims suspend --claim " + string(holder)},
-			{"refused while the listener does not answer", answer{"", "", errors.New("the listener is unreachable")}, "did not say which session holds its role"},
-			{"admitted once no claim names the role", answer{}, ""},
-			{"admitted while another session holds the role", answer{"ses_another", "live", nil}, ""},
-			{"admitted once the holder is gone", answer{session, "gone", nil}, ""},
+			{"refused while the listener names the session as the role's live holder", every, answer{session, "live", nil}, []string{suspendHolder, theBound}, false},
+			{"refused while that holder is unresponsive", every, answer{session, "unresponsive", nil}, []string{suspendHolder}, false},
+			{"refused while that holder is gone but its claim stands", every, answer{session, "gone", nil}, []string{suspendHolder, theBound}, false},
+			{"refused while an older listener names that holder lapsed", every, answer{session, "lapsed", nil}, []string{suspendHolder}, false},
+			{"refused while the listener does not answer", every, answer{"", "", errors.New("the listener is unreachable")}, []string{"did not say which session holds its role"}, false},
+			{"refused naming no claim when the refused name is a file name another claim holds", fileNameOnly, answer{session, "live", nil}, []string{"the process registered under it", theBound}, true},
+			{"admitted once no claim names the role", every, answer{}, nil, false},
+			{"admitted while another session holds the role", every, answer{"ses_another", "live", nil}, nil, false},
 		} {
 			t.Run(clear.name+": "+tc.name, func(t *testing.T) {
-				h, asked := processless(t, true, tc.a)
+				h, asked := processless(t, tc.elsewhere, tc.a)
 				err := h.handle(clear.event(h))
 				if *asked != 1 {
 					t.Errorf("the listener was asked %d times, want once", *asked)
 				}
-				if tc.refused == "" {
+				if tc.refused == nil {
 					if err != nil {
 						t.Fatalf("the clear = %v, want it admitted", err)
 					}
@@ -86,8 +102,16 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 					return
 				}
 				var refused *RefusedError
-				if !errors.As(err, &refused) || !strings.Contains(err.Error(), tc.refused) {
-					t.Fatalf("the clear = %v, want it refused naming %q", err, tc.refused)
+				if !errors.As(err, &refused) {
+					t.Fatalf("the clear = %v, want it refused", err)
+				}
+				for _, want := range tc.refused {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("the refusal = %v, want it to name %q", err, want)
+					}
+				}
+				if tc.unnamed && strings.Contains(err.Error(), string(holder)) {
+					t.Errorf("the refusal = %v, want it to name no claim: %s holds only the file's name, not the session id the listener names", err, holder)
 				}
 				if c := h.claim(); c.Session != session || c.SessionFile != sessionFile {
 					t.Fatalf("the refused clear left the claim recording %q at %q, want %s kept", c.Session, c.SessionFile, session)
@@ -96,7 +120,7 @@ func TestAForgetOfASessionTheClaimDoesNotHoldWaitsForItsRole(t *testing.T) {
 		}
 	}
 	t.Run("a claim holding its own session forgets without asking", func(t *testing.T) {
-		h, asked := processless(t, false, answer{session, "live", nil})
+		h, asked := processless(t, nil, answer{session, "live", nil})
 		h.must(RequestForgetSession{Claim: h.token, Session: session})
 		if *asked != 0 {
 			t.Fatalf("the listener was asked %d times, want none: the claim holds %s", *asked, session)

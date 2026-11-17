@@ -965,14 +965,14 @@ type Deps struct {
 	// inside the machine's decision, so it returns at once and does the call elsewhere.
 	SessionGone func(session string)
 	// RoleHolder reads the session the Envoy listener names as role's holder, with that holder's
-	// state (`live`, `unresponsive` or `gone`), or no holder for a role no claim names
-	// (notify.HTTPPublisher.RoleHolder). A forget of a session this claim records but does not
-	// hold asks it once and refuses while that session holds the claim's role (mayForget): the
-	// claim's role topic opens once it records no session, and the role's messages would then
-	// reach the other claim's process under that session. An error is an answer the daemon does
-	// not have, and the forget refuses on it. Nil is a daemon with no Envoy listener, where no role
-	// carries anything, and asks nothing. It is called inside the machine's decision, bounded by
-	// Timeouts.RPC.
+	// state (`live`, `unresponsive`, `gone`, or `lapsed` from an older listener), or no holder for
+	// a role no claim names (notify.HTTPPublisher.RoleHolder). A forget of a session this claim
+	// records but does not hold asks it once and refuses while the listener names that session as
+	// the claim's role holder, in any state (mayForget): the claim's role topic opens once it
+	// records no session, and the role's messages would then reach the other claim's process under
+	// that session. An error is an answer the daemon does not have, and the forget refuses on it.
+	// Nil is a daemon with no Envoy listener, where no role carries anything, and asks nothing. It
+	// is called inside the machine's decision, bounded by Timeouts.RPC.
 	RoleHolder func(ctx context.Context, role string) (holder, state string, err error)
 	// StallBackstopped is told of each turn the daemon's stall backstop did something to
 	// (backstopStalledTurn), with the record it acted on and the end it made: the owner's notice

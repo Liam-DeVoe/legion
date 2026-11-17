@@ -71,13 +71,16 @@ import (
 // suspended here or not. The daemon withholds its own messages from such a claim's role only
 // while the claim records that session, so the one decision that would open the role topic, the
 // clear of that session, first asks the listener who holds the claim's role and is refused while
-// that session does (supervise's mayForget); the operator suspends the claim holding the session,
-// which stops its process, and forgets once the listener names no such holder. The contained
-// claim takes no forget while it is live, so the operator stops it (`legion claims suspend`, once
-// its runtime answers, or a stop of its pod or pane by hand) before the steps above, which need a
-// daemon that serves (review rounds 11 to 16 of #4220). A statement that makes such a claim the
-// holder of its session writes no claim, and the publication of an issue's role holders
-// follows claim writes, so Dispatch is shown that claim as its role's holder at the next boot, or
+// the listener names that session in any state (supervise's mayForget); the operator suspends the
+// claim holding the session, which stops its process, forgets once the listener names no holder
+// or another session, at most `ENVOY_SESSION_MAX_AGE` + `ENVOY_ROLE_CLAIM_REAP_INTERVAL` (ten
+// minutes with the defaults) after that process's last registration, and only then resumes the
+// claim it suspended. The contained claim takes no forget while it is live, so the operator stops
+// it (`legion claims suspend`, once its runtime answers, or a stop of its pod or pane by hand)
+// before the steps above, which need a daemon that serves (review rounds 11 to 17 of #4220). A
+// statement that makes such a claim the holder of its session writes no claim, and the
+// publication of an issue's role holders follows claim writes, so Dispatch is shown that claim as
+// its role's holder at the next boot, or
 // once the claim is suspended and resumed. A boot whose budget runs out on the suspensions still
 // fails, since every later step would too. A store that refuses
 // the conflicts' read refuses the boot, naming what failed, as the controller's boot stop does
