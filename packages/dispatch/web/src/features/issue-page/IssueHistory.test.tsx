@@ -396,8 +396,12 @@ test("a day the address opened closes when the reader presses its line", async (
   }
 });
 
-/** The history of `KEY` with nothing above it but a query client that never retries. */
-function drawHistory(item: string | undefined): {
+/** The history of `KEY` with nothing above it but a query client that never retries, drawn in
+ *  `container` where one is given. */
+function drawHistory(
+  item: string | undefined,
+  container?: HTMLElement
+): {
   queryClient: QueryClient;
   unmount: () => void;
 } {
@@ -417,7 +421,8 @@ function drawHistory(item: string | undefined): {
           visitMark={99999}
         />
       </QueryClientProvider>
-    </MemoryRouter>
+    </MemoryRouter>,
+    container === undefined ? {} : { container }
   );
   return { queryClient, unmount };
 }
@@ -976,6 +981,141 @@ test("Load older whose last page adds no control hands the focus to the control 
   } finally {
     restoreFocus?.();
     unmount?.();
+    for (const read of reads) read.mockRestore();
+  }
+});
+
+/** How tall the box the history scrolls in is: Details' view. */
+const VIEW_HEIGHT = 600;
+
+// Load older hands the focus on with no scroll, and `ViewportAnchor` takes the reader's place
+// only from what the reader does - the pointer over the rows, or a scroll they made - so it held
+// no entry then: long agents' turns just above Load older, drawn whole until they near the
+// screen, are cut once the page has landed, by commits of their own, and the control the focus
+// was handed to went up with them out of Details' view. The hand-on has the anchor hold the
+// entry the focus is in, which it keeps in place as the entries above it change height. The
+// browser row "Load older pressed as the focus reaches it keeps the focus in view while the
+// turns above it are cut" (`e2e/issue-page-m.e2e.ts`) draws the real turns.
+test("the entry Load older hands the focus to keeps its place in Details' view as the entries above it are cut", async () => {
+  const firstPage = Array.from({ length: 200 }, (_, index) => claimAgo(400 - index, index + 1));
+  const olderPage = [claimAgo(10, 300), claimAgo(9, 301)];
+  const reads = [
+    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+      options?.before === undefined ? [...firstPage] : [...olderPage]
+    ),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+  ];
+  // Details' own box, which the history scrolls in, at the top of the window.
+  const box = document.body.appendChild(document.createElement("div"));
+  box.style.overflowY = "auto";
+  // The first page's two oldest entries, just above Load older, are a thousand pixels tall, as
+  // long turns are drawn whole, until they are cut.
+  const heights = new Map([
+    ["event:202", 1000],
+    ["event:201", 1000],
+  ]);
+  const rows = () => [...box.querySelectorAll<HTMLElement>("[data-event-seq]")];
+  const heightOf = (row: Element) =>
+    heights.get(row.getAttribute("data-history-entry") ?? "") ?? ROW_HEIGHT;
+  const rectOf = (top: number, height: number) =>
+    ({
+      bottom: top + height,
+      height,
+      left: 0,
+      right: 100,
+      toJSON: () => ({}),
+      top,
+      width: 100,
+      x: 0,
+      y: top,
+    }) as DOMRect;
+  // Every entry stacks from `LIST_TOP` in DOM order, moved up by the box's scroll; a control
+  // measures as the entry it is in, and anything else as the whole list.
+  const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    if (this === box) return rectOf(0, VIEW_HEIGHT);
+    const row = this.closest("[data-event-seq]");
+    const start = LIST_TOP - box.scrollTop;
+    let top = start;
+    for (const one of rows()) {
+      if (one === row) return rectOf(top, heightOf(one));
+      top += heightOf(one);
+    }
+    return rectOf(start, top - start);
+  });
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    let top = LIST_TOP - box.scrollTop;
+    for (const one of rows()) {
+      if (y >= top && y < top + heightOf(one)) return one;
+      top += heightOf(one);
+    }
+    return null;
+  });
+  // The anchor hears a change of height outside its commits from a resize observer of its root,
+  // which happy-dom never calls back: the case calls it back once the entries are cut.
+  const observing = new Set<{ readonly callback: ResizeObserverCallback; observer: unknown }>();
+  const RealResizeObserver = globalThis.ResizeObserver;
+  globalThis.ResizeObserver = class {
+    readonly #held: { readonly callback: ResizeObserverCallback; observer: unknown };
+    constructor(callback: ResizeObserverCallback) {
+      this.#held = { callback, observer: this };
+    }
+    observe() {
+      observing.add(this.#held);
+    }
+    unobserve() {}
+    disconnect() {
+      observing.delete(this.#held);
+    }
+  } as unknown as typeof ResizeObserver;
+  let unmount: (() => void) | undefined;
+
+  try {
+    unmount = drawHistory(undefined, box).unmount;
+    const older = await screen.findByRole("button", { name: CONTROL_LABELS.load_older });
+    await waitFor(() => expect(rows()).toHaveLength(200));
+    // Details scrolled down to Load older: the first entry the older page adds lands in the
+    // middle of the view.
+    box.scrollTop = LIST_TOP + 198 * ROW_HEIGHT + 2 * 1000 - VIEW_HEIGHT / 2;
+    older.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: CONTROL_LABELS.load_older })).toBeNull()
+    );
+    const entry = document.activeElement?.closest<HTMLElement>("[data-history-entry]");
+    if (entry === null || entry === undefined) {
+      throw new Error("Load older handed the focus to no entry of the history");
+    }
+    expect(
+      entry.getAttribute("data-history-entry"),
+      "Load older handed the focus to an entry other than the first the page it read added"
+    ).toBe("event:10");
+    const handed = entry.getBoundingClientRect().top;
+    expect(handed, "the entry Load older handed the focus to is not in Details' view").toBe(
+      VIEW_HEIGHT / 2
+    );
+
+    // Each long entry is cut to six lines by a commit of its own, which the anchor sees only as
+    // its root resized.
+    heights.set("event:202", 120);
+    heights.set("event:201", 120);
+    act(() => {
+      for (const { callback, observer } of observing) callback([], observer as ResizeObserver);
+    });
+
+    expect(
+      entry.getBoundingClientRect().top,
+      "the entries above the focus were cut and moved the entry Load older handed it to out of Details' view"
+    ).toBe(handed);
+  } finally {
+    unmount?.();
+    globalThis.ResizeObserver = RealResizeObserver;
+    rect.mockRestore();
+    point.mockRestore();
+    box.remove();
     for (const read of reads) read.mockRestore();
   }
 });

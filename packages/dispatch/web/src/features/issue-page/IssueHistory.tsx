@@ -76,12 +76,13 @@ const WORDS = `mt-0.5 min-w-0 text-sm leading-5 [overflow-wrap:anywhere] ${pageK
  * The issue's history, a list in the panel (`history-model.ts`):
  * newest first, each day before today folded to one line with its count, which opens it - the
  * day the pages of the log read so far end in with no count, as its entries are not all read
- * yet (`HistoryDay.partial`). An event is one line with its pin; one author's uploads, each
- * within a minute of the one before it, are one entry that opens each file, each with its own
- * upload's pin, drawn under one key however the run grows (`runKeys`); a thread agents wrote
- * among themselves is drawn whole, each turn's words with its Reply, which sets the line at the
- * foot of the outline to reply to it - and once a person has replied in a thread, the outline
- * draws it and this list no longer does.
+ * yet (`HistoryDay.partial`). An event is one line with its pin; a run of uploads - one
+ * author's newest upload and their uploads made at most a minute before it, with no other
+ * author's upload between them - is one entry that opens each file, each with its own upload's
+ * pin, drawn under one key as the run grows or a newer upload splits it (`runKeys`); a thread
+ * agents wrote among themselves is drawn whole, each turn's words with its Reply, which sets the
+ * line at the foot of the outline to reply to it - and once a person has replied in a thread,
+ * the outline draws it and this list no longer does.
  *
  * `/activity`, `t v` and the address of a comment or message of such a thread open Details here:
  * at `/activity` the heading is brought into Details' view once for each arrival, except a
@@ -199,7 +200,8 @@ export function IssueHistory({
     ]
   );
   // The key each run of uploads is drawn under, held from one render to the next by its files'
-  // uploads (`runKeys`), so a run a newer upload extends is drawn on, not drawn anew.
+  // uploads (`runKeys`), so a run a newer upload joins is drawn on, not drawn anew, and so is the
+  // newer part of a run that upload splits.
   const runKeyOfUpload = useRef(new Map<number, string>());
   const drawnIds = useMemo(() => runKeys(days, runKeyOfUpload.current), [days]);
   // The days before today the reader opened; the day the address's entry is in is opened as
@@ -328,7 +330,8 @@ export function IssueHistory({
   // gone - while a read that failed leaves it there, beside the line that says so. A reader who
   // has put the focus elsewhere by then keeps it there. No such move scrolls Details, whose
   // reader keeps their place, so a control the page pushed out of view - under files it added
-  // to a run above - takes the focus only when none is in view.
+  // to a run above - takes the focus only when none is in view; and the entry the focus moved to
+  // is then the place Details holds as the entries above it change height (`holdPlaceAtFocus`).
   const pressed = useRef<
     | {
         readonly before: ReadonlySet<HTMLElement>;
@@ -378,6 +381,7 @@ export function IssueHistory({
           lastBefore)
         : failure.current?.querySelector("button");
     (target ?? heading.current)?.focus({ preventScroll: true });
+    holdPlaceAtFocus(scroller.current);
   });
   // The history draws the log it holds whatever the last read's outcome: a read
   // that fails once it holds the log - a refetch after an event, a later open of Details, the
@@ -538,6 +542,24 @@ function scrollingAncestor(element: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
+/**
+ * Has the history's `ViewportAnchor` hold the reader's place at the entry the focus is in, once
+ * this list has moved the focus there itself with no scroll. The anchor takes a place only from
+ * what the reader does - the pointer moving over the rows, or a scroll of the box it moves that
+ * it did not make itself (`ViewportAnchor.tsx`) - and a focus moved by code is neither, so it
+ * held no entry, and a change of height outside any commit moved the focused control with it:
+ * long agents' turns above Load older, drawn whole until they near the screen, are cut after
+ * the page it read lands, a thousand pixels each, and took the control Load older had handed
+ * the focus to up out of Details' view. A scroll event of that box is the anchor's one way to
+ * take a place, and it takes the entry the focus is in, where it stands now; were the anchor's
+ * own scroll of this commit still to raise its event, this one is read as that, and that one,
+ * when it comes, takes the same entry. Where the document scrolls the list `box` is null: the
+ * anchor keeps no place there, the browser's own scroll anchoring does, and nothing is sent.
+ */
+function holdPlaceAtFocus(box: HTMLElement | null): void {
+  box?.dispatchEvent(new Event("scroll"));
+}
+
 /** The day the entry `item` names is in: a thread's turn, root or reply. */
 function dayOf(days: readonly HistoryDay[], item: string): string | undefined {
   return days.find((day) =>
@@ -555,8 +577,11 @@ function dayOf(days: readonly HistoryDay[], item: string): string | undefined {
  * drawn under that name, the run would be mounted anew, and a focus on one of its files' links
  * or Pins would fall to the page. So a run keeps the key it was first drawn under: the key one
  * of its files was drawn under (`held`, by each file's upload) unless another run here took it,
- * else its own id, with a count where that is taken too, as it can be once something other than
- * more of the log splits a run drawn before. Every file of the run is then held under its key.
+ * else its own id, with a count where that is taken too. A newer upload can split a run drawn
+ * before (`buildHistory`): the runs are read newest first, so the part that holds the newer
+ * upload keeps the run's key, and the files split off, more than a minute older than that
+ * upload, are drawn anew under their own run's id, which can be the very key the newer part
+ * kept. Every file of the run is then held under its key.
  */
 function runKeys(
   days: readonly HistoryDay[],

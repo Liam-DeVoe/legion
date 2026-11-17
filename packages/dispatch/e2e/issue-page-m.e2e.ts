@@ -1059,15 +1059,15 @@ test("loading older history entries keeps the reader anchor", async ({ browser }
 // "Load older" adds entries under the reader, and the line they read keeps its place on the
 // screen; and by the focus rule of `IssueHistory.tsx`, a press of Load older made by keyboard
 // hands the focus to a control the page it read added, never one out of the reader's view. One
-// author's uploads in one minute are one entry (`history-model.ts`), so a run whose uploads
-// straddle the log's 200-event page is extended by the older page. Found by the tester on a
-// running build of e3bf280f with a copy of a large real issue, when a run listed its files
-// oldest first and was keyed by its oldest upload read so far: a reader on a file of such a run
-// saw it move 572 px down when Load older landed (the entry's key went from uploads:4736 to
-// uploads:4709), where an event line in the same place stayed put; and Load older pressed by
-// keyboard put the focus on that run's author link 752 px above Details' view (6,624 px on the
-// next press). A run now lists its files newest first and keeps its key as the older page
-// extends it.
+// author's newest upload and their uploads made at most a minute before it are one entry
+// (`history-model.ts`), so a run whose uploads straddle the log's 200-event page is extended by
+// the older page. Found by the tester on a running build of e3bf280f with a copy of a large real
+// issue, when a run listed its files oldest first and was keyed by its oldest upload read so far:
+// a reader on a file of such a run saw it move 572 px down when Load older landed (the entry's
+// key went from uploads:4736 to uploads:4709), where an event line in the same place stayed put;
+// and Load older pressed by keyboard put the focus on that run's author link 752 px above
+// Details' view (6,624 px on the next press). A run now lists its files newest first and keeps
+// its key as the older page extends it.
 test("loading older keeps the reader's place on an upload run the older page extends, and the focus in view", async ({
   browser,
 }) => {

@@ -13,8 +13,8 @@ import { CONTROL_LABELS, DECLARED_WORDS, wordsIn } from "./page-words";
 
 /**
  * The issue's history as the panel draws it: every event that is no row of the outline, newest
- * first, by day, with one author's uploads, each within a minute of the one before it, as one
- * entry and the threads agents wrote among themselves drawn whole.
+ * first, by day, with a run of one author's uploads - the newest and those made at most a minute
+ * before it - as one entry and the threads agents wrote among themselves drawn whole.
  */
 
 const KEY = "CORE-1";
@@ -241,11 +241,12 @@ function uploadRuns(events: readonly DispatchEvent[]): { files: number[]; id: st
   );
 }
 
-// The minute that joins one author's uploads is counted from the upload before each, so an older
-// page only lengthens the oldest run drawn or adds runs under it. Counted from a run's first
-// upload, it split runs: of four uploads at :00, :50, 1:20 and 2:00, a first page holding the
-// last three drew a run of :50 and 1:20 under one of 2:00, and the older page moved 1:20 up into
-// the run of 2:00.
+// A run's minute is counted back from its newest upload, the uploads walked newest first, so an
+// older page only lengthens the oldest run drawn or adds runs under it. Counted from a run's
+// first upload, it split runs: of four uploads at :00, :50, 1:20 and 2:00, a first page holding
+// the last three drew a run of :50 and 1:20 under one of 2:00, and the older page moved 1:20 up
+// into the run of 2:00. Counted from the upload before each, it drew all four as one entry two
+// minutes long.
 test("an older page that extends the oldest run of uploads moves no file of a run drawn", () => {
   seq = 999;
   const uploads = [
@@ -257,22 +258,28 @@ test("an older page that extends the oldest run of uploads moves no file of a ru
   const firstPage = uploadRuns(uploads.slice(1));
   const whole = uploadRuns(uploads);
 
+  expect(firstPage, "the first page's runs are not counted back from each run's newest").toEqual([
+    { files: [1003, 1002], id: "uploads:1003" },
+    { files: [1001], id: "uploads:1001" },
+  ]);
   for (const run of firstPage) {
     const holders = new Set(run.files.map((id) => whole.find((one) => one.files.includes(id))?.id));
     expect([...holders], `the older page moved a file of ${run.id} to another run`).toEqual([
       run.id,
     ]);
   }
-  expect(
-    whole.find((run) => run.files.includes(1001))?.files,
-    "the older page parted the uploads at :50 and 1:20, drawn as one run"
-  ).toContain(1002);
-  expect(whole).toEqual([{ files: [1003, 1002, 1001, 1000], id: "uploads:1003" }]);
+  expect(whole, "the older page did more than extend the oldest run").toEqual([
+    { files: [1003, 1002], id: "uploads:1003" },
+    { files: [1001, 1000], id: "uploads:1001" },
+  ]);
 });
 
-// The live feed adds a newer upload above every entry: within a minute of the newest run's newest
-// upload, it lengthens that run, however long before the run began, and no run under it changes.
-test("a newer upload within a minute of the newest run extends that run and no other", () => {
+// The live feed adds a newer upload above every entry. Within a minute of the newest run's newest
+// upload it joins that run, and the run's uploads more than a minute older than it are split off
+// into a run of their own, as a run's minute is counted back from its newest upload; no file of
+// any run under them moves. Counted from the upload before each, a newer upload lengthened the
+// run however long before the run began.
+test("a newer upload within a minute of the newest run's newest upload joins it and splits off the run's uploads more than a minute older than it", () => {
   seq = 0;
   const drawn = [
     shot("09:00:00", "early"),
@@ -285,8 +292,30 @@ test("a newer upload within a minute of the newest run extends that run and no o
 
   const after = uploadRuns([...drawn, shot("09:02:00", "third")]);
 
-  expect(after[0]?.files, "the newer upload did not join the newest run").toEqual([5, 4, 3]);
-  expect(after.slice(1), "a newer upload changed a run under the newest").toEqual(before.slice(1));
+  expect(after[0]?.files, "the newer upload did not join the newest run's newest upload").toEqual([
+    5, 4,
+  ]);
+  expect(
+    after[1]?.files,
+    "the newest run's upload 80 s older than the newer one was not split off into a run of its own"
+  ).toEqual([3]);
+  expect(after.slice(2), "a newer upload moved a file of a run under the newest").toEqual(
+    before.slice(1)
+  );
+});
+
+// No run spans more than a minute: of three uploads 40 s apart, the oldest is 80 s older than
+// the newest, so it begins a run of its own under the newest two. Counted from the upload before
+// each, the three were one entry, and one entry could span any length of time.
+test("three uploads 40 s apart are two entries, the newest two together", () => {
+  seq = 0;
+  expect(
+    uploadRuns([shot("09:00:00", "first"), shot("09:00:40", "second"), shot("09:01:20", "third")]),
+    "the upload 80 s older than the newest is in the newest run"
+  ).toEqual([
+    { files: [3, 2], id: "uploads:3" },
+    { files: [1], id: "uploads:1" },
+  ]);
 });
 
 test("a thread agents wrote among themselves is one entry with its replies, until a person writes", () => {

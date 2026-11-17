@@ -29,8 +29,8 @@ import { plainWords } from "./tree-drafts";
  * what happened to it, a result recorded against a check, a decision kept, a child's status move
  * - and a new version of a document, which is a version and no upload: a document's versions are
  * in its own toolbar. The upload of any other file or picture, its first version or a later one,
- * is an upload, and one author's uploads, each made within a minute of the one before it with no
- * other author's upload between them, are one entry that opens each.
+ * is an upload, and a run of uploads is one entry that opens each: one author's newest upload
+ * and their uploads made at most a minute before it, with no other author's upload between them.
  *
  * Pure, so the panel and its unit tests read one model.
  */
@@ -75,9 +75,9 @@ export type HistoryEntry =
       readonly id: string;
       readonly at: string;
       readonly author: Actor;
-      /** The files the run uploaded, newest first, each by its own address: one author's
-       *  uploads, each made within a minute of the one before it, with no other author's upload
-       *  between them (`buildHistory`). The run is named (`id`) by its newest upload. */
+      /** The files the run uploaded, newest first, each by its own address: one author's newest
+       *  upload and their uploads made at most a minute before it, with no other author's upload
+       *  between them (`uploadRuns`). The run is named (`id`) by its newest upload. */
       readonly files: readonly UploadedFile[];
       readonly seq: number;
     }
@@ -121,7 +121,8 @@ export interface HistoryInput {
   readonly today: string;
 }
 
-/** How long after one author's upload their next one may come and still join its entry. */
+/** How long before a run's newest upload its author's other uploads may have been made and
+ *  still be of that run: the run's minute is counted back from its newest upload alone. */
 const UPLOAD_RUN_MS = 60_000;
 
 /** The event types of a row the outline draws, which the history leaves out. A comment's and a
@@ -172,8 +173,8 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
   const approvals = new Set(input.asks.flatMap((ask) => (ask.kind === "approval" ? [ask.id] : [])));
   const entries: Dated[] = [];
   let previousStatus: string | undefined;
-  // The upload entry one author's uploads are gathering in, and its place among `entries`.
-  let run: { entry: Extract<Dated, { kind: "uploads" }>; index: number } | undefined;
+  // Each upload's event and file, oldest first, gathered into runs once every event is read.
+  const uploads: { event: DispatchEvent; file: UploadedFile }[] = [];
   const ordered = [...input.events].sort((left, right) => left.seq - right.seq);
   const seqOf = new Map<string, number>();
   for (const event of ordered) {
@@ -192,45 +193,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
       continue;
     }
     if (upload !== undefined) {
-      // An upload joins the run of the upload before it where one author made both, at most a
-      // minute apart: the minute is counted from that upload, the run's newest (`at`), never
-      // from the run's first. So the log read on at either end only lengthens the run at that
-      // end or starts a run beyond it - an older page extends the oldest run or adds runs under
-      // it, a newer upload extends the newest run or adds one above it - and no run drawn is
-      // split, nor loses a file to another.
-      const near =
-        run !== undefined &&
-        run.entry.author.kind === event.actor.kind &&
-        run.entry.author.id === event.actor.id &&
-        Date.parse(event.created_at) - Date.parse(run.entry.at) <= UPLOAD_RUN_MS;
-      // The run is named by its newest upload and lists its files newest first, as the history
-      // lists every entry: an older page that extends the run adds files under the ones the
-      // reader is on and leaves its name, so the entry is neither moved nor drawn anew. A newer
-      // upload renames it, and the panel draws it on under the key it first drew it with
-      // (`IssueHistory.tsx`).
-      if (near && run !== undefined) {
-        const files = [upload, ...run.entry.files];
-        const grown = {
-          ...run.entry,
-          at: event.created_at,
-          files,
-          id: `uploads:${event.id}`,
-          seq: event.seq,
-        };
-        entries[run.index] = grown;
-        run = { entry: grown, index: run.index };
-      } else {
-        const entry = {
-          at: event.created_at,
-          author: event.actor,
-          files: [upload],
-          id: `uploads:${event.id}`,
-          kind: "uploads" as const,
-          seq: event.seq,
-        };
-        run = { entry, index: entries.length };
-        entries.push(entry);
-      }
+      uploads.push({ event, file: upload });
       continue;
     }
     entries.push({
@@ -244,7 +207,7 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     });
     if (status !== undefined) previousStatus = status;
   }
-  entries.push(...threadsOf(input, agentsOnly, seqOf));
+  entries.push(...uploadRuns(uploads.reverse()), ...threadsOf(input, agentsOnly, seqOf));
 
   // Newest first, by when each happened; one instant by the log's own order.
   entries.sort((one, other) => compareTimestamps(other.at, one.at) || other.seq - one.seq);
@@ -291,6 +254,51 @@ export function buildHistory(input: HistoryInput): HistoryDay[] {
     partial: cut !== undefined && day.date <= cut,
     today: day.date === input.today,
   }));
+}
+
+/**
+ * The runs of `uploads`, given newest first, as entries newest first. A run is its newest upload
+ * and the uploads its author made at most a minute (`UPLOAD_RUN_MS`) before that one, with no
+ * other author's upload between them: walked newest first, each upload joins the run above it
+ * or begins the next. The minute is counted from the run's newest upload, never from the upload
+ * before, so no run spans more than a minute however many uploads it holds. The log read further
+ * back only walks on past the uploads already read: an older page extends the oldest run or
+ * adds runs under it, and moves no file of a run drawn. A newer upload within a minute of the
+ * newest run's newest upload joins that run and splits off its uploads more than a minute older
+ * than itself into a run of their own, and the panel draws the newer part on under the key the
+ * run had (`IssueHistory.tsx`). A run lists its files newest first, as the history lists every
+ * entry, and is named by its newest upload, so an older page that extends it adds files under
+ * the ones the reader is on and leaves its name: the entry is neither moved nor drawn anew.
+ */
+function uploadRuns(
+  uploads: readonly { readonly event: DispatchEvent; readonly file: UploadedFile }[]
+): Extract<Dated, { kind: "uploads" }>[] {
+  const runs: Extract<Dated, { kind: "uploads" }>[] = [];
+  // The run being gathered: its author, its files and when its newest upload was made.
+  let run:
+    | { readonly at: number; readonly author: Actor; readonly files: UploadedFile[] }
+    | undefined;
+  for (const { event, file } of uploads) {
+    if (
+      run !== undefined &&
+      run.author.kind === event.actor.kind &&
+      run.author.id === event.actor.id &&
+      run.at - Date.parse(event.created_at) <= UPLOAD_RUN_MS
+    ) {
+      run.files.push(file);
+      continue;
+    }
+    run = { at: Date.parse(event.created_at), author: event.actor, files: [file] };
+    runs.push({
+      at: event.created_at,
+      author: event.actor,
+      files: run.files,
+      id: `uploads:${event.id}`,
+      kind: "uploads",
+      seq: event.seq,
+    });
+  }
+  return runs;
 }
 
 /** Each thread agents wrote among themselves, as one entry at its first turn: every one that
