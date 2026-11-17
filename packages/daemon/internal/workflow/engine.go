@@ -820,9 +820,24 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // held - which is past recording work at all; and any while it stands at admitted. Admitted is the
 // architect's own phase (phase.RoleFor), which completes nothing (handoff), and it comes before
 // every phase a worker works, so no worker's phase there is one the issue moved on from: the guard
-// keeps the refusal a completion at admitted had while no role was named for that phase.
+// keeps the refusal a completion at admitted had while no role was named for that phase. For a
+// task with plan rows, handoff refuses the completion this says to record, as the report of a step
+// whose run Legion ended (lateReport); the test of the run itself is ranUnreported.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+	if issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+		return false, nil
+	}
+	return e.ranUnreported(ctx, tx, issue, role, token)
+}
+
+// ranUnreported says whether role's completion naming token reports a run of role the daemon
+// started on issue at its generation, which is what gives it the claim token
+// (record.Store.RoleRun), with no completion of that run reported yet (record.PhaseRow.Completed).
+// That is a completion of a phase the issue no longer stands in that arrives after the daemon
+// ended the run without it: one it records (leftItsPhase), or, for a task with plan rows, one it
+// refuses as late (lateReport). A completion naming no claim reports no run.
+func (e *Engine) ranUnreported(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
+	if token == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
@@ -858,15 +873,21 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
 	// reported is the phase this completion is of (phase.Of): the issue's own, or, for a role the
-	// issue has moved on without, the phase that role has left.
+	// issue has moved on without, the phase that role has left. For a task with plan rows such a
+	// completion is a report of a step whose run Legion ended, and late is its refusal
+	// (lateReport), which is answered after the lingering tree's, as the recording is.
 	reported := phase.Of(fact.Role, issue.Phase)
 	current := reported == issue.Phase
+	var late *intake.Refusal
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
 		if err != nil {
 			return intake.Result{}, err
 		}
-		if !left {
+		if late, err = e.lateReport(ctx, tx, *issue, fact, reported, left); err != nil {
+			return intake.Result{}, err
+		}
+		if !left && late == nil {
 			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
 		}
 	}
@@ -878,6 +899,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	if lingers {
 		return refusedLingering(*issue, fmt.Sprintf("the %s's completion of phase %s", fact.Role, reported)), nil
+	}
+	if late != nil {
+		if err := e.spendLateHandoff(ctx, tx, fact); err != nil {
+			return intake.Result{}, err
+		}
+		return intake.Result{Refusal: late}, nil
 	}
 	// A failed step's report can name the earlier step of its task that the task returns to (R7,
 	// returnTo). The step it names is judged here, before anything is written, so a refusal
