@@ -1,6 +1,6 @@
 import type { LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, type RefObject, useLayoutEffect, useRef } from "react";
 
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type { IssueCollaboratorPerson } from "../../api/types";
@@ -80,24 +80,47 @@ function Worked({
  *
  * It is drawn in the People section of the issue page's one right-hand panel, behind that
  * section's own disclosure (dispatch://INFRA-1196 R12, `details-more.tsx`), where the nine-tab
- * page gave it a tab of its own.
+ * page gave it a tab of its own. What a read answered stays drawn when a later read fails, with
+ * the failure and its Retry above it (decision 98); the failure is drawn alone only while no read
+ * has answered.
  */
-export function IssueCollaboratorList({ issueKey }: { issueKey: string }): ReactNode {
+export function IssueCollaboratorList({
+  issueKey,
+  owner,
+}: {
+  issueKey: string;
+  /** The control that opens the list, which the focus goes to when the list's Retry goes. */
+  owner: RefObject<HTMLElement | null>;
+}): ReactNode {
   const query = useQuery(issueCollaboratorsQuery(issueKey));
-  if (query.isPending) {
+  // The Retry the reader pressed goes with its line once the read lands, and the focus with it:
+  // the focus goes to the control that opens the list rather than fall to the page, as Unpin in
+  // Pinned hands it on (`IssuePins.tsx`).
+  const retried = useRef<Element | null>(null);
+  useLayoutEffect(() => {
+    if (retried.current === null || retried.current.isConnected) return;
+    retried.current = null;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      owner.current?.focus();
+    }
+  });
+  const failure = query.isError ? (
+    <DetailsErrorLine
+      message={ANSWER_LINES.collaborators_unreadable}
+      onRetry={() => {
+        retried.current = document.activeElement;
+        void query.refetch();
+      }}
+      retrying={query.isFetching}
+    />
+  ) : null;
+  if (query.data === undefined) {
     return (
-      <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
-        {ANSWER_LINES.loading_collaborators}
-      </p>
-    );
-  }
-  if (query.isError) {
-    return (
-      <DetailsErrorLine
-        message={ANSWER_LINES.collaborators_unreadable}
-        onRetry={() => void query.refetch()}
-        retrying={query.isFetching}
-      />
+      failure ?? (
+        <p className={`text-sm ${pageQuietText}`} {...pageChrome}>
+          {ANSWER_LINES.loading_collaborators}
+        </p>
+      )
     );
   }
   const collaborators = query.data;
@@ -110,6 +133,7 @@ export function IssueCollaboratorList({ issueKey }: { issueKey: string }): React
     (collaborators.agents ?? []).length === 0 && (collaborators.people ?? []).length === 0;
   return (
     <section aria-label={PROPERTY_LABELS.collaborators} className="min-w-0 space-y-6">
+      {failure}
       {unavailable ? (
         <p className={`text-sm ${pageMutedText}`} role="status" {...pageChrome}>
           {STATE_LINES.legion_record_unreadable}

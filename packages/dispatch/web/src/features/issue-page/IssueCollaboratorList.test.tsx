@@ -1,14 +1,17 @@
 import { expect, spyOn, test } from "bun:test";
 import type { LegionRole } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { createRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
 import type { Agent, IssueCollaboratorAgent, IssueCollaborators } from "../../api/types";
 import { collaboratorSections } from "../issue/CollaboratorsTab";
 import { IssueCollaboratorList } from "./IssueCollaboratorList";
-import { CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
+import { PROPERTY_LABELS } from "./page-structure";
+import { ANSWER_LINES, CONTROL_LABELS, EMPTY_STATE_LINES, STATE_LINES } from "./page-words";
 
 function legionAgent(
   sessionId: string,
@@ -59,18 +62,25 @@ function live(sessionId: string): Agent {
   };
 }
 
+/** The list under the control that opens it, as Details' People section draws the two. */
 function renderCollaborators(collaborators: IssueCollaborators, agents: readonly Agent[] = []) {
   const read = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaborators);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([...agents]);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const owner = createRef<HTMLButtonElement>();
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <IssueCollaboratorList issueKey="CORE-1" />
+        <button ref={owner} type="button">
+          {PROPERTY_LABELS.collaborators}
+        </button>
+        <IssueCollaboratorList issueKey="CORE-1" owner={owner} />
       </QueryClientProvider>
     </MemoryRouter>
   );
   return {
+    client,
+    owner,
     read,
     restore: () => {
       view.unmount();
@@ -171,6 +181,31 @@ test("the collaborators say when Legion's record could not be read, and when nob
     expect(
       sessionsIn(screen.getByRole("region", { name: CONTROL_LABELS.collaborators_others }))
     ).toEqual(["writer"]);
+
+    // A read that fails once the list holds an answer keeps that answer: the failure and its
+    // Retry are drawn above the list it held (decision 98).
+    unavailable.read.mockRejectedValueOnce(new Error("the collaborators' read failed"));
+    await act(() =>
+      unavailable.client.invalidateQueries({ queryKey: ["issue", "CORE-1", "collaborators"] })
+    );
+    const failure = await screen.findByRole("alert");
+    expect(failure.textContent).toBe(ANSWER_LINES.collaborators_unreadable);
+    const held = screen.queryByRole("region", { name: CONTROL_LABELS.collaborators_others });
+    expect(
+      held === null ? [] : sessionsIn(held),
+      "a failed refetch blanked the held collaborators"
+    ).toEqual(["writer"]);
+    expect(
+      held === null ? 0 : failure.compareDocumentPosition(held) & Node.DOCUMENT_POSITION_FOLLOWING,
+      "the failure is not drawn above the list it held"
+    ).not.toBe(0);
+    // Its Retry goes with its line once the read lands, and the focus goes to the control that
+    // opens the list rather than to the page.
+    await userEvent.click(screen.getByRole("button", { name: CONTROL_LABELS.retry }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(document.activeElement, "the focus fell to the page with Retry").toBe(
+      unavailable.owner.current
+    );
   } finally {
     unavailable.restore();
   }

@@ -7,9 +7,11 @@ import {
   borderDefault,
   linkHoverText,
   linkText,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
   pageQuietText,
+  pageRowAct,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -113,12 +115,25 @@ export function listedEdges(
   );
 }
 
-/** The colours of the list's heading, its lines and its rows: the application's, and with `page`
- *  the new page's own tokens (`PAGE_COLORS`), as every colour of Details is. Its words, its
- *  excerpt and its links keep the application's on both. */
+/** The colours of the list's heading, its lines, its rows, its excerpts and its links: the
+ *  application's, and with `page` the new page's own tokens (`PAGE_COLORS`), as every colour of
+ *  Details is - a link in the page's ink, underlined under the pointer as the page's row controls
+ *  are, and an excerpt in its muted grey. Its words are the application's on both. */
 const LIST_TOKENS = {
-  app: { heading: textSecondaryOnSurface, line: textMutedOnSurface, row: borderDefault },
-  page: { heading: pageMutedText, line: pageQuietText, row: pageLineBorder },
+  app: {
+    excerpt: textSecondaryOnSurface,
+    heading: textSecondaryOnSurface,
+    line: textMutedOnSurface,
+    link: `${linkText} ${linkHoverText}`,
+    row: borderDefault,
+  },
+  page: {
+    excerpt: pageMutedText,
+    heading: pageMutedText,
+    line: pageQuietText,
+    link: `${pageInkText} ${pageRowAct}`,
+    row: pageLineBorder,
+  },
 } as const;
 
 /** Beyond this the row clamps the excerpt and offers to expand it. The real clamp is CSS, so
@@ -213,21 +228,27 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
-function Excerpt({ text }: { text: string }): ReactNode {
+function Excerpt({
+  text,
+  tokens,
+}: {
+  text: string;
+  tokens: { readonly excerpt: string; readonly link: string };
+}): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
 
   return (
     <>
       <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${textSecondaryOnSurface}`}
+        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${tokens.excerpt}`}
       >
         {text}
       </p>
       {clampable ? (
         <button
           aria-expanded={expanded}
-          className={`min-h-11 text-xs font-medium ${linkText} ${linkHoverText}`}
+          className={`min-h-11 text-xs font-medium ${tokens.link}`}
           onClick={() => setExpanded((open) => !open)}
           type="button"
         >
@@ -317,7 +338,7 @@ export function ReferencedBy({
         <p className={`flex flex-wrap items-center gap-2 text-sm ${tokens.line}`}>
           <span>Referenced by unavailable.</span>
           <button
-            className={`font-medium underline ${linkText} ${linkHoverText}`}
+            className={`font-medium underline ${tokens.link}`}
             disabled={query.isFetching}
             onClick={() => void query.refetch()}
             type="button"
@@ -339,7 +360,7 @@ export function ReferencedBy({
                 ) : (
                   <Link
                     {...referenceTriggerProps(group.path.route)}
-                    className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
+                    className={`dispatch-inline-link underline ${tokens.link}`}
                     to={group.path.href}
                   >
                     {group.label}
@@ -371,7 +392,7 @@ export function ReferencedBy({
                         ) : (
                           <Link
                             {...referenceTriggerProps(row.route)}
-                            className={`underline ${linkText} ${linkHoverText}`}
+                            className={`underline ${tokens.link}`}
                             to={row.href}
                           >
                             <Timestamp at={edge.created_at} />
@@ -382,7 +403,7 @@ export function ReferencedBy({
                             <span aria-hidden="true">·</span>
                             <Link
                               {...referenceTriggerProps(cited.route)}
-                              className={`underline ${linkText} ${linkHoverText}`}
+                              className={`underline ${tokens.link}`}
                               to={cited.href}
                             >
                               block {edge.block?.block_id}
@@ -390,7 +411,9 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
-                      {edge.excerpt === undefined ? null : <Excerpt text={edge.excerpt.text} />}
+                      {edge.excerpt === undefined ? null : (
+                        <Excerpt text={edge.excerpt.text} tokens={tokens} />
+                      )}
                     </li>
                   );
                 })}
