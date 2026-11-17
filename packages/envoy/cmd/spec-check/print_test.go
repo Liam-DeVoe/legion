@@ -609,9 +609,10 @@ func TestPrintRunsOneAtATimeOnADirectory(t *testing.T) {
 // the files).
 //
 // The proof of the rule itself is TestPlace, a row for each cell of its table; this test proves
-// that print follows the rule. Over the seeds 1 to 2,000, the last answer to occur first occurs at
-// seed 92 (term replaced T), so the default is five times that, 460 seeds. SPEC_CHECK_PRINT_SEEDS
-// raises the count, for example to 2000 for a longer run.
+// that print follows the rule. Over the seeds 1 to 2,000 of the generator before it planted faults,
+// the last answer to occur first occurred at seed 92 (term replaced T), so the default is five times
+// that, 460 seeds, and the test requires each answer at that count. SPEC_CHECK_PRINT_SEEDS raises
+// the count, for example to 2000 for a longer run.
 func TestPrintKeepsTheInvariant(t *testing.T) {
 	t.Parallel()
 	const limit = 4096
