@@ -82,7 +82,9 @@
 #      no release. Free are the if: of a job in neither chain, where it reads no decision; the
 #      values of concurrency:, cache-mode: and timeout-minutes:; and the runner image behind the
 #      label; and so is the decision passed on through the env context or another step's output,
-#      env: or run:;
+#      env: or run:; and GitHub's own limit stays: a push whose diff holds more than 3,000 files
+#      runs no filtered workflow when the files its filter matches are not among the first 3,000
+#      (the workflow syntax docs, "paths"), covered or not, so nothing releases until a later push;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
