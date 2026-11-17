@@ -86,20 +86,29 @@ func provenCheck(check, proven string) bool {
 	if proven == "" {
 		return false
 	}
+	held, err := programSHA256(check)
+	return err == nil && strings.EqualFold(held, proven)
+}
+
+// programSHA256 is the sha256, in lowercase hex, of the public_leak_check.py beside check, in the
+// script's own directory once its symbolic links are followed: which check is installed, since the
+// script only runs that program. Both a role's shim (Installed) and `legion gh` (provenCheck) hash
+// it.
+func programSHA256(check string) (string, error) {
 	dir := filepath.Dir(check)
 	if followed, err := filepath.EvalSymlinks(check); err == nil {
 		dir = filepath.Dir(followed)
 	}
 	program, err := os.Open(filepath.Join(dir, checkProgram))
 	if err != nil {
-		return false
+		return "", err
 	}
 	defer program.Close()
 	sum := sha256.New()
 	if _, err := io.Copy(sum, program); err != nil {
-		return false
+		return "", err
 	}
-	return strings.EqualFold(hex.EncodeToString(sum.Sum(nil)), proven)
+	return hex.EncodeToString(sum.Sum(nil)), nil
 }
 
 // whatGhCall is what a refusal and a setup failure of this shape call the write. Both halves of

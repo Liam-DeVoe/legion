@@ -51,9 +51,9 @@ func packedLeakCheck(t *testing.T, launcher string) []byte {
 	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
 	_, _ = rand.NewChaCha8([32]byte{}).Read(fixture)
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName:  {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
-		"public_leak_check.py":   {Body: "# the check itself\n", Mode: 0o644},
-		"fixtures/must-pass.bin": {Body: string(fixture), Mode: 0o644},
+		leakguardtest.CheckName:   {Body: "#!/bin/sh\n" + launcher, Mode: 0o755},
+		leakguardtest.ProgramName: {Body: leakguardtest.Program, Mode: 0o644},
+		"fixtures/must-pass.bin":  {Body: string(fixture), Mode: 0o644},
 	})
 	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
@@ -190,7 +190,7 @@ func requireInstalledAt(t *testing.T, dir, pin string) {
 	if err != nil || string(recorded) != pin+"\n" {
 		t.Fatalf("the install's .installed-tag holds %q (%v), want %q", recorded, err, pin+"\n")
 	}
-	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin, leakguard.CheckerVar + "=" + strings.Repeat("5e", 32)}, dir)
+	check, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + pin, leakguard.CheckerVar + "=" + leakguardtest.ProgramSHA256}, dir)
 	if err != nil || check != filepath.Join(dir, leakguardtest.CheckName) {
 		t.Fatalf("a role's shim reads the install as %q, %v; want the check at %s", check, err, dir)
 	}

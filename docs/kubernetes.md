@@ -103,7 +103,7 @@ It carries:
   Every role is told that copy as `PUBLIC_LEAK_CHECK`, and the checker as `LEGION_LEAK_CHECKER_SHA256` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
   The role's name for the checker is not the daemon's, so a configuration a role loads, `legion start --check-config` among them, never reads one half of the daemon's setting without the other.
   A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`); under any other check it gets the whole guard, and the checker a role is told plays no part in it.
-  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, or holds a `public_leak_check.py` whose sha256 is not the checker the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `checker_sha256` starts no role.
   Where the environment names no check, the shim names the install for everything it starts.
   The pod holds no credential for that repository and reads no repository mapping.
 

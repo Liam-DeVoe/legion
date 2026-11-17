@@ -585,19 +585,21 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 
 // theTag is the pin a pod's worker image carries, as these tests spell one, and theChecker the
 // deployment's checker the runtime tells a role of a deployment that runs a shared leak check
-// (leakguard.CheckerVar): a stand-in sha256, since no test here runs the check's program.
+// (leakguard.CheckerVar): the sha256 of the stand-in program every install here carries beside
+// its check (leakguardtest.Program), which the shim hashes before it starts an agent.
 const theTag = "leak-check-v15"
 
-var theChecker = leakguard.CheckerVar + "=" + strings.Repeat("5e", 32)
+var theChecker = leakguard.CheckerVar + "=" + leakguardtest.ProgramSHA256
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
 // made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
-// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
-// tag (leakguard.InstallServed).
+// names both shapes (leakguardtest.AnswersHelp), with the stand-in program beside it, packed
+// (leakguard.PackTarball) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+		leakguardtest.CheckName:   {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+		leakguardtest.ProgramName: {Body: leakguardtest.Program, Mode: 0o644},
 	})
 	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
