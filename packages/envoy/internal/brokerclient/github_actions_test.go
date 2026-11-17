@@ -118,6 +118,50 @@ func TestMachineIdentityGitHubActionsReadsTheRunnersEndpoint(t *testing.T) {
 	}
 }
 
+// TestMachineIdentityGitHubActionsFollowsNoRedirect: the request carries the runner's bearer. A
+// redirect it followed would send that bearer on to a target on the runner's own origin, and take
+// a token that another origin minted as the job's. So no request follows one: a 3xx is the
+// endpoint's refusal, named by its status.
+func TestMachineIdentityGitHubActionsFollowsNoRedirect(t *testing.T) {
+	elsewhere, elsewhereAsked := stubRunner(t, func(_ int, w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"value": "token-from-the-other-origin"})
+	})
+	for _, status := range []int{301, 302, 303, 307, 308} {
+		for _, target := range []string{elsewhere, "/_apis/collect"} {
+			label := strconv.Itoa(status) + " to " + target
+			url, asked := stubRunner(t, func(n int, w http.ResponseWriter) {
+				if n == 1 {
+					w.Header().Set("Location", target)
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte("Redirecting to " + target))
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"value": "token-of-the-redirect"})
+			})
+			source, err := MachineIdentity(func(name string) string {
+				return map[string]string{
+					IdentityVar: IdentityGitHubActions, ActionsTokenURLVar: url,
+					ActionsTokenVar: runnerRequestToken, MachineAudienceVar: "example-audience",
+				}[name]
+			})
+			if err != nil {
+				t.Fatalf("MachineIdentity: %v", err)
+			}
+			token, _, err := source.Token(context.Background())
+			want := "the runner's OIDC token endpoint (" + ActionsTokenURLVar + ") answered HTTP " + strconv.Itoa(status)
+			if err == nil || err.Error() != want {
+				t.Errorf("%s: Token = %q, %v, want the refusal %q", label, token, err, want)
+			}
+			if got := asked(); len(got) != 1 {
+				t.Errorf("%s: the runner's origin was asked %d times, want once: %+v", label, len(got), got)
+			}
+		}
+	}
+	if got := elsewhereAsked(); len(got) != 0 {
+		t.Errorf("the other origin was asked %+v, want nothing", got)
+	}
+}
+
 // TestMachineIdentityGitHubActionsReadsATokenFile: a job with no runner endpoint reads its run's
 // token from AGENT_SECRETS_MACHINE_TOKEN_FILE at every read, as a workflow run's token, and an
 // empty file is refused naming it.

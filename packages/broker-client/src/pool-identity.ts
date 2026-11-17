@@ -128,8 +128,9 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
    * Posts `body` to `endpoint` as JSON, with `bearer` on the `Authorization` header where it is
    * not empty, and answers the member `member` of what came back, or "" where the answer holds
    * none. A non-2xx answer is an error naming the status and the body Google's services put their
-   * reason in, which carries no credential of this machine's; a 2xx answer that is not JSON is
-   * named without its text, since that text could be a token.
+   * reason in, which carries no credential of this machine's; a redirect is named by its status
+   * alone, since a redirector writes its target, path and query with it, into the body; a 2xx
+   * answer that is not JSON is named without its text, since that text could be a token.
    */
   const call = async (
     endpoint: string,
@@ -143,7 +144,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
     );
     // No redirect is followed: fetch sends a 307's or 308's body on to the origin it names, and
     // the body to the security token service is this machine's external credential. A 3xx is
-    // then the service's refusal, named by its status.
+    // then the service's refusal, named by its status alone.
     const answer = await fetch(endpoint, {
       method: "POST",
       redirect: "manual",
@@ -154,6 +155,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
       body: JSON.stringify(body),
       signal: AbortSignal.any(signals),
     });
+    if (answer.status >= 300 && answer.status < 400) throw new Error(`HTTP ${answer.status}`);
     const text = await answerText(answer);
     if (answer.status < 200 || answer.status > 299) {
       throw new Error(`HTTP ${answer.status}: ${text.trim()}`);

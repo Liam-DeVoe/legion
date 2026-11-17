@@ -98,6 +98,40 @@ test("an endpoint that refuses, or answers no token, is an error naming the vari
   }
 });
 
+// The request carries the runner's bearer. A redirect it followed would send that bearer on to a
+// target on the runner's own origin, and take a token that another origin minted as the job's.
+// So no request follows one: a 3xx is the endpoint's refusal, named by its status.
+test("a redirect of the runner's endpoint is followed by no request, and is refused naming its status", async () => {
+  const elsewhere = stubRunner(() => Response.json({ value: "token-from-the-other-origin" }));
+  for (const status of [301, 302, 303, 307, 308]) {
+    for (const [target, sameOrigin] of [
+      [elsewhere.url, false],
+      ["/_apis/collect", true],
+    ] as const) {
+      const runner = stubRunner((n) =>
+        n === 1
+          ? new Response(`Redirecting to ${target}`, { status, headers: { Location: target } })
+          : Response.json({ value: "token-of-the-redirect" })
+      );
+      const source = githubActionsIdentity({
+        requestUrl: runner.url,
+        requestToken: REQUEST_TOKEN,
+        audience: "example-audience",
+      });
+      const refusal = await source.read().then(
+        (token) => token,
+        (error: unknown) => error as Error
+      );
+      const label = `${status} to ${sameOrigin ? "its own origin" : "another origin"}`;
+      expect(refusal instanceof Error ? refusal.message : refusal, label).toBe(
+        `the runner's OIDC token endpoint (${ACTIONS_TOKEN_URL_VAR}) answered HTTP ${status}`
+      );
+      expect(runner.asked.length, label).toBe(1);
+    }
+  }
+  expect(elsewhere.asked).toEqual([]);
+});
+
 test("a runner URL that is no URL is an error naming the variable, and asks nothing", async () => {
   const asked: unknown[] = [];
   const source = githubActionsIdentity({
