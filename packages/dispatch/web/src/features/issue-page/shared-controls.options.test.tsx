@@ -3613,6 +3613,59 @@ test("inside NoTooltips a priority's Remove pressed by Enter hands its focus to 
   }
 });
 
+// Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: the Remove of an entry with
+// entries on both sides hands its focus to the Remove of the entry after it, not of the entry
+// before it. The case above presses a first and a last entry only, where the two orders agree.
+// R1 of dispatch://INFRA-3935: outside `NoTooltips` the focus stays on the body.
+test("inside NoTooltips the Remove of a middle priority hands its focus to the entry after it", async () => {
+  const user = userEvent.setup();
+  const listed = priorities.priorities ?? [];
+  const first = listed[0];
+  if (first === undefined) throw new Error("the fixture lists no priority");
+  stubs.listPriorities.mockResolvedValue({
+    ...priorities,
+    priorities: [
+      ...listed,
+      { ...first, id: "lean-proofs", rank: "lean-proofs", title: "Lean proofs checked" },
+    ],
+  });
+  const rocq = "Remove P2 Rocq and Lean speed work restarted from CORE-1";
+  const lean = "Remove P3 Lean proofs checked from CORE-1";
+  for (const surface of ["inside", "outside"] as const) {
+    let held = ["evals-now", "rocq-lean", "lean-proofs"];
+    const read = async () => ({
+      advances: held.map((id) => ({ id, inherited: false })),
+      advances_revision: 1,
+      key: "CORE-1",
+    });
+    const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) => {
+      // A browser drops the focus of a button that turns disabled to the body; happy-dom does
+      // not, so the write puts it there while it is out.
+      document.body.focus();
+      held = input.advances ?? held;
+      return {} as Issue;
+    });
+    const view = draw(<ReadPriorityLine read={read} />, surface);
+    try {
+      const scope = within(view.container);
+      const remove = await scope.findByRole("button", { name: rocq });
+      await waitFor(() => expect(remove).not.toBeDisabled());
+      remove.focus();
+      await user.keyboard("{Enter}");
+      await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(scope.queryByRole("button", { name: rocq })).toBeNull());
+      await settleReads();
+      expect(patchIssue.mock.calls[0]?.[1].advances).toEqual(["evals-now", "lean-proofs"]);
+      expect(document.activeElement).toBe(
+        surface === "inside" ? scope.getByRole("button", { name: lean }) : document.body
+      );
+    } finally {
+      patchIssue.mockRestore();
+      undraw(view);
+    }
+  }
+});
+
 // Decision 162 of dispatch://INFRA-1196/artifact/part-decisions-md: Rebuild is refused while its
 // write is out. Inside `NoTooltips` it says so with `aria-disabled` in place of `disabled`, which
 // drops the focus in a browser, so it keeps its focus, and a press then asks nothing and sends no
