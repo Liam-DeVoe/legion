@@ -1092,6 +1092,92 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
   }
 });
 
+// R5: a press on an entry of Add opens that property's control. While the priorities' save is
+// out, "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
+// Add's Advances opens nothing and the focus falls to the page. Found by the tester on the
+// preview of 8a8f3f6b, with the save held for six seconds: Add listed Advances, and pressing it
+// left the menu closed, the form shut and the focus on the body. Add lists an entry only while its
+// control can be pressed, and lists it again once a refused save gives that control back.
+test("Add lists no entry whose control is disabled, and lists it again once it is enabled", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue({
+    empty: "",
+    priorities: [
+      {
+        description: "",
+        id: "evals-now",
+        made_at: "2026-11-01T00:00:00Z",
+        made_by: { id: "alice", kind: "user" },
+        owner: "INFRA controller",
+        rank: "evals-now",
+        state: "live",
+        title: "Evals collecting data now",
+        work: {
+          by_status: {},
+          claimed: 0,
+          closed_last_7_days: 0,
+          newest_event_at: null,
+          open_asks: 0,
+        },
+      },
+    ],
+    priority_work_parked: { by_priority: {}, count: 0, issues: [] },
+    work_under_no_priority: { by_project: {}, count: 0, issues: [] },
+  });
+  getIssue.mockResolvedValue({
+    ...issue,
+    advances: [],
+    assignee: "alice",
+    blocked_by: ["CORE-3"],
+    components: {
+      mode: "inherit",
+      ids: ["api"],
+      unknown: [],
+      reason: null,
+      inherited_from: "CORE-2",
+    },
+    labels: ["bug"],
+    parent: "CORE-2",
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    route: "role:legion-controller-core",
+  });
+  const save = Promise.withResolvers<never>();
+  patchIssue.mockImplementationOnce(() => save.promise);
+  const view = renderDetails();
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
+    const form = await screen.findByTestId("issue-advances");
+    await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
+    await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
+    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+    await waitFor(() => expect(control).toBeDisabled());
+    expect(
+      document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+      "Add lists Advances while its control is disabled, so a press on it opens nothing"
+    ).toBeNull();
+    await act(async () =>
+      save.reject(new ApiError(409, { code: "REVISION_CONFLICT", error: "the revision moved" }))
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: addPriorityControlName("CORE-1") })).toBeEnabled()
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector('[aria-haspopup="menu"][aria-label="Add"]'),
+        "Advances has no value and its control is enabled again, but Details draws no Add"
+      ).not.toBeNull()
+    );
+  } finally {
+    view.unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 // The review of 5906c38b: with Details open, the repository's control draws its select only once
 // its own read of the project's mappings answers, in a commit of that control alone. Add, read
 // after its own commits only, never saw the select, so on an issue with a value for every other
