@@ -108,7 +108,16 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
   new bucket. A listener that finds a recreate only by the self-health tick's `Check` fails both
   shapes: the longer one shows nothing of the new bucket before the tick, the shorter one part of
   it. `refillrig recreate -fill-log` records when each record of the fill was acknowledged, so a
-  read that begins before the fill is done is judged against what the bucket held.
+  read that begins before the fill is done is judged against what the bucket held. NATS sends the
+  first 2 MB of the new bucket at once, without waiting for the listener (the push consumer's
+  flow-control window). In an agent pod with 2 CPUs it had sent all 3,001 records about 18 ms after
+  the read began, and the stop on the finding line came 0.2 to 24 ms after that line. A stop that
+  comes after the send holds nothing back, and the shape is `INVALID`: the one at 24 ms was. So a
+  shape that is `INVALID` runs again on a fresh NATS and listener, up to three attempts in all, with
+  a later attempt's evidence in `recreate-live/<shape>-attempt-<n>`. A missed window is never a
+  pass, so another attempt changes no judgement. A `PASS` or `FAIL` on a later attempt says so and
+  quotes the `INVALID` reason of each earlier attempt. Three `INVALID` attempts give `INVALID`, with
+  all three reasons.
 - `refuse`: a start on 40,000-record buckets, where every list answer is the refilling `503` with
   `Retry-After: 5` or the whole bucket and no gauge has a sample while its list refuses; NATS down
   past the 2-minute stale bound, where both lists answer the refilling `503` and `/metrics` has
@@ -124,12 +133,12 @@ fills the bucket, and continues it once the bucket is full, just after a tick of
 Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, or
 `INVALID <reason>` when the run missed the window it was there to observe (no poll inside the read,
 a scan that finished before the interruption, a read that began before the bucket was filled, a
-self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
-verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
-`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports.
+self-health tick inside the read of `recreate-live`), which is never a pass. `recreate-live` runs an
+`INVALID` shape again, up to three attempts (above). It exits 0 when every verdict passes, 1 on a
+`FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and `--natsd-bin` run other builds,
+such as the merge base's for a negative control. The evidence (each scenario's listener and NATS
+logs and every poll, one JSON line each) goes to `--out` (default `$TMPDIR/envoy-e2e-refill`).
+`E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the ports.
 
 A record's set and variant are in what the listener keeps of it: the session id names the set, a
 session row's title (`refill <set> <index> v<n>`) and an interest row's directory

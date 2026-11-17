@@ -4,8 +4,11 @@ body: |-
   for the session's own consumer when it registers a session, since the listener refuses a
   registration that asks for none. The rig now writes a record's variant in its directory,
   `/refill/<set>/v<n>`, and the judge reads an interest row's variant from there. The listener
-  keeps that directory on the row, but it drops the variant topic the rig sent before. A new CI
-  job, `envoy-refill`, runs every scenario of the script when a change touches what it reads.
+  keeps that directory on the row, but it drops the variant topic the rig sent before. The
+  `recreate-live` scenario runs a shape again, up to three attempts, when the shape missed the
+  window it observes (INVALID); a PASS or a FAIL ends it, and its line names each earlier
+  attempt. A new CI job, `envoy-refill`, runs every scenario of the script when a change touches
+  what it reads.
 time: 2026-11-17T02:11:57Z
 custom:
     Issue: pr4194

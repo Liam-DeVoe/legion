@@ -44,8 +44,11 @@ jobs:
     # refuse 3 min 5 s, each with its builds on a warm Go cache. interrupt and recreate-live were
     # not timed there. They wait mostly on the listener's 30 s self-health tick, and by the
     # script's own waits each of their four runs takes about 2 to 4 minutes. 40 minutes is about
-    # twice the sum, which leaves room for a cold Go cache.
-    timeout-minutes: 40
+    # twice the sum, which leaves room for a cold Go cache. recreate-live runs a shape again when
+    # its verdict is INVALID, up to 3 attempts in all. Timed later in such a pod, one attempt took
+    # 74 to 76 s, so the 4 attempts this can add (2 shapes, 2 more attempts each) take up to about
+    # 5 minutes. The budget adds 6 minutes for them.
+    timeout-minutes: 46
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
