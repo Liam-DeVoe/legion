@@ -215,14 +215,28 @@ describe("dispatch plans", () => {
 
   // JSON escapes each character below U+0020, so a line feed in a reason stays on the line. It
   // leaves U+0085, U+2028 and U+2029 as they are, and a reader that splits lines the Unicode way
-  // (Python's `str.splitlines`, for one) breaks the issue's line at each, so each prints escaped.
-  test("a reason holding U+0085, U+2028 or U+2029 prints it escaped, the same JSON string", async () => {
-    for (const [character, escaped] of [
-      ["\u0085", "\\u0085"],
-      ["\u2028", "\\u2028"],
-      ["\u2029", "\\u2029"],
+  // (Python's `str.splitlines`, for one) breaks the issue's line at each, so each prints escaped,
+  // every time it occurs: each of the first three reasons holds one of them twice, and the last
+  // holds each of the three twice, mixed, the second time all three side by side.
+  test("a reason holding U+0085, U+2028 or U+2029 prints each one escaped, the same JSON string", async () => {
+    for (const [reason, printed] of [
+      [
+        "The plan fit.\u0085The review did not.\u0085The merge did.",
+        '"The plan fit.\\u0085The review did not.\\u0085The merge did."',
+      ],
+      [
+        "The plan fit.\u2028The review did not.\u2028The merge did.",
+        '"The plan fit.\\u2028The review did not.\\u2028The merge did."',
+      ],
+      [
+        "The plan fit.\u2029The review did not.\u2029The merge did.",
+        '"The plan fit.\\u2029The review did not.\\u2029The merge did."',
+      ],
+      [
+        "Tasks.\u2028Steps.\u0085Roles.\u2029Agents.\u2028\u0085\u2029Done.",
+        '"Tasks.\\u2028Steps.\\u0085Roles.\\u2029Agents.\\u2028\\u0085\\u2029Done."',
+      ],
     ] as const) {
-      const reason = `The plan fit.${character}The review did not.`;
       const rating = {
         rating: 3,
         reason,
@@ -233,12 +247,14 @@ describe("dispatch plans", () => {
 
       const result = await readPlans({ project: "INFRA" }, answering([], answer));
 
-      const printed = `"The plan fit.${escaped}The review did not."`;
-      expect(result.text.split("\n"), escaped).toEqual([
+      const lines = result.text.split("\n");
+      expect(lines, printed).toEqual([
         "INFRA: 1 finished issues",
         `INFRA-9 closed 2026-11-14T08:00:00Z plan none ratings 3/5 ${printed} time - failed steps 0`,
       ]);
-      expect(JSON.parse(printed), escaped).toBe(reason);
+      // The reason as the line prints it reads back as the reason Dispatch answered.
+      const shown = /^.* ratings 3\/5 (".*") time - failed steps 0$/.exec(lines[1] ?? "")?.[1];
+      expect(JSON.parse(shown ?? "null"), printed).toBe(reason);
     }
   });
 
