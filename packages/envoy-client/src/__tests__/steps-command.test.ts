@@ -179,7 +179,7 @@ function runSteps(dispatch: FakeDispatchFetch) {
 
 /** `dispatch steps --issue LEG-1` over a fake Dispatch whose steps route answers `answer`: the
  *  result, and each request the fake saw as `<method> <pathname>`. */
-async function readSteps(answer: unknown) {
+async function readSteps(answer: IssueSteps) {
   const dispatch = fakeDispatchFetch({ routes: { [STEPS_PATH]: answer } });
   const result = await runSteps(dispatch);
   return {
