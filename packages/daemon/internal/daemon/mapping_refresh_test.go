@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -96,7 +97,8 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, Steps: config.DesignGateOff.Steps()}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, ProjectUnmapped: w.repositories.unmapped,
+		Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	for _, opt := range opts {
@@ -1629,8 +1631,8 @@ func TestARepositoryMappedAfterAnEmptyBootIsServedOnItsMappingChange(t *testing.
 	if got := recordedIssue(t, w, "LEGION-301"); got != nil {
 		t.Fatalf("LEGION-301 recorded as %+v while the project maps no repository", got)
 	}
-	if notes := repositoryNotes(t, w, "LEGION-301"); len(notes) != 1 || !strings.Contains(notes[0], "its repository resolves to none") {
-		t.Fatalf("notes on LEGION-301 = %q, want the one saying its repository resolves to none", notes)
+	if notes := repositoryNotes(t, w, "LEGION-301"); len(notes) != 1 || !strings.Contains(notes[0], api.NoRepositoryMapped("LEGION")) {
+		t.Fatalf("notes on LEGION-301 = %q, want the one saying the project has no repository mapped", notes)
 	}
 
 	running, stop := context.WithCancel(ctx)

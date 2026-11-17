@@ -348,6 +348,27 @@ func noRepositoryServed(project string) string {
 	return "project " + project + " serves no repository: every repository it maps is left out (legion state names why)"
 }
 
+// unmapped is the workflow's Config.ProjectUnmapped: why the project serves no repository while
+// the mapping as last read names none of it (api.NoRepositoryMapped), or "" while it names one.
+func (r *repositories) unmapped() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.accepted) == 0 && len(r.refused) == 0 {
+		return api.NoRepositoryMapped(r.project)
+	}
+	return ""
+}
+
+// membership is which repositories the mapping as last read names, served or left out, as one
+// comparable key: the refresher starts its backoff again when a read changes it.
+func (r *repositories) membership() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := append(slices.Collect(maps.Keys(r.accepted)), slices.Collect(maps.Keys(r.refused))...)
+	slices.Sort(names)
+	return strings.Join(names, "\n")
+}
+
 // view is the mapping as the daemon's state shows it, with caches, the Kubernetes runtime's
 // repository caches (none under tmux): each on the mapped repository it is for, matched whatever
 // the case, and the rest, caches of repositories the mapping no longer names, listed apart.
@@ -1158,7 +1179,8 @@ func (w *workflowRuntime) requestMappingRead() uint64 {
 // out every one it maps; or a repository left out for now, for its installation read or its
 // default-branch read past GitHub's rate limit, or served on its last answer, its installation read
 // having failed), or a recovery has not committed yet, it reads the mapping again of its own on
-// mappingRecheckRetry's backoff, 30 s doubling to 10 min, reset once nothing waits, so a repository
+// mappingRecheckRetry's backoff, 30 s doubling to 10 min, reset once nothing waits and started
+// again at 30 s by a read that changes which repositories the mapping names, so a repository
 // mapped with no event the daemon heard, or one whose App was installed after it was mapped, is
 // served, and one GitHub did not answer for is served, or confirmed, and its issues recovered, once
 // GitHub answers, with no restart and no mapping change.
@@ -1173,8 +1195,17 @@ func (w *workflowRuntime) refreshOnMappingChange(ctx context.Context) {
 		after = time.After
 	}
 	recheckIn := mappingRecheckRetry.Initial
+	mapped := w.repositories.membership()
 	for {
 		var recheck <-chan time.Time
+		// A read that changed which repositories the mapping names starts the backoff again at
+		// 30 s: its reasons are about a mapping no wait so far was for, and an empty project's
+		// grown backoff says nothing about how soon an App lands on a repository just mapped. A read
+		// that changed none of them (a GitHub outage read again, an admission held for a read)
+		// keeps the backoff it has.
+		if now := w.repositories.membership(); now != mapped {
+			mapped, recheckIn = now, mappingRecheckRetry.Initial
+		}
 		waiting := append(w.repositories.awaitingRead(), w.recoveringReasons()...)
 		wait, cut := recheckIn, false
 		if len(waiting) == 0 {

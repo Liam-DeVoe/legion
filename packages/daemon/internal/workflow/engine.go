@@ -92,6 +92,12 @@ type Config struct {
 	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
+	// ProjectUnmapped is asked, before any issue's repository is resolved (ResolveRepository),
+	// why the project serves no repository because Dispatch maps none to it, or "" while it maps
+	// one. While it answers a reason, every issue is refused with it (Resolution.Unmapped): no
+	// repository the issue could name is served, and Dispatch refuses setting an issue to a
+	// repository its project does not map, so only mapping one is a remedy. Nil answers "".
+	ProjectUnmapped func() string
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
 	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
 	// a reviewing round is owed from outside the record, and what moves an approved issue to

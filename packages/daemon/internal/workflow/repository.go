@@ -27,7 +27,9 @@ type Repositories interface {
 // it or, with Unread, for now, because GitHub did not answer its installation read, or its
 // default-branch read past GitHub's rate limit; Refusal names which. An Unread issue is not refused
 // but left: RefuseRecording says nothing on it, and the daemon takes it from Dispatch's listing
-// once GitHub answers for the repository (its recovery).
+// once GitHub answers for the repository (its recovery). Unmapped is an issue of a project that
+// maps no repository in Dispatch (Config.ProjectUnmapped), whatever the issue resolves to: the
+// remedy is mapping one, not setting the issue's.
 type Resolution struct {
 	Repo          string
 	DefaultBranch string
@@ -35,6 +37,7 @@ type Resolution struct {
 	Refusal       string
 	LeftOut       bool
 	Unread        bool
+	Unmapped      bool
 }
 
 // resolvesToNone is the refusal of an issue whose repository Dispatch resolves to none: neither it
@@ -42,8 +45,15 @@ type Resolution struct {
 const resolvesToNone = "its repository resolves to none"
 
 // ResolveRepository is the repository an issue resolving to resolved is recorded on, or why it is
-// not recorded. Admission records roots and orphans with it, as the engine records children.
+// not recorded. Admission records roots and orphans with it, as the engine records children. A
+// project that maps no repository refuses every issue for that (Config.ProjectUnmapped), before
+// the issue's own repository is looked at.
 func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
+	if e.cfg.ProjectUnmapped != nil {
+		if reason := e.cfg.ProjectUnmapped(); reason != "" {
+			return Resolution{Refusal: reason, Unmapped: true}, nil
+		}
+	}
 	if resolved == "" {
 		return Resolution{Refusal: resolvesToNone}, nil
 	}
@@ -90,7 +100,10 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 		return false, nil
 	}
 	note := "Legion did not admit this issue: " + refused.Refusal + ". Set its repository (" + setRepositoryHint + ") and move it to todo again."
-	if refused.LeftOut {
+	switch {
+	case refused.Unmapped:
+		note = "Legion did not admit this issue: " + refused.Refusal + ". Map the project's repositories there, one of them its default, and move the issue to todo again."
+	case refused.LeftOut:
 		note = "Legion did not admit this issue: " + refused.Refusal + ". Install it on " + resolved + ", or set another repository (" + setRepositoryHint + "), and move the issue to todo again."
 	}
 	return e.noteOnce(ctx, tx, key, resolved, note)

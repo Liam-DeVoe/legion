@@ -436,6 +436,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, err
 	}
 	engineCfg.Repositories, engineCfg.NoteUnread, engineCfg.ReadMergeState = w, w.noteUnread, w.queueMergeState
+	engineCfg.ProjectUnmapped = w.repositories.unmapped
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, from the one
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
