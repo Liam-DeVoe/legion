@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -107,16 +108,54 @@ func (s *promptShell) wait(want string) {
 // waitFirst waits until the terminal has shown one of wants, and answers the one it showed first.
 func (s *promptShell) waitFirst(wants ...string) string {
 	s.t.Helper()
-	buf := make([]byte, 4096)
 	first := ""
-	testwait.Until(s.t, fmt.Sprintf("the terminal to show one of %q", wants), func() (string, bool) {
+	s.waitShown(fmt.Sprintf("the terminal to show one of %q", wants), func(shown string) bool {
 		at := -1
 		for _, want := range wants {
-			if i := strings.Index(s.out.String(), want); i >= 0 && (at < 0 || i < at) {
+			if i := strings.Index(shown, want); i >= 0 && (at < 0 || i < at) {
 				first, at = want, i
 			}
 		}
-		if at >= 0 {
+		return at >= 0
+	})
+	return first
+}
+
+// bound waits until the helper has said it is about to make the prompt's k-th wait with a bound
+// (WAIT k <ms>, TestPromptJobHelper), and answers that bound in milliseconds.
+func (s *promptShell) bound(k int) int {
+	s.t.Helper()
+	line := regexp.MustCompile(fmt.Sprintf(`WAIT %d (\d+)\r\n`, k))
+	ms := 0
+	s.waitShown(fmt.Sprintf("the prompt's wait %d with a bound (WAIT %d <ms>)", k, k), func(shown string) bool {
+		said := line.FindStringSubmatch(shown)
+		if said == nil {
+			return false
+		}
+		var err error
+		if ms, err = strconv.Atoi(said[1]); err != nil {
+			s.t.Fatalf("the helper said %q for the prompt's wait %d: %v", said[0], k, err)
+		}
+		return true
+	})
+	return ms
+}
+
+// requireBound fails the test unless the prompt bounded its k-th wait with a bound (bound) at want
+// milliseconds: the bound of what, which the behaviour under test rests on, read as data.
+func (s *promptShell) requireBound(k, want int, what string) {
+	s.t.Helper()
+	if got := s.bound(k); got != want {
+		s.t.Fatalf("the prompt bounded its wait %d, %s, at %d ms; want %d ms", k, what, got, want)
+	}
+}
+
+// waitShown waits until holds is true of what the terminal has shown, reading on from it until then.
+func (s *promptShell) waitShown(what string, holds func(shown string) bool) {
+	s.t.Helper()
+	buf := make([]byte, 4096)
+	testwait.Until(s.t, what, func() (string, bool) {
+		if holds(s.out.String()) {
 			return s.out.String(), true
 		}
 		// The read deadline is how a pty read is made to come back at all, not a bound on the
@@ -126,7 +165,6 @@ func (s *promptShell) waitFirst(wants ...string) string {
 		s.out.Write(buf[:n])
 		return s.out.String(), false
 	})
-	return first
 }
 
 func (s *promptShell) start(wrapper bool, background bool) {
@@ -316,20 +354,37 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 		valueReadWindow = window
 	}
+	// Before each wait of the reader's that has a bound (a poll with a timeout), the helper prints
+	// WAIT <k> <ms>: k counts those waits from 1, and ms is the bound the reader gave the wait, so a
+	// test reads the bound its behaviour rests on as data (promptShell.bound). With
+	// AGENT_SECRETS_JOB_HOLD_WAITS=<n> it holds each of the first n such waits open until input
+	// comes, so what the test sends after a held wait's WAIT line arrives inside that wait however
+	// slowly this process runs. Later waits run with their own bound, so the reader still ends a
+	// quiet window, or gives a paste up, by its own clock where a test needs that. One wait can take
+	// several calls: the reader calls again with the same bound after a watcher event (-2), input
+	// gone before its read (-1), or a signal that interrupted the poll (EINTR, which the Go runtime's
+	// own signals cause too), so only another answer ends the wait, and its hold with it.
+	holds := 0
+	if n := os.Getenv("AGENT_SECRETS_JOB_HOLD_WAITS"); n != "" {
+		var err error
+		if holds, err = strconv.Atoi(n); err != nil {
+			t.Fatal(err)
+		}
+	}
 	var deadline time.Time
 	midEntry, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY") != "", false, false
 	real := readTerminal
-	quiet, readSome := false, false
+	waits, waiting, readSome := 0, false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
 		if midEntry && !readSome {
 			timeout = -1
 		}
-		if timeout >= 0 && !quiet {
-			quiet = true
-			fmt.Println("QUIET_READY")
-			if os.Getenv("AGENT_SECRETS_JOB_HOLD_QUIET") != "" {
-				// Hold the first quiet window open until input comes, so what the test sends
-				// after QUIET_READY arrives inside it however slowly this process runs.
+		if timeout >= 0 {
+			if !waiting {
+				waits, waiting = waits+1, true
+				fmt.Printf("WAIT %d %d\n", waits, timeout)
+			}
+			if waits <= holds {
 				timeout = -1
 			}
 		}
@@ -352,6 +407,7 @@ func TestPromptJobHelper(t *testing.T) {
 			}
 		}
 		n, err := real(fd, wake, buf, timeout)
+		waiting = waiting && (n == -2 || (n == -1 && err == nil) || errors.Is(err, unix.EINTR))
 		if n > 0 && !readSome {
 			readSome = true
 			fmt.Println("READ_SOME")

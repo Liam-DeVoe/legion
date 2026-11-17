@@ -146,10 +146,25 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // shell. The rest is typed once the prompt has either said so or answered, whichever comes first,
 // so a prompt that gives the entry up at the deadline shows the rest reaching the shell. The
 // pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal: the
-// reason the notice reads names no interrupt key, and no open paste.
+// reason the notice reads names no interrupt key, and no open paste. The reader's first wait lasts
+// until input comes, however late, as the helper's AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY has it, so
+// the entry is under way when the deadline passes however late its first key is written; the reader
+// bounds each wait after that input by the deadline itself, so the deadline, never the moment the
+// test's write lands, decides when the prompt refuses the entry.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	controller, terminal := openPTY(t)
 	deadline := time.Now().Add(2 * time.Second)
+	real := readTerminal
+	t.Cleanup(func() { readTerminal = real })
+	readSome := false
+	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		if !readSome {
+			timeout = -1
+		}
+		n, err := real(fd, wake, buf, timeout)
+		readSome = readSome || n > 0
+		return n, err
+	}
 	noticed := make(chan error, 1)
 	answer := make(chan promptRead, 1)
 	go func() {
@@ -197,7 +212,11 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 // closes only once the window is over - is not stored: the prompt reads that paste through its
 // closing mark, and the create then refuses the value as one that did not come in time, never
 // calling AddSecretVersion, deletes the empty secret it made, asks the broker to reread the name,
-// and exits 1 naming the window and the command to run again.
+// and exits 1 naming the window and the command to run again. The create hands the prompt the
+// moment its window ends; the test reads that moment as data, and the prompt here reads with no
+// deadline of its own and holds every wait open until input comes, until the test closes the paste.
+// So neither the create's own start nor any write of the test races the window or the quiet window
+// after the line, and readSecretValue's own check of the deadline, which this test is about, decides.
 func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	controller, terminal := openPTY(t)
 	const window = 2 * time.Second
@@ -210,17 +229,28 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 	useTerminal(t)
 	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
-	readHidden = readHiddenAtTerminal
+	deadlines := make(chan time.Time, 1)
+	readHidden = func(fd int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
+		deadlines <- deadline
+		return readHiddenAtTerminal(fd, time.Time{}, prompt, onDiscard)
+	}
 	real := readTerminal
 	t.Cleanup(func() { readTerminal = real })
 	// draining closes at the reader's first wait after the read that ended the line: the drain of
-	// what follows the line. The terminal turns the typed carriage return into a line feed.
-	draining := make(chan struct{})
+	// what follows the line. The terminal turns the typed carriage return into a line feed. Until
+	// closing is closed, just before the paste's close mark is written, every wait lasts until input
+	// comes, so neither the quiet window after the line nor the bound inside the paste ends by a clock.
+	draining, closing := make(chan struct{}), make(chan struct{})
 	lineEnded, drainSeen := false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
 		if lineEnded && !drainSeen {
 			drainSeen = true
 			close(draining)
+		}
+		select {
+		case <-closing:
+		default:
+			timeout = -1
 		}
 		n, err := real(fd, wake, buf, timeout)
 		if n > 0 && bytes.ContainsAny(buf[:n], "\r\n") {
@@ -238,9 +268,10 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		done <- result{stderr, code}
 	}()
 	awaitEchoOff(t, terminal)
-	// The create asked the store for the secret before the prompt turned echo off, so its window
-	// is over by then.
-	windowEnds := time.Now().Add(window)
+	deadline := testwait.Receive(t, "the create to hand the prompt its deadline", deadlines)
+	if deadline.IsZero() {
+		t.Fatal("the create read its value with no deadline")
+	}
 	if _, err := controller.Write([]byte("typed-value\r")); err != nil {
 		t.Fatal(err)
 	}
@@ -248,11 +279,11 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	if _, err := controller.Write([]byte("\x1b[200~")); err != nil {
 		t.Fatal(err)
 	}
-	// The stand-in for the person: the paste closes past the create's window (valueReadWindow, 2s
-	// here), which the create times on the wall clock and in its poll(2) timeouts, out of reach of
-	// any fake clock. windowEnds is no earlier than the create's own deadline, so the margin is the
-	// person's lateness, and a loaded machine only makes it later.
-	time.Sleep(time.Until(windowEnds) + 300*time.Millisecond)
+	// The stand-in for the person: the paste closes only once the create's window (valueReadWindow,
+	// 2s here) has passed by the wall clock, which readSecretValue reads. No verdict reads this
+	// sleep: a loaded machine only makes the paste's close later.
+	time.Sleep(time.Until(deadline))
+	close(closing)
 	if _, err := controller.Write([]byte("\x1b[201~")); err != nil {
 		t.Fatal(err)
 	}

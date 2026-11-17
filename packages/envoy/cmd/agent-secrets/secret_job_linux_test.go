@@ -243,11 +243,16 @@ func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
 	}
 }
 
+// Ctrl-Z in the quiet window after the line stops the prompt with the entry refused, and after fg the
+// quiet window ends without further input. The helper holds that first window open until input
+// comes, so the stop arrives inside it however slowly this process runs; the window after the resume
+// is not held, so it must end by the prompt's own bound.
 func TestPromptJobStopDuringQuietWindowDoesNotHang(t *testing.T) {
 	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=1 "
 	s.start(false, false)
 	s.send("headtail\r")
-	s.wait("QUIET_READY")
+	s.requireBound(1, pasteGapDeciseconds*100, "the quiet window after the line")
 	s.send("\x1a")
 	s.wait("Stopped")
 	s.out.Reset()
@@ -298,19 +303,25 @@ func TestPromptJobStopKeyDiscardsWhatFollowsIt(t *testing.T) {
 
 // A signal key inside a bracketed paste is pasted text, not a keypress: the prompt refuses it as a
 // control byte and discards the paste through its end, in one write or with the rest arriving
-// later, so none of the paste reaches the shell.
+// later, so none of the paste reaches the shell. Where the rest comes later, the helper holds the
+// paste's first wait open until it is written, and the test requires that wait's bound to be
+// maxPasteDrain: a prompt that bounded it by the quiet window would give the terminal back before
+// the rest came.
 func TestPromptJobSignalKeyInsideAPasteDrainsThroughItsEnd(t *testing.T) {
 	for _, key := range []string{"\x03", "\x1a", "\x1c"} {
-		for _, gap := range []time.Duration{0, 300 * time.Millisecond} {
-			t.Run(fmt.Sprintf("%x/%s", key, gap), func(t *testing.T) {
+		for _, later := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%x/the rest in a later write=%t", key, later), func(t *testing.T) {
 				s := newPromptShell(t)
+				if later {
+					s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=1 "
+				}
 				s.start(false, false)
 				head, tail := "\x1b[200~pastehead"+key, "pastetail\r\x1b[201~"
-				if gap == 0 {
+				if !later {
 					s.send(head + tail)
 				} else {
 					s.send(head)
-					time.Sleep(gap)
+					s.requireBound(1, int(maxPasteDrain.Milliseconds()), "the first wait inside the paste")
 					s.send(tail)
 				}
 				s.wait(fmt.Sprintf("RETURNED the control byte 0x%02x cannot be typed at the prompt", key[0]))
@@ -323,7 +334,10 @@ func TestPromptJobSignalKeyInsideAPasteDrainsThroughItsEnd(t *testing.T) {
 // A paste that begins after the typed line, while the prompt drains what follows it, is read
 // through its closing mark like one in the line: a signal key inside it is pasted text, and the
 // paste's rest, arriving after the quiet window would have ended, is discarded rather than run by
-// the shell. The entry is refused as more than one line.
+// the shell. The entry is refused as more than one line. The helper holds the quiet window after the
+// line and the paste's first wait open until the test writes, and the test requires their bounds to
+// be the quiet window and maxPasteDrain: a prompt that bounded the paste's wait by the quiet window
+// would give the terminal back before the paste's rest came.
 func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
 	for _, key := range []string{"\x03", "\x1c", "\x1a", ""} {
 		name := fmt.Sprintf("%x", key)
@@ -332,12 +346,12 @@ func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s := newPromptShell(t)
-			s.env = "AGENT_SECRETS_JOB_HOLD_QUIET=1 "
+			s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=2 "
 			s.start(false, false)
 			s.send("headtail\r")
-			s.wait("QUIET_READY")
+			s.requireBound(1, pasteGapDeciseconds*100, "the quiet window after the line")
 			s.send("\x1b[200~pastelate" + key)
-			time.Sleep(300 * time.Millisecond)
+			s.requireBound(2, int(maxPasteDrain.Milliseconds()), "the first wait inside the paste")
 			s.send("echo PASTE_$((2+3))\r\x1b[201~")
 			s.wait("RETURNED a value of more than one line must be piped in")
 			// Clear the shell's line, where a leaked paste mark would leave text that breaks the
@@ -351,7 +365,10 @@ func TestPromptJobPasteAfterTheLineDrainsThroughItsEnd(t *testing.T) {
 // A bracketed paste that begins in the same read as the line's end is read on through its closing
 // mark, not given back to the shell after the line: the prompt keeps the terminal, so the paste's
 // rest, arriving after the quiet window would have ended, is discarded rather than run by the shell.
-// The entry is refused as more than one line.
+// The entry is refused as more than one line. The helper holds the prompt's first wait with a bound
+// open until the test writes the paste's rest, and the test requires that bound to be maxPasteDrain:
+// a prompt that did not see the paste waits the quiet window after the line there instead, and
+// gives the terminal back before the rest arrives.
 func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
 	for _, key := range []string{"\x03", "\x1c", "\x1a", ""} {
 		name := fmt.Sprintf("%x", key)
@@ -360,14 +377,12 @@ func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			s := newPromptShell(t)
+			s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=1 "
 			s.start(false, false)
 			// One write carries the line's end and the paste's start; the prompt reads both at
 			// once, so a paste the prompt only watches for after the line would be missed.
 			s.send("headtail\r\x1b[200~pastelate" + key)
-			s.wait("QUIET_READY")
-			// Longer than the quiet window: a prompt that did not see the paste gives the
-			// terminal back before this arrives, and the shell runs it.
-			time.Sleep(300 * time.Millisecond)
+			s.requireBound(1, int(maxPasteDrain.Milliseconds()), "the first wait inside the paste")
 			s.send("echo PASTE_$((2+3))\r\x1b[201~")
 			s.wait("RETURNED a value of more than one line must be piped in")
 			// Clear the shell's line, where a leaked paste mark would leave text that breaks
@@ -381,14 +396,15 @@ func TestPromptJobPasteInTheLineEndReadDrainsThroughItsEnd(t *testing.T) {
 // A paste-start mark split so that only its first bytes arrive in the read that ends the line is
 // held as pending and completed from the next read: the paste opens, so a Ctrl-C after its content
 // is pasted text, not a keypress, and the entry is refused as more than one line rather than its
-// content run by the shell. The helper shortens the paste bound so the refusal does not wait the
-// full bound for a close mark that never comes.
+// content run by the shell. The helper holds the wait for the mark's rest open until the test writes
+// it, and shortens the paste bound so the refusal does not wait the full bound for a close mark that
+// never comes.
 func TestPromptJobSplitPasteMarkAfterTheLineIsRead(t *testing.T) {
 	s := newPromptShell(t)
-	s.env = "AGENT_SECRETS_JOB_HOLD_QUIET=1 AGENT_SECRETS_JOB_PASTE_BOUND=1s "
+	s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=1 AGENT_SECRETS_JOB_PASTE_BOUND=1s "
 	s.start(false, false)
 	s.send("headtail\r\x1b[20")
-	s.wait("QUIET_READY")
+	s.requireBound(1, splitMarkGapMillis, "the wait for the rest of the paste-start mark")
 	s.send("0~pastelate\x03")
 	s.wait("RETURNED a value of more than one line must be piped in")
 	s.noShellValue("headtail", "pastelate")
@@ -396,20 +412,25 @@ func TestPromptJobSplitPasteMarkAfterTheLineIsRead(t *testing.T) {
 
 // A paste-start mark split so that only its first bytes arrive in the read that ends the line, with
 // the rest arriving after the quiet window would have ended, still opens a paste: while a partial
-// mark is pending the drain waits a second for the rest, longer than the quiet window, so a terminal
-// that splits those six bytes across writes that far apart does not give the terminal back before
-// the mark completes and the paste's content runs in the shell. The entry is refused as more than
-// one line. The helper shortens the paste bound so the refusal does not wait the full bound for a
-// close mark that never comes.
+// mark is pending the drain waits splitMarkGapMillis for the rest, longer than the quiet window, so a
+// terminal that splits those six bytes across writes that far apart does not give the terminal back
+// before the mark completes and the paste's content runs in the shell. The entry is refused as more
+// than one line. The helper holds the wait for the mark's rest and the paste's first wait open until
+// the test writes, and the test requires their bounds to be splitMarkGapMillis, longer than the
+// quiet window, and maxPasteDrain: a drain that waited the quiet window for the mark's rest would
+// give the terminal back before it came. The paste's close mark comes, so the paste bound is the
+// prompt's own.
 func TestPromptJobSplitPasteMarkRestAfterTheQuietWindowIsRead(t *testing.T) {
 	s := newPromptShell(t)
-	s.env = "AGENT_SECRETS_JOB_PASTE_BOUND=1s "
+	s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=2 "
 	s.start(false, false)
 	s.send("headtail\r\x1b[20")
-	s.wait("QUIET_READY")
-	time.Sleep(500 * time.Millisecond)
+	if mark := s.bound(1); mark != splitMarkGapMillis || mark <= pasteGapDeciseconds*100 {
+		t.Fatalf("the drain waited %d ms for the rest of the paste-start mark; want splitMarkGapMillis (%d ms), longer than the quiet window (%d ms)",
+			mark, splitMarkGapMillis, pasteGapDeciseconds*100)
+	}
 	s.send("0~pastelate\x03")
-	time.Sleep(300 * time.Millisecond)
+	s.requireBound(2, int(maxPasteDrain.Milliseconds()), "the first wait inside the paste")
 	s.send("echo PASTE_$((2+3))\r\x1b[201~")
 	s.wait("RETURNED a value of more than one line must be piped in")
 	s.send("\x15")
@@ -419,12 +440,15 @@ func TestPromptJobSplitPasteMarkRestAfterTheQuietWindowIsRead(t *testing.T) {
 // A second bracketed paste that begins in the same read that closes a pasted line opens like any
 // other: the prompt keeps reading, so its rest, arriving after the quiet window would have ended,
 // is discarded rather than run by the shell, and the pasted line is refused as more than one line.
+// The helper holds the second paste's first wait open until the test writes its rest, and the test
+// requires that wait's bound to be maxPasteDrain: a prompt that bounded it by the quiet window would
+// give the terminal back before the rest came.
 func TestPromptJobSecondPasteInThePastedLinesCloseIsRead(t *testing.T) {
 	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_HOLD_WAITS=1 "
 	s.start(false, false)
 	s.send("\x1b[200~firstpaste\r\x1b[201~\x1b[200~pastelate")
-	s.wait("QUIET_READY")
-	time.Sleep(300 * time.Millisecond)
+	s.requireBound(1, int(maxPasteDrain.Milliseconds()), "the first wait inside the second paste")
 	s.send("echo PASTE_$((2+3))\r\x1b[201~")
 	s.wait("RETURNED a value of more than one line must be piped in")
 	s.send("\x15")
@@ -449,14 +473,19 @@ func TestPromptJobPasteThatNeverEndsIsGivenUp(t *testing.T) {
 
 // A paste that keeps arriving past the bound is read on, not given up: the bound counts the quiet
 // since the last input, restarted at each read, so a slow paste is drained however long it takes and
-// its lines never reach the shell. The helper shortens the bound; the lines arrive well inside it but
-// for longer than it in all.
+// its lines never reach the shell. The helper shortens the bound and holds each of the paste's first
+// 20 waits open until the test writes a line into it, and the test requires each wait's bound to be
+// the whole bound: a prompt that counted it from the paste's start would bound each later wait by
+// less. The lines arrive for longer than the bound in all. The wait after the last line is not held,
+// so the prompt gives the paste up once it has been quiet for the bound, by its own clock.
 func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
+	const pasteBound, lines = time.Second, 20
 	s := newPromptShell(t)
-	s.env = "AGENT_SECRETS_JOB_PASTE_BOUND=1s "
+	s.env = fmt.Sprintf("AGENT_SECRETS_JOB_PASTE_BOUND=%s AGENT_SECRETS_JOB_HOLD_WAITS=%d ", pasteBound, lines)
 	s.start(false, false)
 	s.send("\x1b[200~")
-	for range 20 {
+	for k := range lines {
+		s.requireBound(k+1, int(pasteBound.Milliseconds()), "a wait inside the paste")
 		s.send("echo LEAKED_$((9+9))\r")
 		time.Sleep(100 * time.Millisecond)
 	}
