@@ -147,9 +147,11 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 }
 
 // listIssueSteps is every run of every step of one issue, task by task in the order of each
-// task's first run: GET /api/v1/issues/{key}/steps. It reads as GET
-// /api/v1/issues/{key}/handoffs does: a closed issue's runs as an open one's, and a key no issue
-// carries as an issue with none.
+// task's first run: GET /api/v1/issues/{key}/steps. A closed issue's runs read as an open one's,
+// and a key no issue carries answers as GET /api/v1/issues/{key} does, 404 NOT_FOUND, so a
+// mistyped key never reads as an issue Legion never ran. Only a read that finds no run looks for
+// the issue: the write reads the issue before it records a run (404 ISSUE_NOT_FOUND), and no issue
+// is ever deleted, so a read that finds a run has found its issue.
 func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -159,6 +161,18 @@ func (s *server) listIssueSteps(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if len(steps) == 0 {
+		var held bool
+		if err := s.deps.Store.Pool.QueryRow(r.Context(),
+			`select exists(select 1 from issues where key = $1)`, key).Scan(&held); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !held {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
 	}
 	read := model.IssueSteps{Issue: key, Tasks: []model.StepTask{}}
 	tasks := map[string]int{}

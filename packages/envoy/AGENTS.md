@@ -382,7 +382,8 @@ Each item below names a task and where its code is, then notes on it.
   An id whose record is a run of another issue is `409 STEP_OTHER_ISSUE`, and an issue Dispatch does not hold `404 ISSUE_NOT_FOUND`, which the daemon tells from the router's `NOT_FOUND` of a Dispatch older than the route.
   The write reads the issue `for key share` with no open check, so the merge that closes an issue still records its step, and it appends no issue event.
   `GET /api/v1/issues/{key}/steps` answers every run task by task, in the order of each task's first run, each with its attempt, which the read computes and no write stores;
-  a key no issue carries reads as an issue with no task, as its handoffs read, and a read-only token may call it (`readScopeRoutes`).
+  an issue no step ran on reads with no task, and a key no issue carries is `404 NOT_FOUND`, as `GET /api/v1/issues/{key}` answers it, so a mistyped key never reads as an issue Legion never ran: only a read that finds no run pays the one read of the issue row, since the write reads the issue before it records a run and no issue is ever deleted.
+  A read-only token may call it (`readScopeRoutes`).
   `workflowstore` is the one writer of the two tables, a node per run and a tuple per fact.
   Shapes: `StepRecord`, `StepTask`, `IssueSteps` in `internal/dispatch/model/model.go`, generated into `packages/contracts/src/dispatch-api.generated.ts`
 

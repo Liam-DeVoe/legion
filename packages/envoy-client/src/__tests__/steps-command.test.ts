@@ -478,9 +478,8 @@ describe("dispatch steps on the command line", () => {
   });
 
   // The answers the steps GET refuses with: a credential Dispatch does not take (401), a fault of
-  // its own (500), and a page something in its place answered (502). No GET is project-scoped, and
-  // a key no issue carries reads as an issue with no step, so it answers no project's 403 and no
-  // issue's 404.
+  // its own (500), and a page something in its place answered (502). No GET is project-scoped, so
+  // it answers no project's 403; a key Dispatch does not hold is the issue read's 404, the next row.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
     /** The run against `server` exits 1, reads the steps route once, and prints `refusal` and no
      *  steps; `label` names the case in each assertion's message. */
@@ -522,5 +521,31 @@ describe("dispatch steps on the command line", () => {
         `Dispatch's error JSON ("502 Bad Gateway"), which looks like a proxy or gateway page ` +
         "rather than Dispatch's own answer, so a retry may succeed."
     );
+  });
+
+  // A key Dispatch does not hold is the issue read's 404 NOT_FOUND on the steps route as on the
+  // issue's own, so `dispatch steps` fails for it as `dispatch read` does, and a mistyped key
+  // never reads as an issue Legion never ran.
+  test("a key Dispatch does not hold fails as dispatch read fails for it, and prints no steps", async () => {
+    /** What each command prints and exits with against a Dispatch answering every request as it
+     *  answers a read of an issue it does not hold, and the paths the command read. */
+    async function runUnknown(argv: readonly string[]) {
+      const server = dispatchServing({
+        handler: () => Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 }),
+      });
+      const { code, stdout } = await run(server, argv);
+      return { code, stdout, reads: server.reads.map((url) => url.pathname) };
+    }
+
+    const steps = await runUnknown(["steps", "--issue", "LEG-999"]);
+    const read = await runUnknown(["read", "--issue", "LEG-999"]);
+
+    expect(steps.reads).toEqual(["/api/v1/issues/LEG-999/steps"]);
+    expect(read.reads).toContain("/api/v1/issues/LEG-999");
+    expect(read.code).toBe(1);
+    expect(read.stdout).toContain("NOT_FOUND: not found");
+    expect(steps.code).toBe(1);
+    expect(steps.stdout).toBe(read.stdout);
+    expect(steps.stdout).not.toContain("steps in");
   });
 });

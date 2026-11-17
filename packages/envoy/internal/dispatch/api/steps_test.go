@@ -345,18 +345,29 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	}
 }
 
-// The read of an issue Dispatch does not hold answers as the read of its handoffs does: 200 and
-// nothing in it.
-func TestAnUnknownIssueReadsAsItsHandoffsRead(t *testing.T) {
+// The read of an issue Dispatch does not hold answers as the read of the issue itself does, 404
+// NOT_FOUND, so a mistyped key never reads as an issue Legion never ran; and that answer is the
+// handler's, not the router's "no route" of a Dispatch older than the route. An issue Dispatch
+// holds that no step ran on still reads 200 and no task.
+func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
 	handler := newTestHandler(t)
+	issue := createTestIssue(t, handler, "LEG", "An issue Legion never ran")
 
-	handoffs := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999/handoffs", nil, "alice")
-	if handoffs.Code != http.StatusOK || strings.TrimSpace(handoffs.Body.String()) != "[]" {
-		t.Fatalf("the handoffs of LEG-999: status=%d body=%s, want 200 []", handoffs.Code, handoffs.Body.String())
-	}
+	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999", nil, "alice")
+	requireStepRefusal(t, "the issue read of LEG-999", read, http.StatusNotFound, "NOT_FOUND")
 	steps := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999/steps", nil, "alice")
-	if want := `{"issue":"LEG-999","tasks":[]}`; steps.Code != http.StatusOK || strings.TrimSpace(steps.Body.String()) != want {
-		t.Fatalf("the steps of LEG-999: status=%d body=%s, want 200 %s", steps.Code, steps.Body.String(), want)
+	if steps.Code != read.Code || strings.TrimSpace(steps.Body.String()) != strings.TrimSpace(read.Body.String()) {
+		t.Fatalf("the steps of LEG-999: status=%d body=%s, want the issue read's status=%d body=%s",
+			steps.Code, steps.Body.String(), read.Code, read.Body.String())
+	}
+	if refusal := decodeBody[refusalAnswer](t, steps); strings.HasPrefix(refusal.Error, "no route") {
+		t.Fatalf("the steps of LEG-999 answer the router's refusal %q, want the handler's", refusal.Error)
+	}
+
+	held := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/steps", nil, "alice")
+	if want := `{"issue":"` + issue + `","tasks":[]}`; held.Code != http.StatusOK || strings.TrimSpace(held.Body.String()) != want {
+		t.Fatalf("the steps of %s, which no step ran on: status=%d body=%s, want 200 %s", issue, held.Code,
+			held.Body.String(), want)
 	}
 }
 
