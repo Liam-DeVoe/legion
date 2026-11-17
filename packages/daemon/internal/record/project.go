@@ -101,14 +101,21 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 	return slices.Contains(phases, StandsAt(issue))
 }
 
-// Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
-// has not closed: it stands in its retro or in its merge, or is held from one of them
-// (StandsIn). Work entering the workflow beneath an issue in one of those phases
-// would let that issue merge first, which is the one thing a parent must not do
-// (dispatch://INFRA-980, "Children first"). The reviewed head of a root whose worker died in
-// retro or merging is accepted still, so the hold must not let work in beneath
+// Accepted says whether the daemon has already accepted issue's head, the head the last step of
+// its task passed, and the issue has not closed: it stands in its retro or in its merge, or is
+// held from one of them (StandsIn). The head is the reviewed one only where the task has a
+// reviewer step; a plan with no reviewer step has no reviewed head. Work entering the workflow
+// beneath an issue in one of those phases would let that issue merge first, which is the one
+// thing a parent must not do (dispatch://INFRA-980, "Children first"). The head of a root whose
+// worker died in retro or merging is accepted still, so the hold must not let work in beneath
 // it: the line held no issue under such a root, the two doors let one in, and the close of a
 // root held from retro handed over nobody.
+//
+// A parent held before its retro for the issues beneath it (HoldForChildren, a parent whose plan
+// has no acceptance step) is not accepted: the hold stands in place of its retro until those
+// issues have run, so each of them must start beneath it and be counted by its wait. Read as
+// accepted, it would hold a child at admitted until the parent closed (HeldUnderAccepted), leave
+// that child out of the wait (OpenBeneath), and start its retro and merge without the child's work.
 //
 // The two phases are named here and nowhere else, so that no rule of the acceptance order can
 // read a list of its own: one that did is what let a child held from retro through. Every one
@@ -118,7 +125,13 @@ func StandsIn(issue Issue, phases ...phase.Phase) bool {
 // (OpenBeneath, which leaves out what that hold stopped) — so none of them can count a root as
 // accepted that another counts as still at work.
 func Accepted(issue Issue) bool {
-	return StandsIn(issue, phase.Retro, phase.Merging)
+	return StandsIn(issue, phase.Retro, phase.Merging) && !HeldForChildren(issue)
+}
+
+// HeldForChildren says whether issue is a parent held before its retro for the issues beneath it
+// (HoldForChildren).
+func HeldForChildren(issue Issue) bool {
+	return issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.Reason == HoldForChildren
 }
 
 // Ancestors is every issue above issue inside its own tree, nearest first and the tree's own

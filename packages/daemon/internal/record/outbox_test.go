@@ -1137,6 +1137,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			Reason: "task a of LEGION-208 was stopped by its owner, the architect legion-legion-legion-208-architect"},
 		{Kind: "plan-not-taken", Role: claim.RoleArchitect,
 			Reason: "The first step of LEGION-209 took no plan of an earlier owner: version 1 of document 6a1f0c3e-2b7d-4e5a-9c81-3d4f5e6a7b80, given by legion-legion-legion-208-architect. It runs the default steps. To run a plan it did not take, give it again with register_plan as your own."},
+		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
+			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent's head proves its children's merged work. Run each one to done, or park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed; Legion starts the retro when the last one leaves."},
 	}
 
 	byKind := make(map[NoticeKind]Notice, len(every))

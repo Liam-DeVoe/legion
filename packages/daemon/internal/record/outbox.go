@@ -1904,6 +1904,11 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // from (workflow's stopUnreturned). The task's owner reads which task, and which step or which
 // architect, in its reason.
 //
+// `retro-held` is a parent whose plan has no acceptance step, held before its retro because it
+// passed its last step while issues beneath it are still in the workflow (workflow's
+// beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
+// retro starts when the last one leaves (workflow's startHeldRetro).
+//
 // `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
 // (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree
 // now (ArchitectOfTree), as after an orphan is admitted again as a root of its own or an adoption
@@ -1917,7 +1922,7 @@ var validNoticeKinds = []NoticeKind{
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted",
-	"session-lost", "session-store-fault", "task-stopped", "plan-not-taken",
+	"session-lost", "session-store-fault", "task-stopped", "plan-not-taken", "retro-held",
 }
 
 // validNoticeKind says whether kind is a notice an architect is told.

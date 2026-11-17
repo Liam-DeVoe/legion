@@ -1624,7 +1624,19 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
+	// A parent whose plan has no acceptance step passes its last step into its retro, and while an
+	// issue beneath it is still in the workflow Legion holds it before its retro instead
+	// (beneathRetro): the task moves to its retro's place, the issue stands in held, and the hold
+	// writes no status, starts no retro and keeps the last step's handoff for the retro's task.
+	beneath, err := e.beneathRetro(ctx, tx, issue, w, row.To)
+	if err != nil {
+		return err
+	}
+	holds := len(beneath) > 0
 	status := PhaseStatus(row.To)
+	if holds {
+		status = PhaseStatus(phase.Held)
+	}
 	if err := e.status(ctx, tx, issue, status); err != nil {
 		return err
 	}
@@ -1644,6 +1656,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	issue.Hold = nil
+	if holds {
+		issue.Phase, issue.Hold = phase.Held, &record.Hold{From: phase.Retro, Reason: record.HoldForChildren}
+	}
 	// This is the one write that moves an issue into a phase of its own, so it is where the issue's
 	// run earns record.Issue.TakenBack: it has stood in a phase. The mark is a fact about that run,
 	// not about the issue's history. It lasts as long as the run's record does — through the phase's
@@ -1668,7 +1683,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
-	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
+	if holds {
+		e.logOnCommit(ctx, "workflow: a parent is held before its retro for the issues beneath it", "issue", issue.Key, "tree", issue.Tree,
+			"task", w.Task, "beneath", beneath)
+	} else if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
@@ -1700,6 +1718,8 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	switch {
+	case holds:
+		// The retro starts when the last issue beneath leaves (startHeldRetro), and nothing here.
 	case mergedAlready:
 		// The merge's step starts all the same, run by nobody, and the close ends it.
 		if err := e.startStep(ctx, tx, issue, ""); err != nil {
@@ -1728,6 +1748,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
+	}
+	if holds {
+		if err := e.notice(ctx, tx, issue.Key, retroHeldNotice(issue.Key, beneath)); err != nil {
+			return err
+		}
 	}
 	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
 		return err
