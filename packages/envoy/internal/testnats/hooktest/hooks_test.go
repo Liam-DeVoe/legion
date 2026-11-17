@@ -464,7 +464,7 @@ func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	report(&natsserver.MeasureEvent{Point: string(testnats.ServerDown), Server: "B", ServerID: "run-b", Store: store})
 	select {
 	case <-publish():
-	case <-time.After(held):
+	case <-time.After(reachWithin):
 		t.Fatal("a publish on a store whose run A is still stopping was parked: B's down cleared A's mark")
 	}
 
