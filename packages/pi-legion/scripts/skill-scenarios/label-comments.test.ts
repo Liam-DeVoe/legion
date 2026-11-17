@@ -664,12 +664,16 @@ for (const code of REDIRECT_CODES) {
     try {
       const anthropic = "https://api.anthropic.com";
       const out = path.join(dir(`direct-${code}`), "labels");
-      const run = io((url, init) =>
-        fetch(
-          url.startsWith(anthropic) ? `${servers.origin}${url.slice(anthropic.length)}` : url,
-          init
-        )
-      );
+      // The model call to Anthropic's own address goes to the first server: the URL is parsed, and
+      // its scheme, host and path are compared whole.
+      const run = io((url, init) => {
+        const asked = new URL(url);
+        const toAnthropic =
+          asked.protocol === "https:" &&
+          asked.host === "api.anthropic.com" &&
+          asked.pathname === "/v1/messages";
+        return fetch(toAnthropic ? `${servers.origin}/v1/messages` : url, init);
+      });
       const exit = await main(
         ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
         {
