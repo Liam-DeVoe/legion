@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# c-blob-unchanged (private projects, verification v17; plan task t-a-22): with no private
-# project, every caller reads at this build, byte for byte, what it reads at the merge base.
+# c-blob-unchanged (private projects, verification v17): with no private project, every caller
+# reads at this build, byte for byte, what it reads at the merge base.
 #
 # It builds the merge base and this checkout through scripts/e2e/lib/two-builds.sh and starts each
 # on a database of its own, made here on the server DATABASE_URL names and dropped when the run
@@ -23,21 +23,21 @@
 # Issue keys, project keys, slugs, names, versions and event numbers are the seed's own and are
 # compared as they are.
 #
-# `GET /api/v1` is left out of the list. The route index gains a row for each route this issue
+# `GET /api/v1` is left out of the list. The route index gains a row for each route a change
 # adds, and the routes golden (packages/envoy/internal/dispatch/api/testdata/routes.txt, held by
-# TestRouteIndexLists) and `go run ./cmd/dispatch openapi --check` hold the index and every route's
-# description instead. So the named list of additions is empty: every field this issue adds is
-# omitempty at its default, and any difference fails. The run reads the whole list before it
-# fails, and names, for each answer that differs, the caller, the route and the first byte that
-# differs, with both answers around it.
+# TestRouteIndexListsEveryRouteSortedByPathThenMethod) and `go run ./cmd/dispatch openapi --check`
+# hold the index and every route's description instead. So the named list of additions is empty:
+# every field private projects add to an answer is omitempty at its default, and any difference
+# fails. The run reads the whole list before it fails, and names, for each answer that differs,
+# the caller, the route and the first byte that differs, with both answers around it.
 #
 # Usage, from packages/dispatch:
 #
 #   DATABASE_URL=<a loopback PostgreSQL this run may create databases on> \
-#     bash e2e/acceptance/with-harness.sh bash e2e/acceptance/project-access-blob.sh \
+#     bash e2e/acceptance/project-access-blob.sh \
 #     [--base-commit <rev> | --base-branch <ref>] [--control private-pub | --control private-header]
 #
-# The harness is not needed: the run starts its own servers and its own fake Envoy, and reads
+# It needs no harness: the run starts its own servers and its own fake Envoy, and reads
 # DATABASE_URL only for the server it names, whose database must hold the vector extension (the
 # harness's does: its server migrated it). --base-commit names the merge base; left out, it is
 # HEAD's merge base with --base-branch's ref, the branch the change is built on, origin/main when
@@ -298,9 +298,9 @@ readonly project_reads=(
 #                   the mask names can be a byte longer at one build
 #   etag            a digest of the raw body, which holds each build's own ids
 # The status line is compared as the status. The one declared addition: this build answers
-# `Dispatch-Private-Projects: 0` (KF7) on every answer, which the base does not send, so it must be
-# on this build's answer and is then dropped from it; any other header difference fails, naming
-# the route and the header.
+# `Dispatch-Private-Projects: 0` (KF7) on every answer, which a base from before it does not send,
+# so it must be on this build's answer, and it is dropped from both builds' headers before they are
+# compared; any other header difference fails, naming the route and the header.
 readonly masked_headers='^(date|content-length|etag):'
 readonly declared_header='dispatch-private-projects: 0'
 

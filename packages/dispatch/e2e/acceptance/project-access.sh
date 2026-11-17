@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# c-private-unseen (private projects, verification v17; plan task t-a-22): a private project
-# is unseen by every caller its access list does not let in, on every read path, and seen by
-# every caller it does.
+# c-private-unseen (private projects, verification v17): a private project is unseen by every
+# caller its access list does not let in, on every read path, and seen by every caller it does.
 #
 # It starts two servers of this checkout, `main` and `twin`, each on a database of its own, with
-# a NATS of its own (the bus a private project's record is written to), a fake Envoy of its own
-# and one fake GitHub, and seeds them through the routes (access-lib.sh):
+# a NATS of its own (the bus a private project's record is to be written to, by a writer this
+# build does not have), a fake Envoy of its own and one fake GitHub, and seeds them through the
+# routes (access-lib.sh):
 #   main  verification v16's seed: PUB, public, and PRIV, made private through the visibility
 #         route; alice, a full member no list names; bob, a restricted member PRIV's list names;
 #         carol, a full member PRIV's list names, who owns both; carol's token that lists PRIV,
@@ -19,8 +19,10 @@
 # Then, in sections, each of which runs whatever the ones before found:
 #   private     the two commands an operator runs on the deploy (envoy-dispatch
 #               backfill-session-projects and scrub-access-events) run against main's database,
-#               and PRIV is made private through PATCH /api/v1/projects/PRIV/access; the sections
-#               below need it, and are reported as not run when the route refuses. With
+#               and PRIV is made private through PATCH /api/v1/projects/PRIV/access. walk, search,
+#               sockets, proxy and writes need it, and are reported as not run when the route
+#               refuses, as it always does in a build with no writer of the private-projects
+#               record (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
 #               --private-by-sql, a route that refuses is stood in for by the store write it
 #               makes (`update projects set visibility = 'private'`), so every section below
 #               runs; the stand-in is written to what did not run, so such a run never passes.
@@ -28,18 +30,22 @@
 #   confined    bob and carol's PRIV token find nothing of PUB, no person (once PRIV is private)
 #               and no agent outside PRIV, and no direct message that is not their own.
 #   walk        for alice, alice's PRIV token, carol's token that lists no project and the shared
-#               token ("the unseeing callers"): every GET row of GET /api/v1 and every write row
-#               whose path names an object, filled once with PRIV's objects and once with ids that
-#               do not exist, each kind of object as the row's Probe names it, answers the same
-#               status and bytes; a row that names an object and has no Probe fails the run,
-#               named. A GET row that names no object is a list: its answer equals the twin's.
+#               token ("the unseeing callers"): every GET row of GET /api/v1 whose path names an
+#               object, filled once with PRIV's objects and once with ids that do not exist, each
+#               kind of object as the row's Probe names it, answers the same status and bytes; a
+#               row that names an object and has no Probe fails the run, named. A GET row that
+#               names no object is a list: its answer equals the twin's.
 #   search      both legs of search, the keyword leg alone and the two together, answer each
 #               unseeing caller what the twin answers.
 #   sockets     the document socket answers an unseeing caller for PRIV's spec what it answers
-#               for a document that does not exist, and lets bob, carol and carol's PRIV token in;
-#               the live socket replays each unseeing caller the event log the twin replays.
+#               for a document that does not exist, lets bob and carol in, and refuses carol's
+#               PRIV token alike for PUB's spec and PRIV's, since it admits a person's cookie
+#               alone; the live socket sends each unseeing caller, while carol comments on PRIV
+#               and then on PUB, the frames the twin sends it.
 #   proxy       the dashboard's GitHub proxy answers an unseeing person for PRIV's repository
 #               what it answers for a repository the App is not installed on.
+#   writes      last, since a write that is not hidden changes what every section above reads:
+#               every write row whose path names an object, walked as walk walks the GET rows.
 # The Probes are read from the server's own table (`go run ./internal/dispatch/api/cmd/routeprobes`),
 # never from a list here. Answers are compared after access-lib.sh's mask, and an answer to a
 # filled path also with the ids it was filled with masked as the wildcard they fill, which is the
@@ -48,11 +54,13 @@
 # Usage, from packages/dispatch:
 #
 #   DATABASE_URL=<a loopback PostgreSQL this run may create databases on> \
-#     bash e2e/acceptance/with-harness.sh bash e2e/acceptance/project-access.sh
+#     bash e2e/acceptance/project-access.sh [--private-by-sql]
 #
-# The harness is not needed: the run starts every process it reads, and reads DATABASE_URL only
-# for the server it names. It prints `ok <section>` for a section that held, and fails at the end
-# naming every pair of answers that differed and everything it could not run, with why.
+# It needs no harness: the run starts every process it reads, and reads DATABASE_URL only for the
+# server it names, on which it makes a database for each of its servers and drops it at the end.
+# It prints `ok <section>` once a section has run to its end, whatever it found, and fails at the
+# end (verdict), naming every pair of answers that differed and everything it could not run, with
+# why.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -280,7 +288,7 @@ note "main serves ${build_url[main]}, the twin ${build_url[twin]}"
 pass
 
 # mark_restricted BUILD PERSON makes PERSON a restricted member. No route of this stack writes a
-# member kind: the outside sign-in does (PlanB's B2), when it signs in an email outside the
+# member kind: the outside sign-in does, when it signs in an email outside the
 # deployment's domain that a project names. Until it is in this stack, the people row is written
 # as that sign-in writes it.
 mark_restricted() {
@@ -896,7 +904,7 @@ if [ "$priv_private" = 1 ]; then
   # The document socket admits a person by their cookie alone, at the merge base as now, so a
   # token has no document-socket path to any project: bob and carol find PRIV's spec there, and a
   # token that lists PRIV is refused alike for PUB's spec and PRIV's. This is the one path on which
-  # "find each object of PRIV" is read as "refused alike" (the integrator's decision of t-a-22).
+  # "find each object of PRIV" is read as "refused alike".
   for caller in bob carol; do
     answer=$(bun "$(dirname "$0")/socket-access.ts" doc "${build_url[main]}" "$work/auth/main-$caller" "$(recalled main "PRIV spec")" "$schema_version" 2>&1) || true
     [[ "$answer" == authenticated* ]] || {
