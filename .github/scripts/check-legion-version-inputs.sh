@@ -47,9 +47,12 @@
 #      is a difference. Also such a step whose own shell:, job's defaults.run.shell or workflow's
 #      defaults.run.shell is anything but `bash` itself (`bash --rcfile x -i {0}` sources x first);
 #      whose workflow's, job's or own env: sets BASH_ENV or ENV, a file of shell a shell sources
-#      before the run:; whose job's or own env: sets one of the variables that hold the paths; or
-#      that comes after an earlier step of its job that writes $GITHUB_ENV or $GITHUB_PATH. Each is
-#      a way for the command to read a value in place of the workflow's, which this check holds;
+#      before the run:; whose job's or own env: sets one of the variables that hold the paths;
+#      whose job runs in a container:, under that image's bash; that comes after an earlier step
+#      of its job that writes $GITHUB_ENV or $GITHUB_PATH; or after a step that runs an action not
+#      on release_version_inputs.py's USES_BEFORE_VERSION_STEPS, at its pin, since an action is
+#      code this check does not read. Each is a way for the command to read a value in place of
+#      the workflow's, which this check holds;
 #   4. a path go names for the legion-envoy archives that no path of $LEGION_ENVOY_VERSION_ARGS
 #      covers, naming it and the listing that names it;
 #   5. an exclude of either line's paths that drops a path go names for it, or that drops anything
@@ -346,10 +349,11 @@ def shown(line):
 
 def version_step(doc, spec):
     """Rule 3 for one of release_version_inputs.py's VERSION_STEPS: its run: is the text that module
-    names, character for character; it runs under `bash` itself, with no startup file a shell
-    sources before the run:; and it reads its variables from the workflow's env: and no other: not
-    its job's or its own env:, and not an earlier step's $GITHUB_ENV, nor a bash an earlier step's
-    $GITHUB_PATH puts first."""
+    names, character for character; it runs under `bash` itself, on the runner and not in a
+    container:, with no startup file a shell sources before the run:; and it reads its variables
+    from the workflow's env: and no other: not its job's or its own env:, not an earlier step's
+    $GITHUB_ENV, nor a bash an earlier step's $GITHUB_PATH puts first, and no action runs before it
+    but those USES_BEFORE_VERSION_STEPS lists."""
     path = spec.workflow
     jobs = doc.get("jobs") if isinstance(doc, dict) else None
     job = (jobs or {}).get(spec.job)
@@ -386,6 +390,15 @@ def version_step(doc, spec):
             if file in run:
                 problem(f"a step of {spec.job} before {where} writes ${file}, which can {what} for it; move that "
                         f"step after it", path)
+        uses = earlier.get("uses") if isinstance(earlier, dict) else None
+        if uses is not None and uses not in plan.USES_BEFORE_VERSION_STEPS:
+            problem(f"a step of {spec.job} before {where} runs the action `{uses}`, which is not on {PLAN}'s "
+                    f"USES_BEFORE_VERSION_STEPS: an action is code this check does not read, and it can write "
+                    f"$GITHUB_ENV or $GITHUB_PATH for the step; move it after the step, or list it at its pin "
+                    f"there ({', '.join(plan.USES_BEFORE_VERSION_STEPS)})", path)
+    if "container" in job:
+        problem(f"{spec.job} runs in a container:, so {where} runs under that image's bash and environment, which "
+                f"this check does not read; run the job on the runner itself", path)
     for scope, shell in (("its own", step.get("shell")),
                          ("its job's defaults.run", ((job.get("defaults") or {}).get("run") or {}).get("shell")),
                          ("the workflow's defaults.run", ((doc.get("defaults") or {}).get("run") or {}).get("shell"))):

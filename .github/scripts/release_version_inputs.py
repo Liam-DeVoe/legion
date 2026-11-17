@@ -23,6 +23,10 @@ accounts for are one plan, kept here.
                                escaped `\\$`, a `${{ }}` line GitHub renders into an assignment, or
                                any added line can keep the paths from release-push.sh, and a
                                reader of shell finds one more such form each time.
+  USES_BEFORE_VERSION_STEPS    the actions a step before one of those may run, each at the pin the
+                               workflows use: an action is code this check does not read, and one
+                               can write $GITHUB_ENV or $GITHUB_PATH for every later step. A bump
+                               of one of these pins in those jobs is an edit here too.
 
 Pure: each caller reads the target lists its own way and hands them in, and keeps its own
 annotations and its own handling of a failure.
@@ -39,6 +43,10 @@ LISTENER = ".github/workflows/release-envoy-listener.yaml"
 LEGION_ARGS = "LEGION_VERSION_ARGS"
 LEGION_BLOCK = "LEGION_GO_INPUTS"
 ENVOY_ARGS = "LEGION_ENVOY_VERSION_ARGS"
+USES_BEFORE_VERSION_STEPS = (
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "docker/login-action@dbcb813823bdd20940b903addbd779551569679f",
+)
 
 
 class VersionStep(NamedTuple):

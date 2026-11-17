@@ -45,6 +45,14 @@ PY
 legion_run=$(canonical legion_build version)
 envoy_build_run=$(canonical release_build version)
 envoy_confirm_run=$(canonical release_publish confirm)
+# The actions the module lets a step before a version step run, at their pins, which the fixtures'
+# jobs run before their version steps as the release jobs do.
+allowed_uses() {
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 -c \
+    'import sys, release_version_inputs as p; print(next(u for u in p.USES_BEFORE_VERSION_STEPS if u.startswith(sys.argv[1] + "@")))' "$1"
+}
+checkout_uses=$(allowed_uses actions/checkout)
+login_uses=$(allowed_uses docker/login-action)
 # The listener's, as release-envoy-listener.yaml writes them: the envoy module but its excluded
 # infra directory, and the workspace's module files.
 envoy_args='    -- :(exclude)packages/envoy/infra packages/envoy/ .github/go-release-targets.json'
@@ -101,6 +109,7 @@ jobs:
   release_build:
     runs-on: ubuntu-24.04
     steps:
+      - uses: $checkout_uses
       - name: Determine next version
         id: version
         run: |
@@ -108,6 +117,8 @@ $envoy_build_run
   release_publish:
     runs-on: ubuntu-24.04
     steps:
+      - uses: $checkout_uses
+      - uses: $login_uses
       - name: Confirm the version
         id: confirm
         env:
@@ -130,6 +141,7 @@ jobs:
   legion_build:
     runs-on: ubuntu-24.04
     steps:
+      - uses: $checkout_uses
       - name: Determine next version
         id: version
         run: |
@@ -386,6 +398,31 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the earlier step's write" \
   "$(contains "$out" "a step of legion_build before legion_build's step \`version\` writes \$GITHUB_PATH, which can put another bash first")"
+
+# An action is code the check does not read, and one can write $GITHUB_ENV or $GITHUB_PATH for
+# every later step: before a version step only the module's actions run, at their pins.
+echo "case: an action the module does not list runs before the version step"
+root=$(written unlisted-action)
+replace "$root/.github/workflows/release.yaml" "      - uses: $checkout_uses"$'\n' \
+  "      - uses: $checkout_uses"$'\n'"      - uses: example/setup-environment@v1"$'\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the action and the list" \
+  "$(contains "$out" "a step of legion_build before legion_build's step \`version\` runs the action \`example/setup-environment@v1\`, which is not on .github/scripts/release_version_inputs.py's USES_BEFORE_VERSION_STEPS")"
+
+echo "case: a listed action at another pin runs before the listener's confirm step"
+root=$(written other-pin)
+replace "$root/.github/workflows/release-envoy-listener.yaml" "      - uses: $login_uses" "      - uses: docker/login-action@v3"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names it" "$(contains "$out" "before release_publish's step \`confirm\` runs the action \`docker/login-action@v3\`")"
+
+echo "case: the version step's job runs in a container"
+root=$(written container)
+replace "$root/.github/workflows/release.yaml" $'    runs-on: ubuntu-24.04\n' $'    runs-on: ubuntu-24.04\n    container: debian:trixie-slim\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job" "$(contains "$out" "legion_build runs in a container:, so legion_build's step \`version\` runs under that image's bash")"
 
 echo "case: the listener's confirm step sets its paths' variable"
 root=$(written confirmenv)
