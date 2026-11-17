@@ -640,6 +640,11 @@ jobs:
               # is a module of its own, so Go's internal rule bars it from internal/contracts,
               # where the generated values are.
               - 'packages/envoy/sessiontiming/*'
+              # The daemon reads an issue event's key and a role lane's role in both forms of
+              # their names through this one public package, and the nats-server versions it
+              # refuses through the next, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
@@ -662,6 +667,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -731,6 +738,8 @@ jobs:
               # The pool_max_conns reader Dispatch's store refuses a pool size with.
               - 'packages/envoy/poolsetting/*'
               - 'packages/envoy/roleholder/*'
+              # internal/bus refuses a nats-server below the floor this package holds.
+              - 'packages/envoy/natsversion/*'
             # The daemon's `legion` command, `go list -deps ./cmd/legion` in packages/daemon (its
             # embedded probes, turnscope.yml and role prompts included, and the envoy package it
             # serves its held listener through): what docs/site/scripts/build-binaries.sh:17 builds
@@ -834,6 +843,10 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              # The doors onto the readers of a message name's two forms and onto the
+              # nats-server versions the daemon refuses, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -843,6 +856,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -862,6 +877,8 @@ jobs:
               - 'packages/envoy/internal/webhook/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
+              # internal/bus refuses a nats-server below the floor this package holds.
+              - 'packages/envoy/natsversion/*'
             # The jj .github/actions/install-jj installs, and the mise it installs that jj with.
             jj_install: &jj_install
               - '.github/actions/install-jj/**'
@@ -1013,6 +1030,8 @@ jobs:
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -1606,6 +1625,9 @@ jobs:
               - *claude_envoy_build
               # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
               - *listener_command
+              # scripts/e2e/lib/nats-image.test.ts builds natsfloor, the command it asks the NATS
+              # floor through; its natsversion package is in the listener's list above.
+              - 'packages/envoy/natsversion/cmd/natsfloor/*'
               # Each harness step's own gate, named here so the job runs for the change that
               # makes one of those gates true. Each of those lists names this file and
               # ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
@@ -1655,6 +1677,10 @@ jobs:
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
               - 'scripts/third-party-notices.test.ts'
+              # scripts/third-party-notices.test.ts:102-105 lists the Dispatch web app's typeface:
+              # it resolves the font file's path, lists that directory and reads the package.json
+              # and LICENSE.txt in it.
+              - 'packages/dispatch/web/src/fonts/inter/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/semantic-line-breaks.ts'
               - 'scripts/semantic-line-breaks.test.ts'
@@ -1701,6 +1727,7 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
             # The guides' layout step of the test job (ci-job-test.yaml's
@@ -1928,6 +1955,8 @@ jobs:
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
@@ -1995,6 +2024,7 @@ jobs:
               # The pool_max_conns reader Dispatch's store refuses a pool size with.
               - 'packages/envoy/poolsetting/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
@@ -2003,6 +2033,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dedupe/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
@@ -2022,6 +2054,7 @@ jobs:
               - 'packages/envoy/internal/webhook/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
             jj_install: &jj_install
               - '.github/actions/install-jj/**'
               - 'packages/daemon/docker/worker.Dockerfile'
@@ -2053,6 +2086,8 @@ jobs:
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
+              # internal/session's repair lock (KnownSessions.repairMu).
+              - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
@@ -2080,6 +2115,7 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/poolsetting/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names.
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
@@ -2272,6 +2308,8 @@ jobs:
               - 'packages/envoy/poolsetting/*'
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -2341,6 +2379,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2388,6 +2427,8 @@ jobs:
               # local-instance-support.test.ts:2-5, run in this job's test step and in no other,
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
+              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/broker-client/**'
               - 'packages/envoy-client/test/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
@@ -2452,6 +2493,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2617,6 +2659,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2839,6 +2882,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2872,6 +2916,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -2941,6 +2986,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -2964,6 +3010,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3032,6 +3079,7 @@ jobs:
               - 'packages/contracts/src/repo.ts'
               - 'packages/contracts/src/sha256.ts'
               - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject-project.ts'
               - 'packages/contracts/src/subject.ts'
               - 'packages/contracts/src/tool-schema.ts'
               - 'packages/contracts/src/trailing-slash.ts'
@@ -3060,6 +3108,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3168,6 +3217,7 @@ jobs:
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3462,6 +3512,7 @@ jobs:
               - '!packages/envoy/internal/brokerclient/**/*_test.go'
               - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/norace_test.go'
+              - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
               - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
@@ -3539,6 +3590,7 @@ jobs:
               - '!packages/envoy/listenfd/**/*_test.go'
               - '!packages/envoy/loadtest/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3679,6 +3731,7 @@ jobs:
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/poolsetting/*'
               - 'packages/envoy/roleholder/*'
+              - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
               - 'packages/envoy/internal/broker/wire/*'
               # internal/dispatch/api/openapi_test.go's
@@ -3752,6 +3805,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -3955,6 +4009,10 @@ jobs:
               # liveness and notice rules read: it sits in the envoy module because the
               # daemon, a module of its own, cannot reach internal/contracts, where they are.
               - 'packages/envoy/sessiontiming/*'
+              # The doors onto the readers of a message name's two forms and onto the
+              # nats-server versions the daemon refuses, for the same reason.
+              - 'packages/envoy/subjectforms/*'
+              - 'packages/envoy/natsversion/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
@@ -4139,6 +4197,7 @@ jobs:
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/poolsetting/**'
               - 'packages/envoy/roleholder/**'
+              - 'packages/envoy/natsversion/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -4227,6 +4286,7 @@ jobs:
               - '!packages/envoy/internal/webhook/**/*_test.go'
               - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/poolsetting/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
               # END generated
@@ -4290,6 +4350,8 @@ jobs:
               - 'packages/envoy/roleholder/**'
               - 'packages/envoy/scripts/**'
               - 'packages/envoy/sessiontiming/**'
+              - 'packages/envoy/subjectforms/**'
+              - 'packages/envoy/natsversion/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'
