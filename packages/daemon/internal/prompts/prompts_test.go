@@ -964,7 +964,7 @@ func TestTheMergerWaitsForAMissingReview(t *testing.T) {
 	}
 	text := foldWhitespace(composedText(t, composer, claim.RoleMerger, false))
 	for _, phrase := range []string{
-		"Verify that each step your task's Steps line names completed, and that the retro completed.",
+		"Verify that each step your task's Steps line names completed (today's line, on a task with no `Task:` line), and that the retro completed.",
 		"If your task's Steps line names no reviewer step and the base's rules require an approving review that no step of this task gave, do not merge, do not approve the pull request yourself, and do not return the task. Wait, and tell the owner of the task which review is missing: the rule that requires it, and that the task's steps have no review step. Only the owner or a person can give that review or change the plan.",
 	} {
 		if !strings.Contains(text, phrase) {
