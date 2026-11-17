@@ -201,7 +201,6 @@ test("no cut moves the words at the middle of the view after a long jump or a la
 }) => {
   test.setTimeout(180_000);
   await phase(browser, seedTallRows, async (page, seeded) => {
-    const last = seeded.rows.at(-1) ?? "";
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width} px`;
 
@@ -218,8 +217,26 @@ test("no cut moves the words at the middle of the view after a long jump or a la
       );
 
       await openTallRows(page, seeded, size, at);
-      await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-      await expect(rowMore(nodeRow(page, last)), `${at} the last row was not cut`).toHaveCount(1);
+      // At the foot the last row is in view, which decision 261 keeps whole, so the foot's batch
+      // is waited out on the row lying wholly above the view, which it cuts.
+      const above = await page.evaluate((rows) => {
+        window.scrollTo(0, document.documentElement.scrollHeight);
+        return (
+          [...rows]
+            .reverse()
+            .find(
+              (id) =>
+                (document
+                  .querySelector(`[data-node-row][data-node-id="${id}"]`)
+                  ?.getBoundingClientRect().bottom ?? 0) < 0
+            ) ?? null
+        );
+      }, seeded.rows);
+      expect(above, `${at} no row lies wholly above the view at the foot`).not.toBeNull();
+      await expect(
+        rowMore(nodeRow(page, above ?? "")),
+        `${at} the row wholly above the view at the foot was not cut`
+      ).toHaveCount(1);
       expectViewHeld(
         await jumpAndWatch(page, { share: 0.3 }),
         `${at}, a jump from the foot up to a third of the way down:`
