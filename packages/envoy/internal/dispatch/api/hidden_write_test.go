@@ -198,10 +198,6 @@ func TestARefusalOfAHiddenObjectNamesNone(t *testing.T) {
 		"/api/v1/issues/"+walk.issue[seedPublic]+"/artifacts", map[string]string{"name": "cited.md", "content": ""}, http.StatusCreated)).Artifact
 	walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPrivate]+"/comments",
 		map[string]any{"body": "See dispatch://" + walk.issue[seedPublic] + "/artifact/" + cited.Slug + " for the rest."}, http.StatusCreated)
-	// The upload settles in the background, which would write doc_settlements_pending under a
-	// call the walk holds to writing nothing.
-	awaitSettled(t, walk.database, cited.ID)
-	awaitBackgroundWrites(t, walk.server)
 	for _, refusal := range []struct {
 		name, method, path string
 		body               map[string]any
@@ -392,10 +388,9 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 		for _, caller := range callers {
 			name := reference.row + " (" + reference.field + ")"
 			// A call refused either way writes nothing: the tables are digested around it, once the
-			// work an earlier call left running (a mention's delivery) has settled.
+			// work an earlier call left running (a mention's delivery) has settled (tableDigests).
 			var before map[string]string
 			if !reference.writes {
-				awaitBackgroundWrites(t, walk.server)
 				before = walk.tableDigests(t)
 			}
 			hidden := walk.request(t, caller, method, reference.path(walk), json.RawMessage(fmt.Sprintf(reference.body, fill.hidden)))
@@ -960,9 +955,11 @@ func (w hiddenWriteSeed) fill(t *testing.T, pattern string, probe writeProbe, op
 	return path, written
 }
 
-// tableDigests is a digest of every row of every table, by table, less volatileColumns.
+// tableDigests is a digest of every row of every table, by table, less volatileColumns, taken
+// once the writes still owed have landed (settle).
 func (w hiddenWriteSeed) tableDigests(t *testing.T) map[string]string {
 	t.Helper()
+	w.settle(t)
 	rows, err := w.database.Pool.Query(context.Background(), w.digest)
 	if err != nil {
 		t.Fatalf("digest the tables: %v", err)
@@ -979,6 +976,27 @@ func (w hiddenWriteSeed) tableDigests(t *testing.T) map[string]string {
 		byTable[pair[0]] = pair[1]
 	}
 	return byTable
+}
+
+// settle waits for the writes that the seed or an earlier call left running past its answer: each
+// document's settlement (awaitSettled, over every document the store holds), then the server's
+// own background writes (awaitBackgroundWrites: the term-statistics refresh, detached runs and the
+// mention sender's sends). A digest taken while one of them runs counts its write as the next
+// call's: under load, the seed's settlements and term refresh landed inside a refused call's
+// digests and named it as writing doc_settlements_pending and the search-term tables. Taken after
+// them, each write is the call's that caused it.
+func (w hiddenWriteSeed) settle(t *testing.T) {
+	t.Helper()
+	rows, err := w.database.Pool.Query(context.Background(), `select id::text from artifacts`)
+	if err != nil {
+		t.Fatalf("list the documents: %v", err)
+	}
+	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the documents: %v", err)
+	}
+	awaitSettled(t, w.database, documents...)
+	awaitBackgroundWrites(t, w.server)
 }
 
 // sqlString is value as a SQL string literal.
