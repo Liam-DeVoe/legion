@@ -3,6 +3,7 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSta
 
 import { api } from "../../api/client";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
+import { newSendKey } from "../../lib/send-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -320,11 +321,14 @@ export function OutlineWriterProvider({
     // Ending the target in the line ends the hold a refused send keeps on it (`keptOnStatement`,
     // `keptOnReply`): the held send loses its statement and its reply, its refusal and its words
     // kept, so the next aim takes effect and a line that mounts again over the send writes on
-    // the issue. The guard above has run, so a send held here was refused.
+    // the issue. It takes a new key too: a send that was stopped, or that a page close cut off,
+    // goes again under its own key, and that key already names the words sent to the old target,
+    // so Dispatch would refuse the same key with another request as a key used twice. The guard
+    // above has run, so a send held here was refused.
     const held = store.get(sendKey)?.request;
     if (held !== undefined && (held.statement !== undefined || held.replyTo !== null)) {
       const { statement: _ended, ...onIssue } = held;
-      store.readdress(sendKey, { ...onIssue, replyTo: null });
+      store.readdress(sendKey, { ...onIssue, replyTo: null, sendKey: newSendKey() });
     }
     setReply(null);
     setAnswer(undefined);
