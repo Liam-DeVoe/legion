@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
+  type Ref,
   type RefCallback,
   type RefObject,
   useEffect,
@@ -36,7 +37,7 @@ import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
-import { BlockedByControl, IssueLine } from "./BlockedByControl";
+import { BlockedByControl, blockedByControlName, IssueLine } from "./BlockedByControl";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
@@ -203,7 +204,7 @@ export function IssueMarginPanel({
   // The failure of Details' last field save, which the route's row says when it is a route's,
   // and the row's own control, which takes the focus of that line's Retry as the line goes.
   const fieldFailure = useSaidFailure(writes.updateIssue);
-  const routeRetryLeft = useFocusHandOff(routeControl);
+  const routeRetryLeft = useFocusHandOff(() => routeControl.current);
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // What Details reads beyond the issue - the titles of the issues around this one, and its
   // links on GitHub - only while the drawer is open, so a load that leaves it shut costs no
@@ -232,6 +233,23 @@ export function IssueMarginPanel({
     edge.kind !== "blocked_by" || edge.node.issue_key === undefined
       ? []
       : [{ key: edge.node.issue_key, title: edge.excerpt?.text ?? "" }]
+  );
+  // The line of a read that failed goes once the read answers, and the focus its Retry held goes
+  // on in the row rather than to the page: in Blocked by to the row's control, found by its name
+  // as the add menu finds it (`blockedByControlName`), or where the row draws none - on a closed
+  // issue, or while its editor is open - to the first issue the row waits on; in Blocks, which
+  // has no control, to the first issue the answer drew, or else to the None it says.
+  const blockedByValue = useRef<HTMLDivElement>(null);
+  const titlesRetryLeft = useFocusHandOff(
+    () =>
+      blockedByValue.current?.querySelector<HTMLElement>(
+        `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
+      ) ?? blockedByValue.current?.querySelector<HTMLElement>("a[href]")
+  );
+  const blocksValue = useRef<HTMLDivElement>(null);
+  const blocksNone = useRef<HTMLSpanElement>(null);
+  const blocksRetryLeft = useFocusHandOff(
+    () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -360,7 +378,7 @@ export function IssueMarginPanel({
             </p>
           ) : null}
         </Row>
-        <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by}>
+        <Row glyph="⊘" label={PROPERTY_LABELS.blocked_by} valueRef={blockedByValue}>
           <BlockedByControl
             draft={blockedByDraft}
             editing={blockedByEditing}
@@ -372,26 +390,40 @@ export function IssueMarginPanel({
           />
           {/* The blockers are drawn by their keys where their titles could not be read, and the
               row says so rather than drawing keys alone as though they had none. */}
-          {blockerTitles.isError ? (
+          {readFailed(blockerTitles) ? (
             <DetailsErrorLine
               error={blockerTitles.error}
+              failure={blockerTitles.errorUpdateCount}
               message="Could not read the titles of these issues."
               onRetry={retryRead(blockerTitles)}
+              retryRef={titlesRetryLeft}
+              retrying={blockerTitles.isFetching}
             />
           ) : null}
         </Row>
         {/* What this issue blocks: drawn whenever the panel is, with None where the answer holds
             nothing that waits on it, nothing while that answer is still out, and the failure
-            where the read failed, as every other row of the panel says what it holds. */}
-        <Row glyph="⊙" label={PROPERTY_LABELS.blocks}>
-          {blocking.isError ? (
+            where the read failed, as every other row of the panel says what it holds. This
+            row's None takes the focus of the failure's Retry when it replaces that line. */}
+        <Row glyph="⊙" label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
+          {readFailed(blocking) ? (
             <DetailsErrorLine
               error={blocking.error}
+              failure={blocking.errorUpdateCount}
               message="Could not read what this issue blocks."
               onRetry={retryRead(blocking)}
+              retryRef={blocksRetryLeft}
+              retrying={blocking.isFetching}
             />
           ) : blocking.isPending ? null : blocks.length === 0 ? (
-            none
+            <span
+              className={`outline-none ${pageQuietText}`}
+              ref={blocksNone}
+              tabIndex={-1}
+              {...pageChrome}
+            >
+              {CONTROL_LABELS.none}
+            </span>
           ) : (
             <IssueList issues={blocks} />
           )}
@@ -446,9 +478,9 @@ export function IssueMarginPanel({
               the write store leaves its refusal to this row, and the header, which says the
               page's other refusals, never sees it. The line stays while the save its Retry sent
               again is out (`useSaidFailure`), and says Dispatch's new reason if that is refused
-              too; its Retry is never disabled, since the drafts send nothing while a save is out
-              (`useSubmitGuard`). Once the route lands the line goes, and the row's control takes
-              the focus Retry held (`useFocusHandOff`). */}
+              too; its Retry reads busy while that save is out and is never disabled, since the
+              drafts send nothing while a save is out (`useSubmitGuard`). Once the route lands the
+              line goes, and the row's control takes the focus Retry held (`useFocusHandOff`). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -458,6 +490,7 @@ export function IssueMarginPanel({
               message={apiErrorMessage(fieldFailure.error, "Could not update this issue.")}
               onRetry={isClosed ? undefined : writes.drafts.retry}
               retryRef={routeRetryLeft}
+              retrying={writes.updateIssue.isPending}
             />
           ) : null}
         </Row>
@@ -612,13 +645,30 @@ export function IssueMarginPanel({
  *  as the app's other refetches do (`DispatchQueryClient` in `api/query-client.ts`, `drive` in
  *  `api/query-refresh.ts`). The query itself decides that as the press lands. A gate on the
  *  render's `isFetching` would not hold: a second press can arrive before React draws the
- *  first one's fetch (`hooks/useSubmitGuard.ts`). Retry stays enabled while the read is out,
- *  because Chromium moves the focus of a control that turns disabled to the page's body, which
- *  would lose a reader who pressed Retry by keyboard. */
+ *  first one's fetch (`hooks/useSubmitGuard.ts`). Retry reads busy while the read is out (the
+ *  query's `isFetching`) but stays enabled, because Chromium moves the focus of a control that
+ *  turns disabled to the page's body, which would lose a reader who pressed Retry by keyboard. A
+ *  read that fails again is drawn afresh (`errorUpdateCount`), so a screen reader says it again
+ *  even in the same words. */
 function retryRead(read: {
   readonly refetch: (options: { cancelRefetch: boolean }) => Promise<unknown>;
 }): () => void {
   return () => void read.refetch({ cancelRefetch: false });
+}
+
+/** Whether a read of Details is said as failed, with its Retry: while it stands failed, and while
+ *  it is read again after it failed holding no answer. A fetch of a read that holds no answer
+ *  clears its error and puts it back to pending (`fetchState` in `@tanstack/query-core`), which
+ *  would take the line, and its Retry with a reader's focus, away while the read Retry sent is
+ *  out. Such a read has answered nothing since its last failure, so a failure it counts
+ *  (`errorUpdateCount`) is one it still stands in; `failureCount` would not tell, since the
+ *  fetch sets it back to 0 as it starts. */
+function readFailed(read: {
+  readonly errorUpdateCount: number;
+  readonly isError: boolean;
+  readonly isPending: boolean;
+}): boolean {
+  return read.isError || (read.isPending && read.errorUpdateCount > 0);
 }
 
 /** The issues of a list of them, each its key as a link and its title beside it, folded after
@@ -742,7 +792,7 @@ function PropertySection({
  * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
  * and its name, and the value beside it; a `wide` row is one column, for a property whose own
  * control names it. `row` names the row a control elsewhere opens Details at
- * (`details-rows.ts`).
+ * (`details-rows.ts`), and `valueRef` takes the box of the row's value.
  */
 function Row({
   children,
@@ -750,6 +800,7 @@ function Row({
   label,
   row,
   testId,
+  valueRef,
   wide = false,
 }: {
   children: ReactNode;
@@ -757,6 +808,7 @@ function Row({
   label?: ReactNode;
   row?: DetailsRow;
   testId?: string;
+  valueRef?: Ref<HTMLDivElement>;
   wide?: boolean;
 }): ReactNode {
   return (
@@ -779,6 +831,7 @@ function Row({
       )}
       <div
         className={`flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 [overflow-wrap:break-word] ${pageInkText}`}
+        ref={valueRef}
       >
         {children}
       </div>

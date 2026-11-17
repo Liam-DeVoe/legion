@@ -746,10 +746,10 @@ function blurWhenDisabled(): () => void {
 
 // A Retry that turned disabled while the read it sent again was out lost the focus of a reader
 // who pressed it by keyboard, since Chromium moves the focus of a control that turns disabled to
-// the page's body (`blurWhenDisabled` does that here). Retry stays enabled, and a press while
-// its read is out joins that read and sends nothing (`retryRead`). The titles answered once
-// before they failed, because a refetch of a read that holds an answer otherwise ends the
-// request that is out and sends another.
+// the page's body (`blurWhenDisabled` does that here). Retry stays enabled and reads busy, and a
+// press while its read is out joins that read and sends nothing (`retryRead`). The titles
+// answered once before they failed, because a refetch of a read that holds an answer otherwise
+// ends the request that is out and sends another.
 test("Retry keeps the focus while the read it sent again is out, and a second press sends none", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -785,6 +785,14 @@ test("Retry keeps the focus while the read it sent again is out, and a second pr
     expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
       retry
     );
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent again is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(retry, "Retry turned disabled while the read it sent again is out").toBeEnabled();
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
     await user.keyboard("{Enter}");
     expect(titles, "a press of Retry while its read is out sent another").toHaveBeenCalledTimes(3);
 
@@ -796,6 +804,211 @@ test("Retry keeps the focus while the read it sent again is out, and a second pr
     stopBlurring();
     unmount();
     titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A read that failed again was said on the same node in the same words, so a screen reader said
+// nothing of it. Each failure is drawn afresh (`errorUpdateCount`), while Retry stays the same
+// button, holding the focus of a reader who pressed it by keyboard.
+test("a read that fails again in the same words is said again, while Retry keeps the focus", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
+  const retried = Promise.withResolvers<ReferenceTargets>();
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(1));
+    titles.mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    const failed = await blockedBy().findByRole("alert");
+    const retry = blockedBy().getByRole("button", { name: CONTROL_LABELS.retry });
+
+    titles.mockImplementationOnce(() => retried.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
+    await act(async () =>
+      retried.reject(new ApiError(500, { code: "INTERNAL", error: "read failed" }))
+    );
+    await waitFor(() =>
+      expect(retry, "Retry still reads busy after the read failed again").not.toHaveAttribute(
+        "aria-busy"
+      )
+    );
+
+    const failedAgain = blockedBy().getByRole("alert");
+    expect(failedAgain).toHaveTextContent("Could not read the titles of these issues.");
+    expect(
+      failedAgain,
+      "the second failure was not drawn afresh, so a screen reader would not say it"
+    ).not.toBe(failed);
+    expect(
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry }),
+      "the line came back with another Retry"
+    ).toBe(retry);
+    expect(document.activeElement, "Retry lost the focus when the read failed again").toBe(retry);
+  } finally {
+    stopBlurring();
+    unmount();
+    titles.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// A read that failed on its first load holds no answer, and a fetch of such a read clears its
+// failure, so the press of its Retry took the line, and the Retry with it, away while the read it
+// sent was out: the focus of a reader who pressed Retry by keyboard went to the page's body. The
+// line stays, its Retry busy and holding the focus, until the read answers, and the focus then
+// goes on in the row rather than to the page: in Blocked by to the row's control, and in Blocks,
+// which has no control, to the first issue the answer drew.
+test("a read that failed on its first load keeps its Retry, with the focus, while the read is out, and hands the focus on in its row once it answers", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"] });
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const getReferences = spyOn(api, "getReferences").mockRejectedValueOnce(
+    new ApiError(500, { code: "INTERNAL", error: "read failed" })
+  );
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const stopBlurring = blurWhenDisabled();
+  const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const titlesRetry = await waitFor(() =>
+      blockedBy().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    const titlesHeld = Promise.withResolvers<ReferenceTargets>();
+    titles.mockImplementationOnce(() => titlesHeld.promise);
+    act(() => titlesRetry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        titlesRetry,
+        "the line and its Retry went while the titles Retry read again are out"
+      ).toBeInTheDocument();
+      expect(
+        titlesRetry,
+        "Retry does not read busy while the titles it read again are out"
+      ).toHaveAttribute("aria-busy", "true");
+    });
+    expect(
+      document.activeElement,
+      "Retry lost the focus while the titles it read again are out"
+    ).toBe(titlesRetry);
+    await act(async () => titlesHeld.resolve({ targets: [] }));
+    await waitFor(() =>
+      expect(
+        blockedBy().queryByRole("alert"),
+        "the titles answered, but Blocked by still says they failed"
+      ).toBeNull()
+    );
+    expect(
+      document.activeElement,
+      "the titles answered, and the focus fell to the page rather than to the row's control"
+    ).toBe(blockedBy().getByRole("button", { name: blockedByControlName("CORE-1", 1) }));
+
+    const blocksRetry = await blocksRow().findByRole("button", { name: CONTROL_LABELS.retry });
+    const blocksHeld = Promise.withResolvers<GraphReferences>();
+    getReferences.mockImplementationOnce(() => blocksHeld.promise);
+    act(() => blocksRetry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(
+        blocksRetry,
+        "the line and its Retry went while the read Retry sent again is out"
+      ).toBeInTheDocument();
+      expect(
+        blocksRetry,
+        "Retry does not read busy while the read it sent again is out"
+      ).toHaveAttribute("aria-busy", "true");
+    });
+    expect(document.activeElement, "Retry lost the focus while the read it sent again is out").toBe(
+      blocksRetry
+    );
+    await act(async () =>
+      blocksHeld.resolve({
+        edges: [
+          {
+            created_at: "2026-10-26T00:00:00Z",
+            direction: "in",
+            excerpt: { text: "Ship the release" },
+            kind: "blocked_by",
+            node: graphNode({
+              id: "CORE-5",
+              issue_key: "CORE-5",
+              kind: "issue",
+              ref: buildDispatchReference({ key: "CORE-5", kind: "issue" }),
+            }),
+            source_seq: 4,
+          },
+        ],
+        node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+      })
+    );
+    const waiting = await blocksRow().findByRole("link", { name: "CORE-5" });
+    expect(
+      document.activeElement,
+      "Blocks answered, and the focus fell to the page rather than to the first issue it drew"
+    ).toBe(waiting);
+  } finally {
+    stopBlurring();
+    unmount();
+    getReferences.mockRestore();
+    titles.mockRestore();
+    restore();
+  }
+});
+
+// Blocks has no control of its own, so where the read its Retry sent answers with nothing
+// waiting on the issue, the focus Retry held goes to the None the row says then.
+test("Blocks hands the focus of its Retry to its None when the read answers with none", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences")
+    .mockResolvedValue({
+      edges: [],
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    })
+    .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
+  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
+  const { unmount } = renderDetails(undefined, drawer);
+  const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
+
+  try {
+    const retry = await waitFor(() =>
+      blocksRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    const none = await blocksRow().findByText(CONTROL_LABELS.none);
+    expect(
+      document.activeElement,
+      "Blocks answered with none, and the focus fell to the page rather than to its None"
+    ).toBe(none);
+  } finally {
+    unmount();
     getReferences.mockRestore();
     restore();
   }
@@ -2466,6 +2679,13 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
       document.activeElement,
       "Retry lost the focus while the route it sent again is out"
     ).toBe(retry);
+    await waitFor(() =>
+      expect(
+        retry,
+        "Retry does not read busy while the route it sent again is out"
+      ).toHaveAttribute("aria-busy", "true")
+    );
+    expect(document.activeElement, "Retry lost the focus once it read busy").toBe(retry);
     await user.keyboard("{Enter}");
     expect(patchIssue, "a press of Retry while its save is out sent another").toHaveBeenCalledTimes(
       2
@@ -2490,6 +2710,10 @@ test("the refused route's Retry keeps the focus while the save is out and refuse
       document.activeElement,
       "Retry lost the focus when Dispatch refused the route again"
     ).toBe(retry);
+    expect(
+      retry,
+      "Retry still reads busy after Dispatch refused the route again"
+    ).not.toHaveAttribute("aria-busy");
 
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));

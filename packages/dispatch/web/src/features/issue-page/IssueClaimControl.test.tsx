@@ -361,6 +361,10 @@ test("the failed release's Retry keeps the focus while the release is out and fa
       document.activeElement,
       "Retry lost the focus while the release it sent again is out"
     ).toBe(retry);
+    expect(
+      retry,
+      "Retry does not read busy while the release it sent again is out"
+    ).toHaveAttribute("aria-busy", "true");
     await view.user.keyboard("{Enter}");
     expect(release, "a press of Retry while its release is out sent another").toHaveBeenCalledTimes(
       2
@@ -377,6 +381,9 @@ test("the failed release's Retry keeps the focus while the release is out and fa
     expect(retryOfRelease(), "the line came back with another Retry").toBe(retry);
     expect(document.activeElement, "Retry lost the focus when the release failed again").toBe(
       retry
+    );
+    expect(retry, "Retry still reads busy after the release failed again").not.toHaveAttribute(
+      "aria-busy"
     );
 
     const landed = Promise.withResolvers<Issue>();

@@ -16,11 +16,11 @@ import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
  *
  * No control here is disabled while its release is out, since Chromium moves the focus of a
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
- * keyboard: Release is marked busy, and the failure's line stays, with its Retry, until the
- * release it sent again is answered (`useSaidFailure`). A focus on a control that goes as the
- * release lands goes on in the row (`useFocusHandOff`): from Retry to Release while the claim is
- * still drawn, and from any of them, once it is not, to the None the row reads then, the one place
- * left in the row and the answer to the reader's press.
+ * keyboard: Release is marked busy, and the failure's line stays, with its Retry marked busy too,
+ * until the release it sent again is answered (`useSaidFailure`). A focus on a control that goes
+ * as the release lands goes on in the row (`useFocusHandOff`): from Retry to Release while the
+ * claim is still drawn, and from any of them, once it is not, to the None the row reads then, the
+ * one place left in the row and the answer to the reader's press.
  */
 export function IssueClaimControl({
   issue,
@@ -34,8 +34,8 @@ export function IssueClaimControl({
   const failure = useSaidFailure(releaseClaim);
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
-  const retryLeft = useFocusHandOff(releaseControl);
-  const claimLeft = useFocusHandOff(none);
+  const retryLeft = useFocusHandOff(() => releaseControl.current);
+  const claimLeft = useFocusHandOff(() => none.current);
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
   // drops a press made before React has drawn the release out, and `isPending` one made after
   // this row was drawn again - Details' section closed and opened - with a guard that starts free.
@@ -70,6 +70,7 @@ export function IssueClaimControl({
           message="Could not release this claim."
           onRetry={release}
           retryRef={retryLeft}
+          retrying={releaseClaim.isPending}
         />
       )}
     </div>

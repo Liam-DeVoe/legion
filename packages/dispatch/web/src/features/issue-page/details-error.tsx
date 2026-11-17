@@ -2,7 +2,6 @@ import {
   type ReactNode,
   type Ref,
   type RefCallback,
-  type RefObject,
   useCallback,
   useLayoutEffect,
   useRef,
@@ -19,15 +18,19 @@ export interface DetailsErrorLineProps {
   /** The failure itself. An agent list that is refilling (`isAgentListRefilling`) is not a
    *  failure to report: the refilling line replaces `message`, as status, not alert. */
   readonly error?: unknown;
-  /** Which failure of a write the line says (`SaidFailure.count`). The line stays while its
-   *  Retry's write is out, so each new failure is drawn afresh by this, and a screen reader says
-   *  it again even in the same words. */
+  /** Which failure the line says: a write's `SaidFailure.count`, a read's `errorUpdateCount`.
+   *  The line stays while its Retry's request is out, so each new failure is drawn afresh by
+   *  this, and a screen reader says it again even in the same words. It keys the alert alone, so
+   *  a failure that repeats is said again while Retry stays the same button, with its focus. */
   readonly failure?: number;
   readonly message: string;
   /** Omitted for a failure a retry cannot get past; no Retry is offered then. */
   readonly onRetry?: () => void;
   /** Takes the Retry, so the row can hand its focus on when the line goes (`useFocusHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
+  /** Whether the request Retry sent again is still out: Retry reads busy (`aria-busy`, and a
+   *  quieter look) and stays enabled, and the caller drops a press made meanwhile. */
+  readonly retrying?: boolean;
 }
 
 /**
@@ -37,8 +40,8 @@ export interface DetailsErrorLineProps {
  * (`AgentListRefilling`'s test id), as status rather than alert.
  *
  * Retry is never disabled, since Chromium moves the focus of a control that turns disabled to
- * the page's body, which would lose a reader who pressed it by keyboard: a press while the
- * request it sent is still out is the caller's to drop.
+ * the page's body, which would lose a reader who pressed it by keyboard: while the request it
+ * sent is still out it reads busy (`retrying`), and a press then is the caller's to drop.
  */
 export function DetailsErrorLine({
   error,
@@ -46,6 +49,7 @@ export function DetailsErrorLine({
   message,
   onRetry,
   retryRef,
+  retrying = false,
 }: DetailsErrorLineProps): ReactNode {
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm">
@@ -60,7 +64,8 @@ export function DetailsErrorLine({
       )}
       {onRetry === undefined ? null : (
         <button
-          className={pageHeaderControl}
+          aria-busy={retrying || undefined}
+          className={`${pageHeaderControl} aria-busy:opacity-50`}
           onClick={onRetry}
           ref={retryRef}
           type="button"
@@ -126,18 +131,21 @@ export function useSaidFailure<Variables>(
 }
 
 /**
- * The ref of an element that may leave the page with the focus inside it - a line whose write
- * landed, with its Retry - which hands that focus to `to` once the element has left, rather than
- * leave it on the page's body, where Chromium puts the focus of an element that leaves. The focus
- * moves as the commit that took the element away ends, so an element that commit draws in its
- * place can take it. A focus anywhere else is the reader's, and stays where it is.
+ * The ref of an element that may leave the page with the focus inside it - a line whose request
+ * was answered, with its Retry - which hands that focus to the element `to` finds once the
+ * element has left, rather than leave it on the page's body, where Chromium puts the focus of an
+ * element that leaves. The focus moves as the commit that took the element away ends, so an
+ * element that commit draws in its place can take it, and `to` is asked only then. A focus
+ * anywhere else is the reader's, and stays where it is.
  */
-export function useFocusHandOff(to: RefObject<HTMLElement | null>): RefCallback<HTMLElement> {
+export function useFocusHandOff(
+  to: () => HTMLElement | null | undefined
+): RefCallback<HTMLElement> {
   const left = useRef(false);
   useLayoutEffect(() => {
     if (!left.current) return;
     left.current = false;
-    to.current?.focus({ preventScroll: true });
+    to()?.focus({ preventScroll: true });
   });
   return useCallback((element: HTMLElement | null) => {
     if (element === null) return undefined;
