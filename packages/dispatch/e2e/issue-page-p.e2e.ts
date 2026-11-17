@@ -2845,8 +2845,9 @@ test("Copy issue key pressed again by Enter while its write is out makes no seco
 });
 
 // A write the server refuses draws its line under the header with Retry: the pin's, from the
-// menu, and the issue's, from the title. Retry by Enter keeps the focus while the write runs
-// again, and once the write lands and the line goes, the focus is still in the header.
+// menu, and the issue's, from the title. Retry by Enter keeps the focus on that Retry while the
+// write runs again, so a disabled Retry whose focus a fallback took is a failure here too; once
+// the write lands and the line goes, the focus is still in the header.
 test("a keyboard Retry of a refused write keeps the focus in the header", async ({ browser }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -2915,6 +2916,10 @@ test("a keyboard Retry of a refused write keeps the focus in the header", async 
       await page.keyboard.press("Enter");
       await retried.promise;
       await framesDrawn(page, 2);
+      await expect(
+        retry,
+        `${line} Retry did not keep the focus while its write ran again`
+      ).toBeFocused();
       const whileRetrying = await focusNow(page);
       expect(
         whileRetrying.onBody || !whileRetrying.inHeader,
