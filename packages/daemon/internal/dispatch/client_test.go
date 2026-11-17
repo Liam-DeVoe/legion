@@ -409,10 +409,13 @@ func TestPutStepWritesTheRecordUnderTheDaemonSession(t *testing.T) {
 	}
 }
 
-// A merge that moves back to the retro ends failed and returns its task to place 0, the retro's:
-// the end write names returned_to as 0, a value, where a write that returns nowhere leaves it out
-// (TestPutStepWritesTheRecordUnderTheDaemonSession), so Dispatch can tell the two apart.
-func TestPutStepWritesAReturnToTheRetroAsPlaceZero(t *testing.T) {
+// The end of a merge that moved back to the retro names each field it knows under the name
+// Dispatch's route reads, the report of the completion that ended it among them: the route ignores
+// a member it does not declare, so a field under another name would be lost with no refusal. Its
+// returned_to is 0, the retro's place, written as a value, where a write that returns nowhere
+// leaves it out (TestPutStepWritesTheRecordUnderTheDaemonSession), so Dispatch can tell the two
+// apart.
+func TestPutStepWritesAnEndUnderTheNamesTheRouteReads(t *testing.T) {
 	const id = "1c2d3e4f-5a6b-5c7d-8e9f-0a1b2c3d4e5f"
 	ended := time.Date(2026, 11, 17, 2, 0, 0, 0, time.UTC)
 	var body map[string]json.RawMessage
@@ -426,16 +429,17 @@ func TestPutStepWritesAReturnToTheRetroAsPlaceZero(t *testing.T) {
 	}))
 	defer server.Close()
 
-	session, model, result, retro := "ses-merger", "anthropic/claude-opus-5", "failed", 0
+	session, model, result, report, retro := "ses-merger", "anthropic/claude-opus-5", "failed", "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", 0
 	write := StepWrite{Task: "default", Step: 0, Kind: "merge", Role: "merger", Type: "",
 		Agent: "legion-leg-leg-1-merger", Generation: 1, Session: &session, Model: &model, EndedAt: &ended,
-		Result: &result, ReturnedTo: &retro}
+		Result: &result, ReturnedTo: &retro, Report: &report}
 	if err := New(server.URL, dispatchToken).PutStep(context.Background(), "LEG-1", id, write); err != nil {
 		t.Fatalf("write the step record: %v", err)
 	}
 	for name, want := range map[string]string{
 		"kind": `"merge"`, "step": "0", "session": `"ses-merger"`, "model": `"anthropic/claude-opus-5"`,
 		"ended_at": `"2026-11-17T02:00:00Z"`, "result": `"failed"`, "returned_to": "0",
+		"report": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
 	} {
 		if got, ok := body[name]; !ok || string(got) != want {
 			t.Errorf("the body writes %s as %q (written: %t), want %s", name, got, ok, want)
