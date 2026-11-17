@@ -188,7 +188,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			input.Title = input.External
 		}
 	}
-	if !projectKeyPattern.MatchString(input.Project) {
+	if !contracts.ValidProjectKey(input.Project) {
 		writeError(w, "INVALID_ISSUE", http.StatusBadRequest, projectKeyProblem("project", input.Project))
 		return
 	}
