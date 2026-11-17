@@ -1,4 +1,5 @@
-// Package testlog holds the one locked log buffer the daemon's tests share. A test that drives
+// Package testlog holds the one locked log buffer the daemon's tests share, and the one swap of the
+// default logger they make (SetDefault). A test that drives
 // real goroutines — a consumer, a supervisor, a process the test started — gives the code under
 // test a sink it writes while the test reads what has arrived so far, and the two happen at once:
 // the buffer's own mutex is what makes the read safe, so the race detector sees a log a test may
@@ -9,11 +10,30 @@ package testlog
 
 import (
 	"bytes"
+	"log"
+	"log/slog"
 	"strings"
 	"sync"
+	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// SetDefault makes handler the default logger's until t ends, then puts back the previous default
+// logger and the log package's output and flags. slog.SetDefault also points the log package's
+// output at handler and clears its flags, and setting the previous default back undoes neither,
+// so without the rest every later log line of the binary would go into a finished test's handler.
+// Envoy's logtest.SetDefault is the same function.
+func SetDefault(t testing.TB, handler slog.Handler) {
+	t.Helper()
+	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+		log.SetOutput(output)
+		log.SetFlags(flags)
+	})
+}
 
 // Buffer is a strings.Builder an io.Writer's user and a reader may hold at the same time.
 type Buffer struct {

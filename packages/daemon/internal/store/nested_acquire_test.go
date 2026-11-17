@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -160,9 +161,7 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logged bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	testlog.SetDefault(t, slog.NewTextHandler(&logged, nil))
 	loggedSites.Lock()
 	clear(loggedSites.seen)
 	loggedSites.Unlock()

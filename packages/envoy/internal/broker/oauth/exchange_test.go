@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1741,9 +1742,7 @@ func TestEveryTradeChecksAgainBecauseThereIsNoRefreshToken(t *testing.T) {
 func capturedLog(t *testing.T) *lockedBuffer {
 	t.Helper()
 	buffer := &lockedBuffer{}
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(buffer, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logtest.SetDefault(t, slog.NewJSONHandler(buffer, nil))
 	return buffer
 }
 
