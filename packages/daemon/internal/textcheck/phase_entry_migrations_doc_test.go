@@ -24,10 +24,11 @@ import (
 // rule of their names, so importing it puts in this job's filter the files whose change these
 // tests must see, and nothing else of the daemon.
 //
-// A name counts wherever it stands in the list, because one entry may speak for several
-// migrations. So a migration named only in passing inside another's entry would pass for one the
-// list describes: name a migration in the list only in the entry that says what the block does
-// to it.
+// The list is what a reader sees of it: a name inside an HTML comment counts for nothing, since
+// the rendered guide does not show it. A name counts wherever else it stands in the list, because
+// one entry may speak for several migrations. So a migration named only in passing inside
+// another's entry would pass for one the list describes: name a migration in the list only in the
+// entry that says what the block does to it.
 const (
 	// phaseEntryMigration is the migration whose way back the list follows, by the name the guide
 	// (wayBackGuide, way_back_doc_test.go) writes. The list's subject is every embedded migration
@@ -45,6 +46,10 @@ var (
 	// migrationNameInGuide is a migration's name as the guide writes it: the file's name without
 	// `.up.sql`.
 	migrationNameInGuide = regexp.MustCompile(`\b\d{14}_\w+`)
+	// htmlComment is an HTML comment of the guide's Markdown, which the rendered guide does not
+	// show. One never closed is read as hiding the rest of the list, since a comment that opens a
+	// line runs to the end of the document.
+	htmlComment = regexp.MustCompile(`(?s)<!--.*?(?:-->|$)`)
 )
 
 // Every migration the daemon embeds above the phase entry is named in the list after the phase
@@ -60,7 +65,8 @@ func TestTheGuideNamesEveryMigrationAboveThePhaseEntry(t *testing.T) {
 		}
 	}
 	if len(missing) > 0 {
-		t.Errorf("%s's list of the migrations recorded above %s does not name %s: give each an entry "+
+		t.Errorf("%s's list of the migrations recorded above %s does not name %s where a reader sees "+
+			"it, outside an HTML comment: give each an entry "+
 			"beside the one it belongs with, saying what it adds or changes and what the phase entry's "+
 			"block does to it", wayBackGuide, phaseEntryMigration, strings.Join(missing, ", "))
 	}
@@ -82,6 +88,43 @@ func TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations(t *testing.T) {
 		default:
 			t.Errorf("%s's list of the migrations recorded above %s names %s, and the daemon embeds no "+
 				"migration of that name", wayBackGuide, phaseEntryMigration, name)
+		}
+	}
+}
+
+// A migration the list names only inside an HTML comment is one the operator never reads: the
+// rendered guide shows nothing of it. So the list counts no name a comment holds, whether the
+// comment fills a line, follows an entry, spans lines or is never closed, and still counts every
+// name of an entry the reader sees. Each case is a list as the guide writes one, between its
+// opening sentence and the line that ends it.
+func TestTheListCountsNoMigrationNamedOnlyInAnHTMLComment(t *testing.T) {
+	const (
+		opening = "The migrations recorded above this one at contract 146 are these.\n"
+		end     = "The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`.\n"
+	)
+	for _, list := range []struct {
+		shape, entries string
+		want           []string
+	}{
+		{"a comment on a line of its own",
+			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table. -->\n",
+			[]string{"20990101000001_seen"}},
+		{"a comment after an entry",
+			"20990101000001_seen adds a column. <!-- 20990101000002_hidden adds a table. -->\n",
+			[]string{"20990101000001_seen"}},
+		{"a comment across lines",
+			"20990101000001_seen adds a column.\n<!--\n20990101000002_hidden adds a table.\n-->\n",
+			[]string{"20990101000001_seen"}},
+		{"a comment never closed",
+			"20990101000001_seen adds a column.\n<!-- 20990101000002_hidden adds a table.\n",
+			[]string{"20990101000001_seen"}},
+		{"one visible entry for two migrations",
+			"20990101000001_seen and 20990101000003_seen_with_it touch none of the six.\n",
+			[]string{"20990101000001_seen", "20990101000003_seen_with_it"}},
+	} {
+		got := phaseEntryListNamesIn(t, list.shape, opening+list.entries+end)
+		if !slices.Equal(got, list.want) {
+			t.Errorf("%s: the list counts %v, want %v: %q", list.shape, got, list.want, list.entries)
 		}
 	}
 }
@@ -109,14 +152,22 @@ func embeddedMigrationsAboveThePhaseEntry(t *testing.T) (above, all []string) {
 	return all[at+1:], all
 }
 
-// phaseEntryListNames is every migration name the list carries: the lines after its opening
-// sentence, up to the line phaseEntryListEnd opens. A guide with no such sentence or with two,
-// with no such line after it, or whose list names no migration stops the test: each would
-// otherwise read as a list that names nothing, which
-// TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
+// phaseEntryListNames is every migration name the list in the guide carries
+// (phaseEntryListNamesIn).
 func phaseEntryListNames(t *testing.T) []string {
 	t.Helper()
-	lines := strings.Split(shippedText(t, wayBackGuide), "\n")
+	return phaseEntryListNamesIn(t, wayBackGuide, shippedText(t, wayBackGuide))
+}
+
+// phaseEntryListNamesIn is every migration name the list in text, the guide called name,
+// carries where a reader sees it: the lines after its opening sentence, up to the line
+// phaseEntryListEnd opens, with every HTML comment taken out. A text with no such sentence or
+// with two, with no such line after it, or whose list names no migration stops the test: each
+// would otherwise read as a list that names nothing, which
+// TestTheGuidesListAboveThePhaseEntryNamesOnlyThoseMigrations passes.
+func phaseEntryListNamesIn(t *testing.T, name, text string) []string {
+	t.Helper()
+	lines := strings.Split(text, "\n")
 	start := -1
 	for i, line := range lines {
 		if !phaseEntryListOpening.MatchString(line) {
@@ -124,26 +175,24 @@ func phaseEntryListNames(t *testing.T) []string {
 		}
 		if start >= 0 {
 			t.Fatalf("%s opens the list of the migrations above %s twice, at lines %d and %d",
-				wayBackGuide, phaseEntryMigration, start+1, i+1)
+				name, phaseEntryMigration, start+1, i+1)
 		}
 		start = i
 	}
 	if start < 0 {
 		t.Fatalf("%s carries no line matching %s: that sentence, which carries no count, opens the list "+
-			"of the migrations recorded above %s after that migration's way back", wayBackGuide,
+			"of the migrations recorded above %s after that migration's way back", name,
 			phaseEntryListOpening, phaseEntryMigration)
 	}
 	end := slices.IndexFunc(lines[start+1:], func(line string) bool { return strings.HasPrefix(line, phaseEntryListEnd) })
 	if end < 0 {
 		t.Fatalf("%s carries no line opening %q after line %d, which ends the list of the migrations above %s",
-			wayBackGuide, phaseEntryListEnd, start+1, phaseEntryMigration)
+			name, phaseEntryListEnd, start+1, phaseEntryMigration)
 	}
-	var names []string
-	for _, line := range lines[start+1 : start+1+end] {
-		names = append(names, migrationNameInGuide.FindAllString(line, -1)...)
-	}
+	visible := htmlComment.ReplaceAllString(strings.Join(lines[start+1:start+1+end], "\n"), "")
+	names := migrationNameInGuide.FindAllString(visible, -1)
 	if len(names) == 0 {
-		t.Fatalf("%s's list after line %d names no migration", wayBackGuide, start+1)
+		t.Fatalf("%s's list after line %d names no migration", name, start+1)
 	}
 	return names
 }
