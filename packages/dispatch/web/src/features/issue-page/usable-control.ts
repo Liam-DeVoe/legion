@@ -4,13 +4,13 @@ import { DETAILS_ATTRIBUTE } from "./margin-slot";
 const SHUT = '[hidden], [inert], [aria-hidden="true"]';
 
 /**
- * Whether `control` takes a press now: the one rule every reach of part H reads before it lists,
- * offers or presses a control another component draws - Add's entries (dispatch://INFRA-3945 R5)
- * and the key `l` (R4) - so what is offered is exactly what a press opens. A control is usable
- * while it is on the page; neither `disabled` nor busy (`aria-disabled="true"`, as part E's saving
- * controls are: the `refused:` variant of `styles.css` reads the same pair); under no element,
- * itself included, that is `hidden`, `inert` or `aria-hidden="true"`; and drawn
- * (`checkVisibility()`), which also catches a box the stylesheet hides.
+ * Whether `control` takes a press now: the one rule Add's entries and the key `l` read before
+ * they list, offer or press a control another component draws, so what is offered is exactly
+ * what a press opens. A control is usable while it is on the page; neither `disabled` nor busy
+ * (`aria-disabled="true"`, as the page's controls are while they save: the `refused:` variant of
+ * `styles.css` reads the same pair); under no element, itself included, that is `hidden`,
+ * `inert` or `aria-hidden="true"`; and drawn (`checkVisibility()`), which also catches a box the
+ * stylesheet hides.
  *
  * `opensDetails` is for a reach that opens Details itself before it presses (`useOpenDetailsAt`
  * for `l`, Add's reach into a shut drawer): the Details drawer's own `aside`, `hidden` while

@@ -509,9 +509,9 @@ test("leaving the blocked-by editor gives the focus back to its Add or Edit", as
   }
 });
 
-// R21: each refusal of a blocked-by list is a sentence in the page's words, with the key the
-// refusal is about inside it as the reader's own text: a key Dispatch knows no issue for, the
-// issue itself, and a list longer than an issue waits on.
+// Each refusal of a blocked-by list is a sentence in the page's words, with the key the refusal
+// is about inside it as the reader's own text: a key Dispatch knows no issue for, the issue
+// itself, and a list longer than an issue waits on.
 test("each refusal of a blocked-by list is the page's sentence about the key it names", () => {
   const refused = (code: string, error: string) => new ApiError(400, { code, error });
   expect(
@@ -540,11 +540,11 @@ test("each refusal of a blocked-by list is the page's sentence about the key it 
   ).toBeUndefined();
 });
 
-// R21: a list that would make the issue wait on itself through the issues it waits on, its
-// parent or its children is refused as `DEPENDENCY_CYCLE`, whose message names the field by its
-// wire token (`CORE-1 would wait on itself through blocked_by and parent links`). It is said in
-// the page's words as the other refusals are, with the issue the server names as the reader's
-// own text; a chain too long for the server to follow names none.
+// A list that would make the issue wait on itself through the issues it waits on, its parent or
+// its children is refused as `DEPENDENCY_CYCLE`, whose message names the field by its wire token
+// (`CORE-1 would wait on itself through blocked_by and parent links`). It is said in the page's
+// words as the other refusals are, with the issue the server names as the reader's own text; a
+// chain too long for the server to follow names none.
 test("a blocked-by list that would make a loop is the page's sentence about the issue it names", () => {
   const refused = (error: string) => new ApiError(409, { code: "DEPENDENCY_CYCLE", error });
   expect(
@@ -574,7 +574,7 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// R13: only a list of unbounded length folds after its first ten. An issue waits on at most
+// Only a list of unbounded length folds after its first ten. An issue waits on at most
 // `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
 test("the blockers never fold", async () => {
   const { getIssue, restore } = stubIssueApi();
@@ -831,7 +831,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   }
 });
 
-// R11: the menu lists the properties with no value and presses the control that sets each one,
+// The menu lists the properties with no value and presses the control that sets each one,
 // rather than drawing a second copy of it. It finds that control by the name the control
 // exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
 // its own, a word changed in one made the entry disappear with no error anywhere.
@@ -906,8 +906,8 @@ test("the add menu opened by the keyboard takes the focus, walks by the arrows a
   }
 });
 
-// R13: the add control lists what has no value yet, so where nothing can be added - a closed
-// issue, or one with a value for every property the menu lists - it is not drawn at all.
+// The add control lists what has no value yet, so where nothing can be added - a closed issue,
+// or one with a value for every property the menu lists - it is not drawn at all.
 test("the add control is not drawn on a closed issue, nor when every property has a value", async () => {
   const { getIssue, restore } = stubIssueApi();
   // The Advances row reads the priorities, to name the one the issue advances.
@@ -961,7 +961,7 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
-// R5 and the review of 5f46a483: Add is drawn while a property it lists has no value and its
+// Found in the review of 5f46a483: Add is drawn while a property it lists has no value and its
 // control is on the page. An issue with a value for every other property loses its last label;
 // while the save is out the labels' control is named "Saving labels of CORE-1", and in the render
 // where the save landed Add looked for "Add a label to CORE-1", which that render's commit had not
@@ -1036,7 +1036,7 @@ test("removing the last label draws Add, whose Labels the row's control now answ
   }
 });
 
-// R5 and the review of 5906c38b: Add is drawn again when a control it reaches comes back in a
+// Found in the review of 5906c38b: Add is drawn again when a control it reaches comes back in a
 // commit of the component that draws it. On an issue with a value for every property but the
 // priorities it advances, Add lists Advances alone. Picking it presses "Add a priority to
 // CORE-1", whose form replaces that control in the same commit, so Add, finding no control, went;
@@ -1093,8 +1093,8 @@ test("Add is drawn again after the Advances form it opened is cancelled", async 
   }
 });
 
-// R5: a press on an entry of Add opens that property's control. While the priorities' save is
-// out, "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
+// A press on an entry of Add opens that property's control. While the priorities' save is out,
+// "Add a priority to CORE-1" is drawn disabled (`IssuePriorityLine`'s `busy`), so a press on
 // Add's Advances opens nothing and the focus falls to the page. Found by the tester on the
 // preview of 8a8f3f6b, with the save held for six seconds: Add listed Advances, and pressing it
 // left the menu closed, the form shut and the focus on the body. Add lists an entry only while its
@@ -1110,7 +1110,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
         id: "evals-now",
         made_at: "2026-11-01T00:00:00Z",
         made_by: { id: "alice", kind: "user" },
-        owner: "INFRA controller",
+        owner: "CORE controller",
         rank: "evals-now",
         state: "live",
         title: "Evals collecting data now",
@@ -1247,10 +1247,9 @@ const refusals = [
   ],
 ] as const;
 
-// Decision 190 of the parts: Add lists an entry only while its control takes a press
-// (`usableControl`), whatever stops it taking one - on the control or on an element around it -
-// and lists it again once that is undone, in a change no component of Add's draws. Each row is
-// one rule of `usableControl`.
+// Add lists an entry only while its control takes a press (`usableControl`), whatever stops it
+// taking one - on the control or on an element around it - and lists it again once that is
+// undone, in a change no component of Add's draws. Each row is one rule of `usableControl`.
 test.each(
   refusals
 )("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
@@ -1297,9 +1296,9 @@ test.each(
   }
 });
 
-// Decision 190 of the parts: `checkVisibility()` is missing from browsers Dispatch still runs on
-// (`shell/roving.ts`), and there `usableControl` reads the attributes alone: a control that takes
-// a press is still listed, and an element that has left the page still takes none.
+// `checkVisibility()` is missing from browsers Dispatch still runs on (`shell/roving.ts`), and
+// there `usableControl` reads the attributes alone: a control that takes a press is still
+// listed, and an element that has left the page still takes none.
 test("with no checkVisibility, Add still lists a control that takes a press", async () => {
   const user = userEvent.setup();
   const { getIssue, restore } = stubIssueApi();
@@ -1442,7 +1441,7 @@ function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
   );
 }
 
-// R2: the page never says two statuses. The header and Details each call the writes, so Details
+// The page never says two statuses. The header and Details each call the writes, so Details
 // reads every pending write of the issue's fields by their one mutation key, whichever caller
 // made it (`useIssueHeaderWrites.ts`'s `pendingStatus`).
 test("Details' Status reads the status another caller of the writes is saving", async () => {
@@ -1496,7 +1495,7 @@ function RetitleThenStart({ issue: details }: { issue: IssueDetails }): ReactNod
   );
 }
 
-// A status picked while another write of the issue is out is held for every caller by part E's
+// A status picked while another write of the issue is out is held for every caller by
 // `pickStatus` (`useIssueHeaderWrites.ts`), so Details draws it at once, and it is sent once,
 // after that write.
 test("Details' Status reads a status picked behind another write", async () => {
@@ -1582,8 +1581,8 @@ function DocumentEditor(): ReactNode {
   );
 }
 
-// R1: Details holds no card of the margin while no document's editor is on the page, and while
-// one is, the margin's own cards stand above the sections, for a comment on a selection.
+// Details holds no card of the margin while no document's editor is on the page, and while one
+// is, the margin's own cards stand above the sections, for a comment on a selection.
 test("the margin's own cards are drawn only while a document's editor is on the page", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -1635,8 +1634,8 @@ test("the margin's own cards are drawn only while a document's editor is on the 
 });
 
 // A control elsewhere on the page that opens Details at one of its rows asks the drawer for that
-// row first (decision 69 of the parts): the section that holds the row opens for it as its
-// heading opens it, so the reader's kept choice follows, and a section already open stays open.
+// row first: the section that holds the row opens for it as its heading opens it, so the
+// reader's kept choice follows, and a section already open stays open.
 test("a request for the Labels row opens a closed Development in the drawer that holds the panel", async () => {
   const { restore } = stubIssueApi();
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
@@ -1694,10 +1693,10 @@ test("a request for the Labels row opens a closed Development in the drawer that
   }
 });
 
-// R2 and the part's source note: each row draws its name one time. The Labels row of an issue
-// with no label reads its name, None, and a control that adds the first label; that control's
-// visible word is not the row's name again (found by the tester on the preview of d4344116, where
-// INFRA-3570's row read "Labels None Labels").
+// Each row draws its name one time. The Labels row of an issue with no label reads its name,
+// None, and a control that adds the first label; that control's visible word is not the row's
+// name again (found by the tester on the preview of d4344116, where an issue's row read "Labels
+// None Labels").
 test("the Labels row of an issue with no label draws its name one time", async () => {
   const { restore } = stubIssueApi();
   const { unmount } = renderDetails();
@@ -1732,10 +1731,9 @@ function IssueKeys(): null {
   return null;
 }
 
-// R4, R5 and decision 112 of the parts: on an issue with no label the labels' control is named
-// for adding one (`labelsControlName`), and the add menu's Labels and the key `l` find it by that
-// name. While both looked for "Edit labels", the menu listed no Labels on such an issue and `l`
-// did nothing.
+// On an issue with no label the labels' control is named for adding one (`labelsControlName`),
+// and the add menu's Labels and the key `l` find it by that name. While both looked for "Edit
+// labels", the menu listed no Labels on such an issue and `l` did nothing.
 test("on an issue with no label, the Add menu's Labels and the key l reach the labels control", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -1788,11 +1786,11 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
   }
 });
 
-// R4 and decision 145 of the parts: while a save of the labels is out, the labels' control is
-// named for it ("Saving labels of CORE-1", `labelsControlName` given the page's `ANSWER_LINES`),
-// and the key `l` finds it by that name; the control is then busy, `aria-disabled` and refusing
-// to open, so `l` is off until the save lands. While `l` read only `disabled`, the list of keys
-// named it enabled for the length of the save and the key pressed a control that opened nothing.
+// While a save of the labels is out, the labels' control is named for it ("Saving labels of
+// CORE-1", `labelsControlName` given the page's `ANSWER_LINES`), and the key `l` finds it by that
+// name; the control is then busy, `aria-disabled` and refusing to open, so `l` is off until the
+// save lands. While `l` read only `disabled`, the list of keys named it enabled for the length of
+// the save and the key pressed a control that opened nothing.
 test("while the labels are saving, the key l is off, and on again once the save lands", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1863,10 +1861,10 @@ test("while the labels are saving, the key l is off, and on again once the save 
   }
 });
 
-// Decision 190 of the parts: `l` opens Details at the Labels row before it presses the labels'
-// control (`useOpenDetailsAt`), so Details being closed - its drawer's `aside` hidden, and the
-// control under it not drawn - leaves `l` on (`usableControl`'s `opensDetails`), while an element
-// inside the drawer that hides the row or takes it out of reach still turns it off.
+// `l` opens Details at the Labels row before it presses the labels' control
+// (`useOpenDetailsAt`), so Details being closed - its drawer's `aside` hidden, and the control
+// under it not drawn - leaves `l` on (`usableControl`'s `opensDetails`), while an element inside
+// the drawer that hides the row or takes it out of reach still turns it off.
 test("with Details closed, l is on for the labels control, and off while its row inside Details is hidden or inert", async () => {
   const { restore } = stubIssueApi();
   const queryClient = new QueryClient({
@@ -1939,11 +1937,11 @@ const architectureSource: ArchitectureSource = {
   repo: "legion/legion",
 };
 
-// R11 and decision 114 of the parts: on an issue no component is attached to, the components
-// picker's trigger draws "Set components" and is named for it inside `NoTooltips`
-// (`componentsControlName` given the attachment the line draws), and the add menu's Components
-// finds it by that name. While the menu looked for `main`'s "Edit components of CORE-1", it
-// listed no Components on such an issue.
+// On an issue no component is attached to, the components picker's trigger draws "Set
+// components" and is named for it inside `NoTooltips` (`componentsControlName` given the
+// attachment the line draws), and the add menu's Components finds it by that name. While the
+// menu looked for `main`'s "Edit components of CORE-1", it listed no Components on such an
+// issue.
 test("on an issue with no component, the Add menu's Components reaches the picker", async () => {
   const user = userEvent.setup();
   const { restore } = stubIssueApi();
@@ -1981,7 +1979,7 @@ test("on an issue with no component, the Add menu's Components reaches the picke
   }
 });
 
-// R3: the header's Set parent issue presses the Parent row's first control (`useOpenDetailsAt`,
+// The header's Set parent issue presses the Parent row's first control (`useOpenDetailsAt`,
 // which presses a row's first control), so that control is the one that opens the parent's
 // editor, and it stands before the parent's link.
 test("the Parent row's first control opens the parent's editor, before the parent's link", async () => {
@@ -2019,7 +2017,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
   }
 });
 
-// R3: the parent is set, changed and cleared in its own row, from the control that row draws
+// The parent is set, changed and cleared in its own row, from the control that row draws
 // first, where the old page opened its editor from the overflow menu.
 test("Details saves a parent from the Parent row's editor", async () => {
   const user = userEvent.setup();
@@ -2316,8 +2314,8 @@ test("leaving the parent's or the route's editor gives the focus back to its row
   }
 });
 
-// R7: the pins are read for their words only where there is a pin, so an issue with none costs
-// no request of the questions, comments and messages.
+// The pins are read for their words only where there is a pin, so an issue with none costs no
+// request of the questions, comments and messages.
 test("with no pin, Pinned reads None and sends no request", async () => {
   const { pinReads, restore } = stubIssueApi();
   const { unmount } = renderDetails();
@@ -2374,8 +2372,8 @@ function commentOf(id: string, body: string, tree?: DisplayTree): CommentWithTre
   };
 }
 
-// R17: until the read that holds a pin's words answers, the pin is drawn by the page's word for
-// its kind, never by the id it was pinned under; once it answers, by its first line.
+// Until the read that holds a pin's words answers, the pin is drawn by the page's word for its
+// kind, never by the id it was pinned under; once it answers, by its first line.
 test("a pin whose words are not read yet is drawn by its kind's word, never its id", async () => {
   const id = "5b0f9e64-2c1d-4a7e-8f3b-91d2c6a4e870";
   const { getMyState, pinReads, restore } = stubIssueApi();
@@ -2409,8 +2407,8 @@ test("a pin whose words are not read yet is drawn by its kind's word, never its 
   }
 });
 
-// R17: no read holds a handoff's words, so its pin is drawn by the page's word for it, and it
-// opens the history, where the handoff is.
+// No read holds a handoff's words, so its pin is drawn by the page's word for it, and it opens
+// the history, where the handoff is.
 test("a pinned handoff is drawn by its kind's word and opens the history", async () => {
   const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(
@@ -2432,8 +2430,8 @@ test("a pinned handoff is drawn by its kind's word and opens the history", async
   }
 });
 
-// R14: a pin's line is its record's words as its row in the outline reads them, from the
-// server's reading of the text, so the symbols that format the body are not drawn as text.
+// A pin's line is its record's words as its row in the outline reads them, from the server's
+// reading of the text, so the symbols that format the body are not drawn as text.
 test("a pinned comment written in markdown is drawn by its words, without the marks", async () => {
   const id = "3c9a7e15-6d2b-4f80-b1e4-7a5c9d0e2f36";
   const { getMyState, pinReads, restore } = stubIssueApi();
@@ -2533,9 +2531,9 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   }
 });
 
-// R9: part M fills the three places Details keeps for it (`details-more.tsx`); until then each
-// draws nothing.
-test("the three places of part M draw nothing", () => {
+// Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
+// row's facts and the history. Until something fills them, each draws nothing.
+test("Details' places for the people, the focused row's facts and the history draw nothing", () => {
   for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
     const view = render(<Place issue={issue} state={undefined} />);
     expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");

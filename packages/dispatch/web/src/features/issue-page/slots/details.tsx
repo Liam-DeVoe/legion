@@ -18,12 +18,12 @@ import type { SlotProps } from "../slot-props";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
-/** The key `l`'s name in the list of keys (dispatch://INFRA-3945 R4). */
+/** The key `l`'s name in the list of keys. */
 const LABELS_CONTROL_NAME = "Edit labels";
 
 /**
- * Details' properties (dispatch://INFRA-1196 R13, R14): the one panel `IssueMarginPanel` draws,
- * filled into the shell's Details drawer.
+ * Details' properties: the one panel `IssueMarginPanel` draws, filled into the shell's Details
+ * drawer.
  *
  * The panel is drawn once for the life of the page into its own stage, an element this slot
  * holds, and the stage is appended to the host the drawer draws (`IssueMarginCards`). So the
@@ -74,8 +74,8 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
   const openDetailsAt = useOpenDetailsAt();
   useKeymap("issue", [
     {
-      // The labels' control is in Details' Labels row (dispatch://INFRA-1196 R13): the key
-      // opens Details there and presses it, as a reader does.
+      // The labels' control is in Details' Labels row: the key opens Details there and presses
+      // it, as a reader does.
       id: "labels",
       keys: "l",
       label: LABELS_CONTROL_NAME,
@@ -84,10 +84,10 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
         // The control, by the name it has for the issue as it is now (`labelsControlName`):
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
-        // from these same writes (decision 145 of the parts). While that save is out the control
-        // is busy, `aria-disabled` and refusing to open, so `l` acts only while the control takes
-        // a press (`usableControl`, R4). The key opens Details at the row first, so the drawer
-        // being closed is no refusal (`opensDetails`).
+        // from these same writes. While that save is out the control is busy, `aria-disabled` and
+        // refusing to open, so `l` acts only while the control takes a press (`usableControl`).
+        // The key opens Details at the row first, so the drawer being closed is no refusal
+        // (`opensDetails`).
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,

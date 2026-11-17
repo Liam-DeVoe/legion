@@ -42,10 +42,9 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
 
 /**
  * The issues this one waits on, in their row of Details beside the repository and the
- * components (dispatch://INFRA-1196 R13), which carries the label: every blocker as a link to
- * it with its title after it, and one control that opens the editor for them - the same control
- * whether the issue waits on nothing or on five, so a set value can be changed and cleared and
- * not only set once.
+ * components, which carries the label: every blocker as a link to it with its title after it,
+ * and one control that opens the editor for them - the same control whether the issue waits on
+ * nothing or on five, so a set value can be changed and cleared and not only set once.
  *
  * The editor is here, where the value is, as the repository's and the components' are. It
  * stays open until Dispatch answers and says there what it refused - a key it has no issue
@@ -176,13 +175,13 @@ export function BlockedByControl({
             waiting={write.pending}
           />
           {/* What the box takes, drawn rather than left to a placeholder a reader on the
-              keyboard never hears (R11). */}
+              keyboard never hears. */}
           <span className="sr-only" id="issue-blocked-by-help" {...pageChrome}>
             {HELP_LINES.blocked_by}
           </span>
           {/* What Dispatch refused, where the reader is typing: the page's sentence, with the key
-              it is about as the reader's own text (R21); a refusal the page has no sentence for
-              is Dispatch's own words. */}
+              it is about as the reader's own text; a refusal the page has no sentence for is
+              Dispatch's own words. */}
           {write.error === undefined ? null : typeof write.error === "string" ? (
             <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...authorText}>
               {write.error}

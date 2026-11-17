@@ -24,11 +24,11 @@ import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
 import { ROW_LINK } from "./row-references";
 
 /**
- * The reader's pins, as links to what they pinned (dispatch://INFRA-1196 R14): each pinned ask,
- * comment and message by its first line, a link to its own address, which focuses its row in the
- * outline (R20), with its Unpin beside it. A pin of what the outline draws no row for - a thread
- * agents wrote among themselves - links to its address too, which opens the history at it, and an
- * old pin of a handoff opens the history. Each line of the history the reader pinned
+ * The reader's pins, as links to what they pinned: each pinned ask, comment and message by its
+ * first line, a link to its own address, which focuses its row in the outline, with its Unpin
+ * beside it. A pin of what the outline draws no row for - a thread agents wrote among
+ * themselves - links to its address too, which opens the history at it, and an old pin of a
+ * handoff opens the history. Each line of the history the reader pinned
  * (`IssueHistory.tsx`'s Pin, an `event:<id>` pin) is listed under them: who did it and what the
  * line says, with a link that opens the history and its Unpin. The pin of a row itself is the
  * focused row's, in its facts (`FocusedNodeFacts.tsx`).
@@ -37,7 +37,7 @@ import { ROW_LINK } from "./row-references";
  * the list costs no request of its own: a record's words from the server's reading of its text,
  * as its row draws them, and its first line whole, wrapping rather than cut. Where a read has
  * not answered, has failed, or holds no words for a pin - a handoff, an event older than the
- * history has read - the pin is drawn by the page's word for its kind and never by its id (R17).
+ * history has read - the pin is drawn by the page's word for its kind and never by its id.
  */
 export function IssuePins({
   dismissed,

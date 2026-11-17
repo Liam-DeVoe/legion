@@ -54,13 +54,13 @@ import { expect, type Locator, type Page, type Request, test } from "./test";
 import { assertWhole } from "./unclipped";
 
 /**
- * Details' properties and pins (dispatch://INFRA-3945, part H of dispatch://INFRA-1196): the
- * rows of the three sections and their controls, the one Add control, the key `l`, the reader's
- * pins, and no comment, question or message of the issue. Every row reads `seedDetailsIssue`
- * as alice with the new page on (`phase`), and writes through Dispatch.
+ * Details' properties and pins: the rows of the three sections and their controls, the one Add
+ * control, the key `l`, the reader's pins, and no comment, question or message of the issue.
+ * Every row reads `seedDetailsIssue` as alice with the new page on (`phase`), and writes through
+ * Dispatch.
  */
 
-/** Development's rows, in the order R2 of the part gives them, as ONE holds them: ONE's spec
+/** Development's rows, in the order the section is to draw them, as ONE holds them: ONE's spec
  *  holds a task list, so its last row is `PROPERTY_LABELS.tasks`. */
 const ONE_DEVELOPMENT_ROWS = [
   PROPERTY_LABELS.status,
@@ -364,7 +364,7 @@ test("every property with a value is visible in Details at every width @phone", 
     const opener = oneRead.created_by?.id;
     expect(opener, `${one} names no one who opened it`).toBeDefined();
 
-    // (5) Every width: R2's order, the twenty labels whole, and each value in its row.
+    // (5) Every width: the rows' order, the twenty labels whole, and each value in its row.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
       await gotoIssue(page, `/issues/${one}`);
@@ -653,10 +653,10 @@ test("every property with a value is visible in Details at every width @phone", 
         underline: UNDERLINE,
       });
     }
-    // Who opened the issue and who holds its claim are part E's `AgentName`, which draws a
-    // session's link in the ink inside `NoTooltips` (its own underline is E's, R8's last
-    // sentence): alice opened ONE, a person, so her name is words; the planner's claim is a
-    // session's link.
+    // Who opened the issue and who holds its claim are drawn by `AgentName`, which draws a
+    // session's link in the ink inside `NoTooltips` (its underline is `AgentName`'s own, which
+    // this row does not read): alice opened ONE, a person, so her name is words; the planner's
+    // claim is a session's link.
     for (const [what, name] of [
       [
         "the opener",
@@ -708,9 +708,9 @@ test("every property with a value is visible in Details at every width @phone", 
  *  break it at. */
 const LONGEST_LABEL = "a-label-of-forty-characters-and-no-space";
 
-// R4 and (5): the Labels row lists every label, none cut. Found by the tester on the preview of
-// d4344116: on INFRA-3570 a 40-character label ran 39 px past Details' edge at 1440 px and was
-// cut, at 390 px as well.
+// Step (5) above, for the longest label: the Labels row lists every label, none cut. Found by the
+// tester on the preview of d4344116: on an issue there a 40-character label ran 39 px past
+// Details' edge at 1440 px and was cut, at 390 px as well.
 test("a label of the most characters Dispatch takes is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -744,9 +744,9 @@ test("a label of the most characters Dispatch takes is whole in Details at every
  *  already runs 14 px past the row at 1440 px. */
 const LONG_REPOSITORY = "acme/a-repository-name-of-exactly-forty-chars";
 
-// (5): the repository is visible in its row, whole. Found by the tester on the preview of
-// 962ec632: on INFRA-3570 a repository of 44 characters ran 101 px past Details' Repository row
-// at 1440 px and was cut at Details' edge, at 390 px as well.
+// Step (5) above, for a long repository: the repository is visible in its row, whole. Found by
+// the tester on the preview of 962ec632: on an issue there a repository of 44 characters ran
+// 101 px past Details' Repository row at 1440 px and was cut at Details' edge, at 390 px as well.
 test("a repository of a long name is whole in Details at every width @phone", async ({
   browser,
 }) => {
@@ -785,7 +785,7 @@ function detailsHeadBottom(page: Page): Promise<number> {
   });
 }
 
-// R5: Add opens the control of the property it lists. In a short window the Labels row has
+// Add opens the control of the property it lists. In a short window the Labels row has
 // scrolled up under Details' head by the time Add, at the end of Development, is in view; Add
 // brings the control into view before it presses it, since the control's popover is placed from
 // where the control is on the screen. Found by the implementer's c-use at cf4dd251 (the popover
@@ -912,7 +912,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     const headerAssignee = await page.locator(`[aria-label="Assignee of ${two}"]`).count();
     await expect(
       openMenu(page).getByRole("menuitem"),
-      "the Add menu lists other than TWO's empty fields, in R5's order"
+      "the Add menu lists other than TWO's empty fields, in `IssueAddMenu`'s order"
     ).toHaveText([
       PROPERTY_LABELS.parent,
       ...(headerAssignee > 0 ? [PROPERTY_LABELS.assignee] : []),
@@ -1095,7 +1095,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
       "false"
     );
     // A control elsewhere on the page that opens Details at a row of a closed section asks the
-    // drawer for that row first (part D's `useOpenDetailsAt`), and the section opens for it.
+    // drawer for that row first (`useOpenDetailsAt`), and the section opens for it.
     await marginShell(page).evaluate(
       (aside, [event, row]) => aside.dispatchEvent(new CustomEvent(event, { detail: row })),
       [DETAILS_ROW_REQUEST_EVENT, "labels"] as const

@@ -24,10 +24,10 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { usableControl } from "./usable-control";
 
 /**
- * The one control that reaches a property this issue has no value for (dispatch://INFRA-1196
- * R13), in Details. Every property that has a value is drawn where it belongs - in the header or
- * in a row of Details - so nothing is hidden behind this; what it lists is exactly what is not
- * there yet, and picking one opens the control that sets it.
+ * The one control that reaches a property this issue has no value for, in Details. Every
+ * property that has a value is drawn where it belongs - in the header or in a row of Details -
+ * so nothing is hidden behind this; what it lists is exactly what is not there yet, and picking
+ * one opens the control that sets it.
  *
  * Six of the fields it lists are edited by a control drawn elsewhere on the page (the assignee,
  * the labels, the issues this one waits on, the repository, the components and the priorities
@@ -35,12 +35,12 @@ import { usableControl } from "./usable-control";
  * each by the name that control exports - `assigneeControlName`, `labelsControlName`,
  * `blockedByControlName`, `repoControlName`, `componentsControlName`, `addPriorityControlName` -
  * so the two sides cannot drift apart, and lists one only while that control takes a press
- * (`usableControl`). A press on an entry opens that property's control (dispatch://INFRA-3945
- * R5), and a control that takes no press opens nothing: a project that maps no repository offers
- * no repository to set, and while the priorities' save was out, Add listed Advances beside the
- * disabled "Add a priority to CORE-1", and a press on it left the form shut and the focus on the
- * body (the tester, on 8a8f3f6b). A control of Details still takes a press while Details is
- * closed, since the reach opens Details first.
+ * (`usableControl`). A press on an entry opens that property's control, and a control that
+ * takes no press opens nothing: a project that maps no repository offers no repository to set,
+ * and while the priorities' save was out, Add listed Advances beside the disabled "Add a
+ * priority to CORE-1", and a press on it left the form shut and the focus on the body (the
+ * tester, on 8a8f3f6b). A control of Details still takes a press while Details is closed, since
+ * the reach opens Details first.
  *
  * Which entries can be reached - which decides whether Add is drawn at all, and what its open
  * menu lists - is read from the page, never while the menu renders: during a render the page
@@ -48,14 +48,14 @@ import { usableControl } from "./usable-control";
  * is not found by its new name. Read during the render, removing an issue's last label drew no
  * Add: in the render where the save landed the labels' control was still "Saving labels of
  * CORE-1", that render's commit renamed it "Add a label to CORE-1", and nothing drew the menu
- * again (dispatch://INFRA-3945 R5). So it is read after each commit of the menu, and again on
- * each change that can draw, rename or remove a control an entry reaches, or change whether it
- * takes a press, which a `MutationObserver` over the panel and the header reports: most such
- * changes are a commit of the control's own component alone, which draws the menu no further
- * time. Read after the menu's own commits only, Add went when it opened the priorities' form,
- * which replaces "Add a priority to CORE-1", and stayed gone once Cancel drew that control again
- * in a commit of `IssuePriorityLine` alone; the repository's select and the components' picker,
- * each drawn once its own read answers, were never seen either (the review of 5906c38b).
+ * again. So it is read after each commit of the menu, and again on each change that can draw,
+ * rename or remove a control an entry reaches, or change whether it takes a press, which a
+ * `MutationObserver` over the panel and the header reports: most such changes are a commit of
+ * the control's own component alone, which draws the menu no further time. Read after the
+ * menu's own commits only, Add went when it opened the priorities' form, which replaces "Add a
+ * priority to CORE-1", and stayed gone once Cancel drew that control again in a commit of
+ * `IssuePriorityLine` alone; the repository's select and the components' picker, each drawn
+ * once its own read answers, were never seen either (the review of 5906c38b).
  */
 export function IssueAddMenu({
   isClosed,
@@ -234,7 +234,7 @@ export function IssueAddMenu({
     // reached with Details closed, since on a phone Details covers it; a control of Details is
     // reached with Details open, since shut it takes neither a press nor the focus. Either is
     // reached only while it takes a press (`controlNamed`): a press on an entry opens that
-    // property's control (R5), and a control that would not take it opens nothing, so its entry
+    // property's control, and a control that would not take it opens nothing, so its entry
     // is not listed and a press finds nothing to reach. The control is scrolled into view first,
     // since its popover is placed from the control's place on the screen.
     const atControl = (name: string) => ({
