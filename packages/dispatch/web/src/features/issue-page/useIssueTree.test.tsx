@@ -3388,3 +3388,72 @@ test("a refused tree read is read again when the live feed comes back with its g
     client.clear();
   }
 });
+
+// A Retry answered with an issue that holds nothing puts the focus on the outline's tree, which
+// is focusable only while it holds the focus. The reader then switches to another window and
+// back: the browser blurs the tree as the window goes and focuses it again as it comes back,
+// while the tree stays the page's focused element. That blur is no focus leaving the tree, so
+// the tree stays focusable; a browser moves the focus to the body as soon as the focused element
+// stops being focusable, which would leave the reader there on coming back.
+test("a window switch while the outline's tree holds the focus leaves it there and focusable", async () => {
+  const stubs = stubTreeReads(async (refs) => namedTargets(refs));
+  const empty: IssueDetails = { ...issue, artifacts: [], plan_artifact_id: "" };
+  const nothing: TreeAnswer = {
+    ...treeAnswer([]),
+    nodes: [answerNode(KEY, "issue", { parent: null })],
+  };
+  let reads = 0;
+  (api.getIssueTree as Mock<typeof api.getIssueTree>).mockImplementation(async () => {
+    reads += 1;
+    if (reads === 1) throw new Error("the tree read was refused");
+    return nothing;
+  });
+  const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const route = { key: KEY, kind: "issue" } as const;
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <KeymapProvider>
+          <MarginProvider>
+            <ProvidersSlot issue={empty} route={route}>
+              <BodySlot issue={empty} route={route} />
+              {children}
+            </ProvidersSlot>
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const view = renderHook(() => useIssueTree(empty), { wrapper });
+    const retry = await failedTreeRetry();
+    act(() => retry.focus());
+    await pressByKeyboard(retry);
+    await waitFor(() => expect(view.result.current.blocksHeld).toBe(true));
+    await act(async () => {
+      await Bun.sleep(100);
+    });
+    const tree = document.body.querySelector<HTMLElement>('[role="tree"]');
+    expect(document.activeElement, "the answer puts the focus on the outline's tree").toBe(tree);
+
+    act(() => {
+      tree?.dispatchEvent(new FocusEvent("blur"));
+      window.dispatchEvent(new FocusEvent("blur"));
+    });
+    act(() => {
+      window.dispatchEvent(new FocusEvent("focus"));
+      tree?.dispatchEvent(new FocusEvent("focus"));
+    });
+    expect(
+      {
+        focused: document.activeElement === tree,
+        focusable: tree?.getAttribute("tabindex") ?? null,
+      },
+      "the tree still holds the focus after the window switch, and can"
+    ).toEqual({ focusable: "-1", focused: true });
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+    client.clear();
+  }
+});
