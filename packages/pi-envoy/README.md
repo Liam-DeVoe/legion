@@ -397,6 +397,11 @@ sends anything and names `--path`, which stores a file whose path does not end i
 `.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
 takes `--content` once it ends in `.md`.
 
+A `--path` upload under a `--name` that ends in `.md` or `.markdown` is sent as Markdown whatever
+the path's extension, so `--name plan.md --path plan.txt` stores a document. The answer names the
+kind Dispatch stored: `a document (kind doc; …)`, `a file (kind file; …)` or
+`a picture (kind image; …)`.
+
 `dispatch handoff-write --issue <KEY> --phase <phase> --body-file <path>` records a Legion phase
 handoff on its issue as this session: the file's text, one JSON object, is stored exactly as
 written, and each write is the phase's next version. Keep the file outside the workspace (such as
