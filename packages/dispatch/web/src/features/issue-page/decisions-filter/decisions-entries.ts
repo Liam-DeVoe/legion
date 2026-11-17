@@ -32,7 +32,19 @@ import { type DecisionsEntry, type DecisionsParts, decisionsParts } from "./deci
  * The view draws four parts (dispatch://INFRA-1196 R2). A decision another person made is no
  * part of its own: it stands under the reader's decisions, with that person's name on its row,
  * so G's `others` is put in `yours`, newest first, and `others` is left empty.
+ *
+ * The seam says too whether those reads hold their answers (`readsHeld`), which the outline's
+ * keys read (`useTreeKeymap.ts`). Until they do, a view with no question or no decision to go to
+ * may be one whose questions and decisions have not arrived, so `q` and `w` with nowhere to go
+ * say nothing rather than that there is none, as the outline's keys do (`slots/body.tsx`).
  */
+
+/** The Decisions view's parts, and whether the reads they come from hold their answers. */
+export interface DecisionsEntries extends DecisionsParts {
+  /** Whether the decisions read, the asks, the comments and, where the issue has a decisions
+   *  document, that document's blocks each hold an answer. A read that failed holds none. */
+  readonly readsHeld: boolean;
+}
 
 /** The Decisions view's parts, from the issue, the reader's login, the whole tree and the tree
  *  as the Decisions view leaves it (`presetView`). */
@@ -49,7 +61,7 @@ export function useDecisionsEntries({
   root: TreeNode;
   /** The tree as the Decisions view leaves it. */
   view: TreeNode;
-}): DecisionsParts {
+}): DecisionsEntries {
   const decisions = useQuery(issueDecisionsQuery(issue.key, true)).data;
   const asks = useQuery({
     queryFn: () => api.listIssueAsks(issue.key, "all"),
@@ -69,6 +81,12 @@ export function useDecisionsEntries({
     ...artifactBlocksQuery(documentId ?? ""),
     enabled: documentId !== undefined,
   }).data;
+  // An issue with no decisions document has no blocks to wait for.
+  const readsHeld =
+    decisions !== undefined &&
+    asks !== undefined &&
+    comments !== undefined &&
+    (documentId === undefined || blocks !== undefined);
   const documents = useMemo<readonly DocumentBlocks[] | undefined>(
     () =>
       documentId === undefined || blocks === undefined
@@ -98,12 +116,13 @@ export function useDecisionsEntries({
     return {
       ...parts,
       others: [],
+      readsHeld,
       yours:
         parts.others.length === 0
           ? parts.yours
           : newestFirst([...parts.yours, ...parts.others], root),
     };
-  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, root, view]);
+  }, [asks, changes, decisions, issue.key, nodeIdOf, reader, readsHeld, root, view]);
 }
 
 /**

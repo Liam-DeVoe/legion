@@ -8,7 +8,7 @@ import { api } from "../../../api/client";
 import type { Actor, ArtifactBlock, Comment, Decision, IssueDecisions } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import { presetView } from "../presets";
-import { useDecisionsEntries } from "./decisions-entries";
+import { type DecisionsEntries, useDecisionsEntries } from "./decisions-entries";
 import {
   answeredAsk,
   closing,
@@ -38,21 +38,22 @@ import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
-/** The seam's parts for the issue whose tree holds `children`, with `decisions`, `asks`,
- *  `comments` and the decisions document's `blocks` as the cache holds them. */
+/** The seam's answer for the issue whose tree holds `children`, with `decisions`, `asks`,
+ *  `comments` and the decisions document's `blocks` as the cache holds them. `comments` null
+ *  leaves the comments out of the cache, as before that read answers. */
 async function entriesOf(
   children: readonly TreeNode[],
   decisions: IssueDecisions,
   asks: readonly DecisionsAsk[] = [],
-  comments: readonly Comment[] = [],
+  comments: readonly Comment[] | null = [],
   blocks: readonly ArtifactBlock[] = []
-): Promise<DecisionsParts> {
+): Promise<DecisionsEntries> {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["decisions", KEY], decisions);
   client.setQueryData(["asks", KEY], asks);
-  client.setQueryData(["comments", KEY], comments);
+  if (comments !== null) client.setQueryData(["comments", KEY], comments);
   // The issue names its decisions document by its role (`issueDetails`), so the seam reads that
   // document's blocks, as the tree does.
   client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], blocks);
@@ -234,6 +235,8 @@ test("the seam gives four parts from today's reads and makes no request", async 
 // R8: a decisions read that holds no decision, or none of its `decisions` member, gives no
 // decision and no error, and the view draws the questions alone. The tree is the one the page
 // builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
+// Such a read holds its answer all the same (`readsHeld`), and a read that has not answered,
+// the comments say, holds none, so the questions are drawn and the reads do not hold yet.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
   // A read with no `decisions` member, which its type does not allow and an answer can still be.
@@ -246,7 +249,8 @@ test("an empty decisions member gives the questions alone and no error", async (
     const drawn = entriesOf(children, decisions);
     // The hook throws nothing on this read: the promise of its parts settles with them.
     await expect(drawn).resolves.toBeDefined();
-    expect({ parts: idsOf(await drawn), read }).toEqual({
+    const entries = await drawn;
+    expect({ parts: idsOf(entries), read, readsHeld: entries.readsHeld }).toEqual({
       parts: {
         agents: [],
         named: [],
@@ -256,6 +260,22 @@ test("an empty decisions member gives the questions alone and no error", async (
         yours: [],
       },
       read,
+      readsHeld: true,
     });
+  }
+
+  // The comments read the mount starts never answers.
+  const listComments = spyOn(api, "listComments").mockReturnValue(
+    Promise.withResolvers<never>().promise
+  );
+  try {
+    const cold = await entriesOf(children, decisionsRead([]), [], null);
+    expect({ open_questions: idsOf(cold).open_questions, readsHeld: cold.readsHeld }).toEqual({
+      open_questions: ["q-open"],
+      readsHeld: false,
+    });
+    expect(listComments).toHaveBeenCalledTimes(1);
+  } finally {
+    listComments.mockRestore();
   }
 });

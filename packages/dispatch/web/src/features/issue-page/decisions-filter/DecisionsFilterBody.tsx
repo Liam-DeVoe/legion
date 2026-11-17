@@ -83,7 +83,9 @@ const NOTHING = (): void => {};
  * `t d` and a page opened here reach a list that holds only the foot. On an issue the view
  * draws nothing for, with no row and no foot, there is nowhere to pass it, and the tree keeps
  * it. A key with nowhere to go says so at the row it was pressed on, or at the list's tab stop
- * where it was pressed on no row, as the outline's keys do (the tester's F16).
+ * where it was pressed on no row, as the outline's keys do (the tester's F16). Until the reads
+ * behind the list hold their answers, `q` and `w` with nowhere to go say nothing: no question or
+ * decision to go to may mean only that they have not arrived (`decisions-entries.ts`).
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
  * by (`useIssueTree.ts`), so the body costs no request of its own (R20).
@@ -464,6 +466,7 @@ export function DecisionsFilterBody({
     onReveal: goTo,
     onZoom: NOTHING,
     oneNodeAtATime: false,
+    readsHeld: parts.readsHeld,
     rows,
     // The tree the view left, as the outline's keys read it (`IssueTree.tsx`): `q` and `w` look
     // past the drawn rows, and a node the words filter took out of the view draws no row to go to.

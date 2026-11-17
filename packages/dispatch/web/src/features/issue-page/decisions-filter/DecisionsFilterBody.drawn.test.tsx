@@ -213,13 +213,21 @@ function decisionsText(made: readonly Decision[]): string {
   ].join("\n\n");
 }
 
+/** The body over the issue whose tree holds `children`, with `asks`, `comments` and the
+ *  decisions read of `made` as the cache holds them. `comments` null leaves the comments out of
+ *  the cache, as before that read answers. */
 function renderBody(
   {
     asks = [],
     children,
     comments = [],
     made = [],
-  }: { asks?: DecisionsAsk[]; children: TreeNode[]; comments?: Comment[]; made?: Decision[] },
+  }: {
+    asks?: DecisionsAsk[];
+    children: TreeNode[];
+    comments?: Comment[] | null;
+    made?: Decision[];
+  },
   props: BodyProps = {},
   {
     requests = false,
@@ -235,7 +243,7 @@ function renderBody(
   // The reads the page's tree is built from, under the keys it reads them by.
   client.setQueryData(["decisions", KEY], decisionsRead(made));
   client.setQueryData(["asks", KEY], asks);
-  client.setQueryData(["comments", KEY], comments);
+  if (comments !== null) client.setQueryData(["comments", KEY], comments);
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
   client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], []);
@@ -1403,9 +1411,26 @@ test("another person's answer stands under Your decisions with their name", () =
 // script moves it, takes the report away at once. A press on another control of the page keeps
 // it drawn while the press is held, so nothing moves under the pointer, and takes it away once
 // the press has ended and its click has landed. Pressed on no row, on the foot's control say,
-// it says so at the list's tab stop, as the outline's keys do.
+// it says so at the list's tab stop, as the outline's keys do. Until every read behind the list
+// holds its answer, there being nowhere to go may be false, so the key says nothing.
 test("a key with nowhere to go reports at the row it was pressed on", async () => {
   const user = userEvent.setup();
+  // The comments read the mount starts never answers.
+  const listComments = spyOn(api, "listComments").mockReturnValue(
+    Promise.withResolvers<never>().promise
+  );
+  try {
+    const cold = renderBody({ ...wholeIssue(), comments: null });
+    await act(async () => rowOf(cold, "q-open").focus());
+    await user.keyboard("w");
+    expect(focusedRow(cold)).toBe("q-open");
+    expect(cold.container.querySelector("[data-row-report]")).toBeNull();
+    cold.unmount();
+  } finally {
+    listComments.mockRestore();
+  }
+
+  // Every read holds its answer from here on.
   const view = renderBody(wholeIssue(), {}, { requests: true });
   await act(async () => rowOf(view, "q-open").focus());
   await user.keyboard("w");
