@@ -160,22 +160,27 @@ test("the starter's signal ends its own wait, and never the trade another caller
 // and the next caller trades afresh. The bound runs on the test runner's fake timers, moved only
 // once the broker holds the trade, so the row judges when on that clock the trade ended, which
 // the machine's load cannot change: it is still waited on a moment before its 300 ms, and has
-// ended at them.
+// ended at them. The broker is the row's own fetch, which fails a held trade in the same turn
+// its signal aborts: Bun's fetch hands an abort to its HTTP thread and rejects only once that
+// thread answers, after time no fake clock drives, so a count of turns could end before it.
 test("a trade its starter left ends at the exchange's own bound", async () => {
   const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
-  const { promise: never } = Promise.withResolvers<never>();
-  const broker = stubBroker(async (_trade, count) => {
-    if (count === 1) {
-      arrive();
-      await never;
-    }
-    return { body: accepted(`token-${count}`, 600) };
-  });
+  let trades = 0;
+  const broker = async (_url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    trades++;
+    if (trades > 1) return Response.json(accepted(`token-${trades}`, 600));
+    const { promise: held, reject } = Promise.withResolvers<Response>();
+    const signal = init?.signal;
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    arrive();
+    return await held;
+  };
   const client = new BrokerTokenClient({
-    brokerUrl: broker.url,
+    brokerUrl: "http://broker.test",
     key: await newDpopKey(),
     subject: countingSource(),
     exchangeBackstopMs: 300,
+    fetch: broker as typeof fetch,
   });
   jest.useFakeTimers();
   try {
@@ -189,7 +194,8 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
     const joining = refusalOf(() => client.token()).finally(() => {
       joinedAfter = performance.now() - started;
     });
-    // The trade's failure reaches the waiting caller on the event loop alone, with no time.
+    // The trade's failure reaches the waiting caller in microtasks alone, which one turn of the
+    // event loop drains, with no time.
     const turns = async (): Promise<void> => {
       for (let turn = 0; turn < 50 && joinedAfter === undefined; turn++) {
         const { promise, resolve } = Promise.withResolvers<void>();
@@ -210,7 +216,7 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
       waitedBefore,
       endedAt: joinedAfter,
       next: next?.accessToken,
-      trades: broker.trades.length,
+      trades,
     }).toEqual({
       left: "AbortError",
       timedOut: true,
@@ -221,7 +227,6 @@ test("a trade its starter left ends at the exchange's own bound", async () => {
     });
   } finally {
     jest.useRealTimers();
-    broker.stop();
   }
 });
 
