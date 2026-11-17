@@ -161,6 +161,14 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
+	// The answer lists the message's attempts as GET /api/v1/messages/{id} reads them, after the
+	// commit and on the pool (hydrateMessageThreads).
+	deliveries, err := s.loadMessageDeliveries(r.Context(), s.deps.Store.Pool, []string{message.ID})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	message.Deliveries = deliveries[message.ID]
 	WriteJSON(w, http.StatusOK, message)
 }
 
@@ -223,6 +231,14 @@ func (s *server) deleteMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), events...)
+	// The answer lists the message's attempts, each send the delete failed among them, as GET
+	// /api/v1/messages/{id} reads them, after the commit and on the pool (hydrateMessageThreads).
+	deliveries, err := s.loadMessageDeliveries(r.Context(), s.deps.Store.Pool, []string{message.ID})
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	message.Deliveries = deliveries[message.ID]
 	WriteJSON(w, http.StatusOK, message)
 }
 

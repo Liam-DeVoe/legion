@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The answers of PATCH and DELETE /api/v1/comments/{id}, of POST /api/v1/comments/{id}/resolve, /api/v1/comments/{id}/accept, /api/v1/comments/{id}/reject and /api/v1/comments/{id}/reopen, and of PATCH and DELETE /api/v1/messages/{id} now list the mentions and the deliveries that a read of that post lists, where each answered a comment with no mentions and no deliveries and a message with no deliveries. The anchor''s position stays out of a comment write answer: a read computes it from the document.'
+time: 2026-11-17T04:03:17.000000000Z
+custom:
+    Issue: pr3512

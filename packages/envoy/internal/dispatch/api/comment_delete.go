@@ -141,5 +141,10 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), events...)
+	comment, err = s.hydrateWrittenComment(r.Context(), comment)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, comment)
 }

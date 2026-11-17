@@ -383,6 +383,19 @@ func (s *server) hydrateCommentSideTables(ctx context.Context, q queryer, commen
 	return comments, nil
 }
 
+// hydrateWrittenComment is the comment a write answers, with the side tables
+// GET /api/v1/comments/{id} reads it with (hydrateCommentSideTables): its mentions, its delivery
+// attempts and the block it replies to. A write calls it once its transaction has committed, on
+// the pool, as getComment reads, so its answer lists what a read made after it lists. The anchor's
+// position stays out: getComment computes it from the document, and no side table holds it.
+func (s *server) hydrateWrittenComment(ctx context.Context, comment model.Comment) (model.Comment, error) {
+	comments, err := s.hydrateCommentSideTables(ctx, s.deps.Store.Pool, []model.Comment{comment})
+	if err != nil {
+		return model.Comment{}, err
+	}
+	return comments[0], nil
+}
+
 func (s *server) loadCommentMentions(ctx context.Context, q queryer, commentIDs []string) (map[string][]model.Mention, error) {
 	mentions := make(map[string][]model.Mention, len(commentIDs))
 	for _, id := range commentIDs {
