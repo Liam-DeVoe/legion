@@ -38,7 +38,7 @@
 import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
-import { messageFor, withoutUserinfo } from "@legion/envoy-client/errors";
+import { messageFor, shownSettingUrl } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import {
   backoffMs,
@@ -193,10 +193,11 @@ function stateMessage(issue: string, comment: Comment): string {
 const USAGE =
   "usage: label-comments.ts --since <RFC 3339> --until <RFC 3339> --out <dir> (--gateway <url> --key-command <file> | --key-file <file>)";
 
-/** Where the model calls go, how each call gets its key, and whether a person named the URL with
- * --gateway. */
+/** Where the model calls go, the same address as a line may show it (`shownSettingUrl`), how each
+ * call gets its key, and whether a person named the URL with --gateway. */
 interface ModelRoute {
   readonly url: string;
+  readonly shown: string;
   readonly key: () => Promise<string>;
   readonly gateway: boolean;
 }
@@ -310,7 +311,7 @@ async function label(
           ? `correct the path of --gateway; ${SAME_ADDRESS_CAUSE}`
           : "give --gateway the gateway's own address";
       throw new Error(
-        `the model at ${withoutUserinfo(route.url)} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key: ${fix}`
+        `the model at ${route.shown} answered ${response.status}, ${redirectedTo(target)}, and a model call follows no redirect, since it carries the key: ${fix}`
       );
     }
     let text: string;
@@ -493,22 +494,23 @@ function modelRoute(args: Arguments): ModelRoute | string {
     if ((mode & 0o077) !== 0) {
       return `--key-file ${keyFile} can be read by its group or by others. Make it 0600.`;
     }
-    return { url: ANTHROPIC_URL, key: () => readKeyFile(keyFile), gateway: false };
+    return {
+      url: ANTHROPIC_URL,
+      shown: ANTHROPIC_URL,
+      key: () => readKeyFile(keyFile),
+      gateway: false,
+    };
   }
   if (gateway === undefined || keyCommand === undefined) return refusal;
-  // The URL may carry a user and a password, so a refusal names it with neither; one that does not
-  // parse has no part a parser can tell for the password, so its refusal names only its length.
-  let url: URL;
-  try {
-    url = new URL(gateway);
-  } catch {
-    return `--gateway does not parse as a URL: its value is ${gateway.length} characters long`;
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    return `--gateway ${withoutUserinfo(gateway)} is not an http or https URL`;
+  // The URL may carry a user and a password: a line names it with neither, and one that is no
+  // http or https URL with a host by its length alone (`shownSettingUrl`).
+  const shown = shownSettingUrl(gateway);
+  if (shown === undefined) {
+    return `--gateway must be an http or https URL: its value is ${gateway.length} characters long`;
   }
   return {
     url: gateway.replace(/\/+$/, ""),
+    shown: shown.replace(/\/+$/, ""),
     key: () => runKeyCommand(keyCommand),
     gateway: true,
   };

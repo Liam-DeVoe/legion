@@ -33,6 +33,23 @@ test("a list of sites that lost one of its count fails before any row runs", () 
   });
 });
 
+// Each site's row is the redirect cases of the test file beside it, so two listed sites that name
+// one file are checked by one row: the second site's own row never runs, and that site would pass
+// while it followed a redirect again. Such a list fails, naming both sites, before any row runs.
+test("a list in which two sites name one row file fails, naming both, before any row runs", () => {
+  const label = "packages/pi-legion/scripts/skill-scenarios/label-comments.ts label";
+  const production =
+    "packages/pi-legion/scripts/skill-scenarios/production-dispatch.ts ProductionDispatch";
+  const labelRow = SITES[label];
+  if (labelRow === undefined) throw new Error(`SITES lists no ${label}`);
+  expect(checked({ ...SITES, [production]: labelRow }, LISTED_SITES)).toEqual({
+    exit: 1,
+    lines: [
+      `FAIL 2 listed sites name one row, packages/pi-legion/scripts/skill-scenarios/label-comments.test.ts: ${label}; ${production}. Each site's row is the test file beside it, so that one row would stand for all 2, and 1 of their own rows would never run`,
+    ],
+  });
+});
+
 test("the check's own list of sites is as long as the count beside it", () => {
   expect(Object.keys(SITES)).toHaveLength(LISTED_SITES);
 });

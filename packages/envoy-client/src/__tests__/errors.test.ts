@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { DispatchGatewayError, DispatchServiceError } from "../dispatch-http";
-import { messageFor, withoutUserinfo } from "../errors";
+import { messageFor, shownSettingUrl, withoutUserinfo } from "../errors";
 
 describe("messageFor", () => {
   test("returns the message from Error values", () => {
@@ -70,5 +70,38 @@ describe("withoutUserinfo", () => {
       "host.example:99999"
     );
     expect(withoutUserinfo("not a url")).toBe("not a url");
+  });
+});
+
+// A setting's value is shown only when the URL parser reads it as an http or https URL with a
+// host, and then with no user and no password. Any other reading cannot be trusted to have found
+// the password (`user:password@host` parses, with `user:` as its scheme and the password in its
+// path), so such a value is shown not at all: a line names its length alone.
+describe("shownSettingUrl", () => {
+  const user = "user-7f2a";
+  const secret = "pw-4c7e19";
+
+  test.each([
+    [`https://${user}:${secret}@host.example/a`, "https://host.example/a"],
+    [`HTTPS://${user}:${secret}@Host.Example/a`, "https://host.example/a"],
+    [`http://${user}@127.0.0.1:8766`, "http://127.0.0.1:8766"],
+    ["http://dispatch.test", "http://dispatch.test"],
+  ])("%p is shown as %p", (value, shown) => {
+    expect(shownSettingUrl(value)).toBe(shown);
+  });
+
+  test.each([
+    [`${user}:${secret}@host.example/a`],
+    [`${user}:${secret}@host.example:8443`],
+    [`mailto:${user}:${secret}@host.example`],
+    [`//${user}:${secret}@host.example/a`],
+    ["   "],
+    [""],
+    [`ftp://${user}:${secret}@host.example/a`],
+    [`file://${user}:${secret}@host.example/a`],
+    [`https://${user}:${secret}@bad host/a`],
+    [`https://${user}:${secret}/x@host.example`],
+  ])("%p is shown not at all", (value) => {
+    expect(shownSettingUrl(value)).toBeUndefined();
   });
 });

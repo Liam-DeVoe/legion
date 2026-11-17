@@ -17,7 +17,7 @@
  * the negative controls point it at an empty list, and at one site's row once for each listed
  * site. The list itself is what makes a site listed, so before any row runs the check says
  * UNKNOWN and exits 1 for a list that names no site, and fails a list whose length is not the
- * count written beside it (`run`).
+ * count written beside it, and a list in which two sites name one row file (`run`).
  */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -193,7 +193,8 @@ function rowsOf(
 
 /** The check of `sites`, whose length the list holds as `count`, with the rows `argv` names: each
  * line it prints goes to `log`, and it answers the exit status. A list that names no site is
- * UNKNOWN and one whose length is not `count` fails, each before any row runs. */
+ * UNKNOWN; one whose length is not `count`, and one in which two sites name one row, fail; each
+ * before any row runs. */
 export function run(
   argv: readonly string[],
   sites: Readonly<Record<string, RowPlace>>,
@@ -213,6 +214,20 @@ export function run(
     );
     return 1;
   }
+  // Each site's row is the redirect cases of the test file beside it, so sites that name one file
+  // would be checked by one row, and the others' own rows would never run.
+  const sitesByRow = new Map<string, string[]>();
+  for (const [site, { directory, file }] of Object.entries(sites)) {
+    const row = path.join(directory, file);
+    sitesByRow.set(row, [...(sitesByRow.get(row) ?? []), site]);
+  }
+  const shared = [...sitesByRow].filter(([, named]) => named.length > 1);
+  for (const [row, named] of shared) {
+    log(
+      `FAIL ${named.length} listed sites name one row, ${row}: ${named.join("; ")}. Each site's row is the test file beside it, so that one row would stand for all ${named.length}, and ${named.length - 1} of their own rows would never run`
+    );
+  }
+  if (shared.length > 0) return 1;
   const rows = rowsOf(argv, sites);
   const scratch = mkdtempSync(path.join(tmpdir(), "redirect-refusals-"));
   const passed = new Set<string>();

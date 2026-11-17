@@ -97,6 +97,45 @@ test("a 3xx's body is cancelled as its target is read, and any other answer keep
   expect(await plain.text()).toBe("a body to read");
 });
 
+// The cancel of a 3xx's body can fail: a body already locked by a reader, and a source whose own
+// cancel throws, each reject it. That failure is no answer of the request, so the read of the
+// target still names it, and leaves no rejection unhandled. The wait for one is a turn of the event
+// loop after the source's cancel ran: an unhandled rejection is reported before that turn.
+test("a 3xx whose body cannot be cancelled still names its target, and leaves no rejection unhandled", async () => {
+  const unhandled: unknown[] = [];
+  const record = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", record);
+  try {
+    const asked = Promise.withResolvers<void>();
+    const failing = new Response(
+      new ReadableStream<Uint8Array>({
+        cancel() {
+          asked.resolve();
+          throw new Error("a made-up failure of the cancel");
+        },
+      }),
+      { status: 307, headers: { Location: "/elsewhere" } }
+    );
+    const locked = new Response("a body a reader holds", {
+      status: 307,
+      headers: { Location: "/elsewhere" },
+    });
+    locked.body?.getReader();
+    for (const response of [failing, locked]) {
+      expect(redirectTarget(response, "http://dispatch.test/")).toEqual({
+        kind: "the same origin",
+      });
+    }
+    await asked.promise;
+    const turn = Promise.withResolvers<void>();
+    setImmediate(turn.resolve);
+    await turn.promise;
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", record);
+  }
+});
+
 // A host name holds at most 253 characters, so an origin longer than `https://`, such a name and
 // `:65535` names no host a person meant; it prints as another address, with its length.
 test("an origin longer than any host name allows prints as another address of its length", () => {

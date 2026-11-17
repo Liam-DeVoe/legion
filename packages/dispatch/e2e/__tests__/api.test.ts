@@ -233,3 +233,67 @@ test(
   },
   rowLimit("short")
 );
+
+/** The forms of a PLAYWRIGHT_BASE_URL with a made-up password that the URL parser does not read as
+ *  an http or https URL with a host, one it does that carries a user part, and one with neither,
+ *  which loads. */
+function baseUrlForms(password: string) {
+  return {
+    unparsed: [
+      `http://made-up-user:${password}@bad host:1`,
+      `https://made-up-user:${password}/x@dispatch.example`,
+      `made-up-user:${password}@dispatch.example`,
+      `mailto:made-up-user:${password}@dispatch.example`,
+      `//made-up-user:${password}@dispatch.example`,
+      "   ",
+    ],
+    withUser: `http://made-up-user:${password}@127.0.0.1:1`,
+    loads: "http://127.0.0.1:1",
+  };
+}
+
+// The client reads PLAYWRIGHT_BASE_URL when it loads, and it may carry a user and a password: an
+// honest one holding a `/` is enough for the URL parser to refuse the value, whose error would
+// print it whole. A value that is no http or https URL with a host stops the load naming the
+// setting and its length alone. One that carries a user part stops it too, named without that
+// part: the fetch of Playwright's Node refuses such a URL with an error that prints it whole, and
+// the client sends a credential of its own. A value with neither loads and prints nothing. The
+// password is made for this run.
+test(
+  "a PLAYWRIGHT_BASE_URL that is no http or https URL with a host, or that carries a user part, stops the client's load printing no part of the password",
+  async () => {
+    const password = crypto.randomUUID();
+    const { unparsed, withUser, loads } = baseUrlForms(password);
+    const said: { exit: number; died: string; holds: boolean }[] = [];
+    for (const base of [...unparsed, withUser, loads]) {
+      const { code, stdout, stderr } = await runBounded({
+        argv: ["bun", "-e", `import * as api from ${JSON.stringify(api)};\nvoid api;`],
+        bound: "short",
+        cwd: scratch,
+        env: { PATH: process.env.PATH ?? "", HOME: scratch, PLAYWRIGHT_BASE_URL: base },
+        from: import.meta.url,
+      });
+      const line = stderr.split("\n").find((one) => one.startsWith("error: "));
+      said.push({
+        exit: code,
+        died: line === undefined ? stderr : line.slice("error: ".length),
+        holds: `${stdout}${stderr}`.includes(password),
+      });
+    }
+    expect(said).toEqual([
+      ...unparsed.map((base) => ({
+        exit: 1,
+        died: `PLAYWRIGHT_BASE_URL must be an http or https URL: its value is ${base.length} characters long`,
+        holds: false,
+      })),
+      {
+        exit: 1,
+        died: "PLAYWRIGHT_BASE_URL http://127.0.0.1:1 must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own",
+        holds: false,
+      },
+      { exit: 0, died: "", holds: false },
+    ]);
+  },
+  // One client process for each form, one after the other.
+  rowLimit(...baseUrlForms("").unparsed.map(() => "short" as const), "short", "short")
+);

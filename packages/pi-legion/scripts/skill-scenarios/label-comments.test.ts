@@ -691,19 +691,26 @@ for (const code of REDIRECT_CODES) {
   });
 }
 
-// A --gateway URL may carry a user and a password. The refusal of one with a scheme that is not
-// http(s) names it with neither, and the refusal of one that does not parse names no part of it,
-// since no parser says which part is the password: only its length. The password is made for this
-// run.
-test("a --gateway refused for its scheme or for not parsing names no user and no password of it", async () => {
+// A --gateway URL may carry a user and a password. One the URL parser does not read as an http or
+// https URL with a host is refused naming its length alone: that reading cannot be trusted to have
+// found the password, since `user:password@host` parses with `user:` as its scheme and the password
+// in its path. The password is made for this run.
+test("a --gateway that is no http or https URL with a host is refused naming its length alone", async () => {
   const password = crypto.randomUUID();
   const command = path.join(dir("refused-gateway"), "key-command");
   writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
   chmodSync(command, 0o700);
   const out = path.join(dir("refused-gateway"), "labels");
+  const refused = [
+    `made-up-user:${password}@gateway.example/anthropic`,
+    `mailto:made-up-user:${password}@gateway.example`,
+    `//made-up-user:${password}@gateway.example/anthropic`,
+    "   ",
+    `ftp://made-up-user:${password}@gateway.example/anthropic`,
+    `https://made-up-user:${password}@bad host/anthropic`,
+  ];
   const said: string[][] = [];
-  const unparsed = `https://made-up-user:${password}@bad host/anthropic`;
-  for (const gateway of [`ftp://made-up-user:${password}@gateway.example/anthropic`, unparsed]) {
+  for (const gateway of refused) {
     const { fetch, sent } = world();
     const run = io(fetch);
     expect(
@@ -718,10 +725,47 @@ test("a --gateway refused for its scheme or for not parsing names no user and no
     expect(sent).toEqual([]);
     said.push(run.stderr);
   }
-  expect(said).toEqual([
-    ["label-comments: --gateway ftp://gateway.example/anthropic is not an http or https URL"],
-    [
-      `label-comments: --gateway does not parse as a URL: its value is ${unparsed.length} characters long`,
-    ],
-  ]);
+  expect(said).toEqual(
+    refused.map((gateway) => [
+      `label-comments: --gateway must be an http or https URL: its value is ${gateway.length} characters long`,
+    ])
+  );
+});
+
+// An http or https --gateway is named with no user and no password, whatever the case of its
+// scheme: here in the refusal of a redirect of its model call, which the first server answers
+// through the call's own fetch. The password is made for this run.
+test("an upper-case HTTPS --gateway with a user part is named without it", async () => {
+  const password = crypto.randomUUID();
+  const gateway = `HTTPS://made-up-user:${password}@gateway.example/anthropic`;
+  const servers = gatewayRedirects();
+  try {
+    const command = path.join(dir("upper-case-gateway"), "key-command");
+    writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
+    chmodSync(command, 0o700);
+    const out = path.join(dir("upper-case-gateway"), "labels");
+    const run = io((url, init) =>
+      fetch(url.startsWith(gateway) ? `${servers.origin}${url.slice(gateway.length)}` : url, init)
+    );
+    const exit = await main(
+      [
+        ...["--since", SINCE, "--until", UNTIL, "--out", out],
+        ...["--gateway", gateway, "--key-command", command],
+      ],
+      {
+        ...run.io,
+        env: { HOME: scratch, DISPATCH_URL: servers.origin, DISPATCH_TOKEN: "made-up-bearer" },
+      }
+    );
+    expect(servers.received).toEqual([]);
+    expect({ exit, stderr: run.stderr }).toEqual({
+      exit: 1,
+      stderr: refusedRun(
+        `the model at https://gateway.example/anthropic answered 307, redirecting to ${servers.elsewhere}, and a model call follows no redirect, since it carries the key: ${FIX}`,
+        path.join(out, "labels.jsonl")
+      ),
+    });
+  } finally {
+    servers.stop();
+  }
 });

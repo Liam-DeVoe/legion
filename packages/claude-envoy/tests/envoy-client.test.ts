@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test"
 import { writeFileSync } from "node:fs"
 import { createServer, type Server, type Socket } from "node:net"
 import { join, resolve } from "node:path"
+import { inspect } from "node:util"
 import {
   REDIRECT_CODES,
   type RedirectServers,
@@ -441,8 +442,8 @@ test("envoy-send to a listener that never answers exits 1 saying the send timed 
 }, 30_000)
 
 // The line that names the URL is the send's own error, made where the URL is cleaned of its user
-// and password, and the error it replaces is its cause.
-test("a send refused by its listener names the URL with no user and no password, and keeps the refusal as its cause", async () => {
+// and password, and its cause carries the refusal's name with the same cleaned line.
+test("a send refused by its listener names the URL with no user and no password, and keeps the refusal's name as its cause", async () => {
   const password = crypto.randomUUID()
   const refusing = Bun.serve({
     port: 0,
@@ -468,4 +469,82 @@ test("a send refused by its listener names the URL with no user and no password,
   } finally {
     refusing.stop(true)
   }
+})
+
+// ky's refusal holds the URL, user and password included, in its message and in its other members
+// (its request among them), so a printer of the cause chain or of the whole error would print the
+// password if the send kept that refusal. No member of the send's error, nor of any cause under it,
+// holds the password. The password is made for this run.
+test("a send refused by its listener holds the password of its URL in no member of its error or of any cause", async () => {
+  const password = crypto.randomUUID()
+  const refusing = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => new Response("no", { status: 401 }),
+  })
+  try {
+    const error = await sendEnvoyMessage({
+      baseUrl: `http://made-up-user:${password}@127.0.0.1:${refusing.port}`,
+      credential: undefined,
+      targetSession: "ses_receiver",
+      message: "refused",
+    }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    expect(error).toBeInstanceOf(Error)
+    const holding: string[] = []
+    let depth = 0
+    for (let at: unknown = error; at instanceof Error; at = at.cause, depth += 1) {
+      for (const key of Object.getOwnPropertyNames(at)) {
+        if (inspect(Reflect.get(at, key), { depth: Number.POSITIVE_INFINITY }).includes(password)) {
+          holding.push(`${"cause.".repeat(depth)}${key}`)
+        }
+      }
+    }
+    expect({ depth, holding }).toEqual({ depth: 2, holding: [] })
+    expect(inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true })).not.toContain(
+      password,
+    )
+  } finally {
+    refusing.stop(true)
+  }
+})
+
+// The Envoy URL may carry a user and a password. One the URL parser does not read as an http or
+// https URL with a host fails the send naming its length alone, before anything is asked: the
+// parser's own error would hold the value whole. The password is made for this run.
+test("a send whose Envoy URL is no http or https URL with a host fails naming its length alone", async () => {
+  const password = crypto.randomUUID()
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `mailto:made-up-user:${password}@127.0.0.1`,
+    `//made-up-user:${password}@127.0.0.1:1`,
+    "   ",
+    `http://made-up-user:${password}/x@127.0.0.1:1`,
+  ]
+  const said: { readonly message: string; readonly holds: boolean }[] = []
+  for (const baseUrl of values) {
+    const error = await sendEnvoyMessage({
+      baseUrl,
+      credential: undefined,
+      targetSession: "ses_receiver",
+      message: "never sent",
+    }).then(
+      () => undefined,
+      (thrown: unknown) => thrown,
+    )
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password,
+      ),
+    })
+  }
+  expect(said).toEqual(
+    values.map((baseUrl) => ({
+      message: `the Envoy URL (ENVOY_URL, or envoy.json's envoy.url) must be an http or https URL: its value is ${baseUrl.length} characters long`,
+      holds: false,
+    })),
+  )
 })

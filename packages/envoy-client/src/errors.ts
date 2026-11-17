@@ -58,3 +58,23 @@ export function withoutUserinfo(url: string): string {
   const shown = parsed.toString();
   return shown.endsWith("/") && !url.endsWith("/") ? shown.slice(0, -1) : shown;
 }
+
+/**
+ * What a line may show of the value of a setting that names an http or https URL, which may carry
+ * a user and a password: the value with neither (`withoutUserinfo`) when the URL parser reads it as
+ * an http or https URL with a host, and undefined for any other value, of which a line names the
+ * length alone. Any other reading cannot be trusted to have found the password: the parser reads
+ * `user:password@host` and `mailto:user:password@host` with no user part at all, the password
+ * in the path, and its error for a value it refuses holds the value whole. Each line that names
+ * such a setting's value, or a URL made from it, asks this first.
+ */
+export function shownSettingUrl(value: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return undefined;
+  }
+  const http = parsed.protocol === "http:" || parsed.protocol === "https:";
+  return http && parsed.host !== "" ? withoutUserinfo(value) : undefined;
+}

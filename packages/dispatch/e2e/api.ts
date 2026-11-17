@@ -5,6 +5,7 @@ import {
   type paths,
 } from "@legion/contracts";
 import type { Cookie } from "@playwright/test";
+import { shownSettingUrl } from "../../envoy-client/src/errors";
 import {
   OWN_PATH_CHECK,
   type RedirectTarget,
@@ -30,9 +31,28 @@ import { type DispatchProcess, pinnedTo } from "./harness-processes";
 /** The Dispatch server a process of `env`'s stack addresses: the deployed server `env` names,
  *  else the harness server of that stack, whose port e2e/global-setup.ts writes into the
  *  environment of every worker before the worker imports this module (e2e/harness-ports.ts).
- *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. */
+ *  `e2e/global-setup.ts` resolves another stack's the same way this one resolves its own. A
+ *  PLAYWRIGHT_BASE_URL that is no http or https URL with a host is refused naming its length alone
+ *  (`shownSettingUrl`), before anything parses it: the URL parser's error for a value it refuses
+ *  would print the value whole. One that carries a user or a password is refused too, named with
+ *  neither: the fetch of Playwright's Node refuses such a URL with an error that prints it whole,
+ *  and every call carries a credential of the client's own. */
 export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
-  return env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
+  const named = env.PLAYWRIGHT_BASE_URL;
+  if (!named) return `http://127.0.0.1:${harnessPorts(env).dispatch.port}`;
+  const shown = shownSettingUrl(named);
+  if (shown === undefined) {
+    throw new Error(
+      `PLAYWRIGHT_BASE_URL must be an http or https URL: its value is ${named.length} characters long`
+    );
+  }
+  const { username, password } = new URL(named);
+  if (username !== "" || password !== "") {
+    throw new Error(
+      `PLAYWRIGHT_BASE_URL ${shown} must carry no user and no password: the fetch of Playwright's Node refuses a URL that carries them, printing it whole, and the e2e client sends a credential of its own`
+    );
+  }
+  return named;
 }
 
 export const baseUrl = baseUrlOf();

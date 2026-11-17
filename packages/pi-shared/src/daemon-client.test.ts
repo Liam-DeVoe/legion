@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { inspect } from "node:util";
 import { LegionReadyRequest } from "@legion/contracts/legion-api";
 import {
   REDIRECT_CODES,
@@ -650,6 +651,84 @@ test("a 502 refusal keeps its stable code through a key no schema names, and is 
   expect(retried).toMatchObject({ status: 502, code: "DISPATCH_FAILED" });
   expect(attempts).toBe(1);
   expect(waits).toEqual([]);
+});
+
+// A refusal after an attempt that lost its connection is told that the lost one may have been
+// applied. The retry did not make that refusal, so it writes nothing to it: it throws an error of
+// its own, with the same method, path, status and code, the longer words, and the refusal,
+// unchanged, as its cause.
+test("a refusal after a dropped attempt comes back as a new error saying the dropped one may have been applied, with the refusal unchanged as its cause", async () => {
+  const refusal = new LegionDaemonApiError(
+    "POST",
+    "/legion/v1/handoff/complete",
+    409,
+    "HANDOFF_ALREADY_RECORDED",
+    "a made-up refusal"
+  );
+  const before = refusal.message;
+  let attempts = 0;
+  const thrown = await retryWhileDaemonRestarts(
+    "handoff_complete",
+    async () => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
+      throw refusal;
+    },
+    { sleep: async () => {} }
+  ).catch((error: unknown) => error);
+  expect(attempts).toBe(2);
+  expect(refusal.message).toBe(before);
+  if (!(thrown instanceof LegionDaemonApiError)) throw new Error(`the retry threw ${thrown}`);
+  expect(thrown).not.toBe(refusal);
+  expect(thrown.cause).toBe(refusal);
+  expect(thrown).toMatchObject({
+    method: "POST",
+    path: "/legion/v1/handoff/complete",
+    status: 409,
+    code: "HANDOFF_ALREADY_RECORDED",
+    detail:
+      "a made-up refusal (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)",
+  });
+  expect(thrown.message).toBe(
+    `${before} (an earlier attempt of handoff_complete lost its connection before the daemon answered, and may have been applied: read the record before calling again)`
+  );
+});
+
+// LEGION_DAEMON_URL may carry a user and a password. One the URL parser does not read as an http
+// or https URL with a host fails each call naming its length alone, and nothing is sent: fetch
+// would try a host it reads out of the value, and its error would hold the value whole. The
+// password is made for this run.
+test("a daemon URL that is no http or https URL with a host fails each call naming its length alone, sending nothing", async () => {
+  const password = crypto.randomUUID();
+  const values = [
+    `made-up-user:${password}@127.0.0.1:1`,
+    `mailto:made-up-user:${password}@127.0.0.1`,
+    `//made-up-user:${password}@127.0.0.1:1`,
+    "   ",
+    `http://made-up-user:${password}/x@127.0.0.1:1`,
+  ];
+  const sent: string[] = [];
+  const said: { readonly message: string; readonly holds: boolean }[] = [];
+  for (const value of values) {
+    const client = createLegionDaemonClient(value, (async (input: string | URL | Request) => {
+      sent.push(String(input));
+      return new Response(null, { status: 204 });
+    }) as typeof fetch);
+    const error = await client.state().catch((thrown: unknown) => thrown);
+    said.push({
+      message: error instanceof Error ? error.message : String(error),
+      holds: inspect(error, { depth: Number.POSITIVE_INFINITY, showHidden: true }).includes(
+        password
+      ),
+    });
+  }
+  expect(sent).toEqual([]);
+  expect(said).toEqual(
+    values.map((value) => ({
+      message: `LEGION_DAEMON_URL must be an http or https URL: its value is ${value.length} characters long`,
+      holds: false,
+    }))
+  );
 });
 
 /** The two calls whose bodies carry a credential, each to the daemon at `origin` through

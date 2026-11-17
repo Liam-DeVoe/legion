@@ -545,26 +545,50 @@ describe("postSlackReply", () => {
     );
   }, 30_000);
 
-  // The override may carry a user and a password; the refusal of one that is no https or loopback
-  // URL names it with neither. The password is made for this run.
+  // The override may carry a user and a password; the refusal of an http URL that is not on a
+  // loopback host names it with neither, whatever the case of its scheme. The password is made
+  // for this run.
   test("a refused Slack API override is named with no user and no password", async () => {
     const password = crypto.randomUUID();
-    const { env } = brokerEnvironment(
-      "granted",
-      `http://made-up-user:${password}@slack.example/api`
-    );
-    expect(await outcome(env)).toBe(
-      "SLACK_POST_API_URL must be an https URL, or http on a loopback host (got http://slack.example/api); nothing was posted"
+    const said: string[] = [];
+    for (const scheme of ["http", "HTTP"]) {
+      const { env } = brokerEnvironment(
+        "granted",
+        `${scheme}://made-up-user:${password}@slack.example/api`
+      );
+      said.push(await outcome(env));
+    }
+    expect(said).toEqual(
+      Array(2).fill(
+        "SLACK_POST_API_URL must be an https URL, or http on a loopback host (got http://slack.example/api); nothing was posted"
+      )
     );
   });
 
-  // An override that does not parse has no part a parser can tell for a password or a token, so
-  // its refusal names its length alone. The value is made for this run.
-  test("a Slack API override that does not parse is named by its length alone", async () => {
-    const value = `made-up value ${crypto.randomUUID()}`;
-    const { env } = brokerEnvironment("granted", value);
-    expect(await outcome(env)).toBe(
-      `SLACK_POST_API_URL does not parse as a URL: its value is ${value.length} characters long; nothing was posted`
+  // An override the URL parser does not read as an http or https URL with a host is refused
+  // naming its length alone: that reading cannot be trusted to have found a password or a token,
+  // since `user:password@host` parses with `user:` as its scheme and the password in its path. The
+  // values are made for this run.
+  test("a Slack API override that is no http or https URL with a host is named by its length alone", async () => {
+    const password = crypto.randomUUID();
+    const refused = [
+      `made-up value ${crypto.randomUUID()}`,
+      `made-up-user:${password}@slack.example/api`,
+      `mailto:made-up-user:${password}@slack.example`,
+      `//made-up-user:${password}@slack.example/api`,
+      "   ",
+      `ftp://made-up-user:${password}@slack.example/api`,
+    ];
+    const said: string[] = [];
+    for (const value of refused) {
+      const { env } = brokerEnvironment("granted", value);
+      said.push(await outcome(env));
+    }
+    expect(said).toEqual(
+      refused.map(
+        (value) =>
+          `SLACK_POST_API_URL must be an https URL, or http on a loopback host: its value is ${value.length} characters long; nothing was posted`
+      )
     );
   });
 });

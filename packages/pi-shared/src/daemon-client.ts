@@ -33,7 +33,7 @@ import {
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
-import { messageFor } from "@legion/envoy-client/errors";
+import { messageFor, shownSettingUrl } from "@legion/envoy-client/errors";
 import { redirectedTo, redirectTarget, SAME_ADDRESS_CAUSE } from "@legion/envoy-client/redirect";
 import type { z } from "zod";
 
@@ -182,10 +182,12 @@ export class LegionDaemonApiError extends Error {
     readonly path: string,
     readonly status: number,
     readonly code: string | undefined,
-    readonly detail: string
+    readonly detail: string,
+    options?: ErrorOptions
   ) {
     super(
-      `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`
+      `${method} ${path} failed with ${status}${code === undefined ? "" : ` ${code}`}: ${detail}`,
+      options
     );
     this.name = "LegionDaemonApiError";
   }
@@ -310,7 +312,8 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
- * the dropped one may have been applied.
+ * the dropped one may have been applied, in an error of the retry's own whose cause is that
+ * refusal.
  */
 export async function retryWhileDaemonRestarts<T>(
   label: string,
@@ -351,8 +354,17 @@ export async function retryWhileDaemonRestarts<T>(
     } catch (error) {
       const unreachable = daemonUnreachable(error);
       if (unreachable === undefined) {
+        // The refusal is the call's, so the sentence goes into a refusal of the retry's own, with
+        // the same fields, and the call's stays unchanged as its cause.
         if (dropped && error instanceof LegionDaemonApiError) {
-          error.message += ` (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read the record before calling again)`;
+          throw new LegionDaemonApiError(
+            error.method,
+            error.path,
+            error.status,
+            error.code,
+            `${error.detail} (an earlier attempt of ${label} lost its connection before the daemon answered, and may have been applied: read the record before calling again)`,
+            { cause: error }
+          );
         }
         throw error;
       }
@@ -404,6 +416,13 @@ export function createLegionDaemonClient(
   fetchFn: typeof fetch = fetch
 ): LegionDaemonClient {
   const endpoint = withoutTrailingSlashes(baseUrl);
+  // The daemon's URL may carry a user and a password. One that is no http or https URL with a host
+  // fails every call naming its length alone (`shownSettingUrl`), and sends nothing: fetch would
+  // try a host it reads out of the value, and its error would hold the value whole.
+  const unusable =
+    shownSettingUrl(baseUrl) === undefined
+      ? `LEGION_DAEMON_URL must be an http or https URL: its value is ${baseUrl.length} characters long`
+      : undefined;
 
   /** The response's status and body once the daemon answered success; a refusal throws. */
   const call = async (
@@ -412,6 +431,7 @@ export function createLegionDaemonClient(
     body?: object,
     signal?: AbortSignal
   ): Promise<{ readonly status: number; readonly text: string }> => {
+    if (unusable !== undefined) throw new Error(unusable);
     const response = await fetchFn(`${endpoint}${path}`, {
       redirect: "manual",
       ...(body === undefined
