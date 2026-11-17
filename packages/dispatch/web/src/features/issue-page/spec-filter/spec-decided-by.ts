@@ -313,9 +313,40 @@ const STAR_EMPHASIS = /\*(?=\S)([^*]*?\S)\*/gu;
  *  `snake_case_name` is one word. */
 const UNDERSCORE_EMPHASIS = /(?<![\p{L}\p{N}])_(?=\S)([^_]*?\S)_(?![\p{L}\p{N}])/gu;
 
-/** The private-use stand-in of each ASCII punctuation character `LITERAL` keeps from the marks
- *  (U+E000 plus its code), which `plainWords` puts the character back for. */
-const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
+/** A private-use code point: one of the Basic Multilingual Plane's, U+E000 to U+F8FF, or one of
+ *  the supplementary planes 15 and 16, U+F0000 to U+10FFFF, which are private-use but for the
+ *  two noncharacters each plane ends with. */
+const PRIVATE_USE = /[\ue000-\uf8ff\u{f0000}-\u{10ffff}]/gu;
+
+/** The private-use characters `plainWords` may hold its stand-ins in, as the first and the last
+ *  code point of each run of them: 50 blocks of 128 in the Basic Multilingual Plane, then 1,024
+ *  in the supplementary planes 15 and 16. */
+const STAND_IN_RANGES = [
+  [0xe000, 0xf8ff],
+  [0xf0000, 0x10ffff],
+] as const;
+
+/**
+ * The first code point of the first block of 128 private-use characters that `paragraph` holds
+ * none of, so a stand-in made in it, the block's first code point plus an ASCII character's
+ * code, is never a character the author wrote. A block of the Basic Multilingual Plane is taken
+ * first; only a paragraph holding a character in every one of its 50 blocks reaches the
+ * supplementary planes. A paragraph holding a character in every one of the 1,074 blocks has
+ * none to give: it holds no stand-ins, and a mark inside what markdown reads literally in it is
+ * read as a mark.
+ */
+function standInBlock(paragraph: string): number | undefined {
+  const held = new Set<number>();
+  for (const [character] of paragraph.matchAll(PRIVATE_USE)) {
+    held.add((character.codePointAt(0) ?? 0) & ~0x7f);
+  }
+  for (const [first, last] of STAND_IN_RANGES) {
+    for (let block = first; block < last; block += 0x80) {
+      if (!held.has(block)) return block;
+    }
+  }
+  return undefined;
+}
 
 /**
  * The words of a stored markdown text as a reader reads them, on one line. It is part F's
@@ -329,21 +360,23 @@ const KEPT = /[\ue021-\ue02f\ue03a-\ue040\ue05b-\ue060\ue07b-\ue07e]/gu;
  * `firstSentenceOf`. Each paragraph is read on its own, since no mark pairs across a blank line.
  * What markdown reads literally (`LITERAL`) - an escaped punctuation character (`1\.` is `1.`),
  * a code span's content, an autolink's URL - is read first, and each ASCII punctuation character
- * of it is held as a private-use stand-in (U+E000 plus its code) while the marks are taken off,
- * so no mark is read inside it, and put back after. A character of the text already in that
- * private-use range is no word a reader reads, and reads as the ASCII character it stands in
- * for. Then a heading marker at the start of any line goes, an image goes whole, a link reads as
- * its words, and strong, emphasis and struck marks go until none is left, so nested marks
- * (`***x***`) go too. White space collapses to single spaces.
+ * of it is held as a private-use stand-in while the marks are taken off, so no mark is read
+ * inside it, and put back after. The stand-ins are made in a block of private-use characters
+ * the paragraph holds none of (`standInBlock`), and only that block's characters are put back,
+ * so a private-use character the author wrote of their own - an icon from an icon font or a
+ * terminal - is kept as they wrote it. Then a heading marker at the start of any line goes, an
+ * image goes whole, a link reads as its words, and strong, emphasis and struck marks go until
+ * none is left, so nested marks (`***x***`) go too. White space collapses to single spaces.
  */
 function plainWords(markdown: string): string {
   const paragraphs = markdown.split(BLANK_LINE).map((paragraph) => {
+    const block = standInBlock(paragraph);
     let words = paragraph
       .replace(
         LITERAL,
         (written, escaped?: string, _run?: string, code?: string, url?: string) =>
           (escaped ?? code ?? url)?.replace(PUNCTUATION, (character) =>
-            String.fromCharCode(0xe000 + character.charCodeAt(0))
+            block === undefined ? character : String.fromCodePoint(block + character.charCodeAt(0))
           ) ?? written
       )
       .replace(HEADING_MARKER, "")
@@ -358,7 +391,11 @@ function plainWords(markdown: string): string {
         .replace(STAR_EMPHASIS, "$1")
         .replace(UNDERSCORE_EMPHASIS, "$1");
     }
-    return words.replace(KEPT, (kept) => String.fromCharCode(kept.charCodeAt(0) - 0xe000));
+    if (block === undefined) return words;
+    return words.replace(PRIVATE_USE, (character) => {
+      const code = (character.codePointAt(0) ?? 0) - block;
+      return code >= 0 && code < 0x80 ? String.fromCharCode(code) : character;
+    });
   });
   return paragraphs.join(" ").replace(/\s+/gu, " ").trim();
 }
