@@ -8,6 +8,7 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
 import { answerRequests } from "../../../__tests__/network";
+import { node } from "../decisions-filter/decisions-fixtures";
 import { drawnLine, firstLineOf, type TreeNode } from "../issue-tree";
 import { NodeRow } from "../NodeRow";
 import { NoTooltips } from "../NoTooltips";
@@ -19,7 +20,7 @@ import {
   LENS_WORDS,
   NODE_TYPE_NAMES,
 } from "../page-words";
-import { node, statementRef } from "../spec-filter/spec-fixtures";
+import { statementRef } from "../spec-filter/spec-fixtures";
 import { blockNodeId } from "../tree-drafts";
 import { LensLines } from "./LensLines";
 import { kindWords, type LensFacts, type LensPlace } from "./lens-drafts";

@@ -1,4 +1,3 @@
-import { buildDispatchReference } from "../../refs/routes";
 import { chipWords } from "../node-row-chip";
 import { NODE_TYPE_NAMES, sentenceCase } from "../page-words";
 import { blank, type Draft, plainWords } from "../tree-drafts";
@@ -19,8 +18,8 @@ import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 
 /** One chip that names another node of the tree: a lens, a check or a constraint. */
 export interface LensChip {
-  /** The target's `dispatch://` address, but a check's id in the tree read where the read knows
-   *  no document of it (`checkAddress`). */
+  /** The target's `dispatch://` address, as its own row carries it, but a check's id in the tree
+   *  read where the read gives the check no address (`TreeDraftContext.referenceOf`). */
   readonly address: string;
   /** The target's words, cut by `chipWords`. */
   readonly words: string;
@@ -215,7 +214,7 @@ export function lensChips(
         targetsOf(node, "prevented_by", context).map((check) =>
           chipTo(
             check,
-            checkAddress(check, context),
+            context.referenceOf(check) ?? check.id,
             { words: chipWords(context.lineOf(check.id) ?? "") },
             context
           )
@@ -382,25 +381,6 @@ function uniqueChips(chips: readonly LensChip[]): LensChip[] {
     if (!unique.has(chip.address)) unique.set(chip.address, chip);
   }
   return [...unique.values()];
-}
-
-/**
- * A check's address, as the tree read's step gives its row one (`tree-read/tree-nodes.ts`'s
- * `referenceOf`): the one the results read gives it, where that read holds a row for it; else
- * its block's in the document the read says it is written in (`document`), in its own issue.
- * Only where the read knows no document of the check does its id in the tree read key the chip,
- * which is no `dispatch://` address.
- */
-function checkAddress(check: TreeAnswerNode, context: TreeDraftContext): string {
-  const kept = context.kept.checks.get(context.treeIdOf(check.id))?.ref;
-  if (kept !== undefined) return kept;
-  if (check.document === undefined) return check.id;
-  return buildDispatchReference({
-    block: { id: check.id },
-    key: check.issue ?? context.key,
-    kind: "artifact",
-    slug: check.document.slug,
-  });
 }
 
 /** For each lens, the lenses whose `triggered_by` tuples name it, in the answer's order: indexed

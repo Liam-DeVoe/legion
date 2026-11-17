@@ -5,22 +5,37 @@ import { act, type RenderResult, render, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
 import { type ReactNode, useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import {
+  MemoryRouter,
+  type NavigateFunction,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 
 import { realClock, tick } from "../../../__tests__/fake-clock";
 import { answerRequests } from "../../../__tests__/network";
 import { userOnFakeClock } from "../../../__tests__/user";
+import { trackQueryFetches } from "../../../api/query-refresh";
 import { buildDispatchReference } from "../../refs/routes";
 import { SEND_DEADLINE_MS } from "../../writes/keyed-write";
 import { writesOf } from "../../writes/write-store";
+import { node, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import { buildIssueTree, type TreeNode } from "../issue-tree";
 import { NoTooltips } from "../NoTooltips";
 import { LENS_ANSWERS, LENS_WORDS, NODE_TYPES, type NodeType } from "../page-words";
-import { issueDetails, node, READER_ACTOR, statementRef } from "../spec-filter/spec-fixtures";
+import { issueDetails, statementRef } from "../spec-filter/spec-fixtures";
 import { TreeRows } from "../TreeRows";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { type TreeAnswer, type TreeAnswerNode, useTreeRead } from "../tree-read/tree-read";
+import {
+  issueTreeKey,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  useTreeRead,
+  viewKey,
+} from "../tree-read/tree-read";
 import { lensActFor } from "./LensMenu";
 
 /**
@@ -45,6 +60,16 @@ const statement = node({
   id: STATEMENT_ID,
   reference: STATEMENT,
   text: "Store the notices for a day",
+  type: "requirement",
+});
+
+/** A second statement, whose row a case moves the focus to. */
+const OTHER_ID = "spec/r2";
+
+const other = node({
+  id: OTHER_ID,
+  reference: statementRef("r2"),
+  text: "Send the notices at noon",
   type: "requirement",
 });
 
@@ -145,6 +170,35 @@ function Rows({ isClosed = false, nodes }: { isClosed?: boolean; nodes: readonly
   );
 }
 
+/** Where the router stands, as `Where` last drew it, and the router's own way of moving it, as
+ *  a reader's press on a link moves it. */
+interface Address {
+  at: string;
+  go: NavigateFunction | undefined;
+}
+
+/** Keeps `address` with the router's, and draws nothing. */
+function Where({ address }: { address: Address }): ReactNode {
+  const { pathname, search } = useLocation();
+  address.at = `${pathname}${search}`;
+  address.go = useNavigate();
+  return null;
+}
+
+/** The rows as the page draws them, on an issue's outline and nowhere else: one of the issue's
+ *  views and a page that is no issue's draw none, so a move there unmounts them. */
+function Outline({ address, nodes }: { address: Address; nodes: readonly TreeNode[] }) {
+  return (
+    <>
+      <Routes>
+        <Route element={<Rows nodes={nodes} />} path="/issues/:key" />
+        <Route element={null} path="*" />
+      </Routes>
+      <Where address={address} />
+    </>
+  );
+}
+
 /** The issue of `spec-filter/spec-fixtures.ts`, with its spec, whose tree the tree read answers. */
 const ISSUE = issueDetails();
 
@@ -202,13 +256,16 @@ function treeAnswer(lenses: number): TreeAnswer {
 }
 
 /** Answers every tree read of this issue, the first with its statement alone and each one after
- *  it with one lens more, and counts them. */
-function answerTreeReads(): { readonly reads: number } {
+ *  it with one lens more, and counts them. Each read after the first answers once `later` has
+ *  settled, where the test holds them back. */
+function answerTreeReads(later?: Promise<void>): { readonly reads: number } {
   const asked = { reads: 0 };
   answerRequests(
-    http.get(`/api/v1/issues/${KEY}/tree`, () => {
+    http.get(`/api/v1/issues/${KEY}/tree`, async () => {
       asked.reads += 1;
-      return Response.json(treeAnswer(asked.reads - 1));
+      const lenses = asked.reads - 1;
+      if (lenses > 0) await later;
+      return Response.json(treeAnswer(lenses));
     })
   );
   return asked;
@@ -600,6 +657,262 @@ test("a refusal adds no row", async () => {
   } finally {
     failing.unmount();
     realClock();
+  }
+});
+
+// A 201 that comes after the reader left this issue's outline moves nothing: the reader stays
+// where they went, on a page that is no issue's, on another issue's outline or on one of this
+// issue's views, whose own query stands.
+test("a 201 after the reader left the outline leaves them where they went", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  let out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json(invoked("pre-mortem"), { status: 201 });
+  });
+  for (const away of ["/inbox?filter=mine", "/issues/CORE-2?q=notices", `/issues/${KEY}/spec`]) {
+    out = Promise.withResolvers<void>();
+    const sent = bodies.length;
+    const address: Address = { at: "", go: undefined };
+    const client = signedIn();
+    const view = renderAt(<Outline address={address} nodes={[statement]} />, undefined, client);
+    try {
+      await user.click(await focusedAct(view));
+      await user.click((await drawnItems(view))[1] as HTMLElement);
+      await waitFor(() => expect(bodies).toHaveLength(sent + 1));
+      act(() => address.go?.(away));
+      expect(address.at).toBe(away);
+
+      out.resolve();
+      await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+      await letRequestsSettle();
+      expect(address.at, `the 201 moved a reader who went to ${away}`).toBe(away);
+    } finally {
+      out.resolve();
+      view.unmount();
+    }
+  }
+});
+
+// Where the reader still stands on this issue's outline as the 201 comes, the page lands on the
+// new lens's row though the row it was picked on lost the focus, and its menu with it: at the
+// address that stands then, which keeps the words filter the reader typed after the pick.
+test("a 201 lands on the outline the reader still stands on", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json(invoked("pre-mortem"), { status: 201 });
+  });
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <Outline address={address} nodes={[statement, other]} />,
+    `/issues/${KEY}?q=notices`
+  );
+  try {
+    await user.click(await focusedAct(view));
+    await user.click((await drawnItems(view))[1] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await focusedAct(view, OTHER_ID);
+    expect(menuOf(view), "the menu outlived its row's focus").toBeNull();
+    act(() => address.go?.(`/issues/${KEY}?q=day`));
+
+    out.resolve();
+    await waitFor(() =>
+      expect(address.at).toBe(`/issues/${KEY}?q=day&node=${invoked("pre-mortem").id}`)
+    );
+  } finally {
+    out.resolve();
+    view.unmount();
+  }
+});
+
+// A 201 reads the tree again and lets go of every view of the issue the cache holds, since a view
+// read before the pick does not hold the lens it made. The page lands on the new lens's row only
+// once the tree read the pick made has answered: until then the menu says the pick is out and the
+// address stays where it was. The client records when each read begins, as the page's event feed
+// has it do, so the pick's read keeps to the scheduler's interval.
+test("a 201 lets go of the held views and lands once the tree is read again", async () => {
+  const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const reread = Promise.withResolvers<void>();
+  const tree = answerTreeReads(reread.promise);
+  const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
+  const client = signedIn();
+  trackQueryFetches(client);
+  client.setQueryData(viewKey(KEY, "spec"), treeAnswer(0));
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <>
+      <TreeReadRows />
+      <Where address={address} />
+    </>,
+    undefined,
+    client
+  );
+  try {
+    const control = await focusedAct(view, read.id);
+    const rows = view.container.querySelectorAll("[data-node-row]").length;
+    expect(tree.reads).toBe(1);
+    await user.click(control);
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(tree.reads).toBe(2));
+    await letRequestsSettle();
+    expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    expect(menuLine(view), "the menu stopped saying the pick is out").toBe(LENS_ANSWERS.examining);
+    expect(address.at, "the page landed before the tree was read again").toBe(`/issues/${KEY}`);
+
+    reread.resolve();
+    await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("trade-off").id}`));
+    expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
+      undefined
+    );
+    expect(tree.reads, "the 201 read the tree more than once").toBe(2);
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
+    );
+    expect(menuOf(view)).toBeNull();
+  } finally {
+    reread.resolve();
+    view.unmount();
+  }
+});
+
+// The same 201 where the tree read is already marked stale as the pick is made, as a write the
+// page saw before it can leave it. TanStack marks no query stale twice, and a mark it does not
+// make tells the cache's listeners nothing, so the pick's read of the tree must not wait on that
+// notice: the tree is read again, the held view is let go and the page lands on the new row.
+test("a 201 on a tree read already marked stale reads it again and lands", async () => {
+  const user = userEvent.setup();
+  const [read] = buildIssueTree({ issue: ISSUE, tree: treeAnswer(0) }).children;
+  if (read?.reference === undefined) throw new Error("the tree read draws no statement");
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const tree = answerTreeReads();
+  const bodies = answerInvocations(() => Response.json(invoked("trade-off"), { status: 201 }));
+  const client = signedIn();
+  trackQueryFetches(client);
+  client.setQueryData(viewKey(KEY, "spec"), treeAnswer(0));
+  const address: Address = { at: "", go: undefined };
+  const view = renderAt(
+    <>
+      <TreeReadRows />
+      <Where address={address} />
+    </>,
+    undefined,
+    client
+  );
+  try {
+    const control = await focusedAct(view, read.id);
+    const rows = view.container.querySelectorAll("[data-node-row]").length;
+    expect(tree.reads).toBe(1);
+    await act(() =>
+      client.invalidateQueries({ exact: true, queryKey: issueTreeKey(KEY), refetchType: "none" })
+    );
+    expect(client.getQueryState(issueTreeKey(KEY))?.isInvalidated).toBe(true);
+    expect(tree.reads, "marking the tree stale read it again").toBe(1);
+
+    await user.click(control);
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("trade-off").id}`));
+    expect(bodies).toEqual([{ kind: "trade-off", on: read.reference }]);
+    expect(tree.reads, "the 201 did not read the tree again").toBe(2);
+    expect(client.getQueryData(viewKey(KEY, "spec")), "the held view outlived the 201").toBe(
+      undefined
+    );
+    await waitFor(() =>
+      expect(view.container.querySelectorAll("[data-node-row]")).toHaveLength(rows + 1)
+    );
+    expect(menuOf(view)).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A refusal that comes after the row lost the focus, and its menu with it, is said at that row
+// once it is focused again, and at no other; the next opening of the menu lets it go.
+test("a refusal after the row lost the focus is said when it is focused again", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json({ code: "NOT_FOUND", error: "no node at that address" }, { status: 404 });
+  });
+  const client = signedIn();
+  const view = renderAt(<Rows nodes={[statement, other]} />, undefined, client);
+  try {
+    await user.click(await focusedAct(view));
+    await user.click((await drawnItems(view))[0] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await focusedAct(view, OTHER_ID);
+
+    out.resolve();
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    await letRequestsSettle();
+    expect(refusal(view), "another row said the refusal").toBeNull();
+
+    const control = await focusedAct(view);
+    expect(refusal(view)).toBe(LENS_ANSWERS.gone);
+    const status = view.container.querySelector(REFUSAL);
+    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.hasAttribute("data-page-chrome")).toBe(true);
+    expect(control.nextElementSibling, "the sentence is not the act's next").toBe(status);
+    expect(rowOf(view).contains(status), "the sentence is not at the row").toBe(true);
+
+    await user.click(control);
+    expect(refusal(view), "the sentence outlived the next opening").toBeNull();
+  } finally {
+    out.resolve();
+    view.unmount();
+  }
+});
+
+// A row focused again while its pick is out says so in its menu, and a pick there sends
+// nothing: whether a pick is out is kept with the node's invocations, not in the menu the row's
+// focus took away. The 201 still lands.
+test("a row focused again while its pick is out takes no second pick", async () => {
+  const user = userEvent.setup();
+  answerCatalogue(() => Response.json(schema(CATALOGUE)));
+  const out = Promise.withResolvers<void>();
+  const bodies = answerInvocations(async () => {
+    await out.promise;
+    return Response.json(invoked("pre-mortem"), { status: 201 });
+  });
+  const address: Address = { at: "", go: undefined };
+  const client = signedIn();
+  const view = renderAt(
+    <Outline address={address} nodes={[statement, other]} />,
+    undefined,
+    client
+  );
+  try {
+    await user.click(await focusedAct(view));
+    await user.click((await drawnItems(view))[1] as HTMLElement);
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    await focusedAct(view, OTHER_ID);
+    expect(menuOf(view), "the menu outlived its row's focus").toBeNull();
+
+    await user.click(await focusedAct(view));
+    await drawnItems(view);
+    expect(menuLine(view), "the menu drawn again says no pick is out").toBe(LENS_ANSWERS.examining);
+    await user.click(items(view)[0] as HTMLElement);
+    await letRequestsSettle();
+    expect(bodies, "a pick while one was out sent another").toEqual([
+      { kind: "pre-mortem", on: STATEMENT },
+    ]);
+    expect(writesOf(client).rows(), "a pick while one was out made another write").toHaveLength(1);
+
+    out.resolve();
+    await waitFor(() => expect(address.at).toBe(`/issues/${KEY}?node=${invoked("pre-mortem").id}`));
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(bodies).toHaveLength(1);
+  } finally {
+    out.resolve();
+    view.unmount();
   }
 });
 

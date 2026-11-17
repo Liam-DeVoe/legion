@@ -397,23 +397,6 @@ export function menuItems(menu: Locator): Promise<LensMenuItem[]> {
   );
 }
 
-/** The text of each element of the page marked as its own words (`[data-page-chrome]`), less
- *  what an author wrote inside it (`[data-author-text]`), as `page-words.ts` reads the page's
- *  words against `DECLARED_WORDS`. */
-export function chromeTexts(page: Page): Promise<string[]> {
-  return issuePage(page)
-    .locator(SELECTORS.pageChrome)
-    .evaluateAll(
-      (elements, selectors) =>
-        elements.map((element) => {
-          const own = element.cloneNode(true) as Element;
-          for (const authored of own.querySelectorAll(selectors.authorText)) authored.remove();
-          return (own.textContent ?? "").replace(/\s+/g, " ").trim();
-        }),
-      SELECTORS
-    );
-}
-
 /** The id the page draws the node `readId` names under (`data-node-id`, the id the readers of
  *  `e2e/issue-page-g.ts` take), read off the first row that carries its read id
  *  (`data-node-read-id`) - a check under two statements is drawn twice under one id - or null

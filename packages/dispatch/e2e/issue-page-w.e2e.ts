@@ -29,6 +29,7 @@ import {
   rowOf,
   unfoldEveryBranch,
 } from "./issue-page-g";
+import { ownWords } from "./issue-page-j";
 import {
   convertedGate,
   heldAnswer,
@@ -38,7 +39,6 @@ import {
   treeReadGate,
 } from "./issue-page-t";
 import {
-  chromeTexts,
   drawnIdOf,
   findingGate,
   focusedRowReadId,
@@ -572,7 +572,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
 
     // Every word of the page's own is declared, and a kind's words, which the catalogue
     // stores, are drawn as stored words and never as the page's.
-    const chrome = await chromeTexts(page);
+    const chrome = await ownWords(issuePage(page));
     expect(
       [...new Set(chrome.flatMap(wordsIn).filter((word) => !DECLARED_WORDS.includes(word)))],
       "the lens rows draw words of the page's own that its list does not declare"
@@ -580,7 +580,7 @@ test("lenses are drawn under their node with the chain that triggered them @phon
     expect(
       chrome.filter((text) =>
         [tradeOffWords, preMortemWords].some((words) =>
-          text.toLowerCase().includes(words.toLowerCase())
+          text.replace(/\s+/gu, " ").toLowerCase().includes(words.toLowerCase())
         )
       ),
       "a kind's words stand in the page's own words"
