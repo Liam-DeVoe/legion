@@ -689,7 +689,7 @@ func (r *handoffRecordsLive) cli(session string, args ...string) (string, int) {
 // `dispatch`.
 func (r *handoffRecordsLive) cliOut(session string, args ...string) (cliOutput, int) {
 	r.t.Helper()
-	return r.bun(session, nil, filepath.Join(r.root, "packages", "envoy-client", "bin", "dispatch.ts"), args...)
+	return r.bun(session, nil, dispatchCLI(r.root), args...)
 }
 
 // bun runs `bun program args...` as an omp session's shell runs a program of its pane's, with the
@@ -718,6 +718,12 @@ func liveCLICheckout(t *testing.T) string {
 		t.Fatalf("bun is not on PATH, and the dispatch CLI runs under it: %v", err)
 	}
 	return root
+}
+
+// dispatchCLI is the dispatch CLI's entry under root, a checkout liveCLICheckout answers, which
+// bun runs.
+func dispatchCLI(root string) string {
+	return filepath.Join(root, "packages", "envoy-client", "bin", "dispatch.ts")
 }
 
 // cliShell is an omp session's shell as it runs a program of its pane's: DISPATCH_HOST omp,

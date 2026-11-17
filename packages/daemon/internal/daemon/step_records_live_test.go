@@ -30,7 +30,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -238,7 +237,7 @@ func (l *stepRecordsLive) writerRefused() {
 func (l *stepRecordsLive) steps() (string, int) {
 	l.t.Helper()
 	shell := cliShell{t: l.t, dir: l.cliHome, session: stepRecordsReaderSession, base: l.dispatch.base, token: l.reader}
-	out, code := shell.bun(nil, filepath.Join(l.root, "packages", "envoy-client", "bin", "dispatch.ts"), "steps", "--issue", l.key)
+	out, code := shell.bun(nil, dispatchCLI(l.root), "steps", "--issue", l.key)
 	return string(out.stdout) + string(out.stderr), code
 }
 
