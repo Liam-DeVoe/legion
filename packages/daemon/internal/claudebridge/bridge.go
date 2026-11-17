@@ -663,7 +663,14 @@ func blocksOf(message json.RawMessage) []contentBlock {
 // (testdata/api-error-429.jsonl:4). Nothing else of the message is read: the phase machine runs in
 // the pane's `legion` MCP server, driven by Claude Code's own hooks, and the bridge is transport.
 func (b *bridge) assistant(message json.RawMessage) {
-	for _, block := range blocksOf(message) {
+	// One decode for both: an error leaves what did decode, as blocksOf's does, so the model a
+	// message names is read even where its content is not a list of blocks.
+	var m struct {
+		Content []contentBlock `json:"content"`
+		Model   string         `json:"model"`
+	}
+	_ = json.Unmarshal(message, &m)
+	for _, block := range m.Content {
 		if block.Type != "tool_use" {
 			continue
 		}
@@ -673,12 +680,9 @@ func (b *bridge) assistant(message json.RawMessage) {
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
 	}
-	var written struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(message, &written) == nil && written.Model != "" && written.Model != syntheticModel {
+	if m.Model != "" && m.Model != syntheticModel {
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
-			"role": "assistant", "provider": "anthropic", "model": written.Model}})
+			"role": "assistant", "provider": "anthropic", "model": m.Model}})
 	}
 }
 
