@@ -340,8 +340,13 @@
 #                  version's content, an event by its id or bounded by a time, or a file at
 #                  a commit, never to the node's present state, and its predicate can still
 #                  fail as the node moves on, an exact value rather than a bound on the
-#                  side the node moves. The predicate of a row with a command holds every
-#                  part its claim names, and the claim names no more than that.
+#                  side the node moves. A generator of committed evidence, a script whose
+#                  output this tree commits, is held to the same rule: it reads each live
+#                  source as it stood at a fixed instant, as coordination/count.py reads
+#                  the issue tree and the cited authors from the feed's rows written before
+#                  the window's end, so a later run measures what an earlier one measured.
+#                  The predicate of a row with a command holds every part its claim names,
+#                  and the claim names no more than that.
 #   questions.md   the question list, which every candidate page answers from
 #   judgement.md   read live from Dispatch, the document the reader reads
 #
@@ -1403,7 +1408,7 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               164  runs the next pipeline when this one exits 0
+#   &&                               165  runs the next pipeline when this one exits 0
 #   ||                                 6  runs the next pipeline when this one fails
 #   |                                403  joins the commands of a pipeline
 #   ;                                 53  ends a pipeline
@@ -1419,9 +1424,9 @@ prepare_env() {
 #   in                                17  comes before a for loop's words
 #   do                                17  comes before a for loop's body
 #   done                              17  closes a for loop
-#   simple command                   571  a command word and its arguments
+#   simple command                   586  a command word and its arguments
 #   pipeline                         403  two or more commands joined by |
-#   list                             189  two or more pipelines joined by ;, &&, || or newline
+#   list                             190  two or more pipelines joined by ;, &&, || or newline
 #   group                             25  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          17  for NAME in words; do list; done
@@ -1454,14 +1459,14 @@ prepare_env() {
 #   program gh                         2  wrapped in a function that records its status
 #   program git                      324  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     198  wrapped in a function that records its status
-#   program jq                        46  wrapped in a function that records its status
+#   program grep                     199  wrapped in a function that records its status
+#   program jq                        57  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
-#   program python3                   35  wrapped in a function that records its status
+#   program python3                   36  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      259  wrapped in a function that records its status
+#   program sed                      263  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  7  wrapped in a function that records its status
 #   program sort                      26  wrapped in a function that records its status
@@ -1486,7 +1491,7 @@ prepare_env() {
 #   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
-#   $NAME or ${NAME}                 392  a parameter, its name in braces or not
+#   $NAME or ${NAME}                 403  a parameter, its name in braces or not
 #   $?                                 7  the status of the last command
 #   $( )                              12  a command substitution
 #   a literal $                        2  a $ that starts no expansion, left as it stands

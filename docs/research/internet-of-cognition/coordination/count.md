@@ -17,12 +17,13 @@ The feed is one list for the whole deployment, ascending by event id, and each r
 
 A row of the feed is one recorded act.
 Thirty-nine event types were written for INFRA inside the window [c-types-1].
-Five of them carry a body in the feed, read over the first thousand events of the window: `comment.anchor_refreshed`, `comment.created`, `comment.resolved`, `message.answered` and `message.created`.
-The two this count reads are `comment.created` and `message.created`, and it leaves out the other types that carry text a party wrote: `message.answered`, with 736 events in the window, `ask.answered`, with 1198, and `artifact.version`, with 30660 [c-types-2].
+Five of them carry a body in the feed, read over the first thousand events of the window: `comment.anchor_refreshed`, `comment.created`, `comment.resolved`, `message.answered` and `message.created` [c-types-2].
+This count reads every written act requirement r4 names: the 30186 `comment.created` and `message.created` rows, the 736 replies to a message (`message.answered`), the asks as opened (1930 `ask.opened`), answered (1198 `ask.answered`), resolved (744 `ask.resolved`) and edited (1128 `ask.edited`), the 29709 versions of a document among the 30660 `artifact.version` rows, and the first versions of the 5467 documents among the 7191 `artifact.created` rows [c-types-3].
+It leaves out the types whose rows hold no text a party wrote that the count has not read already: `ask.handed_back` (249 rows), whose payload is the ask as it stands; `ask.follower_added` (4) and `ask.follower_removed` (2), which hold no text; `comment.resolved` (35) and `comment.anchor_refreshed` (171), which hold the body of a comment `comment.created` counted; `comment.edited` (2), which holds no earlier body to tell what is new; `artifact.human_edited` (72), whose text is the document version it settles into; and the versions of uploaded files, an archive, a log or an image, which are no document [c-types-3] [c-method-5].
 
 ## What one instance is, and how a class is decided
 
-One instance is one recorded act whose body matches any of three patterns.
+One instance is one recorded act whose text matches any of three patterns.
 Each pattern is one regular expression, written into the script and here [c-method-1]:
 
 - a reference to a record Dispatch holds: `dispatch://(?:[A-Z][A-Z0-9]*-[0-9]+|[A-Z][A-Z0-9]+)(?:/[A-Za-z0-9._~@/-]*[A-Za-z0-9_~/-])?`
@@ -31,14 +32,29 @@ Each pattern is one regular expression, written into the script and here [c-meth
 
 - a quoted span attributed to a named author, matched against one paragraph at a time, where a paragraph is the text between blank lines: `["\u201c\u201d][^"\u201c\u201d]*["\u201d][\s\S]*?(?:\u2014\s*[A-Z][A-Za-z.'-]+|said\s+[A-Z][A-Za-z.'-]+|[A-Z][A-Za-z.'-]+\s+wrote\b)`
 
-A class is decided from the row's `actor` and from the issue tree of the record the body cites, and never from prose [c-method-2].
+Each type keeps the text a party wrote in one field, and the count reads only that field [c-method-4]:
+
+- `comment.created`, `message.created` and `message.answered`: the body, which for a reply is the reply's own text and not the message it answers;
+
+- `ask.opened`: the question, then each option's label and description;
+
+- `ask.answered`: the text of the answer, and not the options it selects, which the asker wrote;
+
+- `ask.resolved`: the reason the resolver gave;
+
+- `ask.edited`: the question and the options, counted only for what is new against the ask before the edit, since a rewording repeats the ask it rewords.
+
+A class is decided from the row's `actor` and from the issue tree of the record the text cites, and never from prose [c-method-2].
 
 The actor's party is the row's `actor.kind`: `user` is a person, and every other kind is an agent [c-method-2].
 
-The tree of an issue is found by walking `parent`, the link the command line prints as `child_of`, to the root through `GET /api/v1/issues/<KEY>`, with each answer cached [c-method-2].
+The tree of an issue is found by walking `parent`, the link the command line prints as `child_of`, to the root [c-method-2].
+
+The tree and the cited authors are read from the feed as they stood at the window's end, so a run taken later finds the same classes [c-tree-fixed-1].
+An issue's parent is the one its `issue.created` row names, then every `child.added` and `child.removed` row, each row written before 2026-11-12T00:00:00Z, and the count never reads an issue as it stands now through the API [c-tree-fixed-1].
 
 The cited record's author kind is read from the feed too:
-a `/comment/<id>`, `/ask/<id>` or `/message/<id>` reference from the row that created that record, resolving a uuid prefix when it is unique;
+a `/comment/<id>`, `/ask/<id>` or `/message/<id>` reference from the `comment.created`, `message.created` or `ask.opened` row that created that record, resolving a uuid prefix when it is unique;
 a `/artifact/<slug>` reference from the authors of that document's first version;
 and a bare issue reference or a `/spec` reference from the issue's creator [c-method-2].
 
@@ -50,9 +66,9 @@ The three classes overlap, so the script applies them in one fixed order and the
 
 - across sessions, when the actor is a session and the cited record belongs to another issue.
 
-Where a body cites more than one reference, the first by position that names an issue decides the class [c-method-3].
+Where a text cites more than one reference, the first by position that names an issue decides the class [c-method-3].
 
-## The counts
+## The counts of comments and messages
 
 The denominator is the records read in the window: 30186 `comment.created` and `message.created` rows of INFRA [c-denominator-1].
 
@@ -68,31 +84,102 @@ Each class carries that same denominator of 30186 records read:
 
 - between an agent and a person: 138 [c-class-person-1]
 
-- inside one tree: 6301 [c-class-tree-1]
+- inside one tree: 6307 [c-class-tree-1]
 
-- across sessions: 3483 [c-class-session-1]
+- across sessions: 3477 [c-class-session-1]
 
 No class reads zero over this denominator [c-class-zero-1].
 
-The same counts as one table, which is what a reader and the gate both read:
-
-| class | instances | denominator |
-| --- | --- | --- |
-| between an agent and a person | 138 | 30186 |
-| inside one tree | 6301 | 30186 |
-| across sessions | 3483 | 30186 |
-| a quoted span attributed to a named author, in the handoff sample | 0 | 3143 |
-
-Each class carries its denominator, the records read in the window.
-The last row is the sample of the section below, with its own denominator, and it reads zero over a denominator above zero.
+The count first committed in this tree read the tree live, at about 07:35Z on 2026-11-12, after the window had closed, and put 6301 of these instances inside one tree and 3483 across sessions; read as it stood at the window's end, the tree puts the same instances at 6307 and 3477 [c-tree-fixed-1].
 
 1780 instances are in no class [c-class-unclassed-1].
 1702 of them cite no record at all, because their only match is a commit or a quotation [c-class-unclassed-1].
 15 cite an issue this deployment does not hold, and 63 cite a record whose author the feed does not name [c-class-unclassed-1].
 
+## The other written acts
+
+Each of the other types carries its own denominator, the rows of that type read in the window.
+
+Of the 736 `message.answered` rows, the replies to a message, 115 are instances: 112 carry a `dispatch://` reference, one a commit and three a quotation, and 2 are between an agent and a person, 4 inside one tree, 89 across sessions and 20 in no class [c-acts-message-answered-1].
+
+Of the 1930 `ask.opened` rows, 557 are instances: 544 carry a reference, 29 a commit and 4 a quotation, and 23 are between an agent and a person, 267 inside one tree, 244 across sessions and 23 in no class [c-acts-ask-opened-1].
+
+Of the 1198 `ask.answered` rows, 664 carry the text of an answer, and none of them is an instance [c-acts-ask-answered-0].
+
+Of the 744 `ask.resolved` rows, 173 are instances: 172 carry a reference, 5 a commit and one a quotation, and 29 are between an agent and a person, 51 inside one tree, 90 across sessions and 3 in no class [c-acts-ask-resolved-1].
+
+Of the 1128 `ask.edited` rows, each read for what it adds to the ask before it, 70 are instances: 68 add a reference and 3 a commit, and 9 are between an agent and a person, 10 inside one tree, 45 across sessions and 6 in no class [c-acts-ask-edited-1].
+
+All seven types together are 35922 records read, and 12617 of them are instances: 10909 carry a reference, 5501 a commit and 71 a quotation, and 201 are between an agent and a person, 6639 inside one tree, 3945 across sessions and 1832 in no class [c-acts-all-1].
+
+## Documents, read version by version
+
+A document version is read whole through `GET /api/v1/artifacts/<id>/versions/<n>` beside the version before it, and only the references, commits and quotations new in it count, so a reference a document keeps across forty versions counts once, in the version that wrote it [c-method-6].
+A version is an instance when any of the three is new in it, and its cited record is its first new reference by position [c-method-6].
+
+Of the 30660 `artifact.version` rows of INFRA in the window, 29709 are versions of a document, and each was read beside the version before it; the other 951 are versions of an uploaded file, which are not read [c-docs-versions-1].
+6920 of the 29709 add a reference, a commit or a quotation the version before did not hold: 6063 a reference, 818 a commit and 425 a quotation [c-docs-versions-1].
+330 of them are between an agent and a person, 2770 inside one tree, 2847 across sessions and 973 in no class [c-docs-versions-1].
+
+The first versions of the documents created in the window are a line of their own, since everything in a first version is new [c-method-6].
+Of the 7191 `artifact.created` rows, 5467 are documents, each read whole, and 1724 are uploaded files and images, which are not read [c-docs-first-1].
+4235 of the 5467 are instances: 3540 carry a reference, 1623 a commit and 193 a quotation, and 54 are between an agent and a person, 3013 inside one tree, 385 across sessions and 783 in no class [c-docs-first-1].
+
+## The classes, type by type
+
+The same counts as one table, which is what a reader and the gate both read.
+Each row carries its count and its denominator, the records of its type read in the window:
+
+| class | instances | denominator | records read |
+| --- | --- | --- | --- |
+| between an agent and a person | 138 | 30186 | comments and messages |
+| inside one tree | 6307 | 30186 | comments and messages |
+| across sessions | 3477 | 30186 | comments and messages |
+| between an agent and a person | 2 | 736 | replies to a message |
+| inside one tree | 4 | 736 | replies to a message |
+| across sessions | 89 | 736 | replies to a message |
+| between an agent and a person | 23 | 1930 | asks opened |
+| inside one tree | 267 | 1930 | asks opened |
+| across sessions | 244 | 1930 | asks opened |
+| between an agent and a person | 0 | 1198 | asks answered |
+| inside one tree | 0 | 1198 | asks answered |
+| across sessions | 0 | 1198 | asks answered |
+| between an agent and a person | 29 | 744 | asks resolved |
+| inside one tree | 51 | 744 | asks resolved |
+| across sessions | 90 | 744 | asks resolved |
+| between an agent and a person | 9 | 1128 | asks edited |
+| inside one tree | 10 | 1128 | asks edited |
+| across sessions | 45 | 1128 | asks edited |
+| between an agent and a person | 201 | 35922 | all written acts |
+| inside one tree | 6639 | 35922 | all written acts |
+| across sessions | 3945 | 35922 | all written acts |
+| between an agent and a person | 330 | 29709 | document versions |
+| inside one tree | 2770 | 29709 | document versions |
+| across sessions | 2847 | 29709 | document versions |
+| between an agent and a person | 54 | 5467 | first versions of documents |
+| inside one tree | 3013 | 5467 | first versions of documents |
+| across sessions | 385 | 5467 | first versions of documents |
+| a quoted span attributed to a named author, in the handoff sample | 0 | 3143 | handoffs read |
+
+Two groups of rows read zero over a denominator above zero: the three classes of the answers to asks, and the last row, which is the sample of the section below, with its own denominator.
+
+## The smallest class
+
+Coordination between an agent and a person is the smallest of the three classes in every type that has an instance, and the answers to asks have none [c-smallest-1].
+The smaller of the two other classes is 25.2 times its size in comments and messages, 19.6 times over all written acts, 10.6 times in asks opened, 8.4 times over document versions and 7.1 times over first versions [c-smallest-1].
+It is less than three times its size only in the replies to a message (2.0 times), the asks resolved (1.8) and the asks edited (1.1), whose 358 instances are under 3% of the 12617 instances of written acts [c-smallest-1].
+
 The front page should read the party count as it is.
 138 of 30186 records read, and 138 of 11702 instances, name a record whose author is of the other party [c-class-person-1].
-Coordination between an agent and a person is the smallest of the three classes by more than an order of magnitude [c-class-person-1].
+Over all written acts it is 201 of 35922 records read and of 12617 instances [c-acts-all-1], and over document versions 330 of 29709 versions read and of 6920 instances [c-docs-versions-1].
+Coordination between an agent and a person is the smallest of the three classes of comments and messages by more than an order of magnitude [c-class-person-1].
+
+## What a person writes when they answer an ask
+
+None of the 664 answers with text that people wrote to asks in the window carries a `dispatch://` reference, a forty-character commit or an attributed quotation [c-acts-ask-answered-0].
+A scan of the same 664 texts, every one written by a person, finds 3 that name an issue by its key alone and 15 that hold a web address, and none that holds a reference or a commit [c-ask-answered-scan-1].
+This is a class that reads zero over a denominator above zero, and the judgement's front page must state that premise as failed [c-acts-ask-answered-0].
+By my reading, a person answers an ask in words alone, so a structured reference on a message would come from the agent's side.
 
 ## Handoffs, counted over a sample of their own
 
