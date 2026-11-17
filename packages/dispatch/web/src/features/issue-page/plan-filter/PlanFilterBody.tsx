@@ -736,7 +736,8 @@ function PlanChart({
     {
       // The statements a step serves and the tasks a cycle lists are links, and the chart is
       // one tab stop, so a key reaches them; Enter on the link it left the focus on is the
-      // browser's own.
+      // browser's own. The link is focused as the outline's f focuses one, letting the browser
+      // bring it on screen, so a row the reader scrolled away does not keep its link off screen.
       id: "tree-link",
       keys: "f",
       label: "Move to the next link on the focused row",
@@ -745,7 +746,7 @@ function PlanChart({
         const held = items();
         const links = [...(held[at(held)]?.querySelectorAll<HTMLElement>("a[href]") ?? [])];
         const on = links.indexOf(document.activeElement as HTMLElement);
-        links[(on + 1) % links.length]?.focus({ preventScroll: true });
+        links[(on + 1) % links.length]?.focus();
       },
       when: () => {
         const held = items();

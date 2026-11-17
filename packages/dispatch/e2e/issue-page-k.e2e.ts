@@ -1013,6 +1013,23 @@ test("the Plan view's chart is reached in order with the keyboard @phone", async
         message: "Escape from a link of the first card leaves the card off the screen at 390 px",
       })
       .toBe(true);
+    // f is a move key as well: from a card the reader scrolled off the screen it puts the focus
+    // on the card's first link and brings that link on screen, as the outline's f does.
+    await page.evaluate(() =>
+      window.scrollTo({ behavior: "instant", top: document.documentElement.scrollHeight })
+    );
+    expect(await onScreen(first), `${T.third}'s card is on screen before f`).toBe(false);
+    await page.keyboard.press("f");
+    const link = first.locator("a[href]").first();
+    await expect(
+      link,
+      `f does not reach a link of ${T.third}'s card from off the screen`
+    ).toBeFocused();
+    await expect
+      .poll(() => onScreen(link), {
+        message: "f on the focused first card leaves its link off the screen at 390 px",
+      })
+      .toBe(true);
   });
 });
 
