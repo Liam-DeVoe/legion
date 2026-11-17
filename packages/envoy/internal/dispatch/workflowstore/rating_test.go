@@ -77,21 +77,19 @@ func TestARatingIsWrittenOnceOnTheRetrosRecord(t *testing.T) {
 // points of two bytes each is taken, which is the control of the bound.
 func TestARatingWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	pool := storetest.Open(t).Pool
-	for name, write := range map[string]StepWrite{
-		"rating 0":               rated(retroOf(uuid.NewString()), 0, "A reason."),
-		"rating 6":               rated(retroOf(uuid.NewString()), 6, "A reason."),
-		"rating_reason left out": func() StepWrite { write := retroOf(uuid.NewString()); write.Rating = new(3); return write }(),
-		"rating left out":        func() StepWrite { write := retroOf(uuid.NewString()); write.RatingReason = new("Why."); return write }(),
-		"rating_reason blank":    rated(retroOf(uuid.NewString()), 3, "  \n\t "),
-		"rating_reason of 2001":  rated(retroOf(uuid.NewString()), 3, strings.Repeat("é", 2001)),
-		"rating on a step":       rated(implementer(uuid.NewString()), 3, "A reason."),
-		"rating on a merge": func() StepWrite {
-			write := rated(retroOf(uuid.NewString()), 3, "A reason.")
-			write.Kind = new(StepKindMerge)
-			return write
-		}(),
+	for name, change := range map[string]func(*StepWrite){
+		"rating 0":               func(write *StepWrite) { write.Rating = new(0) },
+		"rating 6":               func(write *StepWrite) { write.Rating = new(6) },
+		"rating_reason left out": func(write *StepWrite) { write.RatingReason = nil },
+		"rating left out":        func(write *StepWrite) { write.Rating = nil },
+		"rating_reason blank":    func(write *StepWrite) { write.RatingReason = new("  \n\t ") },
+		"rating_reason of 2001":  func(write *StepWrite) { write.RatingReason = new(strings.Repeat("é", 2001)) },
+		"rating on a step":       func(write *StepWrite) { *write = rated(implementer(write.ID), 3, "A reason.") },
+		"rating on a merge":      func(write *StepWrite) { write.Kind = new(StepKindMerge) },
 	} {
 		t.Run(name, func(t *testing.T) {
+			write := rated(retroOf(uuid.NewString()), 3, "A reason.")
+			change(&write)
 			err := tryWrite(pool, func(tx pgx.Tx) error {
 				_, err := PutStep(context.Background(), tx, write, daemon, minute(0))
 				return err
