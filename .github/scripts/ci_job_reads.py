@@ -2157,6 +2157,9 @@ GATES = [
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:165,225 runs it, for "
+                                            "scripts/e2e/stage1-skeleton.sh:238,258's check of the DSN "
+                                            "and start of the daemon"),
         ("scripts/e2e/lib/containers.sh", "scripts/e2e/lib/rig.sh:196 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),

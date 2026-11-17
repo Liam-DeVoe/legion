@@ -182,10 +182,10 @@ until_true() {
   fail "timed out after ${limit}s ($polls polls) waiting for $what"
 }
 
-# lib/loopback-dsn.sh holds require_loopback_dsn and run_database_url, the two helpers a proof
-# that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask
-# libpq. It needs nothing of this rig's, and envoy-session-delivery.sh sources it without this
-# file.
+# lib/loopback-dsn.sh holds require_loopback_dsn, require_run_database and exec_run_database, the
+# helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of
+# why they ask libpq. It needs nothing of this rig's, and envoy-session-delivery.sh sources it
+# without this file.
 # shellcheck source-path=SCRIPTDIR source=loopback-dsn.sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"
 

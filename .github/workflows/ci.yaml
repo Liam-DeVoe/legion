@@ -962,6 +962,7 @@ jobs:
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/loopback-dsn.sh'
+              - 'scripts/e2e/lib/loopback-dsn.py'
               - 'scripts/e2e/lib/containers.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'

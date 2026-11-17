@@ -16,9 +16,9 @@
 #     [DISPATCH_BIN=<envoy-dispatch>] bash scripts/e2e/dispatch-claimant-delivery.sh
 #
 # DATABASE_URL is required and must name a loopback host: the run makes a database of its own on
-# that server (lib/loopback-dsn.sh's run_database_uri), which the server migrates, and hands
-# Dispatch that database alone, never the one DATABASE_URL names. A run that passes drops it; one
-# that fails keeps it for inspection and names it.
+# that server, which the server migrates, and hands Dispatch that database alone, never the one
+# DATABASE_URL names, as the URI lib/loopback-dsn.sh's exec_run_database sets in Dispatch's own
+# environment. A run that passes drops it; one that fails keeps it for inspection and names it.
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
 # commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
@@ -64,9 +64,8 @@ done
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
 work=''
-# The run's own database on DATABASE_URL's server, once made, and the URI Dispatch is given.
+# The run's own database on DATABASE_URL's server, once made.
 database=''
-dispatch_database_url=''
 nats_pid=''
 fake_envoy_pid=''
 dispatch_pid=''
@@ -146,8 +145,9 @@ begin database
 # this checkout's each start from a database of their own migrations, and no run writes the
 # database DATABASE_URL names.
 run_db=dispatch_claimant_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-run_database_uri dispatch_database_url DATABASE_URL "$database_url" "$run_db" \
-  "this run creates a database there" || fail "$dispatch_database_url"
+refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
+require_run_database refusal DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri || fail "$refusal"
 psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
   fail "could not create database $run_db on DATABASE_URL's server"
 database=$run_db
@@ -175,17 +175,19 @@ begin dispatch
 # The server gets this environment and nothing else. Identity is the production cookie, minted at
 # the dev sign-in route (DISPATCH_DEV_SIGNIN=1) with a signing key the process generates for itself;
 # HOME and the XDG directories name nothing, so no envoy.json, data directory or AWS profile of the
-# caller's is read. Sessions authenticate with a token minted for this run.
+# caller's is read. Sessions authenticate with a token minted for this run. DATABASE_URL is the
+# run's own database as a URI, which exec_run_database sets as the one variable of the server's
+# environment (--env-only, the `env -i` this start had), and `env` names the rest.
 agent_token=$(openssl rand -hex 24)
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+start_process dispatch exec_run_database DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri --env-only DATABASE_URL -- env \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$dispatch_database_url" \
   DISPATCH_AGENT_TOKEN="$agent_token" \
   DISPATCH_DEV_SIGNIN=1 \
   DISPATCH_IDENTITY=cookie \

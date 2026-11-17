@@ -19,15 +19,17 @@
 # The daemon's store is a database of the run's own, made with psql on the server
 # LEGION_E2E_PG_DSN names (CI's service), or on the container the run starts when it names none,
 # and dropped by the cleanup. The DSN must name a loopback host, which lib/loopback-dsn.py asks
-# libpq for, so the run needs psql and python3 with libpq beside tmux. The run's own container
-# listens on a unix socket in a directory of the run's own and publishes no port
-# (start_postgres_container, lib/rig.sh). Its guard is proof_guard's below, and every wait goes
-# through lib/rig.sh's wait_for, which gives up 30 s before it.
+# libpq for, so the run needs psql and python3 with libpq beside tmux. The daemon is handed that
+# database in LEGION_POSTGRES_DSN, in its own environment alone: legion.yaml names no
+# postgres_dsn, and no variable of this shell holds the URI. The run's own container listens on a
+# unix socket in a directory of the run's own and publishes no port (start_postgres_container,
+# lib/rig.sh). Its guard is proof_guard's below, and every wait goes through lib/rig.sh's
+# wait_for, which gives up 30 s before it.
 set -euo pipefail
 
 pid=
-# lib/rig.sh's start_kept and keep_port set these: the daemon's pid, copied to pid on each start,
-# and its port keeper's.
+# lib/rig.sh's start_process (through start_daemon below) and keep_port set these: the daemon's
+# pid, copied to pid on each start, and its port keeper's.
 daemon_pid=
 daemon_keeper_pid=
 ok=
@@ -226,26 +228,49 @@ fi
 # lib/loopback-dsn.sh's require_loopback_dsn says why these three go before the first connection.
 unset PGHOSTADDR PGSERVICE PGSERVICEFILE
 run_db=stage1_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-database_url=
 # The URI form: the settings check below reads a DSN that leaks into the state by its
-# `postgres://`, and that is the form the daemon is given. A caller's DSN goes through the guard,
-# which reads it with libpq and refuses any host but a loopback one; the run's own container's is
-# a socket directory the run made, which the guard would refuse as no loopback host, so the run
-# writes that URI itself.
+# `postgres://`, and that is the form the daemon is given, in LEGION_POSTGRES_DSN (with_store
+# below). A caller's DSN goes through the guard, which reads it with libpq and refuses any host
+# but a loopback one, here, before the database is made; the run's own container's is a socket
+# directory the run made, which the guard would refuse as no loopback host, so the run writes that
+# URI itself.
+refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
 if [ -z "$pg_sockets" ]; then
-  run_database_uri database_url LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
-    "the run creates and drops a database there" || fail "$database_url"
-else
-  database_url="postgres://legion:${pg_password}@/$run_db?host=$pg_sockets"
+  require_run_database refusal LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+    "the run creates and drops a database there" --uri || fail "$refusal"
 fi
 psql "$pg_server" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
   fail "could not create database $run_db on the run's PostgreSQL server"
 database=$run_db
-# The URI holds no single quote (lib/loopback-dsn.py percent-encodes one), and the configuration
-# file takes it as a single-quoted YAML scalar all the same, in which a single quote is written
-# twice.
-daemon_dsn=${database_url//\'/\'\'}
 note "the daemon's store is the run's own database $database"
+
+# with_store COMMAND... runs COMMAND, a legion command that reads legion.yaml, in place of the
+# subshell that calls it, with LEGION_POSTGRES_DSN naming the run's own database as a URI. The
+# file names no postgres_dsn, so the loader takes that variable
+# (packages/daemon/internal/config/config.go), and every command that loads the file needs it:
+# the daemon, and `legion stop`. A caller's DSN reaches the daemon through lib/loopback-dsn.sh's
+# exec_run_database, so the URI is in no variable of this shell, no argument list and no file;
+# the run's own container's is the one the run writes, as an assignment. Run it in ( … ) or in
+# the background.
+with_store() {
+  if [ -n "$pg_sockets" ]; then
+    LEGION_POSTGRES_DSN="postgres://legion:${pg_password}@/$run_db?host=$pg_sockets" exec "$@"
+  fi
+  exec_run_database LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+    "the run creates and drops a database there" --uri --env LEGION_POSTGRES_DSN -- "$@"
+}
+# start_daemon starts the daemon as the service `daemon` on a copy of the socket daemon_keeper
+# holds, as lib/rig.sh's start_kept starts one, and copies its pid to pid. with_store runs first
+# and held-port.py after it, where start_kept would run held-port.py first: the DSN reaches the
+# helper in the environment of the subshell start_process runs. The first start and the restart
+# both run it, so each daemon is handed its store the same way, and every exec keeps the pid, so
+# pid is the daemon's own.
+start_daemon() {
+  start_process daemon with_store python3 "$root/scripts/e2e/lib/held-port.py" exec \
+    --from "$work/daemon_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
+    "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
+  pid=$daemon_pid
+}
 
 # The operator bearer, as the 0600 file operator_token_file names, and the OMP the daemon resolves
 # at boot (LEGION_OMP_PATH): a stub that answers the plugin gate's load probe (`omp models
@@ -293,11 +318,11 @@ pane_home=(env -u OMP_PROFILE -u PI_PROFILE HOME="$work/home")
 # repositories are Dispatch's mapping, so its entry is empty. The one project is not this daemon's
 # own, so boot resolves no host git, jj or clone credential for it (readTmux reads tools only for
 # cfg.Projects[cfg.Project]), and with no dispatch_url there is no workflow and no App token mint
-# (openWorkflow): the proof still launches nothing and needs nothing new.
+# (openWorkflow): the proof still launches nothing and needs nothing new. It names no postgres_dsn:
+# the daemon reads its store from LEGION_POSTGRES_DSN (with_store above).
 cat >"$work/legion.yaml" <<EOF
 project: $project
 port: $port
-postgres_dsn: '$daemon_dsn'
 state_dir: $work/state
 operator_token_file: $work/operator-token
 review_round_cap: 5
@@ -323,9 +348,15 @@ github_apps:
 EOF
 
 # 1. refuses without Postgres, naming the host and never the password. The bad DSN carries its
-#    own credentials so both halves of that assertion mean something wherever this runs.
-sed 's#^postgres_dsn: .*#postgres_dsn: postgres://legion:hunter2@127.0.0.1:5499/legion#' \
-  "$work/legion.yaml" >"$work/bad.yaml"
+#    own credentials so both halves of that assertion mean something wherever this runs. It is the
+#    file's own postgres_dsn, which outranks LEGION_POSTGRES_DSN, and this start is given none. Its
+#    password is random bytes of this run, so no file holds it and the assertion below reads a
+#    value only this refusal could have printed.
+bad_password=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+{
+  cat "$work/legion.yaml"
+  printf 'postgres_dsn: postgres://legion:%s@127.0.0.1:5499/legion\n' "$bad_password"
+} >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
   echo "expected refusal"
   exit 1
@@ -336,14 +367,13 @@ grep -q '127.0.0.1:5499' "$work/refusal.log" || {
 }
 # `! grep …` would be read as a negation set -e ignores (shellcheck SC2251): the assertion could
 # never fail. The password must fail the run, so the run says so itself.
-grep -q 'hunter2' "$work/refusal.log" && {
+grep -q -- "$bad_password" "$work/refusal.log" && {
   echo "the refusal printed the password"
   exit 1
 }
 
 # 2. starts, answers, restarts against the same store
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
-pid=$daemon_pid
+start_daemon
 wait_healthz
 # The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).
 # It is read here and after the restart both, never at one boot alone: the latch is one-way and
@@ -387,7 +417,8 @@ jq -e '(.capabilities | length) == 21
 # fixture set over its default, a default the fixture left alone, the runtime, the envoy_url with
 # its userinfo masked, and none of what the fixture planted as a credential, a credential file or an
 # App key — the App rides as its id and installations alone, and nothing anywhere in the document
-# reads as a PEM, a DSN, the planted password or a `user:password@` of any URL.
+# reads as a PEM, a DSN (the store's, which the daemon read from LEGION_POSTGRES_DSN), the planted
+# password or a `user:password@` of any URL.
 jq -e '.settings.review_round_cap == 5
   and .settings.worker_boot_timeout_seconds == 120
   and .settings.runtime.name == "tmux"
@@ -407,8 +438,7 @@ jq -e '.settings.review_round_cap == 5
 kill -TERM "$pid"
 stop_daemon SIGTERM
 
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
-pid=$daemon_pid
+start_daemon
 wait_healthz " after restart"
 # The restart's own latch, which the first boot's proves nothing about: a second boot, over a store
 # that already holds this project, must reach serving and say so, and its 503 would be as invisible
@@ -424,7 +454,8 @@ jq -e '.daemon.boots == 2' "$work/state2.json" || {
   echo "firstBootAt changed across the restart: the store is not the same one"
   exit 1
 }
-"$work/legion" stop --config "$work/legion.yaml"
+# `legion stop` loads legion.yaml as the daemon does, so it is handed the store the same way.
+(with_store "$work/legion" stop --config "$work/legion.yaml")
 stop_daemon "legion stop"
 
 ok=1

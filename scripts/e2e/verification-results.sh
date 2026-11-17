@@ -49,11 +49,12 @@
 #
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
 # server (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with
-# libpq's own parser) on which the run makes a database of its own (lib/loopback-dsn.sh's
-# run_database_uri), which the server migrates; Dispatch and the driver are handed that database
-# alone, never the one DATABASE_URL names. A run that passes drops it; one that fails keeps it for
-# inspection and names it. The driver reads and writes it too, for the one fixture no route of
-# Dispatch can write: a stored pull request row of the attribution rule before this build's.
+# libpq's own parser) on which the run makes a database of its own, which the server migrates;
+# Dispatch and the driver are handed that database alone, never the one DATABASE_URL names, as the
+# URI lib/loopback-dsn.sh's exec_run_database sets in each one's own environment. A run that
+# passes drops it; one that fails keeps it for inspection and names it. The driver reads and
+# writes it too, for the one fixture no route of Dispatch can write: a stored pull request row of
+# the attribution rule before this build's.
 # DISPATCH_BIN is optional and names a prebuilt envoy-dispatch: built from the base commit it is
 # this change's negative control, and it fails at the first result write, the route it does not
 # serve; unset, the script builds ./cmd/dispatch from this checkout.
@@ -122,10 +123,8 @@ done
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
 work=''
-# The run's own database on DATABASE_URL's server, once made, and the URI Dispatch and the driver
-# are given.
+# The run's own database on DATABASE_URL's server, once made.
 database=''
-run_database=''
 nats_pid=''
 fake_envoy_pid=''
 fake_github_pid=''
@@ -214,8 +213,9 @@ begin database
 # this checkout's each start from a database of their own migrations, and no run writes the
 # database DATABASE_URL names.
 run_db=verification_results_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-run_database_uri run_database DATABASE_URL "$database_url" "$run_db" \
-  "this run creates a database there" || fail "$run_database"
+refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
+require_run_database refusal DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri || fail "$refusal"
 psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
   fail "could not create database $run_db on DATABASE_URL's server"
 database=$run_db
@@ -260,17 +260,21 @@ begin dispatch
 # packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
 # starts: the attribution case waits for a pass to re-judge two stored rows, and a run that waited
 # five minutes for one would be no proof a reader runs.
+#
+# DATABASE_URL is the run's own database as a URI, which exec_run_database sets as the one
+# variable of the server's environment (--env-only, the `env -i` this start had), and `env` names
+# the rest.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+start_process dispatch exec_run_database DATABASE_URL "$database_url" "$run_db" \
+  "this run creates a database there" --uri --env-only DATABASE_URL -- env \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="$run_database" \
   DISPATCH_AGENT_TOKEN="$agent_token" \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
   DISPATCH_APP_PEM_B64="$app_pem" \
@@ -295,11 +299,15 @@ pass
 
 check=cases
 status=0
-VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
-  VERIFICATION_RESULTS_E2E_DATABASE_URL=$run_database \
-  VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
-  bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
-  status=$?
+# The driver is handed the same URI as VERIFICATION_RESULTS_E2E_DATABASE_URL, in its own
+# environment, which is otherwise this shell's without DATABASE_URL.
+(
+  VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+    VERIFICATION_RESULTS_E2E_DISPATCH_CLI=$dispatch_cli \
+    exec_run_database DATABASE_URL "$database_url" "$run_db" "this run creates a database there" \
+    --uri --env VERIFICATION_RESULTS_E2E_DATABASE_URL -- \
+    bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url"
+) || status=$?
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"
 case "$status" in
   0) ;;

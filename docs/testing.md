@@ -51,7 +51,7 @@ The helpers:
   A test that starts a child process, such as `cmd/dispatch` or the broker, gives the child the URL of the test's own database.
 
 - A shell proof that writes PostgreSQL takes a database of its own for its run.
-  It takes one from `run_database_url` in `scripts/e2e/lib/loopback-dsn.sh`, or through a Go test binary whose fixture makes the run's database, as the driver of `scripts/e2e/lib/live-daemon-proof.sh` does through `testdb.RunDatabaseMain`.
+  It takes one through `exec_run_database` in `scripts/e2e/lib/loopback-dsn.sh`, which hands the server the run's own database in that server's environment and prints it nowhere, or through a Go test binary whose fixture makes the run's database, as the driver of `scripts/e2e/lib/live-daemon-proof.sh` does through `testdb.RunDatabaseMain`.
 
 One exception holds no shared state.
 The `-omp` suites share one NATS server, which `LEGION_TEST_NATS_URL` names.
