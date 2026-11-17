@@ -5265,8 +5265,9 @@ const TEXT_BOXES = [
 
 /** The control named `name` that opens a list: the list's own button. A native select, which is
  *  what several of these lists were before each held a text box, is found by the same name, so a
- *  page that still draws one fails on that list by name rather than on a trigger not found. */
-function listTrigger(scope: Locator | Page, name: string): Locator {
+ *  page that still draws one fails on that list by name rather than on a trigger not found. A
+ *  pattern finds a trigger whose name begins with its label and may go on to the value it shows. */
+function listTrigger(scope: Locator | Page, name: string | RegExp): Locator {
   return scope
     .getByRole("button", { exact: true, name })
     .or(scope.getByRole("combobox", { exact: true, name }));
@@ -5317,10 +5318,11 @@ interface PickListSeed {
 }
 
 /** The Agents page's two live sessions and CORE's Keyboard issue and Rollout plan
- *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's and the Create
- *  issue dialog's Project lists hold two projects and the people a question can be handed to, or
- *  an issue assigned to, are alice, bob and carol; three epics, the first with a member; a spec
- *  and a second document of one issue, each in two versions; a question for each width; two
+ *  (`seedAgents`); a second project, OPS, which carol makes, so the search bar's, the Create
+ *  issue dialog's and the Settings page's Project lists hold two projects, OPS names carol as its
+ *  default assignee, and the people a question can be handed to, an issue assigned to, or a
+ *  project named by, are alice, bob and carol; three epics, the first with a member; a spec and a
+ *  second document of one issue, each in two versions; a question for each width; two
  *  repositories mapped to CORE, acme/widgets its default; three priorities; and an issue of CORE
  *  assigned to alice, which names no repository of its own and advances no priority. */
 async function seedPickLists(): Promise<PickListSeed> {
@@ -5371,9 +5373,9 @@ async function seedPickLists(): Promise<PickListSeed> {
   return { asks, documented: documented.key, header: header.key, member: member.key };
 }
 
-/** The fourteen lists, in the order the row reads them at one width; `step` is the width's
+/** The eighteen lists, in the order the row reads them at one width; `step` is the width's
  *  place, which picks the question it hands on, the issue it addresses, and the person and the
- *  repository the issue header's lists pick. */
+ *  repository the issue header's lists and the Settings page's people lists pick. */
 function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const main = page.getByTestId("main-content");
   const palette = page.getByRole("dialog", { name: "Search" });
@@ -5418,9 +5420,15 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
   const advance = listTrigger(page, "Priority to advance");
   const createIssueDialog = page.getByRole("dialog", { name: "Create issue" });
   const dialogProject = listTrigger(createIssueDialog, "Project");
+  // The Settings page's lists, each found by a name that begins with its label. The New project
+  // form's Default assignee is the one whose label does not go on with " of <KEY>".
+  const opsDefault = listTrigger(page, /^Default assignee of OPS\b/);
+  const newProjectDefault = listTrigger(page, /^Default assignee(?! of )/);
+  const mappingProject = listTrigger(page, /^Project\b/);
+  const sourceProject = listTrigger(page, /^Source project\b/);
   // Each width's pick is a change: the first hands the issue from alice to bob, the second from
-  // bob to carol; the first gives it acme/gadgets of its own, the second takes it back to the
-  // default it inherits.
+  // bob to carol, and OPS's default from carol to bob and back; the first gives the issue
+  // acme/gadgets of its own, the second takes it back to the default it inherits.
   const [personWord, person] = step === 0 ? ["bo", "bob"] : ["car", "carol"];
   const [repositoryWord, repositoryOption, repositoryPicked] =
     step === 0
@@ -5614,18 +5622,60 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
       left: ["OPS · Ops"],
       picked: /^OPS · Ops$/,
     },
+    {
+      // A project's own list, read once the defaults are: until then it is disabled and shows
+      // that they are loading.
+      name: "the Settings page's Default assignee of OPS",
+      reach: async () => {
+        await page.goto("/settings");
+        await expect(opsDefault).toBeEnabled();
+      },
+      trigger: opsDefault,
+      value: shown(opsDefault),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // The New project form's, which starts on the viewer, alice, at each load of the page.
+      name: "the Settings page's New project Default assignee",
+      trigger: newProjectDefault,
+      value: shown(newProjectDefault),
+      word: personWord,
+      left: [person],
+      picked: new RegExp(`^${person}$`),
+    },
+    {
+      // The repository mapping form's, which starts on no project at each load of the page.
+      name: "the Settings page's Project",
+      trigger: mappingProject,
+      value: shown(mappingProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
+    {
+      name: "the Settings page's Source project",
+      trigger: sourceProject,
+      value: shown(sourceProject),
+      word: "op",
+      left: ["OPS · Ops"],
+      picked: /^OPS · Ops$/,
+    },
   ];
 }
 
-// SLOW(>=2s): fourteen lists on seven pages, each list opened three times at each of two widths.
+// SLOW(>=2s): eighteen lists on eight pages, each list opened three times at each of two widths.
 // R3: "Every list of options a reader picks from holds a text box that narrows the options."
-// The row covers the fourteen single picks of the shared list (`components/MultiSelect.tsx`), the
+// The row covers the eighteen single picks of the shared list (`components/MultiSelect.tsx`), the
 // lists whose options grow with the project among them: the search bar's Project and Status, the
 // List's Move to epic, an epic's Merge into another epic, the Inbox's Hand this question to
 // (`AskHandOn`), the Agents composer's Issue, the Spec tab's Version (`SpecToolbar`), a document
 // page's Version (`ArtifactHeader`) and its compare From and To (`ArtifactDetails`), the issue
 // header's Assignee (`AssigneeControl`), Repository (`RepoControl`) and Priority to advance
-// (`IssuePriorityLine`), and the Create issue dialog's Project (`CreateIssueDialog`). The short
+// (`IssuePriorityLine`), the Create issue dialog's Project (`CreateIssueDialog`), and the Settings
+// page's Default assignee of a project and the New project form's Default assignee
+// (`ProjectsSection`), and its Project and Source project (`ProjectSelect`). The short
 // fixed lists - Priority (`PriorityControl`), Snooze (`SnoozeControl`), the Inbox's bulk Snooze,
 // the issue header's Status, the Agents page's Delivery mode, a table pager's Rows per page
 // (`Pager`), and the Delivery page's Color merges by and Window (`DeliveryPage`,
@@ -5647,10 +5697,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 test("every list of options a reader picks from holds a text box that narrows it, at 1440 and 390 @firefox @webkit", async ({
   page,
 }) => {
-  // Eight page loads and a dialog at each width, with the lists read between them. Measured in
+  // Nine page loads and a dialog at each width, with the lists read between them. Measured in
   // an issue pod (two cores), with each of the fourteen lists opened three times: the row took
   // 2.9 min in Chromium and 3.4 min in Firefox, which six minutes keeps under two thirds of the
-  // budget, and WebKit, which no pod runs, is given the same.
+  // budget; with the eighteen it took 2.3 min in Chromium (2026-11-17), and Firefox has not been
+  // run with them. WebKit, which no pod runs, is given the same.
   test.setTimeout(360_000);
   const seed = await seedPickLists();
   /** The lists the row could not read: no trigger, a trigger that names no list of its own, or
