@@ -1547,7 +1547,7 @@ func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
 }
 
 // testKnivesRegistries is a leak_guard.knives_registries value as the daemon writes it
-// (config.LeakGuard.KnivesRegistriesValue): the registry, then its overlay.
+// (leakguard.KnivesRegistriesValue of config.LeakGuard's rows): the registry, then its overlay.
 const testKnivesRegistries = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.toml","ref":"main"},` +
 	`{"repo":"acme/private-registry","path":"knives/repos.local.toml","ref":"main"}]`
 

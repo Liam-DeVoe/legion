@@ -181,7 +181,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	if err := g.rules(ctx, what, records); err != nil {
 		return err
 	}
-	return g.knives(ctx, what, req, records, held)
+	return g.knives(ctx, what, req, records)
 }
 
 // pushRecords is everything a push would publish, as records, which the second and the third of

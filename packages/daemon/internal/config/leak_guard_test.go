@@ -1,16 +1,17 @@
 package config
 
 import (
-	"encoding/json"
 	"slices"
-	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // leak_guard.knives_registries settles in file order, the first row the registry and the second
 // its overlay, and its value for the guard is the JSON list of the three fields of each row in that
-// order: a decoder that refuses a field it does not know, as the guard's does
-// (leakguard.knivesRows), reads every row back.
+// order. That the guard reads every row of it back, with its own decoder (leakguard's knivesRows),
+// is held where that decoder can be called: leakguard's
+// TestTheKnivesRegistriesTheLoaderSettlesAreRowsTheGuardReads.
 func TestLeakGuardKnivesRegistriesSettleInFileOrder(t *testing.T) {
 	cfg, err := Load(writeConfigFile(t, minimalFile+"leak_guard:\n"+
 		"  knives_registries:\n"+
@@ -19,32 +20,18 @@ func TestLeakGuardKnivesRegistriesSettleInFileOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	want := []KnivesRegistry{
+	want := []leakguard.KnivesRegistry{
 		{Repo: "sjawhar/dotfiles", Path: "knives/repos.toml", Ref: "main"},
 		{Repo: "acme/private-registry", Path: "knives/repos.local.toml", Ref: "v4.0.1"},
 	}
 	if !slices.Equal(cfg.LeakGuard.KnivesRegistries, want) {
 		t.Fatalf("LeakGuard.KnivesRegistries = %v, want %v in file order", cfg.LeakGuard.KnivesRegistries, want)
 	}
-	value := cfg.LeakGuard.KnivesRegistriesValue()
+	value := leakguard.KnivesRegistriesValue(cfg.LeakGuard.KnivesRegistries)
 	const wantValue = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.toml","ref":"main"},` +
 		`{"repo":"acme/private-registry","path":"knives/repos.local.toml","ref":"v4.0.1"}]`
 	if value != wantValue {
-		t.Errorf("KnivesRegistriesValue() = %s, want %s", value, wantValue)
-	}
-	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.DisallowUnknownFields()
-	var rows []struct{ Repo, Path, Ref string }
-	if err := decoder.Decode(&rows); err != nil {
-		t.Fatalf("a decoder that refuses unknown fields reads %s: %v", value, err)
-	}
-	if len(rows) != len(want) {
-		t.Fatalf("the value decodes to %d rows, want %d", len(rows), len(want))
-	}
-	for i, row := range rows {
-		if row.Repo != want[i].Repo || row.Path != want[i].Path || row.Ref != want[i].Ref {
-			t.Errorf("row %d decodes to %+v, want %+v", i, row, want[i])
-		}
+		t.Errorf("KnivesRegistriesValue = %s, want %s", value, wantValue)
 	}
 }
 
@@ -66,8 +53,8 @@ func TestLeakGuardIsTheZeroValueWithoutRows(t *testing.T) {
 		if cfg.LeakGuard.KnivesRegistries != nil {
 			t.Errorf("Load(%q) LeakGuard.KnivesRegistries = %v, want nil", body, cfg.LeakGuard.KnivesRegistries)
 		}
-		if value := cfg.LeakGuard.KnivesRegistriesValue(); value != "" {
-			t.Errorf("Load(%q) KnivesRegistriesValue() = %q, want empty", body, value)
+		if value := leakguard.KnivesRegistriesValue(cfg.LeakGuard.KnivesRegistries); value != "" {
+			t.Errorf("Load(%q) KnivesRegistriesValue = %q, want empty", body, value)
 		}
 	}
 }

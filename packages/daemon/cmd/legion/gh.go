@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -29,11 +28,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // and its owner, as gh resolves them (ghTargetOf) and execs the real gh (LEGION_GH_PATH) as `gh`
 // with its arguments untouched and GH_CONFIG_DIR set to a gh directory under
 // LEGION_GH_OWNERS_DIR: the repository's own, `<owner>/<repo>`, whose token reaches that one
-// repository, when every selector of the command named that one repository and the bundle holds
-// its directory, and the owner's otherwise (repositoryGHConfigDir) — a command naming no
-// repository, one naming two repositories of the one owner, one where a selector named the owner
-// alone beside a repository, and one whose repository the bundle holds no directory for, which
-// is every repository of an owner the role writes to one of. A command naming no owner at all,
+// repository, when every selector of the command named that one repository, or the command is
+// one of knives' audit GraphQL reads of it (knivesAuditRead), and the bundle holds its directory,
+// and the owner's otherwise (repositoryGHConfigDir) — a command naming no repository, one naming
+// two repositories of the one owner, one where a selector named the owner alone beside a
+// repository, and one whose repository the bundle holds no directory for, which is every
+// repository of an owner the role writes to one of. A command naming no owner at all,
 // in a working directory whose git remotes name none, keeps GH_CONFIG_DIR, the issue's owner's,
 // and so does a read of one repository of an owner the bundle holds no directory for
 // (ghTarget.read: a call that writes nothing, by the rule ghWritesNothing holds, naming that one
@@ -125,10 +125,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		repo = target.owner + "/" + target.repo
 	}
 	mode := ghCallModeOf(rateLimitRead, isVisibilityRead, target.writesNothing)
-	// For a read and a guarded call one guard serves twice: its visibility read decides the
-	// directory of a read of an owner the bundle holds no directory for (ghConfigDir), and its
-	// check clears the call below, which for a call guarded whole reads again the public answer
-	// that read kept. The call log records the source of the first answer, the one the call read.
+	// For a read and a guarded call one guard serves twice where the call reads one repository of
+	// an owner the bundle holds no directory for (ghTarget.read): its visibility read of
+	// owner/repo decides the directory (ghConfigDir), and its check clears the call below, handed
+	// that same repository (leakguard.GhRequest.Repo), so a call guarded whole reads again the
+	// public answer that read kept. The call log records the source of the first answer, the one
+	// the call read.
 	var guard *leakguard.Guard
 	switch mode {
 	case ghRateLimitCall:
@@ -288,10 +290,12 @@ func ghCallModeOf(rateLimitRead, visibilityRead, writesNothing bool) ghCallMode 
 //
 //   - a read of one repository (ghTarget.read: a call in the read grammar, ghWritesNothing,
 //     naming that one repository, or one of knives' audit GraphQL reads of it, knivesAuditRead)
-//     that GitHub reports public, asked through the guard's own visibility read
-//     (leakguard.Guard.Visibility) with that directory's token, never unauthenticated, since
-//     GitHub allows an unauthenticated read sixty times an hour for each address and pods share
-//     addresses; and
+//     that GitHub reports public, asked through the guard's own visibility read of owner/repo
+//     (leakguard.Guard.Visibility), which is made with that directory's token, since GitHub
+//     allows an unauthenticated read sixty times an hour for each address and pods share
+//     addresses. Only its fallback runs with no credential: where GitHub's secondary rate limit
+//     refuses the read, or a GraphQL limit refuses the read the guard makes in its place after the
+//     core limit, the guard asks `git ls-remote`, which answers public and nothing else; and
 //   - that visibility read itself (visibilityRead, runGh's ghVisibilityCall), the call
 //     ghVisibilityRead lets past the guard, which is the asking: it prints one word, and a
 //     repository the token cannot read answers none.
@@ -310,15 +314,16 @@ func ghConfigDir(ctx context.Context, guard *leakguard.Guard, env map[string]str
 		return dir, nil
 	case visibilityRead:
 		return env["GH_CONFIG_DIR"], nil
-	case target.read == "":
+	case !target.read:
 		return "", refused
 	}
+	read := target.owner + "/" + target.repo
 	// The guard reads no visibility of a name ghVisibilityRead could not let past it, which the
 	// read through the `gh` wrapper would then run the guard for again (Guard.scanThrough).
-	if _, err := ghrepo.Parse("", target.read); err != nil {
+	if _, err := ghrepo.Parse("", read); err != nil {
 		return "", refused
 	}
-	if visibility, err := guard.Visibility(ctx, target.read); err != nil || visibility != leakguard.Public {
+	if visibility, err := guard.Visibility(ctx, read); err != nil || visibility != leakguard.Public {
 		return "", refused
 	}
 	return env["GH_CONFIG_DIR"], nil
@@ -713,22 +718,23 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 
 // ghTarget is what a gh command names: owner, the lowercased owner of the repository it acts on,
 // and repo, that repository's lowercased name where every selector of the command named that one
-// repository of that owner and "" where they named more than one, where one named the owner
-// alone, and where none named a repository at all. A target with no owner is a command naming
+// repository of that owner, or where the command is one of knives' audit GraphQL reads, whose
+// owner variable names the owner alone and whose name variable the repository
+// (knivesAuditRead); "" where the selectors named more than one, where one named the owner alone,
+// and where none named a repository at all. A target with no owner is a command naming
 // none, whose token stays the one GH_CONFIG_DIR already names. command is the resolved command
 // path with no arguments. files are the files the command would send to GitHub as content
 // (ghSentFiles), which the leak guard reads the text of. writesNothing is whether the call is in
 // a read grammar (ghWritesNothing), so that under the shared check that rule was proven against
 // the guard runs that check alone for it (runGh's ghReadCall). Such a call sends no file: no
 // grammar names an option of ghSentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
-// read is the one repository, `<owner>/<repo>`, the call only reads: owner/repo where the call
-// writes nothing and names that one repository, and the repository its variables name for one
-// of knives' audit GraphQL reads (knivesAuditRead), which the read grammar does not hold. It is
-// "" for every other call, and decides nothing but the directory a call naming an owner the
-// bundle holds none for runs under (ghConfigDir).
+// read is whether the call only reads that one repository, owner/repo: a call that writes nothing
+// and names it, or one of knives' audit GraphQL reads of it, which the read grammar does not
+// hold. It decides nothing but the directory a call naming an owner the bundle holds none for
+// runs under (ghConfigDir).
 type ghTarget struct {
 	owner, repo   string
-	read          string
+	read          bool
 	command       string
 	files         []leakguard.GhFile
 	writesNothing bool
@@ -785,61 +791,6 @@ func ghSentFiles(parsed ghArgs) []leakguard.GhFile {
 		}
 	}
 	return files
-}
-
-// knivesQueryHead opens both GraphQL reads knives v3.2.6's audit makes of the repository a fork's
-// pull requests live in, its upstream (sjawhar/knives src/forge/github.rs, sweep_query and
-// pull_facts_query): a query of the one repository its $owner and $name variables name.
-const knivesQueryHead = "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { "
-
-// knivesSweepQuery is the audit's sweep of that repository's pull requests, the newest-updated
-// first, which it makes where it holds a cache of them.
-const knivesSweepQuery = knivesQueryHead + "pullRequests(orderBy: {field: UPDATED_AT, direction: DESC}, first: 100) " +
-	"{ pageInfo { hasNextPage } nodes { number updatedAt state } } } }"
-
-// knivesFactsFields are the pull requests the audit's batch of their facts asks for, by number,
-// each under its alias `p<number>`, between knivesQueryHead and knivesFactsTail.
-var knivesFactsFields = regexp.MustCompile(`^p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \}( p[0-9]+: pullRequest\(number: [0-9]+\) \{ \.\.\.facts \})*$`)
-
-// knivesFactsTail closes the audit's batch of pull requests' facts, the live batch it reads the
-// head of each of its open pull requests from, with the fragment each is read through.
-const knivesFactsTail = " } } fragment facts on PullRequest { number state reviewDecision headRefName headRefOid " +
-	"updatedAt isDraft url headRepositoryOwner { login } baseRefName mergeable mergeStateStatus mergeCommit { oid } " +
-	"additions deletions changedFiles headRef { name } body " +
-	"reviewThreads(first: 100) { pageInfo { hasNextPage } nodes { isResolved } } " +
-	"reviews(last: 100) { nodes { submittedAt } } commits(last: 100) { nodes { commit { committedDate } } } " +
-	"rollup: commits(last: 1) { nodes { commit { tree { oid } " +
-	"parents(first: 2) { pageInfo { hasNextPage } nodes { tree { oid } } } " +
-	"statusCheckRollup { contexts(first: 100) { pageInfo { hasNextPage } nodes { __typename " +
-	"... on CheckRun { name conclusion } ... on StatusContext { context state } } } } " +
-	"checkSuites(first: 100) { pageInfo { hasNextPage } nodes { conclusion checkRuns(first: 1) { totalCount } " +
-	"app { name } workflowRun { workflow { name } } } } } } } comments(last: 1) { nodes { createdAt } } }"
-
-// knivesAuditRead is the repository, `<owner>/<name>`, a `gh api graphql` call reads when it is
-// one of those two reads exactly as knives makes it, `-f owner=<owner> -f name=<name> -f
-// query=<query>` with no other option taking a value, and "" for any other GraphQL call, which
-// may write or read whatever its query names. owner is the call's one owner, the one its owner
-// variable names (selectors.fromAPI).
-func knivesAuditRead(parsed ghArgs, owner string) string {
-	fields := parsed.values["raw-field"]
-	if len(parsed.values) != 1 || len(fields) != 3 {
-		return ""
-	}
-	variables := map[string]string{}
-	for _, field := range fields {
-		key, value, _ := strings.Cut(field, "=")
-		variables[key] = value
-	}
-	query := variables["query"]
-	asked, head := strings.CutPrefix(query, knivesQueryHead)
-	asked, tail := strings.CutSuffix(asked, knivesFactsTail)
-	switch {
-	case len(variables) != 3 || !strings.EqualFold(variables["owner"], owner) || variables["name"] == "":
-		return ""
-	case query != knivesSweepQuery && !(head && tail && knivesFactsFields.MatchString(asked)):
-		return ""
-	}
-	return owner + "/" + ghconfig.RepositoryName(variables["name"])
 }
 
 // ghCallerToken is the first of GH_TOKEN and GITHUB_TOKEN that env sets, in gh's own order,
@@ -965,12 +916,15 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 		return ghTarget{command: command, files: files, writesNothing: writesNothing}, nil
 	case 1:
 		for owner := range sel.owners {
-			repo, read := sel.onlyRepository(), ""
+			repo, read := sel.onlyRepository(), false
 			switch {
 			case writesNothing && repo != "":
-				read = owner + "/" + repo
+				read = true
 			case cmd.isAPI() && slices.Equal(parsed.positionals, []string{"graphql"}):
-				read = knivesAuditRead(parsed, owner)
+				// Its owner variable names the owner alone, and its name variable the repository.
+				if name := knivesAuditRead(parsed, owner); name != "" {
+					repo, read = name, true
+				}
 			}
 			return ghTarget{owner: owner, repo: repo, read: read, command: command, files: files, writesNothing: writesNothing}, nil
 		}

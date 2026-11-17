@@ -1,13 +1,13 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // leakGuardKey is `leak_guard`, and knivesRegistriesKey its one member's path, the keys every
@@ -24,33 +24,11 @@ const (
 type LeakGuard struct {
 	// KnivesRegistries is `leak_guard.knives_registries`, in file order: the first row is the
 	// knives registry and each row after it an overlay, as knives' own repos.local.toml is one
-	// beside its repos.toml. Nil while the file names none, an empty list included.
-	KnivesRegistries []KnivesRegistry
-}
-
-// KnivesRegistry is one row of `leak_guard.knives_registries`: the file at Path, at Ref, in the
-// GitHub repository Repo. Its JSON is the row of leakguard.KnivesRegistriesVar, whose decoder
-// refuses a field it does not know, so this type's three fields are the whole of the row.
-type KnivesRegistry struct {
-	Repo string `json:"repo"`
-	Path string `json:"path"`
-	Ref  string `json:"ref"`
-}
-
-// KnivesRegistriesValue is the rows as leakguard.KnivesRegistriesVar carries them to every role
-// process the Kubernetes runtime launches: a JSON list of {"repo", "path", "ref"} rows in file
-// order, and "" with no row, where the runtime sets no such variable at all and a push has no
-// knives pass.
-func (g LeakGuard) KnivesRegistriesValue() string {
-	if len(g.KnivesRegistries) == 0 {
-		return ""
-	}
-	value, err := json.Marshal(g.KnivesRegistries)
-	if err != nil {
-		// A list of structs of three strings always marshals.
-		panic("config: marshal leak_guard.knives_registries: " + err.Error())
-	}
-	return string(value)
+	// beside its repos.toml. Each row is the file at Path, at Ref, in the GitHub repository Repo,
+	// of the one row type the guard reads too, and the Kubernetes runtime hands the rows to every
+	// role process it launches as leakguard.KnivesRegistriesValue writes them. Nil while the file
+	// names none, an empty list included.
+	KnivesRegistries []leakguard.KnivesRegistry
 }
 
 // readLeakGuard is `leak_guard`: a mapping whose one member, `knives_registries`, is a list of
@@ -97,34 +75,34 @@ func readLeakGuard(value *yaml.Node, key string) (LeakGuard, error) {
 }
 
 // readKnivesRegistry is one row of `leak_guard.knives_registries`, field its path in the file.
-func readKnivesRegistry(entry *yaml.Node, field string) (KnivesRegistry, error) {
+func readKnivesRegistry(entry *yaml.Node, field string) (leakguard.KnivesRegistry, error) {
 	if entry.Kind != yaml.MappingNode {
-		return KnivesRegistry{}, fmt.Errorf("%s must be a mapping", field)
+		return leakguard.KnivesRegistry{}, fmt.Errorf("%s must be a mapping", field)
 	}
 	fields, err := describedMembers(entry, field, knivesRegistriesKey+"[]")
 	if err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
 	repo, err := requiredString(fields["repo"], field+".repo", ": the GitHub repository the registry file is in")
 	if err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
 	parsed, err := ghrepo.Parse(field+".repo", repo)
 	if err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
 	path, err := requiredString(fields["path"], field+".path", ": the registry file's path in that repository")
 	if err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
 	if err := checkKnivesRegistryPath(path, field+".path"); err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
 	ref, err := requiredString(fields["ref"], field+".ref", ": the branch or tag the file is read at")
 	if err != nil {
-		return KnivesRegistry{}, err
+		return leakguard.KnivesRegistry{}, err
 	}
-	return KnivesRegistry{Repo: parsed.String(), Path: path, Ref: ref}, nil
+	return leakguard.KnivesRegistry{Repo: parsed.String(), Path: path, Ref: ref}, nil
 }
 
 // checkKnivesRegistryPath refuses a registry file's path that names no file from the repository's

@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	configpkg "github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // The legion.yaml example the repository ships (deploy/kubernetes/daemon/legion.yaml.example, the
@@ -190,7 +191,7 @@ func TestShippedLegionYAMLExamplesLeakGuardPassesCheckConfig(t *testing.T) {
 	}
 	want = `[{"repo":"sjawhar/dotfiles","path":"knives/repos.toml","ref":"main"},` +
 		`{"repo":"acme/private-knives","path":"knives/repos.local.toml","ref":"main"}]`
-	if got := cfg.LeakGuard.KnivesRegistriesValue(); got != want {
+	if got := leakguard.KnivesRegistriesValue(cfg.LeakGuard.KnivesRegistries); got != want {
 		t.Errorf("the example's knives registries = %s, want %s", got, want)
 	}
 }

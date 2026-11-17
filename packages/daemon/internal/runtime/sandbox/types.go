@@ -196,11 +196,11 @@ type Options struct {
 	// restarted with another list relaunches it, resuming its session.
 	ControllerSlackChannels []string
 	// KnivesRegistries is legion.yaml's leak_guard.knives_registries as the push guard reads it
-	// (config.LeakGuard.KnivesRegistriesValue): every role process this runtime launches, an issue
-	// pod's and the controller's, is told it as leakguard.KnivesRegistriesVar (mainEnvironment),
-	// and "" tells none. It travels in each generation's start command, so a changed list reaches
-	// a role at its next launch and replaces no pod; the files the rows name are read at every
-	// push to a repository GitHub reports public.
+	// (leakguard.KnivesRegistriesValue of config.LeakGuard's rows): every role process this
+	// runtime launches, an issue pod's and the controller's, is told it as
+	// leakguard.KnivesRegistriesVar (mainEnvironment), and "" tells none. It travels in each
+	// generation's start command, so a changed list reaches a role at its next launch and replaces
+	// no pod; the files the rows name are read at every push to a repository GitHub reports public.
 	KnivesRegistries string
 	// Pod is the operator's pod configuration, added to every worker pod and to the probe pod.
 	Pod Pod

@@ -365,7 +365,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 		// Every role this runtime launches, the controller's among them, is told the knives
 		// registries its pushes to a repository GitHub reports public are scanned against
 		// (leakguard.KnivesRegistriesVar).
-		KnivesRegistries:      cfg.LeakGuard.KnivesRegistriesValue(),
+		KnivesRegistries:      leakguard.KnivesRegistriesValue(cfg.LeakGuard.KnivesRegistries),
 		Tools:                 workerImageTools,
 		Pod:                   sandbox.Pod(k.Pod),
 		RoleConfigFiles:       cfg.RoleConfigFiles,

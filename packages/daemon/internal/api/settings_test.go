@@ -229,9 +229,6 @@ var settingsExcluded = map[string]string{
 	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 	"Config.LeakGuard":                "leak_guard: a knives registry row can name a private repository, and the state is served to callers that may not read it (GET /legion/v1/state authenticates nobody)",
 	"LeakGuard.KnivesRegistries":      "leak_guard.knives_registries: a row can name a private repository, and the state is served to callers that may not read it",
-	"KnivesRegistry.Repo":             "leak_guard.knives_registries[].repo: can name a private repository, which a caller of the state may not read",
-	"KnivesRegistry.Path":             "leak_guard.knives_registries[].path: a file of a repository that can be private",
-	"KnivesRegistry.Ref":              "leak_guard.knives_registries[].ref: a branch or tag of a repository that can be private",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly

@@ -4,10 +4,11 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // testLeakGuard is a leak_guard block as the loader settles it: a knives registry and its overlay.
-var testLeakGuard = config.LeakGuard{KnivesRegistries: []config.KnivesRegistry{
+var testLeakGuard = config.LeakGuard{KnivesRegistries: []leakguard.KnivesRegistry{
 	{Repo: "sjawhar/dotfiles", Path: "knives/repos.toml", Ref: "main"},
 	{Repo: "acme/private-registry", Path: "knives/repos.local.toml", Ref: "main"},
 }}

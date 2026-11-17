@@ -1,7 +1,6 @@
 package leakguard
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,9 +41,7 @@ forbidden = ["Bramblecote", "` + knivesTerm + `"]
 // knivesServed is one registry a stand-in gh serves (servingKnives): its row of
 // LEGION_KNIVES_REGISTRIES, and the file.
 type knivesServed struct {
-	Repo string `json:"repo"`
-	Path string `json:"path"`
-	Ref  string `json:"ref"`
+	KnivesRegistry
 	// file is the registry file's content.
 	file string
 	// unserved is a row the stand-in answers as it answers any read it does not know: exit 1.
@@ -53,13 +50,14 @@ type knivesServed struct {
 
 // theKnivesRow is the registry most of these tests read: theKnivesRegistry, from the default
 // branch of a public repository.
-var theKnivesRow = knivesServed{Repo: "invented-org/knives-registry", Path: "repos.toml", Ref: "main", file: theKnivesRegistry}
+var theKnivesRow = knivesServed{KnivesRegistry: KnivesRegistry{Repo: "invented-org/knives-registry", Path: "repos.toml", Ref: "main"}, file: theKnivesRegistry}
 
 // servingKnives is what a guard's environment needs to read registries: path, a PATH whose first
 // gh is a stand-in that answers the guard's read of each registry with its file, and exits 1 for
 // any other call, printing the call as gh prints a read it was refused; and listed, the
-// LEGION_KNIVES_REGISTRIES that lists the registries in order. The stand-in records nothing but
-// that it ran, one line in the file ran for each run.
+// LEGION_KNIVES_REGISTRIES that lists the registries in order, as the daemon writes it
+// (KnivesRegistriesValue). The stand-in records nothing but that it ran, one line in the file ran
+// for each run.
 func servingKnives(t *testing.T, registries ...knivesServed) (path, listed, ran string) {
 	t.Helper()
 	bin, files := t.TempDir(), t.TempDir()
@@ -69,7 +67,9 @@ func servingKnives(t *testing.T, registries ...knivesServed) (path, listed, ran 
 	script.WriteString(`if [ "$#" = 4 ] && [ "$1" = api ] && [ "$2" = -H ] && [ "$3" = 'Accept: application/vnd.github.raw' ] &&` + "\n")
 	script.WriteString(`  [ "${GH_HOST-}" = github.com ] && [ "${NO_COLOR-}" = 1 ] && [ "${CLICOLOR_FORCE-}" = 0 ]; then` + "\n")
 	script.WriteString("  case \"$4\" in\n")
+	rows := make([]KnivesRegistry, 0, len(registries))
 	for i, registry := range registries {
+		rows = append(rows, registry.KnivesRegistry)
 		if registry.unserved {
 			continue
 		}
@@ -85,11 +85,7 @@ func servingKnives(t *testing.T, registries ...knivesServed) (path, listed, ran 
 	script.WriteString(`echo "{\"message\":\"Not Found\",\"read\":\"$4\"}"` + "\n")
 	script.WriteString(`echo "gh: Not Found (HTTP 404): $4" >&2` + "\nexit 1\n")
 	writeProgram(t, bin, "gh", script.String())
-	rows, err := json.Marshal(registries)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pathWith(bin), "LEGION_KNIVES_REGISTRIES=" + string(rows), ran
+	return pathWith(bin), "LEGION_KNIVES_REGISTRIES=" + KnivesRegistriesValue(rows), ran
 }
 
 // knivesCommit is a repository of two commits on main: a base the destination holds, and on it a

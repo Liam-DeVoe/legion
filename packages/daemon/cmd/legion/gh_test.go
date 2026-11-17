@@ -766,7 +766,11 @@ func TestGhTargetOfReadsOnlyTheRepositoryOfAReadOnlyCommand(t *testing.T) {
 		{[]string{"api", "graphql", "-f", "owner=other", "-f", "name=open", "-f", facts("")}, ""},
 	} {
 		target, err := ghTargetOf(tc.argv, nil, savedGhHelp, noGitRepository)
-		if err != nil || target.read != tc.read {
+		read := ""
+		if target.read {
+			read = target.owner + "/" + target.repo
+		}
+		if err != nil || read != tc.read {
 			t.Errorf("ghTargetOf(%q) = %+v, %v; want it to read %q", tc.argv, target, err, tc.read)
 		}
 	}
@@ -1067,13 +1071,14 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // its pull requests' list, as knives' audit makes them — and the GraphQL reads knives' audit makes
 // of a fork's upstream. It runs under the shared check the read rule was proven against, which
 // alone checks a call in that grammar, and under another, which guards it whole; either way that
-// one visibility read is the only one made, and the call's line in the call log names its
-// source, never checked-only. Everything else naming that owner is refused as it always was,
-// exit 2, `"other" is not an owner of this project`, and gh runs for none of it: a write naming
-// that same repository, `repo clone`, a read typed outside the read grammar, a GraphQL call that
-// is no read of knives', and a command naming the owner alone are refused before any visibility
-// read; a read of a repository GitHub reports private, and one whose visibility read fails, after
-// that one read.
+// one visibility read is the only one made, and the call's line in the call log names the
+// repository, a GraphQL read of knives', whose variables alone name it, among them, and the
+// source of that visibility read, never checked-only. Everything else naming that owner is
+// refused as it always was, exit 2, `"other" is not an owner of this project`, and gh runs for
+// none of it: a write naming that same repository, `repo clone`, a read typed outside the read
+// grammar, a GraphQL call that is no read of knives', and a command naming the owner alone are
+// refused before any visibility read; a read of a repository GitHub reports private, and one
+// whose visibility read fails, after that one read.
 func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
@@ -1140,6 +1145,9 @@ func TestLegionGhReadsAPublicRepositoryOfAnOwnerTheBundleHoldsNoneFor(t *testing
 			}
 			if strings.Count(got.log, "\n") != 1 || !strings.Contains(got.log, `visibility="github"`) {
 				t.Errorf("under %s, the call log of legion gh %q reads %q; want one line naming its visibility read's source, github", name, args, got.log)
+			}
+			if want := `repository="other/open"`; !strings.Contains(got.log, want) {
+				t.Errorf("under %s, the call log of legion gh %q reads %q; want its line to name the repository it read, %s", name, args, got.log, want)
 			}
 		}
 	}

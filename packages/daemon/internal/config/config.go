@@ -252,8 +252,9 @@ type Config struct {
 	RepositoryRenames ghrepo.Renames
 	// LeakGuard is `leak_guard`: the knives registries the push guard of every role process the
 	// Kubernetes runtime launches reads (leakguard.KnivesRegistriesVar, which that runtime sets
-	// from LeakGuard.KnivesRegistriesValue). The tmux runtime tells a pane nothing of it, since a
-	// pane's push runs no leak guard. The zero value while the file configures none.
+	// to leakguard.KnivesRegistriesValue of LeakGuard.KnivesRegistries). The tmux runtime tells a
+	// pane nothing of it, since a pane's push runs no leak guard. The zero value while the file
+	// configures none.
 	LeakGuard LeakGuard
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and

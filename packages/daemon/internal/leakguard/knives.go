@@ -29,10 +29,13 @@ import (
 // daemon, which sets it. Unset or empty, a push has no third pass.
 const KnivesRegistriesVar = "LEGION_KNIVES_REGISTRIES"
 
-// knivesRow is one row of KnivesRegistriesVar: the file at path, at ref, in the GitHub repository
-// repo. A row can name a private repository, so no message of this package carries a row's repo,
-// path or ref; a message names a row by its number (knivesRowName).
-type knivesRow struct {
+// KnivesRegistry is one row of KnivesRegistriesVar: the file at Path, at Ref, in the GitHub
+// repository Repo. It is the one type of the row at both ends of the variable: the daemon settles
+// legion.yaml's leak_guard.knives_registries into these rows (config.LeakGuard) and writes them
+// with KnivesRegistriesValue, and the guard reads them back with knivesRows, whose decoder refuses
+// a field it does not know. A row can name a private repository, so no message of this package
+// carries a row's repo, path or ref; a message names a row by its number (knivesRowName).
+type KnivesRegistry struct {
 	Repo string `json:"repo"`
 	Path string `json:"path"`
 	Ref  string `json:"ref"`
@@ -44,19 +47,22 @@ func knivesRowName(i int) string {
 }
 
 // knivesEntry is one entry of the merged registries: a table repos.<name> of the first registry,
-// with the forbidden terms of every overlay that adds to it after its own.
+// with the forbidden terms of every overlay that adds to it after its own. Its JSON is the entry as
+// the kept list's file holds it (knivesKept), so the order and the names of its fields are that
+// file's.
 type knivesEntry struct {
-	// name is the entry's table name in the first registry: the name of a public repository,
+	// Name is the entry's table name in the first registry: the name of a public repository,
 	// and the one name of an entry a message carries (knivesEntryName).
-	name string
-	// origin and release are the fork's two remotes as the registry writes them, release empty
+	Name string `json:"name"`
+	// Origin and Release are the fork's two remotes as the registry writes them, Release empty
 	// where the entry names none.
-	origin, release string
-	// upstream is the repository the fork is of, as the registry writes it, empty where the entry
+	Origin  string `json:"origin"`
+	Release string `json:"release"`
+	// Upstream is the repository the fork is of, as the registry writes it, empty where the entry
 	// names none. A commit its branches or tags reach is not read (Guard.knives).
-	upstream string
-	// forbidden is the merged list, the first registry's terms first, each as written.
-	forbidden []string
+	Upstream string `json:"upstream"`
+	// Forbidden is the merged list, the first registry's terms first, each as written.
+	Forbidden []string `json:"forbidden"`
 }
 
 // knivesRegistryFile is what this pass reads of the first registry: each entry's origin, its
@@ -101,24 +107,24 @@ type knivesOverlayFile struct {
 // ledger rehearsals, which hold those terms by design.
 //
 // Of the push's commits, the pass reads none that the fork or the upstream of an entry that
-// applies holds already (remoteHeld): a commit that a branch or a tag of the push's destination
-// reaches, as the one read of Guard.Push answered (destination), or a branch or a tag of such an
-// upstream, read the same way from the entry's upstream URL (Guard.advertised), each ref counting
-// where this clone has the commit it is at. The destination's refs reach none of the records'
-// commits, since Guard.commits lists none they reach; the pass counts them all the same, so that
-// what it holds does not rest on the rule pass's reading. A commit the fork holds is the fork's
-// own history, and one the upstream holds is upstream's text, not the fork's: `knives audit`
-// reads none of it either, since its base for a branch is its fork point with upstream's trunk,
-// and a mirror sync of a fork's main, a release cut over a newer upstream base and a member
-// rebased onto one all push such commits. No ref of this clone's own says what either holds
-// (Guard.Push says why): a cut rehearsed on a local bare repository, whatever the remote it was
-// pushed through is named and whatever URL that remote names now, is still the real push's own,
-// and the pass reads it (the architect's rule of 2026-11-17). An upstream's ref at a commit this
-// clone does not have reaches nothing, so a clone that has not fetched as far as that ref reads
-// upstream's lines and refuses those that hold a term (knivesAdvice). The upstream is read only
-// for a push the pass would otherwise refuse, once for each upstream URL, so a push that adds no
-// term runs no git for it; a read that fails refuses the push as a setup failure naming the URL.
-func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record, destination []string) error {
+// applies holds already. The fork's are in no record: Guard.commits lists no commit that a branch
+// or a tag of the push's destination reaches, as the one read of Guard.Push answered, so the
+// records the pass is handed hold none of them. Of the rest, it reads none that a branch or a tag
+// of such an upstream reaches (remoteHeld), read the same way from the entry's upstream URL
+// (Guard.advertised), each ref counting where this clone has the commit it is at. A commit the
+// fork holds is the fork's own history, and one the upstream holds is upstream's text, not the
+// fork's: `knives audit` reads none of it either, since its base for a branch is its fork point
+// with upstream's trunk, and a mirror sync of a fork's main, a release cut over a newer upstream
+// base and a member rebased onto one all push such commits. No ref of this clone's own says what
+// either holds (Guard.Push says why): a cut rehearsed on a local bare repository, whatever the
+// remote it was pushed through is named and whatever URL that remote names now, is still the real
+// push's own, and the pass reads it (the architect's rule of 2026-11-17). An upstream's ref at a
+// commit this clone does not have reaches nothing, so a clone that has not fetched as far as that
+// ref reads upstream's lines and refuses those that hold a term (knivesAdvice). The upstream is
+// read only for a push the pass would otherwise refuse, once for each upstream URL, so a push that
+// adds no term runs no git for it; a read that fails refuses the push as a setup failure naming
+// the URL.
+func (g *Guard) knives(ctx context.Context, what string, req PushRequest, records []Record) error {
 	listed := value(g.base(), KnivesRegistriesVar)
 	if listed == "" {
 		return nil
@@ -135,7 +141,7 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	// push, once its destination is named.
 	var failed error
 	if held && kept.freshAt(now) {
-		entries = kept.entries()
+		entries = kept.Entries
 	} else {
 		read, err := g.knivesEntries(ctx, rows)
 		switch {
@@ -145,7 +151,7 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 		case !held:
 			return &SetupFailure{What: what, Why: unread, Err: err}
 		default:
-			entries, failed = kept.entries(), err
+			entries, failed = kept.Entries, err
 		}
 	}
 	repos, err := g.destinationRepos(ctx, req)
@@ -165,16 +171,16 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	if len(lines) == 0 {
 		return nil
 	}
-	// A commit is held where the destination's refs reach it, or the refs of the upstream of an
-	// entry that applies.
-	holding := slices.Clip(destination)
+	// A commit the destination holds is in no record (Guard.commits), so a commit is held here
+	// where the refs of the upstream of an entry that applies reach it.
+	var holding []string
 	upstreams := map[string]bool{}
 	for _, entry := range applying {
-		if entry.upstream == "" || upstreams[entry.upstream] {
+		if entry.Upstream == "" || upstreams[entry.Upstream] {
 			continue
 		}
-		upstreams[entry.upstream] = true
-		upstream, err := g.advertised(ctx, req.Dir, entry.upstream)
+		upstreams[entry.Upstream] = true
+		upstream, err := g.advertised(ctx, req.Dir, entry.Upstream)
 		if err != nil {
 			return &SetupFailure{What: what, Why: "the refs of the registry entry's upstream could not be read", Err: err}
 		}
@@ -182,7 +188,7 @@ func (g *Guard) knives(ctx context.Context, what string, req PushRequest, record
 	}
 	reached, err := g.remoteHeld(ctx, req.Dir, holding, records)
 	if err != nil {
-		return &SetupFailure{What: what, Why: "the commits the destination and the upstream hold could not be read", Err: err}
+		return &SetupFailure{What: what, Why: "the commits the registry entry's upstream holds could not be read", Err: err}
 	}
 	if len(reached) > 0 {
 		records = slices.DeleteFunc(slices.Clone(records), func(record Record) bool { return reached[record.Commit] })
@@ -203,19 +209,17 @@ const knivesAdvice = "A commit is not read where a branch or tag of the destinat
 
 // remoteHeld are the commits of records of files that one of held reaches, each reaching itself:
 // the commits the knives pass does not read (Guard.knives), held being the commits that the
-// branches and tags of the push's destination and of an applying entry's upstream are at
-// (Guard.advertised). One rev-list answers for all of them, fed on its standard input the
-// records' commits, a line each, and then ^<sha> for each of held:
+// branches and tags of an applying entry's upstream are at (Guard.advertised). One rev-list
+// answers for all of them, fed on its standard input the records' commits, a line each, and then
+// ^<sha> for each of held:
 //
-//	git rev-list --no-walk --stdin
+//	git rev-list --stdin
 //
-// which is `git rev-list --no-walk <commits...> --not <held...>` with the shas off the command
-// line, since a repository can advertise thousands of refs. It prints every fed commit that none
-// of held reaches, with any ancestor of one that none reaches either, so a fed commit it does not
-// print is held. git documents that --no-walk has no effect where a range is given, and the ^
-// lines make one, so rev-list walks from the fed commits down to held. No git runs where no
-// record of a file names a commit, or where held is empty: nothing is held then. A git that fails
-// is an error, never a commit read as held.
+// which is `git rev-list <commits...> --not <held...>` with the shas off the command line, since a
+// repository can advertise thousands of refs. It prints every fed commit that none of held
+// reaches, with any ancestor of one that none reaches either, so a fed commit it does not print is
+// held. No git runs where no record of a file names a commit, or where held is empty: nothing is
+// held then. A git that fails is an error, never a commit read as held.
 func (g *Guard) remoteHeld(ctx context.Context, dir string, held []string, records []Record) (map[string]bool, error) {
 	// reached is every commit asked about, until rev-list names the ones none of held reaches.
 	reached := map[string]bool{}
@@ -236,7 +240,7 @@ func (g *Guard) remoteHeld(ctx context.Context, dir string, held []string, recor
 		fed.WriteString(sha)
 		fed.WriteString("\n")
 	}
-	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--no-walk", "--stdin")
+	out, err := g.gitFed(ctx, dir, fed.String(), "rev-list", "--stdin")
 	if err != nil {
 		return nil, err
 	}
@@ -261,26 +265,9 @@ const knivesKeptFor = 10 * time.Minute
 // this user may read and write the file (readPrivateState, writePrivateState): it holds every
 // entry's terms, and a term is private, which is why it is listed.
 type knivesKept struct {
-	ReadAt  time.Time         `json:"read_at"`
-	Entries []knivesKeptEntry `json:"entries"`
-}
-
-// knivesKeptEntry is a knivesEntry as the kept list's file writes one.
-type knivesKeptEntry struct {
-	Name      string   `json:"name"`
-	Origin    string   `json:"origin"`
-	Release   string   `json:"release"`
-	Upstream  string   `json:"upstream"`
-	Forbidden []string `json:"forbidden"`
-}
-
-// entries are the kept list's entries, in the order the read that made it merged them.
-func (k knivesKept) entries() []knivesEntry {
-	entries := make([]knivesEntry, 0, len(k.Entries))
-	for _, entry := range k.Entries {
-		entries = append(entries, knivesEntry{name: entry.Name, origin: entry.Origin, release: entry.Release, upstream: entry.Upstream, forbidden: entry.Forbidden})
-	}
-	return entries
+	ReadAt time.Time `json:"read_at"`
+	// Entries are the read's entries, in the order it merged them.
+	Entries []knivesEntry `json:"entries"`
 }
 
 // freshAt is whether the kept list stands in for a read at now: it was read no more than
@@ -317,10 +304,7 @@ func (g *Guard) keepKnives(listed string, readAt time.Time, entries []knivesEntr
 	if path == "" {
 		return
 	}
-	kept := knivesKept{ReadAt: readAt.UTC(), Entries: make([]knivesKeptEntry, 0, len(entries))}
-	for _, entry := range entries {
-		kept.Entries = append(kept.Entries, knivesKeptEntry{Name: entry.name, Origin: entry.origin, Release: entry.release, Upstream: entry.upstream, Forbidden: entry.forbidden})
-	}
+	kept := knivesKept{ReadAt: readAt.UTC(), Entries: entries}
 	encoded, err := json.Marshal(kept)
 	if err != nil {
 		return
@@ -341,16 +325,32 @@ func (g *Guard) knivesKeptPath(listed string) string {
 	return filepath.Join(state, "legion-gh", "knives", fmt.Sprintf("%x.json", sum))
 }
 
+// KnivesRegistriesValue is rows as KnivesRegistriesVar carries them to every role process the
+// Kubernetes runtime launches: a JSON list of {"repo", "path", "ref"} rows in order, which
+// knivesRows reads back, and "" with no row, where the runtime sets no such variable at all and a
+// push has no knives pass.
+func KnivesRegistriesValue(rows []KnivesRegistry) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	value, err := json.Marshal(rows)
+	if err != nil {
+		// A list of structs of three strings always marshals.
+		panic("leakguard: marshal the knives registries: " + err.Error())
+	}
+	return string(value)
+}
+
 // knivesRows are the rows listed holds. A value of any other shape is an error, never a list read
 // as empty: not one JSON list, a row with a field more, a row with a field missing or empty, or a
 // repo that is no <owner>/<name> ghrepo.Parse takes. No error carries the value or the decoder's
 // message, which can quote it.
-func knivesRows(listed string) ([]knivesRow, error) {
+func knivesRows(listed string) ([]KnivesRegistry, error) {
 	notRows := errors.New(KnivesRegistriesVar + ` is not a JSON list of {"repo", "path", "ref"} rows`)
 	decoder := json.NewDecoder(strings.NewReader(listed))
 	decoder.DisallowUnknownFields()
 	// A pointer, so that a JSON null, which decodes into a nil slice, is told from a list.
-	var rows *[]knivesRow
+	var rows *[]KnivesRegistry
 	if err := decoder.Decode(&rows); err != nil || rows == nil {
 		return nil, notRows
 	}
@@ -384,7 +384,11 @@ func knivesRows(listed string) ([]knivesRow, error) {
 // read takes about as long as a push's other passes together (measured 2026-11-17 in an issue
 // pod, 5 pushes each to a local bare: a median of 5.12 s with two rows read one after the other,
 // 3.45 s with none), and the reads depend on nothing of one another.
-func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEntry, error) {
+func (g *Guard) knivesEntries(ctx context.Context, rows []KnivesRegistry) ([]knivesEntry, error) {
+	if len(rows) == 0 {
+		// An empty list names no registry, and so no entry.
+		return []knivesEntry{}, nil
+	}
 	files := make([]string, len(rows))
 	failures := make([]error, len(rows))
 	var reads sync.WaitGroup
@@ -395,40 +399,37 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 	if err := errors.Join(failures...); err != nil {
 		return nil, err
 	}
+	var registry knivesRegistryFile
+	if err := toml.Unmarshal([]byte(files[0]), &registry); err != nil {
+		return nil, notKnivesTOML(0, err)
+	}
 	entries := map[string]*knivesEntry{}
-	for i, file := range files {
-		if i == 0 {
-			var registry knivesRegistryFile
-			if err := toml.Unmarshal([]byte(file), &registry); err != nil {
-				return nil, notKnivesTOML(i, err)
+	for _, name := range slices.Sorted(maps.Keys(registry.Repos)) {
+		read := registry.Repos[name]
+		entry := &knivesEntry{Name: name, Forbidden: read.Forbidden}
+		named := knivesEntryName(name, knivesTerms(entry.Forbidden))
+		for _, remote := range []struct {
+			field string
+			read  any
+			into  *string
+		}{{"origin", read.Origin, &entry.Origin}, {"release", read.Release, &entry.Release}, {"upstream", read.Upstream, &entry.Upstream}} {
+			value, ok := remote.read.(string)
+			if !ok && remote.read != nil {
+				return nil, fmt.Errorf("%s: %s %s is not a string", knivesRowName(0), named, remote.field)
 			}
-			for _, name := range slices.Sorted(maps.Keys(registry.Repos)) {
-				read := registry.Repos[name]
-				entry := &knivesEntry{name: name, forbidden: read.Forbidden}
-				named := knivesEntryName(name, knivesTerms(entry.forbidden))
-				for _, remote := range []struct {
-					field string
-					read  any
-					into  *string
-				}{{"origin", read.Origin, &entry.origin}, {"release", read.Release, &entry.release}, {"upstream", read.Upstream, &entry.upstream}} {
-					value, ok := remote.read.(string)
-					if !ok && remote.read != nil {
-						return nil, fmt.Errorf("%s: %s %s is not a string", knivesRowName(i), named, remote.field)
-					}
-					*remote.into = value
-				}
-				if entry.origin == "" {
-					return nil, fmt.Errorf("%s: %s names no origin", knivesRowName(i), named)
-				}
-				if err := knivesChecked(i, entry); err != nil {
-					return nil, err
-				}
-				entries[name] = entry
-			}
-			continue
+			*remote.into = value
 		}
+		if entry.Origin == "" {
+			return nil, fmt.Errorf("%s: %s names no origin", knivesRowName(0), named)
+		}
+		if err := knivesChecked(0, entry); err != nil {
+			return nil, err
+		}
+		entries[name] = entry
+	}
+	for i := 1; i < len(files); i++ {
 		var overlay knivesOverlayFile
-		if err := toml.Unmarshal([]byte(file), &overlay); err != nil {
+		if err := toml.Unmarshal([]byte(files[i]), &overlay); err != nil {
 			return nil, notKnivesTOML(i, err)
 		}
 		for _, name := range slices.Sorted(maps.Keys(overlay.Repos)) {
@@ -437,7 +438,7 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 				// The overlay's own table name is not printed: an overlay is the private half.
 				return nil, fmt.Errorf("%s adds to an entry no earlier registry has; an overlay only adds to an entry the registry already has", knivesRowName(i))
 			}
-			entry.forbidden = append(entry.forbidden, overlay.Repos[name].Forbidden...)
+			entry.Forbidden = append(entry.Forbidden, overlay.Repos[name].Forbidden...)
 			if err := knivesChecked(i, entry); err != nil {
 				return nil, err
 			}
@@ -461,7 +462,7 @@ func (g *Guard) knivesEntries(ctx context.Context, rows []knivesRow) ([]knivesEn
 // and the error names the row by its number and gh's status alone: gh's standard error is never
 // read, and its standard output is read only as a file it answered with 0, because what gh prints
 // of a failure names the read, and a row can name a private repository.
-func (g *Guard) knivesRegistry(ctx context.Context, i int, row knivesRow) (string, error) {
+func (g *Guard) knivesRegistry(ctx context.Context, i int, row KnivesRegistry) (string, error) {
 	// The path and the ref are escaped where they are written into the endpoint, so that a `?`,
 	// `#` or `%` of a file's name, or an `&` or `+` of a ref, reads the file the row names.
 	path := strings.ReplaceAll(url.PathEscape(row.Path), "%2F", "/")
@@ -498,13 +499,13 @@ func notKnivesTOML(i int, err error) error {
 // list is wrong and the entry (knivesEntryName), and never the term.
 func knivesChecked(i int, entry *knivesEntry) error {
 	seen := map[string]bool{}
-	for _, term := range entry.forbidden {
+	for _, term := range entry.Forbidden {
 		if strings.TrimSpace(term) == "" {
-			return fmt.Errorf("%s: the forbidden list of %s holds an empty term", knivesRowName(i), knivesEntryName(entry.name, knivesTerms(entry.forbidden)))
+			return fmt.Errorf("%s: the forbidden list of %s holds an empty term", knivesRowName(i), knivesEntryName(entry.Name, knivesTerms(entry.Forbidden)))
 		}
 		lowered := strings.ToLower(term)
 		if seen[lowered] {
-			return fmt.Errorf("%s: the forbidden list of %s lists a term twice, case aside", knivesRowName(i), knivesEntryName(entry.name, knivesTerms(entry.forbidden)))
+			return fmt.Errorf("%s: the forbidden list of %s lists a term twice, case aside", knivesRowName(i), knivesEntryName(entry.Name, knivesTerms(entry.Forbidden)))
 		}
 		seen[lowered] = true
 	}
@@ -626,7 +627,7 @@ func (g *Guard) remotes(ctx context.Context, dir string) ([]remote, error) {
 func knivesApplying(entries []knivesEntry, repos []string) []knivesEntry {
 	var applying []knivesEntry
 	for _, entry := range entries {
-		if namesOneOf(entry.origin, repos) || namesOneOf(entry.release, repos) {
+		if namesOneOf(entry.Origin, repos) || namesOneOf(entry.Release, repos) {
 			applying = append(applying, entry)
 		}
 	}
@@ -657,7 +658,7 @@ func knivesLines(entries []knivesEntry, records []Record) []string {
 	terms := make([][]string, len(entries))
 	var every []string
 	for e, entry := range entries {
-		terms[e] = knivesTerms(entry.forbidden)
+		terms[e] = knivesTerms(entry.Forbidden)
 		every = append(every, terms[e]...)
 	}
 	if len(every) == 0 {
@@ -686,7 +687,7 @@ func knivesLines(entries []knivesEntry, records []Record) []string {
 					line = file + ": the path: forbidden term " + strconv.Itoa(n+1)
 				}
 				if len(entries) > 1 {
-					line += " of " + knivesEntryName(entries[e].name, every)
+					line += " of " + knivesEntryName(entries[e].Name, every)
 				}
 				if !seen[line] {
 					seen[line] = true

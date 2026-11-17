@@ -3,6 +3,7 @@ package leakguard
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,10 +22,8 @@ import (
 // theKnivesRegistry: a row can name a private repository, whose repository, path and terms no
 // message may carry.
 var knivesOverlayRow = knivesServed{
-	Repo: "invented-org/private-registry",
-	Path: "repos.local.toml",
-	Ref:  "main",
-	file: "[repos.invented-repo]\nforbidden = [\"Marrowfen\"]\n",
+	KnivesRegistry: KnivesRegistry{Repo: "invented-org/private-registry", Path: "repos.local.toml", Ref: "main"},
+	file:           "[repos.invented-repo]\nforbidden = [\"Marrowfen\"]\n",
 }
 
 // knivesRefusal is err as a refusal of the knives pass, failing the test where it is anything
@@ -57,14 +56,19 @@ func TestAPushThatAddsNoKnivesTermPasses(t *testing.T) {
 	}
 }
 
-// Where LEGION_KNIVES_REGISTRIES is not set there is no knives pass: a line that holds a term
-// passes, and gh is never run.
+// Where LEGION_KNIVES_REGISTRIES is not set, and where it lists no row, no entry names the push's
+// destination: a line that holds a term passes, and gh is never run.
 func TestNoKnivesRegistriesIsNoKnivesPass(t *testing.T) {
 	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "the QUILLWORTHY build\n"})
 	path, _, ran := servingKnives(t, theKnivesRow)
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, path)
-	if err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin)); err != nil {
-		t.Fatalf("a push with no registries listed: %v", err)
+	for name, env := range map[string][]string{
+		"no registries listed":        {path},
+		"an empty list of registries": {path, KnivesRegistriesVar + "=[]"},
+	} {
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, env...)
+		if err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin)); err != nil {
+			t.Errorf("a push with %s: %v", name, err)
+		}
 	}
 	if runs := countLines(t, ran); runs != 0 {
 		t.Errorf("gh ran %d times, want none", runs)
@@ -400,7 +404,7 @@ func TestAnOctopusMergesOwnLinesAreReadForKnivesTerms(t *testing.T) {
 // entry's term is in force in both halves.
 func TestAKnivesTermInARefNameOrAMessageIsNotRead(t *testing.T) {
 	const registry = "[repos.invented-repo]\norigin = \"https://github.com/invented-org/invented-repo\"\nforbidden = [\"Legion\"]\n"
-	row := knivesServed{Repo: "invented-org/knives-registry", Path: "repos.toml", Ref: "main", file: registry}
+	row := knivesServed{KnivesRegistry: KnivesRegistry{Repo: "invented-org/knives-registry", Path: "repos.toml", Ref: "main"}, file: registry}
 	for _, tc := range []struct {
 		name, line string
 		want       []string
@@ -529,6 +533,37 @@ func TestAFreshKeptKnivesListIsUsedWithNoRead(t *testing.T) {
 	}
 	if len(notices) != 0 {
 		t.Errorf("the guard gave the notices %q, want none", notices)
+	}
+}
+
+// The kept list's file is the JSON of the read's time and the merged entries, each entry's name,
+// origin, release, upstream and forbidden list in that order and under those names, and a
+// newline: the bytes the guard wrote while the file had an entry type of its own, so a list a
+// role kept before a release is the one the next release reads, and a guard of either release
+// reads a file the other kept. The file reads back as the entries the read merged.
+func TestTheKeptKnivesListsFileIsTheMergedEntriesAsJSON(t *testing.T) {
+	_, repo, base, head := knivesCommit(t, map[string]string{"notes.md": "a line of ordinary prose\n"})
+	path, listed, _ := servingKnives(t, theKnivesRow, knivesOverlayRow)
+	var notices []string
+	guard := knivesGuardAt(t, t.TempDir(), &visibilityTestClock{now: knivesReadAt}, &notices, path, listed)
+	if err := guard.Push(bound(t), knivesPush(repo, base, head, "origin", knivesOrigin)); err != nil {
+		t.Fatalf("a push that adds no term, its registries read in full: %v", err)
+	}
+	kept, err := os.ReadFile(knivesKeptFile(guard, listed))
+	if err != nil {
+		t.Fatalf("the read that passed kept no list: %v", err)
+	}
+	const want = `{"read_at":"2026-11-17T09:52:00Z","entries":[{"name":"invented-repo",` +
+		`"origin":"https://github.com/invented-org/invented-repo","release":"",` +
+		`"upstream":"https://github.com/upstream-org/invented-repo","forbidden":["Bramblecote","Quillwort","Marrowfen"]}]}` + "\n"
+	if string(kept) != want {
+		t.Errorf("the kept list's file is\n  %s\nwant\n  %s", kept, want)
+	}
+	read, ok := guard.keptKnives(strings.TrimPrefix(listed, KnivesRegistriesVar+"="))
+	merged := []knivesEntry{{Name: "invented-repo", Origin: "https://github.com/invented-org/invented-repo", Upstream: knivesUpstream,
+		Forbidden: []string{"Bramblecote", knivesTerm, "Marrowfen"}}}
+	if !ok || !read.ReadAt.Equal(knivesReadAt) || !reflect.DeepEqual(read.Entries, merged) {
+		t.Errorf("the kept list reads back as %+v (kept: %t), want %+v read at %s", read, ok, merged, knivesReadAt)
 	}
 }
 
