@@ -218,7 +218,14 @@ func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
 		ErrorCode: "invalid_request", ErrorDescription: "LOGIN_PENDING: a login is already pending (echo " + secret + ")",
 	}
 	credentialed := brokeraddr.New("http://" + "tokuser9f3" + ":" + secret + "@broker.invalid")
-	err := (&requestReach{}).settle(oauthBrokerError(refusal, credentialed))
+	// settled is settle of err for a request that was sent whole, where only a refusal the helper
+	// can read as the broker's 4xx is a known outcome.
+	settled := func(err error) error {
+		reach := &requestReach{}
+		reach.sent.Store(true)
+		return reach.settle(err)
+	}
+	err := settled(oauthBrokerError(refusal, credentialed))
 	var be *BrokerError
 	if !errors.As(err, &be) || be.Status != http.StatusBadRequest {
 		t.Fatalf("the refusal beside an address with a credential = %v, want a BrokerError of status 400", err)
@@ -226,12 +233,22 @@ func TestARefusalBesideAnAddressWithACredentialIsStillARefusal(t *testing.T) {
 	if outcomeUnknown(err) {
 		t.Errorf("the refusal beside an address with a credential = %q, which reads as an unknown outcome", err)
 	}
-	wantNamedNotPrinted(t, "the refusal beside an address with a credential", err.Error(), []string{"broker 400"}, secret)
+	wantNamedNotPrinted(t, "the refusal beside an address with a credential", err.Error(), []string{"broker 400: " + brokeraddr.WordsNotPrinted}, secret)
 	if strings.Contains(err.Error(), "tokuser9f3") || strings.Contains(err.Error(), "LOGIN_PENDING") {
 		t.Errorf("the refusal beside an address with a credential = %q, which prints the broker's words", err)
 	}
-	clean := (&requestReach{}).settle(oauthBrokerError(refusal, brokeraddr.New("https://broker.example")))
-	if !strings.HasPrefix(clean.Error(), "broker 400 LOGIN_PENDING: a login is already pending") {
-		t.Errorf("the refusal beside a clean address = %q, want its code and words", clean)
+	clean := brokeraddr.New("https://broker.example")
+	if got := settled(oauthBrokerError(refusal, clean)); !strings.HasPrefix(got.Error(), "broker 400 LOGIN_PENDING: a login is already pending") {
+		t.Errorf("the refusal beside a clean address = %q, want its code and words", got)
+	}
+	// An answer with an error_uri does not print whole even beside a clean address. It is still
+	// the broker's refusal, of its status alone, and it names no unclean address it does not have.
+	pointing := &oauth2.RetrieveError{
+		Response:  &http.Response{StatusCode: http.StatusBadRequest},
+		ErrorCode: "invalid_request", ErrorDescription: "see " + secret, ErrorURI: "https://broker.example/why?k=" + secret,
+	}
+	got := settled(oauthBrokerError(pointing, clean))
+	if !errors.As(got, &be) || outcomeUnknown(got) || got.Error() != "broker 400" {
+		t.Errorf("a refusal with an error_uri beside a clean address = %q (unknown outcome: %t), want \"broker 400\"", got, outcomeUnknown(got))
 	}
 }

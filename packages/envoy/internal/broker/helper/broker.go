@@ -381,13 +381,13 @@ func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) contex
 // and description.
 //
 // An answer the redactor did not print whole - every answer beside an address that carries a
-// credential, which the broker or anyone answering for it can repeat back - is still the broker's
-// refusal, so it is a BrokerError of its status alone, with brokeraddr.WordsNotPrinted for its
-// words: no code and no word of its description, which are the very text the redactor withheld,
-// so no BrokerError holds a part of the credential either. requestReach.settle reads its status,
-// so a 4xx refusal is reported as one and not as an unknown outcome. Any other failure stays as
-// the redactor printed it. The answer is read as the broker's own (redact.BrokerAnswer), never
-// through errors.As: an answer that redact.Class or redact.Masked holds is another server's.
+// credential, which the broker or anyone answering for it can repeat back, and one with an
+// error_uri - is still the broker's refusal, so it is a BrokerError of its status alone: no code
+// and no word of its description, which are the very text the redactor withheld, so no BrokerError
+// holds a part of the credential either. Its words read brokeraddr.WordsNotPrinted beside an
+// address that is not clean, and are empty beside a clean one. requestReach.settle reads its
+// status, so a 4xx refusal is reported as one and not as an unknown outcome. The answer is read as
+// the broker's own (redact.BrokerAnswer), never through errors.As: Class and Masked hold others'.
 func oauthBrokerError(err error, addr brokeraddr.Address) error {
 	shown := addr.Error(err)
 	re, ok := redact.BrokerAnswer(err)
@@ -405,7 +405,11 @@ func oauthBrokerError(err error, addr brokeraddr.Address) error {
 		if be.Status == 0 {
 			return shown
 		}
-		return &BrokerError{Status: be.Status, Message: brokeraddr.WordsNotPrinted, withheld: true}
+		withheld := &BrokerError{Status: be.Status, withheld: true}
+		if !addr.Clean() {
+			withheld.Message = brokeraddr.WordsNotPrinted
+		}
+		return withheld
 	}
 	return be
 }
