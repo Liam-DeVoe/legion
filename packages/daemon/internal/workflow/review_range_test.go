@@ -20,25 +20,16 @@ import (
 // reviewerRow is LEGION-208's reviewer row as the record holds it.
 func reviewerRow(t *testing.T, pool *pgxpool.Pool) record.PhaseRow {
 	t.Helper()
-	return roleRow(t, pool, "LEGION-208", claim.RoleReviewer)
+	return roleRow(t, pool, claim.RoleReviewer)
 }
 
-// roleRow is role's phases row of issue as the record holds it, failing the test where the record
-// holds none.
-func roleRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
+// roleRow is role's phases row of LEGION-208 as the record holds it (phaseRowOf), failing the
+// test where the record holds none.
+func roleRow(t *testing.T, pool *pgxpool.Pool, role claim.Role) record.PhaseRow {
 	t.Helper()
-	tx, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(context.Background())
-	rows, err := record.NewStore().Phases(context.Background(), tx, issue)
-	if err != nil {
-		t.Fatalf("read phases: %v", err)
-	}
-	row := record.PhaseRowOf(rows, role)
+	row := phaseRowOf(t, pool, role)
 	if row.Role != role {
-		t.Fatalf("%s holds no %s's row", issue, role)
+		t.Fatalf("LEGION-208 holds no %s's row", role)
 	}
 	return row
 }
@@ -373,7 +364,7 @@ func TestALaterReviewRoundIsToldTheCommitTheReviewBeforeItRead(t *testing.T) {
 	}
 
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
-		row := roleRow(t, pool, "LEGION-208", role)
+		row := roleRow(t, pool, role)
 		if row.EntryTask == "" || !strings.Contains(row.EntryTask, " Phase: ") {
 			t.Fatalf("the %s's row holds the task %q, want the task round 2 started it with", role, row.EntryTask)
 		}
