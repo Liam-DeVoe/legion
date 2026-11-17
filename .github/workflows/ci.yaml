@@ -2663,6 +2663,7 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
+              - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/testwait/*'
               # gcp/dispatch.go's outsideOrigin check calls weborigin.Parse, so every build of the
               # component compiles that package.
@@ -3231,6 +3232,7 @@ jobs:
               - 'packages/envoy/internal/testpg/*'
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
+              - 'packages/envoy/internal/testtmp/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
