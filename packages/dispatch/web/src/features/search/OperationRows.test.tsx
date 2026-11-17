@@ -1147,6 +1147,44 @@ test("a fill step closes and sends nothing once a chip change makes another run 
   }
 });
 
+// A fill submitted while the person's setting is still being read waits for it, holding the
+// values typed for this run's invocations. A chip change with the same words makes another run
+// current before the setting arrives, so the waiting press is of a run no longer current: it
+// sends nothing, and none of the next run's writes goes with the values typed for this one.
+test("a fill submitted while the setting is still read sends nothing once a chip change makes another run of the same words current", async () => {
+  const read = Promise.withResolvers<{ confirm_writes: boolean }>();
+  settings.mockImplementation(() => read.promise);
+  const projects = spyOnProjects();
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_follow"]), follows, ended);
+    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+    await submit(user);
+    await user.type(
+      await screen.findByRole("textbox", { name: "Fill the session for ask-1" }),
+      "Planner"
+    );
+    await user.type(screen.getByRole("textbox", { name: "Fill the session for ask-2" }), "Tester");
+    await user.keyboard("{Enter}");
+    await tick(200);
+    expect(written).not.toHaveBeenCalled();
+
+    await askOfAnotherProject(user, decision(true, ["dispatch_follow"]), follows, ended);
+    await screen.findByRole("option", { name: /^Run follow on ask-1 and ask-2/ });
+    await act(async () => {
+      read.resolve({ confirm_writes: false });
+    });
+
+    await tick(1000);
+    expect(written).not.toHaveBeenCalled();
+  } finally {
+    bar.unmount();
+    projects.mockRestore();
+  }
+});
+
 test("a new issue the run made is the issue its write names, with no read of it that could fail", async () => {
   const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
     label: "",
