@@ -468,10 +468,10 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
 });
 
 // The task of a later review round names the commit read by the newest of the reviewer's own
-// deciding reviews that the daemon recorded, so the reviewer reads the difference from it and
-// hands the pair that same diff in each agent's task text, since each agent reviews only the diff
-// its task supplies. A defect seen outside the difference stays a finding, and three cases read
-// the whole change again. The daemon's prompts
+// deciding reviews whose footer named the entry of its round, so the reviewer reads the
+// difference from it and hands the pair that same diff in each agent's task text, since each
+// agent reviews only the diff its task supplies. A defect seen outside the difference stays a
+// finding, and three cases read the whole change again. The daemon's prompts
 // carry the same rule; prompts_test.go pins the composed reviewer prompt. The pull request body's
 // guide records it: the `Thermo` line's pair half names the range the pair read, and a later round
 // whose difference touches no runtime code has a form of its own, since `not run (docs-only)`
@@ -494,9 +494,10 @@ test("a later review round reads from the commit its task names, and the pair re
   );
   expect(mergeGate).not.toContain("then, when the diff touches runtime code, runs");
   expect(mergeGate).toContain(
-    "The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews that the daemon recorded"
+    "The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.`"
   );
   expect(mergeGate).not.toContain("the head your own last deciding review read");
+  expect(mergeGate).not.toContain("deciding reviews that the daemon recorded");
   expect(mergeGate).toContain(
     "Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit."
   );

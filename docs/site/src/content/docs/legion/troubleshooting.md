@@ -1416,6 +1416,17 @@ These arrive as messages on the Dispatch issue:
   from that head leaves it undecided until the new head arrives. The remedy is the reviewer's
   approval of the head itself, which ends the round once the record reaches that head and GitHub
   reports that head one the issue may advance on.
+- **A later review round reads the whole change, or from an older commit.** The reviewer's task of
+  a later round names `Last reviewed commit: <sha>`, and the reviewer reads the difference from that
+  commit to the head. A review moves that commit only when it is the reviewer's own (its Legion
+  footer names the session the reviewer's claim records), the reviewer's phase row holds the task of
+  an entry, and the footer's `entry` is the entry on that row, the number the reviewer's task names
+  as its last sentence, `Review entry: <n>.`. A review whose footer names no entry, or another one,
+  such as a review of a round before a new generation or a carried hand-over's promotion entered
+  the reviewer again, decides its round as any other and leaves the commit where it stands; so
+  does a person's review. The next round then reads from an older commit, or the whole change
+  where none stands, and a new generation clears the commit, so its first round reads the whole
+  change. The footer of the reviewer's newest deciding review on GitHub shows which case holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
   GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
   `implementing` on its own. And it enqueues nothing on a merge-queue base whose

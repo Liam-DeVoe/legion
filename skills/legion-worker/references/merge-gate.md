@@ -188,7 +188,7 @@ as the fingerprint decides (*The reviewer*, below, and
   nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
   one review.
 - **A later round reads from the commit its task names.**
-  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews that the daemon recorded (the daemon part of your role prompt says which reviews it records and where the commit comes from).
+  The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.` (the daemon part of your role prompt gives the whole rule and where the commit comes from).
   Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit.
   Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review.
   The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other, and *No deferrals* in `skill://legion-worker` holds for it.
