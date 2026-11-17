@@ -1070,6 +1070,10 @@ describe("a ! command in envoy.json", () => {
     };
     const start = Date.now();
     try {
+      // The clock holds at the start while the first runs are kept, as the row below holds it: a
+      // run is kept at the time it ends, and a run that takes a second on a loaded machine would
+      // otherwise move the 60 s past the 61 s this row reads at.
+      setSystemTime(new Date(start));
       for (let resolution = 0; resolution < 2; resolution += 1) {
         expect(await resolve()).toMatchObject({
           dispatch: { token: cachedSecret },
