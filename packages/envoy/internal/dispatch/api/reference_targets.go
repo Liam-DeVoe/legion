@@ -263,12 +263,17 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // out of each line of a document's block. A blank line, which the renderer can write without
 // that indentation, is kept as it stands, and a text with a line that is not blank and does not
 // carry that indentation is answered as it stands. A block of a comment, a message or an ask is a
-// top-level block of its item's own text, and that text's parse reads its lines as written: they
-// start at column 0, the parser takes out of each no more than the opening line's indentation,
-// which is none, and a fence fewer than four columns in closes the block. So the lines of an
-// item's block are its content as written, with no indentation taken out: under a fence two
-// spaces in, a line four spaces in is an indented code block, as the item reads it, and a line at
-// column 0 stays at column 0.
+// top-level block of its item's own text, stored from the start of its line, so its opening line
+// can stand up to three spaces in. The cut takes that indentation off the opening line before it
+// reads the directive, and up to as many columns of indentation off each later line (columnsOff),
+// as the item's own parse reads them. Under an opening line one to three spaces in, the
+// indentation left on each later line is written as spaces, each tab counted to the next multiple
+// of four from its own column in the stored text, so the content keeps the block structure the
+// item's own parse reads whatever tabs that indentation holds. An opening line that stands a tab
+// or four spaces in opens no typed block, so its text is answered as it stands. With an opener at
+// column 0 every line is as written: under a fence two spaces in, a line four spaces in is an
+// indented code block, as the item reads it, and a line at column 0 stays at column 0. Wherever
+// the opener stands, a fence fewer than four columns in closes the block.
 //
 // Of either kind, the blank lines at the start and at the end of the content are no part of it,
 // so a block that holds nothing has no content. A first line `---` is written `***`, the same
@@ -289,13 +294,23 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // a rendering of the block's content does (blockContent), and it is the same bytes except in
 // lines that read as nothing or as the same text: an escape that keeps a line from closing the
 // block, the blank line of an empty code block, the blank lines a rendering writes for the empty
-// paragraph an ask holds ahead of a list. One shape reads back otherwise: in a footnote
-// definition, a blank line of code is written without the definition's indentation, and the cut
-// cannot tell those columns from the code's, so such a line can keep other spaces than the
-// document reads in it.
+// paragraph an ask holds ahead of a list. Two shapes read otherwise. In a footnote definition, a
+// blank line of code is written without the definition's indentation, and the cut cannot tell
+// those columns from the code's, so such a line can keep other spaces than the document reads in
+// it. In an indented code block under an item's opening line one to three spaces in, a tab of the
+// line's indentation that lies wholly past the code's four columns is kept as a tab by the item's
+// own parse and written as spaces by the cut, so the code's text can hold spaces where the item
+// holds a tab; its block structure is the same.
 func blockTextContent(whole string, document bool) string {
 	opening, rest, _ := strings.Cut(whole, "\n")
-	if _, _, typed := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(opening, "\r")); !typed {
+	columns := 0
+	if !document {
+		columns = len(opening) - len(strings.TrimLeft(opening, " "))
+	}
+	if columns > 3 {
+		return whole
+	}
+	if _, _, typed := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(opening[columns:], "\r")); !typed {
 		return whole
 	}
 	inner, closing := "", rest
@@ -306,7 +321,7 @@ func blockTextContent(whole string, document bool) string {
 	if colons := strings.TrimRight(fence, " \t\r"); colons == "" || strings.Trim(colons, ":") != "" {
 		return whole
 	}
-	lines, standing := inner, whole
+	lines, standing := columnsOff(inner, columns), whole
 	if indent := closing[:len(closing)-len(fence)]; document && indent != "" {
 		outdent, cut := outdented(inner, indent)
 		if !cut {
@@ -339,6 +354,38 @@ func outdented(lines, indent string) (text string, cut bool) {
 		written.WriteString(rest)
 	}
 	return written.String(), true
+}
+
+// columnsOff is lines with columns columns of indentation taken off each line, as the item's own
+// parse reads a typed block whose opening line stands columns spaces in
+// (pmdoc.typedDirectiveParser.Continue). With columns above 0, the spaces and tabs a line starts
+// with, a blank line's included, are written again as spaces: as many as the columns they reach,
+// a space one column and a tab reaching the next multiple of four from its own column in the
+// line, less columns and never fewer than none. The rest of the line is kept as it stands. Kept
+// as a tab, a tab past columns would reach another stop once the line starts columns earlier, so
+// the content would read with another block structure than the item gives it. With columns 0 it
+// is lines.
+func columnsOff(lines string, columns int) string {
+	if columns == 0 {
+		return lines
+	}
+	var written strings.Builder
+	written.Grow(len(lines))
+	for line := range strings.Lines(lines) {
+		column, at := 0, 0
+		for ; at < len(line) && (line[at] == ' ' || line[at] == '\t'); at++ {
+			if line[at] == '\t' {
+				column += 4 - column%4
+			} else {
+				column++
+			}
+		}
+		for ; column > columns; column-- {
+			written.WriteByte(' ')
+		}
+		written.WriteString(line[at:])
+	}
+	return written.String()
 }
 
 // withoutBlankEnds is lines from the first that holds more than whitespace to the line ending

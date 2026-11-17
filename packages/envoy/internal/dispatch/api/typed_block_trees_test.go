@@ -217,6 +217,9 @@ func referenceTargetsOf(references ...string) string {
 // column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
 // A comment's typed block whose fence and lines stand two spaces in, with a line four spaces in
 // between them, answers that line as the comment's own parse reads it: a code block, not a heading.
+// A comment's and a message's typed block whose opening line stands two spaces in, after a
+// paragraph, answers its content with those spaces taken off it and off its lines, as the item's
+// own parse reads them, and no word of its opening line.
 // A member that names no block carries no tree, and neither does any member of a read that asked
 // for none. The names are the same either way.
 //
@@ -307,6 +310,13 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	codeLine := createReferenceAPIComment(t, handler, issue.Key, ":::callout{}\n"+notAHeading+"\n  :::")
 	const messageBlock = "A message's second block, with dispatch://TBT-1 in it."
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "A message's first block.\n\n" + messageBlock}, "alice")
+	// A comment's and a message's second block, a typed block whose opening line stands two spaces
+	// in: the block is stored from the start of its line, those spaces included, and the item's own
+	// parse reads it from past them.
+	const indentedOpener = "Indented opener."
+	indentedBody := "Intro.\n\n  :::callout{}\n  " + indentedOpener + "\n  :::"
+	indentedComment := createReferenceAPIComment(t, handler, issue.Key, indentedBody)
+	indentedMessage := createIssueMessage(t, handler, issue.Key, map[string]any{"body": indentedBody}, "alice")
 	ask := readPartAsk(t, handler, createPartAsk(t, handler, issue.Key, "Which day do we ship?",
 		map[string]string{"label": "Monday", "description": "Ship at the start of the week."},
 		map[string]string{"label": "Tuesday"}).ID)
@@ -335,6 +345,8 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 		"dispatch://" + issue.Key + "/comment/" + fenced.ID + "#b-b1",
 		"dispatch://" + issue.Key + "/comment/" + fencedThree.ID + "#b-b1",
 		"dispatch://" + issue.Key + "/comment/" + codeLine.ID + "#b-b1",
+		"dispatch://" + issue.Key + "/comment/" + indentedComment.ID + "#b-b2",
+		"dispatch://" + issue.Key + "/message/" + indentedMessage.ID + "#b-b2",
 	}
 	target := referenceTargetsOf(references...)
 	plain := treesRequest(t, handler, target, false)
@@ -395,6 +407,16 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	}
 	if tree := string(read[15].TextTree); !strings.Contains(tree, `"code_block"`) || strings.Contains(tree, `"heading"`) {
 		t.Errorf("the comment's block with a line four spaces in answers the text_tree\n\t%s\nwant that line as a code block, not a heading", tree)
+	}
+	for _, member := range read[16:] {
+		if member.TextTree == nil {
+			t.Errorf("%s carries no text_tree, want the tree of %q", member.Ref, indentedOpener)
+			continue
+		}
+		want := sameShape(t, pmdoc.DisplayJSON(indentedOpener, pmdoc.DisplayLatest))
+		if got := sameShape(t, json.RawMessage(member.TextTree)); !bytes.Equal(got, want) || strings.Contains(string(member.TextTree), "callout") {
+			t.Errorf("%s: text_tree is\n\t%s\nwant the tree of %q, with no callout in it\n\t%s", member.Ref, got, indentedOpener, want)
+		}
 	}
 
 	nestedTarget := referenceTargetsOf(references[9])

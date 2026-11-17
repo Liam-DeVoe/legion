@@ -11,10 +11,11 @@ import (
 // blockTextContent answers every shape of a block's stored text found so far with the content
 // its text_tree is read from, and reads no database. A document's block, which can stand in a
 // list item or a footnote definition, has the closing fence's indentation taken out of its lines.
-// A block of a comment, a message or an ask keeps its lines as written, and its content reads as
-// the item's own parse reads what the block holds. A text that does not read back as one typed
-// block is answered as it stands. The documents' texts are slices of a rendering, as the block
-// index stores them; the items' texts are as a comment writes them.
+// A block of a comment, a message or an ask, stored from the start of its line, has its opening
+// line's indentation, up to three spaces, taken off it and up to as many columns off each later
+// line, and its content reads as the item's own parse reads what the block holds. A text that does
+// not read back as one typed block is answered as it stands. The documents' texts are slices of a
+// rendering, as the block index stores them; the items' texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
 	const document, item = true, false
 	for _, row := range []struct {
@@ -102,6 +103,44 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"an item's empty block", item,
 			":::callout{}\n:::",
 			""},
+		// A comment's or a message's block is its body from the start of the line it starts on
+		// (itemblocks.Split), so the block of `Intro.\n\n  :::callout{}\n  Text.\n  :::` is stored
+		// from the callout's two spaces on, without the paragraph. An ask's part is the ask's
+		// question, an option or its answer whole, as written (refs.AskParts), so a question that
+		// is such a callout is a part of that same text.
+		{"an item's block whose opening line stands two spaces in: a comment's second block, after a paragraph", item,
+			"  :::callout{}\n  Text.\n  :::",
+			"Text.\n"},
+		{"an item's block whose opening line stands two spaces in: a message's block", item,
+			"  :::callout{}\n  A message's text.\n  :::",
+			"A message's text.\n"},
+		{"an item's block whose opening line stands two spaces in: an ask's question", item,
+			"  :::callout{}\n  An ask's question.\n  :::",
+			"An ask's question.\n"},
+		{"an item's block whose opening line stands three spaces in, over a line at column 0", item,
+			"   :::callout{}\nAt column 0.\n   :::",
+			"At column 0.\n"},
+		{"an item's text whose opening line stands four spaces in, which opens no typed block", item,
+			"    :::callout{}\n    Four in.\n    :::",
+			"    :::callout{}\n    Four in.\n    :::"},
+		{"an item's text whose opening line stands a tab in, which opens no typed block", item,
+			"\t:::callout{}\n\tA tab in.\n\t:::",
+			"\t:::callout{}\n\tA tab in.\n\t:::"},
+		{"an item's block whose opening line stands two spaces in, over a line four spaces in", item,
+			"  :::callout{}\n    Para four in.\n  :::",
+			"  Para four in.\n"},
+		{"an item's block whose opening line stands two spaces in, over a line six spaces in", item,
+			"  :::callout{}\n      Code six in.\n  :::",
+			"    Code six in.\n"},
+		{"an item's block whose opening line stands one space in, over a line a tab in", item,
+			" :::callout{}\n\tTabbed.\n :::",
+			"   Tabbed.\n"},
+		{"an item's block whose opening line stands two spaces in, over a line two spaces and a tab in", item,
+			"  :::callout{}\n  \tTab past two.\n  :::",
+			"  Tab past two.\n"},
+		{"an item's block whose opening line stands one space in, over a code line a space and two tabs in", item,
+			" :::callout{}\n \t\tCode across a tab.\n :::",
+			"       Code across a tab.\n"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			content := blockTextContent(row.whole, row.document)
