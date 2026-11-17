@@ -1429,8 +1429,10 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	if p.supervising != nil {
 		p.supervising(sup.quiet)
 	}
+	// A hello's boot token is resolved within the RPC bound on the daemon's clock, as the machines'
+	// own bounds are (helloResolver).
 	listener, err := stream.Listen(draining, p.stream,
-		sup.helloResolver(tokens, cfg.WorkerRPCTimeout), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
+		sup.helloResolver(tokens, cfg.WorkerRPCTimeout, p.clock), stream.Options{RPCTimeout: cfg.WorkerRPCTimeout, Log: log})
 	if err != nil {
 		cancel()
 		endDrain()

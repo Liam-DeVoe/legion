@@ -377,8 +377,10 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 }
 
 // helloCountingApplied dials the worker stream at address as a shim does, says hello with
-// bootToken, marks said, and waits for the daemon's hello_ack; then it counts how many of events
-// the store holds as applied at that moment.
+// bootToken, marks said, and waits for the daemon's hello_ack as the shim waits for it, with no
+// bound of its own (internal/shim's connect): the test's wait for its answer is the shared one
+// (testwait.Receive), and the daemon's stop closes the connection of a hello it never answered.
+// Then it counts how many of events the store holds as applied at that moment.
 func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reader *pgxpool.Pool, events []string) (net.Conn, int, error) {
 	conn, err := net.Dial("unix", strings.TrimPrefix(address, "unix://"))
 	if err != nil {
@@ -389,9 +391,6 @@ func helloCountingApplied(address, bootToken string, said *sync.WaitGroup, reade
 	said.Done()
 	if err != nil {
 		return conn, 0, fmt.Errorf("say hello: %w", err)
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
-		return conn, 0, err
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {

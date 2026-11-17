@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/testbuild"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
@@ -32,6 +31,7 @@ import (
 type idleRigListener struct {
 	t      *testing.T
 	url    string
+	ctx    context.Context
 	logs   string
 	cmd    *exec.Cmd
 	client *http.Client
@@ -76,8 +76,11 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		defer close(done)
 		_ = cmd.Wait()
 	}()
-	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), logs: logs, cmd: cmd, port: port,
-		client: &http.Client{Timeout: 10 * time.Second}}
+	// Every request the rig makes of the listener carries the shared wait's bound
+	// (testwait.Context) and no timeout of the rig's own, so a listener a loaded machine answers
+	// late is answered.
+	l := &idleRigListener{t: t, url: "http://127.0.0.1:" + fmt.Sprint(port), ctx: testwait.Context(t), logs: logs, cmd: cmd, port: port,
+		client: &http.Client{}}
 	var once sync.Once
 	l.stop = func() {
 		once.Do(func() {
@@ -92,7 +95,11 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 		}
 	}()
 	testwait.Eventually(t, "the Envoy listener answering /healthz healthy", func() bool {
-		response, err := l.client.Get(l.url + "/healthz")
+		request, err := http.NewRequestWithContext(l.ctx, http.MethodGet, l.url+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := l.client.Do(request)
 		if err != nil {
 			return false
 		}
@@ -138,7 +145,7 @@ func (l *idleRigListener) send(body map[string]any) (int, string) {
 // rig's listener shortens. It answers the listener's status and body.
 func (l *idleRigListener) freeClaims(session string) (int, string) {
 	l.t.Helper()
-	request, err := http.NewRequest(http.MethodDelete, l.url+"/v1/interests/"+session, nil)
+	request, err := http.NewRequestWithContext(l.ctx, http.MethodDelete, l.url+"/v1/interests/"+session, nil)
 	if err != nil {
 		l.t.Fatal(err)
 	}
@@ -151,7 +158,7 @@ func (l *idleRigListener) call(path string, body map[string]any) (int, string) {
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPost, l.url+path, bytes.NewReader(encoded))
+	request, err := http.NewRequestWithContext(l.ctx, http.MethodPost, l.url+path, bytes.NewReader(encoded))
 	if err != nil {
 		l.t.Fatal(err)
 	}

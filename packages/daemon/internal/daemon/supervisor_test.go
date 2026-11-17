@@ -17,6 +17,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/clock"
+	"github.com/sjawhar/legion/daemon/internal/clock/clocktest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -49,7 +51,7 @@ func TestHelloResolverRejectsAnUnknownTokenAtOnceDuringTheBootWait(t *testing.T)
 	synctest.Test(t, func(t *testing.T) {
 		sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 		const resolveTimeout = 20 * time.Millisecond
-		resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout)
+		resolve := sup.helloResolver(api.NewBootTokens(fixedClaimStore{found: false}), resolveTimeout, clock.Real())
 
 		done := make(chan struct{})
 		go func() {
@@ -80,7 +82,7 @@ func TestHelloResolverHoldsAKnownTokenUntilRestoredRatherThanRejectingItAfterThe
 		sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 		const resolveTimeout = 20 * time.Millisecond
 		store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout, clock.Real())
 
 		done := make(chan struct{})
 		go func() {
@@ -118,7 +120,7 @@ func TestHelloResolverReleasesAKnownTokenWhenTheBootGivesUpRatherThanBecomingRea
 		sup := newSupervisor(ctx, nil, "PROJECT", "", quietLogger())
 		const resolveTimeout = 20 * time.Millisecond
 		store := fixedClaimStore{found: true, claim: supervise.Claim{Token: claim.Token("a-claim"), Generation: 1}}
-		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout)
+		resolve := sup.helloResolver(api.NewBootTokens(store), resolveTimeout, clock.Real())
 
 		done := make(chan struct{})
 		go func() {
@@ -179,7 +181,9 @@ func TestAHelloWhoseClaimReadFailsOnceIsAcceptedOnTheRedialWithNoRefusal(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	listener, err := stream.Listen(ctx, "unix://"+filepath.Join(shortTempDir(t), "worker-stream.sock"),
-		sup.helloResolver(api.NewBootTokens(store), time.Second),
+		// The resolve bound is on a fake the row never moves: the first read fails by the store's
+		// own error, and the bound ends no read however late a loaded machine answers it.
+		sup.helloResolver(api.NewBootTokens(store), time.Second, clocktest.New(time.Now())),
 		stream.Options{RPCTimeout: time.Second, Log: slog.New(slog.NewTextHandler(logs, nil))})
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -329,7 +333,7 @@ func TestHelloResolverResolvesAgainAfterRestorationSoARelaunchDuringTheHoldIsNot
 				sup := newSupervisor(context.Background(), nil, "PROJECT", "", quietLogger())
 				sup.machines[claim.Token("a-claim")] = &member{}
 				const resolveTimeout = 20 * time.Millisecond
-				resolve := sup.helloResolver(tokens, resolveTimeout)
+				resolve := sup.helloResolver(tokens, resolveTimeout, clock.Real())
 
 				done := make(chan result, 1)
 				go func() {

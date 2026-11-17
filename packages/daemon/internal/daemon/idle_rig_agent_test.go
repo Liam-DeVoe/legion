@@ -416,7 +416,10 @@ type idleRigRoleProcess struct {
 }
 
 func newIdleRigRoleProcess(rig string) (*idleRigRoleProcess, error) {
-	p := &idleRigRoleProcess{rig: rig, client: &http.Client{Timeout: 20 * time.Second}, recorded: map[uint64]bool{}}
+	// The client sets no timeout of its own: a request ends when it is answered or when this
+	// process does, which the rig's launcher ends when the test ends, so no bound of the rig's
+	// decides a request a loaded machine answers late.
+	p := &idleRigRoleProcess{rig: rig, client: &http.Client{}, recorded: map[uint64]bool{}}
 	p.pod = os.Getenv("LEGION_SANDBOX")
 	if p.pod == "" {
 		p.pod = os.Getenv("LEGION_ISSUE")
@@ -544,8 +547,12 @@ func (p *idleRigRoleProcess) bootToken() (string, error) {
 	return answer.Token, nil
 }
 
+// dial connects to the worker stream and says hello, as the shim does, and waits for the daemon's
+// hello_ack as the shim waits for it: with no bound of its own (internal/shim's connect), so a
+// daemon that answers late under load is answered, and one that never answers holds this process
+// until the rig ends it.
 func (p *idleRigRoleProcess) dial(bootToken string) error {
-	conn, err := net.DialTimeout("tcp", p.connect, 10*time.Second)
+	conn, err := net.Dial("tcp", p.connect)
 	if err != nil {
 		return fmt.Errorf("dial the worker stream %s: %w", p.connect, err)
 	}
@@ -553,7 +560,7 @@ func (p *idleRigRoleProcess) dial(bootToken string) error {
 	if err := p.writer.WriteFrame(shimwire.Hello2{BootToken: bootToken}); err != nil {
 		return err
 	}
-	frame, err := p.next(30 * time.Second)
+	frame, err := p.next()
 	if err != nil {
 		return err
 	}
@@ -795,7 +802,7 @@ func (p *idleRigRoleProcess) report(kinds []string) error {
 // serve answers the daemon's frames until the connection ends or a shutdown arrives.
 func (p *idleRigRoleProcess) serve() error {
 	for {
-		frame, err := p.next(0)
+		frame, err := p.next()
 		if err != nil {
 			return nil
 		}
@@ -879,14 +886,9 @@ func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 	return p.reportActivity()
 }
 
-func (p *idleRigRoleProcess) next(within time.Duration) (shimwire.Frame, error) {
-	deadline := time.Time{}
-	if within > 0 {
-		deadline = time.Now().Add(within)
-	}
-	if err := p.conn.SetReadDeadline(deadline); err != nil {
-		return nil, err
-	}
+// next is the daemon's next frame on the worker stream, read with no deadline, as the shim reads
+// it.
+func (p *idleRigRoleProcess) next() (shimwire.Frame, error) {
 	line, err := p.lines.ReadBytes('\n')
 	if err != nil {
 		return nil, err
