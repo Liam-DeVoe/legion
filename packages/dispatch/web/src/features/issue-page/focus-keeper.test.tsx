@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 // biome-ignore lint/style/noRestrictedImports: the press case needs a press, a blur and a removal inside one task, and user-event's press awaits between its events.
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { useFocusKeeper } from "./focus-keeper";
 
@@ -167,5 +168,159 @@ test("a press on the focused control is no move of the reader's when its write d
   } finally {
     view.unmount();
     stopFixup();
+  }
+});
+
+test("a control that turns disabled gets the focus back once it is enabled again", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+    view.rerender(<Region />);
+    await waitFor(() => expect(button("Save")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a Retry that fails twice has the focus back after each failure", async () => {
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    // The reader presses Retry: it is disabled while its read runs again, and that read fails.
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+    view.rerender(<Region />);
+    await waitFor(() => expect(button("Save")).toHaveFocus());
+    // The reader presses it again, and the read fails again.
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+    view.rerender(<Region />);
+    await waitFor(() => expect(button("Save")).toHaveFocus());
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+test("a key the reader presses where the keeper put the focus keeps it there", async () => {
+  const user = userEvent.setup();
+  const stopFixup = emulateChromiumFocusFixup();
+  const view = render(<Region />);
+  try {
+    act(() => button("Save").focus());
+    view.rerender(<Region save="disabled" />);
+    await waitFor(() => expect(button("First fallback")).toHaveFocus());
+    // The reader acts on the control the keeper gave them, inside the region: from then on that
+    // is where they are, so Save enabled again takes nothing back.
+    await user.keyboard("{Enter}");
+    view.rerender(<Region />);
+    // A give-back would run in the check this change starts.
+    await act(async () => {});
+    expect(button("First fallback")).toHaveFocus();
+  } finally {
+    view.unmount();
+    stopFixup();
+  }
+});
+
+/**
+ * A region whose Save control an answer removes, and whose own effect then hands the focus to the
+ * second fallback button when the focus went with Save. The answer lands outside any event, as a
+ * read's does, so React runs that effect in a task of its own scheduler, after the keeper's
+ * observer has heard the removal. `onHandOn` is told once the effect has run.
+ */
+function HandOnRegion({ answer, onHandOn }: { answer: Promise<void>; onHandOn: () => void }) {
+  const region = useRef<HTMLDivElement>(null);
+  const second = useRef<HTMLButtonElement>(null);
+  const [answered, setAnswered] = useState(false);
+  useFocusKeeper(region, [
+    ({ root }) => root.querySelector<HTMLElement>("[data-fallback='first']"),
+  ]);
+  useEffect(() => {
+    void answer.then(() => setAnswered(true));
+  }, [answer]);
+  useEffect(() => {
+    if (!answered) return;
+    // The site hands the focus on only when it went with Save, never past a place the reader chose.
+    if (document.activeElement === document.body) second.current?.focus();
+    onHandOn();
+  }, [answered, onHandOn]);
+  return (
+    <div ref={region}>
+      {answered ? null : <button type="button">Save</button>}
+      <button data-fallback="first" type="button">
+        First fallback
+      </button>
+      <button ref={second} type="button">
+        Second fallback
+      </button>
+    </div>
+  );
+}
+
+/** React's switch for its warning about an update outside `act`, which Testing Library's own waits
+ *  turn off while they let the page's tasks run. */
+const reactGlobals = globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean };
+
+test("a site that hands the focus on from a passive effect keeps its own choice", async () => {
+  const answer = Promise.withResolvers<void>();
+  const handedOn = Promise.withResolvers<void>();
+  const view = render(<HandOnRegion answer={answer.promise} onHandOn={handedOn.resolve} />);
+  const actEnvironment = reactGlobals.IS_REACT_ACT_ENVIRONMENT;
+  // A held clock keeps the keeper's move, which waits one task, from running until the site's
+  // effect has run. React runs that effect from its own scheduler, which the clock does not hold;
+  // on a real clock, which of the two tasks ran first would depend on how busy the machine is. A
+  // keeper that moved at once would move in its observer's microtask, before either.
+  jest.useFakeTimers();
+  try {
+    act(() => button("Save").focus());
+    // The answer lands outside `act`, so React draws its change and runs the effect in tasks of
+    // its scheduler as a browser does, rather than all at once as `act` ends.
+    reactGlobals.IS_REACT_ACT_ENVIRONMENT = false;
+    answer.resolve();
+    await handedOn.promise;
+    reactGlobals.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+    // The keeper's move runs now, and finds the focus already handed on.
+    realClock();
+    expect(button("Second fallback")).toHaveFocus();
+  } finally {
+    reactGlobals.IS_REACT_ACT_ENVIRONMENT = actEnvironment;
+    jest.useRealTimers();
+    view.unmount();
+  }
+});
+
+/** A box whose Act control is drawn inside a wrapper of its own, which goes with it, beside the
+ *  box's Chip. The keeper's one fallback finds the box from where Act stood. */
+function BoxRegion({ shown = true }: { shown?: boolean }) {
+  const region = useRef<HTMLDivElement>(null);
+  useFocusKeeper(region, [({ place }) => place?.closest("[data-box]")?.querySelector("button")]);
+  return (
+    <div ref={region}>
+      <div data-box>
+        {shown ? (
+          <span>
+            <button type="button">Act</button>
+          </span>
+        ) : null}
+        <button type="button">Chip</button>
+      </div>
+    </div>
+  );
+}
+
+test("a control removed with its wrapper hands the focus to the one beside where it stood", async () => {
+  const view = render(<BoxRegion />);
+  try {
+    act(() => button("Act").focus());
+    view.rerender(<BoxRegion shown={false} />);
+    await waitFor(() => expect(button("Chip")).toHaveFocus());
+  } finally {
+    view.unmount();
   }
 });
