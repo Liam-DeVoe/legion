@@ -788,10 +788,12 @@ func (w *Watcher) beginSettle(generation uint64, read Read) *settling {
 	return settle
 }
 
-// armSettle arms generation's bound on its wait past the barrier, the idle timeout from the
-// barrier's acknowledgement, on the scan's idle wait, which the scan's end disarmed. The bound's
-// deadline is kept (settleDeadline), so a signal on that channel ends the wait only once it has
-// gone (settleExpired).
+// armSettle arms generation's bound on its wait past the barrier, on the scan's idle wait, which
+// the scan's end disarmed: the idle timeout from now. consume calls it once the barrier's
+// acknowledgement has arrived and the stream check that follows it (confirmStream, bounded by
+// bus.RequestTimeout) has returned, so the bound starts when that check returns, not at the
+// acknowledgement. The bound's deadline is kept (settleDeadline), so a signal on that channel
+// ends the wait only once it has gone (settleExpired).
 func (w *Watcher) armSettle(generation uint64, idle chan<- struct{}) {
 	w.mu.Lock()
 	defer w.mu.Unlock()

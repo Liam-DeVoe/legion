@@ -244,9 +244,10 @@ func TestAReadStopsWaitingAtTheBarrierWhateverItsPendingCount(t *testing.T) {
 }
 
 // A read's wait past its barrier is bounded: a consumer that never reaches the barrier fails the
-// read after the idle timeout from the barrier's acknowledgement, which removes nothing and reads
-// the bucket again. ReadErr measures from when the wait began, so it reports a wait that has
-// outlasted the stale bound while it is still under way, and the failed run after it.
+// read the idle timeout after the stream check that follows the barrier's acknowledgement, which
+// removes nothing and reads the bucket again. ReadErr measures from when the wait began, so it
+// reports a wait that has outlasted the stale bound while it is still under way, and the failed
+// run after it.
 func TestAReadsWaitPastItsBarrierIsBoundedAndReported(t *testing.T) {
 	const heldByTheCopy = "held-by-the-copy"
 	uri := testnats.URL(t)
