@@ -166,6 +166,8 @@ var readsWithoutAViewer = map[string]string{
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
 	"BlockTextAt":          nodeDetail,
+	"BlockTexts": nodeDetail + " - the batch of CurrentBlockText and CurrentItemBlockText, which the reference-targets read " +
+		"asks only for the blocks TargetNames answered its reader",
 	"CanonicalRepo":        noNode,
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
@@ -327,8 +329,9 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return database.Pool.SendBatch(ctx, batch).Close()
 		})
 	}
-	// Nodes is Node over a batch, and ExcerptedNodes is Nodes with each node's excerpt: one
-	// target of every kind, so each kind's loader issues its statement in the one call.
+	// Nodes is Node over a batch, ExcerptedNodes is Nodes with each node's excerpt, and
+	// TargetNames is Nodes with each node's name: one target of every kind, so each kind's
+	// loader issues its statement in the one call.
 	everyKind := make([]Target, len(nodeKinds))
 	for index, kind := range nodeKinds {
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
@@ -339,6 +342,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
 		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		return err
+	})
+	record("TargetNames", "TargetNames of every kind at once", func() error {
+		_, err := TargetNames(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
@@ -386,6 +393,19 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			return err
 		})
 	}
+	// ResolvePrefixes is ResolvePrefix over a batch: one short id of each kind and scope it reads,
+	// so each of its statements, a pinned block's included, is issued in the one call.
+	record("ResolvePrefixes", "ResolvePrefixes of every kind at once", func() error {
+		_, _, err := ResolvePrefixes(ctx, recorder, who, []ShortID{
+			{Kind: "ask", Prefix: "00000000"},
+			{Kind: "comment", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"},
+			{Kind: "artifact", Prefix: "00000000"},
+			{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
+			{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
+		})
+		return err
+	})
 	// A document's own scope is its id, answered with no statement; the three kinds whose scope
 	// is read are read here.
 	for _, kind := range []string{"ask", "comment", "message"} {

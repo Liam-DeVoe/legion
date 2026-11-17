@@ -2,7 +2,19 @@ import { type ReactNode, useMemo, useState } from "react";
 
 import type { ArchitectureTreeComponent } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
-import { secondaryButtonCompact } from "../../theme/classes";
+import { usePageWords } from "../../components/tooltips";
+import {
+  pageLineBorder,
+  pageMutedText,
+  pagePaperBg,
+  secondaryButtonCompact,
+} from "../../theme/classes";
+
+/** The trigger inside `NoTooltips`: `secondaryButtonCompact`'s shape in the new issue page's
+ *  colours (dispatch://INFRA-3935 R6 and R9, decision 56 of
+ *  dispatch://INFRA-1196/artifact/part-decisions-md), as its other compact secondary controls
+ *  draw it: the header control's rule and muted words on the paper, quiet words while busy. */
+const PAGE_TRIGGER = `min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${pageLineBorder} ${pagePaperBg} ${pageMutedText} refused:text-page-quiet`;
 
 export interface ComponentPickerProps {
   /** The trigger's text; defaults to `Components`. */
@@ -40,6 +52,7 @@ export function ComponentPicker({
   selected,
   triggerAriaLabel,
 }: ComponentPickerProps): ReactNode {
+  const page = usePageWords();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const attachable = useMemo(
@@ -99,9 +112,21 @@ export function ComponentPicker({
       searchLabel="Search components"
       selected={draft}
       triggerAriaLabel={triggerAriaLabel}
-      triggerClassName={secondaryButtonCompact}
+      triggerClassName={page === null ? secondaryButtonCompact : PAGE_TRIGGER}
     >
-      {saving ? "Saving…" : (children ?? "Components")}
+      {/* While it saves, inside `NoTooltips` the trigger says the page's words with their mark
+          (dispatch://INFRA-3935 R8 and R9, decision 114 of
+          dispatch://INFRA-1196/artifact/part-decisions-md), which the components line's name
+          begins with (`componentsControlName`); outside it says `main`'s "Saving…" (R1). */}
+      {saving ? (
+        page === null ? (
+          "Saving…"
+        ) : (
+          <span {...page.pageChrome}>{page.ANSWER_LINES.saving_components}</span>
+        )
+      ) : (
+        (children ?? "Components")
+      )}
     </MultiSelect>
   );
 }
