@@ -210,6 +210,9 @@ YAML
   cat > "$root/scripts/e2e/lib/nats-stream.test.ts" <<YAML
 docker("run", "--rm", "$REGISTRY@$NATS", "-js");
 YAML
+  cat > "$root/scripts/e2e/lib/containers.test.ts" <<YAML
+const natsImage = "$REGISTRY@$NATS";
+YAML
   cat > "$root/packages/dispatch/e2e/visual-run.sh" <<YAML
 #!/bin/sh
 docker run --rm --network host --cpus 2 --memory 4g $REGISTRY@$NATS \\
@@ -752,6 +755,18 @@ root=$(fixture opaque-docker)
 cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
 #!/usr/bin/env bash
 docker run -d --name pg "$PG_IMAGE" >/dev/null
+YAML
+run_check tree "$root"
+check "a variable from nowhere fails" "$(is "$status" 1)"
+check "says what to do with it" "$(contains "$out" 'add the variable that holds it to IMAGE_FROM')"
+
+echo "case: a lib/containers.sh start whose image this check cannot read"
+# start_postgres_container and start_nats_container run \`docker run\` on the image after their
+# \`--\`, so a call of either is a docker command that fetches that image.
+root=$(fixture opaque-container-start)
+cat > "$root/scripts/e2e/stage1-skeleton.sh" <<'YAML'
+#!/usr/bin/env bash
+start_postgres_container pg pg_sockets --cpus 2 --memory 2g -- "$PG_IMAGE"
 YAML
 run_check tree "$root"
 check "a variable from nowhere fails" "$(is "$status" 1)"

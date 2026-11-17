@@ -62,6 +62,7 @@ stagings.push(() => {
   for (const lib of [
     "rig.sh",
     "loopback-dsn.sh",
+    "containers.sh",
     "loopback-dsn.py",
     "port-file.sh",
     "held-port.py",

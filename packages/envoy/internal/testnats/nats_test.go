@@ -832,16 +832,23 @@ const envoyRoot = "../.."
 // build does not see at all.
 const thisPackage = "github.com/sjawhar/envoy/internal/testnats"
 
-// containerRigs are the packages of this module that may reach testcontainers: this rig, and the
-// two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
+// containerRigs are the packages of this module that may reach a container runtime: this rig, and
+// the two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
 // internal/tests3 SeaweedFS). Every other package is a finding, whichever testcontainers package
 // it imports: modules/nats is the obvious way to start a NATS container, and
-// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
+// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import. A rig may drive
+// the docker CLI itself, as tests3 does: its container publishes no port on Docker's bridge
+// network, which testcontainers cannot start (docs/testing.md, "A container a test starts
+// publishes no port").
 var containerRigs = []string{
 	thisPackage,
 	"github.com/sjawhar/envoy/internal/testpg",
 	"github.com/sjawhar/envoy/internal/tests3",
 }
+
+// modulePath is this module's import path, which the file walk joins a directory to for the
+// package its files are.
+const modulePath = "github.com/sjawhar/envoy"
 
 // containerModule is the import prefix every testcontainers package shares.
 const containerModule = "github.com/testcontainers/testcontainers-go"
@@ -865,9 +872,10 @@ var dockerDriver = regexp.MustCompile(
 // one consumer, internal/dispatch/files, skips under DISPATCH_TEST_NO_CONTAINERS=1), and a
 // separate issue removes Postgres through testpg; widening this guard to walk go list -deps is
 // that issue's work, not this one's. internal/smoke's containers are behind the smoke build tag
-// and the rig's own behind natslive, so an untagged go list never sees their imports. The walk
-// does not go by tag: it reads every .go file, those included, and passes them because none
-// drives docker by hand.
+// and the rig's own behind natslive, so an untagged go list never sees their imports. The file
+// walk does not go by tag: it reads every .go file, those included, and passes the rigs' own
+// files alone, as the import walk passes the rigs' packages, so a docker call in any other
+// package, internal/pgmigrate's or a test's, is still a finding.
 func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
 	t.Run("imports", func(t *testing.T) {
 		for _, finding := range containerImporters(t) {
@@ -960,16 +968,20 @@ func dockerDriverFiles(t *testing.T) []string {
 		if !strings.HasSuffix(path, ".go") {
 			return nil
 		}
+		relative, err := filepath.Rel(envoyRoot, path)
+		if err != nil {
+			return err
+		}
+		relative = filepath.ToSlash(relative)
+		if slices.Contains(containerRigs, modulePath+"/"+filepath.ToSlash(filepath.Dir(relative))) {
+			return nil
+		}
 		text, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
 		if dockerDriver.Match(text) {
-			relative, err := filepath.Rel(envoyRoot, path)
-			if err != nil {
-				return err
-			}
-			drivers = append(drivers, filepath.ToSlash(relative))
+			drivers = append(drivers, relative)
 		}
 		return nil
 	})

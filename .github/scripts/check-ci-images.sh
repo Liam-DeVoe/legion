@@ -339,6 +339,7 @@ REACH = (
     "packages/envoy/internal/tests3/seaweedfs.go",
     "packages/envoy-client/src/__tests__/nats-server.ts",
     "scripts/e2e/lib/nats-stream.test.ts",
+    "scripts/e2e/lib/containers.test.ts",
     "packages/dispatch/e2e/visual-run.sh",
     "packages/pi-legion/scripts/skill-scenarios/rig.sh",
     "scripts/e2e/stage1-skeleton.sh",
@@ -424,6 +425,8 @@ ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)")
 STRING = re.compile(r"\"([^\"\n\\]*)\"|'([^'\n\\]*)'|`([^`\n\\]*)`")
 GO_VERSION_ARG = re.compile(r"^ARG\s+GO_VERSION=(\S+)\s*$")
 FETCH_VERBS = {"pull", "run", "create"}
+# scripts/e2e/lib/containers.sh's two starts, each a `docker run` of the image after its `--`.
+FETCH_HELPERS = {"start_nats_container", "start_postgres_container"}
 
 problems: list[str] = []
 used_image_from: set[tuple[str, str]] = set()
@@ -1039,13 +1042,16 @@ def strip_comment(command: str) -> str:
 
 def fetches(words: list[str]) -> bool:
     """A command that fetches an image from a registry: a `docker` whose subcommand, the first
-    word after it that is not an option, is `pull`, `run` or `create`. `docker buildx
+    word after it that is not an option, is `pull`, `run` or `create`, or a call of one of
+    FETCH_HELPERS, which runs `docker run` on the image it is given. `docker buildx
     imagetools create` writes an index and `docker image inspect` reads the local daemon, so
     neither is one; what `docker buildx build` pulls is the FROM of its Dockerfile, which this
     check reads where that Dockerfile is in the reach. A global option that takes a separate
     value (`docker --context two run …`) would shift the subcommand, and no command in the reach
     has one."""
     for index, word in enumerate(words):
+        if word in FETCH_HELPERS:
+            return True
         if word != "docker" and not word.endswith("/docker"):
             continue
         for following in words[index + 1 :]:

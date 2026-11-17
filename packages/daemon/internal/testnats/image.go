@@ -13,7 +13,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +39,7 @@ const SkippingImage = "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be
 // permissions (the configuration StartNkeyAuthorizedUsers gives an in-process server), removed when
 // t ends, and returns the container, whose log a test reads, beside its client URL once the server
 // refuses a client with no credential (answering).
-func StartImage(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSContainer, string) {
+func StartImage(t testing.TB, image string, users ...NkeyUser) (*testcontainers.DockerContainer, string) {
 	t.Helper()
 	skipWithoutContainerRuntime(t)
 	started, err := startContainer(testwait.Context(t), image, tcnats.WithConfigFile(strings.NewReader(nkeyConfig(users))))
@@ -45,18 +47,15 @@ func StartImage(t testing.TB, image string, users ...NkeyUser) (*tcnats.NATSCont
 		t.Fatalf("start nkey-authorized NATS on %s: %v", image, err)
 	}
 	testcontainers.CleanupContainer(t, started)
-	url, err := started.ConnectionString(testwait.Context(t))
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
+	url := loggedURL(t, started)
 	answering(t, url)
 	return started, url
 }
 
-// StartOpenImage runs image as a NATS container with JetStream and no users (the NATS module's own
-// -js), so it admits any client, removed when t ends, and returns its client URL once its JetStream
-// API answers. It is for a test of the server itself, such as one the daemon refuses
-// (SkippingImage); every other test takes a server of its own in this process through URL.
+// StartOpenImage runs image as a NATS container with JetStream and no users (-js alone), so it
+// admits any client, removed when t ends, and returns its client URL once its JetStream API
+// answers. It is for a test of the server itself, such as one the daemon refuses (SkippingImage);
+// every other test takes a server of its own in this process through URL.
 func StartOpenImage(t testing.TB, image string) string {
 	t.Helper()
 	skipWithoutContainerRuntime(t)
@@ -65,10 +64,7 @@ func StartOpenImage(t testing.TB, image string) string {
 		t.Fatalf("start NATS on %s: %v", image, err)
 	}
 	testcontainers.CleanupContainer(t, started)
-	url, err := started.ConnectionString(testwait.Context(t))
-	if err != nil {
-		t.Fatalf("NATS connection string: %v", err)
-	}
+	url := loggedURL(t, started)
 	testwait.Until(t, fmt.Sprintf("the JetStream API of the NATS server at %s to answer", url), func() (error, bool) {
 		conn, err := nats.Connect(url, nats.Name(t.Name()))
 		if err != nil {
@@ -84,22 +80,61 @@ func StartOpenImage(t testing.TB, image string) string {
 	return url
 }
 
-// limits caps a NATS test container at one CPU and 512 MiB, as every container the repository's
-// tests and proofs start is capped on a shared host: a test server holds a few small streams.
-var limits = testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
+// onTheHostNetwork runs a NATS test container on the host's network, where Docker publishes
+// nothing, and caps it at one CPU and 512 MiB, as every container the repository's tests and proofs
+// start is capped on a shared host: a test server holds a few small streams. A port Docker
+// publishes is one its own allocator chooses, without asking the kernel whether another program
+// holds it, and ten taken ports in a row fail the start (docs/testing.md, "A container a test
+// starts publishes no port"); the NATS module of testcontainers publishes 4222, 6222 and 8222 so.
+var onTheHostNetwork = testcontainers.WithHostConfigModifier(func(hostConfig *container.HostConfig) {
+	hostConfig.NetworkMode = "host"
 	hostConfig.NanoCPUs = 1_000_000_000
 	hostConfig.Memory = 512 << 20
 })
 
-// startContainer runs a NATS container of image. A container Docker created and never saw ready (a
-// readiness wait that failed) comes back beside the error, and is removed before startContainer
-// returns, since the caller registers no removal of a container it was not handed.
-func startContainer(ctx context.Context, image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
-	started, err := tcnats.Run(ctx, image, append([]testcontainers.ContainerCustomizer{limits}, options...)...)
+// serverArgs are the arguments every container of startContainer runs nats-server with, before
+// any its options add (WithConfigFile's -config): JetStream, debug and trace logging, as the NATS
+// module ran it, and a client listener on 127.0.0.1 on a port the kernel chooses when the server
+// binds it (-p -1), which the server logs (clientPortLine). A flag overrides the configuration
+// file's port.
+var serverArgs = []string{"-DV", "-js", "-a", "127.0.0.1", "-p", "-1"}
+
+// clientPortLine is the line the server logs once it has bound its client port, with the port.
+var clientPortLine = regexp.MustCompile(`Listening for client connections on 127\.0\.0\.1:(\d+)`)
+
+// startContainer runs a NATS container of image on the host's network (onTheHostNetwork, with
+// serverArgs). A container Docker created and never saw ready (a readiness wait an option set that
+// failed) comes back beside the error, and is removed before startContainer returns, since the
+// caller registers no removal of a container it was not handed.
+func startContainer(ctx context.Context, image string, options ...testcontainers.ContainerCustomizer) (*testcontainers.DockerContainer, error) {
+	started, err := testcontainers.Run(ctx, image, append([]testcontainers.ContainerCustomizer{onTheHostNetwork, testcontainers.WithCmd(serverArgs...)}, options...)...)
 	if err != nil {
 		return started, errors.Join(err, testcontainers.TerminateContainer(started))
 	}
 	return started, nil
+}
+
+// loggedURL waits for the server in started to log its client port, and returns its client URL,
+// nats://127.0.0.1:<port>.
+func loggedURL(t testing.TB, started testcontainers.Container) string {
+	t.Helper()
+	port := testwait.Until(t, fmt.Sprintf("the NATS server of container %s to log %q", started.GetContainerID(), clientPortLine), func() (string, bool) {
+		logs, err := started.Logs(context.Background())
+		if err != nil {
+			return err.Error(), false
+		}
+		defer logs.Close()
+		text, err := io.ReadAll(logs)
+		if err != nil {
+			return err.Error(), false
+		}
+		found := clientPortLine.FindSubmatch(text)
+		if found == nil {
+			return "no such line", false
+		}
+		return string(found[1]), true
+	})
+	return "nats://127.0.0.1:" + port
 }
 
 // containerRuntime is the probe's answer for the test binary's life: a machine with no container

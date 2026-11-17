@@ -55,11 +55,16 @@ import (
 const Image = "mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4"
 
 // SkipMessage is what a test is skipped with when there is no Postgres to run it against. It is
-// exported for internal/testpg, whose Clone skips with the same words.
+// exported for internal/testpg, whose Clone skips with the same words. The server it gives a
+// person to start listens on a unix socket in a directory of their own and publishes no port,
+// since a port Docker chooses can be one another program holds (docs/testing.md, "A container a
+// test starts publishes no port"); it is ready once it has logged its readiness twice, the first
+// time for the entrypoint's server that makes the database and then stops.
 const SkipMessage = "LEGION_TEST_PG_DSN is unset, so there is no Postgres to test against. In a Legion pod, read skill://legion-worker/references/tools.md, \"The database your tests use\"; never the sessions database. Elsewhere, start one and set it:\n" +
-	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -p 127.0.0.1::5432 " + Image + "\n" +
-	"  port=$(docker port legion-pg 5432/tcp | head -1 | sed 's/.*://')\n" +
-	"  LEGION_TEST_PG_DSN=postgres://legion:legion@127.0.0.1:$port/legion go test ./..."
+	"  sock=$(mktemp -d) && chmod 0777 \"$sock\"\n" +
+	"  docker run -d --name legion-pg --cpus 2 --memory 2g -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion -v \"$sock:/sockets\" " + Image + " -c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/sockets\n" +
+	"  until [ \"$(docker logs legion-pg 2>&1 | grep -c 'database system is ready to accept connections')\" -ge 2 ]; do sleep 1; done\n" +
+	"  LEGION_TEST_PG_DSN=\"postgres://legion:legion@/legion?host=$sock\" go test ./..."
 
 // Available reports whether LEGION_TEST_PG_DSN names a server, which is whether a fixture here
 // gives a test a database rather than skipping it. It is for the gate of a package whose tests
