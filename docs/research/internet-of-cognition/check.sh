@@ -1473,7 +1473,7 @@ prepare_env() {
 #   ;                                 53  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
-#   2>                                12  writes the error output to a file
+#   2>                                20  writes the error output to a file
 #   2>&1                               6  sends the error output where the output goes
 #   {                                 25  opens a group
 #   }                                 25  closes a group
