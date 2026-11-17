@@ -230,7 +230,11 @@ type sessionRelays struct {
 	// framesMu guards frames and each relay's outstanding and unanswered frames.
 	framesMu sync.Mutex
 	// frames maps the token of every frame awaiting done or nak to it: the random last token of
-	// its reply subject, which the session the frame was sent to alone can read.
+	// its reply subject. Among sessions on per-session credentials (the NATS auth service's grant,
+	// which subscribes a session's own relay subject alone) only the session the frame was sent to
+	// can read that subject. A holder of the shared session user or of a host user reads every
+	// session's relay subject, frames' reply subjects with them, and may publish to each, so neither
+	// the token nor onReply's check of the session the subject names stops it.
 	frames map[string]*relayFrame
 }
 
