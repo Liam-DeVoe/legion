@@ -13,7 +13,7 @@ import (
 // ClaimRequest is what either of the controller's two claim recoveries names: the claim on Role
 // of Issue, under the caller's controller grant. Role is a workflow role or `architect`; the
 // project controller is no role here, so the controller's own claim cannot be named at all
-// (claim.IsRole, whose six roles the controller is not one of). The fresh session and the
+// (claim.IsRole, which refuses the controller). The fresh session and the
 // compaction take the same three members, so they take one type (controllerClaim).
 type ClaimRequest struct {
 	GrantID string `json:"grantId"`
