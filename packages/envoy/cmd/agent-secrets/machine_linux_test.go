@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -315,12 +316,7 @@ func startGrantSession(t *testing.T, binary, sock, url string) *grantSession {
 	go func() { _ = cmd.Wait(); close(waited) }()
 	t.Cleanup(func() {
 		_ = stdin.Close()
-		select {
-		case <-waited:
-		case <-time.After(10 * time.Second):
-			_ = cmd.Process.Kill()
-		}
-		<-waited
+		testwait.Receive(t, "the session's process to exit once its stdin closed", waited)
 	})
 	return &grantSession{t: t, stdin: stdin, resultsPath: results}
 }
@@ -337,24 +333,22 @@ func (s *grantSession) run(args ...string) grantSessionResult {
 		s.t.Fatalf("sending %v to the session: %v", args, err)
 	}
 	s.seen++
-	deadline := time.Now().Add(30 * time.Second)
-	for {
+	line = []byte(testwait.Until(s.t, fmt.Sprintf("the session to report a result for %v", args), func() (string, bool) {
 		data, _ := os.ReadFile(s.resultsPath)
-		if len(data) > 0 {
-			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-			if len(lines) >= s.seen {
-				var res grantSessionResult
-				if err := json.Unmarshal([]byte(lines[s.seen-1]), &res); err != nil {
-					s.t.Fatalf("the session's result for %v was %q: %v", args, lines[s.seen-1], err)
-				}
-				return res
-			}
+		if len(data) == 0 {
+			return "", false
 		}
-		if time.Now().After(deadline) {
-			s.t.Fatalf("the session never reported a result for %v", args)
+		lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+		if len(lines) < s.seen {
+			return "", false
 		}
-		time.Sleep(20 * time.Millisecond)
+		return lines[s.seen-1], true
+	}))
+	var res grantSessionResult
+	if err := json.Unmarshal(line, &res); err != nil {
+		s.t.Fatalf("the session's result for %v was %q: %v", args, line, err)
 	}
+	return res
 }
 
 // requestAutoSecret asks for TEST_AUTO_SECRET from inside the session and returns the id of the
