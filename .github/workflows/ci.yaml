@@ -2840,7 +2840,7 @@ jobs:
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
+              # (internal/textcheck/claims_doc_test.go:37,46,72, reclaim_doc_test.go:44,167 and
               # way_back_doc_test.go:94).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
@@ -3139,7 +3139,7 @@ jobs:
               # holds each pod's grace, less its pre-stop wait, to the listener's stop budget.
               - 'packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden'
               - 'packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden'
-              # The documents cmd/listener/grace_margin_doc_test.go:18-20 read: each states the
+              # The documents cmd/listener/grace_margin_doc_test.go:20-22 read: each states the
               # margin a listener pod grants, held to listenerGraceMargin.
               - 'packages/envoy/AGENTS.md'
               - 'packages/envoy/infra/README.md'
@@ -3213,6 +3213,8 @@ jobs:
               - 'packages/envoy/testnkeys/*'
               - 'packages/envoy/testwait/*'
               - 'packages/envoy/internal/testport/*'
+              # cmd/listener/grace_margin_doc_test.go reads its documents through VisibleMarkdown.
+              - 'packages/envoy/internal/textcheck/*'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'

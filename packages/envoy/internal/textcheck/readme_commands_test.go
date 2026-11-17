@@ -26,7 +26,8 @@ func TestREADMEBashCommandsRunAsWritten(t *testing.T) {
 	}
 	var bad []string
 	inBlock, continued := false, false
-	for i, line := range strings.Split(string(b), "\n") {
+	// Read as the page shows it: a block inside an HTML comment is a command no reader runs.
+	for i, line := range strings.Split(VisibleMarkdown(string(b)), "\n") {
 		switch {
 		case strings.HasPrefix(line, "```bash"):
 			inBlock, continued = true, false
