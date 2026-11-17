@@ -94,7 +94,7 @@ import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, isCleanUrl, requestForText, urlForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { textHead } from "./ask-answer";
-import type { RequestCredential } from "./bearer";
+import { credentialDeadline, type RequestCredential } from "./bearer";
 
 /** What names the Dispatch URL in a text where the URL does not parse (`urlForText`,
  *  `requestForText`). The configuration refuses such a URL before a client is made
@@ -2265,7 +2265,12 @@ export class DispatchClient {
         method: "GET",
         headers: {
           Accept: "application/json",
-          ...(await this.#credential.headers("GET", probe, undefined, limit)),
+          ...(await this.#credential.headers(
+            "GET",
+            probe,
+            undefined,
+            credentialDeadline(limit, KEY_LAYER_PROBE_MS)
+          )),
         },
         signal: limit,
       });

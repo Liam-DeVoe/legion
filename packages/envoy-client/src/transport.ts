@@ -13,7 +13,7 @@ import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText } from "@legion/contracts/log-text";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
-import type { RequestCredential } from "./bearer";
+import { credentialDeadline, type RequestCredential } from "./bearer";
 import { messageFor } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
@@ -920,9 +920,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // and stands or falls on the listener's own answer. A listener that did want one answers 401
     // or 403, and that is reported as the failed trade it really is, below.
     let unminted: unknown;
-    // One deadline for the whole attempt: the credential is given it, so a broker credential
-    // waiting on a pod's missing registration stops at it, and the request runs on what is left.
+    // One deadline for the whole attempt, and the credential waits on its first half
+    // (`credentialDeadline`): a broker credential waiting on a pod's missing registration stops
+    // there, and one that hands over its live token when its wait ends leaves the request the
+    // other half to be sent and answered.
     const deadline = AbortSignal.timeout(deadlineMs);
+    const waited = credentialDeadline(deadline, deadlineMs);
     try {
       const headers = new Headers(init.headers);
       // Awaited only when the credential answers with a promise. A bearer answers at once, and
@@ -930,14 +933,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // drain at shutdown — start before this request leaves.
       let presented: Readonly<Record<string, string>> | undefined;
       try {
-        const ready = credential?.headers(init.method ?? "GET", url, actingSession, deadline);
+        const ready = credential?.headers(init.method ?? "GET", url, actingSession, waited);
         presented = ready instanceof Promise ? await ready : ready;
       } catch (error) {
         unminted = error;
       }
-      // A credential stopped by the deadline leaves nothing to send: the attempt is unanswered,
-      // in the credential's own words (a pending registration names its session).
-      if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
+      // A credential stopped at the end of its wait leaves nothing to send: the attempt is
+      // unanswered, in the credential's own words (a pending registration names its session).
+      if (unminted !== undefined && waited.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       response = await config.fetch(url, {
         ...init,

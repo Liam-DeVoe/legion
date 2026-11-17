@@ -28,11 +28,8 @@ import {
   machineIdentity,
 } from "@legion/broker-client/environment";
 import { chooseSignIn, type SignInRecord } from "@legion/broker-client/signins";
-import {
-  type BrokerToken,
-  type BrokerTokenClient,
-  isFinalRefusal,
-} from "@legion/broker-client/token-client";
+import type { BrokerToken, BrokerTokenClient } from "@legion/broker-client/token-client";
+import { isFinalRefusal } from "@legion/broker-client/token-errors";
 import type { RequestCredential } from "./bearer";
 
 /**

@@ -21,7 +21,7 @@ import {
   RegistrationPendingError,
   SignInEndedError,
   TradeRetryingError,
-} from "@legion/broker-client/token-client";
+} from "@legion/broker-client/token-errors";
 import { scrub } from "@legion/contracts/held-secrets";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.
@@ -55,15 +55,16 @@ export interface BrokerNatsCredential {
   /**
    * Takes the token to present, trading for one where the token in hand is not live: a connection
    * is dialled only once this has answered, since the CONNECT is signed at once. It is one wait on
-   * the token client's retry loop (`BrokerTokenClient.token`), in one of two modes. Given `life`,
-   * it waits for ready: until a token lands, a refusal no trade cures ends the loop, or `life`
-   * ends, through every failure the loop trades again on, a pod session not registered yet, a
-   * broker that does not answer and an identity source that cannot be read among them. Given
-   * none, it fails fast: a failure the loop trades again on is told at once, naming it, and a
-   * pod session not registered yet is waited out for `tradeDeadlineMs`. Either way the loop goes
-   * on, and the token client logs as its schedule says.
+   * the token client's retry loop (`BrokerTokenClient.token`), in one of three modes
+   * ({@link ReadyOptions}): for a caller's `life`, waiting for ready until a token lands, a refusal
+   * no trade cures ends the loop, or `life` ends; for a startup's bound (`waitForReady`), waiting
+   * for ready for `tradeDeadlineMs`, through every failure the loop trades again on, and then
+   * failing, naming the last one; and failing fast, the default: a failure the loop trades again
+   * on is told at once, naming it, and a pod session not registered yet is waited out for
+   * `tradeDeadlineMs`. Either way the loop goes on, and the token client logs as its schedule
+   * says.
    */
-  ready(life?: AbortSignal): Promise<void>;
+  ready(options?: ReadyOptions): Promise<void>;
   /**
    * The CONNECT's credential for the server's `nonce`: the token in hand as `auth_token`, and as
    * `sig` the proof of its key over that nonce, base64url-encoded, as the auth service reads a
@@ -81,14 +82,25 @@ export interface BrokerNatsCredential {
   expiresAt(): Date;
   /** Takes the session's token again: a renewed one inside the renewal window, and the token of
    *  the session the name now reads, after a switch, even one made while a renewal was in flight.
-   *  It fails fast (`TokenCallOptions`): where the token client's last trade failed in a way its
-   *  retry loop trades again on and nothing live is in hand, it is told so at once. It waits out a
-   *  pod session's missing registration no longer than `signal`, and a switch to another session
-   *  ends the waits for the one before. */
-  renew(signal?: AbortSignal): Promise<void>;
+   *  It fails fast (`TokenCallOptions`) unless `waitForReady`: where the token client's last trade
+   *  failed in a way its retry loop trades again on and nothing live is in hand, it is told so at
+   *  once. It waits no longer than `signal`, and a switch to another session ends the waits for
+   *  the one before. */
+  renew(signal?: AbortSignal, waitForReady?: boolean): Promise<void>;
   /** Whether the last CONNECT presented a token other than the one in hand, so the connection
    *  should reconnect to present it. */
   needsReconnect(): boolean;
+}
+
+/** How {@link BrokerNatsCredential.ready} waits. */
+export interface ReadyOptions {
+  /** Waits for ready for as long as this signal lives, and rethrows its reason when it ends: a
+   *  caller whose whole life is the wait, such as Claude Code's channel server, which Claude Code
+   *  does not restart. */
+  readonly life?: AbortSignal | undefined;
+  /** Waits for ready for `tradeDeadlineMs`, a startup's bound inside its pass, and then fails
+   *  naming the trade's last failure. */
+  readonly waitForReady?: boolean | undefined;
 }
 
 /** Why a CONNECT presenting the broker token fails at a hub that sent no nonce: it runs no auth
@@ -100,9 +112,16 @@ export function noAuthService(source: string): string {
   return `${source} is broker, but the NATS server sent no nonce to sign: it runs no auth service, so ${remedy} for this hub`;
 }
 
-/** How long {@link BrokerNatsCredential.ready} waits for a trade: nats.js's own dial timeout, so a
- *  secrets broker that never answers fails a start as a hub that never answers does, named,
- *  rather than holding it in silence. */
+/**
+ * How long {@link BrokerNatsCredential.ready} waits for a trade: nats.js's own dial timeout, so a
+ * secrets broker that never answers fails a start as a hub that never answers does, named,
+ * rather than holding it in silence. A startup that waits for ready (`ReadyOptions.waitForReady`)
+ * waits this long: it is the pass's 30 s deadline (`MIN_PASS_DEADLINE_MS`) less 10 s for the rest
+ * of the pass (the dial, its subscribes and the registration), so the start fails naming the
+ * trade's cause before the pass is abandoned; and it is longer than the retry loop's longest first
+ * wait (15 s, `RETRY_FIRST_WAIT_MS`, with its jitter at its longest) and that trade's answer, so
+ * one transient failure is always ridden out.
+ */
 export const TRADE_DEADLINE_MS = 20_000;
 
 /** Why `ready` failed: the broker has not answered the trade the setting `source` chose. */
@@ -212,7 +231,8 @@ export function brokerNatsCredential(
       }
     );
   };
-  const renew = (signal?: AbortSignal): Promise<void> => take(signal, false);
+  const renew = (signal?: AbortSignal, waitForReady = false): Promise<void> =>
+    take(signal, waitForReady);
   /** Why a wait in `ready` ended, as this package's own line naming the setting `source`. */
   const notReady = (error: unknown, deadlineMs: number): unknown => {
     if (isDeadline(error)) return new LoggableError(tradeUnanswered(source, deadlineMs));
@@ -232,13 +252,13 @@ export function brokerNatsCredential(
   };
   return {
     // One wait on the token client's retry loop, which trades on past it for the keeper and the
-    // next `ready`: for `life`, waiting for ready, where the caller gives one, else failing fast
-    // within `tradeDeadlineMs`.
-    ready: async (life?: AbortSignal) => {
+    // next `ready`, in the mode the caller asks for (`ReadyOptions`).
+    ready: async (options: ReadyOptions = {}) => {
       if (live()) return;
+      const { life } = options;
       try {
         await (life === undefined
-          ? take(AbortSignal.timeout(tradeDeadlineMs), false)
+          ? take(AbortSignal.timeout(tradeDeadlineMs), options.waitForReady === true)
           : take(life, true));
       } catch (error) {
         if (life?.aborted === true) throw life.reason;
@@ -387,8 +407,10 @@ export function keepNatsCredential(
   return stop;
 }
 
-/** How long a session switch waits for its connection to come back as the new session. */
-const FOLLOW_TIMEOUT_MS = 15_000;
+/** How long a session switch waits for its connection to come back as the new session, once its
+ *  token is in hand: with the trade's `TRADE_DEADLINE_MS` before it, the follow fits inside the
+ *  pass's 30 s deadline (`MIN_PASS_DEADLINE_MS`) with 2 s to spare. */
+const FOLLOW_RECONNECT_MS = 8_000;
 
 /** nats.js's status of a connection that is back (`Events.Reconnect`), written out so this module
  *  imports nats.js's types alone; the type holds it to the enum's own value. */
@@ -404,10 +426,13 @@ const RECONNECTED: `${Events.Reconnect}` = "reconnect";
  * presented. A reconnect counts only once the CONNECT it made presented the token in hand, so one
  * that began before the move does not end it; and since nats.js's `reconnect()` does nothing while
  * the connection is redialling, a redial that comes back with the old token is followed by another
- * reconnect, which presents the new one. Throws where the new session's token does not come within
- * 15 s, the renewal's own deadline, or the connection does not come back within 15 s of that
- * renewal landing, or where the connection closes first. The status reader it opens is stopped on
- * every way out: nats.js keeps a reader registered until it is stopped, whatever becomes of the
+ * reconnect, which presents the new one. The new session's trade waits for ready
+ * (`TokenCallOptions`), since a switch has nothing to do until it holds that token, for
+ * `TRADE_DEADLINE_MS`, through every failure the token client's retry loop trades again on: a
+ * first trade's 503 is ridden out. Throws, naming the trade's last failure, where the token does
+ * not come within that time, where the connection does not come back within 8 s of the token
+ * landing, or where the connection closes first. The status reader it opens is stopped on every
+ * way out: nats.js keeps a reader registered until it is stopped, whatever becomes of the
  * connection.
  */
 export async function followNatsCredential(
@@ -415,16 +440,16 @@ export async function followNatsCredential(
   credential: BrokerNatsCredential
 ): Promise<void> {
   try {
-    await credential.renew(AbortSignal.timeout(FOLLOW_TIMEOUT_MS));
+    await credential.renew(AbortSignal.timeout(TRADE_DEADLINE_MS), true);
   } catch (error) {
     throw new LoggableError(
       isDeadline(error)
-        ? `the NATS connection could not take the new session's token within ${FOLLOW_TIMEOUT_MS / 1000} s`
+        ? `the NATS connection could not take the new session's token within ${TRADE_DEADLINE_MS / 1000} s`
         : `the NATS connection could not take the new session's token: ${tradeFailureReason(error)}`
     );
   }
   if (!credential.needsReconnect()) return;
-  const deadline = AbortSignal.timeout(FOLLOW_TIMEOUT_MS);
+  const deadline = AbortSignal.timeout(FOLLOW_RECONNECT_MS);
   // nats.js's status() is a QueuedIterator, which has a stop() its declared type leaves out.
   const statuses: AsyncIterable<Status> & { stop?: () => void } = connection.status();
   const back = (async () => {
@@ -445,7 +470,7 @@ export async function followNatsCredential(
   const expire = () =>
     late.reject(
       new LoggableError(
-        `the NATS connection did not come back as the new session within ${FOLLOW_TIMEOUT_MS / 1000} s`
+        `the NATS connection did not come back as the new session within ${FOLLOW_RECONNECT_MS / 1000} s`
       )
     );
   if (deadline.aborted) expire();

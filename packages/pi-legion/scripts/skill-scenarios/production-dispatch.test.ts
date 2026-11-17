@@ -240,9 +240,11 @@ test("mapLimit keeps the order and runs at most the limit at once", async () => 
   expect(most).toBe(3);
 });
 
-test("a read hands the credential the deadline its request runs on", async () => {
+test("a read hands the credential its share of the deadline its request runs on", async () => {
   // A broker credential waiting on a pod's missing registration stops at the deadline it is
-  // given, naming the session; one given none waits until the registration lands.
+  // given, naming the session; one given none waits until the registration lands. It is given
+  // the first half of the request's (`credentialDeadline`), so one that hands over its live token
+  // when its wait ends leaves the request the other half.
   const given: (AbortSignal | undefined)[] = [];
   const bearer = bearerCredential(DISPATCH_TOKEN);
   const credential = {
@@ -256,5 +258,6 @@ test("a read hands the credential the deadline its request runs on", async () =>
   const dispatch = new ProductionDispatch({ ...credentials, credential }, fetch, noSleep);
   await dispatch.comments("ACME-1");
   expect(given[0], "the read handed its credential no deadline").toBeInstanceOf(AbortSignal);
-  expect(sent[0]?.init.signal).toBe(given[0]);
+  expect(sent[0]?.init.signal, "the request ran on no deadline").toBeInstanceOf(AbortSignal);
+  expect(sent[0]?.init.signal).not.toBe(given[0]);
 });

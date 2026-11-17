@@ -606,8 +606,12 @@ describe.skipIf(!envoyStackEnabled)(
           expect(warnings.join("\n")).not.toContain(one.value);
         }
 
-        // The broker is back: a token is traded and the connection is admitted again.
+        // The broker is back: a token is traded and the connection is admitted again. It mints
+        // tokens of a session's usual life again, so the keeper does not renew within the row:
+        // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
+        // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
         const back = Date.now();
+        broker.state.seconds = 900;
         broker.state.down = false;
         while (!reconnected.some((at) => at > back) && Date.now() < back + 20_000)
           await Bun.sleep(100);

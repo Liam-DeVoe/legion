@@ -1,8 +1,7 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import {
@@ -10,6 +9,7 @@ import {
   brokerNatsCredential,
 } from "@legion/envoy-client/nats-credential"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import {
   type Authenticator,
   type ConnectionOptions,
@@ -19,6 +19,9 @@ import {
   nkeys,
 } from "nats"
 import { dialChannelNats } from "../src/envoy-channel-server"
+
+/** Each row's home, removed after it, failed or not. */
+const makeDirectory = temporaryDirectories("channel-nats")
 
 /** The resolver's error for `host`, as Bun throws it through nats.js: its text names the host. */
 const unresolved = (host: string): Error =>
@@ -82,7 +85,7 @@ function fakeDial() {
 
 test("dialChannelNats keeps the broker token renewed until it is stopped", async () => {
   const broker = shortTokenBroker()
-  const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
+  const home = makeDirectory()
   const tokenFile = join(home, "token")
   await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(
@@ -155,7 +158,7 @@ test("a pod session registered past the trade deadline still comes up, admitted"
     },
   })
   servers.push(server)
-  const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
+  const home = makeDirectory()
   const tokenFile = join(home, "token")
   await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(
@@ -206,7 +209,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   const port = probe.port as number
   probe.stop(true)
   const minted: string[] = []
-  const home = await mkdtemp(join(tmpdir(), "channel-nats-"))
+  const home = makeDirectory()
   const tokenFile = join(home, "token")
   await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(

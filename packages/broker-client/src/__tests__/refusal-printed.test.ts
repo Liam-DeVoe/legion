@@ -4,7 +4,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { holdSecret } from "@legion/contracts/held-secrets";
-import { BrokerRefusedError } from "../token-client";
+import { BrokerRefusedError } from "../token-errors";
 
 // The policy's own refusal prints as the broker wrote it, and a broker can echo the subject token
 // in it. A host prints the error itself, not only its reason line: pi-envoy's console.warn of the
@@ -45,7 +45,7 @@ test("a refusal echoing the subject token, thrown and uncaught, prints none of i
     script,
     [
       `import { holdSecret } from ${JSON.stringify(join(import.meta.dir, "../../../contracts/src/held-secrets.ts"))};`,
-      `import { BrokerRefusedError } from ${JSON.stringify(join(import.meta.dir, "../token-client.ts"))};`,
+      `import { BrokerRefusedError } from ${JSON.stringify(join(import.meta.dir, "../token-errors.ts"))};`,
       'const subject = holdSecret(process.env.REFUSAL_SUBJECT ?? "");',
       `throw new BrokerRefusedError(400, "invalid_request", ${JSON.stringify(refusalEchoing("SUBJECT"))}.replace("SUBJECT", subject), "probe");`,
     ].join("\n")

@@ -166,11 +166,13 @@ export function natsBrokerStandIns(prefix: string) {
    * every trade it was sent, answered or not. While `down` is set the exchange answers 503, as a
    * broker that is away; while `unregistered` is set it refuses each trade as the broker refuses a
    * pod session no registration names yet (`registeredPodSession`,
-   * packages/envoy/internal/broker/oauth/exchange.go), in its own words.
+   * packages/envoy/internal/broker/oauth/exchange.go), in its own words. `state.seconds`, at first
+   * `lifeSeconds`, is how long the next token lives: a row may change it, as a broker that is back mints tokens of their
+   * usual life.
    */
-  function stubBroker(seconds: number) {
+  function stubBroker(lifeSeconds: number) {
     const minted: Minted[] = [];
-    const state = { down: false, unregistered: false, minted, trades: 0 };
+    const state = { down: false, unregistered: false, minted, trades: 0, seconds: lifeSeconds };
     const server = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
@@ -215,13 +217,13 @@ export function natsBrokerStandIns(prefix: string) {
           value,
           session: form.get("session") ?? "",
           jkt: await thumbprintOf(header.jwk),
-          expiresAt: Date.now() + seconds * 1000,
+          expiresAt: Date.now() + state.seconds * 1000,
         });
         return Response.json({
           access_token: value,
           issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
           token_type: "DPoP",
-          expires_in: seconds,
+          expires_in: state.seconds,
         });
       },
     });

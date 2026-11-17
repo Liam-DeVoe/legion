@@ -14,13 +14,8 @@ import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
 import type { SubjectToken, TokenSource } from "../source";
-import {
-  BrokerRefusedError,
-  type BrokerToken,
-  BrokerTokenClient,
-  isFinalRefusal,
-  RegistrationPendingError,
-} from "../token-client";
+import { type BrokerToken, BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError, isFinalRefusal, RegistrationPendingError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
 import { accepted, type StubAnswer, type StubTrade, stubBroker } from "./stub";
 

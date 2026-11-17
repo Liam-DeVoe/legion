@@ -1188,7 +1188,13 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
   const dialNats = async (): Promise<NatsConnection> => {
     const { natsUrls, natsCredential } = requireInbound();
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
-    if (natsCredential.kind === "broker") await natsCredential.broker.ready();
+    // The start has nothing to do until it holds one, so it waits for ready within its bound
+    // (`TRADE_DEADLINE_MS`, inside the pass's deadline): a first trade's 503 is ridden out rather
+    // than costing the session its registration until the next heartbeat, and a broker that never
+    // grants fails the start naming the trade's cause.
+    if (natsCredential.kind === "broker") {
+      await natsCredential.broker.ready({ waitForReady: true });
+    }
     // nats.js re-subscribes existing subscriptions on its own once reconnected.
     return (natsConnectStore[NATS_CONNECT] ?? connect)(
       natsConnectionOptions({

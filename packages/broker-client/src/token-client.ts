@@ -38,15 +38,14 @@ import {
 } from "openid-client";
 import type { DpopKey } from "./dpop";
 import { messageOf } from "./error-text";
-import {
-  isKnownBrokerRefusal,
-  KNOWN_OAUTH_ERROR_CODES,
-  REFUSAL_TEXT_WITHHELD,
-  type RefusalContext,
-  shownOAuthCode,
-} from "./refusal-text";
-import { SIGNIN_COMMAND } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
+import {
+  BrokerRefusedError,
+  BrokerTradeFailedError,
+  isFinalRefusal,
+  RegistrationPendingError,
+  TradeRetryingError,
+} from "./token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   EXCHANGE_CLIENT_ID,
@@ -55,7 +54,6 @@ import {
   FORM_PROJECTS,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
-  POD_SESSION_NOT_REGISTERED,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
@@ -85,24 +83,9 @@ export interface BrokerToken {
   readonly credentialExpiresAt: Date | null;
 }
 
-/** The broker's rate limit: the first of the four refusals a later trade may be answered
- *  differently. */
-const TOO_MANY_REQUESTS = 429;
-
-/** What the broker answers a proof whose `iat` is outside its 60 s skew window. */
-const INVALID_DPOP_PROOF = "invalid_dpop_proof";
-
-/** What the broker answers a proof it wants a nonce in (RFC 9449 Section 8), which `#send`
- *  already retries once with the nonce the answer carried. */
-const USE_DPOP_NONCE = "use_dpop_nonce";
-
 /** What names the broker's URL in a text where it does not parse (`urlForText`); the constructor
  *  refuses such a URL, and `brokerTokenClient` names AGENT_SECRETS_URL in its refusal. */
 const BROKER_URL_SETTING = "the broker URL";
-
-/** The code of the broker's refusal of a pod session it holds no registration for yet, whose
- *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
-const INVALID_GRANT = "invalid_grant";
 
 /** The first wait before trading again after a trade the broker did not answer, answered with a
  *  5xx, its 429 or a DPoP refusal, or that failed before it reached the broker, doubling to
@@ -150,129 +133,6 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * A trade the broker refused: a plain error naming what was traded and what the broker said.
- * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
- * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The four exceptions are the broker's 429, its two DPoP refusals, and a pod session it holds no
- * registration for yet (`permanent`).
- */
-export class BrokerRefusedError extends Error {
-  /** What the broker said, as a text may print it: its description where that is a known
-   *  refusal ({@link isKnownBrokerRefusal}), "" where it sent none, and {@link REFUSAL_TEXT_WITHHELD}
-   *  otherwise. The description the broker sent is kept nowhere. */
-  readonly said: string;
-  /** The OAuth code where it is one the clients handle ({@link KNOWN_OAUTH_ERROR_CODES}), else "";
-   *  what decides a retry ({@link BrokerRefusedError.permanent}). */
-  readonly code: string;
-  /** The code as a text shows it ({@link shownOAuthCode}). */
-  readonly shownCode: string;
-  /** Whether this is the broker's refusal of a pod whose session no registration names yet:
-   *  `invalid_grant`, its description beginning {@link POD_SESSION_NOT_REGISTERED} and a colon.
-   *  The same words under another code, or anywhere but at the start, are some other refusal.
-   *  Read from the description as the broker sent it, which is then kept nowhere. */
-  readonly podSessionUnregistered: boolean;
-
-  /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
-  constructor(
-    readonly status: number,
-    code: string,
-    description: string,
-    refused: string,
-    context: RefusalContext = {}
-  ) {
-    const shownCode = shownOAuthCode(code);
-    const said =
-      description === ""
-        ? ""
-        : isKnownBrokerRefusal(description, context)
-          ? // Scrubbed here, not only where a caller prints it: a host prints the error itself
-            // (a `console.warn(text, error)`, an uncaught error), and the policy's own refusal
-            // can carry the subject token it was sent.
-            scrub(description)
-          : REFUSAL_TEXT_WITHHELD;
-    super(
-      `the secrets broker refused ${refused}: HTTP ${status}${shownCode === "" ? "" : ` ${shownCode}`}${said === "" ? "" : `: ${said}`}`
-    );
-    this.name = "BrokerRefusedError";
-    this.code = KNOWN_OAUTH_ERROR_CODES.has(code) ? code : "";
-    this.shownCode = shownCode;
-    this.said = said;
-    this.podSessionUnregistered =
-      code === INVALID_GRANT && description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`);
-  }
-
-  /**
-   * Whether this refusal is one no retry can cure, which every refusal is but four. The Go
-   * client reads it the same way, out of the same four cases (`RefusedError.Permanent`,
-   * packages/envoy/internal/brokerclient/brokerclient.go), and
-   * `packages/envoy/internal/brokerclient/testdata/wire.json` holds the two to that one reading.
-   *
-   * The broker's 429: its token endpoint spends a bucket per source address, and a bucket
-   * refills. A client that dropped the token in hand on a 429 would write with no identity
-   * through a burst — its own, or another process's on the same machine — while the token it
-   * already held was still good.
-   *
-   * `invalid_dpop_proof`, which is what the broker answers a proof whose `iat` is outside its
-   * 60 s skew window. A process started before NTP has corrected the host's clock would
-   * otherwise drop a live token and fail every Dispatch and listener call until something
-   * restarted it; the next trade after the correction succeeds.
-   *
-   * `use_dpop_nonce`, which `#send` already retries once with the nonce the answer carried. One
-   * that reaches here is an answer that carried no nonce, or a nonce the broker then refused in
-   * turn — a server state the next trade can find changed.
-   *
-   * A pod session the broker holds no registration for yet ({@link podSessionUnregistered}): a
-   * pod's trade can reach the broker before its daemon's or its session watch's registration
-   * does, and a registrar can be down for minutes, so the trade that follows the registration
-   * succeeds.
-   */
-  get permanent(): boolean {
-    return (
-      this.status !== TOO_MANY_REQUESTS &&
-      this.code !== INVALID_DPOP_PROOF &&
-      this.code !== USE_DPOP_NONCE &&
-      !this.podSessionUnregistered
-    );
-  }
-}
-
-/**
- * A call that stopped waiting, its signal ended by its own deadline, while the broker held no
- * registration for this pod's session yet ({@link BrokerRefusedError.podSessionUnregistered}).
- * The client goes on trading for that session in the background, so it is not final
- * ({@link isFinalRefusal}): a later call takes the token once the registration lands. Its message
- * carries the refusal as the refusal prints it (`said`), never the text the broker sent.
- */
-export class RegistrationPendingError extends Error {
-  constructor(
-    readonly session: string,
-    refusal: BrokerRefusedError
-  ) {
-    super(
-      `the secrets broker has no registration for this pod's session ${session} yet, and the trade is being retried in the background until it lands${refusal.said === "" ? "" : ` (${refusal.said})`}`,
-      { cause: refusal }
-    );
-    this.name = "RegistrationPendingError";
-  }
-}
-
-/**
- * A call that stopped waiting, its signal ended by its own deadline, while the client's retry
- * loop was trading again after a failure a later trade may cure, other than a pod session not
- * registered yet ({@link RegistrationPendingError}): no answer within {@link TRADE_ATTEMPT_MS},
- * no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that could not be made.
- * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
- * line for that failure (`Retried.said`), which names nothing a peer wrote.
- */
-export class TradeRetryingError extends Error {
-  constructor(said: string) {
-    super(`${said}, and the trade is being retried in the background`);
-    this.name = "TradeRetryingError";
-  }
-}
-
-/**
  * A failed trade of the retry loop that a later trade may cure, by its class, with the text that
  * says what it was (`#failure`): `pending`, a pod session the broker holds no registration for
  * yet; `busy`, the broker's 429 or a DPoP refusal; `unanswered`, no answer within the attempt's
@@ -302,52 +162,6 @@ export interface TokenCallOptions {
    * holds no registration for yet.
    */
   readonly waitForReady?: boolean | undefined;
-}
-
-/**
- * A trade that ended other than in a refusal: the broker gave no answer, a 5xx, or an answer
- * that is not this grant's. Its message names the identity traded, the broker as `urlForText`
- * names it and the failure by its class (`errorClass`), and nothing a peer wrote, so a caller
- * prints it whole; it keeps no cause, since the library's error can hold the answer it read.
- */
-export class BrokerTradeFailedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "BrokerTradeFailedError";
-  }
-}
-
-/**
- * A person's sign-in that the issuer no longer honours: its refresh token was answered
- * `invalid_grant`, because the person revoked the grant at Google or it expired. It mirrors the
- * Go client's `ErrSignInEnded` (`packages/envoy/internal/brokerclient/device.go`), and like a
- * broker's permanent refusal it is final ({@link isFinalRefusal}): no retry and no other caller
- * cures it, only a new {@link SIGNIN_COMMAND}. `issuer` is the issuer as a text names it
- * (`urlForText`), and it keeps no cause: the library's error holds the issuer's answer.
- */
-export class SignInEndedError extends Error {
-  constructor(
-    readonly issuer: string,
-    readonly person: string
-  ) {
-    super(
-      `${issuer} no longer honours ${person}'s sign-in on this machine; run: ${SIGNIN_COMMAND}`
-    );
-    this.name = "SignInEndedError";
-  }
-}
-
-/**
- * Whether `error` ends the identity a client trades for good: a broker's refusal no retry can
- * cure (`BrokerRefusedError.permanent`), or a sign-in the issuer has ended
- * ({@link SignInEndedError}). A client drops the token in hand on one rather than answer it
- * until it lapses, and a caller that remembers refusals remembers these alone: remembering the
- * broker's 429 or a clock-skewed proof would stop a client a later trade would have answered.
- */
-export function isFinalRefusal(error: unknown): boolean {
-  return (
-    (error instanceof BrokerRefusedError && error.permanent) || error instanceof SignInEndedError
-  );
 }
 
 /** One client: the broker it trades at, the identity it trades, and the key it proves. */
@@ -560,8 +374,12 @@ export class BrokerTokenClient {
     const held = this.#held;
     if (held !== null && now < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
     if (held !== null && now < held.expiresAt.getTime() && this.#last !== null) return held;
+    // A closed client trades no more, and says so to a caller with nothing live in hand.
+    const closed = this.#closed.signal;
+    if (closed.aborted) throw closed.reason;
     const last = this.#last;
-    if (!waitForReady && last !== null && last.kind !== "pending") {
+    // Only while a loop is trading again: a last failure no loop is retrying is no retry under way.
+    if (!waitForReady && this.#loop !== null && last !== null && last.kind !== "pending") {
       throw new TradeRetryingError(last.said);
     }
     if (this.#loop === null) {

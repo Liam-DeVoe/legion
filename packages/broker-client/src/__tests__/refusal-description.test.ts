@@ -7,7 +7,8 @@
 import { expect, test } from "bun:test";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { newDpopKey } from "../dpop";
-import { BrokerRefusedError, BrokerTokenClient } from "../token-client";
+import { BrokerTokenClient } from "../token-client";
+import { BrokerRefusedError } from "../token-errors";
 import { refusalOf, stubBroker } from "./stub";
 
 test.each([

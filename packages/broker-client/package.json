@@ -49,6 +49,10 @@
       "types": "./src/token-client.ts",
       "bun": "./src/token-client.ts"
     },
+    "./token-errors": {
+      "types": "./src/token-errors.ts",
+      "bun": "./src/token-errors.ts"
+    },
     "./wire": {
       "types": "./src/wire.ts",
       "bun": "./src/wire.ts"
