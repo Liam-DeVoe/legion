@@ -827,10 +827,11 @@ def reaches(pattern, path):
 def push_paths(path, doc, key, required, excludes):
     """Rule 3's push paths for the workflow `path`: each path its version step reads, `required`,
     is covered whole by a pattern of on.push.paths without `!`, and no `!` pattern after it can
-    drop a change to it, unless that pattern lies inside what an exclude of `key`'s paths drops
-    (`!packages/envoy/infra/**` beside `:(exclude)packages/envoy/infra`). A commit that touches
-    only a path no pattern covers runs no release workflow, so nothing releases until a later
-    commit does, and no release step changes."""
+    drop a change to it, unless that pattern's literal part, up to its first wildcard, lies inside
+    the directory an exclude of `key`'s paths drops (`!packages/envoy/infra/**` beside
+    `:(exclude)packages/envoy/infra`; `!packages/envoy/infra*/**` also reaches a sibling such as
+    infra2, so it is refused). A commit that touches only a path no pattern covers runs no
+    release workflow, so nothing releases until a later commit does, and no release step changes."""
     on = doc.get("on", doc.get(True)) if isinstance(doc, dict) else None
     push = on.get("push") if isinstance(on, dict) else None
     patterns = push.get("paths") if isinstance(push, dict) else None
@@ -856,7 +857,7 @@ def push_paths(path, doc, key, required, excludes):
             if not pattern.startswith("!") or not reaches(pattern[1:], need):
                 continue
             static = WILDCARD.split(pattern[1:], maxsplit=1)[0]
-            if any(static.startswith(d) or static.rstrip("/") + "/" == d for d in dropped):
+            if any(static.startswith(d) for d in dropped):
                 continue
             problem(f"{path}'s on.push.paths pattern `{pattern}`, after `{patterns[last]}`, can leave out a change to "
                     f"{need}, which its version step reads through {key}: {why}", path)

@@ -257,6 +257,14 @@ root=$(written paths-negated-excluded)
 replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!packages/envoy/infra/**"]\n'
 run_check "$root"
 check "passes a ! pattern inside an exclude of the arguments" "$(is "$status" 0)"
+root=$(written paths-negated-prefix)
+replace "$root/.github/workflows/release-envoy-listener.yaml" $'    paths: ["**"]\n' \
+  $'    paths: ["**", "!packages/envoy/infra/**", "!packages/envoy/infra*/**"]\n'
+run_check "$root"
+check "exits 1 on a ! pattern whose literal part is the exclude's name alone (R9)" "$(is "$status" 1)"
+check "names it, and not the one inside the exclude" \
+  "$(contains "$out" "release-envoy-listener.yaml's on.push.paths pattern \`!packages/envoy/infra\*/\*\*\`, after \`\*\*\`, can leave out a change to packages/envoy/")"
+check "and nothing else" "$(is "$(grep -c '::error' <<< "$out")" 1)"
 root=$(written paths-unread)
 replace "$root/.github/workflows/release.yaml" $'    paths: ["**"]\n' $'    paths: ["**", "!go.work+"]\n'
 run_check "$root"
