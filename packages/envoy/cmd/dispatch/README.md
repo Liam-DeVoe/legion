@@ -1395,8 +1395,9 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind and keeps every run, which `envoy-dispatch erase` alone removes (Answering a question, below; a process of the release before still deletes a run an hour old during a roll), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind whose `ends_at` passed within the last day and keeps every run, which `envoy-dispatch erase` alone removes (Answering a question, below; a process of the release before still deletes a run an hour old during a roll), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
+  It reads those runs through `going_requests_ends_at` (migration `20261116232634`) and over that day alone (`goingSweepWindow`, `api/going.go`), so its read does not grow with the runs kept; an older run with no terminal frame stored is ended by its reader instead, when its stream is next read (Answering a question, below).
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
@@ -2002,6 +2003,16 @@ the release before this one reads `state = 'sent'`, and the wider index carries 
 `drop index` takes `ACCESS EXCLUSIVE` on `message_deliveries` for the instant it unlinks the index, inside the runner's transaction, and it reads no row of the table.
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
+
+Migration `20261116232634_going_requests_ends_at_index` creates `going_requests_ends_at` on `going_requests (ends_at)`, the index the maintenance sweep reads the overdue answer runs through (Background loops, above; Answering a question, below).
+A run is kept until `envoy-dispatch erase` removes it, where the release before deleted a run an hour old, so `going_requests` grows with every question asked, and the sweep reads it once a minute for the runs whose `ends_at` passed within the last day with no terminal frame stored (`goingSweepWindow`, `goingOverdueRuns`);
+without the index that read is a scan of every run ever kept.
+Keyed on `ends_at` alone, it serves the range the read's two bounds give and its order by `ends_at` (`api.TestTheGoingSweepReadsItsWindowThroughTheEndsAtIndex` holds the read to it, in the plan Postgres builds for the sweep's values and in the generic plan a prepared statement settles on).
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
+`going_requests` holds rows by now, and a plain build holds `SHARE` on it, which blocks every write to it, each `POST /api/v1/going/requests` among them, for as long as one read of the table takes.
+No constraint and no later migration depends on the index, and the release before this one reads and writes `going_requests` as it did, so rolling back past it is an image rollback alone; `20261116232634_going_requests_ends_at_index.down.sql` is the by-hand script that drops it, with `drop index concurrently` outside a transaction, after which the sweep scans `going_requests` again.
+Its census answers `0`: an index build refuses and rewrites no row.
+A failed concurrent build leaves an INVALID index of the new name on `going_requests`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
 Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes (`packages/envoy/AGENTS.md`, "References form one graph"):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
@@ -3396,7 +3407,8 @@ The citation rule is the server's and not the model's: a text frame carries plai
 An answer is cut at 120 words with `cut`, one the model wrote no text for at all ends `none`, and either way `end` closes the stream.
 
 A run has 30 seconds, and that window belongs to the record: `going_requests.ends_at` is written by the `POST`, never held as a timer in the process running the answer.
-A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads (Background loops, above).
+A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads whose `ends_at` passed within the last day (Background loops, above).
+The sweep reads no run older than that day, so a run whose `ends_at` passed longer ago with no terminal frame stored, one no maintenance pass ended in that day, is ended only when its stream is next read, by that reader (`streamGoingAnswer`).
 A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node interaction:<uuid>` erases all three (Erasing a node, above), where the release before deleted a run an hour old; during a roll, and after a rollback, a process of that release still deletes a run an hour old, and `envoy-dispatch backfill-graph-store` states that run's node `gone`.
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
