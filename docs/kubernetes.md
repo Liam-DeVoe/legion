@@ -5530,6 +5530,7 @@ A release that stopped short names why (`result.failure`), such as a list of the
 A pod deleted with work lost does not change the exit code.
 `--dry-run` reads the workspaces as the release would and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
 It asks, stops and saves nothing, and exits 0 when the daemon answers with a dry run.
+When `--wait` ends before the daemon answers, it exits 1 and says that a dry run records and starts nothing.
 A daemon process that already ran a release answers `--dry-run` with that release instead: the command says so, and prints that release and exits on it as on a release.
 
 The release lives in the process that started it, and only a boot of the daemon on the same database ends it: the boot stamps it ended (`endedBy` is `boot`), and a later `GET` says so.

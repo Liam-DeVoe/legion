@@ -69,16 +69,14 @@ func runProjectRelease(ctx context.Context, args []string, stdout, stderr io.Wri
 	began := time.Now()
 	// The call is bounded from its start. Until the daemon names the release's bound, the bound
 	// the command was given stands in for it, and a bound the daemon chooses moves the end once
-	// the daemon has named it (waitUntil). A start that bound ends is printed as what it is: the
-	// daemon goes on with the release, which this bound never cancels, and the same command
-	// answers that release when it is run again. A dry run's start says that a dry run records
-	// and starts nothing.
+	// the daemon has named it (waitUntil).
 	c.until = waitUntil(began, *wait, *bound)
 	request := api.ProjectReleaseRequest{DryRun: *dryRun}
 	if *bound > 0 {
 		request.Bound = bound.String()
 	}
 	release, answer, cut, ok := releaseRequest(ctx, c, op, http.MethodPost, request)
+	// The daemon has answered nothing yet, so which sentence ends the wait follows --dry-run.
 	if cut {
 		ended := releaseGoesOn
 		if *dryRun {
