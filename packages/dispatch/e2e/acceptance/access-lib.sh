@@ -295,6 +295,9 @@ first_difference() {
   esac
 }
 
+# Every answer judged counts in compared, a pair as one and a read held to a rule of its own as
+# one, and an answer that fails its judgement counts once in differed, so no_difference can never
+# name more answers that differ than it judged.
 compared=0
 differed=0
 # same_answers WHAT LEFT RIGHT: the answers kept as LEFT and RIGHT (keep_answer) are the same
@@ -314,6 +317,19 @@ same_answers() {
       "$2" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$left.body" | head -c 240)" \
       "$3" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$right.body" | head -c 240)" >>"$work/differences"
   fi
+}
+
+# judge STATUS PROBLEM counts one answer held to a rule of its own rather than beside another (a
+# status it must have, a name it must or must not hold): STATUS joins the statuses, and PROBLEM,
+# when it is not empty, is how the answer broke the rule, written to $work/differences as one that
+# differed.
+judge() {
+  compared=$((compared + 1))
+  printf '%s\n' "$1" >>"$work/statuses"
+  [ -z "$2" ] || {
+    differed=$((differed + 1))
+    printf '%s\n' "$2" >>"$work/differences"
+  }
 }
 
 # no_difference fails the check when any pair so far differed, printing every one.

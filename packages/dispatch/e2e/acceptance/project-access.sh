@@ -59,8 +59,8 @@
 # It needs no harness: the run starts every process it reads, and reads DATABASE_URL only for the
 # server it names, on which it makes a database for each of its servers and drops it at the end.
 # It prints `ok <section>` once a section has run to its end, whatever it found, and fails at the
-# end (verdict), naming every pair of answers that differed and everything it could not run, with
-# why.
+# end (verdict), naming every answer that failed its judgement, a pair that differed or a read that
+# broke its own rule, and everything it could not run, with why.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../../../.." && pwd)
@@ -477,12 +477,13 @@ for caller in "${listed_callers[@]}"; do
   for path in "${object_reads[@]}"; do
     path=${path//\{P\}/PRIV}
     send main "$caller" GET "$(resolve main "$path")"
+    problem=''
     if [ "$status" = 200 ] && grep -q "PRIV" "$work/body"; then
       found=$((found + 1))
     else
-      printf '%s GET %s: HTTP %s, want 200 naming PRIV: %s\n' "$caller" "$path" "$status" "$(head -c 300 "$work/body")" >>"$work/differences"
-      differed=$((differed + 1))
+      problem="$caller GET $path: HTTP $status, want 200 naming PRIV: $(head -c 300 "$work/body")"
     fi
+    judge "$status" "$problem"
   done
 done
 note "$found of $((${#listed_callers[@]} * ${#object_reads[@]})) reads of PRIV's objects found them"
@@ -536,32 +537,56 @@ for caller in bob carol-priv-token; do
   done
   send main "$caller" GET /api/v1/projects
   keys=$(jq -c '[.[].key]' "$work/body" 2>/dev/null || echo "not a list: $(head -c 200 "$work/body")")
-  [ "$keys" = '["PRIV"]' ] || {
-    printf '%s GET /api/v1/projects: lists %s, want ["PRIV"]\n' "$caller" "$keys" >>"$work/differences"
-    differed=$((differed + 1))
-  }
+  problem=''
+  [ "$keys" = '["PRIV"]' ] || problem="$caller GET /api/v1/projects: lists $keys, want [\"PRIV\"]"
+  judge "$status" "$problem"
   # A person of PUB is one of PRIV's people only while PRIV is public (R2: every full member reads a
   # public project, and so is one of its people), so the people a restricted member and a token that
-  # lists PRIV read is held to PRIV's own only once PRIV is private.
+  # lists PRIV read is held to PRIV's own only once PRIV is private. Each list must be answered 200
+  # and name what the caller sees, carol and PRIV's session, or the name it must not hold could be
+  # missing from an error or an empty list.
   if [ "$priv_private" = 1 ]; then
     send main "$caller" GET /api/v1/users
-    if grep -q "$alice" "$work/body"; then
-      printf '%s GET /api/v1/users: names %s, who is outside PRIV\n' "$caller" "$alice" >>"$work/differences"
-      differed=$((differed + 1))
+    problem=''
+    if [ "$status" != 200 ]; then
+      problem="$caller GET /api/v1/users: HTTP $status, want 200: $(head -c 300 "$work/body")"
+    elif ! grep -q "$carol" "$work/body"; then
+      problem="$caller GET /api/v1/users: names no $carol, one of PRIV's people, so it shows nothing: $(head -c 300 "$work/body")"
+    elif grep -q "$alice" "$work/body"; then
+      problem="$caller GET /api/v1/users: names $alice, who is outside PRIV"
     fi
+    judge "$status" "$problem"
   else
     note "$caller GET /api/v1/users not compared: PRIV is public, so every full member is one of its people (R2)"
   fi
   send main "$caller" GET /api/v1/agents
-  if grep -q ses-pub-session "$work/body"; then
-    printf '%s GET /api/v1/agents: lists ses-pub-session, an agent of PUB\n' "$caller" >>"$work/differences"
-    differed=$((differed + 1))
+  problem=''
+  if [ "$status" != 200 ]; then
+    problem="$caller GET /api/v1/agents: HTTP $status, want 200: $(head -c 300 "$work/body")"
+  elif ! grep -q ses-priv-session "$work/body"; then
+    problem="$caller GET /api/v1/agents: lists no ses-priv-session, PRIV's agent, which $caller sees, so it shows nothing: $(head -c 300 "$work/body")"
+  elif grep -q ses-pub-session "$work/body"; then
+    problem="$caller GET /api/v1/agents: lists ses-pub-session, an agent of PUB"
   fi
+  judge "$status" "$problem"
+  # PUB's session is answered as one nobody holds (404 SESSION_NOT_FOUND), or its messages are
+  # read without carol's direct message to it.
   send main "$caller" GET /api/v1/agents/ses-pub-session/messages
-  if grep -q "$(recalled main "PUB direct message")" "$work/body"; then
-    printf '%s GET /api/v1/agents/ses-pub-session/messages: holds carol'"'"'s direct message to it\n' "$caller" >>"$work/differences"
-    differed=$((differed + 1))
-  fi
+  problem=''
+  case "$status" in
+    200)
+      if grep -q "$(recalled main "PUB direct message")" "$work/body"; then
+        problem="$caller GET /api/v1/agents/ses-pub-session/messages: holds carol's direct message to it"
+      fi
+      ;;
+    404)
+      if [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != SESSION_NOT_FOUND ]; then
+        problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP 404, want its code SESSION_NOT_FOUND: $(head -c 300 "$work/body")"
+      fi
+      ;;
+    *) problem="$caller GET /api/v1/agents/ses-pub-session/messages: HTTP $status, want 200 or 404 SESSION_NOT_FOUND: $(head -c 300 "$work/body")" ;;
+  esac
+  judge "$status" "$problem"
 done
 note "bob and carol's PRIV token read PUB's objects, the projects, the people, the agents and a direct message"
 pass
@@ -641,11 +666,10 @@ walk_rows() {
       for caller in bob alice-priv-token carol-priv-token; do
         send main "$caller" "$method" "$target" "$body"
         refused=$((refused + 1))
-        [ "$status" = 403 ] || {
-          printf '%s %s %s (%s): HTTP %s, want 403 for a caller that is not open: %s\n' "$caller" "$method" "$pattern" \
-            "$no_project" "$status" "$(head -c 300 "$work/body")" >>"$work/differences"
-          differed=$((differed + 1))
-        }
+        problem=''
+        [ "$status" = 403 ] ||
+          problem="$caller $method $pattern ($no_project): HTTP $status, want 403 for a caller that is not open: $(head -c 300 "$work/body")"
+        judge "$status" "$problem"
       done
       continue
     fi
@@ -939,11 +963,12 @@ if [ "$priv_private" = 1 ]; then
       cp "$work/live-body-$server" "$work/body"
       keep_answer "$server" "$server"
     done
-    [ "$caller" = alice-priv-token ] || grep -q '"type":"event"' "$work/answers/twin.body" || {
-      printf '%s /ws/live: the twin sent no event of carol'"'"'s PUB comment, so the compare saw nothing: %s\n' \
-        "$caller" "$(head -c 300 "$work/answers/twin.body")" >>"$work/differences"
-      differed=$((differed + 1))
-    }
+    if [ "$caller" != alice-priv-token ]; then
+      problem=''
+      grep -q '"type":"event"' "$work/answers/twin.body" ||
+        problem="$caller /ws/live: the twin sent no event of carol's PUB comment, so the compare saw nothing: $(head -c 300 "$work/answers/twin.body")"
+      judge "$(<"$work/answers/twin.status")" "$problem"
+    fi
     same_answers "$caller /ws/live (beside the twin)" main twin
   done
   # The document socket admits a person by their cookie alone, at the merge base as now, so a
@@ -952,10 +977,9 @@ if [ "$priv_private" = 1 ]; then
   # "find each object of PRIV" is read as "refused alike".
   for caller in bob carol; do
     answer=$(bun "$(dirname "$0")/socket-access.ts" doc "${build_url[main]}" "$work/auth/main-$caller" "$(recalled main "PRIV spec")" "$schema_version" 2>&1) || true
-    [[ "$answer" == authenticated* ]] || {
-      printf '%s /ws/doc/{PRIV spec}: %s, want authenticated\n' "$caller" "$answer" >>"$work/differences"
-      differed=$((differed + 1))
-    }
+    problem=''
+    [[ "$answer" == authenticated* ]] || problem="$caller /ws/doc/{PRIV spec}: $answer, want authenticated"
+    judge socket "$problem"
   done
   printf 'document\t%s\n' "$(recalled main "PUB spec")" >"$work/fill-pub"
   for side in pub hidden; do
@@ -988,8 +1012,8 @@ if [ "$priv_private" = 1 ]; then
 fi
 
 begin verdict
-note "$compared pairs of answers compared; by status: $(statuses)"
-[ "$compared" -gt 0 ] || unrun "no pair of answers was compared"
+note "$compared answers judged, each pair compared and each read held to a rule of its own; by status: $(statuses)"
+[ "$compared" -gt 0 ] || unrun "no answer was judged"
 if [ -s "$work/unrun" ]; then
   fail "$(wc -l <"$work/unrun") things did not run:
 $(<"$work/unrun")

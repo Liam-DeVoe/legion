@@ -313,9 +313,10 @@ keep_headers() {
 
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
 # made as CALLER, are the same status and, masked, the same bytes (same_answers), and the same
-# headers but the declared addition.
+# headers but the declared addition. The pair is one answer compared, so however many of these it
+# breaks, each written to the differences, it counts once among those that differ.
 compare() {
-  local caller=$1 method=$2 path=$3 body=${4:-} build target
+  local caller=$1 method=$2 path=$3 body=${4:-} build target before=$differed headers_differ=0
   for build in base head; do
     target=$(resolve "$build" "$path")
     send "$build" "$caller" "$method" "$target" "$body"
@@ -324,7 +325,7 @@ compare() {
   done
   same_answers "$caller $method $path" base head
   if ! grep -qx "$declared_header" "$work/answers/head.headers"; then
-    differed=$((differed + 1))
+    headers_differ=1
     printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
       "$(grep -i '^dispatch-private-projects:' "$work/answers/head.headers" || echo 'the header is absent')" >>"$work/differences"
   fi
@@ -335,10 +336,11 @@ compare() {
     grep -vx "$declared_header" "$work/answers/$build.headers" >"$work/answers/$build.headers.compared" || true
   done
   if ! cmp -s "$work/answers/base.headers.compared" "$work/answers/head.headers.compared"; then
-    differed=$((differed + 1))
+    headers_differ=1
     printf '%s %s %s: the headers differ:\n%s\n' "$caller" "$method" "$path" \
       "$(diff "$work/answers/base.headers.compared" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
   fi
+  [ "$headers_differ" = 0 ] || [ "$differed" -gt "$before" ] || differed=$((differed + 1))
 }
 
 begin create-projects
