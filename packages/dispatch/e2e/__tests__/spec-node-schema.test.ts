@@ -52,7 +52,7 @@ describe("the YAML of the spec files", () => {
   for (const name of ["all-kinds", "quoted", "separators"]) {
     test(`${name}.yaml reads as ${name}.decoded.json, and the schema takes each node`, () => {
       const documents = parseAllDocuments(specgraph(`testdata/nodes/${name}.yaml`));
-      if (!Array.isArray(documents)) throw new Error(`${name}.yaml holds no document`);
+      if ("empty" in documents) throw new Error(`${name}.yaml holds no document`);
       const want = JSON.parse(specgraph(`testdata/nodes/${name}.decoded.json`)) as unknown[];
       expect(documents.length).toBe(want.length);
       documents.forEach((document, i) => {

@@ -248,14 +248,11 @@ func missing(s string) bool {
 	return s != "" && !hasWord(s)
 }
 
-// idShape is the shape of an id in the schema: words of lower-case ASCII letters and digits joined
-// by single hyphens.
-var idShape = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
-// isIDShape reports whether id has the schema's shape of an id. Validate reads a relation, and
-// judges an id, only when it has; the schema refuses each other one.
+// isIDShape reports whether id has the schema's shape of an id (slug, the pattern of the schema's
+// id). Validate reads a relation, and judges an id, only when it has; the schema refuses each
+// other one.
 func isIDShape(id string) bool {
-	return idShape.MatchString(id)
+	return slug.MatchString(id)
 }
 
 func (v *validator) component(c Component) {

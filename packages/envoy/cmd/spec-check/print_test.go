@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -182,7 +183,7 @@ func TestPrintedFilesPassTheComparison(t *testing.T) {
 	if texts := readTexts(t, only); len(texts) != 0 {
 		t.Fatalf("print wrote %q, want nothing", texts)
 	}
-	after, _, refusals := planPrint(only, map[string][]byte{}, a, statements, int64(1<<20))
+	after, _, refusals := planPrint(only, map[string][]byte{}, a, statements, notes.MaxFileSize)
 	if len(refusals) == 0 || after == nil {
 		t.Fatalf("planPrint of the statements only: refusals %q, after %v; want the refusal and the files", refusals, after)
 	}

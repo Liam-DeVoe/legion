@@ -249,6 +249,7 @@ func splitFile(data []byte, documents []document, nodes []any, lines []int, stop
 		cuts = append(cuts, rest)
 	}
 	var result []Document
+	k := 0 // nodes and lines are in the order of documents, and each document has its own line
 	for i, at := range cuts {
 		end := len(text)
 		if i+1 < len(cuts) {
@@ -258,10 +259,9 @@ func splitFile(data []byte, documents []document, nodes []any, lines []int, stop
 			continue // a stop at the end of the file leaves no text after the documents
 		}
 		d := Document{Text: text[at:end]}
-		if i < len(documents) {
-			if k := slices.Index(lines, documents[i].line); k >= 0 {
-				d.Node = nodes[k]
-			}
+		if i < len(documents) && k < len(lines) && lines[k] == documents[i].line {
+			d.Node = nodes[k]
+			k++
 		}
 		result = append(result, d)
 	}
@@ -391,11 +391,14 @@ func schemaDetail(leaf *jsonschema.ValidationError) string {
 	return where + ": " + msg
 }
 
+// pointerEscape writes a token of a JSON pointer as RFC 6901 writes it.
+var pointerEscape = strings.NewReplacer("~", "~0", "/", "~1")
+
 // jsonPointer is the JSON pointer of a location within a document: "" for the document itself.
 func jsonPointer(tokens []string) string {
 	var b strings.Builder
 	for _, token := range tokens {
-		b.WriteString("/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(token))
+		b.WriteString("/" + pointerEscape.Replace(token))
 	}
 	return b.String()
 }
@@ -456,8 +459,8 @@ const FileSuffix = ".yaml"
 // notes.KindFile) directly in the directory, whose name ends in FileSuffix. Each reader of the
 // spec files takes its entries by this rule: spec-check, through notes.ReadSet, and ReadScenario
 // for the files of each commit.
-func IsFile(name string, kind notes.Kind) bool {
-	return kind == notes.KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, FileSuffix)
+func IsFile(name string, entryKind notes.Kind) bool {
+	return entryKind == notes.KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, FileSuffix)
 }
 
 // ReadLayout reads the spec files, keyed by their names directly in the spec directory, as Parse

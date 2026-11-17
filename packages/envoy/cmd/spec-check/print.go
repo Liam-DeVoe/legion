@@ -107,9 +107,9 @@ func printApproved(stdout, stderr io.Writer, path string, a specgraph.Approved, 
 // (printRun) with Layout.Place and limit, then judges the result with judgeFiles. after is the
 // files that the run leaves (nil when Place refused a node); wrote is the line of each node it
 // placed; refusals is each line that refuses the run, empty for a run that print writes.
-func planPrint(dir string, files map[string][]byte, a specgraph.Approved, ids []string, limit int64) (after map[string][]byte, wrote, refusals []string) {
+func planPrint(dir string, files map[string][]byte, a specgraph.Approved, named []string, limit int64) (after map[string][]byte, wrote, refusals []string) {
 	current, _ := a.Current() // ReadApproved refused every document that would be a problem here
-	run := printRun(current, ids)
+	run := printRun(current, named)
 	layout, _ := specgraph.ReadLayout(files) // the judgment below names each problem of the files
 	for _, node := range run {
 		if _, err := layout.Place(node, limit); err != nil {

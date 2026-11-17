@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -9,6 +8,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
 // testForm runs the built command over the YAML form of the spec files: tree refuses each file
@@ -120,8 +122,8 @@ func testForm(t *testing.T, binary string) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if info.Size() > 1<<20 {
-					t.Fatalf("after print %s, %s is %d bytes (limit %d)", id, entry.Name(), info.Size(), 1<<20)
+				if info.Size() > notes.MaxFileSize {
+					t.Fatalf("after print %s, %s is %d bytes (limit %d)", id, entry.Name(), info.Size(), notes.MaxFileSize)
 				}
 			}
 			if got := runBinary(t, binary, "", "tree", "--dir", dir); got.code != 0 {
@@ -138,28 +140,13 @@ func testForm(t *testing.T, binary string) {
 // path.
 func writeApproved(t *testing.T, documents map[string]string) string {
 	t.Helper()
-	type version struct {
-		Version  int       `json:"version"`
-		At       time.Time `json:"at"`
-		Document string    `json:"document"`
-	}
-	type node struct {
-		ID            string    `json:"id"`
-		Removed       bool      `json:"removed"`
-		PartlyChecked bool      `json:"partly_checked"`
-		Versions      []version `json:"versions"`
-	}
 	var file struct {
-		Nodes []node `json:"nodes"`
+		Nodes []specgraph.ApprovedNode `json:"nodes"`
 	}
 	for id, document := range documents {
-		file.Nodes = append(file.Nodes, node{ID: id, Versions: []version{{Version: 1, At: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Document: document}}})
-	}
-	content, err := json.Marshal(file)
-	if err != nil {
-		t.Fatal(err)
+		file.Nodes = append(file.Nodes, specgraph.ApprovedNode{ID: id, Versions: []specgraph.ApprovedVersion{{Version: 1, At: time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC), Document: document}}})
 	}
 	path := filepath.Join(t.TempDir(), "approved.json")
-	writeFile(t, path, content)
+	writeJSONFile(t, path, file)
 	return path
 }

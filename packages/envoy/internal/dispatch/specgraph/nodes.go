@@ -108,7 +108,7 @@ func fileOf(n any) (any, *nodePrinter) {
 		f := checkFile{
 			Type: "check", ID: n.ID, Serves: p.line("serves", n.Serves), Subject: p.line("subject", string(n.Subject)),
 			Procedure: p.line("procedure", string(n.Procedure)), Claim: p.line("claim", n.Claim),
-			ProcedureText: p.lines("procedure", n.ProcedureText), FailingExample: p.lines("failing example", n.FailingExample),
+			ProcedureText: p.lines("procedure_text", n.ProcedureText), FailingExample: p.lines("failing_example", n.FailingExample),
 		}
 		if n.Test != nil {
 			if *n.Test == (Test{}) {
@@ -120,7 +120,7 @@ func fileOf(n any) (any, *nodePrinter) {
 		case n.TimeLimit > 0:
 			f.TimeLimit = n.TimeLimit.String()
 		case n.TimeLimit < 0:
-			p.refuse("time limit", "a time limit is a positive duration")
+			p.refuse("time_limit", "a time limit is a positive duration")
 		}
 		return f, p
 	case Component:

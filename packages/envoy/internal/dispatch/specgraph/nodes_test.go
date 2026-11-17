@@ -117,9 +117,10 @@ func fileText(t *testing.T, path string) string {
 	return string(content)
 }
 
-// The texts that YAML must quote or escape: the texts of the round trip of the block format, and
-// each line of the plan's review focus 1. Each line is one line of a text, so a text of more lines
-// is a list of more items.
+// The texts that YAML must quote or escape: a line that starts or holds one of its marks, a word
+// that a YAML 1.1 reader reads as another type, a tab, an emoji and the white space and format
+// characters outside ASCII. Each line is one line of a text, so a text of more lines is a list of
+// more items.
 var hardTexts = []string{
 	`a "quoted" word`, "a & b", "a &amp; b", "a &lt; b", "a } b", "a { b", "a # b", "a `code` b",
 	"a\u202fb", "a \U0001F600 b", "#a}", "line one\nline two",
@@ -217,7 +218,7 @@ func TestPrintRefusesUnprintable(t *testing.T) {
 		{name: "a NUL byte", node: Term{ID: "a-term", Name: "term", Definition: "A te\x00rm."}, field: "definition"},
 		{name: "a byte that is not UTF-8", node: Term{ID: "a-term", Name: "caf\xe9", Definition: "A term."}, field: "name"},
 		{name: "a test part that names nothing", node: Check{ID: "a-check", Serves: "s", Claim: "One.", Subject: SubjectCode, Procedure: ProcedureProgram, Test: &Test{}}, field: "test"},
-		{name: "a negative time limit", node: Check{ID: "a-check", Serves: "s", Claim: "One.", Subject: SubjectCode, Procedure: ProcedureAgent, TimeLimit: -time.Hour}, field: "time limit"},
+		{name: "a negative time limit", node: Check{ID: "a-check", Serves: "s", Claim: "One.", Subject: SubjectCode, Procedure: ProcedureAgent, TimeLimit: -time.Hour}, field: "time_limit"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()

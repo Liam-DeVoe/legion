@@ -406,13 +406,8 @@ func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
 // "---" line to the next.
 func withoutDocument(t *testing.T, text, id string) string {
 	t.Helper()
-	var kept, documents []string
-	for line := range strings.Lines(text) {
-		if line == "---\n" {
-			documents = append(documents, "")
-		}
-		documents[len(documents)-1] += line
-	}
+	var kept []string
+	documents := splitDocuments(text)
 	for _, document := range documents {
 		if !strings.Contains(document, "\nid: "+id+"\n") {
 			kept = append(kept, document)

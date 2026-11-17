@@ -141,7 +141,7 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	tree, problems := Parse(map[string][]byte{name: []byte(v.Document)})
 	// Parse holds a document with no problem to the document that Print writes (not-printed); a
 	// document with a problem of the schema it does not hold to it, so the check below does.
-	shaped := len(problems) > 0
+	printedFormUnchecked := len(problems) > 0
 	problems = slices.DeleteFunc(problems, func(p Problem) bool { return p.Rule == "schema" })
 	if len(problems) != 0 {
 		return Tree{}, problems
@@ -156,7 +156,7 @@ func versionText(id string, v ApprovedVersion) (Tree, []Problem) {
 	case nodes[0].id != id:
 		return refuse(fmt.Sprintf("the document is of node %q, not %q", nodes[0].id, id))
 	}
-	if shaped {
+	if printedFormUnchecked {
 		if printed, err := nodes[0].node.Print(); err != nil || printed != v.Document {
 			return refuse("the document is not as Print writes it")
 		}

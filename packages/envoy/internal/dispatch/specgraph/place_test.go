@@ -25,11 +25,11 @@ var (
 	placeTerm      = Term{ID: "order", Name: "order", Definition: "An order is a request of a customer."}
 )
 
-// placeRow is one row of the table of section 1.1 of the plan: a kind of node and whether the
-// directory holds its statement or its parent. layout gives the directory before the write and the
-// node, new or replaced (the replacement has text more), and the home of the node; want is the
-// answer of each column: W writes at the home, M moves the block to the next file of the home's
-// series, T, S and P are ErrTooLarge, ErrNoStatement and ErrNoParent.
+// placeRow is one row of the table of the cases of Place (its doc comment): a kind of node and
+// whether the directory holds its statement or its parent. layout gives the directory before the
+// write and the node, new or replaced (the replacement has text more), and the home of the node;
+// want is the answer of each column: W writes at the home, M moves the block to the next file of
+// the home's series, T, S and P are ErrTooLarge, ErrNoStatement and ErrNoParent.
 type placeRow struct {
 	name         string
 	layout       func(t *testing.T, replaced bool) (l Layout, node any, home string)
@@ -328,6 +328,6 @@ func sameLayout(t *testing.T, l, before Layout) {
 	if !maps.EqualFunc(l.Files, before.Files, func(a, b []Document) bool {
 		return slices.EqualFunc(a, b, func(x, y Document) bool { return x.Text == y.Text && nodeID(x.Node) == nodeID(y.Node) })
 	}) {
-		t.Errorf("the layout changed on a refusal:\n got %v\nwant %v", maps.Collect(maps.All(l.Bytes())), before.Bytes())
+		t.Errorf("the layout changed on a refusal:\n got %v\nwant %v", l.Bytes(), before.Bytes())
 	}
 }

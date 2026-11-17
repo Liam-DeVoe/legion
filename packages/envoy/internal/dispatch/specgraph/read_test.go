@@ -46,7 +46,8 @@ func TestNodesDecodeToTheirData(t *testing.T) {
 // document's "---", and finds no problem in it.
 func TestReadReadsEachNodeKind(t *testing.T) {
 	t.Parallel()
-	tree, problems := Parse(map[string][]byte{"all-kinds.yaml": []byte(fileText(t, "testdata/nodes/all-kinds.yaml"))})
+	all := fileText(t, "testdata/nodes/all-kinds.yaml")
+	tree, problems := Parse(map[string][]byte{"all-kinds.yaml": []byte(all)})
 	if len(problems) != 0 {
 		t.Fatalf("Parse: problems %+v, want none", problems)
 	}
@@ -67,7 +68,7 @@ func TestReadReadsEachNodeKind(t *testing.T) {
 
 	// The control: the same documents in the reverse order read with no problem and keep each
 	// digest.
-	documents := splitDocuments(fileText(t, "testdata/nodes/all-kinds.yaml"))
+	documents := splitDocuments(all)
 	slices.Reverse(documents)
 	other, problems := Parse(map[string][]byte{"reversed.yaml": []byte(strings.Join(documents, ""))})
 	if len(problems) != 0 {

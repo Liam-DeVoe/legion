@@ -63,11 +63,11 @@ func (e *PlaceError) Error() string {
 func (l Layout) Bytes() map[string][]byte {
 	files := make(map[string][]byte, len(l.Files))
 	for name, documents := range l.Files {
-		var b strings.Builder
+		b := make([]byte, 0, size(documents))
 		for _, d := range documents {
-			b.WriteString(d.Text)
+			b = append(b, d.Text...)
 		}
-		files[name] = []byte(b.String())
+		files[name] = b
 	}
 	return files
 }
@@ -146,7 +146,7 @@ func (l *Layout) Place(node any, limit int64) (string, error) {
 		return "", e
 	}
 	target := l.nextInSeries(home, size(block), limit)
-	l.Files[target] = append(slices.Clone(l.Files[target]), block...)
+	l.Files[target] = slices.Concat(l.Files[target], block)
 	l.Files[home] = slices.Concat(documents[:start], documents[end:])
 	return target, nil
 }

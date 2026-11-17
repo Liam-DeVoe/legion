@@ -1,5 +1,7 @@
 kind: Changed
-body: The spec files of .dispatch/spec are YAML files, one document for each node, that a JSON Schema in the repository checks.
+body: |-
+    The spec files of .dispatch/spec are YAML files, one document for each node, that a JSON Schema in the repository checks.
+    spec-check print takes --dir, writes each node's document into the files at its place, and writes nothing when spec-check tree would refuse the result.
 time: 2026-11-17T00:11:09.111715342Z
 custom:
     Issue: pr4250
