@@ -32,6 +32,7 @@ import {
   firstBlockWordsRaw,
   firstLineOf,
   lineWords,
+  lineWordsRaw,
   nodeWords,
   type TreeNode,
   targetNames,
@@ -2779,4 +2780,42 @@ test("the raw words of a reading and of a stored text keep each address as writt
   const stored = "Do it as **dispatch://CORE-2** says, see <dispatch://CORE-3>.";
   expect(plainWordsRaw(stored)).toBe("Do it as dispatch://CORE-2 says, see dispatch://CORE-3.");
   expect(plainWords(stored)).toBe("Do it as CORE-2 says, see CORE-3.");
+});
+
+// Decision 140: a caller that names each reference itself cuts a node's line from words in which
+// no address is written short (`lineWordsRaw`), or it finds no address left to name. It walks a
+// node as `lineWords` does - the first block of its reading, and where it has none, the first
+// block of its stored text that holds words, a heading to its own line - and keeps each bare
+// address as written on both paths, where `lineWords` reads it short. A decision passes as its
+// read sends it, `{ text, tree: text_tree }`, with no node built for it.
+test("a node's raw line keeps each bare address as written, from a reading and from stored text", () => {
+  const words = "Do it as dispatch://CORE-2 says.";
+  const short = "Do it as CORE-2 says.";
+  for (const [sent, read] of [
+    ["a reading", true],
+    ["no reading", false],
+  ] as const) {
+    const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
+    expect(task?.tree === undefined, sent).toBe(!read);
+    expect(task === undefined ? "" : lineWordsRaw(task), sent).toBe(words);
+    expect(task === undefined ? "" : lineWords(task), sent).toBe(short);
+  }
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ruled = decision("d1", "---\n\nDo it as **dispatch://CORE-2** says.", []);
+  const headed = decision("d2", "## Title\n\nDo it as **dispatch://CORE-2** says.", []);
+  const root = buildIssueTree({
+    decisions: decisions([ruled, headed]),
+    issue: issueDetails([spec, made]),
+  });
+  for (const [row, raw, line] of [
+    [ruled, words, short],
+    [headed, "Title", "Title"],
+  ] as const) {
+    const node = nodeOf(root, blockNodeId("decisions-md", row.block_id));
+    expect(node?.tree, row.block_id).toBeUndefined();
+    expect(node === undefined ? "" : lineWordsRaw(node), row.block_id).toBe(raw);
+    expect(node === undefined ? "" : lineWords(node), row.block_id).toBe(line);
+    expect(lineWordsRaw({ text: row.text, tree: row.text_tree }), row.block_id).toBe(raw);
+  }
 });

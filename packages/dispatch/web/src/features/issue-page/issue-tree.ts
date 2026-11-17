@@ -22,6 +22,7 @@ import {
   BLANK_LINE,
   type Draft,
   plainWords,
+  plainWordsRaw,
   type TreeContext,
   treeContext,
   treeDrafts,
@@ -402,10 +403,29 @@ export function nodeWords(node: TreeNode): string {
  * from.
  */
 export function lineWords(node: TreeNode): string {
-  if (node.tree !== undefined) return firstBlockWords(node.tree);
+  return lineWordsBy(node, firstBlockWords, plainWords);
+}
+
+/** The words a node's one line is cut from, as `lineWords` walks them but with no address
+ *  written short: the first block of a reading read by `firstBlockWordsRaw` and a stored block by
+ *  `plainWordsRaw`, so a bare address stays as written (dispatch://INFRA-1196 decision 140). A
+ *  caller that names each reference itself reads these, since a short form leaves it no address
+ *  to name. A `TreeNode` passes as it is, and a decision as `{ text, tree: text_tree }`. */
+export function lineWordsRaw(node: { readonly text: string; readonly tree?: DisplayTree }): string {
+  return lineWordsBy(node, firstBlockWordsRaw, plainWordsRaw);
+}
+
+/** `lineWords`' walk, the one both `lineWords` and `lineWordsRaw` read by: the first block of a
+ *  reading read to words by `firstBlock`, and a stored block read to plain words by `plain`. */
+function lineWordsBy(
+  node: { readonly text: string; readonly tree?: DisplayTree },
+  firstBlock: (reading: DisplayTree) => string,
+  plain: (markdown: string) => string
+): string {
+  if (node.tree !== undefined) return firstBlock(node.tree);
   for (const stored of node.text.split(BLANK_LINE)) {
     const block = stored.trimStart();
-    const words = plainWords(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
+    const words = plain(/^#{1,6} +.*/u.exec(block)?.[0] ?? block);
     if (!NO_WORDS.test(words)) return words;
   }
   return "";
