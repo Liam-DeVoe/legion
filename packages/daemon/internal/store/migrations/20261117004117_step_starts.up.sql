@@ -5,8 +5,10 @@
 -- start of a step raises the count by one in the transaction that writes the start, and the write
 -- that ends the step reads it unchanged, maybe in another transaction of another daemon after a
 -- restart: no start of the same place comes between the two, because the step runs until one of
--- the ends ends it. agent is the agent that latest start named, which the end names again: a merge
--- GitHub already made starts no merger and names none.
+-- the ends ends it. agent and started_at are what that latest start wrote, which the end writes
+-- again, so the two writes agree whichever reaches Dispatch first: a merge GitHub already made
+-- starts no merger and names no agent, and a start that raised no phase entry has no other
+-- record of its moment.
 --
 -- The count is keyed by task (slice 1 writes the one task, default, of today's fixed phases), and a
 -- re-admission does not clear it (record.Store.ClearGeneration keeps it): the generation is part of
@@ -20,5 +22,6 @@ create table step_starts (
   place integer not null,
   starts bigint not null,
   agent text not null,
+  started_at timestamptz not null,
   primary key (issue, task, kind, place)
 );
