@@ -942,7 +942,7 @@ test("the controller's held table names every word of admission.held, in the dae
     [admission]
   );
   countedOncePerFile(
-    "A later version of its plan that changes the task, which its architect gives with `register_plan`, or, on a root, a person setting that root `todo`: the daemon then starts the task at its first step.",
+    "A later version of its plan from its architect (`register_plan`) whose block of the task differs from the block in force (in its `steps`, its text, `needs`, `owner`, `part_of` or `merges`) or that puts another task in its place, or, on a root, a person setting that root `todo`: the daemon then starts the task the plan now holds at its first step; a later version that leaves that block as it is (changing only the text outside the blocks, or `serves`) is taken and the task stays stopped.",
     [admission]
   );
   countedOncePerFile(
