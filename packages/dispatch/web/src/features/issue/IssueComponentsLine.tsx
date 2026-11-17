@@ -41,11 +41,11 @@ function editsOwnSet(components: Pick<IssueComponents, "inherited_from" | "mode"
  *  reaches this trigger by this name rather than drawing a second picker, so a word changed here
  *  changes both sides at once.
  *
- *  Called with the issue's key alone it is `main`'s "Edit components of CORE-1", the name the
- *  trigger answers to in every state outside `NoTooltips` (R1). Inside, `drawn` carries the page's
- *  words (`CONTROL_LABELS`) and the issue's attachment, and, while a save is in flight, the page's
- *  `ANSWER_LINES` as `saving`; the name begins with the words the trigger draws, then "of" and
- *  the issue's key (dispatch://INFRA-3935 R8, decision 114 of
+ *  `inside` is required: the trigger's state inside `NoTooltips`, or `null` outside it, where the
+ *  name is `main`'s "Edit components of CORE-1" in every state (R1). Inside it carries the
+ *  issue's attachment, whether a save is in flight, and the page's words (`ANSWER_LINES` and
+ *  `CONTROL_LABELS`); the name begins with the words the trigger draws, then the list's
+ *  `control_name_of` and the issue's key (dispatch://INFRA-3935 R8, decision 114 of
  *  dispatch://INFRA-1196/artifact/part-decisions-md): "Set components of CORE-1" while it draws
  *  `components_set`, and while it saves, when `ComponentPicker` draws `saving_components`
  *  ("Saving components…") in place of the trigger's words, those words with their trailing
@@ -57,19 +57,20 @@ function editsOwnSet(components: Pick<IssueComponents, "inherited_from" | "mode"
  *  file imports nothing of that list (`components/tooltips.tsx`). */
 export function componentsControlName(
   issueKey: string,
-  drawn?: {
+  inside: {
     readonly components: Pick<IssueComponents, "inherited_from" | "mode">;
-    readonly controlLabels: PageWords["CONTROL_LABELS"];
-    readonly saving?: Pick<PageWords["ANSWER_LINES"], "saving_components">;
-  }
+    readonly saving: boolean;
+    readonly words: Pick<PageWords, "ANSWER_LINES" | "CONTROL_LABELS">;
+  } | null
 ): string {
-  if (drawn?.saving !== undefined) {
-    return `${withoutEllipsis(drawn.saving.saving_components)} of ${issueKey}`;
-  }
-  if (drawn === undefined || editsOwnSet(drawn.components)) {
+  if (inside === null || (!inside.saving && editsOwnSet(inside.components))) {
     return `Edit components of ${issueKey}`;
   }
-  return `${drawn.controlLabels.components_set} of ${issueKey}`;
+  const { words } = inside;
+  const drawn = inside.saving
+    ? withoutEllipsis(words.ANSWER_LINES.saving_components)
+    : words.CONTROL_LABELS.components_set;
+  return `${drawn} ${words.CONTROL_LABELS.control_name_of} ${issueKey}`;
 }
 
 /**
@@ -224,13 +225,7 @@ export function IssueComponentsLine({
           // of dispatch://INFRA-1196/artifact/part-decisions-md). Outside it is `main`'s (R1).
           triggerAriaLabel={componentsControlName(
             issue.key,
-            page === null
-              ? undefined
-              : {
-                  components,
-                  controlLabels: page.CONTROL_LABELS,
-                  saving: write.pending ? page.ANSWER_LINES : undefined,
-                }
+            page === null ? null : { components, saving: write.pending, words: page }
           )}
         >
           {page === null ? (

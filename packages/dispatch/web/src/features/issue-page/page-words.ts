@@ -815,6 +815,14 @@ export const CONTROL_LABELS = freeze({
   /** The direct children's count in the header's properties line, before the issue's own
    *  numbers: "Children 2 of 7 done" (R13). */
   children: "Children",
+  /** The word between the words a shared control draws and the issue's key, in the name the
+   *  control answers to inside `NoTooltips`: "Set components of CORE-1", "Saving components of
+   *  CORE-1" (`componentsControlName`) and "Saving labels of CORE-1" (`labelsControlName`). */
+  control_name_of: "of",
+  /** The word between the labels control's `add_label` and the issue's key, in the name it
+   *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
+   *  (`labelsControlName`). */
+  control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */

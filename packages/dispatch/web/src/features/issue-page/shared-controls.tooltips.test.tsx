@@ -25,6 +25,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
+import { withoutEllipsis } from "../../components/tooltips";
 import * as theme from "../../theme/classes";
 import {
   calloutWarningBg,
@@ -49,7 +50,7 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
@@ -1402,10 +1403,15 @@ const componentsWithPicker: Mount = {
     );
   },
   // The picker's name is `main`'s outside `NoTooltips` and begins with the words its trigger
-  // draws inside (`componentsControlName`; dispatch://INFRA-3935 R8, decision 114 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the issue's key.
+  // draws inside, then B's joining word (`componentsControlName`; dispatch://INFRA-3935 R8,
+  // decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the
+  // issue's key.
   settle: async (view) => {
-    await within(view.container).findByRole("button", { name: /\bcomponents of CORE-2$/u });
+    const names = [
+      "Edit components of CORE-2",
+      `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`,
+    ];
+    await within(view.container).findByRole("button", { name: (name) => names.includes(name) });
   },
 };
 
@@ -1422,7 +1428,11 @@ const componentPickerSaving: Mount = {
         onSave={() => undefined}
         saving
         selected={[]}
-        triggerAriaLabel="Saving components of CORE-1"
+        triggerAriaLabel={componentsControlName("CORE-1", {
+          components: { inherited_from: null, mode: "inherit" },
+          saving: true,
+          words: { ANSWER_LINES, CONTROL_LABELS },
+        })}
       >
         Set components
       </ComponentPicker>
@@ -2939,18 +2949,26 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
     ]);
-    // The control of an issue with no label is named by the words it draws, then the issue's
-    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the words it draws then, their
-    // ellipsis dropped, and here no key is given (R8, decision 114 of
-    // dispatch://INFRA-1196/artifact/part-decisions-md).
-    expect(
-      within(view.container)
-        .getAllByRole("button", { name: /labels?\b/iu })
-        .map((control) => [control.getAttribute("aria-label"), control.textContent])
-    ).toEqual([
-      [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
-      ["Saving labels", ANSWER_LINES.saving_labels],
+    // The control of an issue with no label is named by the words it draws, then B's joining
+    // word and the issue's key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the
+    // words it draws then, their ellipsis dropped, and here no key is given (R8, decision 114 of
+    // dispatch://INFRA-1196/artifact/part-decisions-md). Each name is built from B's words.
+    const named = [
+      `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`,
+      withoutEllipsis(ANSWER_LINES.saving_labels),
+    ].map((name) => within(view.container).getByRole("button", { name }));
+    expect(named.map((control) => control.textContent)).toEqual([
+      CONTROL_LABELS.add_label,
+      ANSWER_LINES.saving_labels,
     ]);
+    // Each name begins with the words its control draws, their ellipsis dropped.
+    for (const control of named) {
+      const drawn = withoutEllipsis((control.textContent ?? "").trim());
+      expect({
+        drawn,
+        nameBeginsWithWords: control.getAttribute("aria-label")?.startsWith(drawn),
+      }).toEqual({ drawn, nameBeginsWithWords: true });
+    }
   });
 
   await readDrawn(
@@ -3176,7 +3194,9 @@ test("inside NoTooltips the components picker's trigger draws in B's page colour
   const triggers = (view: RenderResult, surface: Surface) =>
     [
       "Edit components of CORE-1",
-      surface === "inside" ? "Set components of CORE-2" : "Edit components of CORE-2",
+      surface === "inside"
+        ? `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`
+        : "Edit components of CORE-2",
     ].map((name) => within(view.container).getByRole("button", { name }));
   const mainsColours = tokens(secondaryButtonCompact).filter(
     (token) => colourOf(splitToken(token).utility) !== undefined

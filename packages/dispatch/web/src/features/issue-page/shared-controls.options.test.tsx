@@ -23,6 +23,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { approvalPillClassName, LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
+import { withoutEllipsis } from "../../components/tooltips";
 import { pageHeaderControl, pageInkText } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
 import { ConnectionDot } from "../doc/ConnectionDot";
@@ -1108,12 +1109,12 @@ test("inside NoTooltips a label chip wraps a long label and is never cut", () =>
 // inside `NoTooltips` the control of an issue with no label says what it does, as the priority's
 // says "Add a priority", because its row of Details already names the property and the
 // property's name in the control drew "Labels None Labels". Its accessible name there begins with
-// the words it draws and ends with the issue's key, as the priority's "Add a priority to CORE-1"
-// does, so a voice user says what they read (WCAG 2.5.3 Label in Name, dispatch://INFRA-3935
-// R2); with no key given it is those words alone. Outside it says `main`'s word and keeps
-// `main`'s name, "Edit labels", key or no key (R1).
+// the words it draws and ends with B's joining word and the issue's key, as the priority's "Add a
+// priority to CORE-1" does, so a voice user says what they read (WCAG 2.5.3 Label in Name,
+// dispatch://INFRA-3935 R2); with no key given it is those words alone. Outside it says `main`'s
+// word and keeps `main`'s name, "Edit labels", key or no key (R1). Each name inside is built from
+// B's words.
 test("inside NoTooltips the empty labels control says Add a label", () => {
-  expect(`${CONTROL_LABELS.add_label} to CORE-1`).toBe("Add a label to CORE-1");
   for (const variant of ["default", "rail"] as const) {
     for (const surface of ["inside", "outside"] as const) {
       for (const issueKey of ["CORE-1", undefined]) {
@@ -1135,7 +1136,7 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
               ? "Edit labels"
               : issueKey === undefined
                 ? CONTROL_LABELS.add_label
-                : `${CONTROL_LABELS.add_label} to ${issueKey}`;
+                : `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} ${issueKey}`;
           const control = within(view.container).getByRole("button", { name });
           const which = { issueKey, surface, variant };
           expect({ ...which, word: control.textContent }).toEqual({
@@ -1143,9 +1144,11 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
             word: surface === "inside" ? CONTROL_LABELS.add_label : "Labels",
           });
           if (surface === "inside") {
+            // Its name begins with the words it draws.
+            const drawn = withoutEllipsis((control.textContent ?? "").trim());
             expect({
               ...which,
-              nameBeginsWithWord: name.startsWith(control.textContent ?? ""),
+              nameBeginsWithWord: control.getAttribute("aria-label")?.startsWith(drawn),
             }).toEqual({ ...which, nameBeginsWithWord: true });
             // Neither its words nor any attribute of it says the property's name.
             expect({ ...which, control: control.outerHTML.includes("Labels") }).toEqual({
@@ -1162,14 +1165,15 @@ test("inside NoTooltips the empty labels control says Add a label", () => {
 });
 
 // dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md:
-// while its labels save, the control inside `NoTooltips` draws the page's "Saving labels…"
+// while its labels save, the control inside `NoTooltips` draws the page's `saving_labels`
 // whatever it holds, and it stays focusable, marked busy. Its accessible name then begins with
-// those words, their ellipsis dropped, and ends with the issue's key ("Saving labels of CORE-1"),
-// or is those words alone with no key given, so a voice user says what they read (WCAG 2.5.3
-// Label in Name). Outside it draws `main`'s "Saving labels…" and keeps `main`'s name, "Edit
-// labels", in every state (R1).
+// those words, their ellipsis dropped, and ends with B's joining word and the issue's key
+// ("Saving labels of CORE-1"), or is those words alone with no key given, so a voice user says
+// what they read (WCAG 2.5.3 Label in Name). Outside it draws `main`'s "Saving labels…" and keeps
+// `main`'s name, "Edit labels", in every state (R1). Each name and word inside is built from B's
+// words.
 test("inside NoTooltips the saving labels control is named by its visible words", () => {
-  expect(ANSWER_LINES.saving_labels).toBe("Saving labels…");
+  const saving = withoutEllipsis(ANSWER_LINES.saving_labels);
   for (const labels of [[], ["api"]]) {
     for (const surface of ["inside", "outside"] as const) {
       for (const issueKey of ["CORE-1", undefined]) {
@@ -1189,21 +1193,26 @@ test("inside NoTooltips the saving labels control is named by its visible words"
             surface === "outside"
               ? "Edit labels"
               : issueKey === undefined
-                ? "Saving labels"
-                : `Saving labels of ${issueKey}`;
+                ? saving
+                : `${saving} ${CONTROL_LABELS.control_name_of} ${issueKey}`;
           const control = within(view.container).getByRole("button", { name });
           const which = { issueKey, labels, surface };
           expect({
             ...which,
             busy: control.getAttribute("aria-disabled"),
             word: control.textContent,
-          }).toEqual({ ...which, busy: "true", word: "Saving labels…" });
+          }).toEqual({
+            ...which,
+            busy: "true",
+            word: surface === "inside" ? ANSWER_LINES.saving_labels : "Saving labels…",
+          });
           if (surface === "inside") {
-            const said = (control.textContent ?? "").replace(/…$/u, "");
-            expect({ ...which, nameBeginsWithWords: name.startsWith(said) }).toEqual({
+            // Its name begins with the words it draws, their ellipsis dropped.
+            const drawn = withoutEllipsis((control.textContent ?? "").trim());
+            expect({
               ...which,
-              nameBeginsWithWords: true,
-            });
+              nameBeginsWithWords: control.getAttribute("aria-label")?.startsWith(drawn),
+            }).toEqual({ ...which, nameBeginsWithWords: true });
           }
         } finally {
           undraw(view);
