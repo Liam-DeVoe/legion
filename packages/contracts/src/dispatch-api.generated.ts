@@ -4615,7 +4615,10 @@ export interface components {
       p90_minutes: null | number;
     };
     DeliveryTarget: {
+      /** @enum {string} */
+      direction: "higher_better" | "lower_better";
       inclusive: boolean;
+      judges: string[] | null;
       /** Format: double */
       value: number;
     };

@@ -1,5 +1,8 @@
 // The prototype's web/src/components/Sparkbars.tsx, ported as it is; its fills are the `chartBar`
-// tokens, since no component writes a colour utility of its own.
+// tokens, since no component writes a colour utility of its own. One difference: each day carries
+// its own verdict (`met`), which its caller judges from that day's row (`lib/target.ts`'s
+// `dayMeets`), rather than the bar's figure judged here, since a target may judge a statistic the
+// bar does not draw.
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
 
@@ -7,25 +10,26 @@ export interface SparkbarPoint {
   label: string; // tooltip prefix, e.g. "2026-09-27"
   value: number | null; // null: nothing to measure that day
   partial: boolean;
+  // Whether the day meets the target; null draws its bar neutral, as every bar is with no target.
+  met: boolean | null;
 }
 
 interface Props {
   points: SparkbarPoint[];
-  // Omitted where no target exists: no target line, and every bar the same neutral colour.
+  // Omitted where no target exists: no target line.
   target?: number;
   // Top of the scale; the target line always fits under it.
   max: number;
-  met?: (value: number) => boolean;
   format: (value: number) => string;
 }
 
 const BAR = 10;
 const HEIGHT = 28;
 
-/** One bar per day with a dashed target line: green bars meet the target, red
- * bars miss it, faded bars are days the window only partly covers. Plain SVG,
- * no chart library, so it costs nothing on a filter change. */
-export function Sparkbars({ points, target, max, met, format }: Props) {
+/** One bar per day with a dashed target line: green bars are days that meet the target, red bars
+ * days that miss it, neutral ones days with no verdict, and faded bars days the window only partly
+ * covers. Plain SVG, no chart library, so it costs nothing on a filter change. */
+export function Sparkbars({ points, target, max, format }: Props) {
   const y = barScale(
     max,
     target,
@@ -58,13 +62,7 @@ export function Sparkbars({ points, target, max, met, format }: Props) {
               y={y(p.value)}
               width={BAR - 2}
               height={Math.max(HEIGHT - y(p.value), 1)}
-              className={
-                target === undefined || met === undefined
-                  ? chartBar.neutral
-                  : met(p.value)
-                    ? chartBar.met
-                    : chartBar.missed
-              }
+              className={p.met === null ? chartBar.neutral : p.met ? chartBar.met : chartBar.missed}
             />
           )}
         </g>

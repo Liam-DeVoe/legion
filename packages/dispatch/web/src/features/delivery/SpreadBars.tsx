@@ -1,7 +1,8 @@
 // The prototype's web/src/components/SpreadBars.tsx, ported as it is; its fills are the
-// `chartBar` tokens, since no component writes a colour utility of its own. One difference: a bar
-// is judged by the rule its caller passes (`met`), as `Sparkbars`' are, rather than the
-// prototype's strict "under the target", since a person may make a target inclusive.
+// `chartBar` tokens, since no component writes a colour utility of its own. One difference: each
+// day carries its own verdict (`met`), which its caller judges from that day's row
+// (`lib/target.ts`'s `dayMeets`), rather than the prototype's strict "under the target" of each
+// bar's figure, since a person may make a target inclusive and judge any statistic of the day.
 import { chartBar } from "../../theme/classes";
 import { barScale } from "./lib/barScale";
 
@@ -11,15 +12,15 @@ export interface SpreadBarDay {
   median_minutes: number | null;
   p90_minutes: number | null;
   partial: boolean;
+  // Whether the day meets the target, both its bars coloured by it; null draws them neutral, as
+  // every day is with no target.
+  met: boolean | null;
 }
 
 interface Props {
   days: readonly SpreadBarDay[];
-  // Omitted where no target exists: no target line, and bars in one neutral colour.
+  // Omitted where no target exists: no target line.
   target?: number;
-  // Whether a day's figure meets the target, by the measure's own rule (`lib/target.ts`'s
-  // `judgedBy`); omitted with the target, which leaves every bar neutral.
-  met?: (minutes: number) => boolean;
   noun: string; // what `n` counts, "runs"
   format: (minutes: number) => string;
 }
@@ -27,10 +28,10 @@ interface Props {
 const BAR = 12;
 const HEIGHT = 36;
 
-/** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it
- * and a bar is green where `met` says its figure meets the target, red where it does not. Today's
- * partial day is faded. Plain SVG, like `Sparkbars`. */
-export function SpreadBars({ days, target, met, noun, format }: Props) {
+/** One bar per day: the p90 drawn faint behind the median. With a target, a dashed line marks it,
+ * and a day's two bars are green where the day meets the target, red where it misses it and
+ * neutral where it has no verdict. Today's partial day is faded. Plain SVG, like `Sparkbars`. */
+export function SpreadBars({ days, target, noun, format }: Props) {
   const y = barScale(
     1,
     target,
@@ -71,9 +72,9 @@ export function SpreadBars({ days, target, met, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.p90_minutes), 1)}
                 className={
-                  target === undefined || met === undefined
+                  d.met === null
                     ? chartBar.neutralFaint
-                    : met(d.p90_minutes)
+                    : d.met
                       ? chartBar.metFaint
                       : chartBar.missedFaint
                 }
@@ -84,11 +85,7 @@ export function SpreadBars({ days, target, met, noun, format }: Props) {
                 width={BAR - 2}
                 height={Math.max(HEIGHT - y(d.median_minutes), 1)}
                 className={
-                  target === undefined || met === undefined
-                    ? chartBar.neutral
-                    : met(d.median_minutes)
-                      ? chartBar.met
-                      : chartBar.missed
+                  d.met === null ? chartBar.neutral : d.met ? chartBar.met : chartBar.missed
                 }
               />
             </>

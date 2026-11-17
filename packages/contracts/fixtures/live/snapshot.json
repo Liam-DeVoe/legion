@@ -246,27 +246,52 @@
       "targets": {
         "deploys_per_day": {
           "value": 20,
-          "inclusive": true
+          "inclusive": true,
+          "direction": "higher_better",
+          "judges": [
+            "deploys.per_day"
+          ]
         },
         "change_failure_rate": {
           "value": 0.05,
-          "inclusive": false
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "per_deploy.rate"
+          ]
         },
         "merge_to_production_minutes": {
           "value": 45,
-          "inclusive": false
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "minutes.max",
+            "minutes.median"
+          ]
         },
         "opened_to_merge_median_minutes": {
           "value": 60,
-          "inclusive": false
+          "inclusive": false,
+          "direction": "lower_better",
+          "judges": [
+            "minutes.median"
+          ]
         },
         "deploy_run_success_rate": {
           "value": 0.9,
-          "inclusive": true
+          "inclusive": true,
+          "direction": "higher_better",
+          "judges": [
+            "runs.rate"
+          ]
         },
         "unowned_p0": {
           "value": 0,
-          "inclusive": true
+          "inclusive": true,
+          "direction": "lower_better",
+          "judges": [
+            "issues.value"
+          ]
         }
       },
       "status": {
@@ -366,7 +391,7 @@
       }
     },
     "fields": {
-      "measures": "bcc3a66b2e03f2be",
+      "measures": "b6ac94e836bdb327",
       "waiting": "65f5705a0510ccf7",
       "window": "037ec912c5c440a4"
     }

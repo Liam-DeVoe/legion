@@ -19637,8 +19637,24 @@
       },
       "DeliveryTarget": {
         "properties": {
+          "direction": {
+            "enum": [
+              "higher_better",
+              "lower_better"
+            ],
+            "type": "string"
+          },
           "inclusive": {
             "type": "boolean"
+          },
+          "judges": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           },
           "value": {
             "format": "double",
@@ -19647,7 +19663,9 @@
         },
         "required": [
           "value",
-          "inclusive"
+          "inclusive",
+          "direction",
+          "judges"
         ],
         "type": "object"
       },

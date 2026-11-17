@@ -110,10 +110,10 @@ contains it, whenever that pull request merged and whatever the filters.
 ## The targets
 
 Each target is the target of an eval of the project the deploy repository is mapped to
-(**Settings → Repositories → Projects**), so a change to that eval's target, or to whether the
-target itself counts as met, moves the card's verdict and its label. Until someone changes one,
-and where the deploy repository is mapped to no project or the project has no such eval yet, the
-targets are these:
+(**Settings → Repositories → Projects**), so a change to that eval's target, to whether the
+target itself counts as met, or to the statistics it judges moves the card's verdict and its
+label. Until someone changes one, and where the deploy repository is mapped to no project or the
+project has no such eval yet, the targets are these:
 
 | Figure | Eval | Target |
 | --- | --- | --- |
@@ -127,18 +127,35 @@ targets are these:
 "Under" is met strictly below the target. "At least" is met at the target. An eval whose target is
 off has a card with no target and no verdict.
 
+A card's label names the statistics its eval's target judges, so it always says what the verdict
+beside it is of: "< 45m for every change" for the longest change, "median < 60m", and, for a
+`pr-open-to-merge` whose target someone set to judge its 90th percentile, "p90" in place of
+"median". A statistic another judged one implies is left out: `merge-to-production` judges its
+longest change and its median, and every change under the target puts the median under it, so
+the label names the longest change alone and the verdict is the same. A card whose target
+judges its own headline figure alone (deploys a day, the failure rate per deploy, run success,
+the count of unowned P0 issues) names no statistic. On the two lead-time cards a figure takes the
+verdict's colour only when it is one of the statistics the label names; merge to production's
+median is always coloured by its own comparison with the target. A day's bar on a card's chart
+is green where that day's value of each judged statistic meets the target, red where one misses
+it, and neutral where the day has no value of one; the dashed target line is drawn only when the
+target judges the figure the bars draw.
+
 ## For agents
 
 `GET /api/v1/delivery/measures?from=<RFC 3339>&to=<RFC 3339>` answers the same figures, the
-targets, whether each is met, and the unowned P0 issues. Each target is `{"value", "inclusive"}`,
-where `inclusive` says whether the value itself is met, or null when the eval's target is off; each
-verdict under `status` is true, false, or null when there is no target or nothing to judge. The
-verdicts are the eval's own, judged by the same code as `GET /api/v1/projects/{key}/evals`. The
-route takes the timeline's parameters: `from` and `to` (the last seven days when both are left
-out, at most 84 days apart), `q` for the search, and any filter repeated for several values, such
-as `&repo=acme/widgets&priority=P0`. `from`, `to` and `q`, and the Pipeline route's `at`, take one
-value each, and a query naming one of them twice is `400 INVALID_QUERY`, as it is on the eval
-routes. Any signed-in person or agent token reads it.
+targets, whether each is met, and the unowned P0 issues. Each target is
+`{"value", "inclusive", "direction", "judges"}`, or null when the eval's target is off:
+`inclusive` says whether the value itself is met, `direction` is the eval's, `higher_better` or
+`lower_better`, and `judges` lists the statistics the verdict judges, each `<series>.<stat>`, in
+the order they are judged (the eval's `target_judges`, or its primary series' headline statistic
+when it names none). Each verdict under `status` is true, false, or null when there is no target
+or nothing to judge. The verdicts are the eval's own, judged by the same code as
+`GET /api/v1/projects/{key}/evals`. The route takes the timeline's parameters: `from` and `to`
+(the last seven days when both are left out, at most 84 days apart), `q` for the search, and any
+filter repeated for several values, such as `&repo=acme/widgets&priority=P0`. `from`, `to` and
+`q`, and the Pipeline route's `at`, take one value each, and a query naming one of them twice is
+`400 INVALID_QUERY`, as it is on the eval routes. Any signed-in person or agent token reads it.
 `GET /api/v1/delivery/timeline` carries the same
 answer as its `measures` for its own window and filters, so an agent reading both needs only the
 timeline. The routes and the page's live updates compute from the same stored facts with the same
@@ -315,9 +332,15 @@ clock; a step's median and 90th percentile are rounded to a tenth of a minute.
   changes that: a median under 60 minutes.
 
 The verdict on these two cards is the eval's own, judged by the same code as
-`GET /api/v1/projects/{key}/evals`. Each day's bar on them is green where that day meets the
-eval's target, the target's own value included where the eval counts it as met, and red where it
-does not.
+`GET /api/v1/projects/{key}/evals`. Each card names the statistics its eval's target judges and
+shows today's and the seven days' value of each, leaving out one that another implies (merge to
+production shows its longest change, which under the target puts the median under it), so a card
+whose eval someone set to judge the 90th percentile reads "P90" where it read "Median". Each
+day's bars on them are green where that day's value of each judged statistic meets the eval's
+target, the target's own value included where the eval counts it as met, red where one misses
+it, and neutral where the day has no value
+of one. The dashed line marks the target when it judges minutes, and is left out when it judges
+the count of pull requests alone.
 
 **PR CI: slowest jobs** ranks the checks workflow's jobs by their seven-day median, slowest first,
 and shows five. A job needs a number of timed results in the seven days to be ranked, so a rarely

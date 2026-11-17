@@ -274,7 +274,7 @@ func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, de
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
 		Measures:    measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
-		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: measures.DefaultTargets,
+		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
 		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
@@ -293,7 +293,7 @@ func livePipelineOf(computedAt time.Time, n int) deliveryPipelineResponse {
 		}},
 		MergeToProduction: measures.LeadTimeTiming{Days: []measures.LeadTimeDay{}},
 		OpenedToMerge:     measures.LeadTimeTiming{Days: []measures.LeadTimeDay{}},
-		Targets:           measures.DefaultTargets,
+		Targets:           catalogueTargets(),
 		Freshness:         delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
 }

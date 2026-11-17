@@ -17,7 +17,9 @@ import (
 // evals' targets and rank the Pipeline's slowest jobs by pr-ci's min_n as a person sets them (R5):
 // the evals of the project the deploy repository is mapped to (DeployRepoEvals), each figure judged
 // by the one rule an eval read judges by (VerdictOf), so a delivery answer's verdict of a figure is
-// its eval's verdict of the same figure.
+// its eval's verdict of the same figure. Each answer states every target with its eval's direction
+// and the statistics that verdict judges (JudgesOf), so its reader names the figure a verdict is
+// of rather than a statistic of its own choosing.
 
 // DeliveryTargetSlugs are the evals whose targets the measures answer judges its KPIs by and
 // states, and PipelineSlugs the evals the Pipeline answer reads: the same six, whose targets it
@@ -48,27 +50,36 @@ type Verdict struct {
 	Judges    []Judge `json:"judges"`
 }
 
+// JudgesOf is the statistics entry's target judges, each `<series>.<stat>`, in the order
+// VerdictOf judges them: its target_judges or, where those are empty, the primary series' headline
+// statistic (HeadlineStatistic), and none where it names none and holds no primary series. The
+// delivery answers state them beside each target (measures.Target), so a reader names the figure
+// the verdict is of rather than the one a card shows by default.
+func JudgesOf(entry Entry) []string {
+	if judges := entry.Definition.TargetJudges; len(judges) > 0 {
+		return judges
+	}
+	if index := slices.IndexFunc(entry.Series, func(one Series) bool { return one.IsPrimary }); index >= 0 {
+		primary := entry.Series[index]
+		return []string{primary.Series + "." + HeadlineStatistic(entry.Definition, primary)}
+	}
+	return []string{}
+}
+
 // VerdictOf judges entry's target over window, the statistics of its series over one range by
-// series name, null where the target is off. Each judge is `<series>.<stat>`, of target_judges or,
-// where those are empty, of the primary series' headline statistic (HeadlineStatistic); a judge
-// naming a series entry does not list, or a statistic window does not state, has no value. A
-// higher_better eval meets its target at or above it where it is inclusive and above it where it
-// is strict, a lower_better eval at or below it and below it; an eval with no direction judges
-// nothing. Every reader that judges a figure by its eval's target judges it here: the eval reads,
-// over their folded day rows, and the delivery answers, over their own figures
-// (ResultStatistics, LeadTimeStatistics).
+// series name, null where the target is off. It judges each of JudgesOf(entry); a judge naming a
+// series entry does not list, or a statistic window does not state, has no value. A higher_better
+// eval meets its target at or above it where it is inclusive and above it where it is strict, a
+// lower_better eval at or below it and below it; an eval with no direction judges nothing. Every
+// reader that judges a figure by its eval's target judges it here: the eval reads, over their
+// folded day rows, and the delivery answers, over their own figures (ResultStatistics,
+// LeadTimeStatistics).
 func VerdictOf(entry Entry, window map[string]Statistics) *Verdict {
 	definition := entry.Definition
 	if definition.Target == nil {
 		return nil
 	}
-	judges := definition.TargetJudges
-	if len(judges) == 0 {
-		if index := slices.IndexFunc(entry.Series, func(one Series) bool { return one.IsPrimary }); index >= 0 {
-			primary := entry.Series[index]
-			judges = []string{primary.Series + "." + HeadlineStatistic(definition, primary)}
-		}
-	}
+	judges := JudgesOf(entry)
 	target := *definition.Target
 	verdict := &Verdict{Target: target, Direction: definition.Direction, Inclusive: definition.TargetInclusive, Judges: []Judge{}}
 	missed, unknown := false, len(judges) == 0

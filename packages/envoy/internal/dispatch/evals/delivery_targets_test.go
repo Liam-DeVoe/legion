@@ -3,11 +3,36 @@ package evals
 import (
 	"errors"
 	"maps"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
+
+// TestTheTargetsDirectionEnumIsTheEvalsDirections (R2-Q9): a delivery answer states each target's
+// direction as its eval holds it (measures.Target), and the generated contract types that field
+// from its enum tag, which the page reads in place of a direction of its own. measures cannot
+// import this package, so the tag restates DirectionHigherBetter and DirectionLowerBetter; this
+// ties the two, and holds every delivery eval of the catalogue to one of them, so a direction
+// renamed or added here fails here rather than on a page that judges a day the wrong way.
+func TestTheTargetsDirectionEnumIsTheEvalsDirections(t *testing.T) {
+	field, _ := reflect.TypeFor[measures.Target]().FieldByName("Direction")
+	directions := []string{DirectionHigherBetter, DirectionLowerBetter}
+	if tag := field.Tag.Get("enum"); tag != strings.Join(directions, ",") {
+		t.Errorf("measures.Target.Direction's enum is %q, want the evals' directions %q", tag, strings.Join(directions, ","))
+	}
+	for _, slug := range DeliveryTargetSlugs {
+		index := slices.IndexFunc(catalogue, func(entry catalogueEntry) bool { return entry.definition.Slug == slug })
+		if index < 0 {
+			t.Fatalf("the catalogue holds no %s", slug)
+		}
+		if direction := catalogue[index].definition.Direction; !slices.Contains(directions, direction) {
+			t.Errorf("%s's direction is %q, which the enum of a delivery target does not hold", slug, direction)
+		}
+	}
+}
 
 // TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers (R5): a person may name any
 // statistic an eval's read states as a judge of its target, and the measures answer and the
