@@ -22,7 +22,8 @@ var ErrReconnecting = errors.New("NATS is reconnecting")
 
 // reconnectingSend is a send nats.go refused while it connects or reconnects the connection:
 // nats.ErrReconnectBufExceeded, which it answers to every publish then, since the client keeps no
-// reconnect buffer, or nats.ErrConnectionReconnecting. Its text is `bus: NATS is reconnecting`,
+// reconnect buffer, nats.ErrConnectionReconnecting, or any error a JetStream request returns while
+// it does (namedRequests.named). Its text is `bus: NATS is reconnecting`,
 // ErrReconnecting's under this package's prefix, so a caller that wraps it adds no `bus:` of its
 // own. The text of nats.ErrReconnectBufExceeded is `nats: outbound buffer limit exceeded`, and a
 // reader of an answer or a log line reads that as a client that sent too much, where the bus is
@@ -37,9 +38,22 @@ func (e reconnectingSend) Unwrap() []error { return []error{ErrReconnecting, e.r
 
 // Reconnecting names err as the ErrReconnecting it is when it is nats.go's refusal of a send while
 // it connects or reconnects the connection (reconnectingSend), and returns any other err as it is.
-// Every send of this package names its error with it. A caller that sends through a nats.go
-// handle of its own, such as the listener's reads and writes of its durable consumer, names its
-// error with it too.
+// This package calls it once for each kind of send it makes, at the one place that kind is sent:
+//   - a JetStream request through a legacy JetStream context (namedRequests), which also names
+//     any error a request returns while the connection reconnects, and which wraps every such
+//     context the package builds (jetStreamOn) and every one a caller hands it (namedJetStream):
+//     the client's own, which Client.JS hands its callers, the stream ensure's, the subject
+//     read's, the leader read of a key (KeyValue.GetFromLeader), and the contexts EnsureKeyValue,
+//     OpenKeyValue and SetKeyValueMaxAge are handed;
+//   - a session consumer's pull request (SessionPull.pull) and each answer to a message it pulled
+//     (sessionAck);
+//   - a publish, JetStream or core, and a core request (Client.refused, window.unsent,
+//     SessionConsumers.Publish);
+//   - a call through a KV bucket's handles (kvAnswer, KeyValue.Status, KeyValue.ReadStreamState,
+//     wrapKeyValue).
+//
+// A caller that sends through a nats.go handle none of these cover names its error with it too,
+// such as kvwatch's delete of a watcher's consumer.
 func Reconnecting(err error) error {
 	if err == nil {
 		return nil
@@ -52,6 +66,123 @@ func Reconnecting(err error) error {
 		return reconnectingSend{refusal: err}
 	}
 	return err
+}
+
+// namedRequests is a legacy JetStream context whose requests name their error (named): each method
+// below sends one or more JetStream API requests on the context's connection, and answers an
+// error it returns while nats.go connects or reconnects that connection as the ErrReconnecting it
+// is. It is the one place this package names the error of such a request, so no call through the
+// context names it again. Every other method is the context's own: a publish names its own error
+// (Client.refused, window.unsent), and ConsumerNames answers no error.
+//
+// conn is the connection the context sends on, whose state named reads. It is nil only for a
+// context a caller handed without its connection (SetKeyValueMaxAge), whose requests are named
+// for nats.go's refusal alone (Reconnecting).
+type namedRequests struct {
+	nats.JetStreamContext
+	conn *nats.Conn
+}
+
+// jetStreamOn is conn's legacy JetStream context, built with opts, with its requests named
+// (namedRequests). Every legacy JetStream context this package builds is built here.
+func jetStreamOn(conn *nats.Conn, opts ...nats.JSOpt) (nats.JetStreamContext, error) {
+	js, err := conn.JetStream(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return namedRequests{JetStreamContext: js, conn: conn}, nil
+}
+
+// namedJetStream is js, a context a caller handed this package, with its requests named
+// (namedRequests); conn is the connection js sends on, or nil when the caller handed none. A
+// context that names them already, such as Client.JS's, is returned as it is.
+func namedJetStream(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
+	if _, named := js.(namedRequests); named {
+		return js
+	}
+	return namedRequests{JetStreamContext: js, conn: conn}
+}
+
+// named is err, a request's answer, as the ErrReconnecting it is when the request was made while
+// nats.go connects or reconnects the connection: nats.go's refusal of its send (Reconnecting), or
+// any error the request returns while the connection reports that state. The state is read because
+// nats.go refuses some requests then before it sends anything, with words of its own that say
+// nothing true: a KV bucket's lookup and create first check the server's version, which a
+// connection that is reconnecting does not report, and answer "nats: key-value requires at least
+// server version 2.6.2". The error nats.go gave stays in the chain (reconnectingSend), so a caller
+// that reads it still finds it.
+func (j namedRequests) named(err error) error {
+	if err == nil || j.conn == nil || !connecting(j.conn) {
+		return Reconnecting(err)
+	}
+	var named reconnectingSend
+	if errors.As(err, &named) {
+		return err
+	}
+	return reconnectingSend{refusal: err}
+}
+
+func (j namedRequests) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info, err := j.JetStreamContext.AddStream(cfg, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info, err := j.JetStreamContext.UpdateStream(cfg, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	info, err := j.JetStreamContext.StreamInfo(stream, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) PurgeStream(stream string, opts ...nats.JSOpt) error {
+	return j.named(j.JetStreamContext.PurgeStream(stream, opts...))
+}
+
+func (j namedRequests) GetLastMsg(stream, subject string, opts ...nats.JSOpt) (*nats.RawStreamMsg, error) {
+	message, err := j.JetStreamContext.GetLastMsg(stream, subject, opts...)
+	return message, j.named(err)
+}
+
+func (j namedRequests) AddConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	info, err := j.JetStreamContext.AddConsumer(stream, cfg, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) UpdateConsumer(stream string, cfg *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	info, err := j.JetStreamContext.UpdateConsumer(stream, cfg, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	info, err := j.JetStreamContext.ConsumerInfo(stream, consumer, opts...)
+	return info, j.named(err)
+}
+
+func (j namedRequests) DeleteConsumer(stream, consumer string, opts ...nats.JSOpt) error {
+	return j.named(j.JetStreamContext.DeleteConsumer(stream, consumer, opts...))
+}
+
+// KeyValue looks the bucket up: a STREAM.INFO of its stream, after a check of the server's version.
+func (j namedRequests) KeyValue(bucket string) (nats.KeyValue, error) {
+	kv, err := j.JetStreamContext.KeyValue(bucket)
+	return kv, j.named(err)
+}
+
+// CreateKeyValue creates the bucket: after a check of the server's version, the account's
+// JetStream info, then its stream's create.
+func (j namedRequests) CreateKeyValue(cfg *nats.KeyValueConfig) (nats.KeyValue, error) {
+	kv, err := j.JetStreamContext.CreateKeyValue(cfg)
+	return kv, j.named(err)
+}
+
+// Subscribe binds or creates the subscription's consumer: a CONSUMER.INFO, and a CONSUMER.CREATE
+// when it creates one.
+func (j namedRequests) Subscribe(subject string, handler nats.MsgHandler, opts ...nats.SubOpt) (*nats.Subscription, error) {
+	sub, err := j.JetStreamContext.Subscribe(subject, handler, opts...)
+	return sub, j.named(err)
 }
 
 // reconnectWaitEnded is the error of a wait for a connection nats.go is reconnecting whose ctx

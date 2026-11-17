@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -252,5 +255,133 @@ func TestAWriteThroughANATSReconnectWaitsOrFailsByName(t *testing.T) {
 		if strings.Contains(line, reconnectBufferRefusal) {
 			t.Errorf("a log line names nats.go's buffer refusal rather than the reconnect: %s", line)
 		}
+	}
+}
+
+// A session relay run through two NATS outages writes no line that holds nats.go's "outbound
+// buffer limit exceeded", and each send it makes in an outage that nats.go refuses names the
+// reconnect. Nothing nats.go refused is sent once the bus is back: the relay that takes the
+// session again is delivered both of its messages again.
+//
+// In the first outage the listener's connections are cut while the server runs on, as a network
+// that drops them does, so the relay still holds its two frames. The session answers one of them
+// done, so the relay acks that message, and the listener loses its machine's durable binding, so
+// the relay hands the other back with a nak. The rows above cannot reach either send through the
+// routes. nats.go refuses both, since the client keeps no reconnect buffer, and each line names
+// the reconnect.
+//
+// The second outage stops the server and starts it again. A stopping server ends each pull
+// request it holds with "409 Server Shutdown" (nats-server v2.15.1 signalPullConsumers), so a
+// restart line the relay writes then names that; a restart line for a pull request nats.go
+// refused names the reconnect.
+func TestAWriteThroughANATSReconnectWaitsOrFailsByNameInASessionRelay(t *testing.T) {
+	const (
+		answerFailed   = "session relay could not answer the consumer for a frame"
+		pullEnded      = "session relay pull ended; restarting at the ack floor"
+		serverShutdown = "409 Server Shutdown"
+	)
+	_, handOverFailed := relayHandOverLines(relayCancelBindingLost)
+	server, uri := testnats.Start(t)
+	// The listener reaches the server through a proxy the row can cut. The session's stand-in
+	// reaches it directly, so it stays connected while the listener's connections are cut.
+	proxy := testnats.StartProxy(t, uri)
+	rig := newRelayRigUnownedOn(t, proxy.URL(), relayPauseFirst, relayPauseMax)
+	// The receipt wait is longer than the row, so the relay cannot pause, and so forget the frames
+	// it holds, before the row takes the session away.
+	rig.relays.receiptWait = time.Minute
+	rig.relays.setOwned(true)
+	sessionID := "ses_relay_reconnect_" + id.New()
+	// A nil answer leaves the stand-in silent, so every frame stays outstanding with the relay.
+	standIn := startSessionStandIn(t, uri, sessionID, nil)
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	agent := contracts.LegacyAgentSubject(sessionID)
+	first, _ := rig.storeEvent(t, agent)
+	second, _ := rig.storeEvent(t, agent)
+	frames := standIn.collect(t, 2, 5*time.Second)
+	requireFrames(t, frames, first, second)
+	awaitAckState(t, rig.consumers, sessionID, 2, 0)
+
+	// consumerCall makes one call on the listener's own session-consumer connection, the one the
+	// relay answers and hands back on: it fails as bus.ErrReconnecting while nats.go reconnects
+	// that connection, and succeeds once the connection is back.
+	consumerCall := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		_, err := rig.deps.consumers.consumers.Info(ctx, sessionID)
+		return err
+	}
+	reconnecting := func(t *testing.T) {
+		t.Helper()
+		waitFor(t, 15*time.Second, "the listener's session-consumer connection to start reconnecting", func() bool {
+			return errors.Is(consumerCall(), bus.ErrReconnecting)
+		})
+	}
+	reconnected := func(t *testing.T) {
+		t.Helper()
+		waitFor(t, 30*time.Second, "the listener to reconnect", rig.harness.client.Connected)
+		waitFor(t, 30*time.Second, "the listener's session-consumer connection to reconnect", func() bool { return consumerCall() == nil })
+	}
+
+	if !t.Run("an answer and a hand-over while the listener's connections are cut fail by name", func(t *testing.T) {
+		proxy.Cut()
+		reconnecting(t)
+		// The session's done for the first frame, handed to the relay as its reply subscription
+		// hands one on: with the listener's connections cut, no reply reaches it any other way.
+		rig.relays.onReply(&natsgo.Msg{Subject: frames[0].msg.Reply, Data: []byte(relayReplyDone)})
+		rig.relays.setOwned(false)
+		awaitLogLine(t, rig, handOverFailed, 15*time.Second)
+		proxy.Restore()
+		reconnected(t)
+		rig.relays.setOwned(true)
+		// Neither the refused ack nor the refused nak reached the server: both messages still
+		// await an ack, so the relay that takes the session again delivers both.
+		requireFrames(t, standIn.collect(t, 2, 20*time.Second), first, second)
+	}) {
+		return
+	}
+
+	if !t.Run("a relay through a NATS stop and start delivers its messages again", func(t *testing.T) {
+		server.Stop(t)
+		reconnecting(t)
+		// The relay stops until the session's stand-in is back on the server, so no frame goes
+		// out before something reads it.
+		rig.relays.setOwned(false)
+		server.Start(t)
+		reconnected(t)
+		// The stand-in's own connection ended with the server, so the session is back on another.
+		again := startSessionStandIn(t, uri, sessionID, nil)
+		rig.relays.setOwned(true)
+		requireFrames(t, again.collect(t, 2, 20*time.Second), first, second)
+	}) {
+		return
+	}
+
+	logs := rig.harness.logs.String()
+	for line := range strings.SplitSeq(logs, "\n") {
+		if strings.Contains(line, reconnectBufferRefusal) {
+			t.Errorf("a log line names nats.go's buffer refusal rather than the reconnect: %s", line)
+		}
+	}
+	written := map[string]int{}
+	for _, record := range warnLinesNaming(logs, sessionID) {
+		message, _ := record["msg"].(string)
+		failure, _ := record["error"].(string)
+		switch {
+		case message == answerFailed, message == handOverFailed:
+			written[message]++
+			if !strings.Contains(failure, reconnectingReason) {
+				t.Errorf("the relay logged %q with error %q, want it naming %q", message, failure, reconnectingReason)
+			}
+		case message == pullEnded:
+			if !strings.Contains(failure, reconnectingReason) && !strings.Contains(failure, serverShutdown) {
+				t.Errorf("the relay logged %q with error %q, want it naming %q or the server's %q", message, failure, reconnectingReason, serverShutdown)
+			}
+		}
+	}
+	if written[answerFailed] != 1 {
+		t.Errorf("the relay logged %q %d times, want once, for the one frame the session answered while the connection was cut", answerFailed, written[answerFailed])
+	}
+	if written[handOverFailed] == 0 {
+		t.Errorf("the relay never logged %q, the hand-over it made while the connection was cut", handOverFailed)
 	}
 }

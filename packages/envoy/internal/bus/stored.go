@@ -196,7 +196,8 @@ func (c *Client) ReadKeptRoleCursor(ctx context.Context, role string) (StoredKep
 // answers an empty list: the state carries a subject only while a message is stored on it.
 //
 // Its errors are the stream's own: nats.ErrStreamNotFound when the stream is gone,
-// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first.
+// nats.ErrNoResponders when no JetStream answers, and ctx's error when ctx ends first. A read
+// nats.go refuses while it reconnects the connection is ErrReconnecting (Client.JS).
 func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 	if err := c.ensureConnWithContext(ctx); err != nil {
 		return nil, err
@@ -205,7 +206,7 @@ func (c *Client) KeptRoleLanes(ctx context.Context) ([]string, error) {
 		&nats.StreamInfoRequest{SubjectsFilter: KeptRoleSubject(">")},
 		nats.Context(ctx))
 	if err != nil {
-		return nil, fmt.Errorf("read %s's kept role lanes: %w", Stream, Reconnecting(err))
+		return nil, fmt.Errorf("read %s's kept role lanes: %w", Stream, err)
 	}
 	roles := make([]string, 0, len(info.State.Subjects))
 	for subject, held := range info.State.Subjects {

@@ -2529,7 +2529,7 @@ func streamInfoWithin(ctx context.Context, inspector streamInfoLookup, streamNam
 	}()
 	select {
 	case result := <-resultCh:
-		return result.info, bus.Reconnecting(result.err)
+		return result.info, result.err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

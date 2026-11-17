@@ -204,7 +204,9 @@ func namedRequest(request string, err error) error {
 // draws (the comment on the create below lists them): a list of them would name requests the
 // server answered and leave out the one it did not (namedRequest). A raise names itself
 // (raiseReplicas), and a refused create names the setting behind it after the step:
-// `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`.
+// `KV_envoy_interests create: ENVOY_NATS_REPLICAS=3: ...`. Every request goes through js with its
+// errors named (namedJetStream), so one nats.go refuses while it reconnects the connection names
+// the reconnect: `KV_envoy_interests STREAM.INFO: bus: NATS is reconnecting`.
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
 // (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
@@ -217,6 +219,7 @@ func namedRequest(request string, err error) error {
 // next pass. A caller that waits on a budget of its own, such as a request or a watcher's
 // repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
+	js = namedJetStream(conn, js)
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -326,7 +329,7 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	stream := "KV_" + bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, Reconnecting(err))
+		return 0, fmt.Errorf("raise %s: %w", stream, err)
 	}
 	if info.Config.Replicas >= replicas {
 		return 0, nil
@@ -334,7 +337,7 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 	raised := info.Config
 	raised.Replicas = replicas
 	if err := updateStream(js, &raised, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= replicas }); err != nil {
-		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(Reconnecting(err), &info.Config, &raised))
+		return 0, fmt.Errorf("raise %s: %w", stream, refusedSettings(err, &info.Config, &raised))
 	}
 	return info.Config.Replicas, nil
 }
@@ -353,15 +356,15 @@ func raiseReplicas(js nats.JetStreamContext, bucket string, replicas int) (int, 
 // moment this call answers, and a stale miss there asks GitHub for a redelivery it already made.
 //
 // A read that fails is returned, since the stream is there: this runs only after a raise of it
-// answered. A read refused while the bus reconnects says so (Reconnecting), as every other bucket
-// call's error does.
+// answered. A read refused while the bus reconnects says so, as every request through js does
+// (namedRequests).
 func awaitReplicasCurrent(js nats.JetStreamContext, bucket string, replicas int) error {
 	stream := "KV_" + bucket
 	start := time.Now()
 	for attempt := 1; ; attempt++ {
 		info, err := js.StreamInfo(stream)
 		if err != nil {
-			return fmt.Errorf("raise %s: read the raised stream: %w", stream, Reconnecting(err))
+			return fmt.Errorf("raise %s: read the raised stream: %w", stream, err)
 		}
 		behind := copiesBehind(info, replicas)
 		if behind == "" {
@@ -418,15 +421,18 @@ func copiesBehind(info *nats.StreamInfo, replicas int) string {
 // own age standing (ParseSessionMaxAge), as it leaves one copy alone.
 // An age an answer never came for succeeds when the stream, read again, carries it, and one the
 // server refused as overlapping the bucket's own stream is sent again (updateStream). Its error
-// names the bucket's stream: `set KV_envoy_sessions max age: ...`.
+// names the bucket's stream: `set KV_envoy_sessions max age: ...`. A request nats.go refuses while
+// it reconnects the connection names the reconnect (namedJetStream). The call is handed no
+// connection, so a context other than Client.JS's names nats.go's refusal alone.
 func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Duration) (time.Duration, error) {
 	if maxAge <= 0 {
 		return 0, nil
 	}
+	js = namedJetStream(nil, js)
 	stream := "KV_" + bucket
 	info, err := js.StreamInfo(stream)
 	if err != nil {
-		return 0, fmt.Errorf("set %s max age: %w", stream, Reconnecting(err))
+		return 0, fmt.Errorf("set %s max age: %w", stream, err)
 	}
 	if info.Config.MaxAge == maxAge {
 		return maxAge, nil
@@ -434,7 +440,7 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 	aged := info.Config
 	aged.MaxAge = maxAge
 	if err := updateStream(js, &aged, func(again *nats.StreamInfo) bool { return again.Config.MaxAge == maxAge }); err != nil {
-		return 0, fmt.Errorf("set %s max age: %w", stream, Reconnecting(err))
+		return 0, fmt.Errorf("set %s max age: %w", stream, err)
 	}
 	return maxAge, nil
 }
@@ -446,11 +452,13 @@ func SetKeyValueMaxAge(js nats.JetStreamContext, bucket string, maxAge time.Dura
 // none and reads js's MaxWait alone) is waited for only until ctx ends, its answer then dropped
 // (Bounded; the lookup changes nothing, so a dropped one leaves nothing behind). A reconnect hook
 // gives it the run's context, so a lookup sent on a connection that then drops ends the hook at
-// the drop. An open while the bus reconnects fails as ErrReconnecting (Reconnecting).
+// the drop. An open while the bus reconnects fails as ErrReconnecting: a wait that ends first
+// (Bounded), or a lookup nats.go refused (namedJetStream).
 func OpenKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string) (KeyValue, error) {
+	js = namedJetStream(conn, js)
 	kv, _, err := Bounded(ctx, conn, func() (nats.KeyValue, error) { return js.KeyValue(bucket) })
 	if err != nil {
-		return KeyValue{}, Reconnecting(err)
+		return KeyValue{}, err
 	}
 	return wrapKeyValue(ctx, conn, kv, false, oneSend)
 }

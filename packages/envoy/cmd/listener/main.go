@@ -629,8 +629,9 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		consumerInfo, err := d.client.JS().ConsumerInfo(bus.Stream, d.consumer, nats.Context(ctx))
 		if err != nil {
 			// A read ctx ended did not answer, the info read's own form of healthzPing's unanswered.
-			// A read the connection dropped under since the flush is named as the reconnect it is.
-			writeDependencyHealth(w, "durable consumer", bus.Reconnecting(err), ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
+			// A read the connection dropped under since the flush is named as the reconnect it is by
+			// the client's JetStream context (bus.Client.JS).
+			writeDependencyHealth(w, "durable consumer", err, ctx.Err() != nil || errors.Is(err, nats.ErrConsumerNotFound))
 			return
 		}
 		// One read and no confirming second one, unlike durableProbe's: the endpoint reports the
