@@ -9,6 +9,7 @@ import {
 } from "../web/src/features/issue-page/page-words";
 import { blockNodeId } from "../web/src/features/issue-page/tree-drafts";
 import { getArtifact, getAsk, getIssueDecisions, listComments } from "./api";
+import { nextFrames } from "./frames";
 import { seedDecisionsFilter, seedReviewList } from "./issue-layout-seed";
 import { OPEN_QUESTION_BLOCK_ID } from "./issue-layout-seed-text";
 import { gotoIssue, phase } from "./issue-page";
@@ -22,6 +23,7 @@ import {
   nodeRow,
   PHONE,
   parentOfRow,
+  type RowLayout,
   rowBody,
   rowGroups,
   rowLayouts,
@@ -772,16 +774,11 @@ test("under Decisions a row draws the outline's layout, short names and the six-
         // Ruling 1 on a question: the long one a person answered is cut, with more than 20
         // words held back, and the long one that waits on the reader is drawn whole.
         // The page measures a row's cut once the row stands within a screen of the viewport, in
-        // the frame after it comes there, and draws a far row whole until then, so each cut read
-        // here is of a row brought into view and read two frames later: a row read as drawn
-        // whole is then one the page has measured, not one it has not reached yet.
+        // the frames after it comes there, and draws a far row whole until then, so each cut
+        // read here is of a row brought into view and read two frames later.
         const cutOf = async (question: string) => {
           await nodeRow(page, question).first().scrollIntoViewIfNeeded();
-          await page.evaluate(() => {
-            const frames = Promise.withResolvers<void>();
-            requestAnimationFrame(() => requestAnimationFrame(() => frames.resolve()));
-            return frames.promise;
-          });
+          await nextFrames(page);
           return (await rowLayouts(page)).find((row) => row.id === question);
         };
         // The control that opens a cut text, in the page's own words: "more · N words".
@@ -789,18 +786,27 @@ test("under Decisions a row draws the outline's layout, short names and the six-
           `^${CONTROL_LABELS.read_more} · ([\\d,]+) ${CONTROL_LABELS.read_more_words}$`,
           "u"
         );
+        // The cut is waited for, and the words it holds back are read off the very layout the
+        // wait matched, so no later reading of the row stands in for it.
+        const answered: { layout?: RowLayout } = {};
         await expect
-          .poll(async () => (await cutOf(seeded.answered))?.more ?? null, {
-            message: `${where} does not cut the long answered question`,
-          })
-          .toMatch(more);
-        const hidden = Number(
-          more.exec((await cutOf(seeded.answered))?.more ?? "")?.[1]?.replace(/,/gu, "")
-        );
+          .poll(
+            async () => {
+              answered.layout = await cutOf(seeded.answered);
+              return answered.layout;
+            },
+            { message: `${where} does not cut the long answered question` }
+          )
+          .toMatchObject({ more: expect.stringMatching(more) });
+        const hidden = Number(more.exec(answered.layout?.more ?? "")?.[1]?.replace(/,/gu, ""));
         expect(
           hidden,
           `${where} holds back 20 words or fewer of the answered question`
         ).toBeGreaterThan(20);
+        // A row drawn whole is read once, two frames after it came into view. Two frames are an
+        // assumed bound, not one the page promises: its measurer reads at most one slice of a
+        // batch a frame and carries the rest into later frames (`clamp-measurer.ts`), so a row
+        // it has not reached yet would read as whole here too.
         expect(
           await cutOf(seeded.waiting),
           `${where} cuts the long question that waits on the reader`

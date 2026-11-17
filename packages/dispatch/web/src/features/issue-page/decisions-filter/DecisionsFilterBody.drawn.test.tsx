@@ -1357,8 +1357,9 @@ test("each statement on the informs line is named within 32 characters", () => {
 });
 
 // R9: the list is one tab stop and the outline's own keys work it: `j` and `k` move through
-// the parts in the order they are drawn, Shift+K presses Keep, Enter goes to the entry's node
-// in the conversation, and the key that cycles how much is drawn unfolds the foot.
+// the parts in the order they are drawn, and so does `q` through the open questions, Shift+K
+// presses Keep, Enter goes to the entry's node in the conversation, and the key that cycles how
+// much is drawn unfolds the foot.
 test("the outline's keys move through the parts and work a row's controls", async () => {
   const user = userEvent.setup();
   const kept = spyOn(api, "keepDecision").mockReturnValue(Promise.withResolvers<never>().promise);
@@ -1419,6 +1420,24 @@ test("the outline's keys move through the parts and work a row's controls", asyn
     expect(document.activeElement).toBe(rowOf(view, "q-open"));
     expect(rowOf(view, "q-open").querySelector("[data-node-body]")).not.toBeNull();
     expect(rowOf(view, D("kept")).querySelector("[data-node-body]")).toBeNull();
+    view.unmount();
+
+    // `q` walks the open questions in the order the list draws them, the one that waits on the
+    // reader first, whatever order the tree holds them in, and on the last one drawn it says
+    // there is no further one.
+    const waitingFirst = renderBody({
+      children: [statement("s1"), openAsk("q-other", false), openAsk("q-mine", true)],
+    });
+    expect(rowsOfPart(waitingFirst, "open_questions")).toEqual(["q-mine", "q-other"]);
+    await act(async () => rowOf(waitingFirst, "q-mine").focus());
+    await user.keyboard("q");
+    expect(focusedRow(waitingFirst)).toBe("q-other");
+    expect(waitingFirst.container.querySelector("[data-row-report]")).toBeNull();
+    await user.keyboard("q");
+    expect(focusedRow(waitingFirst)).toBe("q-other");
+    expect(words(rowOf(waitingFirst, "q-other").querySelector("[data-row-report]"))).toBe(
+      KEY_REPORTS.no_next_question
+    );
   } finally {
     kept.mockRestore();
   }
@@ -1782,9 +1801,11 @@ test("a key with nowhere to go reports at the row it was pressed on", async () =
   expect(noQuestion.container.querySelectorAll("[data-row-report]").length).toBe(1);
 });
 
-// R20: the filter by words narrows the list to the nodes the filter's own view kept, and the
-// keys that look past the drawn rows walk that view: `q` goes to the open question it kept, not
-// to one it took out, which draws no row.
+// R20: the filter by words narrows the list to the nodes the filter's own view kept. The keys
+// that look past the drawn rows walk what it kept first, then the rest of the issue: `q` goes to
+// the open question it kept before one it took out, and a question or a decision it took out,
+// which draws no row here, `q` and `w` open in the conversation, as an entry's link does. Where
+// the issue holds no open question at all, `q` says so.
 test("the body draws the entries the filter's view left", async () => {
   const whole = wholeIssue();
   const view = renderBody(whole, { view: issueTree([openAsk("q-open"), decisionNode("first")]) });
@@ -1803,6 +1824,56 @@ test("the body draws the entries the filter's view left", async () => {
   await act(async () => rowOf(narrowed, D("first")).focus());
   await user.keyboard("q");
   expect(focusedRow(narrowed)).toBe("q-later");
+  // On the last question it kept, `q` goes on to the one it took out.
+  await user.keyboard("q");
+  await waitFor(() =>
+    expect(narrowed.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/q-open`)
+  );
+  narrowed.unmount();
+
+  // From the one decision it kept, `q` goes to the open question it took out.
+  const questionOut = renderBody(whole, { view: issueTree([decisionNode("first")]) });
+  await act(async () => rowOf(questionOut, D("first")).focus());
+  await user.keyboard("q");
+  await waitFor(() =>
+    expect(questionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}/asks/q-open`)
+  );
+  questionOut.unmount();
+
+  // `w` on a question it kept goes to the decision behind it, which it took out: the decision
+  // names the question's address among its chips.
+  const behind = decisionNode("first", {
+    chips: [
+      {
+        answered: true,
+        gone: false,
+        name: "Question q-open?",
+        ref: `dispatch://${KEY}/ask/q-open`,
+      },
+    ],
+  });
+  const decisionOut = renderBody(
+    { children: [statement("s1"), openAsk("q-open"), behind], made: [decision("first")] },
+    { view: issueTree([openAsk("q-open")]) }
+  );
+  await act(async () => rowOf(decisionOut, "q-open").focus());
+  await user.keyboard("w");
+  await waitFor(() =>
+    expect(decisionOut.getByTestId("where").textContent).toBe(`/issues/${KEY}#b-first`)
+  );
+  decisionOut.unmount();
+
+  // An issue that holds no open question, kept or not.
+  const noQuestion = renderBody(
+    { ...whole, children: whole.children.filter((child) => child.id !== "q-open") },
+    { view: issueTree([decisionNode("first")]) }
+  );
+  await act(async () => rowOf(noQuestion, D("first")).focus());
+  await user.keyboard("q");
+  expect(words(rowOf(noQuestion, D("first")).querySelector("[data-row-report]"))).toBe(
+    KEY_REPORTS.no_next_question
+  );
+  expect(noQuestion.getByTestId("where").textContent).toBe("/");
 });
 
 // R2: the filter is drawn at every width. Nothing the body draws is taken off the page at a

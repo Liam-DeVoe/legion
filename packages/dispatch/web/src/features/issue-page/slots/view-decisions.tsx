@@ -43,7 +43,9 @@ export function ViewDecisionsSlot({ issue, route }: SlotProps): ReactNode {
     <NoTooltips>
       <DecisionsFilterBody
         artifacts={artifacts}
-        emptyLine={address.filter === "" ? EMPTY_STATE_LINES.decisions : EMPTY_STATE_LINES.no_match}
+        emptyLine={
+          address.filter.trim() === "" ? EMPTY_STATE_LINES.decisions : EMPTY_STATE_LINES.no_match
+        }
         // The view's Escape, which turns it off, comes before the list is left (part N).
         holdsEscape
         isClosed={issue.closed_at !== null}

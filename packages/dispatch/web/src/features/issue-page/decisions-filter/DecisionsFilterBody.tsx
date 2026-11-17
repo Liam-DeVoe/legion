@@ -84,18 +84,20 @@ const NOTHING = (): void => {};
  * takes the tab order (R9); the keys are the outline's own (`useTreeKeymap.ts`): the arrows and
  * `j`/`k` move, `Shift+K` and `Shift+C` press Keep and Change, `a` and `r` answer and reply,
  * `f` steps through a row's links, Enter goes to the entry's node in the conversation, and the
- * key that cycles how much is drawn unfolds the foot. The foot's own control is a plain button
- * in the tab order, as the prototype's is, so Tab reaches it where the foot is all the list
- * holds. The tree element keeps no focus while the list draws a row, nor while it draws the
- * foot once the reads that say which questions and decisions there are hold their answers: a
- * focus on it goes on to the tab stop, or to the foot's control where the list draws no row,
- * which is how `t d` and a page opened here reach a list that holds only the foot. On an issue
- * the view draws nothing for, with no row and no foot, there is nowhere to pass it, and the
- * tree keeps it. A key with nowhere to go says so at the row it was pressed on, or at the
- * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16).
- * Until the reads that say which questions and decisions there are hold their answers, `q` and
- * `w` with nowhere to go say nothing: no question or decision to go to may mean only that they
- * have not arrived (`decisions-entries.ts`).
+ * key that cycles how much is drawn unfolds the foot. `q` and `w` walk the entries in the order
+ * the list draws them and then the rest of the issue, so a question or a decision the words
+ * filter left out is still found, and opens in the conversation, as an entry's link does. The
+ * foot's own control is a plain button in the tab order, as the prototype's is, so Tab reaches
+ * it where the foot is all the list holds. The tree element keeps no focus while the list draws
+ * a row, nor while it draws the foot once the reads that say which questions and decisions there
+ * are hold their answers: a focus on it goes on to the tab stop, or to the foot's control where
+ * the list draws no row, which is how `t d` and a page opened here reach a list that holds only
+ * the foot. On an issue the view draws nothing for, with no row and no foot, there is nowhere to
+ * pass it, and the tree keeps it. A key with nowhere to go says so at the row it was pressed on,
+ * or at the list's tab stop where it was pressed on no row, as the outline's keys do (the
+ * tester's F16). Until the reads that say which questions and decisions there are hold their
+ * answers, `q` and `w` with nowhere to go say nothing: no question or decision to go to may mean
+ * only that they have not arrived (`decisions-entries.ts`).
  *
  * A read that says which entries there are and was refused before it first answered - the
  * decisions, the asks - draws the page's one line for a failed read over the list
@@ -513,6 +515,41 @@ export function DecisionsFilterBody({
     tree.current?.focus();
   }, [focused, footFocused, goTo, partOf, parts, reader]);
 
+  // What `q` and `w` walk (`tree-keys.ts`), in the order a reader reads this list: its entries
+  // as it draws them, the foot's last whether it is unfolded or not, then every other node of
+  // the issue in the tree's order, so a question or a decision the words filter took out of the
+  // view is still found, after everything the list holds. Each is a leaf, so no node is walked
+  // twice, and the root is the view's own, so a key that reads the root's id reads it as before.
+  const keyOrder = useMemo<TreeNode>(() => {
+    const seen = new Set([root.id, view.id]);
+    const leaves: TreeNode[] = [];
+    const add = (node: TreeNode): void => {
+      if (seen.has(node.id)) return;
+      seen.add(node.id);
+      leaves.push({ ...node, children: [] });
+    };
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const entry of parts[part]) add(entry.node);
+    }
+    for (const node of nodesInOrder(root)) add(node);
+    return { ...view, children: leaves };
+  }, [parts, root, view]);
+  // Where `q` and `w` take the reader: to an entry of the list as any move does, the foot
+  // unfolded for one of its own, and to the conversation at a node the list draws no row for,
+  // as an entry's link to its node does, since there is no row here to put the focus on.
+  const goToOrOpen = useCallback(
+    (id: string) => {
+      if (partOf.has(id)) {
+        goTo(id);
+        return;
+      }
+      const node = keyOrder.children.find((leaf) => leaf.id === id);
+      const path = node === undefined ? undefined : conversationPath(node);
+      if (path !== undefined) navigate(path);
+    },
+    [goTo, keyOrder, navigate, partOf]
+  );
+
   useTreeKeymap({
     container: body,
     holdsEscape,
@@ -535,14 +572,12 @@ export function DecisionsFilterBody({
     onOpenDeeper: NOTHING,
     onPin: pin,
     onReport: reportHere,
-    onReveal: goTo,
+    onReveal: goToOrOpen,
     onZoom: NOTHING,
     oneNodeAtATime: false,
     readsHeld: parts.readsHeld,
     rows,
-    // The tree the view left, as the outline's keys read it (`IssueTree.tsx`): `q` and `w` look
-    // past the drawn rows, and a node the words filter took out of the view draws no row to go to.
-    root: view,
+    root: keyOrder,
     writer,
     zoom: undefined,
   });
