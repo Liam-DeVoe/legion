@@ -1,7 +1,7 @@
 // legion_board.go serves GET /api/v1/projects/{key}/legion/board, one project's Legion board from
 // what the sampler recorded (dispatch://INFRA-1077), and the body the `legion` live view kind
-// sends (live_frames.go's legionBoardView). This pull request ships no page that draws it; the
-// board is the data a later tree's Legion view reads.
+// sends (live_frames.go's legionBoardView). No dashboard page draws it: the route and the live
+// view kind are all there is of it.
 //
 // The answer is read from what Dispatch holds, never from the daemon: the sampler reads each
 // daemon once a minute under a lease (internal/dispatch/legion) and records what moved, and this
@@ -58,6 +58,7 @@ var legionBoardColumnOrder = []struct{ id, label string }{
 	{legion.ColumnTesting, "Testing"},
 	{legion.ColumnReviewing, "Reviewing"},
 	{legion.ColumnAccepting, "Accepting"},
+	{legion.ColumnRetro, "Retro"},
 	{legion.ColumnMerging, "Merging"},
 	{legion.ColumnAwaiting, "Waiting on a person"},
 	{legion.ColumnHeld, "Held"},
@@ -138,11 +139,9 @@ type legionBoardFacts struct {
 // trees does (dispatch://INFRA-980), and ReadAt is null for a project whose daemon has never
 // answered at all, which shows the board with empty columns.
 //
-// The three facts fields are read together for one reason: a reader can then tell a project with
-// no Legion work from a project whose backfill has not run. The first carries no Legion issues
-// and no rows; the second carries Legion issues and no rows. The cursor age alone cannot tell
-// them apart, because it is the deployment's one consumer rather than the project's, and every
-// project of a running deployment reads the same age.
+// The two facts fields are read apart, the first of this project's own rows and the second of the
+// deployment's one consumer, so a reader can tell a project with no Legion work (rows: none,
+// cursor: an age) from a deployment whose consumer has never run (rows: none, cursor: null).
 type legionBoardHeader struct {
 	SlotsInUse  int        `json:"slots_in_use"`
 	SlotCap     *int       `json:"slot_cap"`
@@ -151,10 +150,6 @@ type legionBoardHeader struct {
 	ReadAt      *time.Time `json:"read_at"`
 	ReadOK      bool       `json:"read_ok"`
 	ReadError   *string    `json:"read_error"`
-	// LegionIssues is how many issues of this project carry Legion phase work, which is the
-	// same set the facts consumer writes a row for. The board reads that set already, for its
-	// cards and its tree walk, so the count costs no read of its own.
-	LegionIssues int `json:"legion_issues"`
 	// FactsUpdatedAt is the oldest updated_at of the stored rows this answer served, which are the
 	// rows of the issues the map carries (Issues: the open issues and the issues the board shows)
 	// and not every row the project holds, null where it served none.
@@ -167,10 +162,10 @@ type legionBoardHeader struct {
 }
 
 // legionBoardColumn is one column: its id, the label the view shows, and its cards in the order
-// the view draws them. ID is one of the ten columns, in the order legionBoardColumnOrder draws
+// the view draws them. ID is one of the eleven columns, in the order legionBoardColumnOrder draws
 // them; the enum is what makes the generated type carry that set rather than a bare string.
 type legionBoardColumn struct {
-	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,merging,awaiting_person,held"`
+	ID    string            `json:"id" enum:"queue,design,planning,implementing,testing,reviewing,accepting,retro,merging,awaiting_person,held"`
 	Label string            `json:"label"`
 	Cards []legionBoardCard `json:"cards"`
 }
@@ -240,7 +235,7 @@ type legionBoardWaiting struct {
 // (R2, R26: everything of one project under a path). A project that names no daemon is 404
 // LEGION_NOT_CONFIGURED; a project whose daemon has never answered is answered the board with
 // empty columns and the read's failure in its header; a project that does not exist is 404
-// NOT_FOUND, and a malformed key 400 LEGION_SETTING_INPUT.
+// PROJECT_NOT_FOUND, and a malformed key 400 INVALID_PROJECT (legionProject).
 func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -263,8 +258,9 @@ func (s *server) getLegionBoard(w http.ResponseWriter, r *http.Request) {
 }
 
 // legionBoardPopulation is every read one board answer makes: the project's Legion setting, the
-// newest read of its daemon, the newest value of every field the sampler recorded, and the
-// project's own issues in Dispatch's rank order.
+// newest read of its daemon, the newest value of every field the sampler recorded, the issues the
+// daemon reports, the project's own issues in Dispatch's rank order, and the phase work of the
+// issues its tree walk can climb onto that the daemon reports nothing of.
 type legionBoardPopulation struct {
 	project string
 	// read is the newest legion_reads row, nil for a project whose daemon was never read.
@@ -275,16 +271,21 @@ type legionBoardPopulation struct {
 	// settings is the daemon's own settings block as the newest read recorded it, nil while no
 	// read has recorded one.
 	settings map[string]json.RawMessage
-	// issues is every issue the daemon reported, by key, with what Dispatch holds of it beside the
-	// observations.
+	// issues is every issue the newest good read reported, by key, with what Dispatch holds of it
+	// beside the observations (readObservations): the issues the board may show a card of.
 	issues map[string]*legionBoardIssue
+	// reported is every issue the daemon reports, against the `tree` the newest good read names
+	// for it (readReported): every issue of issues, and every one that left the daemon's state
+	// after Dispatch observed a phase of it, which carries no card and is Legion's for the walk.
+	reported map[string]string
 	// parents is the parent Dispatch records for every issue of the project, the chain the tree
 	// walk climbs: an issue the daemon reports nothing of can still be the Legion issue above one
 	// it does (treeRoot).
 	parents map[string]string
-	// phaseWork is the server's set of the issues that carry Legion phase work, the other half of
-	// what makes an issue Legion's for the walk (legion_phase_work.go); nil is an empty set.
-	phaseWork *legionPhaseWork
+	// phaseWork is which of the issues the tree walk can climb onto that the daemon reports
+	// nothing of carry Legion phase work, the other half of what makes an issue Legion's for the
+	// walk (readPhaseWork); nil where the walk climbs onto none.
+	phaseWork map[string]struct{}
 	// cards is every card the board draws, by column id, placed once the daemon's state and the
 	// project's issues are read (placeCards): what the stored facts the answer carries follow.
 	cards map[string][]legionBoardCard
@@ -320,14 +321,12 @@ type legionBoardIssue struct {
 	// slotSince is when the newest slot observation was recorded, which is when the issue was
 	// admitted to that slot.
 	slotSince time.Time
-	// tree is the daemon's own `tree` for the issue, empty where it named none.
-	tree      string
 	waitingOn *legion.Wait
 	// roles are the roles of the issue whose claim state is `working`, sorted.
 	roles []string
 	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
 	// Dispatch records is p.parents, which holds every issue of the project and not only the
-	// ones the daemon reports.
+	// ones the daemon reports, and the daemon's `tree` is p.reported's.
 	title    string
 	priority *int
 }
@@ -352,19 +351,14 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 	}
 	population := &legionBoardPopulation{
 		project: project, issues: map[string]*legionBoardIssue{}, parents: map[string]string{},
-		phaseWork: &s.legionPhaseWork,
 	}
-	// The walk reads the issues that carry Legion phase work beside the daemon's own reports, and
-	// the set is read once rather than per board (legion_phase_work.go).
-	if err := s.legionPhaseWork.ensure(ctx, pool); err != nil {
-		return nil, err
-	}
-	// The daemon's read, its observations, the project's issues and the stored facts are one
-	// chain: the issues name the cards the observations made, and the cards name the trees whose
-	// facts the answer carries beside every open issue's. The age of the consumer's oldest cursor,
-	// which says how recently it read its feeds, depends on nothing before it, so the two run side
-	// by side (store.ReadSideBySide), as the delivery population's independent reads do
-	// (delivery.go).
+	// The daemon's read, its observations, the issues it reports, the project's issues, the phase
+	// work the tree walk climbs onto and the stored facts are one chain: the walk climbs the
+	// issues the daemon reports and the project's issues name, the cards stand in the trees that
+	// walk places them in, and the cards name the trees whose facts the answer carries beside
+	// every open issue's. The age of the consumer's oldest cursor, which says how recently it read
+	// its feeds, depends on nothing before it, so the two run side by side (store.ReadSideBySide),
+	// as the delivery population's independent reads do (delivery.go).
 	if err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			if err := population.readDaemonRead(ctx, pool); err != nil {
@@ -373,7 +367,13 @@ func (s *server) readLegionBoard(ctx context.Context, project string, now time.T
 			if err := population.readObservations(ctx, pool); err != nil {
 				return err
 			}
+			if err := population.readReported(ctx, pool); err != nil {
+				return err
+			}
 			if err := population.readIssues(ctx, pool); err != nil {
+				return err
+			}
+			if err := population.readPhaseWork(ctx, pool); err != nil {
 				return err
 			}
 			population.cards = population.placeCards()
@@ -416,40 +416,45 @@ func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, pool *store.
 	return nil
 }
 
-// readObservations reads the newest value of every field the sampler recorded for the project: one
-// row per issue and field, which the unique index (project, issue_key, field, observed_at) answers
-// in order. The rows under legion.AdmissionKey belong to no issue: the admission block and the
-// daemon's settings.
+// readObservations reads the newest value of every field the sampler recorded for the project
+// that holds one as of the newest good read (legion.NewestObservations, the rows the sampler's
+// own write compares a read against): an issue gone from the daemon's state, and a role's claim
+// gone from an issue, are written `null` when the read no longer carries them (legion's
+// recordObservations) and are not among them, so an issue none of whose fields holds a value is
+// on no card: the board answers the newest good read and nothing an older one held. The rows
+// under legion.AdmissionKey belong to no issue: the admission block and the daemon's settings.
 func (p *legionBoardPopulation) readObservations(ctx context.Context, pool *store.Pool) error {
-	rows, err := pool.Query(ctx, `
-		select distinct on (issue_key, field) issue_key, field, value, observed_at
-		from legion_observations
-		where project = $1
-		order by issue_key, field, observed_at desc
-	`, p.project)
+	newest, err := legion.NewestObservations(ctx, pool, p.project)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var key, field string
-		var value []byte
-		var at time.Time
-		if err := rows.Scan(&key, &field, &value, &at); err != nil {
-			return err
-		}
-		if key == legion.AdmissionKey {
-			p.observeProject(field, value)
+	for _, one := range newest {
+		if one.IssueKey == legion.AdmissionKey {
+			p.observeProject(one.Field, one.Value)
 			continue
 		}
-		issue := p.issues[key]
+		issue := p.issues[one.IssueKey]
 		if issue == nil {
-			issue = &legionBoardIssue{key: key}
-			p.issues[key] = issue
+			issue = &legionBoardIssue{key: one.IssueKey}
+			p.issues[one.IssueKey] = issue
 		}
-		issue.observe(field, value, at)
+		issue.observe(one.Field, one.Value, one.ObservedAt)
 	}
-	return rows.Err()
+	return nil
+}
+
+// readReported reads the issues the daemon reports, against the `tree` the newest good read names
+// for each, by the read the metrics make too (legion.ReportedIssues): the half of what makes an
+// issue Legion's that the daemon answers (treeNode). An issue that left the daemon's state after
+// Dispatch observed a phase of it is among them, so a child of it climbs through it as it did
+// while the daemon carried it, though it carries no card.
+func (p *legionBoardPopulation) readReported(ctx context.Context, pool *store.Pool) error {
+	reported, err := legion.ReportedIssues(ctx, pool, p.project)
+	if err != nil {
+		return err
+	}
+	p.reported = reported
+	return nil
 }
 
 // observeProject takes one of the project's own newest observations: a value of another shape
@@ -474,8 +479,6 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 	switch {
 	case field == legion.FieldPhase:
 		issue.phase, issue.phaseSince = legion.JSONString(value), at
-	case field == legion.FieldTree:
-		issue.tree = legion.JSONString(value)
 	case field == legion.FieldSlot:
 		if slot, read := legion.ParseSlot(value); read {
 			issue.slot, issue.slotSince = slot, at
@@ -529,6 +532,49 @@ func (p *legionBoardPopulation) readIssues(ctx context.Context, pool *store.Pool
 	return rows.Err()
 }
 
+// readPhaseWork reads which of the issues the tree walk can climb onto carry Legion phase work:
+// the half of what makes an issue Legion's that the daemon's reports do not answer (treeNode). It
+// runs after the daemon's observations and the project's issues are read, since the walk climbs
+// what they read, and before the cards are placed, since placing them walks the trees.
+//
+// An issue the daemon reports is Legion's already, and the walk asks about any other only as the
+// parent of an issue whose `tree` is empty (legion.TreeChain). The daemon names a tree for every
+// issue it records (the daemon's api.Issue.Tree, dispatch://INFRA-980), so a board of such a
+// daemon asks about none and this reads nothing. Where the walk can ask — an issue of a daemon
+// from before that release, or an operator's claim, which stands in no tree — the walk is made
+// once first with every such issue taken as Legion's, which climbs onto every one the real walk
+// can reach and some it cannot, and only those are read (legion.PhaseWorkOf): an index read of
+// those issues' own rows, whose answer for each is the one the whole log gives it.
+func (p *legionBoardPopulation) readPhaseWork(ctx context.Context, pool *store.Pool) error {
+	var climbed []string
+	taken := map[string]bool{}
+	climb := func(key string) (legion.TreeNode, bool) {
+		node, known := p.treeNode(key)
+		if known && !node.Legion {
+			if !taken[key] {
+				taken[key] = true
+				climbed = append(climbed, key)
+			}
+			node.Legion = true
+		}
+		return node, known
+	}
+	// Every walk the board makes starts at an issue the daemon reports (placeCards' waiting line,
+	// and card).
+	for key := range p.issues {
+		legion.TreeChain(key, climb)
+	}
+	if len(climbed) == 0 {
+		return nil
+	}
+	work, err := legion.PhaseWorkOf(ctx, pool, climbed)
+	if err != nil {
+		return err
+	}
+	p.phaseWork = work
+	return nil
+}
+
 // issueKeys is every issue the board's answer names — the issues the daemon reported and the
 // issues whose stored facts the answer carries — which is what the live hub marks its view dirty
 // by (delivery_live_hub_intake.go's dirtyIssueLocked). A facts write of an issue on no card
@@ -548,11 +594,12 @@ func (p *legionBoardPopulation) issueKeys() map[string]struct{} {
 // (legion.TreeRoot), which the metrics walk too. Where that walk stops, and why, is stated once
 // in legion.TreeChain's doc.
 //
-// The walk knows every issue of the project (parents) and every issue the daemon reports, and an
-// issue is Legion's for it by the one rule both readers state (dispatch://INFRA-1077's spec, "The
-// top issue of a tree", which the metrics' own population holds as well): the daemon reports it,
-// or it carries Legion phase work. An issue of another project, which only a daemon that reports
-// one brings here, is a root of its own.
+// The walk knows every issue of the project (parents) and every issue the daemon reports
+// (reported), and an issue is Legion's for it by the one rule both readers state
+// (dispatch://INFRA-1077's spec, "The top issue of a tree", which the metrics' own population
+// holds as well): the daemon reports it, or it carries Legion phase work. So a chain climbs
+// through an issue that left the daemon's state, which carries no card. An issue of another
+// project, which only a daemon that reports one brings here, is a root of its own.
 func (p *legionBoardPopulation) treeRoot(key string) string {
 	return legion.TreeRoot(key, p.treeNode)
 }
@@ -560,16 +607,13 @@ func (p *legionBoardPopulation) treeRoot(key string) string {
 // treeNode is what that walk reads of one issue: the daemon's `tree`, Dispatch's parent, and
 // whether the issue is Legion's.
 func (p *legionBoardPopulation) treeNode(key string) (legion.TreeNode, bool) {
-	issue, reported := p.issues[key]
+	tree, reported := p.reported[key]
 	parent, held := p.parents[key]
 	if !reported && !held {
 		return legion.TreeNode{}, false
 	}
-	node := legion.TreeNode{Parent: parent, Legion: reported || p.phaseWork.has(key)}
-	if reported {
-		node.Tree = issue.tree
-	}
-	return node, true
+	_, worked := p.phaseWork[key]
+	return legion.TreeNode{Tree: tree, Parent: parent, Legion: reported || worked}, true
 }
 
 // lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue),
@@ -720,14 +764,6 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	}
 
 	header := legionBoardHeader{QueueLength: len(cards[legion.ColumnQueue])}
-	// How many issues of this project Legion has worked, counted over the set the board already
-	// read: it is what tells a project with no Legion work from one whose facts have not been
-	// written yet, since neither carries a stored row.
-	for _, key := range p.ranked {
-		if p.phaseWork.has(key) {
-			header.LegionIssues++
-		}
-	}
 	// Slots in use are the daemon's own count where it reports one. dispatch://INFRA-980 makes
 	// admission.active list every issue that holds a slot, children included, so it is the
 	// authority; before that release the daemon lists roots there and only a root carries a slot,

@@ -79,17 +79,17 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 				if cut < len(wantMerged.ApplyRuns) {
 					bounded++
 				}
+				every, err := listEveryRunJobForRuns(ctx, pool, waitingRepo, runIDsOf(merged.ApplyRuns))
+				if err != nil {
+					t.Fatalf("%s: listEveryRunJobForRuns: %v", label, err)
+				}
 				for _, run := range merged.ApplyRuns {
-					every, err := ListRunJobs(ctx, pool, run.Repo, run.RunID)
-					if err != nil {
-						t.Fatalf("%s: ListRunJobs %d: %v", label, run.RunID, err)
-					}
-					want := slices.DeleteFunc(every, func(job DeliveryRunJob) bool {
+					want := slices.DeleteFunc(every[run.RunID], func(job DeliveryRunJob) bool {
 						failed := job.Conclusion != nil && *job.Conclusion == DeliveryJobConclusionFailure
 						return !slices.Contains(judged, job.Name) && !(failedJobs && failed)
 					})
 					if got, held := merged.ApplyJobs[run.RunID]; len(want) == 0 && held || len(want) > 0 && !reflect.DeepEqual(got, want) {
-						t.Fatalf("%s: apply run %d's jobs = %v, want %v", label, run.RunID, jobNamesOf(got), jobNamesOf(want))
+						t.Fatalf("%s: apply run %d's jobs = %v, want %v", label, run.RunID, jobNames(got), jobNames(want))
 					}
 				}
 				applies := ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, production).Applies
@@ -189,13 +189,10 @@ func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
 // a run id that no answer shows.
 func seedWindowHistory(t *testing.T, ctx context.Context, pool *store.Pool, random *rand.Rand, base time.Time) {
 	t.Helper()
-	for _, table := range []string{"delivery_run_jobs", "delivery_runs", "delivery_pull_requests"} {
-		if _, err := pool.Exec(ctx, "delete from "+table); err != nil {
-			t.Fatalf("clear %s: %v", table, err)
-		}
-	}
 	minutes := func(lo, hi int) time.Duration { return time.Duration(lo+random.IntN(hi-lo+1)) * time.Minute }
 	success, failure := DeliveryJobConclusionSuccess, DeliveryJobConclusionFailure
+	var runs []DeliveryRun
+	var runJobs [][]DeliveryRunJob
 	for i := range 30 + random.IntN(30) {
 		id := int64(900 + i)
 		created := base.Add(minutes(0, 14*24*60))
@@ -239,28 +236,29 @@ func seedWindowHistory(t *testing.T, ctx context.Context, pool *store.Pool, rand
 			conclusion = DeliveryRunConclusionFailure
 		}
 		run.Conclusion, run.CompletedAt = &conclusion, new(done.Add(2*time.Minute))
-		if err := UpsertRun(ctx, pool, run); err != nil {
-			t.Fatalf("seed run %d: %v", id, err)
-		}
 		for j := range jobs {
 			jobs[j].Repo, jobs[j].RunID = waitingRepo, id
 		}
-		if err := UpsertRunJobs(ctx, pool, waitingRepo, id, jobs, true); err != nil {
-			t.Fatalf("seed run %d's jobs: %v", id, err)
-		}
+		runs, runJobs = append(runs, run), append(runJobs, jobs)
 	}
+	var prs []waitingPR
 	for i := range 30 + random.IntN(20) {
 		repo := waitingRepo
 		if random.IntN(8) == 0 {
 			repo = "acme/other"
 		}
-		merged := base.Add(minutes(0, 14*24*60)).Truncate(time.Second)
-		opened := merged.Add(-time.Hour)
-		if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
-			Repo: repo, Number: 600 + i, Title: "feat: a widget", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, 600+i),
-			Author: "octocat", CreatedAt: &opened, MergedAt: &merged,
-		}); err != nil {
-			t.Fatalf("seed %s#%d: %v", repo, 600+i, err)
+		prs = append(prs, waitingPR{repo: repo, number: 600 + i, merged: base.Add(minutes(0, 14*24*60)).Truncate(time.Second)})
+	}
+	// seedWaitingHistory clears the tables and writes the pull requests. The runs are written
+	// here, since a waitingRun gives each of its jobs the run's one conclusion and so cannot hold a
+	// failed guard beside a successful production job.
+	seedWaitingHistory(t, ctx, pool, nil, prs)
+	for i, run := range runs {
+		if err := UpsertRun(ctx, pool, run); err != nil {
+			t.Fatalf("seed run %d: %v", run.RunID, err)
+		}
+		if err := UpsertRunJobs(ctx, pool, waitingRepo, run.RunID, runJobs[i], true); err != nil {
+			t.Fatalf("seed run %d's jobs: %v", run.RunID, err)
 		}
 	}
 }
@@ -272,15 +270,6 @@ func runIDsOf(runs []DeliveryRun) []int64 {
 		ids[i] = run.RunID
 	}
 	return ids
-}
-
-// jobNamesOf is the names of jobs, in order.
-func jobNamesOf(jobs []DeliveryRunJob) []string {
-	names := make([]string, len(jobs))
-	for i, job := range jobs {
-		names[i] = job.Name
-	}
-	return names
 }
 
 // shippedIDs is ShippedBy's answer by pull request id, each deploy's in order.

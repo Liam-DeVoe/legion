@@ -30,9 +30,9 @@ func TestASessionTitleNamesARoleAndItsIssue(t *testing.T) {
 	}
 }
 
-// TestRoleSessionWorksIsTheTitleHalfOfPhaseWork: the one rule both readers of the phase-work
-// fact ask (PhaseWorkKeys) — a phase worker or a root architect of that very issue, never a
-// controller, and never a role working another issue.
+// TestRoleSessionWorksIsTheTitleHalfOfPhaseWork: the one rule both reads of the phase-work fact
+// ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the board) — a phase worker or a root
+// architect of that very issue, never a controller, and never a role working another issue.
 func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
 	for _, one := range []struct {
 		title, issue string
@@ -53,9 +53,9 @@ func TestRoleSessionWorksIsTheTitleHalfOfPhaseWork(t *testing.T) {
 
 // TestWorkerTitleIsTheOneStatementOfTheWorkerRule: which titles are a Legion worker's — a phase
 // worker's or a root architect's, never the project controller's — is said once (WorkerTitle),
-// and the three readers of it ask it rather than stating it again: the project-wide read's
-// RoleSessions (PhaseWorkKeys), the board's index of the sessions that can move that answer
-// (api's legionPhaseWork.observe) and the issue half below (RoleSessionWorks).
+// and its readers ask it rather than stating it again: the issue half below (RoleSessionWorks),
+// which both reads of the phase-work fact ask (PhaseWorkKeys for the metrics, PhaseWorkOf for the
+// board), and the metrics' own window read (metrics.readRoleEvents).
 func TestWorkerTitleIsTheOneStatementOfTheWorkerRule(t *testing.T) {
 	for _, one := range []struct {
 		title string

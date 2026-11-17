@@ -1689,8 +1689,8 @@ export class DispatchApiClient {
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named
    *  it and when it last changed, or `null` for a project that names none. There is no list of
    *  every project's daemon, so the Settings page's daemon section reads this once per project
-   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. An unknown project
-   *  is `404 NOT_FOUND`. */
+   *  (`useLegionDaemons`): `null` is an ordinary answer rather than a failure. A key that is not a
+   *  project key is `400 INVALID_PROJECT`, and an unknown project `404 PROJECT_NOT_FOUND`. */
   getLegionDaemon(project: string) {
     return this.read("/api/v1/projects/{key}/legion/daemon", { key: project });
   }
@@ -1700,7 +1700,7 @@ export class DispatchApiClient {
    *  `state_url` that is not an absolute http(s) URL with a host and no path, carrying no user,
    *  password, query or fragment, is `400 LEGION_SETTING_INPUT` with the server's own reason
    *  (`legionStateURL` in packages/envoy/internal/dispatch/api/settings_legion.go), and an
-   *  unknown project is `404 NOT_FOUND`. */
+   *  unknown project is `404 PROJECT_NOT_FOUND`. */
   putLegionDaemon(project: string, stateUrl: string, bounds: WriteBounds) {
     return this.put(
       "/api/v1/projects/{key}/legion/daemon",

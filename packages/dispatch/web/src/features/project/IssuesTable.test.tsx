@@ -2006,7 +2006,6 @@ function legionBoard(
     header: {
       facts_cursor_age_seconds: null,
       facts_updated_at: null,
-      legion_issues: 0,
       queue_length: 0,
       read_at: "2026-11-17T08:00:00Z",
       read_error: null,

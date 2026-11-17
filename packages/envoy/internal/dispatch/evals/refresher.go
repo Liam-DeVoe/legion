@@ -22,7 +22,7 @@ import (
 // rows (legion_days.go) and the unowned-p0 row of today, and the explicit zero rows of every series
 // from its first input day on, the logged evals' included. It is one woken loop under one lease
 // (RefresherLease), with a cursor of its own in each of the two feeds it reads (eval_days_cursor,
-// migration 20261113170753):
+// migration 20261117100021):
 //
 //   - delivery_changes, woken by delivery.ChangesChannel. Each change names the days it touches
 //     (refresher_work.go): a pull request's merge day and the start day of the deploy run that
@@ -32,7 +32,7 @@ import (
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
 //     day before and after. A settings change (the delivery settings, or a repository's
-//     mapping in repo_projects, 20261113170752) begins the delivery walk again, and a mapping
+//     mapping in repo_projects, 20261117100020) begins the delivery walk again, and a mapping
 //     begins every project's Legion walk again too.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of

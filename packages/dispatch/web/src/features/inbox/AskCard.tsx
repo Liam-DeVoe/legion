@@ -23,6 +23,7 @@ import type {
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { focusOnMount } from "../../components/focus-place";
+import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
@@ -51,7 +52,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import { badgeSelectBadge, badgeSelectWrapper } from "../issue/badge-select";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -192,6 +193,10 @@ function useFormRef(): [
   return [formRef, track];
 }
 
+/** The hand-on list's trigger: the badge it shows, filling the wrapper's tap target, whose focus
+ *  ring the wrapper draws. */
+const HAND_ON_TRIGGER = "flex cursor-pointer items-center self-stretch rounded-sm outline-none";
+
 /**
  * Who an open ask waits on, and the one control that hands it to somebody else. It sits in the
  * card rather than in the Inbox, so every surface that draws an open ask has it: the Inbox row
@@ -200,16 +205,17 @@ function useFormRef(): [
  *
  * The badge is the server's own answer (`waiting_on_person`: whoever the ask was handed to,
  * else the assignee of its issue, else the default assignee of its project, which every project
- * names), and the picker over it is the same
- * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
- * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
- * (`usersQuery`, read only once the reader reaches for the control and then kept for the
- * session), with the assignee of the ask's own issue offered first where the card has it -
- * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
- * null on every other surface - since handing the ask back to them is what empties the stored
- * field and lets the ask follow its issue again. Where it is null that person is still in the
- * people list, under their own login: the named choice is a label, not the only way to pick
- * them, and the control's own value comes from the ask itself.
+ * names), and it is the trigger of the shared list's single pick (`MultiSelect`), whose text box
+ * narrows the people as the reader types: a pick of somebody else is the hand-on, in one step,
+ * and a pick of the person it already waits on writes nothing, as a `<select>` set to the value
+ * it holds fires nothing. Its people are everyone who has signed in (`usersQuery`, read only
+ * once the reader reaches for the control and then kept for the session), with the assignee of
+ * the ask's own issue offered first where the card has it - `assignee` is the Inbox row's
+ * `issue.assignee`, the one read that hydrates the issue, and null on every other surface -
+ * since handing the ask back to them is what empties the stored field and lets the ask follow
+ * its issue again. Where it is null that person is still in the people list, under their own
+ * login: the named choice is a label, not the only way to pick them, and the control's own
+ * value comes from the ask itself.
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
@@ -232,6 +238,7 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
   const [wanted, setWanted] = useState(false);
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
+  const [open, setOpen] = useState(false);
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
   const live = write.pending || write.failed;
@@ -241,20 +248,19 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     return () => onLive(ask.id, false);
   }, [ask.id, live, onLive]);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
-  // The list is drawn only once the reader reaches for the control, as it is read: the query
-  // keeps its people for the session, so a card that built its options from whatever another
-  // control had already fetched would draw one `<option>` per signed-in person for every open
-  // ask on the page.
-  const logins = (wanted ? (people.data ?? []) : [])
+  // The list draws its options only while it stands open, which is after the reader reached for
+  // the control and the people were asked for.
+  const logins = (people.data ?? [])
     .map((user) => user.login)
     .filter((login) => login !== assignee);
-  // Whoever holds the ask stays selectable even where the people list does not carry them (it
-  // is unread until the reader reaches for the control), so the select never shows a value its
-  // options lack.
+  // Whoever holds the ask stays in the list even where the people list does not carry them (it
+  // is unread until the reader reaches for the control), so the list always holds the value it
+  // marks.
   const others =
     waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
       ? logins
       : [waitingOn, ...logins];
+  const options = assignee === null ? others : [assignee, ...others];
   const handedOnBy = ask.asked_of_by ?? "";
   const handedOnAt = ask.asked_of_at ?? null;
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
@@ -262,47 +268,48 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
     <div
       className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
     >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {write.pending
-            ? "Handing on…"
-            : waitingOn === ""
-              ? "Asked of nobody"
-              : `Asked of ${waitingOn}`}
-        </span>
-        <select
-          aria-label="Hand this question to"
-          className={badgeSelectOverlay}
-          data-ask-hand-on={ask.id}
-          onChange={(event) => {
-            const { value } = event.target;
-            if (value !== "") write.submit(value);
+      {/* The wrapper is the 44 px tap target with the focus ring, and the badge inside it is
+          the list's trigger. */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only keep a press on the trigger, or in the list it opens (portalled, but a React child of this one), out of the row or card under it, and read the people as the reader reaches for either, so the wrapper needs no role of its own. */}
+      <span
+        className={badgeSelectWrapper}
+        data-ask-hand-on={ask.id}
+        onFocus={want}
+        onMouseDown={(event) => event.stopPropagation()}
+        onPointerDown={(event) => event.stopPropagation()}
+        onPointerEnter={want}
+        onTouchStart={(event) => {
+          event.stopPropagation();
+          want();
+        }}
+      >
+        <MultiSelect
+          emptyMessage={people.isPending ? "Loading people…" : "Nobody matches that."}
+          label="Hand this question to"
+          mode="single"
+          onOpenChange={setOpen}
+          onPick={(login) => {
+            if (login !== waitingOn) write.submit(login);
           }}
-          onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
-          }}
+          open={open}
+          optionLabel={(login) => (login === assignee ? `${login} (the issue's assignee)` : login)}
+          options={options}
+          searchLabel="Search people"
+          triggerClassName={HAND_ON_TRIGGER}
+          // The server's own answer, `""` where it names nobody, which only a Dispatch older
+          // than every project naming a default answers: no option is that value, and nobody is
+          // no pick (the route takes a person's email and refuses anything else), but the badge
+          // still describes the trigger, as the select's disabled Nobody did.
           value={waitingOn}
         >
-          {/* Selected only where the server names no person, which only a Dispatch older than
-              every project naming a default answers. Nobody is not a pick: the route takes a
-              person's email and refuses anything else. */}
-          <option disabled value="">
-            Nobody
-          </option>
-          {assignee === null ? null : (
-            <option value={assignee}>{assignee} (the issue's assignee)</option>
-          )}
-          {others.map((login) => (
-            <option key={login} value={login}>
-              {login}
-            </option>
-          ))}
-        </select>
+          <span className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+            {write.pending
+              ? "Handing on…"
+              : waitingOn === ""
+                ? "Asked of nobody"
+                : `Asked of ${waitingOn}`}
+          </span>
+        </MultiSelect>
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
         <span>

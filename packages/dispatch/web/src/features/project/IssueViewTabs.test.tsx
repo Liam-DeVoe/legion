@@ -248,7 +248,6 @@ function header(overrides: Partial<LegionBoardHeader> = {}): LegionBoardHeader {
   return {
     facts_cursor_age_seconds: 12,
     facts_updated_at: null,
-    legion_issues: 9,
     queue_length: 5,
     read_at: new Date(Date.now() - 5 * 60_000).toISOString(),
     read_error: null,

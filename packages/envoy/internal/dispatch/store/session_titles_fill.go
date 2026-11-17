@@ -13,7 +13,7 @@ import (
 const SessionTitlesFillBatch = 1000
 
 // fillSessionTitlesCursorQuery reads the cursor the next batch starts from, and no row once the
-// pass has finished (20261113090413). It is a statement of its own so that the batch below is
+// pass has finished (20261117100016). It is a statement of its own so that the batch below is
 // planned with the cursor bound as a parameter, which the planner keys the index scan on
 // (store.fillEmbeddingProjectKeysCursorQuery says what a cursor the planner cannot see cost
 // that fill). The row is read `for update`, which is what makes two processes filling at once
@@ -30,10 +30,10 @@ const fillSessionTitlesCursorQuery = `select session_id from session_titles_back
 // last batch stopped instead of counting past it as an `offset` would. It takes every session,
 // one that never stamped a title included, because only a read of its events can tell.
 //
-// `latest` is the rule ResolveSessionTitles read from events before 20261113082156 (its statement
+// `latest` is the rule ResolveSessionTitles read from events before 20261117100008 (its statement
 // is held as eventsSessionTitlesQuery in store/session_titles_fill_test.go): each session's newest
 // event whose origin stamps a non-empty title, one ordered read a session of the same index, and
-// no row for a session that never stamped one. `e.id` breaks the tie 20261113090412's trigger
+// no row for a session that never stamped one. `e.id` breaks the tie 20261117100015's trigger
 // breaks, two titled events at one created_at: the first one inserted keeps the title.
 //
 // `filled` writes under that trigger's own guard, `where excluded.titled_at >
@@ -74,17 +74,17 @@ const fillSessionTitlesBatchQuery = `
 	select (select count(*) from filled), (select max(session_id) from batch)
 `
 
-// FillSessionTitles fills 20261113082156's session_titles for the sessions whose titled events
-// were stored before 20261113090412's trigger went live, and answers how many rows it wrote.
+// FillSessionTitles fills 20261117100008's session_titles for the sessions whose titled events
+// were stored before 20261117100015's trigger went live, and answers how many rows it wrote.
 // The boot runs it after the migrations and before the server serves (cmd/dispatch/main.go):
 // delivery.ResolveSessionTitles reads session_titles alone, so a process serving with the table
 // unfilled would name those sessions by their ids.
 //
 // A pass already finished costs one read of an empty table: its last batch deleted the row
-// 20261113090413 creates. Otherwise it loops, each iteration one short transaction that takes
+// 20261117100016 creates. Otherwise it loops, each iteration one short transaction that takes
 // the next batch of sessions by keyset, writes their titles and commits, so no row it writes
 // stays uncommitted for longer than its own batch and an event write that meets one of its keys
-// at its commit waits for that batch alone. 20261113090413's comment says why it is not a
+// at its commit waits for that batch alone. 20261117100016's comment says why it is not a
 // migration.
 func (s *Store) FillSessionTitles(ctx context.Context) (int64, error) {
 	var written, batches int64

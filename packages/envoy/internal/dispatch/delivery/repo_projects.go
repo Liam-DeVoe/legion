@@ -33,7 +33,7 @@ func ScanRepoProject(row pgx.Row) (model.RepoProject, error) {
 // the projects the write may put the mapping in.
 //
 //   - the change log's lock (LockChanges): the mapping's trigger logs a settings change under it
-//     (migration 20261113170752), and the write's later statements, a default switch of other
+//     (migration 20261117100020), and the write's later statements, a default switch of other
 //     mappings and the events, would otherwise run after it, so it is taken first, before any row
 //     lock: repo_projects' one position for the lock;
 //   - repo's own advisory lock, which every writer of the mapping takes whether or not its row

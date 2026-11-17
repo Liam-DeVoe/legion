@@ -12,6 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { listOf, textBoxes } from "../../__tests__/list-picks";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -1211,6 +1212,15 @@ const coreIssue: IssueSummary = {
   created_at: "2026-09-14T00:00:00Z",
 };
 
+/** The Issue list a card's own trigger opened, portalled out of the card: the panel the trigger
+ *  names in `aria-controls`. */
+function issueList(agentCard: HTMLElement): HTMLElement {
+  const trigger = within(agentCard).getByRole("button", { hidden: true, name: "Choose issue" });
+  const panel = document.getElementById(trigger.getAttribute("aria-controls") ?? "");
+  if (panel === null) throw new Error("the card's Issue list is not open");
+  return panel;
+}
+
 test("Agents keeps selected-issue sends on the issue message route", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ issues: [coreIssue] });
@@ -1220,10 +1230,9 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     await user.click(within(planner).getByRole("button", { name: "Choose issue" }));
-    await waitFor(() =>
-      expect(within(planner).getByRole("combobox", { name: "Issue" })).toBeTruthy()
+    await user.click(
+      await within(issueList(planner)).findByRole("option", { name: "CORE-1 · Core work" })
     );
-    await user.selectOptions(within(planner).getByRole("combobox", { name: "Issue" }), "CORE-1");
     await waitFor(() =>
       expect(
         (within(planner).getByRole("textbox", { name: "Comment" }) as HTMLTextAreaElement).value
@@ -1265,6 +1274,47 @@ test("Agents loads only open issues when an optional picker is opened", async ()
     expect(page.listIssues).not.toHaveBeenCalled();
     await user.click(within(planner).getByRole("button", { name: "Choose issue" }));
     await waitFor(() => expect(page.listIssues).toHaveBeenCalledWith({ open: true }));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." The composer's Issue list is such a list: its options are the project's issues,
+// which grow with the project. Opened, it holds a text box of its own, a word typed into it
+// leaves only the issues that match, and Enter picks the one left and hands the reader to the
+// message it addresses.
+test("the composer's Issue list holds a text box that narrows the issues, and Enter picks into the message", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    issues: [coreIssue, { ...coreIssue, key: "CORE-2", title: "Rollout plan" }],
+  });
+
+  try {
+    const region = await screen.findByRole("region", { name: "Agents" });
+    const planner = card(region, "Planner");
+    await expand(user, planner, "Planner");
+    const before = new Set(textBoxes());
+    const toggle = within(planner).getByRole("button", { name: "Choose issue" });
+    await user.click(toggle);
+    const named = (box: Element) =>
+      [...listOf(box).querySelectorAll('[role="option"]')].map((option) => option.textContent);
+    let own: Element[] = [];
+    await waitFor(() => {
+      own = textBoxes().filter((box) => !before.has(box));
+      expect(own, "the Issue list holds no text box of its own").toHaveLength(1);
+      expect(named(own[0] as Element)).toContain("CORE-1 · Core work");
+    });
+    const box = own[0] as HTMLElement;
+    await waitFor(() => expect(box).toHaveFocus());
+    await user.keyboard("rollout");
+    expect(named(box), `"rollout" leaves only CORE-2 in the Issue list`).toEqual([
+      "CORE-2 · Rollout plan",
+    ]);
+    await user.keyboard("{Enter}");
+    expect(toggle).toHaveTextContent("Issue: CORE-2");
+    expect(within(planner).getByRole("textbox", { name: "Comment" })).toHaveFocus();
   } finally {
     page.view.unmount();
     page.restore();
@@ -3780,12 +3830,14 @@ test("an agent's answer on its row renders as a Markdown block, lists included",
   }
 });
 
-// A collapse keeps the row's picker as the reader left it, open included, so `i` opens the
-// picker rather than toggling it: on a picker already open it goes into the select instead of
-// clicking it shut.
-test("i on a row collapsed with its picker open goes back into the picker's select", async () => {
+// `i` opens the Issue list rather than toggling it: a list the reader left open - opened before its
+// issues came, so it took no focus, and left for the row - is still open, and the key goes into
+// its text box instead of clicking it shut.
+test("i on a row whose Issue list is open goes into its text box rather than shutting it", async () => {
   const user = userEvent.setup();
   const page = renderAgents({ issues: [coreIssue] });
+  const held = Promise.withResolvers<IssueSummary[]>();
+  page.listIssues.mockImplementation(() => held.promise);
 
   try {
     const region = await screen.findByRole("region", { name: "Agents" });
@@ -3793,17 +3845,16 @@ test("i on a row collapsed with its picker open goes back into the picker's sele
     await expand(user, planner, "Planner");
     const toggle = within(planner).getByRole("button", { name: "Choose issue" });
     await user.click(toggle);
-    await within(planner).findByRole("combobox", { name: "Issue" });
-    await expand(user, planner, "Planner");
     expect(toggle).toHaveAttribute("aria-expanded", "true");
 
     planner.focus();
-    // The key goes to the focused row; clicking it would collapse the card the key has to reach.
+    // The key goes to the focused row; clicking it would be a press outside the list.
     await user.keyboard("i");
-    const select = within(planner).getByRole("combobox", { hidden: true, name: "Issue" });
-    await waitFor(() => expect(select).toHaveFocus());
+    const box = within(issueList(planner)).getByRole("combobox", { name: "Issue" });
+    await waitFor(() => expect(box).toHaveFocus());
     expect(toggle).toHaveAttribute("aria-expanded", "true");
   } finally {
+    held.resolve([coreIssue]);
     page.view.unmount();
     page.restore();
   }

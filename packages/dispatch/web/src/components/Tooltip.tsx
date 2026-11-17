@@ -11,7 +11,7 @@ import {
 import { card } from "../theme/classes";
 import { AnchoredPanel } from "./AnchoredPanel";
 
-const TOOLTIP_CLASS = `z-50 max-w-72 rounded-lg border p-2 text-xs font-normal shadow-lg ${card}`;
+const TOOLTIP_CLASS = `max-w-72 rounded-lg border p-2 text-xs font-normal shadow-lg ${card}`;
 
 /** What a control that carries a tooltip holds: whether the tooltip is open, the id the control
  *  names it by while it is, and the handlers the control spreads onto itself, which open it on

@@ -13,7 +13,7 @@ type UnownedIssue struct {
 }
 
 // The reads of the open P0 issues with no owner. Each carries issues_open_p0's predicate as the
-// migration spells it (20261113082158, `priority = 0 and status <> 'done'`), so the planner proves
+// migration spells it (20261117100010, `priority = 0 and status <> 'done'`), so the planner proves
 // the index from the statement's own clauses and reads that index, which holds the open P0 issues
 // alone, and no other row of issues, with the rest of the rule (no claim, no route) a filter over
 // what it reads: one project's issues are one range of its key, every project's the whole of a

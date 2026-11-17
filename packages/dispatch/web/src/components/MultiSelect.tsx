@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
 
+import { focusOnDocument } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -14,7 +15,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
-import { AnchoredPanel } from "./AnchoredPanel";
+import { AnchoredPanel, type PanelDismissal } from "./AnchoredPanel";
 import { type ControlName, type ControlSize, controlPadding } from "./control-names";
 import { TruncatedText } from "./TruncatedText";
 
@@ -22,8 +23,21 @@ function fold(value: string | undefined): string {
   return (value ?? "").trim().toLocaleLowerCase();
 }
 
-export interface MultiSelectProps {
-  /** Trigger content; defaults to the label with the selection count (`Labels · 2`). */
+/** What closed the list, which `onOpenChange` hands its host with the close: a single pick's
+ *  pick, its trigger pressed again, or what dismisses the panel it stands in - Escape, Tab or
+ *  Shift+Tab, a press outside it, its trigger gone (`PanelDismissal`). */
+export type ListClosing = PanelDismissal | "pick" | "trigger";
+
+/** `data-*` attributes a host writes on the list's own elements, for its own code to find
+ *  them by: the trigger, and the text box, which the list portals out of the host's tree. */
+export interface ListMarks {
+  readonly search?: Readonly<Record<`data-${string}`, string>>;
+  readonly trigger?: Readonly<Record<`data-${string}`, string>>;
+}
+
+interface SharedProps {
+  /** Trigger content. A multi-select's defaults to the label with the selection count
+   *  (`Labels · 2`), a single pick's to the picked value's row text, else to the label. */
   readonly children?: ReactNode;
   readonly disabled?: boolean;
   /** Which control of the vocabulary this is, written into the trigger's `data-control`: a
@@ -37,20 +51,25 @@ export interface MultiSelectProps {
   readonly error?: string | null;
   /** Shown in place of the list when nothing is left to choose or nothing matches the search. */
   readonly emptyMessage: string;
-  /** The concept the control picks from: the default trigger text, `Clear <label>`, and the
-   *  listbox's accessible name. */
+  /** Whether opening moves the focus into the text box, as it does by default. A host that
+   *  opens the list before its options have come passes `false`, and hands the focus in itself
+   *  once they have. Read as the list opens. */
+  readonly focusOnOpen?: boolean;
+  /** The concept the control picks from: the default trigger text, `Clear <label>`, the
+   *  listbox's accessible name, and a single pick's trigger's accessible name. */
   readonly label: string;
-  readonly onChange: (selected: string[]) => void;
-  /** Enables the `Create "<query>"` row for a search that matches no option. */
-  readonly onCreate?: (value: string) => void;
-  readonly onOpenChange: (open: boolean) => void;
+  /** Marks the host's own code finds the trigger and the text box by. */
+  readonly marks?: ListMarks;
+  /** The trigger pressed, a pick or a dismissal: `true` to open, `false` with what closed it. */
+  readonly onOpenChange: (open: boolean, closedBy?: ListClosing) => void;
   /** Every keystroke in the search input, so a host can drop a message it showed for the
    *  previous query (a rejected create). */
   readonly onQueryChange?: (query: string) => void;
   readonly open: boolean;
   /** The values the host stores (URL keys, label strings) in list order. */
   readonly options: readonly string[];
-  /** Row text for a value; the search matches this text. Defaults to the value itself. */
+  /** Row text for a value; the search matches this text, and a single pick's trigger shows it
+   *  for the picked value. Defaults to the value itself. */
   readonly optionLabel?: (value: string) => string;
   /** Muted text at the end of a value's row, such as how many items carry it, or `undefined`
    *  for a row with no detail at all. The row's accessible name reads it after the label and a
@@ -60,51 +79,96 @@ export interface MultiSelectProps {
    *  a bare count. Defaults to that text. */
   readonly optionDetailLabel?: (value: string) => string;
   readonly searchLabel: string;
-  readonly selected: readonly string[];
   /** How much room the default trigger takes; a `triggerClassName` decides for itself. */
   readonly size?: ControlSize;
+  /** The trigger's accessible name in place of its text. A single pick's defaults to `label`,
+   *  so its trigger is named for the list whatever value it shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
 }
 
+/** Any number of values: a row ticks or unticks its value, and a `Clear` foot empties them. */
+interface MultipleProps extends SharedProps {
+  readonly mode?: "multiple";
+  readonly onChange: (selected: string[]) => void;
+  /** Enables the `Create "<query>"` row for a search that matches no option. */
+  readonly onCreate?: (value: string) => void;
+  readonly selected: readonly string[];
+}
+
+/** One value: a pick hands it to `onPick`, closes the list and puts the focus on the trigger. */
+interface SingleProps extends SharedProps {
+  readonly mode: "single";
+  readonly onPick: (value: string) => void;
+  /** The value picked now, which the list marks selected and the trigger shows; absent while
+   *  the host holds none. */
+  readonly value?: string;
+}
+
+export type MultiSelectProps = MultipleProps | SingleProps;
+
 /**
- * The one searchable multi-select: a trigger button and a portalled popover holding a
- * `combobox` search input over an `aria-multiselectable` listbox of checkbox rows. Arrow keys
- * move the active option, Enter toggles it (or creates the typed value), Escape and Tab close;
- * an outside pointer press closes too, and closing returns focus to the trigger. The host owns
- * `open`, so it can stage a draft on open and commit on close.
+ * The one searchable list a reader picks from: a trigger button and a portalled popover holding
+ * a `combobox` search input that narrows the listbox under it. Arrow keys move the active option
+ * and Enter takes it; Escape and Tab close with nothing taken, an outside pointer press closes
+ * too, and closing returns the focus to the trigger from the list it closed (a focus the reader
+ * or the host has put somewhere else stays there). The host owns `open`, so it can stage a draft
+ * on open and commit on close, and every close tells it what closed the list (`ListClosing`).
+ *
+ * By default it picks many: the listbox is `aria-multiselectable`, a row (or Enter) ticks or
+ * unticks its value in the checkbox drawn beside it, `onCreate` adds a row for a search that
+ * matches no option, and a `Clear` foot empties the selection. `mode="single"` picks one: the
+ * rows are plain options, the picked one `aria-selected` and marked, and a pick hands its one
+ * value to `onPick`, closes the list and returns the focus to the trigger. It opens with its
+ * picked value active, as a `<select>` and the WAI-ARIA select-only combobox do, so Enter there
+ * keeps the value and the arrows move on from it; Escape picks nothing, changes no value and
+ * returns the focus to the trigger. Its trigger is named for the list (`label`) whatever it
+ * shows, and while a value is picked the trigger's text is its description, so a reader hears
+ * the list and the value staged in it, as a `<select>` reads. While the list is open the trigger
+ * names the panel holding it (`aria-controls`), the text box and the listbox both.
  */
-export function MultiSelect({
-  ariaDisabled = false,
-  children,
-  control,
-  disabled = false,
-  emptyMessage,
-  error = null,
-  label,
-  onChange,
-  onCreate,
-  onOpenChange,
-  onQueryChange,
-  open,
-  options,
-  optionDetail,
-  optionDetailLabel,
-  optionLabel = (value) => value,
-  searchLabel,
-  selected,
-  size = "comfortable",
-  triggerAriaLabel,
-  triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
-}: MultiSelectProps): ReactNode {
+export function MultiSelect(props: MultiSelectProps): ReactNode {
+  const {
+    ariaDisabled = false,
+    children,
+    control,
+    disabled = false,
+    emptyMessage,
+    error = null,
+    focusOnOpen = true,
+    label,
+    marks,
+    onOpenChange,
+    onQueryChange,
+    open,
+    options,
+    optionDetail,
+    optionDetailLabel,
+    optionLabel = (value: string) => value,
+    searchLabel,
+    size = "comfortable",
+    triggerAriaLabel,
+    triggerClassName = `rounded-lg border text-sm font-semibold ${controlPadding[size]} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`,
+  } = props;
+  const single = props.mode === "single";
+  // What is picked now, a single pick's value as a list of one, so both modes read it alike.
+  const selected =
+    props.mode !== "single" ? props.selected : props.value === undefined ? [] : [props.value];
+  const onCreate = props.mode === "single" ? undefined : props.onCreate;
   const id = useId();
+  const panelId = `${id}-panel`;
   const listboxId = `${id}-options`;
+  const pickedId = `${id}-picked`;
   const optionId = (value: string) => `${id}-option-${encodeURIComponent(value)}`;
   const [query, setQuery] = useState("");
   const [activeValue, setActiveValue] = useState<string | undefined>(undefined);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpen = useRef(false);
+  // What an open reads of this render: whether it takes the focus, and the value it starts on.
+  const focusesOnOpen = useRef(focusOnOpen);
+  focusesOnOpen.current = focusOnOpen;
+  const opensOn = useRef<string | undefined>(undefined);
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -125,9 +189,22 @@ export function MultiSelect({
   // `Legion` still ticks the option the project spells `Legion`, and ticking it again removes it
   // rather than adding a second spelling.
   const isPicked = (value: string) => selected.some((current) => fold(current) === fold(value));
-  const toggle = (value: string) => {
+  // A single pick opens on the option its value picks - in the option's own spelling, which is
+  // the one the arrows find in the list - or on the value itself while no option has come yet.
+  opensOn.current = props.mode === "single" ? (options.find(isPicked) ?? props.value) : undefined;
+  // A single pick puts the focus on the trigger before it hands the value over, so a pick that
+  // takes the trigger away - the search bar's Project list, gone once its narrowing is on - takes
+  // it from the trigger's own place, from which the panel around it hands the focus on
+  // (`useFocusPlace`), rather than from a list portalled outside that panel.
+  const choose = (value: string) => {
     setActiveValue(value);
-    onChange(
+    if (props.mode === "single") {
+      onOpenChange(false, "pick");
+      triggerRef.current?.focus();
+      props.onPick(value);
+      return;
+    }
+    props.onChange(
       isPicked(value)
         ? selected.filter((current) => fold(current) !== fold(value))
         : [...selected, value]
@@ -140,13 +217,15 @@ export function MultiSelect({
     setActiveValue(value);
   };
 
-  // Opening starts a fresh search and focuses it; closing returns focus to the trigger.
+  // Opening starts a fresh search on the value a single pick holds, and focuses the search unless
+  // the host hands the focus in itself. Closing returns the focus to the trigger when the close
+  // left it nowhere - the list that held it is gone - and leaves a focus that is somewhere.
   useEffect(() => {
     if (open) {
       setQuery("");
-      setActiveValue(undefined);
-      inputRef.current?.focus();
-    } else if (wasOpen.current) {
+      setActiveValue(opensOn.current);
+      if (focusesOnOpen.current) inputRef.current?.focus();
+    } else if (wasOpen.current && focusOnDocument()) {
       triggerRef.current?.focus();
     }
     wasOpen.current = open;
@@ -170,12 +249,17 @@ export function MultiSelect({
       if (activeRow === createValue) {
         create(activeRow);
       } else {
-        toggle(activeRow);
+        choose(activeRow);
       }
       return;
     }
+    // Tab and Shift+Tab close the list and leave the reader on its trigger, as Escape does. The
+    // close puts the focus back on the trigger before the browser's own Tab would run, which
+    // would carry it on past the trigger: out of a filter panel altogether from its first
+    // control, where a list inside the panel is to be left for its trigger (`useNestedPanels`).
     if (event.key === "Tab") {
-      onOpenChange(false);
+      event.preventDefault();
+      onOpenChange(false, "tab");
     }
   };
 
@@ -187,24 +271,38 @@ export function MultiSelect({
   return (
     <>
       <button
+        aria-controls={open ? panelId : undefined}
+        aria-describedby={single && selected.length > 0 ? pickedId : undefined}
         aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"
-        aria-label={triggerAriaLabel}
+        aria-label={single ? (triggerAriaLabel ?? label) : triggerAriaLabel}
         className={triggerClassName}
         data-control={control}
+        {...marks?.trigger}
         disabled={disabled}
-        onClick={() => onOpenChange(!open)}
+        onClick={() => {
+          if (open) onOpenChange(false, "trigger");
+          else onOpenChange(true);
+        }}
         ref={triggerRef}
         type="button"
       >
-        {children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`)}
+        {single ? (
+          <span id={pickedId}>
+            {children ?? (selected[0] === undefined ? label : labelOf(selected[0]))}
+          </span>
+        ) : (
+          (children ?? (selected.length === 0 ? label : `${label} · ${selected.length}`))
+        )}
       </button>
       {open ? (
         <AnchoredPanel
           anchorRef={triggerRef}
-          className={`z-50 max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
-          onDismiss={() => onOpenChange(false)}
+          className={`max-h-72 w-64 max-w-[calc(100vw-1rem)] overflow-auto rounded-lg border shadow-lg ${card} ${borderDefault}`}
+          focusOnOpen={focusOnOpen}
+          id={panelId}
+          onDismiss={(how) => onOpenChange(false, how)}
         >
           <div className={`sticky top-0 border-b p-2 ${card}`}>
             <input
@@ -213,6 +311,7 @@ export function MultiSelect({
               aria-controls={listboxId}
               aria-expanded="true"
               aria-label={searchLabel}
+              {...marks?.search}
               className={`block min-h-11 w-full rounded-lg px-3 py-2 text-sm outline-none ${inputClasses(true)}`}
               disabled={disabled}
               onChange={(event) => {
@@ -230,7 +329,7 @@ export function MultiSelect({
           </div>
           <div
             aria-label={`${label} options`}
-            aria-multiselectable="true"
+            aria-multiselectable={single ? undefined : "true"}
             id={listboxId}
             role="listbox"
           >
@@ -247,14 +346,18 @@ export function MultiSelect({
                   disabled={disabled}
                   id={optionId(option)}
                   key={option}
-                  onClick={() => toggle(option)}
+                  onClick={() => choose(option)}
                   onMouseDown={(event) => event.preventDefault()}
                   role="option"
                   type="button"
                 >
                   <span
                     aria-hidden="true"
-                    className={`grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`}
+                    className={
+                      single
+                        ? "w-4 shrink-0 text-center"
+                        : `grid size-4 shrink-0 place-items-center rounded border text-xs leading-none ${borderStrong}`
+                    }
                   >
                     {isSelected ? "✓" : ""}
                   </span>
@@ -293,12 +396,12 @@ export function MultiSelect({
           {error === null ? null : (
             <p className={`border-t px-3 py-2 text-sm ${borderDefault} ${dangerText}`}>{error}</p>
           )}
-          {selected.length === 0 ? null : (
+          {props.mode === "single" || selected.length === 0 ? null : (
             <div className={`sticky bottom-0 border-t p-2 ${card}`}>
               <button
                 className={`min-h-11 w-full rounded-lg px-3 py-2 text-sm font-medium ${surfaceMutedBg} ${textSecondaryOnSurface}`}
                 disabled={disabled}
-                onClick={() => onChange([])}
+                onClick={() => props.onChange([])}
                 onMouseDown={(event) => event.preventDefault()}
                 type="button"
               >

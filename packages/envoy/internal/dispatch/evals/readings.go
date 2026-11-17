@@ -271,7 +271,7 @@ func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading)
 }
 
 // insertReadings stores rows in one statement, so the batch logs one change row whatever its
-// size (the statement-level trigger of 20261113082200), with the server's recorder and time, and
+// size (the statement-level trigger of 20261117100012), with the server's recorder and time, and
 // each link stored at now, and answers them in the batch's order. Each row's id was minted when
 // it was parsed.
 func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading, caller model.Actor, now time.Time) ([]Reading, error) {

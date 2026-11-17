@@ -162,15 +162,15 @@ test("each chip narrows the same list and reads back in the words the person cho
     const narrow = await openFilterPanel(page, dialog);
     await narrow.getByRole("button", { exact: true, name: "Project" }).click();
     await page
-      .getByRole("dialog", { name: "Project" })
-      .getByRole("button", { name: "INFRA" })
+      .getByRole("listbox", { name: "Project options" })
+      .getByRole("option", { name: "INFRA" })
       .click();
     await expect(options).toHaveCount(4);
 
     await narrow.getByRole("button", { exact: true, name: "Status" }).click();
     await page
-      .getByRole("dialog", { name: "Status" })
-      .getByRole("button", { name: "Todo" })
+      .getByRole("listbox", { name: "Status options" })
+      .getByRole("option", { name: "Todo" })
       .click();
     await expect(options).toHaveCount(3);
 

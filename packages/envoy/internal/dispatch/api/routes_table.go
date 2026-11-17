@@ -382,6 +382,7 @@ var idRoutes = map[string]idRoute{
 	"DELETE /api/v1/delivery/session-groups/{id}":   {Reason: "a Delivery session group id"},
 	"GET /api/v1/going/requests/{id}/stream":        {Reason: "a going request's run id, which the route reads for its own author alone and answers for itself"},
 	"GET /api/v1/handoffs/{id}":                     {Reason: "a handoff id: one phase's record on an issue"},
+	"GET /api/v1/near-copy-checks/{id}":             {Reason: "a near-copy check id: one answer of the near-copy gate"},
 	"POST /api/v1/machine-logins/{id}/revoke":       {Reason: "a machine login id"},
 	"POST /api/v1/signins/{id}/revoke":              {Reason: "a sign-in id at the secrets broker"},
 	"PATCH /api/v1/priorities/{id}":                 {Reason: "a priority id, a slug of its own and no uuid at all"},
@@ -467,10 +468,15 @@ type routeScopeSet []string
 // token, a project-scoped session's token and a broker-issued token that names a service and no
 // person hold neither.
 //
+// The scope `read` a read-only token holds is no value of this map: a scope here is one the
+// caller must hold, and no person holds that one. The routes such a token may call are a list of
+// their own, readScopeRoutes below, which its own gate reads (refuseReadOnlyToken).
+//
 // A route that takes an id written short needs no scope of its own for it: the prefix layer
-// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so
-// the row's scopes are the first thing a request is held to and a credential that holds none is
-// refused before any id is read - and it only rewrites the path value, so a short id reaches
+// (resolveIDPrefixes, idRoutes) runs inside this gate - register wraps the gate around it, so a
+// credential that holds none of the row's scopes is refused before any id is read, and the one
+// check a request meets ahead of the row's scopes is whether a read-only token may call the row
+// at all (refuseReadOnlyToken) - and it only rewrites the path value, so a short id reaches
 // exactly the scopes the whole id reaches, and a row that needs none with a whole id needs none
 // with a prefix.
 var routeScopes = map[string]routeScopeSet{
@@ -539,6 +545,27 @@ var routeScopes = map[string]routeScopeSet{
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
 }
 
+// readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
+// secrets broker minted from a read entry, which holds the scope read alone and names a service
+// and a session and no person and no project (model.Credential.ReadOnly). Every other row of the
+// table, and GET /ws/live beside it, answers such a token 403 READ_ONLY_TOKEN before anything
+// else the route does (refuseReadOnlyToken), so a route added later stays closed to it until it
+// is listed here.
+//
+// A route is listed only when, for such a caller, it writes nothing but the row that records its
+// DPoP proof as spent (store.DPoPProofs) and caches Dispatch rebuilds from what it already holds:
+// the display trees a read with Dispatch-Trees: 1 stores (displayTreeReader.storeOf) and the
+// stored listener roster (route_roster). TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches
+// holds the route listed today to that.
+//
+// It is a list beside the table and not a value of routeScopes: a scope there is one the caller
+// must hold, and no person holds read, so the list says what a credential that holds read alone
+// may still call rather than what a route requires. For the same reason the route index (GET
+// /api/v1), the OpenAPI document and the reference generated from it do not carry it. routes()
+// stamps it onto the row (apiRoute.ReadScope), and register refuses to mount a table whose list
+// names anything but a GET row it mounts (readRoutesNotMountedAsGET).
+var readScopeRoutes = []string{"GET /api/v1/projects/{key}/architecture"}
+
 // routesNotMounted names every route of names that is no row of the table, sorted. The walk is
 // over the table with its test hooks in, since a hook's row is a row of the table wherever a
 // deployment leaves it out.
@@ -566,6 +593,23 @@ func scopedRoutesNotMounted() []string {
 	return routesNotMounted(maps.Keys(routeScopes))
 }
 
+// readRoutesNotMountedAsGET names every route of names that is not a GET row of the table,
+// sorted: one no row holds (routesNotMounted) and one whose method is not GET. register refuses
+// to mount a read list that names either (readScopeRoutes). A name no row holds opens nothing
+// while the list reads as though it opened a route - a row renamed or deleted and its entry left
+// behind - and a POST, PUT, PATCH or DELETE row is a write, which a read-only token is minted
+// never to make. The walk is over the table with its test hooks in, as routesNotMounted's is.
+func readRoutesNotMountedAsGET(names []string) []string {
+	refused := routesNotMounted(slices.Values(names))
+	for _, name := range names {
+		if method, _, _ := strings.Cut(name, " "); method != http.MethodGet && !slices.Contains(refused, name) {
+			refused = append(refused, name)
+		}
+	}
+	sort.Strings(refused)
+	return refused
+}
+
 // routeRow is a row as the table writes it: the five columns every route has, written as a
 // positional literal, which is why the write class is not among them (writeClasses).
 type routeRow struct {
@@ -577,16 +621,19 @@ type routeRow struct {
 }
 
 // apiRoute is one mounted route: the table's row, the class routes() stamps onto it from
-// writeClasses and the OAuth scopes it stamps from routeScopes. Register mounts the table and
-// GET /api/v1 lists it, so the two can never disagree about what the server serves. Every
-// mutating row carries a Scope, and a GET row carries none (project_scope.go); OAuthScopes is
-// empty on every row any authenticated caller may reach; the row's own five columns are read
-// through it by promotion. What the route takes and answers is routeShapes', which only the
-// OpenAPI emitter reads, so no row carries it.
+// writeClasses, the OAuth scopes it stamps from routeScopes, and whether a read-only token may
+// call it, which it stamps from readScopeRoutes. Register mounts the table and GET /api/v1 lists
+// it, so the two can never disagree about what the server serves. Every mutating row carries a
+// Scope, and a GET row carries none (project_scope.go); OAuthScopes is empty on every row any
+// authenticated caller may reach; ReadScope is true on the rows the read list names and on no
+// other, and only the read-only gate reads it (refuseReadOnlyToken), never the route index or the
+// OpenAPI document; the row's own five columns are read through it by promotion. What the route
+// takes and answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
 	OAuthScopes routeScopeSet
+	ReadScope   bool
 }
 
 // routeIndexEntry is the public shape of a route in GET /api/v1. Scopes is left out of a route
@@ -663,10 +710,10 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPut, "/api/v1/projects/{key}/gated-steps", authAny, "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.", s.putProjectGatedSteps},
 		{http.MethodGet, "/api/v1/settings/delivery", authAny, "The delivery timeline's one configuration record (deploy repository, workflow paths, production job names, optional production apply step, population authors, excluded repositories, and the Pipeline page's optional staging end-to-end, staging deploy and PR-checks roll-up job names), or null when it has not been set.", s.getDeliverySettings},
 		{http.MethodPut, "/api/v1/settings/delivery", authAny, "Set the delivery timeline's configuration after proving the GitHub App can read the deploy repository; 409 DELIVERY_SETTINGS_ACCESS a credential or repository problem.", s.putDeliverySettings},
-		{http.MethodGet, "/api/v1/projects/{key}/legion/daemon", authAny, "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 404 NOT_FOUND for a project that does not exist.", s.getLegionSetting},
-		{http.MethodPut, "/api/v1/projects/{key}/legion/daemon", authAny, "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included.", s.putLegionSetting},
-		{http.MethodDelete, "/api/v1/projects/{key}/legion/daemon", authAny, "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none.", s.deleteLegionSetting},
-		{http.MethodGet, "/api/v1/projects/{key}/legion/board", authAny, "The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue the board does not show being served by an eval's items route alone; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 NOT_FOUND for a project that does not exist.", s.getLegionBoard},
+		{http.MethodGet, "/api/v1/projects/{key}/legion/daemon", authAny, "The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionSetting},
+		{http.MethodPut, "/api/v1/projects/{key}/legion/daemon", authAny, "Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.putLegionSetting},
+		{http.MethodDelete, "/api/v1/projects/{key}/legion/daemon", authAny, "Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist.", s.deleteLegionSetting},
+		{http.MethodGet, "/api/v1/projects/{key}/legion/board", authAny, "The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue the board does not show being served by an eval's items route alone; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist.", s.getLegionBoard},
 		{http.MethodGet, "/api/v1/delivery/timeline", authAny, "The delivery timeline within [from, to) (default the last 7 days), the search q (title or PR id) and the given facets (repeatable repo, parent_agent, session, issue, priority (P0-P3), component (a parent includes its children), author, rework, deployed; __no_issue__, __no_priority__, __no_component__ and __no_session__ select by cause): merges with each PR's issue title, priority and effective components, successful production deploys with every window PR they shipped first, pipeline failures with each run's production job and failing step, and merged work waiting to deploy, each PR's deployed_status (deployed, waiting, not_tracked) computed from stored facts; facet_counts (each facet counted with every other facet applied and its own ignored), color_counts (with none applied), the components and issue titles the window names, data freshness, and measures (what GET /api/v1/delivery/measures answers for the same window, search and facets); 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryTimeline},
 		{http.MethodGet, "/api/v1/delivery/runs/{id}", authAny, "One deploy-repository run with every job it ran, by start, each with its result and timings; 400 RUN_ID_INPUT for an id that is not a positive integer, 404 NOT_FOUND for no such run, 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryRun},
 		{http.MethodGet, "/api/v1/delivery/measures", authAny, "The four delivery measures and Sami's KPI targets for [from, to) (default the last 7 days) and the same facets the timeline takes: deploys a day, lead time (merge, first commit and open to production; open to merge), change failure rate per PR and per deploy, time to restore, rework share, deploy-run success, a per-UTC-day series, the open P0 issues with no owner, and whether each target is met. flags_source says whether a failure source fed the change failure rate and time to restore: with none (none) change_failure_rate is null, time_to_restore has no median, and both verdicts are null, since a rate nothing measured is no 0. 404 DELIVERY_NOT_CONFIGURED without a delivery_settings row.", s.getDeliveryMeasures},
@@ -733,6 +780,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodGet, "/api/v1/search/coverage", authAny, "Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total.", s.searchCoverage},
 		{http.MethodGet, goingCataloguePath, authAny, "The catalogue of operations an agent may propose on Dispatch's graph: twenty of the twenty-one dispatch tools that write, of the thirty-five tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. The one it leaves out is dispatch_review, on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.", s.getGoingCatalogue},
 		{http.MethodGet, "/api/v1/related-checks", authAny, "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.", s.getRelatedChecks},
+		{http.MethodGet, "/api/v1/near-copy-checks", authAny, fmt.Sprintf("List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to %d, default %d), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most %d, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to %s, and tried once more in the background for up to %s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged.", nearCopyChecksPageMax, nearCopyChecksPageMax, duplicateCandidateLimit, nearCopyRecordTimeout, relatedRecordRetryTimeout), s.getNearCopyChecks},
+		{http.MethodGet, "/api/v1/near-copy-checks/{id}", authAny, "One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid.", s.getNearCopyCheck},
 		{http.MethodPost, "/api/v1/going/requests", authAny, fmt.Sprintf("Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the %s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most %d characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 %s and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame %s, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own.", contracts.GoingRunWindow, contracts.GoingWordsMax, codeGoingAskerNamesNobody, contracts.GoingErrorNoModelConfigured), s.createGoingRequest},
 		{http.MethodGet, "/api/v1/going/requests/{id}/stream", authAny, fmt.Sprintf("One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (%s, %s, %s, %s, %s, %s, %s) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on %s or %s. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error %s, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 %s, so an id tells a caller nothing it did not already know.", contracts.GoingEventText, contracts.GoingEventItem, contracts.GoingEventCut, contracts.GoingEventChanged, contracts.GoingEventNone, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingEventEnd, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive, codeGoingRequestNotFound), s.streamGoingAnswer},
 		{http.MethodGet, "/api/v1/going/capability", authAny, "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.", s.getGoingCapability},
@@ -855,7 +904,7 @@ func (s *server) routes() []apiRoute {
 	routes := make([]apiRoute, len(rows))
 	for index, row := range rows {
 		name := row.Method + " " + row.Pattern
-		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name]}
+		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], slices.Contains(readScopeRoutes, name)}
 	}
 	return routes
 }

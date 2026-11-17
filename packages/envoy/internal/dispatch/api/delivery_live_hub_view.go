@@ -18,7 +18,7 @@ func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError)
 	if !known {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or evals")
 	}
-	if view.Project != nil && !classes.project {
+	if view.Project != nil && !classes.reads.namesProject() {
 		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion or an evals view names a project")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
@@ -96,15 +96,15 @@ func parsePipelineLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveE
 // parseLegionLiveView reads a legion view: it names the project whose board it shows and nothing
 // else, since the board has no window and the project is the whole of what
 // GET /api/v1/projects/{key}/legion/board reads. A badly spelled key is refused with the code and
-// the words the board route answers it with (legionProject), so a person who meets the mistake at
-// both doors learns one name for it: it is no INVALID_QUERY, as a timeline, measures or pipeline
-// view's bad value is, since the board's project is a segment of its path and no query, and every
-// Legion route of a project refuses a bad key there as LEGION_SETTING_INPUT.
+// the words the board route answers it with (legionProject), which are every project route's
+// (INVALID_PROJECT, projectKeyProblem), so a person who meets the mistake at either door learns
+// one name for it. A project that does not exist is the read's to refuse, as the route's is
+// (readLegionBoardView, loadProject).
 func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")
 	}
-	project, refusal := readLiveProject(view, "a legion view", "LEGION_SETTING_INPUT")
+	project, refusal := readLiveProject(view, "a legion view", "INVALID_PROJECT")
 	if refusal != nil {
 		return refusal
 	}

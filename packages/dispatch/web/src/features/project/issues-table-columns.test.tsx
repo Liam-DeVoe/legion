@@ -124,7 +124,6 @@ function board(
     header: {
       facts_cursor_age_seconds: null,
       facts_updated_at: null,
-      legion_issues: 0,
       queue_length: 0,
       read_at: null,
       read_error: null,

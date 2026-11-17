@@ -102,7 +102,7 @@ export function PanelTrigger({
         <AnchoredPanel
           align={align}
           anchorRef={trigger}
-          className={`z-50 flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border text-sm font-normal shadow-lg ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
+          className={`flex max-h-[min(20rem,calc(100dvh-16px))] w-64 max-w-[calc(100vw-16px)] flex-col overflow-y-auto rounded-lg border text-sm font-normal shadow-lg ${stacked ? "items-start gap-2 p-2" : "p-1"} ${card}`}
           focusOnOpen={focusOnOpen}
           label={title ?? (typeof label === "string" ? label : undefined)}
           onDismiss={() => onOpenChange(false)}

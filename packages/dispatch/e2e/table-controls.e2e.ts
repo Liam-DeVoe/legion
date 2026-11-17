@@ -2557,8 +2557,8 @@ test("no press in the shared controls drops the keyboard focus onto the page, at
       await opener.focus();
       await page.keyboard.press("Enter");
       const pick = page
-        .getByRole("dialog", { name: menu })
-        .getByRole("button", { exact: true, name: option });
+        .getByRole("listbox", { name: `${menu} options` })
+        .getByRole("option", { exact: true, name: option });
       await pick.focus();
       await page.keyboard.press("Enter");
       await expect(
@@ -3080,10 +3080,7 @@ test("Tab and Escape never leave a panel for the page behind it, in a dialog or 
     .getByRole("dialog", { name: "Filter" })
     .getByRole("button", { exact: true, name: "Project" })
     .click();
-  await page
-    .getByRole("dialog", { name: "Project" })
-    .getByRole("button", { exact: true, name: "CORE" })
-    .focus();
+  await page.getByRole("combobox", { exact: true, name: "Search projects" }).focus();
   await page.keyboard.press("Shift+Tab");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");

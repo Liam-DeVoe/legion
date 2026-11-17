@@ -1,8 +1,7 @@
-// The Settings page's Legion daemon field, written straight into Postgres. This pull request ships
-// the data layer and no page that draws a daemon's board, so the only Legion surface a browser
-// drives is the Settings section where a project's daemon is named, listed and removed. These are
-// the rows that section reads: a project to name a daemon for, and the `legion_settings` row a
-// naming leaves.
+// The Settings page's Legion daemon field, written straight into Postgres. No dashboard page draws
+// a daemon's board, so the only Legion surface a browser drives is the Settings section where a
+// project's daemon is named, listed and removed. These are the rows that section reads: a project
+// to name a daemon for, and the `legion_settings` row a naming leaves.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
 import { sql } from "./psql";

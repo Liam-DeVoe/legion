@@ -439,9 +439,8 @@ func (s *server) liveSocketFrame(socket *liveSocket, data []byte) {
 // decodeSocketClientFrame decodes one frame from the page into its struct. A member the struct
 // does not declare is ignored, as decodeJSON ignores one in a body, since a page of a newer build
 // can reach this build while a release rolls out. A frame type or a view kind this build cannot
-// serve is still refused (liveSocketFrame, the hub's view check), that subscription alone: the
-// page keeps the socket, whose other subscriptions this build goes on answering, and sends the
-// refused one again on its next socket (packages/dispatch/web/src/api/live-socket.ts).
+// serve is still refused (liveSocketFrame, the hub's view check), so that page reconnects until it
+// reaches a process that serves it.
 func decodeSocketClientFrame(data []byte, frame any) error {
 	return json.Unmarshal(data, frame)
 }

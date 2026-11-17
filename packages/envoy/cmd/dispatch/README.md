@@ -187,20 +187,32 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 No setting of its own configures it.
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
-A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service the machine holding it belongs to, and `actor` in the body does not decide that session:
+A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, or the service a read entry names), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
 A token scoped to one project carries that project on every actor it writes, set from the token and never from the body;
 a token scoped to its person names no single project and carries none.
+A read-only token names no project either.
 Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
-it names no session, it names neither a person nor a service, or it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is
+it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's)
 — Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
-A websocket re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
+The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
 the upgrade's proof authenticated it and cannot be presented a second time.
 Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` presentation is the `401 UNAUTHORIZED` `invalid bearer token` any Authorization header that is not a bearer has always been.
+
+A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
+It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
+`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
+Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
+That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
+The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
+`/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
+The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -237,10 +249,12 @@ The sign-in check refuses every write by a credential that names a service and n
 It stands in front of every mutating route whatever its class, and outermost of the three, so such a caller is told it may make no write at all rather than which project the write it tried belongs to.
 Its reads are untouched: the machine reads everything its session may read, and what it may not do is write, because Dispatch records a write under the person who made it and this credential names none.
 A broker token that does name a person, and every other credential, reaches the handler as before.
+A read-only token names a service and no person too, but it never reaches this check: the read-only refusal above answers it `403 READ_ONLY_TOKEN` first, because signing a person in is no remedy for it.
 
 The project and session checks are a no-op for a credential that carries no project and proves no session
 — a browser cookie, a personal agent token, a Kubernetes service-account token, the shared token, and an access token the broker scoped to a person rather than to one project.
 That is the rule and not a transitional measure: every caller that exists today writes exactly what it wrote before.
+A read-only token carries no project either, and none of the three checks reads it, because the read-only refusal answers it first on every mutating route.
 
 GitHub App credentials come either from the `DISPATCH_APP_*` variables or from `~/.local/share/dispatch/app.json`; the variables take precedence.
 Two of them carry rules beyond their row:
@@ -1180,8 +1194,8 @@ So for each surface the two builds share, this is what build N+1 may change whil
 
 - **Socket frames.**
   A new member is additive: the delivery socket (`/ws/delivery`) ignores a member a frame does not declare (`decodeSocketClientFrame`).
-  A new frame type or view kind degrades on build N, which answers that subscription `INVALID_FRAME`, as a build before INFRA-1077 answers a `legion` view, and so does a member build N declares but refuses on a view of that kind:
-  the page fails that one view and keeps the socket, whose other subscriptions build N goes on answering, and sends the view again on its next socket, which a rotation (4001) or build N's own shutdown close (1012) opens and which can reach a process that serves it (`web/src/api/live-socket.ts`).
+  A new frame type or view kind degrades on build N, which answers it `INVALID_FRAME`:
+  the page then closes the socket and reconnects with the backoff of a lost socket (`web/src/api/delivery-live.ts`), until it reaches a process that serves the frame.
   A subscribe frame's `resume` is the exception to the ignoring:
   it is the point the view restarts from, so a member the view's resume does not take is refused by name (`decodeLiveResume`) rather than dropped, which would restart the view somewhere else.
 
@@ -1363,10 +1377,10 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
 - The eval day-row refresher (`evals.Store.RunRefresher`, lease `eval-days`) keeps every project's `eval_days` true to its inputs.
-  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261113170752`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261115155340`), and by `dispatch_events`.
+  It is woken by `delivery_changes`, which every delivery table's trigger notifies (`0100`), as does that of `repo_projects` (`20261117100020`), and the triggers of `issue_facts`, `issue_filings` and the eval tables notify as they record their changes in the change log's outbox (`20261117100024`), and by `dispatch_events`.
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
-  A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261113170753`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
+  A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
   A change cursor whose change has left the log is a loss only when that change was younger than its 24 hours, by the rule the delivery live hub reads its own cursor by: one pruned after its 24 hours lost nothing, and a loss begins every walk again.
   The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
   It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
@@ -1386,7 +1400,7 @@ A process that finds it held tries again
 
 **Boot passes** run once at start:
 
-- The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261115155339`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
+- The drain of the delivery change log's outbox (`delivery.DrainPending`, `20261117100023`) runs once, before the process serves, with no lease: two drains take turns on the change log's lock and move each pending change once.
   An eval or Legion write records its change in the outbox and drains it right after its commit; a write whose process was killed between the two leaves the change pending, and its commit's notification woke every live process's hub, which drains before it reads.
   This drain moves what such a write left while no process was alive, logs `dispatch: moved the delivery changes left pending into the change log` with `moved=<n>`, and its own notification wakes every hub listening by then; this process's refresher reads the moved changes on its first pass.
   A drain that fails is logged and the boot goes on, since the hub and the refresher drain again.
@@ -3174,7 +3188,8 @@ A text whose picked terms number fewer than `duplicateMinTerms` (3), or that hol
 a share of one or two terms is 1.0 against any issue that holds them.
 Such a text is judged by equality instead (`duplicateEqualLexemesQuery`):
 the gate refuses an open issue of the project, outside the new issue's ancestors, whose title lexemes and whose primary document's lexemes are exactly the new title's and the new spec's as Dispatch would store it, and it names nothing else.
-A candidate at or above `duplicateRefuseScore` refuses the create;
+A candidate at or above `duplicateRefuseScore` refuses the create once the refusal's row in `near_copy_checks` is known to be written;
+when that row cannot be written, the create goes in unchecked and its `201` names the candidate in `advice.suggestions.near_copy_check` (below);
 the closest one at or above `duplicateNudgeScore` and below the refusal is named to the filer as `advice.suggestions.likely_duplicate`, which refuses nothing.
 Both bars are set by `TestNearCopyRefusalReplay` over a frozen export of a project's history (`scripts/near-copy-replay.sh`), and a change to the term picker or to the scoring statement invalidates that calibration.
 A candidate's snippet marks the words its title shares with the new one, and the `POSSIBLE_DUPLICATE` message quotes a candidate's whole title.
@@ -3183,6 +3198,13 @@ one bound, because two would have a read of 700 ms refuse an unforced create whi
 A create whose check does not answer is written either way, forced or not, and the `201` says so in `advice.suggestions.near_copy_check`:
 the create went in without the near-copy check an unforced create otherwise meets.
 A forced one also records `forced` with an empty `past` on its `issue.created` event, which is how the weekly audit tells it from an override.
+
+Each answer the gate gives a create is one row of `near_copy_checks` (`api/near_copy_checks.go`), read through `GET /api/v1/near-copy-checks` and `GET /api/v1/near-copy-checks/{id}`:
+`refused`, `forced`, `nudged`, `passed` or `not_made`, with the reason a check was not made (`bound`, `failed` or `unrecorded`), the candidates it read with their scores, and, for a refused create alone, the spec it refused.
+A refusal is answered only once its row is known to be written, so every `409 POSSIBLE_DUPLICATE` has its row;
+otherwise the refusal refuses nothing, and the create goes in as `not_made`, reason `unrecorded`, its row written in its own transaction under the id the refusal used, so it replaces a refused row whose insert landed unseen.
+Every other create's row is written after the commit, bounded to one second (`nearCopyRecordTimeout`), and tried once more in the background for up to 30 s (`retryRecord`) when a timeout or a lock stopped it, as a `related_checks` row is;
+a row that still cannot be written is logged, and the create stands.
 
 `POST /api/v1/issues`, `POST /api/v1/issues/{key}/asks` and `POST /api/v1/artifacts/{id}/asks` run the related-item check once the write has committed, and so does each decision block a document edit (`POST /api/v1/artifacts/{id}/edits`) adds, on the block's question (the check replaced LEGION-550's 300 ms keyword suggestions).
 The check never refuses the write, but the response waits for it, at most 5 s (`relatedCheckAllowance`);
@@ -3810,23 +3832,23 @@ Each item below names a path with its method and identity, then its purpose.
 
   The Legion daemon this project's state is read from: GET reads it, with the actor that first named it and when it was last written, or `null` when the project names none; PUT names it, `{state_url}`; DELETE stops reading it, what the sampler already recorded staying.
   No route lists every project's daemon, since R26 of dispatch://INFRA-979's spec permits one cross-project read and this is not it: the Settings page's Legion section reads each project's.
-  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, and a project that does not exist `404 NOT_FOUND`.
+  A `state_url` that is not an absolute http(s) URL with a host and no path is `400 LEGION_SETTING_INPUT`, a DELETE for a project that names no daemon `404 NOT_FOUND`, a key that is not a project key `400 INVALID_PROJECT`, and a project that does not exist `404 PROJECT_NOT_FOUND`.
   The daemon points Dispatch at a host, so it belongs to the deployment rather than to the project it is addressed under, and a project-scoped credential is refused the PUT and the DELETE as it is a repository mapping, the project this path names included.
   `internal/dispatch/api/settings_legion.go` gives the rest, including why neither write emits an event.
 
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion board of the project its path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored; the `/ws/live` `legion` view carries the same body and pushes each change, and no page draws it.
-  Ten columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
+  Eleven columns (`queue`, `design`, `planning`, `implementing`, `testing`, `reviewing`, `accepting`, `retro`, `merging`, `awaiting_person`, `held`), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds with what that slot is used for and when it was taken, its tree's slot, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, why it waits with its place in the daemon's line, its tree root and the children of its tree that have not started.
   Beside them `issues`, a map keyed by issue key of the stored facts of every open issue with Legion phase work and of every issue the board shows: each card's issue and every issue of a tree a card stands in, those on no card included.
   A closed issue the board does not show has no entry: `GET /api/v1/projects/{key}/evals/{slug}/items` serves its facts by its close day, so every issue has one source and the body follows the open work and what the daemon runs, not the project's history.
-  Each entry holds its hours by column, its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written; an open issue's hours, work time and last moment of work are given at the moment of the read, each grown from the newest input the row was closed at by the rate the row stores.
-  The rows are read by key through the primary key, by tree root through `issue_facts_root` (`20261116151147`) and the open rows through `issue_facts_closed` (`closed_at is null`), never as the project's rows filtered after the read.
-  The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, how many issues of the project carry Legion phase work, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
-  The three facts fields together tell a project with no Legion work, which carries no Legion issues and no rows, from a project whose backfill has not run, which carries Legion issues and no rows; the cursor age alone cannot, because it is the deployment's one consumer and every project of a running deployment reads the same age.
-  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `404 NOT_FOUND` for a project that does not exist.
+  Each entry holds its hours by column (an issue's hours in retro under `retro`, beside merging's), its work time, its review rounds, its root and depth in the tree, the hours it held a slot, why it waits, and when the row was written; an open issue's hours, work time and last moment of work are given at the moment of the read, each grown from the newest input the row was closed at by the rate the row stores.
+  The rows are read by key through the primary key, by tree root through `issue_facts_root` (`20261117100026`) and the open rows through `issue_facts_closed` (`closed_at is null`), never as the project's rows filtered after the read.
+  The header carries the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, the oldest `updated_at` of the rows served (those the map carries, not every row of the project) and the age of the facts consumer's cursor.
+  The cursor age is of the deployment's one consumer and not of the project, so it says how fresh the facts are and is null on a deployment whose consumer has never run.
+  `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `400 INVALID_PROJECT` for a key that is not a project key, `404 PROJECT_NOT_FOUND` for a project that does not exist.
 
-- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).
   Each item is an eval's current definition (every field of `eval_versions`, read through `evals_current`), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array, and the verdict of its target (null where the target is off).
@@ -3836,6 +3858,10 @@ Each item below names a path with its method and identity, then its purpose.
   A series with no day row reads every statistic `null`, never 0, and a range that starts before a series' first day (`data_since`) reads `null` too, its per-day array still answering the days that exist.
   A figure the fold of a range takes past what a float holds (two days each summing 1e308) reads `null` too, as does a change between two such figures: each day row is finite, since the readings write refuses one that would not be, but their sum need not be.
   `kind` keeps one kind, and `repo`, repeated, folds those repositories' rows in place of the project's own; `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
+  `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+
+- `/api/v1/projects/{key}/evals` (POST; cookie, trusted header, or bearer)
+
   POST registers an eval or writes the next version of its definition, `{slug, ...}` with each field it sets, every other copied forward from the newest version (`target: null` turns the target off), and `doc_text` replacing the eval's method in its section of the project's `evals-md`; it answers `201` with the version written, or `200` where the body changed nothing.
   A version that lists or unlists a logged eval's series lists or unlists the series' stored day rows in the same transaction, so a window that spans the change folds every day of it.
   `source` is `logged`: only the seeded catalogue makes an eval computed, so another source is `400 EVAL_FIELD_INVALID` naming `source`, and no write leaves a logged eval computed with no builder of its rows.
@@ -3846,7 +3872,7 @@ Each item below names a path with its method and identity, then its purpose.
   The eval's code defines the rest, so a write naming its `name`, `question`, `number_rule`, `decision`, `failure_modes`, `unit`, `direction`, `kind` or `source`, any field of a series but `min_n`, or a series the eval does not hold, is `400 EVAL_FIELD_COMPUTED` naming that field and stores nothing; a logged eval takes every other field.
   A link `{rel, href, label}` takes the server's `recorded_at`; an `href` that is not an absolute URL is `400 LINK_HREF_NOT_ABSOLUTE`, and one whose scheme is not `http` or `https` (`javascript:`, `data:`, `mailto:`, `urn:` among them) `400 LINK_HREF_NOT_HTTP`, since a page draws the link for a person to click; the server never fetches it.
   A slug or a series' name holds at most 512 bytes (`400 EVAL_KEY_TOO_LONG`), which keeps every index entry of the registry well inside what Postgres holds (`evals.maxKeyBytes`); each refusal of the write names its field in `field`.
-  `400 INVALID_QUERY` names a malformed key, and a key the route does not take (any but those above and the global `session` parameter, so a caller still sending the old `scope=` is told rather than answered every issue), `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+  `404 PROJECT_NOT_FOUND` names an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`, as the read refuses them.
 
 - `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
 
@@ -4065,6 +4091,18 @@ Each item below names a path with its method and identity, then its purpose.
   another is `400 INVALID_QUERY`) when given:
   `{project, source_kind, from, to}` echo the filters (null when absent), then `total`, `by_source_kind`, `by_outcome`, `by_search` (a check not made counted under `not_made`), `by_reason`, `completed` (found or none), `skipped_for_time` (reason `timeout`), `other_project_offers` (the ask creates of the window that offered at least one answered question of another project, read from `write_suggestions`), and `keyword_ms` and `total_ms`, each `{count, p50, p95, max, over_300ms}` over the checks holding that time (`model.RelatedChecksReport`).
 
+- `/api/v1/near-copy-checks?project=&from=&to=&after=&limit=` (GET; cookie, trusted header, or bearer)
+
+  List one project's near-copy gate answers (`near_copy_checks`, [Search](#search)) within `[from, to)` (RFC3339, each optional; `from` not before `to` is `400 INVALID_QUERY`), oldest first, at most `limit` (1 to 1,000, default 1,000) after the row `after` names:
+  `{project, from, to, checks, next_after}` (`model.NearCopyChecksPage`), each row with no spec.
+  `project` is required (`400 INVALID_PROJECT` when it is not a key), and an `after` that is no row of the project is `400 INVALID_QUERY`.
+  A window should end some time before now: a row written in its create's transaction holds that transaction's start as `created_at` and is seen only once it commits, so a reader that pages up to now and resumes with `after` can miss it.
+
+- `/api/v1/near-copy-checks/{id}` (GET; cookie, trusted header, or bearer)
+
+  One near-copy gate answer (`model.NearCopyCheck`), with `spec` on a refused row alone;
+  `404 NEAR_COPY_CHECK_NOT_FOUND` when there is none, `400 NEAR_COPY_CHECK_ID_INPUT` for an id that is not a uuid.
+
 - `/api/v1/issues/{key}/references?versions=` (GET; cookie, trusted header, or bearer)
 
   Read the issue's eight-hop artifact reference closure; a reference to a block reaches the block's document while a current version holds the block.
@@ -4128,7 +4166,9 @@ Each item below names a path with its method and identity, then its purpose.
   `repo` (`owner/name`) is the issue's own repository and must be mapped to its project:
   `400 INVALID_ISSUE` when it is not `owner/name`, `400 REPO_NOT_MAPPED` when it is not mapped.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
-  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true; external references skip the check.
+  Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
+  a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
+  External references skip the check.
   A forced create records the issues it went past on its `issue.created` event, under `forced.past`.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;

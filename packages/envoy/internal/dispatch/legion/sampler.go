@@ -2,6 +2,7 @@ package legion
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -43,9 +44,10 @@ func RunSampler(ctx context.Context, pool *store.Pool, leases duty.Leases) {
 }
 
 // Pass is one pass: every configured project's daemon read in turn, each recorded whatever the
-// others did, and then the reads older than ReadRetention deleted. A project whose read fails
-// keeps the observations it already has — the failure is in legion_reads, and the board's header
-// names it there.
+// others did, and then the reads older than ReadRetention deleted. A project whose read fails —
+// the daemon did not answer its state, or Dispatch could not store the answer — keeps the
+// observations it already has: the failure is in legion_reads, and the board's header names it
+// there.
 func (s *Sampler) Pass(ctx context.Context) {
 	settings, err := ListSettings(ctx, s.pool)
 	if err != nil {
@@ -65,15 +67,15 @@ func (s *Sampler) Pass(ctx context.Context) {
 	}
 }
 
-// read is one project's read, the two records it leaves, and the notification that wakes every
-// open Legion board of the project (StateChannel). The notification goes out after a failed read
-// too: the board's header carries the failure.
+// read is one project's read, the record it leaves, and the notification that wakes every open
+// Legion board of the project (StateChannel). A read the daemon answered is recorded with its
+// observations in one transaction (RecordRead); a read that failed, and one whose record Postgres
+// refused, are recorded as a failed read (RecordFailedRead), the refusal as `record: <why>`, so the
+// last good read stands and the board's header names what failed. The notification goes out after
+// a failed read too: the board's header carries the failure.
 func (s *Sampler) read(ctx context.Context, setting Settings) {
 	state, bytes, readErr := s.clients[setting.StateURL].State(ctx)
 	at := s.now().UTC()
-	if err := RecordRead(ctx, s.pool, setting.Project, at, bytes, readErr); err != nil {
-		slog.Warn("dispatch: record a Legion state read", "project", setting.Project, "error", err)
-	}
 	defer func() {
 		if err := NotifyRead(ctx, s.pool, setting.Project); err != nil {
 			slog.Warn("dispatch: announce a Legion state read", "project", setting.Project, "error", err)
@@ -81,15 +83,19 @@ func (s *Sampler) read(ctx context.Context, setting Settings) {
 	}()
 	if readErr != nil {
 		slog.Warn("dispatch: read a Legion daemon's state", "project", setting.Project, "bytes", bytes, "error", readErr)
-		return
-	}
-	written, err := RecordObservations(ctx, s.pool, setting.Project, at, state.Observations())
-	if err != nil {
+	} else {
+		written, err := RecordRead(ctx, s.pool, setting.Project, at, bytes, state.Observations())
+		if err == nil {
+			if written > 0 {
+				slog.Info("dispatch: recorded Legion state changes", "project", setting.Project, "rows", written, "issues", len(state.Issues))
+			}
+			return
+		}
 		slog.Warn("dispatch: record a Legion daemon's state", "project", setting.Project, "error", err)
-		return
+		readErr = fmt.Errorf("record: %w", err)
 	}
-	if written > 0 {
-		slog.Info("dispatch: recorded Legion state changes", "project", setting.Project, "rows", written, "issues", len(state.Issues))
+	if err := RecordFailedRead(ctx, s.pool, setting.Project, at, bytes, readErr); err != nil {
+		slog.Warn("dispatch: record a Legion state read", "project", setting.Project, "error", err)
 	}
 }
 

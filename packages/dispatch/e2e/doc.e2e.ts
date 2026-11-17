@@ -24,6 +24,8 @@ import {
   documentTransport,
   openDocumentSockets,
   openSpecAndAwaitHeadingIds,
+  openVersions,
+  pickVersion,
   placeCaret,
   selectEditorText,
   typeAtEnd,
@@ -305,9 +307,10 @@ test("named versions, the version picker, and the diff stay current across users
       )
       .toMatchObject({ named: true, number: 3, summary: "Decided Postgres" });
 
-    const versionPicker = page.getByRole("combobox", { name: "Version" });
-    await expect(versionPicker).toContainText("Version 3 — Decided Postgres");
-    await versionPicker.selectOption("1");
+    // The picker's list names the version just named, with its summary.
+    await expect(await openVersions(page)).toContainText("Version 3 — Decided Postgres");
+    await page.keyboard.press("Escape");
+    await pickVersion(page, 1);
     const versionView = page.getByTestId("version-view");
     await expect(versionView).toContainText("Use SQLite");
     await expect(versionView.getByRole("textbox", { name: "Document editor" })).toHaveAttribute(
@@ -320,7 +323,7 @@ test("named versions, the version picker, and the diff stay current across users
     await expect(page.getByTestId("change-view").locator("del")).toHaveText("SQLite");
     await expect(page.getByTestId("change-view").locator("ins")).toHaveText("Postgres");
 
-    await versionPicker.selectOption("");
+    await pickVersion(page, null);
     await expect(documentEditor(page)).toBeVisible();
     await expect.poll(sockets).toBe(1);
   } finally {
@@ -396,7 +399,7 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
     await expect(documentEditor(alicePage)).toBeAttached();
     await expect(documentEditor(alicePage)).toContainText("Use SQLite");
     await expect(documentEditor(alicePage)).toContainText("before reload");
-    await expect(alicePage.getByRole("combobox", { name: "Version" })).toContainText("Version 1");
+    await expect(await openVersions(alicePage)).toContainText("Version 1");
   } finally {
     await bob.close();
     await alice.close();

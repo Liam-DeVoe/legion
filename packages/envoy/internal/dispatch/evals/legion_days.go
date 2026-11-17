@@ -49,7 +49,7 @@ import (
 //
 // Each issue counted is an item of the family `legion` in eval_day_members, keyed by its issue
 // key, on its close day with its repository. The day an issue leaves when it closes again on
-// another day is named by the change of its facts itself (t_old, migration 20261116151147); the
+// another day is named by the change of its facts itself (t_old, migration 20261117100026); the
 // members say where each issue below an issue whose repository or parent moved was counted
 // (subtreeCloseDays), and a write that moves a member off a day records that day owed a rewrite
 // (eval_days_owed). A filing's day is the time of its `issue.created` event, which never moves,

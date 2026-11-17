@@ -18,6 +18,19 @@ import { focusableIn } from "./focus-place";
 /** The panel's widest, before the 8 px margin it keeps from each viewport edge. */
 const PANEL_WIDTH = 256;
 
+/**
+ * The layer every panel stands in, the one place it is set: an open panel is the reader's
+ * topmost layer, over whatever it was opened over - the page, a dialog (`z-40` and `z-50`), the
+ * Inbox drawer, a toast, a reference's hover card (`z-[60]`) and a document's own floating bars,
+ * the selection bar with its Comment and Suggest and the mark popovers `@legion/proof-editor`
+ * draws at z-index 190 to 280 - so a reader with text selected in a document who opens its
+ * Version list presses its options rather than the bar drawn over them. Only the browser's top
+ * layer is above it, a modal `<dialog>` (the picture lightbox), which no panel is opened over. A
+ * panel opened inside another stands in the same layer, after it in the body, so over it. Any
+ * press outside a panel closes it, so nothing it covers is left under it for long.
+ */
+const PANEL_LAYER = 300;
+
 /** Counts `panel`, opened from inside the panel that hands this out, as part of that panel for
  *  as long as it stands open, and of every panel around that one. Answers what stops counting it. */
 type HoldPanel = (panel: HTMLElement) => () => void;
@@ -37,6 +50,13 @@ const EDGE: CSSProperties = {
 /** The keymap's mark on the panel's element: a key pressed inside it is the panel's own
  *  (`PANEL_ATTRIBUTE`). */
 const PANEL_MARK = { [PANEL_ATTRIBUTE]: "" };
+
+/** What dismissed a panel, which `onDismiss` hands its host: Escape, Tab or Shift+Tab past its
+ *  last or first control, a pointer press outside it and its anchor, or its anchor gone from the
+ *  page or drawn nowhere. A host whose next move depends on how the reader left - the Agents
+ *  composer's Issue list, whose Escape is one level out to the row - reads it; any other host
+ *  ignores it. */
+export type PanelDismissal = "escape" | "gone" | "press" | "tab";
 
 /**
  * The one panel that hangs off a control: portalled to the body so no ancestor can clip it,
@@ -83,6 +103,7 @@ export function AnchoredPanel({
   className,
   flip = false,
   focusOnOpen = true,
+  id,
   label,
   onDismiss,
   role,
@@ -97,9 +118,11 @@ export function AnchoredPanel({
   flip?: boolean;
   /** Whether opening moves the focus into the panel. Read once, as the panel opens. */
   focusOnOpen?: boolean;
+  /** The panel element's id, for an anchor that names what it opened (`aria-controls`). */
+  id?: string;
   /** The panel's accessible name, for a panel that names itself. */
   label?: string;
-  onDismiss: () => void;
+  onDismiss: (how: PanelDismissal) => void;
   role?: "dialog";
 }): ReactNode {
   const panelRef = useRef<HTMLDivElement>(null);
@@ -153,13 +176,13 @@ export function AnchoredPanel({
       // where the anchor used to be. The second half is asked only of an environment that lays
       // anything out at all, so a test DOM with no layout keeps its panels.
       if (anchor === null || anchor === undefined || !anchor.isConnected) {
-        dismiss.current();
+        dismiss.current("gone");
         return;
       }
       if (box === undefined) return;
       const drawn = panelRef.current?.getBoundingClientRect();
       if (box.width === 0 && box.height === 0 && drawn !== undefined && drawn.height > 0) {
-        dismiss.current();
+        dismiss.current("gone");
         return;
       }
       const panel = panelRef.current;
@@ -241,7 +264,7 @@ export function AnchoredPanel({
       // leaving it: it closes, and they are back on the anchor.
       if (inside.current) {
         anchorRef.current?.focus();
-        dismiss.current();
+        dismiss.current("tab");
         return;
       }
       // From the page before the panel, or from what the body draws after it, they are coming
@@ -266,7 +289,7 @@ export function AnchoredPanel({
       }
       if (anchorRef.current?.contains(target)) return;
       for (const held of inner) if (held.contains(target)) return;
-      dismiss.current();
+      dismiss.current("press");
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -285,7 +308,7 @@ export function AnchoredPanel({
       event.stopPropagation();
       // A tooltip's focus never left the anchor, or a link inside it, so it stays there.
       if (!tooltip) anchorRef.current?.focus();
-      dismiss.current();
+      dismiss.current("escape");
     };
     document.addEventListener("focusin", followFocus, true);
     document.addEventListener("pointerdown", outside);
@@ -306,8 +329,9 @@ export function AnchoredPanel({
       )}
       <div
         className={className}
+        id={id}
         ref={panelRef}
-        style={{ position: "fixed", ...position }}
+        style={{ position: "fixed", zIndex: PANEL_LAYER, ...position }}
         tabIndex={tooltip ? undefined : -1}
         {...named}
         {...PANEL_MARK}

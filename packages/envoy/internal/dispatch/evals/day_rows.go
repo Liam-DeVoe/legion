@@ -71,7 +71,7 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 // zeroes are those of slugs alone and the stale members it deletes those of families alone, so
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
 // what names the rows in a refusal. Its upsert's change rows wait in the change log's outbox
-// (migration 20261115155340), so the transaction takes no change log lock, and they are moved into
+// (migration 20261117100024), so the transaction takes no change log lock, and they are moved into
 // the log once it has committed (drainChanges).
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := measures.Midnight(day.Day)
@@ -119,7 +119,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	// An item this write takes from another day leaves that day's rows counting it until the day
 	// is written again: one it moves here from the day it was counted on, and, for a pull request
 	// it moves to another deploy run or stops counting, the day of the run that shipped it. Each
-	// such day is recorded owed (eval_days_owed, migration 20261113082154) in this transaction,
+	// such day is recorded owed (eval_days_owed, migration 20261117100006) in this transaction,
 	// before the members that name it move, so a pass that fails before it rewrites that day still
 	// finds it (owedDays) where no stored member names it any more.
 	if _, err := tx.Exec(ctx, `
@@ -179,7 +179,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 // upsertDays writes rows in one statement, in key order, each the computation's (writer
 // `computation`) with built_by builtBy: a new row is inserted, and a stored one rewritten only
 // where a value differs (built_by included, so a new build's rebuild marks every row it rebuilt).
-// updated_at moves only with a value: the trigger of eval_days (migration 20261113082202) logs no
+// updated_at moves only with a value: the trigger of eval_days (migration 20261117100014) logs no
 // change for a rewrite that moves built_by and updated_at alone, and the evals list answers the
 // oldest updated_at of the rows it folds (api/evals.go's freshness), so a rebuild that moved it
 // would leave a live evals view answering the old one while the read answered the new.

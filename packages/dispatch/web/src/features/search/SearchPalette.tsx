@@ -16,6 +16,7 @@ import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { ControlRow } from "../../components/ControlRow";
 import { filterChips } from "../../components/filter-chips";
+import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
 import { QueryError } from "../../components/QueryError";
 import { SearchBox } from "../../components/SearchBox";
@@ -32,7 +33,6 @@ import {
   selectedCardBg,
   selectedCardBorder,
   surfaceMutedBg,
-  surfaceMutedHoverBg,
   textMutedOnSelectedCard,
   textMutedOnSurface,
   textMutedOnSurfaceMuted,
@@ -40,7 +40,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { issueStatuses, statusLabel, statusText } from "../project/board-model";
+import { issueStatuses, statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import {
@@ -376,61 +376,19 @@ const FILTER_REMOVALS: Record<SearchFilterName, SearchBarFilters> = {
 
 /** The two lists the panel opens inside itself, which `useNestedPanels` keeps one open at a time,
  *  as the Delivery page's facets are. */
-type FilterMenuName = "project" | "status";
-
-/**
- * One value picked from a short list, inside the panel: a control that names the narrowing and
- * a list of plain buttons under it.
- *
- * The list is buttons rather than a `<select>` or a listbox because the bar's own hits are this
- * dialog's `option` rows, and a second set of options inside it would join the rows the arrows
- * walk and the rows a reader is told there are.
- */
-function FilterMenu({
-  emptyText,
-  label,
-  onOpenChange,
-  onPick,
-  open,
-  options,
-}: {
-  emptyText: string;
-  label: string;
-  onOpenChange: (open: boolean) => void;
-  onPick: (value: string) => void;
-  open: boolean;
-  options: readonly { text: string; value: string }[];
-}): ReactNode {
-  return (
-    <PanelTrigger label={label} onOpenChange={onOpenChange} open={open}>
-      {(close) =>
-        options.length === 0 ? (
-          <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>{emptyText}</p>
-        ) : (
-          options.map(({ text, value }) => (
-            <button
-              className={`block min-h-11 w-full rounded-lg px-3 py-2 text-left text-sm ${textPrimaryOnSurface} ${surfaceMutedHoverBg}`}
-              key={value}
-              onClick={() => {
-                close();
-                onPick(value);
-              }}
-              type="button"
-            >
-              {text}
-            </button>
-          ))
-        )
-      }
-    </PanelTrigger>
-  );
-}
+type FilterListName = "project" | "status";
 
 /**
  * The four narrowings the bar offers, in the panel its one trigger opens: a project, an issue
  * status, an author and the day since which the item was last written. Each is a control in the
  * panel while it is unset and a chip in the row once the person has chosen, and pressing that
  * chip drops that narrowing alone and brings its control back.
+ *
+ * The project and the status are each picked from the shared list's single-pick mode
+ * (`MultiSelect`), a text box over the options that narrows them. Its `option` rows join neither
+ * the rows this dialog's arrows walk nor the hits a reader is told there are: the list is
+ * portalled to the body (`AnchoredPanel`), outside the dialog. A pick takes its control out of
+ * the panel, and the panel hands the focus to the control now at its place (`PanelTrigger`).
  *
  * The author is typed rather than picked: an item's author is a person's login or a session id,
  * and no list holds both. It is taken when the person presses Enter or leaves the box, so a
@@ -447,7 +405,7 @@ function SearchNarrowing({
   projects: readonly Project[];
 }): ReactNode {
   const [open, setOpen] = useState(false);
-  const filterMenu = useNestedPanels<FilterMenuName>(open);
+  const filterList = useNestedPanels<FilterListName>(open);
   const [author, setAuthor] = useState("");
   const set = (patch: SearchBarFilters) => onFilters({ ...filters, ...patch });
   const takeAuthor = () => {
@@ -473,24 +431,26 @@ function SearchNarrowing({
       {() => (
         <>
           {filters.project === undefined ? (
-            <FilterMenu
-              {...filterMenu("project")}
-              emptyText="No projects yet"
+            <MultiSelect
+              {...filterList("project")}
+              emptyMessage={projects.length === 0 ? "No projects yet" : "No project matches that."}
               label="Project"
+              mode="single"
               onPick={(project) => set({ project })}
-              options={projects.map((project) => ({ text: project.key, value: project.key }))}
+              options={projects.map((project) => project.key)}
+              searchLabel="Search projects"
             />
           ) : null}
           {filters.status === undefined ? (
-            <FilterMenu
-              {...filterMenu("status")}
-              emptyText="No statuses"
+            <MultiSelect
+              {...filterList("status")}
+              emptyMessage="No status matches that."
               label="Status"
+              mode="single"
               onPick={(status) => set({ status })}
-              options={issueStatuses.map((status) => ({
-                text: statusLabel(status),
-                value: status,
-              }))}
+              optionLabel={statusText}
+              options={issueStatuses}
+              searchLabel="Search statuses"
             />
           ) : null}
           {filters.author === undefined ? (

@@ -11,7 +11,7 @@ import (
 
 // writeTitledEvent writes one event of a session on an issue, under a title that names the issue
 // titled, which need not be the issue the event is on. A session's newest title decides which
-// issue every event of that session works (legion.PhaseWork), so an event written here under
+// issue every event of that session works (legion.PhaseWorkKeys), so an event written here under
 // another issue's title is how a role session takes its phase work with it. writeRoleEvent
 // (stale_row_test.go) is the same write with the title always naming the issue written on.
 //

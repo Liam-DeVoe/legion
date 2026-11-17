@@ -1,6 +1,7 @@
 package legion
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -137,18 +138,6 @@ const (
 	PhaseHeld           = "held"
 )
 
-// MergerPhases are the daemon's three phases the merger works, in the order the workflow runs
-// them. Every reader groups them as one — the board's Merging column (api/legion_board.go), the
-// merger's bar of metric 2, the word a table names a phase by (`merging`) and the send-back out
-// of the merger's phase (legion/metrics/compute.go) — so the grouping is declared here, beside
-// the phases themselves, and not again in each of them.
-var MergerPhases = []string{PhaseRetro, PhaseMerging, PhaseAwaitingMerge}
-
-// IsMergerPhase is whether the daemon's phase is one the merger works (MergerPhases).
-func IsMergerPhase(phase string) bool {
-	return slices.Contains(MergerPhases, phase)
-}
-
 // JSONString is a JSON text's string value, or "" for a null, a number, or anything else: an
 // observation's value is whatever the daemon sent, so a reader of one names what it expects
 // rather than trusting the shape.
@@ -174,17 +163,20 @@ type Observation struct {
 }
 
 // Observations is every observed field of every issue the read carries, by issue key and then by
-// field, so two reads of one state produce one list. The project's own three come first, under
-// AdmissionKey: the admission block, the settings the daemon reports and where each came from,
-// none of which belongs to an issue.
+// field, so two reads of one state produce one list. The project's own two come first, under
+// AdmissionKey: the admission block and the settings the daemon reports, neither of which belongs
+// to an issue.
 //
 // Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
 // slot released or a wait answered is a change like any other; a first `null` writes no row
 // (store.go's insert). A claim is observed for each role the read names — the architect and each
-// worker — and a tree only for an issue the daemon named one for, since a field the daemon does
-// not name has not changed: it is simply not this daemon's. The issue's status and its pull
-// request are not observed, since neither the board nor the metrics reads either: the metrics
-// read an issue's status from Dispatch's own events (metrics' readStatusMarks).
+// worker — and a tree only for an issue the daemon named one for. A field this list does not
+// carry is one the read no longer holds — an issue gone from the daemon's state, a role's claim
+// gone from an issue, a tree the daemon stopped naming — and the store writes it `null` where its
+// newest row holds a value (recordObservations), so the newest rows are this read's and nothing
+// older. The issue's status and its pull request are not observed, since neither the board nor
+// the metrics reads either: the metrics read an issue's status from Dispatch's own events
+// (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
 	// The three fields every issue carries and one claim each, and the project's two.
@@ -227,11 +219,45 @@ func (s State) Observations() []Observation {
 
 // encodeValue is value as the jsonb column holds it: its JSON, or `null` for a value that does not
 // encode, since a column that takes no half-written value is better left saying the read found
-// nothing than refusing every other field of the issue.
+// nothing than refusing every other field of the issue. A NUL in any of its strings is written as
+// U+FFFD (withoutNUL), which jsonb takes.
 func encodeValue(value any) json.RawMessage {
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return json.RawMessage("null")
+	}
+	return withoutNUL(encoded)
+}
+
+// nulEscape is how a JSON text writes the NUL character: valid JSON, and the one escape of a
+// string the daemon's Go encoder can write that Postgres's jsonb refuses ("unsupported Unicode
+// escape sequence", SQLSTATE 22P05). A read's observations go in one statement, so a wait whose
+// detail carries one would fail every observation of the project at every read.
+var nulEscape = []byte(`\u0000`)
+
+// replacementEscape is U+FFFD, the character that stands for one that cannot be represented,
+// written as an escape as long as nulEscape, so the rewrite is in place.
+var replacementEscape = []byte(`\ufffd`)
+
+// withoutNUL rewrites every NUL escape of encoded, in a key or a value, as U+FFFD, in place:
+// encoded is json.Marshal's own fresh buffer. A backslash in valid JSON only ever starts an escape
+// inside a string, so stepping over each escape whole tells the NUL escape from an escaped
+// backslash followed by `u0000`, which is six characters of text and no NUL.
+func withoutNUL(encoded []byte) []byte {
+	if !bytes.Contains(encoded, nulEscape) {
+		return encoded
+	}
+	for index := 0; index < len(encoded); index++ {
+		if encoded[index] != '\\' {
+			continue
+		}
+		if bytes.HasPrefix(encoded[index:], nulEscape) {
+			copy(encoded[index:], replacementEscape)
+			index += len(nulEscape) - 1
+			continue
+		}
+		// The escaped character, which may itself be a backslash.
+		index++
 	}
 	return encoded
 }

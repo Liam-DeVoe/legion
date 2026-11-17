@@ -1307,7 +1307,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 
     await openFilters(user);
     await user.click(screen.getByRole("button", { name: "Status" }));
-    await user.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("option", { name: "In progress" }));
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
         "astrolabe",
@@ -1354,7 +1354,7 @@ test("a project picked in the panel narrows the search and reads back as its chi
     await searchFor(user, "astrolabe");
     await openFilters(user);
     await user.click(await screen.findByRole("button", { name: "Project" }));
-    await user.click(await screen.findByRole("button", { name: "INFRA" }));
+    await user.click(await screen.findByRole("option", { name: "INFRA" }));
 
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
@@ -1457,10 +1457,10 @@ test("after Shift+Tab out of the Project list, Escape closes the panel, and the 
   try {
     await openFilters(user);
     await user.click(await screen.findByRole("button", { name: "Project" }));
-    const infra = await screen.findByRole("button", { name: "INFRA" });
-    act(() => infra.focus());
+    const box = await screen.findByRole("combobox", { name: "Search projects" });
+    act(() => box.focus());
     await user.tab({ shift: true });
-    expect(screen.queryByRole("dialog", { name: "Project" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
     expect(screen.getByRole("button", { name: "Project" })).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: "Filter" })).toBeNull();

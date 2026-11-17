@@ -941,7 +941,7 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
 // runJobsFailedForRunsQuery is listRunJobsFailedForRuns' read: each run's failed jobs not named
-// $3, through delivery_run_jobs_failed (migration 20261114154233), the partial index of the failed
+// $3, through delivery_run_jobs_failed (migration 20261117100022), the partial index of the failed
 // jobs alone, keyed by the run. `name <> all($3)` leaves a named job that failed to the read by
 // name (runJobsNamedForRunsQuery), so the two answer no job in common. The failure is written
 // into the statement, not bound, so the planner proves the index's predicate from the statement
@@ -1115,12 +1115,16 @@ var windowApplyRunsCreated = runCreatedAt + ` >= $2 and ` + runCreatedAt + ` <= 
 			` + firstShipCompletion("$1", "$4", "$5", ">= $3") + `
 		), 'infinity')`
 
+// windowApplyRunsWhere is the filter of a window's apply runs over the alias r: the deploy runs on
+// main of $1 created as windowApplyRunsCreated says.
+var windowApplyRunsWhere = `r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated
+
 // windowApplyRunsQuery is listWindowRuns' read of a window's apply runs alone, each flagged as an
 // apply run and as no deploy of the window, oldest creation first.
 var windowApplyRunsQuery = `
 		select ` + RunColumns + `, true, false
 		from delivery_runs r
-		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+		where ` + windowApplyRunsWhere + `
 		order by ` + runCreatedAt + `, r.run_id
 		limit $6`
 
@@ -1133,14 +1137,14 @@ var windowRunsQuery = `
 		select ` + RunColumns + `, applies, started from (
 			select ` + RunColumns + `, true as applies, r.started_at >= $2 and r.started_at < $3 as started
 			from delivery_runs r
-			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and ` + windowApplyRunsCreated + `
+			where ` + windowApplyRunsWhere + `
 			union all
 			select ` + RunColumns + `, ` + runCreatedAt + ` >= $2, true
 			from delivery_runs r
 			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.started_at >= $2 and r.started_at < $3
 				and not (` + windowApplyRunsCreated + `)
-		) runs
-		order by coalesce(created_at, started_at), run_id
+		) r
+		order by ` + runCreatedAt + `, r.run_id
 		limit $6`
 
 // listWindowRuns lists the apply runs of [from, to) of the deploy repository repo, oldest creation
@@ -1301,7 +1305,7 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 }
 
 // openP0KeysQuery is OpenP0Keys' read. Its clauses are issues_open_p0's predicate (migration
-// 20261113082158), so the planner proves the index from them and reads the whole of that index,
+// 20261117100010), so the planner proves the index from them and reads the whole of that index,
 // which holds the open P0 issues alone, rather than scanning every issue of every project.
 const openP0KeysQuery = `select key from issues where priority = 0 and status <> 'done'`
 

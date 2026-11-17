@@ -307,7 +307,8 @@ func TestTheRequiredMethodsSayWhatTheSpecRequires(t *testing.T) {
 		},
 		SlugLegionIdleTime: {
 			"It is not the idle segment of phase time", "The issue holds its own slot",
-			"is not `working`. No claim counts as not working", "merger: `retro`, `merging` and `awaiting_merge`",
+			"is not `working`. No claim counts as not working", "implementer: `implementing` and `retro`",
+			"merger: `merging` and `awaiting_merge`",
 			"before that observation reads \"no data\"",
 		},
 	} {

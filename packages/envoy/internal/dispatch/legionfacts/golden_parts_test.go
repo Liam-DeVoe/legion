@@ -16,10 +16,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// goldenPartsFile is the per-issue parts the base head's window aggregation (metrics.Compute,
-// since deleted) took from each finished issue, recorded before the parts were split out of it
-// (legion/metrics/golden_record_test.go, deleted with it: once the split landed it would have
-// recorded the new code's answer and stopped being the oracle).
+// goldenPartsFile is the per-issue parts the base's window aggregation (metrics.Compute, which
+// this branch deleted) takes from each finished issue: 89e7e83f's answers, recorded on a checkout
+// of that base head with the seeder (legion/legiontest) of 02a7b3c6 and the recorder
+// legion/metrics/golden_record_test.go of 8a78cf55, which this branch has since deleted. They were
+// 02a7b3c6's answers until the base changed its rules on purpose (8beac41a07, 687c7048d5,
+// 2eed8f979e, 22bd759ecb; the evals package's legion_golden_test.go names them), so the oracle is
+// the base's own code over the same history.
 var goldenPartsFile = filepath.Join("..", "legion", "metrics", "testdata", "golden_issue_parts.json")
 
 // goldenParts is that file: the history it was recorded over and each finished issue's parts, in

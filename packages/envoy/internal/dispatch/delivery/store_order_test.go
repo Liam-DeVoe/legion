@@ -60,8 +60,10 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 			t.Fatalf("write run %d's jobs %v: %v", runID, names, err)
 		}
 	}
-	for _, id := range runs {
-		if err := UpsertRun(ctx, pool, changeTestRun(id, DeliveryRunKindDeploy, earlier, earlier)); err != nil {
+	listedRuns := make([]DeliveryRun, len(runs))
+	for i, id := range runs {
+		listedRuns[i] = changeTestRun(id, DeliveryRunKindDeploy, earlier, earlier)
+		if err := UpsertRun(ctx, pool, listedRuns[i]); err != nil {
 			t.Fatalf("UpsertRun %d: %v", id, err)
 		}
 		write(id, listing)
@@ -105,10 +107,6 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 			failed, err := listRunJobsFailedForRuns(ctx, planned, "acme/widgets", runs, timelineNames)
 			if err != nil {
 				t.Fatalf("listRunJobsFailedForRuns: %v", err)
-			}
-			listedRuns := make([]DeliveryRun, len(runs))
-			for i, id := range runs {
-				listedRuns[i] = DeliveryRun{RunID: id}
 			}
 			namedAndFailed := namedAndFailedJobs(listedRuns, timelineNamed, failed)
 			for _, id := range runs {

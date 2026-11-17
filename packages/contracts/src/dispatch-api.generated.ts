@@ -2219,6 +2219,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/near-copy-checks": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description List one project's near-copy gate answers, one row for each create the gate answered (an external create runs no gate and has none), recorded when the create was refused or once it was written: the rows of ?project= (required; 400 INVALID_PROJECT when it is not a key) within [from, to) (RFC3339, each optional; 400 INVALID_QUERY when from is not before to), oldest first, at most ?limit= (1 to 1000, default 1000), after the row whose id ?after= names (400 INVALID_QUERY when it is no row of the project). A window should end some time before now: a row written in its create's transaction holds that transaction's start as created_at and is seen only once the transaction commits, so a reader that pages up to now and resumes with ?after= can miss it. {project, from, to} echo the query (null when absent), checks are the rows, and next_after is the id to pass as ?after= for the next page, null on the last. A row is {id, created_at, project, actor_kind, actor_id, outcome, reason, force, title, spec_sha256, parent, issue, candidates, refuse_score, nudge_score, build_commit}, with no spec: GET /api/v1/near-copy-checks/{id} reads one row with it. outcome is refused (the gate refused it and nothing was written; every 409 POSSIBLE_DUPLICATE has this row, written before the answer), forced (written past a refusal with force), nudged (written, its closest open issue named as a likely duplicate), passed (written with nothing named) or not_made (no check that could stop the create was made, and it went in unchecked); reason is bound, failed or unrecorded for not_made and null otherwise; force is whether the create asked for it; spec_sha256 is the sha256 of the spec as sent, on every row; issue is the key written, null for a refusal; candidates are the issues the gate read at or above nudge_score, at most 5, best first, each {key, title, score}; refuse_score and nudge_score are the build's bars and build_commit the commit it was built from, null for an unstamped build. A refusal is answered only once its row is known to be written: otherwise it refuses nothing, and the create goes in as not_made, reason unrecorded, writing its row in its own transaction. The row of every other create that went in is written after the commit, on a context of its own bounded to 1s, and tried once more in the background for up to 30s when a timeout or a lock stopped it, so one whose row still could not be written has none and is otherwise unchanged. */
+    get: operations["getApiV1NearCopyChecks"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/near-copy-checks/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One near-copy gate answer by id: the row GET /api/v1/near-copy-checks lists, with spec, the spec as sent, on a refused row alone (absent on every other, whose issue holds it; empty for a refused create that sent none); 404 NEAR_COPY_CHECK_NOT_FOUND when there is none, 400 NEAR_COPY_CHECK_ID_INPUT for an id that is not a uuid. */
+    get: operations["getApiV1NearCopyChecksById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/priorities": {
     parameters: {
       query?: never;
@@ -2675,7 +2709,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue the board does not show being served by an eval's items route alone; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 404 NOT_FOUND for a project that does not exist. */
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon and the stored per-issue Legion facts: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; an issues map carrying, by issue key, the stored facts of every open issue with Legion phase work and of every issue the board shows (each card's issue and every issue of a tree a card stands in), a closed issue the board does not show being served by an eval's items route alone; and a header with the slots in use, the slot cap, the queue's length, the last read of the daemon with its failure, and how fresh the stored facts it serves are. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1ProjectsByKeyLegionBoard"];
     put?: never;
     post?: never;
@@ -2692,12 +2726,12 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 404 NOT_FOUND for a project that does not exist. */
+    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1ProjectsByKeyLegionDaemon"];
-    /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. */
+    /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
     put: operations["putApiV1ProjectsByKeyLegionDaemon"];
     post?: never;
-    /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none. */
+    /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist. */
     delete: operations["deleteApiV1ProjectsByKeyLegionDaemon"];
     options?: never;
     head?: never;
@@ -5741,6 +5775,7 @@ export interface components {
         | "testing"
         | "reviewing"
         | "accepting"
+        | "retro"
         | "merging"
         | "awaiting_person"
         | "held";
@@ -5773,7 +5808,6 @@ export interface components {
       facts_cursor_age_seconds: null | number;
       /** Format: date-time */
       facts_updated_at: null | string;
-      legion_issues: number;
       queue_length: number;
       /** Format: date-time */
       read_at: null | string;
@@ -5991,6 +6025,45 @@ export interface components {
     MyReplySession: {
       id: string;
       name: string;
+    };
+    NearCopyCheck: {
+      actor_id: string;
+      actor_kind: string;
+      build_commit: null | string;
+      candidates: components["schemas"]["NearCopyCheckCandidate"][] | null;
+      /** Format: date-time */
+      created_at: string;
+      force: boolean;
+      id: string;
+      issue: null | string;
+      /** Format: double */
+      nudge_score: number;
+      /** @enum {string} */
+      outcome: "refused" | "forced" | "nudged" | "passed" | "not_made";
+      parent: null | string;
+      project: string;
+      /** @enum {null|string} */
+      reason: "bound" | "failed" | "unrecorded" | null;
+      /** Format: double */
+      refuse_score: number;
+      spec?: string;
+      spec_sha256: string;
+      title: string;
+    };
+    NearCopyCheckCandidate: {
+      key: string;
+      /** Format: double */
+      score: number;
+      title: string;
+    };
+    NearCopyChecksPage: {
+      checks: components["schemas"]["NearCopyCheck"][] | null;
+      /** Format: date-time */
+      from: null | string;
+      next_after: null | string;
+      project: string;
+      /** Format: date-time */
+      to: null | string;
     };
     NewIssueSettings: {
       label: string;
@@ -12415,6 +12488,77 @@ export interface operations {
       };
     };
   };
+  getApiV1NearCopyChecks: {
+    parameters: {
+      query?: {
+        project?: string;
+        from?: string;
+        to?: string;
+        after?: string;
+        limit?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyChecksPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1NearCopyChecksById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["NearCopyCheck"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Priorities: {
     parameters: {
       query?: {
@@ -15012,6 +15156,9 @@ export type MyRepliesResponse = components["schemas"]["MyRepliesResponse"];
 export type MyReplyReply = components["schemas"]["MyReplyReply"];
 export type MyReplyRow = components["schemas"]["MyReplyRow"];
 export type MyReplySession = components["schemas"]["MyReplySession"];
+export type NearCopyCheck = components["schemas"]["NearCopyCheck"];
+export type NearCopyCheckCandidate = components["schemas"]["NearCopyCheckCandidate"];
+export type NearCopyChecksPage = components["schemas"]["NearCopyChecksPage"];
 export type NewIssueSettings = components["schemas"]["NewIssueSettings"];
 export type NewIssueSettingsInput = components["schemas"]["NewIssueSettingsInput"];
 export type OpenAsk = components["schemas"]["OpenAsk"];

@@ -11,6 +11,7 @@ import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime, markedText } from "../../__tests__/document-runtime";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { listOf, textBoxes } from "../../__tests__/list-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -1673,12 +1674,100 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
-    expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
-    await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
+    expect(screen.getAllByRole("button", { name: "Version" })).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Version" }));
+    await user.click(screen.getByRole("option", { name: "Version 1 — Initial design" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
         "/issues/CORE-1/artifacts/design?v=1"
       )
+    );
+  } finally {
+    view.unmount();
+    getArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+/** A document's version, as the issue's document list carries it. */
+function documentVersion(number: number, summary: string | null) {
+  return {
+    authors: [{ id: "alice", kind: "user" as const }],
+    created_at: `2026-09-09T0${number}:00:00Z`,
+    mime: "text/markdown",
+    named: summary !== null,
+    number,
+    sha256: `version-${number}-sha`,
+    size: 10,
+    summary,
+  };
+}
+
+// INFRA-3135, R3: "Every list of options a reader picks from holds a text box that narrows the
+// options." A document page's Version is such a list: its options are the document's versions,
+// which grow as it is written. Opened, it holds a text box of its own, a word typed into it
+// leaves only the versions that match, and a pick opens that version, pushed onto the history,
+// with the focus on the Version control of the page it opened.
+test("a document page's Version list holds a text box that narrows its versions", async () => {
+  const user = userEvent.setup();
+  const documentArtifact = {
+    created_at: "2026-09-09T01:00:00Z",
+    created_by: { id: "alice", kind: "user" as const },
+    id: "artifact-design",
+    issue_key: "CORE-1",
+    project: "CORE",
+    kind: "doc" as const,
+    name: "design.md",
+    primary: false,
+    ref_key: "CORE-1/design",
+    session_id: null,
+    slug: "design",
+    versions: [
+      documentVersion(1, "Initial design"),
+      documentVersion(2, null),
+      documentVersion(3, "Settled design"),
+    ],
+  };
+  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, documentArtifact] });
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...documentArtifact });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Design",
+    version: 3,
+    token: "sha256:design",
+  });
+  const view = renderIssuePage("/issues/CORE-1/artifacts/design");
+
+  try {
+    await screen.findByRole("heading", { name: "design.md" });
+    const before = new Set(textBoxes());
+    await user.click(screen.getByLabelText("Version"));
+    await waitFor(() =>
+      expect(
+        screen.queryAllByRole("option", { name: /^Version 1 — Initial design$/ }).length
+      ).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Version list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    await user.type(own[0] as HTMLElement, "settled");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^(Current|Version 1\b)/ }),
+        `"settled" leaves Current and Version 1 in the Version list`
+      ).toHaveLength(0)
+    );
+    await user.click(within(list).getByRole("option", { name: "Version 3 — Settled design" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        "/issues/CORE-1/artifacts/design?v=3"
+      )
+    );
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Version", description: "Version 3 — Settled design" })
+      ).toHaveFocus()
     );
   } finally {
     view.unmount();
@@ -1800,8 +1889,8 @@ test("IssuePage encodes primary-document version selection in the artifact route
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByLabelText("Version");
-    await user.selectOptions(screen.getByLabelText("Version"), "1");
+    await user.click(await screen.findByRole("button", { name: "Version" }));
+    await user.click(screen.getByRole("option", { name: "Version 1 — Initial spec" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
         "/issues/CORE-1/artifacts/spec?v=1"
@@ -1815,7 +1904,72 @@ test("IssuePage encodes primary-document version selection in the artifact route
   }
 });
 
-test("IssuePage renders exactly one Version combobox on the Spec tab", async () => {
+// INFRA-3135, R3, as the issue page's Spec tab draws it: the Spec's Version is a list of the
+// spec's versions, which grow as it is written. Opened, it holds a text box of its own, a word
+// typed into it leaves only the versions that match, and a pick opens that version with the
+// focus on the Version control of the tab row it opened.
+test("the Spec tab's Version list holds a text box that narrows its versions", async () => {
+  const user = userEvent.setup();
+  const primaryArtifact = issue.artifacts[0];
+  if (primaryArtifact === undefined) {
+    throw new Error("IssuePage test fixture needs a primary document.");
+  }
+  const versioned = {
+    ...primaryArtifact,
+    versions: [documentVersion(1, "Initial spec"), documentVersion(2, "Settled spec")],
+  };
+  const restore = stubIssuePage({ ...issue, artifacts: [versioned] });
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...versioned });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Primary",
+    version: 2,
+    token: "sha256:primary",
+  });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    const tabs = await screen.findByTestId("issue-tabs");
+    const before = new Set(textBoxes());
+    await user.click(await within(tabs).findByLabelText("Version"));
+    await waitFor(() =>
+      expect(
+        screen.queryAllByRole("option", { name: /^Version 1 — Initial spec$/ }).length
+      ).toBeGreaterThan(0)
+    );
+    const own = textBoxes().filter((box) => !before.has(box));
+    expect(own, "the Spec's Version list holds no text box of its own").toHaveLength(1);
+    const list = listOf(own[0] as HTMLElement);
+    await user.type(own[0] as HTMLElement, "settled");
+    await waitFor(() =>
+      expect(
+        within(list).queryAllByRole("option", { name: /^(Current version|Version 1\b)/ }),
+        `"settled" leaves Current version and Version 1 in the Spec's Version list`
+      ).toHaveLength(0)
+    );
+    await user.click(within(list).getByRole("option", { name: "Version 2 — Settled spec" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        "/issues/CORE-1/artifacts/spec?v=2"
+      )
+    );
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        within(screen.getByTestId("issue-tabs")).getByRole("button", {
+          name: "Version",
+          description: "Version 2 — Settled spec",
+        })
+      ).toHaveFocus()
+    );
+  } finally {
+    view.unmount();
+    getArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage renders exactly one Version list on the Spec tab", async () => {
   const primaryArtifact = issue.artifacts[0];
   if (primaryArtifact === undefined) {
     throw new Error("IssuePage test fixture needs a primary document.");
@@ -1832,8 +1986,8 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("combobox", { name: "Version" });
-    expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
+    await screen.findByRole("button", { name: "Version" });
+    expect(screen.getAllByRole("button", { name: "Version" })).toHaveLength(1);
     expect(screen.queryByTestId("artifact-header")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1857,14 +2011,14 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
 
   try {
     const tabs = await screen.findByTestId("issue-tabs");
-    expect(within(tabs).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    expect(within(tabs).getByRole("button", { name: "Version" })).not.toBeNull();
     expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
     expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
 
     for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
       await user.click(screen.getByRole("tab", { name: tab }));
       await screen.findByRole("tab", { name: tab, selected: true });
-      expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Version" })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
     }
   } finally {

@@ -32,7 +32,10 @@ const (
 
 // breakdownParts are the parts in the order a page draws them, each with the phases whose hours
 // it holds. Their ids are the board's columns, which the legion package declares
-// (legion.ColumnDesign and the rest), with waiting on children and other beside them.
+// (legion.ColumnDesign and the rest, and legion.PhaseColumns, which they follow), with waiting on
+// children and other beside them: retro is a part of its own, and merging holds merging and
+// awaiting merge alone (dispatch://INFRA-1077's b74df7a79b), so an issue's retro hours are under
+// `retro` and on no merger figure, as retro is on the implementer's bar of metric 2.
 var breakdownParts = []struct {
 	id     string
 	phases []string
@@ -43,7 +46,8 @@ var breakdownParts = []struct {
 	{legion.ColumnTesting, []string{legion.PhaseTesting}},
 	{legion.ColumnReviewing, []string{legion.PhaseReviewing}},
 	{legion.ColumnAccepting, []string{legion.PhaseAccepting}},
-	{legion.ColumnMerging, legion.MergerPhases},
+	{legion.ColumnRetro, []string{legion.PhaseRetro}},
+	{legion.ColumnMerging, []string{legion.PhaseMerging, legion.PhaseAwaitingMerge}},
 	{breakdownPerson, []string{legion.PhaseAwaitingPerson}},
 	{legion.ColumnHeld, []string{legion.PhaseHeld}},
 }

@@ -11,7 +11,7 @@ import (
 )
 
 // eventsSessionTitlesQuery is delivery.ResolveSessionTitles' statement as it read session titles
-// out of events before session_titles (migration 20261113082156) held them, letter for letter. It
+// out of events before session_titles (migration 20261117100008) held them, letter for letter. It
 // is held here rather than built from anything the package ships, so the comparison below asks
 // the old read its own question however the new one changes.
 const eventsSessionTitlesQuery = `
@@ -196,7 +196,7 @@ func requireSameTitles(t *testing.T, what string, stored, old map[string]string)
 	t.Fatalf("%s holds %d titles and the old read of events answers %d; they differ on %v", what, len(stored), len(old), differ)
 }
 
-// The trigger on events (migration 20261113090412) stores, for every session, the title the read
+// The trigger on events (migration 20261117100015) stores, for every session, the title the read
 // of events it replaces answered, as each event is inserted: the newest title a session stamped,
 // none for a session that stamped none or for a person's actor, the first event of an instant on a
 // tie, and the newer of two events whichever was inserted first.
@@ -226,7 +226,7 @@ func TestTheTriggerStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 func TestTheFillStoresTheTitleTheEventsReadAnswered(t *testing.T) {
 	store := migratedTitlesStore(t)
 	ctx := context.Background()
-	// The events below are stored as a database holds them before 20261113090412 applied.
+	// The events below are stored as a database holds them before 20261117100015 applied.
 	if _, err := store.Pool.Exec(ctx, `alter table events disable trigger events_session_title`); err != nil {
 		t.Fatalf("disable the trigger: %v", err)
 	}

@@ -20,7 +20,7 @@ const (
 // seedTitlesIssue writes titlesIssue in deliveryProject and clears its events and the stored
 // titles of sessions, so a run against the database an earlier run left reads only what this test
 // writes: deleting an event takes no title away, since the title is stored where the event was
-// written (migration 20261113090412's trigger).
+// written (migration 20261117100015's trigger).
 func seedTitlesIssue(t *testing.T, ctx context.Context, pool *store.Pool, sessions ...string) {
 	t.Helper()
 	seedDeliveryProject(t, ctx, pool)

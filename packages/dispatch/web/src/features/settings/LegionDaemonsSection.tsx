@@ -2,7 +2,7 @@
 // reads from which daemon. Naming a project's daemon here is what makes Dispatch's sampler read
 // that daemon's `GET /legion/v1/state` once a minute and record what changed, and removing one
 // stops the reading while everything already read stays. No page draws what the sampler records:
-// the board it feeds (`GET /api/v1/projects/{key}/legion/board`) is for a later tree's view.
+// nothing in the dashboard reads the board it feeds (`GET /api/v1/projects/{key}/legion/board`).
 //
 // No route lists every project's daemon, so the section reads each project's
 // `GET /api/v1/projects/{key}/legion/daemon` (`useLegionDaemons`), and a write changes the one
@@ -31,7 +31,6 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { useLegionDaemons } from "../legion/useLegionDaemons";
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
@@ -43,6 +42,7 @@ import {
   settingsTableWrapper,
 } from "./classes";
 import { ProjectSelect } from "./ProjectSelect";
+import { useLegionDaemons } from "./useLegionDaemons";
 
 /** A daemon a person named: the project it serves and the base URL its state is read from. */
 interface DaemonInput {

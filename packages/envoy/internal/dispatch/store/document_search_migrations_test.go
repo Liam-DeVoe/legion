@@ -19,12 +19,12 @@ const (
 	documentSearchBackfill = 20261101182501
 )
 
-// The trigger on events that keeps session_titles (20261113082156) filled, recording each stamped
-// title; 20261113090413 after it creates the one row that stands for the boot's fill of the events
+// The trigger on events that keeps session_titles (20261117100008) filled, recording each stamped
+// title; 20261117100016 after it creates the one row that stands for the boot's fill of the events
 // stored before it (store.FillSessionTitles).
-const sessionTitlesTrigger = 20261113090412
+const sessionTitlesTrigger = 20261117100015
 
-// 20261101182454 and 20261113090412 are each a function and a trigger and nothing else, which is
+// 20261101182454 and 20261117100015 are each a function and a trigger and nothing else, which is
 // what lets them ship: the pre-deploy census refuses any migration that locks a table above its
 // size limit, and each trigger's table is among the largest a deployment holds (artifact_versions
 // is 5.2 GiB in production; events is larger). Neither statement reads a row, so the time the
@@ -80,8 +80,8 @@ func TestTheTriggerMigrationsTouchOnlyWhatTheyMustLock(t *testing.T) {
 		{"20261101182447, the table and its index", "20261101182447_document_search.up.sql", []string{"document_search"}},
 		{"20261101182454, the function and the trigger", "20261101182454_artifact_versions_document_search_trigger.up.sql", []string{"artifact_versions"}},
 		{"20261101182501, the fill's progress row", "20261101182501_document_search_backfill.up.sql", []string{"document_search_backfill"}},
-		{"20261113090412, the function and the trigger", "20261113090412_events_session_titles.up.sql", []string{"events"}},
-		{"20261113090413, the fill's progress row", "20261113090413_session_titles_backfill.up.sql", []string{"session_titles_backfill"}},
+		{"20261117100015, the function and the trigger", "20261117100015_events_session_titles.up.sql", []string{"events"}},
+		{"20261117100016, the fill's progress row", "20261117100016_session_titles_backfill.up.sql", []string{"session_titles_backfill"}},
 	} {
 		t.Run(migration.name, func(t *testing.T) {
 			sql, err := migrationFiles.ReadFile("migrations/" + migration.files)

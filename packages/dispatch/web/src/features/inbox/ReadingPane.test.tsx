@@ -1034,7 +1034,9 @@ test("the column's card registers its hand-on, so the list keeps the row the col
   const { handOnLiveness, view } = renderPane({ ask: row });
 
   try {
-    await user.selectOptions(await screen.findByLabelText("Hand this question to"), "bob");
+    // The list of people is portalled onto the body, so its option is reached from the screen.
+    await user.click(await screen.findByLabelText("Hand this question to"));
+    await user.click(await screen.findByRole("option", { name: /^bob\b/ }));
     await waitFor(() => expect(handAskTo).toHaveBeenCalled());
     // The control sits in the card, not in the head, so the registration reaches the list
     // through the context the Inbox provides rather than through a prop of this column's: the

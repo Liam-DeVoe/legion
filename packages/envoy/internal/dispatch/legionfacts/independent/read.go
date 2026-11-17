@@ -343,7 +343,11 @@ func (p *population) readHandoffs(ctx context.Context, db Querier) error {
 //
 // It takes two more facts from the same rows, each a fact of the project rather than of a
 // window: which issues the daemon reports at all, and the tree root it named for each, which is
-// the newest `tree` row of that issue.
+// the newest `tree` row of that issue. The daemon reports an issue that is in its state or that
+// Dispatch observed a phase of (dispatch://INFRA-1077's spec, "The top issue of a tree", as the
+// base reads it since 2eed8f979e): an issue one of whose fields still holds a value at its newest
+// row, or that has a `phase` row at all. An issue that left the daemon's state has every field
+// written `null`, so it keeps being reported only through a phase Dispatch once observed.
 func (p *population) readObservations(ctx context.Context, db Querier) error {
 	rows, err := db.Query(ctx, `
 		select issue_key, field, value::text, observed_at
@@ -365,7 +369,6 @@ func (p *population) readObservations(ctx context.Context, db Querier) error {
 		if held == nil {
 			continue
 		}
-		held.reported = true
 		held.observed[field] = append(held.observed[field], mark{at: at, value: value})
 		if field == fieldTree {
 			held.tree = jsonString(value)
@@ -374,7 +377,25 @@ func (p *population) readObservations(ctx context.Context, db Querier) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read the observations of %s: %w", p.scope.Project, err)
 	}
+	for _, held := range p.issues {
+		held.reported = reportedByObservations(held.observed)
+	}
 	return nil
+}
+
+// reportedByObservations is whether the daemon reports an issue whose observations, oldest first
+// within each field, are observed: it has a `phase` row, or a field whose newest row holds a
+// value.
+func reportedByObservations(observed map[string][]mark) bool {
+	if len(observed[fieldPhase]) > 0 {
+		return true
+	}
+	for _, marks := range observed {
+		if newest := marks[len(marks)-1].value; newest != "null" {
+			return true
+		}
+	}
+	return false
 }
 
 // jsonString is the string a recorded value holds, and "" for a null, a number or a value of any

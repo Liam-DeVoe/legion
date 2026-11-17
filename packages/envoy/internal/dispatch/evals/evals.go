@@ -30,7 +30,7 @@ import (
 )
 
 // The values the registry's enumerated columns hold, each the set the column's check in
-// 20261113082153_eval_registry.up.sql allows.
+// 20261117100005_eval_registry.up.sql allows.
 const (
 	KindDelivery   = "delivery"
 	KindLegion     = "legion"

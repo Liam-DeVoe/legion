@@ -17,25 +17,25 @@ import (
 // row's content changed, so a reconcile pass that finds nothing new logs none.
 //
 // An issue_facts row holds no repository: Repo carries the project key and Ref the issue key,
-// because a stored Legion fact belongs to a project and an issue (migration 20261111093100). Its
-// TOld and TNew are the issue's closed_at before and after the change (migration 20261116151147),
+// because a stored Legion fact belongs to a project and an issue (migration 20261117100002). Its
+// TOld and TNew are the issue's closed_at before and after the change (migration 20261117100026),
 // since a Legion day row counts an issue on its close day alone: an insert carries TNew alone, a
 // delete TOld alone, and each is nil where the issue was or is open, so a change of an open
 // issue's facts carries neither.
 //
 // The three eval kinds hold none either: Repo carries the project key and Ref the eval id
-// (migrations 20261113082200 to 20261113082202). An eval_readings row is one statement's readings
+// (migrations 20261117100012 to 20261117100014). An eval_readings row is one statement's readings
 // of one eval, spanning their measured_at; an eval_versions row is one new version of a
 // definition or of one of its series and carries no span, since it changes how every window of
 // the eval reads; an eval_days row is one transaction's writes of one eval's day rows, spanning
 // midnight UTC of the first and the last day written.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
-// key (migration 20261113170751). TOld and TNew are the filing's filed_at before and after: an
+// key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
 // insert carries TNew alone, a delete TOld alone.
 //
 // A settings row is a write of the delivery settings, whose Repo is empty, or of a repository's
-// mapping in repo_projects, whose Repo is that repository (migration 20261113170752); Ref, TOld
+// mapping in repo_projects, whose Repo is that repository (migration 20261117100020); Ref, TOld
 // and TNew are empty for both.
 type Change struct {
 	Seq     int64
@@ -71,7 +71,7 @@ const ChangeRetention = 24 * time.Hour
 
 // ChangesChannel is the Postgres notification channel a delivery change announces itself on: the
 // trigger that writes each delivery_changes row (migration 0100, delivery_change_log), the trigger
-// that records each pending row (delivery_change_log_pending, 20261115155339) and the drain that
+// that records each pending row (delivery_change_log_pending, 20261117100023) and the drain that
 // moves pending rows into the log (DrainPending) each send it, and Postgres delivers it at their
 // commit. The Delivery page's live hub and the Legion facts consumer both listen on it, and this
 // package owns the row, so the name is declared here alone, as SettingsChannel is beside the
@@ -120,7 +120,7 @@ const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 // before it.
 //
 // No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261115155339), and the drain moves them into the log in a
+// (delivery_changes_pending, migration 20261117100023), and the drain moves them into the log in a
 // short transaction of its own after they commit.
 func LockChanges(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, lockChangesStatement); err != nil {
@@ -145,7 +145,7 @@ const drainBatch = 250
 // DrainPending moves every committed pending change row (delivery_changes_pending, the outbox the
 // eval and Legion tables' triggers record their changes in) into delivery_changes, and answers how
 // many it moved. It moves them a batch at a time, each batch one statement of its own,
-// delivery_changes_drain (migration 20261115155339), never a statement of a caller's transaction,
+// delivery_changes_drain (migration 20261117100023), never a statement of a caller's transaction,
 // and moves another batch while a whole one moved. So it holds the change log's lock for one
 // batch's statement and its commit at a time, whatever the burst: each batch takes the lock first,
 // before the pending rows it deletes, and moves the lowest pending ids in id order, keeping each

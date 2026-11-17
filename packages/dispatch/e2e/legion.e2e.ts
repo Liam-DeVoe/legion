@@ -1,6 +1,6 @@
-// The Settings page's Legion daemon field (dispatch://INFRA-1077). This pull request ships the
-// data layer and no page that draws a daemon's board, so the one Legion surface a browser drives is
-// the Settings section where a project's daemon is named, listed, refused a bad URL, and removed.
+// The Settings page's Legion daemon field (dispatch://INFRA-1077). No dashboard page draws a
+// daemon's board, so the one Legion surface a browser drives is the Settings section where a
+// project's daemon is named, listed, refused a bad URL, and removed.
 // Every spec is tagged `@legion`, so `--grep @legion` runs this file's work and nothing else.
 //
 // A project's daemon is named by `PUT /api/v1/projects/{key}/legion/daemon` and removed by its
@@ -13,9 +13,9 @@ import { asUser } from "./users";
 
 const DAEMON_URL = "http://legion.acme.internal:9731";
 
-// A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. There is no
-// Legion view for it to bring — this pull request ships none — so the row is the naming itself: a
-// project that named no daemon is given one, and the section lists it.
+// A1/A4: naming a project's daemon on the Settings page, beside the Delivery settings. No Legion
+// view exists for it to bring, so the row is the naming itself: a project that named no daemon is
+// given one, and the section lists it once the page is read again from the server.
 test("the Settings page names a project's Legion daemon @legion", async ({ browser }) => {
   await seedLegionProject();
   const context = await asUser(browser, "alice");
@@ -36,7 +36,9 @@ test("the Settings page names a project's Legion daemon @legion", async ({ brows
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
 
-    // The section lists the daemon the naming stored.
+    // The section lists the daemon the naming stored, as the server reads it back: the section
+    // fills its list before its refetch settles, so only a reload proves what was stored.
+    await page.reload();
     await expect(page.locator("[data-legion-daemons]")).toContainText(DAEMON_URL);
   } finally {
     await context.close();

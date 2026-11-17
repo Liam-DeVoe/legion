@@ -8,10 +8,10 @@ The worked spans are the life of the issue less its parked hours and its hours i
 
 - architect: `design` and `accepting`
 - planner: `planning`
-- implementer: `implementing`
+- implementer: `implementing` and `retro`
 - tester: `testing`
 - reviewer: `reviewing`
-- merger: `retro`, `merging` and `awaiting_merge`
+- merger: `merging` and `awaiting_merge`
 
 `legionfacts` stores the idle hours of each issue by role, by the rules of `legion/metrics`. For each UTC day, `metrics.IdleTimeDay` builds one series for each of the six roles: the idle hours in that role of every issue that finished that day, with a zero where it had none. `metrics.FoldIdleTime` merges a window's days. For each role it answers the hours, the count, the median and the 90th percentile. Each series has its roots cut (`<role>:roots`) and its children cut (`<role>:children`).
 

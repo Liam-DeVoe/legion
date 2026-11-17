@@ -19,8 +19,8 @@ import (
 )
 
 // evalsChange is one delivery_changes row of an eval kind: the eval's project in Repo and the eval
-// in Ref, with the span of moments the write put values in (migrations 20261113082200 to
-// 20261113082202; a version's change carries none).
+// in Ref, with the span of moments the write put values in (migrations 20261117100012 to
+// 20261117100014; a version's change carries none).
 func evalsChange(kind, project, slug string, first, last *time.Time) delivery.Change {
 	return delivery.Change{Seq: 1, Kind: kind, Repo: project, Ref: project + "/" + slug, TOld: first, TNew: last}
 }

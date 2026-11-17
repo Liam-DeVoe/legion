@@ -475,9 +475,8 @@ func searchSource(t *testing.T, files []string, want, with *regexp.Regexp) ([]so
 
 // boardReadPathFiles is every file that holds a function the board's GET runs below the router:
 //
-//   - legion_board.go is the handler, the reads it makes and the body it writes;
-//   - legion_phase_work.go is the one thing the handler keeps between requests, the issues that
-//     carry Legion phase work, which the tree walk reads;
+//   - legion_board.go is the handler, the reads it makes and the body it writes, the read of the
+//     phase work of the issues its tree walk climbs onto among them (readPhaseWork);
 //   - legionfacts/store.go holds Read, the one read of the stored rows;
 //   - legionfacts/close.go and legion/metrics/grow.go are the close of each open part of a row at
 //     the read's own clock (boardCloseFiles), the one computation the read makes;
@@ -488,7 +487,6 @@ func searchSource(t *testing.T, files []string, want, with *regexp.Regexp) ([]so
 // wider than the path rather than narrower.
 var boardReadPathFiles = append([]string{
 	"legion_board.go",
-	"legion_phase_work.go",
 	"../legionfacts/store.go",
 	"../legion/board_rules.go",
 	"../legion/phase_work.go",

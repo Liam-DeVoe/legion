@@ -13,7 +13,7 @@ import (
 
 // issueFactsChange is one delivery_changes row of the stored per-issue Legion facts: the project
 // in Repo and the issue in Ref, with the issue's close before and after the change (migration
-// 20261116151147).
+// 20261117100026).
 func issueFactsChange(project, issue string, closedBefore, closedAfter time.Time) delivery.Change {
 	return delivery.Change{Seq: 1, Kind: "issue_facts", Repo: project, Ref: issue, TOld: &closedBefore, TNew: &closedAfter}
 }
@@ -85,14 +85,15 @@ func TestAnIssueFactsChangeTouchesTheLegionBoardOfItsProject(t *testing.T) {
 		}
 	}
 
-	// The board still judges no freshness: the worker reads classes.delivery for that
-	// (delivery_live_hub_worker.go), this change moves no delivery row, and the flag stays off,
-	// so the verdict stays the one the delivery views' own reads set.
-	if deliveryLiveKinds[legionBoardView].delivery {
-		t.Error("the Legion board reads no delivery row, so it must judge no freshness")
+	// The board still judges no freshness: the worker reads classes.reads for that
+	// (delivery_live_hub_worker.go), this change moves no delivery row, and the board reads the
+	// Legion source and not the delivery rows, so the verdict stays the one the delivery views'
+	// own reads set.
+	if reads := deliveryLiveKinds[legionBoardView].reads; reads != viewReadsLegion {
+		t.Errorf("the Legion board reads %d, want viewReadsLegion: it reads no delivery row, so it must judge no freshness", reads)
 	}
-	t.Logf("a change of %s in %s: %d of %d views woken, %d left, Legion board delivery flag %t",
-		change.Ref, change.Repo, woken, len(tests), left, deliveryLiveKinds[legionBoardView].delivery)
+	t.Logf("a change of %s in %s: %d of %d views woken, %d left, Legion board reads %d",
+		change.Ref, change.Repo, woken, len(tests), left, deliveryLiveKinds[legionBoardView].reads)
 }
 
 // writeIssueFacts writes one issue's stored Legion facts, in the tree of root, whose work falls
@@ -209,7 +210,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 // the 210 issues of the facts' own rig that carry Legion phase work. A build's first whole read
 // rewrites every row whose values or writer moved, as the newer build of a roll rewrites every
 // row the older wrote, and the trigger logs one delivery change for each (migration
-// 20261111093100).
+// 20261117100002).
 const batchRows = 210
 
 // writeFactsBatch writes count rows of the project in one write, as one whole read does, giving

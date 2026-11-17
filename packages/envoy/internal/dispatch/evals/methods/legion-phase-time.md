@@ -2,10 +2,10 @@
 
 - architect: `design` and `accepting`
 - planner: `planning`
-- implementer: `implementing`
+- implementer: `implementing` and `retro`
 - tester: `testing`
 - reviewer: `reviewing`
-- merger: `retro`, `merging` and `awaiting_merge`
+- merger: `merging` and `awaiting_merge`
 - no role: `awaiting_person` and `held`
 
 The hours in the queue are on no bar. So the seven bars of an issue add up to its work time, and this eval and legion-work-time agree.

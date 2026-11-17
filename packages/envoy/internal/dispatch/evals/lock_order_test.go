@@ -16,7 +16,7 @@ import (
 )
 
 // The registry's writes and the refresher's record their changes in the change log's outbox
-// (delivery_changes_pending, migration 20261115155340) and take no change log lock: each write's
+// (delivery_changes_pending, migration 20261117100024) and take no change log lock: each write's
 // drain moves them into the log in a short transaction of its own after it commits
 // (delivery.DrainPending). Before that, each took the change log's lock (6900) in a trigger in the
 // middle of its transaction, and then each took it first, before any other lock; in the first

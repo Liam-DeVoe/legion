@@ -161,7 +161,7 @@ func legionProjects(ctx context.Context, q Querier, self process, lost bool) (ma
 //
 // It is how the running build learns that a roll has ended, with no timer. While two builds run,
 // the older one can still write rows by its own rule, and every row carries the build that wrote
-// it (written_build, migration 20261116151147). A row the older build's rule computes none for is
+// it (written_build, migration 20261117100026). A row the older build's rule computes none for is
 // not deleted but stamped with the older build (ProjectWrite.Yielded), so it is found here too.
 // Each of the older build's writes and stamps logs an issue_facts change, whose drain notifies
 // the delivery change channel and so wakes the newer process (Deps.Deliveries), and that pass
@@ -199,7 +199,7 @@ const otherBuildsRowsQuery = `
 // issue is lives in the build as the phase-work rule does, so a filing the older build of a roll
 // wrote or stamped (FilingsWrite.Yielded) is one the newer build decides again, and once the
 // older process has stopped no filing is left that it wrote. It reads issue_filings_written_build
-// (migration 20261116151147) as otherBuildsRows reads the rows' index.
+// (migration 20261117100026) as otherBuildsRows reads the rows' index.
 func otherBuildsFilings(ctx context.Context, q Querier, build string) (map[string][]string, error) {
 	return readOtherBuilds(ctx, q, "stored filings", otherBuildsFilingsQuery, build)
 }
@@ -305,7 +305,7 @@ func filingsToCompute(ctx context.Context, q Querier, project string, keys []str
 
 // storedFilingsOfQuery is filingsToCompute's read of the stored filings of a project whose filed
 // issue or filer's issue is among $2: the filed issue through the primary key, and the filer's
-// issue through issue_filings_filer (migration 20261113082155), whose predicate (a filer issue
+// issue through issue_filings_filer (migration 20261117100007), whose predicate (a filer issue
 // that is not the empty string) the statement carries, since `filer_issue = any($2)` implies it
 // only for the values it runs with and pgx's cached statement settles on a generic plan.
 const storedFilingsOfQuery = `

@@ -30,8 +30,10 @@
 -- - The index is the board's one read: the newest row of a project.
 --
 -- legion_observations is append-only, one row per value a read found changed: the sampler writes a
--- row only where the value differs from the newest row that project, issue and field already hold,
--- so a minute in which nothing moved writes nothing. The fields are an issue's `phase`, `slot`,
+-- row where the value differs from the newest row that project, issue and field already hold, and
+-- a `null` row for each field whose newest row holds a value and that a good read no longer
+-- carries, so a minute in which nothing moved writes nothing, and an issue that left the daemon's
+-- state reads as absent from the read it left at. The fields are an issue's `phase`, `slot`,
 -- `waiting_on`, `tree` and `claim.<role>`, and the project's own `admission` and `settings`
 -- (internal/dispatch/legion/state.go).
 --

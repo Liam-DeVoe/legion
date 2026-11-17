@@ -32,7 +32,7 @@ const (
 var sessionTitlePlanSessions = []string{titledPlanSession, untitledPlanSession, unknownPlanSession}
 
 // newSessionTitlesPlanFixture writes the events the read answers from, through the trigger on
-// events that records each stamped title (migration 20261113090412): a session whose only title
+// events that records each stamped title (migration 20261117100015): a session whose only title
 // is on an older event, a session whose every event carries none, a user actor sharing the titled
 // session's id (no session's title, which the trigger must not record), and a session nobody asks
 // about. seedTitlesIssue clears the issue's events and the listed sessions' titles first, so a

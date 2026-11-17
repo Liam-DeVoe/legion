@@ -70,7 +70,7 @@ const (
 var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_observations", "delivery_pull_requests", "legion_settings"}
 
 // BaseLacks are the tables of this head's Legion evals that the base head 02a7b3c6 does not have
-// (its migrations end at 20261112193821): the filings, the session titles, the registry and its
+// (its migrations end at 20261117100004): the filings, the session titles, the registry and its
 // day rows. This head derives every one of them from LegionTables' rows (the session titles by a
 // trigger on events, the rest by the server's facts consumer and refresher), so the fixture writes
 // none of them in any mode, and a database holding eval_days is this head's.

@@ -19,7 +19,7 @@ import (
 )
 
 // The eval writes record their change rows in the change log's outbox (delivery_changes_pending,
-// migrations 20261115155339 and 20261115155340) and take no change log lock, and each write's own
+// migrations 20261117100023 and 20261117100024) and take no change log lock, and each write's own
 // drain moves them into the log in a short transaction of its own after it commits
 // (delivery.DrainPending). R19 holds every write to at most 100 ms of the lock at the size of a
 // correction of 1,400 readings, and an intake statement behind eval writes to a median wait of at

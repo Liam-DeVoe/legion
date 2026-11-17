@@ -22,12 +22,13 @@ type MergedRows struct {
 	// ListPullRequestsInWindow lists them.
 	PullRequests []DeliveryPullRequest
 	// ApplyRuns is the deploy runs on main of the deploy repository that GitHub created at or
-	// after from, oldest creation first, unbounded past to: a pull request merged just before to
-	// may first ship after it, so bounding the read to [from, to) would read it as waiting.
-	// ReadMergedRows reads every such run (listRuns); ReadWindowRows those created by the bound
-	// past which no run ships a pull request first (windowApplyRunsCreated). A production job on
-	// another branch ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged
-	// by (Production.JudgedJobNames), which judge each run as its every job would, and with them,
+	// after from, oldest creation first, not cut at to: a pull request merged just before to may
+	// first ship after it, so bounding the read to [from, to) would read it as waiting.
+	// ReadMergedRows reads every such run (listRuns); ReadWindowRows every one created up to the
+	// bound past which no run ships a pull request merged before to first, with no bound for a
+	// window ending at the present (windowApplyRunsCreated). A production job on another branch
+	// ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged by
+	// (Production.JudgedJobNames), which judge each run as its every job would, and with them,
 	// for the timeline, each of the run's jobs that failed.
 	ApplyRuns []DeliveryRun
 	ApplyJobs map[int64][]DeliveryRunJob
@@ -101,9 +102,10 @@ func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 // (listWindowRuns) and the production jobs of both in one more, where reading each list and its
 // jobs apart read the window's production jobs twice, three times the window's for the measures
 // of a compare range, whose apply runs reached to the present (dispatch://INFRA-2916, R8). The apply
-// runs are those a pull request of the window or of Deploys.Earlier can ship first with
-// (windowApplyRunsCreated), so every pull request's deploy is the one ReadMergedRows' runs give it.
-// The pull requests are read side by side with the runs and their jobs.
+// runs stop at the bound past which no run ships first a pull request of the window or of
+// Deploys.Earlier (windowApplyRunsCreated), so every pull request's deploy is the one
+// ReadMergedRows' runs give it. The pull requests are read side by side with the runs and their
+// jobs.
 func ReadWindowRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs, deploys bool) (MergedRows, Deploys, error) {
 	var rows MergedRows
 	var window Deploys
