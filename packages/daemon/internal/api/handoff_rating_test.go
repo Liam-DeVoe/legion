@@ -274,3 +274,29 @@ func TestAnOldPluginOutsideATurnIsRefusedStale(t *testing.T) {
 		t.Fatalf("facts after the refusal = %#v, want none applied", got)
 	}
 }
+
+// The completion that ends the retro, rated, is the one request of the completion route a plugin
+// at PlanRatingContract must send: Go writes it from HandoffCompleteRequest (`-update`), and
+// `packages/contracts/src/legion-api.test.ts` parses it with LegionHandoffCompleteRequest, a strict
+// schema, so a JSON name of the rating Go writes and the contract does not read, or the reverse,
+// fails there. Every other Go test of the rating marshals this same struct, so a renamed tag moves
+// both ends of it at once. The rating and its reason are values no default and no other field of
+// the body holds.
+func TestHandoffCompleteRequestRatedGolden(t *testing.T) {
+	golden(t, "handoff-complete-request-rated.json", HandoffCompleteRequest{
+		GrantID: "grant-for-one-command", Summary: "Retro done.", Commit: "c0ffee5a1d2b3c4d5e6f708192a3b4c5d6e7f809",
+		PlanRating: new(3), PlanReason: "The tester found the bug the plan had left out.",
+	})
+}
+
+// The bounds of a rating of the plan, as planRatingRefusal holds a completion to them: the scale
+// (planRatingLeast, planRatingMost) and the most characters of the reason (planReasonMax). Go
+// writes them (`-update`), and `packages/contracts/src/legion-api.test.ts` holds the contract's own
+// bounds, which the plugin's tool reads, equal to the file.
+func TestPlanRatingGolden(t *testing.T) {
+	golden(t, "plan-rating.json", struct {
+		Least      int `json:"least"`
+		Most       int `json:"most"`
+		ReasonMost int `json:"reasonMost"`
+	}{Least: planRatingLeast, Most: planRatingMost, ReasonMost: planReasonMax})
+}

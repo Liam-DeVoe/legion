@@ -74,10 +74,20 @@ type HandoffCompleteRequest struct {
 // serves its claim (staleClaim), completes with no rating.
 const PlanRatingContract = 155
 
-// planReasonMax is the most characters, counted as Unicode code points, a rating's reason holds:
-// Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer one taken
-// here could never be written there.
-const planReasonMax = 2000
+// The bounds of a rating of the plan. TestPlanRatingGolden writes the three to
+// `packages/contracts/fixtures/daemon-api/plan-rating.json`, and `packages/contracts`'s
+// legion-api.test.ts holds the contract's own bounds equal to that file, so a bound moved on one
+// side alone fails a test on the other.
+const (
+	// planRatingLeast and planRatingMost are the scale: 1, the plan cost the work, to 5, the plan
+	// fit the work.
+	planRatingLeast = 1
+	planRatingMost  = 5
+	// planReasonMax is the most characters, counted as Unicode code points, a rating's reason
+	// holds: Dispatch's record of the retro takes a reason of one to 2,000 characters, so a longer
+	// one taken here could never be written there.
+	planReasonMax = 2000
+)
 
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
@@ -441,7 +451,7 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 			"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 	case !named && endsRetro && pluginContract >= PlanRatingContract:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
-			"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from 1 (the plan cost the work) to 5 (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue)}
+			"this completion ends the retro of %s and carries no rating of the plan: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", issue, planRatingLeast, planRatingMost)}
 	case !named:
 		return nil
 	}
@@ -449,8 +459,8 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 	switch length := utf8.RuneCountInString(req.PlanReason); {
 	case req.PlanRating == nil:
 		wrong = "planReason comes with no planRating"
-	case *req.PlanRating < 1 || *req.PlanRating > 5:
-		wrong = fmt.Sprintf("planRating %d is outside 1 to 5", *req.PlanRating)
+	case *req.PlanRating < planRatingLeast || *req.PlanRating > planRatingMost:
+		wrong = fmt.Sprintf("planRating %d is outside %d to %d", *req.PlanRating, planRatingLeast, planRatingMost)
 	case req.PlanReason == "":
 		wrong = fmt.Sprintf("planRating %d comes with no planReason", *req.PlanRating)
 	case strings.TrimSpace(req.PlanReason) == "":
@@ -461,7 +471,7 @@ func planRatingRefusal(req HandoffCompleteRequest, endsRetro bool, pluginContrac
 		return nil
 	}
 	return &intake.Refusal{Status: http.StatusBadRequest, Code: "PLAN_RATING_INPUT", Message: fmt.Sprintf(
-		"%s: a rating of the plan is a whole number from 1 to 5 in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planReasonMax)}
+		"%s: a rating of the plan is a whole number from %d to %d in planRating with why in planReason, one to %d characters, the two together; nothing was recorded", wrong, planRatingLeast, planRatingMost, planReasonMax)}
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
