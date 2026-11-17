@@ -2396,3 +2396,214 @@ test("the key card and the palette offer the approval chip's two keys while the 
     await expect(chip, "Request changes did not give the focus back to the chip").toBeFocused();
   });
 });
+
+/** Where the focus is, as a reader of a screen reader hears it: `body` when no control holds it,
+ *  and otherwise the focused element's tag and name, with whether the header holds it. */
+function focusNow(page: Page): Promise<{ inHeader: boolean; onBody: boolean; what: string }> {
+  return page.evaluate(() => {
+    const active = document.activeElement;
+    const header = document.querySelector("[data-issue-page] header[data-issue-header]");
+    if (!(active instanceof HTMLElement) || active === document.body) {
+      return { inHeader: false, onBody: true, what: "body" };
+    }
+    const name = (active.getAttribute("aria-label") ?? active.textContent ?? "").trim();
+    return {
+      inHeader: header?.contains(active) === true,
+      onBody: false,
+      what: `${active.tagName.toLowerCase()} ${name.slice(0, 40)}`,
+    };
+  });
+}
+
+// The palette's Close issue, run with the focus on the status, the priority or the assignee,
+// closes the issue, and the close then refuses input on that control. A keyboard reader who ran
+// it keeps a focus in the header rather than on the page's body, from which the next Tab starts
+// again at the top of the page.
+test("the palette's Close issue, run from a header control, leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const key = seeded.key;
+    const header = issueHeader(page);
+    for (const [name, control] of [
+      ["the status", header.getByRole("combobox", { name: "Status" })],
+      ["the priority", header.getByRole("combobox", { name: `Priority of ${key}` })],
+      ["the assignee", header.getByRole("combobox", { name: `Assignee of ${key}` })],
+    ] as const) {
+      await patchIssue(key, { status: "in_progress" });
+      await gotoIssue(page, `/issues/${key}`);
+      await expectHeaderDrawn(page);
+      await control.focus();
+      await expect(control).toBeFocused();
+      await page.keyboard.press("Control+k");
+      const palette = page.getByRole("dialog", { name: "Search" });
+      await expect(palette, "Control+k did not open the palette").toBeVisible();
+      await palette
+        .getByRole("group", { name: "Actions" })
+        .getByRole("option", { name: "Close issue" })
+        .click();
+      await expect(palette, "the palette's row did not close the palette").toHaveCount(0);
+      await expect
+        .poll(async () => (await getIssue(key)).status, {
+          message: `the palette's Close issue from ${name} did not close the issue`,
+        })
+        .toBe("done");
+      await expect(header.getByText(STATE_LINES.closed, { exact: true })).toBeVisible();
+      await framesDrawn(page, 2);
+      const focus = await focusNow(page);
+      expect(
+        focus.onBody || !focus.inHeader,
+        `the palette's Close issue from ${name} left the focus on ${focus.what}`
+      ).toBe(false);
+    }
+  });
+});
+
+// A change request sent from the header - from its Request changes by Enter, or by Shift+R from
+// its Approve - answers the request, so the header draws neither action any more, and the dialog
+// gives the focus back to a button the header then removes. The focus stays in the header.
+test("a change request sent from the header leaves the focus in the header", async ({
+  browser,
+}) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const header = issueHeader(page);
+    const dialog = page.getByRole("dialog", { name: "Request changes" });
+    for (const [from, open] of [
+      [
+        "its Request changes by Enter",
+        async () => {
+          const button = header.getByRole("button", { exact: true, name: "Request changes" });
+          await button.focus();
+          await page.keyboard.press("Enter");
+        },
+      ],
+      [
+        "Shift+R from its Approve",
+        async () => {
+          const button = header.getByRole("button", { exact: true, name: "Approve" });
+          await button.focus();
+          await page.keyboard.press("Shift+R");
+        },
+      ],
+    ] as const) {
+      await requestApproval(seeded.specArtifactId, { summary: "Read it." });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectHeaderDrawn(page);
+      await expect(
+        header.getByRole("button", { exact: true, name: "Approve" }),
+        "the chip carries no Approve while its request waits"
+      ).toBeVisible();
+      await open();
+      await expect(dialog, `${from} opened no Request changes`).toBeVisible();
+      await page.keyboard.type("One change.");
+      await dialog.getByRole("button", { exact: true, name: "Request changes" }).focus();
+      await page.keyboard.press("Enter");
+      await expect(dialog, `the change request sent from ${from} left its dialog open`).toHaveCount(
+        0
+      );
+      await expect
+        .poll(async () => (await getArtifact(seeded.specArtifactId)).approval?.state, {
+          message: `the change request sent from ${from} was not recorded`,
+        })
+        .toBe("changes_requested");
+      await expect(reviewActions(header), "the header still draws an action").toHaveCount(0);
+      await framesDrawn(page, 2);
+      const focus = await focusNow(page);
+      expect(
+        focus.onBody || !focus.inHeader,
+        `the change request sent from ${from} left the focus on ${focus.what}`
+      ).toBe(false);
+    }
+  });
+});
+
+// A write the server refuses draws its line under the header with Retry: the pin's, from the
+// menu, and the issue's, from the title. Retry by Enter keeps the focus while the write runs
+// again, and once the write lands and the line goes, the focus is still in the header.
+test("a keyboard Retry of a refused write keeps the focus in the header", async ({ browser }) => {
+  test.setTimeout(150_000);
+  await phase(browser, seedHeader, async (page, seeded) => {
+    const key = seeded.key;
+    const header = issueHeader(page);
+    for (const [line, address, method, refuse] of [
+      [
+        "the pin's",
+        `**/api/v1/me/issues/${key}/state`,
+        "PUT",
+        async () => {
+          const trigger = header.getByRole("button", {
+            exact: true,
+            name: CONTROL_LABELS.issue_actions,
+          });
+          await trigger.focus();
+          await page.keyboard.press("Enter");
+          await header.getByRole("button", { name: "Pin issue" }).focus();
+          await page.keyboard.press("Enter");
+        },
+      ],
+      [
+        "the issue's",
+        `**/api/v1/issues/${key}`,
+        "PATCH",
+        async () => {
+          const heading = header.getByRole("heading", { level: 1 });
+          await heading.focus();
+          await page.keyboard.press("e");
+          await expect(header.getByRole("textbox", { name: "Issue title" })).toBeFocused();
+          await page.keyboard.press("End");
+          await page.keyboard.type(" again");
+          await page.keyboard.press("Enter");
+        },
+      ],
+    ] as const) {
+      await gotoIssue(page, `/issues/${key}`);
+      await expectHeaderDrawn(page);
+      // Every write is refused until Retry is pressed; the Retry's write is held open, so the
+      // focus is read while it runs, and then let through.
+      let refusing = true;
+      const held = Promise.withResolvers<void>();
+      const retried = Promise.withResolvers<void>();
+      await page.route(address, async (route) => {
+        if (route.request().method() !== method) {
+          await route.continue();
+          return;
+        }
+        if (refusing) {
+          await route.fulfill({
+            body: JSON.stringify({ code: "INVALID_INPUT", error: "Dispatch refused the write" }),
+            contentType: "application/json",
+            status: 400,
+          });
+          return;
+        }
+        retried.resolve();
+        await held.promise;
+        await route.continue();
+      });
+      await refuse();
+      const retry = header.getByRole("button", { name: "Retry" });
+      await expect(retry, `${line} refused write drew no Retry`).toBeVisible();
+      await retry.focus();
+      refusing = false;
+      await page.keyboard.press("Enter");
+      await retried.promise;
+      await framesDrawn(page, 2);
+      const whileRetrying = await focusNow(page);
+      expect(
+        whileRetrying.onBody || !whileRetrying.inHeader,
+        `${line} Retry, while its write ran again, left the focus on ${whileRetrying.what}`
+      ).toBe(false);
+      held.resolve();
+      await expect(retry, `${line} line stayed after its write landed`).toHaveCount(0);
+      await framesDrawn(page, 2);
+      const landed = await focusNow(page);
+      expect(
+        landed.onBody || !landed.inHeader,
+        `${line} line went and left the focus on ${landed.what}`
+      ).toBe(false);
+      await page.unroute(address);
+    }
+  });
+});
