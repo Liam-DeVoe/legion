@@ -4,6 +4,7 @@ import { shortForm } from "../refs/routes";
 import { drawnLine, firstLineOf, type TreeNode } from "./issue-tree";
 import { chipWords } from "./node-row-chip";
 import { NODE_TYPE_NAMES, type NodeType } from "./page-words";
+import { withoutDirectiveLines } from "./RowText";
 import { rowReferences } from "./row-references";
 
 /**
@@ -196,12 +197,6 @@ export function oneLineCut({
     : { cut: true, line: first.line.slice(0, word), sentence: false, under: true, wraps: true };
 }
 
-/** A typed block's source line in a text: its opening `:::requirement{#r1}`, or its closing
- *  `:::`. A copy of part G's `DIRECTIVE_LINE` (`RowText.tsx`'s `withoutDirectiveLines`), which
- *  that module keeps to itself; this part imports G's export in its place, and deletes the copy,
- *  once G exports it and is under this part's base (decision 94). */
-const SOURCE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
-
 /** A text's words with each reference it cites unnamed while a line is cut from them, and the
  *  names put in after the cut (`referenceStandIns`). */
 export interface ReferenceStandIns {
@@ -318,7 +313,7 @@ export function referenceStandIns(
             return cut === undefined || NAME_END.test(name) ? drawn : `${drawn}${cut}`;
           }),
     standIn: (text) => {
-      const words = text.includes(":::") ? text.replace(SOURCE_LINE, "") : text;
+      const words = withoutDirectiveLines(text);
       let held = "";
       let at = 0;
       for (const one of rowReferences(words, [])) {
