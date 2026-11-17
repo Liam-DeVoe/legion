@@ -177,6 +177,8 @@ export const realStackReasons: Record<string, string> = {
   "issue-page-i.e2e.ts": "the server's reads fold the outline; read marks and typed words persist",
   "issue-page-l.e2e.ts":
     "each row writes from the box at the foot and then reads its own write: the comment, reply, answer or read mark Dispatch stored, and the row the outline draws from the server's reads",
+  "issue-page-y.e2e.ts":
+    "a criterion the server writes into the issue's tree, a child's checks the parent's tree read answers, and the issue room the server admits each editor to",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue-page-d.e2e.ts":

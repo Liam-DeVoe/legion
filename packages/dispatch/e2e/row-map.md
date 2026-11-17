@@ -274,6 +274,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-l.e2e.ts` | each row writes from the box at the foot and then reads its own write: the comment, reply, answer or read mark Dispatch stored, and the row the outline draws from the server's reads |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
+| `e2e/issue-page-y.e2e.ts` | a criterion the server writes into the issue's tree, a child's checks the parent's tree read answers, and the issue room the server admits each editor to |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |
 | `e2e/judged-grant.e2e.ts` | the two grants it reads are written into the fake broker and the page is asserted against what the server lists back |
