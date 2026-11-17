@@ -31,11 +31,15 @@ Three facts govern every thread, whoever opened it.
     resolves with the same call, one per thread, as soon as the message reaches it or as part of
     answering that review, and records in the PR body's `Threads` section too; never one the
     reviewer did not name. On a task whose `Steps:` line names no reviewer, nobody adjudicates a
-    bot's finding for the implementer: before each `handoff_complete` it lists the pull request's
-    threads (the query below), answers each bot thread, resolves each one it fixed or declined,
-    with its reason in the reply, and records each in the `Threads` section. It names each thread
-    it declined, by node id with its reason, to the architect, the owner of the task, in the
-    `summary` of that `handoff_complete`, which its `phase-finished` notice carries. When GitHub
+    bot's finding for the implementer: before each `handoff_complete`, its retro's included, it
+    lists the pull request's threads (the query below), answers each bot thread still unresolved
+    (`isResolved: false`), resolves each one it fixed or declined, with its reason in the reply,
+    and records each in the `Threads` section. By its retro the head's runs have ended, so the
+    bot threads of the last head are there; retro pushes nothing, so a thread whose finding needs a
+    fix goes back with `request_backward_move` to `implementing`, its reason naming the thread
+    (`skill://legion-retro`, step 1). It names each thread it declined, by node id with its reason,
+    to the architect, the owner of the task, in the `summary` of that `handoff_complete`, which its
+    `phase-finished` notice carries. When GitHub
     refuses a resolution, report the thread and GitHub's message to the architect with
     `envoy_publish`, which opens a `dispatch ask` for a human to resolve it by hand; never skip it
     silently.
