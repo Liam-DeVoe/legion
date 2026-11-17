@@ -66,7 +66,12 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import {
+  appendToDraft,
+  DraftUploadStatus,
+  uploadErrorMessage,
+  useDraftUpload,
+} from "../artifacts/ArtifactUpload";
 import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { useAgentText } from "../refs/AgentName";
@@ -270,7 +275,8 @@ export interface OutlineKind {
  * ends the target. The host words every part of it, since the composer imports nothing of the
  * page's; what the composer says in answer to a send - a refusal, a delivery warning, the
  * picker - is its own, as on every surface that draws it, save the one refusal the host words
- * (`statementTwice`), and it is drawn in the page's colours. A new target keeps the words the
+ * (`statementTwice`) and what it says of a file uploading into the draft (`uploading`,
+ * `uploadedUnanswered`), and it is drawn in the page's colours. A new target keeps the words the
  * line holds, since the line is the page's one draft.
  */
 export interface OutlineLook {
@@ -291,7 +297,12 @@ export interface OutlineLook {
   /** What Send says while the send is out: the host's own busy word, as its other controls say
    *  theirs. */
   readonly sending: string;
-  /** What Send says while a file pasted or dropped into the draft is still uploading. */
+  /** What the line says when Dispatch stored a file pasted or dropped into the draft and lost its
+   *  answer (`409 KEY_COMMITTED`), so the file's reference could not be added to the draft: the
+   *  host's own sentence, in place of the one `LandedWithoutAnswer` draws on other surfaces. */
+  readonly uploadedUnanswered: string;
+  /** What Send says while a file pasted or dropped into the draft is still uploading, and what
+   *  the line says of that upload under the field. */
   readonly uploading: string;
   /** What the line says, in place of the server's words, when Dispatch refused a comment on a
    *  statement because the statement's words stand twice in its document (`409
@@ -1079,9 +1090,51 @@ export function MentionComposer({
       : undefined;
   // Retry sends the draft as it stands, so it asks what Send asks of it.
   const retry = canSubmit && statementTwice === undefined ? send : undefined;
+  // A file pasted or dropped into the draft, as its upload stands: on the issue page's box
+  // `DraftUploadStatus`'s lines in the page's own words and colours (`OutlineLook`), a refused
+  // upload's Retry a 24 px target (R2) whose press leaves the focus where it is, as the box's
+  // refusal's does (`keepFocusOnPress`); `DraftUploadStatus` itself on every other surface.
+  const uploadStatus =
+    uploadOwner === undefined ? null : outlined ? (
+      <>
+        {upload.pending > 0 ? (
+          <p className={`text-sm ${pageMutedText}`} role="status">
+            {outline.uploading}
+          </p>
+        ) : null}
+        {upload.isError ? (
+          <div
+            className={`flex flex-wrap items-center gap-3 text-sm ${pageFailedText}`}
+            role="alert"
+          >
+            <p>{uploadErrorMessage(upload.error)}</p>
+            <button
+              className={`font-medium underline disabled:cursor-not-allowed disabled:opacity-50 ${pageComposerControl}`}
+              disabled={upload.isPending}
+              onClick={upload.retry}
+              onMouseDown={keepFocusOnPress}
+              type="button"
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
+        {upload.madeUnanswered === null ? null : (
+          <p
+            className={`text-sm ${pageMutedText}`}
+            data-testid="landed-without-answer"
+            role="status"
+          >
+            {outline.uploadedUnanswered}
+          </p>
+        )}
+      </>
+    ) : (
+      <DraftUploadStatus upload={upload} />
+    );
   const sendState = (
     <>
-      {uploadOwner === undefined ? null : <DraftUploadStatus upload={upload} />}
+      {uploadStatus}
       {refusal === undefined ? null : (
         // A press here on the issue page's box leaves the focus where it is, as one on the line's
         // own controls does (`keepFocusOnPress`).
@@ -1477,13 +1530,18 @@ export function MentionComposer({
   // nothing, its frame with it.
   if (dormant) return null;
   // Past its deadline a send is still the server's: no Retry, which would post it twice. It is
-  // still being tried under its key, so it says so and offers Stop trying, which sits outside the
-  // held fieldset, the one control a send that is out leaves the reader.
+  // still being tried under its key, so it says so - in the page's muted words on the issue
+  // page's box, whose Stop trying `RefusableButton` draws in the page's look - and offers Stop
+  // trying, which sits outside the held fieldset, the one control a send that is out leaves the
+  // reader.
   const heldLate = outgoing.held?.status === "late" ? outgoing.held : undefined;
   const lateStatus =
     heldLate === undefined ? null : (
       <div className="flex flex-wrap items-center gap-3">
-        <p className={`text-sm ${textMutedOnSurfaceMuted}`} role="status">
+        <p
+          className={`text-sm ${outlined ? pageMutedText : textMutedOnSurfaceMuted}`}
+          role="status"
+        >
           {KEYED_SEND_LATE_TEXT}
         </p>
         <StopTrying onStop={outgoing.stop} stopping={heldLate.stopping} />

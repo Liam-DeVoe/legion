@@ -411,6 +411,7 @@ function WriteLine({
               />
             </>
           ),
+        uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
         uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}
@@ -519,6 +520,7 @@ function EditLine({
             />
           </>
         ),
+        uploadedUnanswered: ANSWER_LINES.uploaded_unanswered,
         uploading: ANSWER_LINES.uploading,
       }}
       owner={owner}

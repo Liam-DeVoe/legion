@@ -15,7 +15,6 @@ import type { Artifact, Decision, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
-  inputClasses,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
@@ -376,25 +375,19 @@ function ChangeComposer({
       <p className={`text-xs ${textMutedOnCanvas}`} {...pageChrome}>
         {CONTROL_LABELS.your_change}
       </p>
-      {/* A column of its own, so the picker's open list, which the field's `look` puts last
-          among the field's own elements, stands under the field rather than under the form's
-          buttons. */}
-      <div className="flex min-w-0 flex-col">
-        <MentionField
-          body={body}
-          fieldRef={field}
-          issueKey={issueKey}
-          label={CONTROL_LABELS.your_change}
-          labelHidden
-          look={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
-          onChange={(change) => {
-            setBody(change.body);
-            drafts?.set(decision.ref, change.body);
-          }}
-          rows={3}
-          writing={dispatchWritingBox("issue-page-decision-change", "comment")}
-        />
-      </div>
+      <MentionField
+        body={body}
+        fieldRef={field}
+        issueKey={issueKey}
+        label={CONTROL_LABELS.your_change}
+        labelHidden
+        onChange={(change) => {
+          setBody(change.body);
+          drafts?.set(decision.ref, change.body);
+        }}
+        rows={3}
+        writing={dispatchWritingBox("issue-page-decision-change", "comment")}
+      />
       {send.error === null ? null : (
         <p className={`text-xs ${dangerText}`} role="alert" {...pageChrome}>
           {ANSWER_LINES.change_not_sent}

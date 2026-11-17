@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 
 import type { Artifact } from "../../api/types";
+import { focusOnDocument } from "../shell/roving";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { roomTarget, useRoomFacts } from "./model-rows/room-target";
@@ -160,11 +161,7 @@ export function useNodeEditing({
         settled = holdEditorAtBlock(row, editingBlock);
         // Only a selection moved after the caret was placed is the editor's doing.
         document.addEventListener("selectionchange", changed, { signal: acts.signal });
-      } else if (
-        document.activeElement === null ||
-        document.activeElement === document.body ||
-        caretOutOfBlock(row, editingBlock)
-      ) {
+      } else if (focusOnDocument() || caretOutOfBlock(row, editingBlock)) {
         caretInBlock(row, editingBlock);
       }
       return acts.signal.aborted;
@@ -240,8 +237,7 @@ export function useNodeEditing({
       const focusOffset = selection?.focusOffset ?? 0;
       if (frame !== undefined) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
-        const holder = document.activeElement;
-        if (holder !== null && holder !== document.body) return;
+        if (!focusOnDocument()) return;
         if (box.querySelector(rowSelector)?.contains(editable) !== true) return;
         editable.focus({ preventScroll: true });
         if (

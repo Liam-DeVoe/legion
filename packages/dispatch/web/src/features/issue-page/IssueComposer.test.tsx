@@ -1,13 +1,15 @@
-import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import {
@@ -16,13 +18,19 @@ import {
   plannerAgent,
   searchResponse,
 } from "../../__tests__/search-fixture";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
+import { pageFailedText, pageMutedText } from "../../theme/classes";
+import type { UploadResult } from "../artifacts/ArtifactUpload";
+import { heldSends } from "../conversation/held-sends";
+import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { IssueComposer } from "./IssueComposer";
 import { IssueTree } from "./IssueTree";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
@@ -1238,6 +1246,165 @@ test("a statement held twice is refused in the page's words, with no Retry and t
   expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`);
 });
 
+// The reviewer's finding PRRT_kwDORFy7ds64Sg45: a comment on a statement refused with
+// `TARGET_AMBIGUOUS` holds the box on its statement only while the held send carries it. The
+// target line's control takes the statement off the held send, its refusal and its words kept,
+// so `r` on another row then aims the box at that row, the refused words kept, and `a` on an
+// open question draws the answer line.
+test("a refused statement let go with the target line's control frees a Reply and an Answer", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(409, {
+        code: "TARGET_AMBIGUOUS",
+        error: `"${STATEMENT_QUOTE}" matches 2 places; pass a zero-based occurrence, or quote more of the surrounding text`,
+      })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("Agreed{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+  expect(await within(composerBox()).findByRole("alert")).toHaveTextContent(
+    ANSWER_LINES.statement_twice
+  );
+
+  // The target line's control: the box writes on the issue.
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+  expect(page.writer().statement).toBeUndefined();
+
+  // `r` on bob's comment: a reply to it, the refused words still the box's draft.
+  await page.press(user, "comment-1", "r");
+  await waitFor(() =>
+    expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`)
+  );
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(page.writer().reply?.id).toBe("comment-1");
+  expect(page.writer().statement).toBeUndefined();
+  expect(writeField().value).toBe("Agreed");
+
+  // `a` on the open question: the answer line.
+  await page.press(user, "ask-1", "a");
+  await waitFor(() => expect(answerField()).toHaveFocus());
+  expect(targetWords()).toBe(`${CONTROL_LABELS.answering} Question ask-1?`);
+  expect(page.writer().answer?.askId).toBe("ask-1");
+  expect(page.writer().statement).toBeUndefined();
+
+  // The refusal is still held, with no statement left on it.
+  const held = heldSends(page.client).get(["issue-composer", KEY]);
+  expect(held?.status).toBe("refused");
+  expect(held?.request.statement).toBeUndefined();
+});
+
+// The reviewer's finding PRRT_kwDORFy7ds64Sg4-: a reply Dispatch refused keeps the box on the
+// comment it answers when the reader presses `r` on a statement, as a Reply on another row does
+// (`redirectedReplyTarget`), so Enter sends the words again as that reply and never as a comment
+// anchored to the statement.
+test("r on a statement keeps the box on a refused reply, and the send carries the reply", async () => {
+  const user = userEvent.setup();
+  const createComment = stub(
+    spyOn(api, "createComment")
+      .mockRejectedValueOnce(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+      )
+      .mockResolvedValue(
+        commentRecord("comment-9", ALICE, "My reply to bob", { reply_to: "comment-1" })
+      )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // `r` on the statement: the box stays on bob's comment, the refused words in it.
+  await page.press(user, "spec#b-r1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
+  expect(page.writer().reply?.id).toBe("comment-1");
+  expect(page.writer().statement).toBeUndefined();
+  expect(writeField().value).toBe("My reply to bob");
+
+  // Enter sends the words again as the reply, with no statement's anchor.
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+  expect(createComment.mock.calls[1]?.[1]).toEqual({
+    body: "My reply to bob",
+    reply_to: "comment-1",
+  });
+});
+
+// The same rule for a reply: a reply Dispatch refused holds the box on the comment it answers
+// when the reader presses `a` on an open question, so the refused words are never sent as a
+// comment on the issue once the answer line is done.
+test("a on an open question keeps the box on a refused reply", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // `a` on the open question: the box stays on bob's comment, with no answer line.
+  await page.press(user, "ask-1", "a");
+  expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} bob Earlier words`);
+  expect(composerBox().querySelector("form[data-answering]")).toBeNull();
+  expect(page.writer().answer).toBeUndefined();
+  expect(page.writer().reply?.id).toBe("comment-1");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("My reply to bob");
+});
+
+// Ending a refused reply in the box lets it go, as ending a statement does: the target line's
+// control takes the reply off the held send, its refusal and its words kept, so `r` on another
+// row then aims the box at that row.
+test("a refused reply let go with the target line's control frees a Reply on another row", async () => {
+  const user = userEvent.setup();
+  stub(
+    spyOn(api, "createComment").mockRejectedValue(
+      new ApiError(400, { code: "INVALID_INPUT", error: "The reply was refused." })
+    )
+  );
+  const page = renderPage();
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  await user.keyboard("My reply to bob{Enter}");
+  await waitFor(() =>
+    expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
+  );
+
+  // The target line's control: the box writes on the issue.
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
+
+  // `r` on the question the reader answered: a reply to it, the refused words kept.
+  await page.press(user, "ask-2", "r");
+  await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
+  expect(page.writer().reply?.id).toBe("ask-2");
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("My reply to bob");
+
+  // The refusal is still held, with no reply left on it.
+  const held = heldSends(page.client).get(["issue-composer", KEY]);
+  expect(held?.status).toBe("refused");
+  expect(held?.request.replyTo).toBeNull();
+});
+
 // The reading list's `issue-page-composer-target`: the target line and the answer's options draw
 // a stored text as its plain words - formatting gone, a reference read as the name it reads as -
 // never as the characters it is stored as.
@@ -1283,4 +1450,92 @@ test("the target line reads the entry, the question and its options as their pla
       `${CONTROL_LABELS.answering} Ship which path for @Planner? · ${CONTROL_LABELS.answer_chose} “Fast for @Planner”`
     )
   );
+});
+
+/** The classes of `element` and of everything inside it that are a colour of the dashboard's
+ *  palette (`theme/classes.ts`'s slate greys and rose and red refusals), which nothing inside the
+ *  issue page is drawn in (decision 56 of dispatch://INFRA-1196). */
+function dashboardColours(element: Element): string[] {
+  return [element, ...element.querySelectorAll("*")]
+    .flatMap((one) => [...one.classList])
+    .filter((name) => /(?:slate|rose|red)-\d/u.test(name));
+}
+
+// The reviewer's finding PRRT_kwDORFy7ds64NIrQ: what the box says of a file pasted into its
+// draft - the upload still out, an upload Dispatch refused with its Retry, one Dispatch stored
+// and lost its answer for - and of a send past its deadline, with Stop trying, is drawn in the
+// page's colours and words, as the box's refusal is, and never in the dashboard's.
+test("the box draws an upload's lines and a late send's in the page's colours", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  // The first upload stays out until the case refuses it, from inside the request it made, so
+  // the refusal reaches a write that is waiting for it.
+  let refuseUpload: ((refusal: ApiError) => void) | undefined;
+  stub(
+    spyOn(api, "uploadArtifact")
+      .mockImplementationOnce(() => {
+        const { promise, reject } = Promise.withResolvers<UploadResult>();
+        refuseUpload = reject;
+        return promise;
+      })
+      .mockRejectedValueOnce(new ApiError(409, { code: "KEY_COMMITTED", error: "already made" }))
+  );
+  const answer = Promise.withResolvers<CommentWithTrees>();
+  const createComment = stub(spyOn(api, "createComment").mockReturnValueOnce(answer.promise));
+  try {
+    renderPage();
+    await user.click(writeField());
+    const file = new File(["# Notes"], "notes.md", { type: "text/markdown" });
+    // user-event's paste carries text, never files.
+    fireEvent.paste(writeField(), { clipboardData: { files: [file] } });
+
+    // The upload out: the page's busy word, in its muted grey.
+    const uploading = await within(composerBox()).findByText(ANSWER_LINES.uploading, {
+      selector: '[role="status"]',
+    });
+    expect(dashboardColours(uploading)).toEqual([]);
+    expect(uploading).toHaveClass(pageMutedText);
+
+    // Refused: the server's reason in the page's red, with a Retry whose press leaves the caret
+    // in the field.
+    await waitFor(() => expect(refuseUpload).toBeDefined());
+    await act(async () =>
+      refuseUpload?.(
+        new ApiError(400, { code: "INVALID_INPUT", error: "The file is not allowed." })
+      )
+    );
+    const refused = (await within(composerBox()).findByText("The file is not allowed.")).closest(
+      '[role="alert"]'
+    );
+    if (refused === null) throw new Error("the box drew the upload's refusal as no alert");
+    expect(dashboardColours(refused)).toEqual([]);
+    expect(refused).toHaveClass(pageFailedText);
+    await user.click(within(refused as HTMLElement).getByRole("button", { name: "Retry" }));
+    expect(writeField()).toHaveFocus();
+
+    // Stored with no answer: the page's own sentence, in its muted grey.
+    const unanswered = await within(composerBox()).findByTestId("landed-without-answer");
+    expect(unanswered.textContent).toBe(ANSWER_LINES.uploaded_unanswered);
+    expect(dashboardColours(unanswered)).toEqual([]);
+    expect(unanswered).toHaveClass(pageMutedText);
+
+    // A send past its deadline: still being tried, in the page's muted grey, beside a Stop
+    // trying drawn in the page's look.
+    await user.keyboard("Agreed{Enter}");
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
+    await jump(SEND_DEADLINE_MS);
+    const late = within(composerBox()).getByText(KEYED_SEND_LATE_TEXT);
+    expect(late).toHaveClass(pageMutedText);
+    const lateLine = late.parentElement;
+    if (lateLine === null) throw new Error("the box drew the late line alone");
+    expect(dashboardColours(lateLine)).toEqual([]);
+    expect(within(lateLine).getByRole("button", { name: "Stop trying" })).toHaveClass(
+      pageMutedText
+    );
+
+    await act(async () => answer.resolve(commentRecord("comment-9", ALICE, "Agreed")));
+    await waitFor(() => expect(writeField().value).toBe(""));
+  } finally {
+    realClock();
+  }
 });

@@ -169,19 +169,22 @@ function EditedDocument({
 /** The tree alone, under the page's keymap and the focused node it sets. `reveal` is the chain
  *  down to the node an address names, which the tree is then to put the focus on
  *  (`slots/body.tsx`); `editor` stands in for the editor of the document a row is editing in,
- *  which the page draws on that row's stage; `redraw` draws the same tree again, as a read
- *  answering does. */
+ *  which the page draws on that row's stage; `readsHeld` is whether the reads the tree is built
+ *  from hold their answers, until `holdReads` draws the same tree with them held; `redraw` draws
+ *  the same tree again, as a read answering does. */
 function renderTree(
   root: TreeNode,
   {
     artifacts = [],
     decisions,
     editor,
+    readsHeld = true,
     reveal,
   }: {
     artifacts?: Artifact[];
     decisions?: IssueDecisions;
     editor?: ReactNode;
+    readsHeld?: boolean;
     reveal?: readonly TreeNode[];
   } = {}
 ) {
@@ -190,6 +193,7 @@ function renderTree(
   });
   if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
   const edited: (string | undefined)[] = [];
+  const reads = { held: readsHeld };
   const editedDocument: { set?: (artifactId: string | undefined) => void } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
@@ -215,6 +219,7 @@ function renderTree(
                     edited.push(artifactId);
                     editedDocument.set?.(artifactId);
                   }}
+                  readsHeld={reads.held}
                   reveal={reveal}
                   root={root}
                   rootRow
@@ -234,6 +239,10 @@ function renderTree(
     address: () => seen.path,
     edited,
     focusedNode: () => focused.node,
+    holdReads: () => {
+      reads.held = true;
+      view.rerender(draw());
+    },
     redraw: () => view.rerender(draw()),
     ...view,
   };
@@ -1098,24 +1107,15 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
         );
         expect(editable, "the row took no editor").toBeTruthy();
       });
+      if (editable === null || editable === undefined) throw new Error("the row took no editor");
       const frame = Promise.withResolvers<void>();
       requestAnimationFrame(() => frame.resolve());
       await act(async () => frame.promise);
       expect(
-        editable?.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)?.style.maxHeight,
+        editable.closest<HTMLElement>(`[${EDITOR_BOX_ATTRIBUTE}]`)?.style.maxHeight,
         "the editor was opened before it had drawn the document's text"
       ).toBe("");
-      await act(async () => {
-        for (const [id, words] of [
-          ["r0", "The words above the statement."],
-          ["r1", "A statement of the spec."],
-        ] as const) {
-          const block = document.createElement("p");
-          block.dataset.blockId = id;
-          block.textContent = words;
-          editable?.append(block);
-        }
-      });
+      await drawStatementBlocks(editable);
     };
     const editorBox = async (): Promise<HTMLElement> => {
       let box: HTMLElement | null | undefined;
@@ -1138,10 +1138,7 @@ test("the row's editor opens at the node's block, in a box that ends at the foot
     );
     expect(box.scrollTop, "the box was not scrolled to the statement's block").toBe(1500);
     expect(scrolled, "the page around the row moved").not.toHaveBeenCalled();
-    expect(
-      window.getSelection()?.anchorNode?.parentElement?.getAttribute("data-block-id"),
-      "the caret is not in the statement's block"
-    ).toBe("r1");
+    expect(caretBlock(), "the caret is not in the statement's block").toBe("r1");
 
     // Low on the screen, with less than half the room under it.
     await user.keyboard("{Escape}");
@@ -1197,7 +1194,20 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
     expect(found, "the row took no editor").toBeTruthy();
   });
   const editable = found as HTMLElement;
-  await act(async () => {
+  await drawStatementBlocks(editable);
+  await waitFor(() =>
+    expect(
+      document.activeElement === editable && caretBlock() === "r1",
+      "Enter did not put the caret in the statement"
+    ).toBe(true)
+  );
+  return editable;
+}
+
+/** Draws the statement's document in the row's `editable`, as its editor does once it has read
+ *  it: the words above the statement (`r0`), then the statement (`r1`). */
+function drawStatementBlocks(editable: HTMLElement): Promise<void> {
+  return act(async () => {
     for (const [id, words] of [
       ["r0", "The words above the statement."],
       ["r1", "A statement of the spec."],
@@ -1208,13 +1218,6 @@ async function editStatement(user: UserEvent): Promise<HTMLElement> {
       editable.append(block);
     }
   });
-  await waitFor(() =>
-    expect(
-      document.activeElement === editable && caretBlock() === "r1",
-      "Enter did not put the caret in the statement"
-    ).toBe(true)
-  );
-  return editable;
 }
 
 /** The block of the editor the caret is in, by its `data-block-id`. */
@@ -1863,6 +1866,62 @@ test("a key with nowhere to go says so at its row, until the next move", async (
   await user.keyboard("j");
   await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
   expect(rowReport(view.container)).toBeUndefined();
+});
+
+// The class search's finding on `q` and `w`: each works out where it goes from the tree as it
+// stands, so pressed before the reads the tree is built from have answered, the absence it says
+// may be false - the question may be in the asks' read still out. Until those reads hold an
+// answer (`slots/body.tsx`) the key says nothing, and once they do it says there is none.
+test("q says there is no next question only once the reads the tree is built from are held", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { readsHeld: false });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  // `user.keyboard` answers once the render its keys made has been drawn.
+  await user.keyboard("q");
+  expect(focusedRow(view.container), "q moved with no question to go to").toBe("comment-1");
+  expect(
+    rowReport(view.container),
+    "q said there is no next question before the tree's reads held an answer"
+  ).toBeUndefined();
+
+  view.holdReads();
+  await user.keyboard("q");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_next_question));
+});
+
+test("w says no decision is behind the row only once the reads the tree is built from are held", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({ id: "comment-1", text: "The first words.", type: "comment" }),
+      node({ id: "comment-2", text: "The second words.", type: "comment" }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root, { readsHeld: false });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  // `user.keyboard` answers once the render its keys made has been drawn.
+  await user.keyboard("w");
+  expect(focusedRow(view.container), "w moved with no decision to go to").toBe("comment-1");
+  expect(
+    rowReport(view.container),
+    "w said no decision is behind the row before the tree's reads held an answer"
+  ).toBeUndefined();
+
+  view.holdReads();
+  await user.keyboard("w");
+  await waitFor(() => expect(rowReport(view.container)).toBe(KEY_REPORTS.no_decision));
 });
 
 // The reviewer's finding on the Contents pane's asks: an ask is acted on once, whatever draws
