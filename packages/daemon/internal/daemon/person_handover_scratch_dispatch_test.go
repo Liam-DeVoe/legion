@@ -221,16 +221,18 @@ type scratchReview struct {
 // personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
 // database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
 // writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve.
+// version 1 to approve. experimentSource, set before boot, is the random source the booted daemon
+// draws a `random` experiment with; nil is the daemon's own.
 type personHandoverRig struct {
-	t       *testing.T
-	baseURL string
-	cfg     config.Config
-	pool    *store.Pool
-	logs    *syncBuffer
-	github  string
-	rt      *fake.Runtime
-	d       *daemon
+	t                *testing.T
+	baseURL          string
+	cfg              config.Config
+	pool             *store.Pool
+	logs             *syncBuffer
+	github           string
+	rt               *fake.Runtime
+	d                *daemon
+	experimentSource func(uint64) (uint64, error)
 }
 
 // personHandoverSpec is the spec every issue of these proofs is created with.
@@ -289,6 +291,7 @@ func (r *personHandoverRig) boot() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
 	o.controllerFirstWake = time.Hour
+	o.experimentSource = r.experimentSource
 	r.rt = rt
 	r.d = startDaemonLogging(t, r.cfg, o, slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 }

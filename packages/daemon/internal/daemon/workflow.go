@@ -349,7 +349,11 @@ func mintAtBoot(ctx context.Context, tokens appauth.Tokens, repo ghrepo.Reposito
 // wake the engine causes may run, the catch-up a start writes in place of a launch (workflow's
 // claimReady), and nil while the operator paces nothing, which is the engine's reading of the
 // pacing off — the catch-up is then due at once, as it always was.
-func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time) (opened *workflowRuntime, _ error) {
+//
+// source is the random source every `random` experiment the engine and the admission draw is
+// drawn with (overrides.experimentSource), and nil is the engine's and the admission's own,
+// experiment.CryptoSource.
+func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, projectID, dispatchToken string, hookPrompts map[string]string, repos *repositories, log *slog.Logger, suppliedTokens appauth.Tokens, githubAPI string, reserve func(time.Time) time.Time, source func(uint64) (uint64, error)) (opened *workflowRuntime, _ error) {
 	if cfg.DispatchURL == "" {
 		return nil, nil
 	}
@@ -445,6 +449,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	engineCfg.ExperimentSource = source
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's declared experiments decide what each unit admission records is drawn for.
@@ -452,6 +457,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no
 	// variant (config.Project.ExperimentsDeclared).
 	w.admission.UseExperiments(cfg.ExperimentsDeclared())
+	if source != nil {
+		w.admission.UseExperimentSource(source)
+	}
 	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
 	// has stopped at: the loader gives six hours to a file that names no key, so the pass
 	// always runs under a number somebody chose.

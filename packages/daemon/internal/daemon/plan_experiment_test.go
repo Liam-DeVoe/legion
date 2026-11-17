@@ -1,0 +1,301 @@
+package daemon
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand/v2"
+	"net/http"
+	"slices"
+	"sync"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/experiment"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
+)
+
+// The whole daemon draws the group of each new issue of a project that declares an experiment
+// whose arms set `plan`, and the group sets how the issue is done: an issue of the arm `owner`
+// takes its owner's plan as an issue of no experiment does, and one of the arm `default` runs the
+// project's default steps, its owner's register_plan answered PLAN_NOT_TAKEN. The rig is the
+// person's handover proof's (personHandoverRig): the real Dispatch server with its events on a
+// real NATS, a real Postgres, and the daemon in process on the fake runtime, which its admission
+// cap of ten lets take every issue at once. The daemon draws `random` from seeded(11), so the
+// draws of a run are the seed's, in the order the issues are recorded.
+//
+// Each subtest creates ten labelled issues one at a time and hands each to Legion as the person's
+// todo, waiting until the daemon has recorded it and launched its architect, so the order of the
+// draws is the order of creation. The owner of the first gives the plan `implementer reviewer`
+// twice before its gate opens, and each issue's gate is registered and approved by the person.
+// Then each issue's row of the experiment, the phase its first step started in and the source of
+// the plan its run walks are read from the daemon's database:
+//
+//   - owner: mode on at the arm a, so ten rows a/owner; the first issue's plan is taken and its
+//     run starts at implementing, and each other issue runs the default steps from planning;
+//   - default: mode on at the arm b, so ten rows b/default; both sends of the owner's plan are
+//     answered 409 PLAN_NOT_TAKEN, since a refusal leaves the fact unspent, and each issue
+//     runs the default steps from planning;
+//   - shares: mode random, a and b of weight 1 each, so the ten recorded arms, in the order of
+//     creation, are the ten arms experiment.Draw gives over a fresh seeded(11), and each issue
+//     runs as its arm says;
+//   - control-no-experiment: the settings of shares with no experiment, so no issue holds a row
+//     of planning, the comparison of shares fails, and each issue runs as with no experiment.
+func TestTheExperimentSetsHowEachIssueIsDone(t *testing.T) {
+	t.Run("owner", func(t *testing.T) {
+		issues := tenIssuesUnder(t, []config.Experiment{planningExperiment(config.ExperimentOn, "a")})
+		for _, issue := range issues {
+			if !issue.drawn || issue.variant != "a" || issue.plan != string(config.PlanGroupOwner) {
+				t.Fatalf("%s holds the row %+v of the experiment planning; want the arm a, whose plan is owner", issue.key, issue)
+			}
+		}
+		ranAsTheirGroups(t, issues)
+	})
+
+	t.Run("default", func(t *testing.T) {
+		issues := tenIssuesUnder(t, []config.Experiment{planningExperiment(config.ExperimentOn, "b")})
+		for _, issue := range issues {
+			if !issue.drawn || issue.variant != "b" || issue.plan != string(config.PlanGroupDefault) {
+				t.Fatalf("%s holds the row %+v of the experiment planning; want the arm b, whose plan is default", issue.key, issue)
+			}
+		}
+		ranAsTheirGroups(t, issues)
+	})
+
+	t.Run("shares", func(t *testing.T) {
+		declared := planningExperiment(config.ExperimentRandom, "")
+		issues := tenIssuesUnder(t, []config.Experiment{declared})
+		if err := drawnAsTheSeed(issues, declared, 11); err != nil {
+			t.Fatal(err)
+		}
+		arms := map[string]int{}
+		for _, issue := range issues {
+			arms[issue.variant]++
+		}
+		if arms["a"] == 0 || arms["b"] == 0 {
+			t.Fatalf("the seed drew the arms %v for the ten issues; want both arms drawn, so each group's run is read", arms)
+		}
+		ranAsTheirGroups(t, issues)
+		t.Logf("the ten issues were drawn %v, the seed's own draws in the order of creation", arms)
+	})
+
+	t.Run("control-no-experiment", func(t *testing.T) {
+		issues := tenIssuesUnder(t, nil)
+		err := drawnAsTheSeed(issues, planningExperiment(config.ExperimentRandom, ""), 11)
+		if err == nil {
+			t.Fatal("the comparison of the recorded arms with the seed's draws passed for a project that declares no experiment; want it to fail, since no issue holds a row of planning")
+		}
+		for _, issue := range issues {
+			if issue.drawn {
+				t.Fatalf("%s holds the row %+v of the experiment planning, which the project does not declare", issue.key, issue)
+			}
+		}
+		ranAsTheirGroups(t, issues)
+		t.Logf("with no experiment declared, the comparison failed: %v", err)
+	})
+}
+
+// seeded is a random source of the shape a draw takes (experiment.Draw): each value is the next
+// of one PCG seeded with seed, below the bound asked. The daemon hands its one source to its
+// admission, its workflow and its API, which draw on goroutines of their own, and a PCG is not
+// safe to share, so one mutex holds it.
+func seeded(seed uint64) func(uint64) (uint64, error) {
+	var mu sync.Mutex
+	values := rand.New(rand.NewPCG(seed, seed))
+	return func(bound uint64) (uint64, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return values.Uint64N(bound), nil
+	}
+}
+
+// planningExperiment is the experiment planning, drawn for each issue at mode: its arm a runs
+// each issue as its owner gives it (plan owner), and its arm b runs the project's default steps
+// (plan default), one weight each. onVariant is the arm mode on gives every issue.
+func planningExperiment(mode config.ExperimentMode, onVariant string) config.Experiment {
+	return config.Experiment{Name: "planning", Mode: mode, Unit: config.ExperimentIssue, OnVariant: onVariant,
+		Variants: []config.Variant{
+			{Name: "a", Weight: 1, Plan: config.PlanGroupOwner},
+			{Name: "b", Weight: 1, Plan: config.PlanGroupDefault},
+		}}
+}
+
+// experimentTitles are the titles of the ten issues each subtest creates, in the order it creates
+// them. Dispatch refuses a new issue whose title near-duplicates one of its project, so no two
+// share a word.
+var experimentTitles = [...]string{
+	"Ledger reconciles nightly",
+	"Billing exports quarterly totals",
+	"Search ranks fresher pages",
+	"Onboarding emails welcome newcomers",
+	"Cache evicts stale entries",
+	"Uploads resume after drops",
+	"Audit trail captures logins",
+	"Dashboard charts weekly revenue",
+	"Webhooks retry failed deliveries",
+	"Profiles show avatar thumbnails",
+}
+
+// ownersPlan is the plan the owner of each subtest's first issue gives: one task whose steps are
+// an implementer's and then a reviewer's, so a run that takes it starts at implementing, where the
+// project's default steps start at planning.
+const ownersPlan = ":::plan_task{#a steps=\"implementer reviewer\"}\nBuild the widget.\n:::\n"
+
+// drawnIssue is what one issue of a subtest came to.
+type drawnIssue struct {
+	key string
+	// drawn is whether the issue holds a row of the experiment planning, and variant and plan are
+	// that row's arm and its plan.
+	drawn         bool
+	variant, plan string
+	// answers are the daemon's answers to the two sends of the owner's register_plan, on the first
+	// issue alone.
+	answers []planAnswer
+	// firstStep is the phase the issue's run started its work in once its gate opened, and source
+	// the source of the plan that run walks (record.PlanSourceOwner or record.PlanSourceDefault).
+	firstStep phase.Phase
+	source    string
+}
+
+// planAnswer is one answer of the daemon to register_plan: its status, and its code and sentence
+// where it refused.
+type planAnswer struct {
+	status  int
+	failure api.Failure
+}
+
+// tenIssuesUnder boots the daemon at a project that declares experiments, drawing `random` from
+// seeded(11), takes ten issues through to the first step of each run, and answers what each came
+// to, in the order of creation.
+func tenIssuesUnder(t *testing.T, experiments []config.Experiment) []drawnIssue {
+	t.Helper()
+	r := newPersonHandoverRig(t, len(experimentTitles))
+	r.cfg.Projects[r.cfg.Project] = config.Project{Experiments: experiments}
+	r.experimentSource = seeded(11)
+	r.boot()
+	issues := make([]drawnIssue, len(experimentTitles))
+	for i, title := range experimentTitles {
+		created := r.create(asSession, title, map[string]any{"labels": []string{"legion"}})
+		grant := r.admit(created.Key)
+		issues[i].key = created.Key
+		if i == 0 {
+			document := r.uploadDocument(created.Key, "plan.md", ownersPlan)
+			issues[i].answers = []planAnswer{r.givePlan(created.Key, document, grant), r.givePlan(created.Key, document, grant)}
+		}
+		r.registerGate(created.Key, created.PrimaryArtifactID, grant)
+		r.approve(created.PrimaryArtifactID)
+		settled(t, r.d, "start the first step of "+created.Key, func(s api.State) bool {
+			started := s.Issues[created.Key].Phase
+			return started != "" && started != phase.Admitted
+		})
+	}
+	for i := range issues {
+		r.readDrawn(&issues[i])
+	}
+	t.Logf("the ten issues came to %+v", issues)
+	return issues
+}
+
+// givePlan gives Legion the plan in version 1 of document as key's owner, as the architect's
+// register_plan does, and answers what the daemon answered. Dispatch settles an uploaded version
+// in its own time, so an answer that Dispatch does not show the version yet is asked again.
+func (r *personHandoverRig) givePlan(key, document string, grant func() string) planAnswer {
+	r.t.Helper()
+	var answer planAnswer
+	testwait.Eventually(r.t, "Dispatch to show version 1 of "+document+" to register_plan on "+key, func() bool {
+		status, body := r.d.request(http.MethodPost, "/legion/v1/plans/register", api.PlanRegisterRequest{
+			GrantID: grant(), Issue: key, ArtifactID: document, Version: 1,
+		}, false)
+		answer = planAnswer{status: status}
+		if status != http.StatusOK {
+			if err := json.Unmarshal(body, &answer.failure); err != nil {
+				r.t.Fatalf("decode the refusal of the plan of %s from %s: %v", key, body, err)
+			}
+		}
+		return answer.failure.Code != "VERSION_NOT_IN_DISPATCH"
+	})
+	return answer
+}
+
+// readDrawn reads, from the daemon's database, issue's row of the experiment planning, the phase
+// its run is at and the source of the plan in force at its generation.
+func (r *personHandoverRig) readDrawn(issue *drawnIssue) {
+	r.t.Helper()
+	ctx := r.t.Context()
+	err := r.pool.QueryRow(ctx, `select variant, plan from experiment_assignments where issue_key = $1 and experiment = 'planning'`,
+		issue.key).Scan(&issue.variant, &issue.plan)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+	case err != nil:
+		r.t.Fatalf("read the row of the experiment planning of %s: %v", issue.key, err)
+	default:
+		issue.drawn = true
+	}
+	var step string
+	if err := r.pool.QueryRow(ctx, `select phase from issues where key = $1`, issue.key).Scan(&step); err != nil {
+		r.t.Fatalf("read the phase of %s: %v", issue.key, err)
+	}
+	issue.firstStep = phase.Phase(step)
+	if err := r.pool.QueryRow(ctx, `select source from issue_plans
+		where issue = $1 and generation = (select generation from issues where key = $1)
+		order by version desc limit 1`, issue.key).Scan(&issue.source); err != nil {
+		r.t.Fatalf("read the source of the plan of %s: %v", issue.key, err)
+	}
+}
+
+// drawnAsTheSeed is nil where the arm each issue recorded for declared, in the order of creation,
+// is the arm experiment.Draw gives over a fresh seeded(seed), and otherwise names the first issue
+// whose arm differs or which holds no row of declared.
+func drawnAsTheSeed(issues []drawnIssue, declared config.Experiment, seed uint64) error {
+	source := seeded(seed)
+	for _, issue := range issues {
+		want, err := experiment.Draw(declared, source)
+		if err != nil {
+			return err
+		}
+		if !issue.drawn {
+			return fmt.Errorf("%s holds no row of the experiment %s, where the source seeded %d draws the arm %s for it", issue.key, declared.Name, seed, want)
+		}
+		if issue.variant != want {
+			return fmt.Errorf("%s was drawn into the arm %s of the experiment %s, where the source seeded %d draws the arm %s for it", issue.key, issue.variant, declared.Name, seed, want)
+		}
+	}
+	return nil
+}
+
+// ranAsTheirGroups holds each issue to the run its group sets. An issue of the group default runs
+// the project's default steps, from planning, on a plan of the source default, and the owner of
+// such a first issue was answered PLAN_NOT_TAKEN at both sends. Any other issue, of the group owner
+// or of none, runs as with no experiment: the first issue takes its owner's plan, taken at both
+// sends, and starts at implementing, and each other issue runs the default steps.
+func ranAsTheirGroups(t *testing.T, issues []drawnIssue) {
+	t.Helper()
+	for i, issue := range issues {
+		runsByDefault := issue.plan == string(config.PlanGroupDefault)
+		wantStep, wantSource := phase.Planning, record.PlanSourceDefault
+		if i == 0 && !runsByDefault {
+			wantStep, wantSource = phase.Implementing, record.PlanSourceOwner
+		}
+		if issue.firstStep != wantStep || issue.source != wantSource {
+			t.Fatalf("%s, of the group %q, started at %s on a plan of the source %s; want %s on a plan of the source %s",
+				issue.key, issue.plan, issue.firstStep, issue.source, wantStep, wantSource)
+		}
+		if i != 0 {
+			continue
+		}
+		want := planAnswer{status: http.StatusOK}
+		if runsByDefault {
+			refusal := intake.PlanNotTaken(issue.key, "planning", issue.variant, issue.plan)
+			want = planAnswer{status: refusal.Status, failure: api.Failure{Code: refusal.Code, Error: refusal.Message}}
+		}
+		if !slices.Equal(issue.answers, []planAnswer{want, want}) {
+			t.Fatalf("the two sends of the owner's plan of %s, of the group %q, were answered %+v; want %+v both times", issue.key, issue.plan, issue.answers, want)
+		}
+	}
+}

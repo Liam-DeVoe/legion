@@ -131,6 +131,13 @@ func (a *Admission) UseExperiments(experiments []config.Experiment) {
 	a.experiments = experiments
 }
 
+// UseExperimentSource registers source as the random source every `random` experiment this
+// admission draws is drawn with, in place of experiment.CryptoSource: the daemon's seam for a
+// test that compares a run's draws with those of a seed (the daemon's overrides.experimentSource).
+func (a *Admission) UseExperimentSource(source func(uint64) (uint64, error)) {
+	a.source = source
+}
+
 // UseStalledTreeNotice registers how long a tree of this project may be quiet before the
 // admission pass tells the project's controller that it has stopped (`stalled_tree_notice_hours`,
 // config.Config.StalledTreeNotice, tellStalledTrees). It is a setter rather than a parameter of

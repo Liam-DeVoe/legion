@@ -211,6 +211,11 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// experimentSource is the random source every `random` experiment is drawn with: admission's
+	// draw of each tree and issue it records, the workflow's of each child, and the API's of an
+	// operator's spawn (experiment.Draw). nil, in production, is experiment.CryptoSource; a test
+	// that compares a run's draws with a seed's hands in a source of that seed.
+	experimentSource func(uint64) (uint64, error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -348,7 +353,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
 	// probe: the work after them has a budget of its own.
-	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
+	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake, plan.experimentSource)
 	if err != nil {
 		st.Close()
 		if ctx.Err() != nil {
@@ -800,6 +805,8 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// experimentSource is overrides.experimentSource: nil draws with experiment.CryptoSource.
+	experimentSource func(uint64) (uint64, error)
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -884,6 +891,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		experimentSource: o.experimentSource,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -2363,6 +2371,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Releaser:           s.supervisor.deps.Runtime,
 		Trees:              st,
 		Experiments:        cfg.ExperimentsDeclared(),
+		ExperimentSource:   p.experimentSource,
 		ClaimReady:         claimReadyHook(keeper, claimReady),
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
