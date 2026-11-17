@@ -36,22 +36,28 @@
 -- what the rollback keeps of each issue with a row, run with the daemon stopped
 -- (docs/kubernetes.md, "Rolling back the release that records each step"): the issue's tree,
 -- step_run_witness of the issue then, and the moment of the rollback. At the roll forward
--- 20261117064152 reads the witness again; an issue whose witness changed had a run of this release
--- ended under it, or a run started that this release did not count: a run open at the rollback
--- gets its end, stopped at that moment, and its rows read 'uncounted' from then on.
+-- 20261117064152 reads the witness again and compares the two for each row of the issue: a run
+-- open at the rollback that the earlier release ended gets its end, stopped at that moment, and a
+-- place where it may have started a run this release did not count reads 'uncounted' from then on.
 --
 -- step_run_witness is what this release's own model ends or starts a run on, read from the
--- columns every earlier release writes as it does those things:
---   * the phase the issue stands in, the phase its hold is from where it is held (record.StandsAt):
---     a transition, a leave and a merge's close move it;
---   * the issue's generation: a re-admission, a child's re-entry into its tree and an adoption
---     each open the next one;
---   * the implementer's pass, which every move back raises: an issue that left a phase and came
+-- columns every earlier release writes as it does those things, as one object:
+--   * at: the phase the issue stands in, the phase its hold is from where it is held
+--     (record.StandsAt): a transition, a leave and a merge's close move it;
+--   * generation: the issue's, which a re-admission, a child's re-entry into its tree and an
+--     adoption each raise;
+--   * pass: the implementer's, which every move back raises: an issue that left a phase and came
 --     back to it stands where it stood, with its pass raised;
---   * the generation of the tree's root: a re-admission of the root, whose promotion starts its
---     members' steps again with their own generations unchanged;
---   * whether the root lingers while the issue stands in a phase other than merging: the linger
---     ends every member's step but a merge awaiting its pull request (workflow's beginLinger).
+--   * entries: the entry of each role of the issue (phases.entry), which each start that hands a
+--     phase worker its work raises (workflow's enter): a move into the phase, and the promotion
+--     of a tree admitted again, which starts a member's merger again and ends the merge the
+--     linger left open (admit's startMidPhaseMembers);
+--   * root_generation: the generation of the tree's root, which the root's re-admission raises:
+--     a member's step the linger ended starts again at its promotion, with the member's own
+--     generation unchanged, and a member's merge the linger left open runs on until its merger
+--     starts again;
+--   * lingers: whether the root lingers, whose start ends every member's step but a merge
+--     awaiting its pull request (workflow's beginLinger).
 -- The tree is the one the rollback found the issue in, so a hand-over, which keeps the record of a
 -- merge it hands over open until the re-admission ends it, changes nothing here. An issue with no
 -- row in issues reads null, and a null witness against a null one reads as unchanged.
@@ -82,12 +88,13 @@ create table step_starts_rollback (
 );
 
 create function step_run_witness(issue_key text, tree_key text) returns jsonb language sql stable as $$
-  select jsonb_build_array(
-    coalesce(case when i.phase = 'held' then i.held_from end, i.phase),
-    i.generation,
-    (select p.pass from phases p where p.issue = i.key and p.role = 'implementer'),
-    root.generation,
-    root.linger_until is not null and coalesce(case when i.phase = 'held' then i.held_from end, i.phase) <> 'merging')
+  select jsonb_build_object(
+    'at', coalesce(case when i.phase = 'held' then i.held_from end, i.phase),
+    'generation', i.generation,
+    'pass', (select p.pass from phases p where p.issue = i.key and p.role = 'implementer'),
+    'entries', (select jsonb_object_agg(p.role, p.entry) from phases p where p.issue = i.key),
+    'root_generation', root.generation,
+    'lingers', root.linger_until is not null)
   from issues i left join issues root on root.key = tree_key
   where i.key = issue_key
 $$;

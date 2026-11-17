@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -99,6 +101,81 @@ func TestAStepTheEarlierReleaseStartedEndsInARecordOfItsOwn(t *testing.T) {
 				t.Fatalf("the end = %+v, want the record %s of the second count, the tester's, started at %s", end, want, secondRun)
 			}
 		})
+	}
+}
+
+// A member's merge runs on through the linger of its tree and the re-admission of its root, and
+// only the promotion that starts its merger again ends it (admit's startMidPhaseMembers). So an
+// earlier release that re-admits the root after a rollback, and has not promoted the tree by the
+// roll forward, ended no run of the member: the roll forward writes nothing of its merge, and the
+// merge that lands then ends the record this release counted, passed, under its own id.
+func TestAMembersMergeRunsOnThroughARootReadmittedAcrossARollback(t *testing.T) {
+	pool := migratedPool(t)
+	root := stepRoot(t, pool, phase.Reviewing)
+	stepChild(t, pool, "LEGION-209", phase.Retro, nil)
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 43,
+		Branch: "legion/LEGION-209", HeadSHA: "head-43", Failing: []string{}})
+	engine := stepEngine(nil)
+	move(t, pool, engine, "LEGION-209", TriggerRetroCompleted, "", record.PhaseRow{})
+	apply := applyFacts(t, pool, engine)
+	apply("park-root", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "sjawhar/legion", Seq: 2, Type: "issue.updated",
+		Status: "backlog", Title: "root", Rank: "U"})
+	writes := stepWrites(t, pool, "LEGION-209")
+	if len(writes) != 2 || !isStart(writes[1]) || writes[1].Kind != "merge" {
+		t.Fatalf("the member's writes before the rollback = %+v, want the retro's end and the merge's start, open", writes)
+	}
+	merge := writes[1].ID
+	rollBackStepRecords(t, pool)
+	// The earlier release re-admits the root (admit's readmit): a new generation, its linger
+	// cleared, and no promotion yet.
+	execSQL(t, pool, `update issues set generation = generation + 1, linger_until = null, phase = 'admitted', status = 'todo' where key = $1`, root.Key)
+	rollForwardStepRecords(t, pool)
+	if after := stepWrites(t, pool, "LEGION-209")[len(writes):]; len(after) != 0 {
+		t.Fatalf("the roll forward wrote %+v for LEGION-209, whose merge still runs", after)
+	}
+	apply("merge", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, HeadSHA: "head-43", MergeSHA: "merge-43"})
+	after := stepWrites(t, pool, "LEGION-209")[len(writes):]
+	if len(after) != 1 || after[0].ID != merge {
+		t.Fatalf("the merge's writes after the roll forward = %+v, want the one end of the record %s this release counted", after, merge)
+	}
+	assertEnd(t, after[0], "merge", 0, 3, "passed", nil)
+}
+
+// A review the review event approves before the reviewer completes ends passed with no report, and
+// the reviewer's completion names its handoff on that ended run's record when it lands
+// (reportEndedStep). A rollback between the two, under which the earlier release signs the issue
+// off into the retro, starts no review: the review's place is none that release may have run
+// again, so the roll forward leaves its counted run ended, and the late completion's report lands
+// on the record this release counted.
+func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T) {
+	const report = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	pool := migratedPool(t)
+	seedReview(t, pool, "green")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		return engine.StartStepRecord(ctx, tx, issue)
+	})
+	apply := applyFacts(t, pool, engine)
+	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
+		Body: reviewBody("the review", headOne)})
+	if got := issueAt(t, pool, "LEGION-208"); got != phase.Accepting {
+		t.Fatalf("LEGION-208 stands at %s after the approval, want accepting", got)
+	}
+	rollBackStepRecords(t, pool)
+	// The earlier release signs the issue off: accepting moves to the retro, whose start raises
+	// the implementer's entry.
+	execSQL(t, pool, `update issues set phase = 'retro' where key = 'LEGION-208'`)
+	execSQL(t, pool, `update phases set entry = entry + 1 where issue = 'LEGION-208' and role = 'implementer'`)
+	rollForwardStepRecords(t, pool)
+	before := len(stepWrites(t, pool, "LEGION-208"))
+	if result := apply("reviewer-handoff", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+		Claim: "review-claim", Summary: "reviewed", HandoffRecord: report, HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("the reviewer's completion was refused: %+v", result.Refusal)
+	}
+	after := stepWrites(t, pool, "LEGION-208")[before:]
+	counted := StepID("LEGION-208", 1, record.StepPlace{Task: "default", Kind: "step", Place: 4}, 1)
+	if len(after) != 1 || after[0].ID != counted || after[0].Report == nil || *after[0].Report != report {
+		t.Fatalf("the late completion wrote %+v, want one write of the counted review's record %s naming %s", after, counted, report)
 	}
 }
 
