@@ -680,7 +680,8 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // record.PhaseRow.ReviewedHead), so the reviewer can read the difference from that commit rather
 // than the whole change again. The composed reviewer prompt therefore names the field, the
 // function that writes it into the task, and whose review sets it: the session the daemon recorded
-// on the claim it started the reviewer under, in the first round as in every later one. It says to
+// on the claim it started the reviewer under, in the first round as in every later one, in a review
+// submitted after the daemon last entered the reviewer into that round. It says to
 // read the difference from that commit and each thread, gives the thermonuclear pair that same
 // diff, keeps every defect seen outside it a finding, and names the three cases that read the
 // whole change again. The pair's old sentence, which ran it over the whole change in every round,
@@ -698,7 +699,8 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 		"`reviewedCommit.part` in `packages/daemon/internal/workflow/effects.go` writes it into the task",
 		"Your session is the one the daemon recorded on the claim it started you under, in your first round as in every later one;",
 		"it is recorded when your agent registers, and while that claim records no session, no review of the review App decides the round or sets the commit.",
-		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
+		"an `APPROVE` or a `REQUEST_CHANGES` your session submitted as the review App after the daemon last entered you into that round (`PhaseRow.EntryRaisedAt`), and the daemon took as its round's decision.",
+		"A `COMMENT`, a review the daemon set aside, a person's review and a review submitted before that entry, such as one from before a new generation or a carried hand-over's promotion entered you again, leave it where it stands.",
 		"read the difference from that commit to the head (`git diff <commit> <head>`), and each thread",
 		"over the diff that round reads, when that diff touches runtime code",
 		"The thermonuclear pair reads that same difference, and runs only when it touches runtime code.",
@@ -714,6 +716,7 @@ func TestTheComposedReviewerPromptReadsALaterRoundFromTheCommitItsTaskNames(t *t
 	for _, retired := range []string{
 		"Run the thermonuclear pair once at the head the round reviews when the diff touches runtime code",
 		"`reviewedPart` in `packages/daemon/internal/workflow/effects.go` writes into the task",
+		"A `COMMENT`, a review the daemon set aside and a person's review leave it where it stands.",
 	} {
 		if strings.Contains(text, retired) {
 			t.Errorf("the composed reviewer prompt still says %q", retired)

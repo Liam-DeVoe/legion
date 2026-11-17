@@ -1,11 +1,12 @@
 -- 20261116234034_phase_reviewed_head.up.sql — the commit the reviewer's own newest deciding review
 -- read, kept on the reviewer's phases row across its rounds.
 --
--- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes,
--- submitted as the review App from the session the claims record holds for the claim the daemon
--- starts the reviewer under, writes the head its Legion footer names (workflow's review,
--- byReviewer); a review of any other session writes nothing, in the first round as in every later
--- one, and neither does any review while that claim records no session. Only a review of the round
+-- phases.reviewed_head is record.PhaseRow.ReviewedHead. A review that approves or requests changes
+-- and decides its round, submitted as the review App from the session the claims record holds for
+-- the claim the daemon starts the reviewer under, writes the head its Legion footer names
+-- (workflow's review, byReviewer); a person's review and a review of any other session write
+-- nothing, in the first round as in every later one, and while that claim records no session no
+-- review of the review App decides, so none writes it. Only a review of the round
 -- that stands writes it: the reviewer's row holds the task of an entry, and the review was
 -- submitted after that entry was raised (phases.entry_task and phases.entry_raised_at), so a review
 -- submitted before a new generation's clear writes nothing, however late it is applied. No entry

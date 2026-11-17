@@ -472,13 +472,12 @@ func (e *Engine) reviewersClaim(ctx context.Context, tx pgx.Tx, issue record.Iss
 }
 
 // reviewersAnswer says whether fact is the reviewer's answer to a round it completed undecided: a
-// review from the reviewer's own review-App session (byReviewer), with a body - GitHub records a
-// reply on a review thread as a review with no body - more than answerSkew after the completion
-// was applied. A review submitted before the completion but delivered after it is not, since the
-// completion comes through the API and the review by webhook; nor is one with no submission time,
-// or anyone else's, the review App's other sessions included.
+// review from the reviewer's own review-App session (byReviewer), more than answerSkew after the
+// completion was applied. A review submitted before the completion but delivered after it is not,
+// since the completion comes through the API and the review by webhook; nor is one with no
+// submission time, or anyone else's, the review App's other sessions included.
 func (e *Engine) reviewersAnswer(fact intake.PullRequestReview, reviewer record.PhaseRow, reviewerSession string) bool {
-	return e.byReviewer(fact, reviewerSession) && fact.Body != "" && fact.SubmittedAt.After(reviewer.CompletedAt.Add(answerSkew))
+	return e.byReviewer(fact, reviewerSession) && fact.SubmittedAt.After(reviewer.CompletedAt.Add(answerSkew))
 }
 
 func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestReview) (intake.Result, error) {
@@ -593,26 +592,28 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
-	// (reviewedPart). Only the reviewer's own review moves it (byReviewer), and only where the
-	// reviewer's session is recorded: with none, the login decides the round, but nothing says the
-	// review is the reviewer's, and the cost of leaving the commit is only a next round that reads
-	// the whole change. A person's review decides the round as before and leaves that commit where
-	// it stands, since the reviewer never read the commit the person did.
+	// (reviewedPart). Two rules say which deciding review moves it. Where either fails, the commit
+	// stays where it stands, and the cost is a next round that reads more.
 	//
-	// And only a review of the round that stands moves it. The reviewer's row holds the task of an
-	// entry, which a new generation's clear empties until the promotion raises the entry again
+	// The review is the reviewer's own: a review-App review whose Legion footer names the session
+	// the reviewer's claim records (byReviewer). A person's review decides the round and leaves the
+	// commit where it stands, since the reviewer never read the commit the person did. While the
+	// reviewer's claim records no session, no review-App review gets here: it waits
+	// (RoundRefusal.Waits).
+	//
+	// And it is a review of the round that stands. The reviewer's row holds the task of an entry,
+	// which a new generation's clear empties until the promotion raises the entry again
 	// (record.Store.ClearTreeGeneration, StartPromotedWorker), and the review was submitted after
 	// that entry was raised (record.PhaseRow.EntryRaisedAt). So a review submitted before a
 	// re-admission and applied after it, however late, leaves the cleared commit cleared, and the
 	// first review of the new generation reads the whole change. A review with no submission time
 	// moves nothing. There is no allowance for the skew of GitHub's clock against the daemon's: a
-	// review comes minutes after its round's entry. Where either test fails, the commit stays where
-	// it stands, and the cost is a next round that reads more. A carried hand-over's promotion
-	// raises a new entry in the middle of the round, so a review submitted before that entry and
-	// applied after it moves nothing. A row that the entry upgrade filled
-	// (20261111225552_phase_entry) can hold no task, or an entry time later than the reviews of its
-	// round, and a review of that round moves nothing.
-	if head := reviewer.Decision.Head; head != "" && reviewerSession != "" && e.byReviewer(fact, reviewerSession) &&
+	// review comes minutes after its round's entry. A carried hand-over's promotion raises a new
+	// entry in the middle of the round, so a review submitted before that entry and applied after
+	// it moves nothing. A row that the entry upgrade filled (20261111225552_phase_entry) can hold no
+	// task, or an entry time later than the reviews of its round, and a review of that round moves
+	// nothing.
+	if head := reviewer.Decision.Head; head != "" && e.byReviewer(fact, reviewerSession) &&
 		reviewer.EntryTask != "" && fact.SubmittedAt.After(reviewer.EntryRaisedAt) {
 		reviewer.ReviewedHead = head
 	}

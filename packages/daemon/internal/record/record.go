@@ -558,9 +558,9 @@ type PhaseRow struct {
 	// from the session the claims record holds for the claim the daemon starts the reviewer under
 	// (workflow's review, byReviewer and reviewersClaim), in the first round as in every later one.
 	// Only the reviewer's row holds it. A person's review does not move it, since the reviewer did
-	// not read that commit; neither does another review-App session's review, a review that decides
-	// nothing, or any review while the reviewer's claim records no session, when the login alone
-	// decides the round and nothing says the review is the reviewer's. Unlike Decision
+	// not read that commit; neither does another review-App session's review or a review that
+	// decides nothing, and while the reviewer's claim records no session no review-App review
+	// decides the round or moves it (workflow's RoundRefusal.Waits). Unlike Decision
 	// it outlives its round: no entry into a phase clears it (workflow's clearHandoff, whose list
 	// of fields does not hold it), so the task of the reviewer's next round names it (workflow's
 	// reviewedPart) and the reviewer reads the difference from it to the head. Only a review of the
