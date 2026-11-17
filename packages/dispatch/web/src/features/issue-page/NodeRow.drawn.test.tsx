@@ -2,7 +2,7 @@ import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -14,7 +14,7 @@ import type { SentRequest } from "../conversation/send-request";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
-import { NodeOptions, NodeRow } from "./NodeRow";
+import { NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
 import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./outline-writer";
@@ -711,15 +711,18 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   }
 });
 
-/** The names the page's one batched read brought, published as the page publishes them. */
+/** The names the page's one batched read brought, and the references it read as ambiguous,
+ *  published as the page publishes them. */
 function Named({
+  ambiguous,
   children,
   names,
 }: {
+  ambiguous?: ReadonlySet<string>;
   children: ReactNode;
   names: ReadonlyMap<string, string>;
 }): ReactNode {
-  usePublishReferenceNames(names);
+  usePublishReferenceNames(names, ambiguous);
   return children;
 }
 
@@ -809,6 +812,49 @@ test("the read's names are named as chips once per answer, not once per row", as
   } finally {
     view.unmount();
     named.mockRestore();
+  }
+});
+
+// Decisions 62 and 89: a short reference two or more targets answer to names none of them, so
+// the page publishes it as ambiguous, apart from its names, and a node's words draw it as its
+// author wrote it, with no link, never as a target that is gone. A reference the read named
+// nothing for and did not read as ambiguous keeps its fallback: a link, by its short form. Both
+// the words drawn from their reading and the words drawn as stored are read.
+test("an ambiguous short reference in a node's words is drawn as written with no link, and a gone one keeps its link", async () => {
+  const written = "dispatch://CORE-1/spec#b-1a2b3c4d";
+  const gone = "dispatch://CORE-1/spec#b-9f8e7d6c";
+  const text = `It follows ${written} and ${gone}.`;
+  const ambiguous: ReadonlySet<string> = new Set([written]);
+  const names: ReadonlyMap<string, string> = new Map();
+  for (const tree of [displayTree(text), undefined]) {
+    const drawn = tree === undefined ? "as stored" : "from their reading";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <ReferenceNamesProvider>
+            <Named ambiguous={ambiguous} names={names}>
+              <RowText markdown={text} {...(tree === undefined ? {} : { tree })} />
+            </Named>
+          </ReferenceNamesProvider>
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    try {
+      await waitFor(() =>
+        expect(
+          view.container.querySelector(`a[data-row-reference="${gone}"]`),
+          `the gone reference drawn ${drawn} lost its link`
+        ).not.toBeNull()
+      );
+      expect(
+        view.container.querySelector(`a[data-row-reference="${written}"]`),
+        `the ambiguous reference drawn ${drawn} is a link`
+      ).toBeNull();
+      expect(view.container.textContent).toContain(`It follows ${written} and `);
+    } finally {
+      view.unmount();
+    }
   }
 });
 
@@ -1066,6 +1112,86 @@ test("an option's press keeps the focus, and only a waiting question's are in th
   }
 });
 
+/** One row the way the conversation's rows draw it: closed until it takes the focus, open from
+ *  then on, under the page's writer. */
+function RowOpenedByFocus({ drawn }: { drawn: TreeNode }): ReactNode {
+  const [focused, setFocused] = useState(false);
+  return (
+    <NodeRow
+      author={{ kind: "agent", name: "Planner", reader: false }}
+      body={focused}
+      context={false}
+      focused={focused}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      onFocus={() => setFocused(true)}
+      onPin={() => {}}
+      onToggle={() => {}}
+      ownAnswer={false}
+      pinned={false}
+      rowKey="row"
+      tabStop
+      tabStops
+    />
+  );
+}
+
+// Decision 120: a control a reader can see acts on its first press. An option drawn on a row
+// that is not open yet is picked by that press, and the same press opens the row: the reader
+// never presses twice.
+test("a press on an option of a closed row picks it and opens the row in one", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  for (const key of [
+    ["asks", "CORE-1"],
+    ["comments", "CORE-1"],
+    ["issue-messages", "CORE-1"],
+    ["agents"],
+  ]) {
+    queryClient.setQueryData(key, []);
+  }
+  const asked = node({
+    id: "ask-1",
+    options: [{ description: "Where the rail fits.", label: "1280 px" }, { label: "1024 px" }],
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "open",
+    text: "At which width does the identity block condense?",
+    type: "ask",
+    waiting: true,
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <NoTooltips>
+          <OutlineWriterProvider issueKey="CORE-1">
+            <RowOpenedByFocus drawn={asked} />
+          </OutlineWriterProvider>
+        </NoTooltips>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    expect(view.container.querySelector("[data-node-body]")).toBeNull();
+    const option = view.container.querySelector<HTMLElement>('[data-pick-option="1024 px"]');
+    if (option === null) throw new Error("the closed row draws no option to press");
+    await user.click(option);
+    await waitFor(() => {
+      expect(
+        view.container.querySelector('[data-pick-option="1024 px"]')?.getAttribute("aria-pressed")
+      ).toBe("true");
+      expect(
+        view.container.querySelector("[data-node-body]"),
+        "the press picked the option and left the row closed"
+      ).not.toBeNull();
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 // Ruling 5: a child issue's row is one line - its title, then how it stands and what blocks it -
 // and its key is the row's tag, a link to the child's own page; it names no author and no time.
 test("a child issue's row draws its title, its facts and its key as the tag", () => {
@@ -1303,5 +1429,45 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
     }
   } finally {
     createComment.mockRestore();
+  }
+});
+
+/** A focused row whose box the browser lays out at `top`, 24 px tall, placed by the hook every
+ *  row of the outline places itself with. */
+function FocusedRowAt({ top }: { top: number }): ReactNode {
+  const row = useRef<HTMLDivElement | null>(null);
+  useRowOnScreen(row, true);
+  return (
+    <div
+      ref={(element) => {
+        row.current = element;
+        if (element !== null) element.getBoundingClientRect = () => new DOMRect(0, top, 320, 24);
+      }}
+    />
+  );
+}
+
+// Decision 113: a focused row stands below everything that stays at the top of the screen. At
+// 760 px and below the view row stays there and publishes its height (`slots/view-row.tsx`),
+// which the page's `scroll-padding-top` holds, while a header that publishes no band of its own
+// leaves `bringOnScreen` nothing to clear: so a focused row 10 px from the top lay under the view
+// row. It is scrolled to 8 px below it, and a row already below it is left where it is.
+test("a focused row under the view row that stays is placed below it, and one below it is left", () => {
+  document.documentElement.style.setProperty("--issue-view-row-height", "44px");
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
+  try {
+    const under = render(<FocusedRowAt top={10} />);
+    expect(
+      scrollBy,
+      "the focused row was left under the view row that stays"
+    ).toHaveBeenCalledTimes(1);
+    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 8 });
+    under.unmount();
+    scrollBy.mockClear();
+    render(<FocusedRowAt top={60} />).unmount();
+    expect(scrollBy, "a row already below the view row was scrolled").not.toHaveBeenCalled();
+  } finally {
+    scrollBy.mockRestore();
+    document.documentElement.style.removeProperty("--issue-view-row-height");
   }
 });

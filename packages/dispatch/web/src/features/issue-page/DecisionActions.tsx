@@ -290,6 +290,9 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
+  // Whether the send is reading the decisions document's text, which it does before the comment
+  // goes out: Send is off while it does, as it is while the comment is out.
+  const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
   // every other form of the app. At rest - no form open - the tree is still one tab stop (R9).
@@ -305,22 +308,40 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() === "") return;
+        if (body.trim() === "" || reading) return;
         // Send is disabled while the comment is out, and the form goes once it lands. The draft
         // goes while the send is out: a body that closes then comes back with Change closed, and
         // the shell's pending-writes indicator holds the send, so a second press cannot write the
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, read
-        // here, at the send, from the decisions read: `changeAnchor` reads every decision above
-        // this one, which no render of a row pays for (decision 92).
-        const anchor = changeAnchor(
-          decision,
-          queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-            ?.decisions
-        );
-        send.mutate({ anchor: anchor ?? { occurrence: 0, quote }, body });
+        // Which of the quote's places in the decisions document is this decision's own, counted
+        // here, at the send, over the document's own reading, which the send reads once now:
+        // `changeAnchor` walks every decision above this one, which no render of a row pays for
+        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
+        // takes it where the quote stands once, and refuses it where the quote stands more than
+        // once, which the form says in the page's words with the draft kept.
+        setReading(true);
+        void queryClient
+          .fetchQuery({
+            queryFn: () => api.getArtifactText(documentId),
+            queryKey: ["artifact", documentId, "text"],
+            staleTime: 0,
+          })
+          .then(
+            (text) => text.markdown_tree,
+            () => undefined
+          )
+          .then((tree) => {
+            setReading(false);
+            const anchor = changeAnchor(
+              decision,
+              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
+                ?.decisions,
+              tree
+            );
+            send.mutate({ anchor: anchor ?? { quote }, body });
+          });
       }}
     >
       <blockquote
@@ -353,7 +374,7 @@ function ChangeComposer({
       <p className="flex min-w-0 flex-wrap items-baseline gap-2">
         <button
           className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
-          disabled={send.isPending || body.trim() === ""}
+          disabled={send.isPending || reading || body.trim() === ""}
           type="submit"
           {...pageChrome}
         >

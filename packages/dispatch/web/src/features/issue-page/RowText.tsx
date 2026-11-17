@@ -23,7 +23,7 @@ import type { TextSource } from "../refs/text-references";
 import { chipWords } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
-import { useKnownReferenceNames } from "./reference-names";
+import { useKnownAmbiguousReferences, useKnownReferenceNames } from "./reference-names";
 import {
   knownIssueKeys,
   linkRowReferences,
@@ -48,9 +48,13 @@ import {
  * what its references point at (`row-references.ts`): an issue by its key and title, and a block
  * or a document as a chip in place, named as a tie's chip is, in plain words (`chipName`, part
  * G's R4). The page publishes that read's names as plain words already (`useIssueTree.ts`), so
- * they are drawn with no markdown pass (decision 66). The row asks the server nothing for it
- * (R21), so the body's own link pass, which reads one target for each reference, is given
- * nothing to link.
+ * they are drawn with no markdown pass (decision 66). A short reference that two or more targets
+ * answer to names no one of them: the page publishes it as ambiguous, apart from the names
+ * (`useKnownAmbiguousReferences`), and it is drawn as its author wrote it, with no link
+ * (decisions 62 and 89). A reference the read named nothing for and did not read as ambiguous -
+ * a gone one, or one the read has not answered yet - keeps its link, by its short form. The row
+ * asks the server nothing for it (R21), so the body's own link pass, which reads one target for
+ * each reference, is given nothing to link.
  *
  * The words are a reading of the text, as it was when it was drawn as stored: an `ask` block in a
  * document is a node of the tree of its own, where a reader answers it, so the text draws its
@@ -189,8 +193,9 @@ function dropDirectiveLines(root: HTMLElement): void {
   }
 }
 
-/** A text drawn as stored, each reference in it the link the batched read names, and no typed
- *  block's source line in it. */
+/** A text drawn as stored, each reference in it the link the batched read names, but for one
+ *  the read answered as ambiguous, which stays as written, and no typed block's source line in
+ *  it. */
 function StoredText({
   markdown: stored,
   tabStops,
@@ -200,8 +205,13 @@ function StoredText({
 }): ReactNode {
   const markdown = useMemo(() => withoutDirectiveLines(stored), [stored]);
   const read = useKnownReferenceNames();
+  const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
-  const found = useMemo(() => rowReferences(markdown, knownIssueKeys(names)), [markdown, names]);
+  const found = useMemo(
+    () =>
+      rowReferences(markdown, knownIssueKeys(names)).filter((one) => !ambiguous.has(one.reference)),
+    [ambiguous, markdown, names]
+  );
   const follow = useFollowInPlace();
   let at = 0;
   return (
@@ -313,6 +323,7 @@ function DrawnText({
 }): ReactNode {
   const drawn = useRef<HTMLDivElement>(null);
   const read = useKnownReferenceNames();
+  const ambiguous = useKnownAmbiguousReferences();
   const names = useMemo(() => chipNames(read, markdown), [markdown, read]);
   // After every paint of the reading, and again when the batched read brings the names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
@@ -323,7 +334,17 @@ function DrawnText({
     dropDirectiveLines(element);
     linkRowReferences(element, names);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
-      const route = parseNodeReference(anchor.getAttribute("data-row-reference") ?? "");
+      const reference = anchor.getAttribute("data-row-reference") ?? "";
+      // A reference the read answered as ambiguous is drawn as its author wrote it, with no
+      // link. The pass links only what the reading left as text, and the reading makes a
+      // dashboard address a link of its own, so what it linked here is a `dispatch://`
+      // reference, which is written as the reference reads. Each later pass links it again,
+      // and this takes the link out again.
+      if (ambiguous.has(reference)) {
+        anchor.replaceWith(reference);
+        continue;
+      }
+      const route = parseNodeReference(reference);
       if (route !== undefined && route.kind !== "issue") {
         anchor.setAttribute(ROW_CHIP, "");
         // A whole document is named by the page's word for one, as `chipNames` names it, also
@@ -333,7 +354,7 @@ function DrawnText({
       }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
-  }, [names, tabStops]);
+  }, [ambiguous, names, tabStops]);
   useLayoutEffect(link, [link]);
   useOutOfTabOrder(drawn, !tabStops);
   const follow = useFollowInPlace();
