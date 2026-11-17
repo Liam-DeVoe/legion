@@ -171,20 +171,24 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 }
 
 // A run's session, its report and its generation reach the store from the body and come back from
-// it as written: the write's answer and the read carry the session the first write named, the
-// report in its canonical spelling and generation 2, beside its attempt 1 and the place it
-// returned to.
+// it as written. The start names no session, as the daemon's start does, and the end names the
+// session with the model, as one pair; a later end that names another session leaves it. The
+// write's answers and the read carry that pair, the report in its canonical spelling and
+// generation 2, beside its attempt 1 and the place it returned to.
 func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
 	identity := withStepFields(stepIdentity(daemonSession("LEG")), map[string]any{"generation": 2})
-	putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
-		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart, "session": "ses_implementer_run",
+	started := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart,
 	}))
+	if started.Session != "" || started.Model != "" {
+		t.Fatalf("the start answers %s, want no session and no model yet", stepJSON(t, started))
+	}
 	ended := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
-		"session": "ses_a_later_session", "report": strings.ToUpper(report), "returned_to": 1,
+		"session": "ses_implementer_run", "report": strings.ToUpper(report), "returned_to": 1,
 	}))
 
 	returned := 1
@@ -196,6 +200,12 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	}
 	if got := stepJSON(t, ended); got != stepJSON(t, want) {
 		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, stepJSON(t, want))
+	}
+	again := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
+		"result": "failed", "ended_at": stepEnd, "session": "ses_a_later_session",
+	}))
+	if got := stepJSON(t, again); got != stepJSON(t, want) {
+		t.Fatalf("the repeated end's answer is\n%s\nwant the first end's session\n%s", got, stepJSON(t, want))
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || stepJSON(t, steps[0]) != stepJSON(t, want) {
 		t.Fatalf("the read lists %+v, want the one record\n%s", steps, stepJSON(t, want))
