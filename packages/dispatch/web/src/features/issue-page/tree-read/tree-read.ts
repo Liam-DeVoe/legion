@@ -130,6 +130,9 @@ export interface TreeRead {
   /** The typed blocks of the document that plays `role` (`blocksOfRole`), the same value for a
    *  role until the answer or the read's state changes. */
   readonly blocksOf: (role: TreeFilter) => TreeBlocksRead;
+  /** Whether the read has neither answered nor failed yet: what holds back a read that waits on
+   *  every other read of the page, as the batched name read does (`useIssueTree`). */
+  readonly pending: boolean;
 }
 
 /**
@@ -139,7 +142,13 @@ export interface TreeRead {
  * built again on every render.
  */
 export function useTreeRead(issue: IssueDetails): TreeRead {
-  const { data: answer, isError, isSuccess, refetch } = useQuery(issueTreeQuery(issue.key));
+  const {
+    data: answer,
+    isError,
+    isPending,
+    isSuccess,
+    refetch,
+  } = useQuery(issueTreeQuery(issue.key));
   const blocks = useMemo(
     () => ({
       plan: blocksOfRole(answer, "plan", issue),
@@ -162,8 +171,9 @@ export function useTreeRead(issue: IssueDetails): TreeRead {
       blocksHeld: answer !== undefined,
       blocksRead: isSuccess,
       blocksOf: (role: TreeFilter) => reads[role],
+      pending: isPending,
     }),
-    [answer, isSuccess, reads]
+    [answer, isPending, isSuccess, reads]
   );
 }
 

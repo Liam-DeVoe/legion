@@ -36,6 +36,7 @@ import { CONTROL_LABELS, EMPTY_STATE_LINES, NODE_TYPE_NAMES, type NodeType } fro
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
 import { addressesAsShortForms } from "./tree-drafts";
+import { issueTreeQuery } from "./tree-read/tree-read";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -2004,6 +2005,14 @@ test("the outline says the issue holds nothing only once the reads its nodes com
   client.setQueryData(["decisions", KEY], { decisions: [], document: null, open_questions: [] });
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(["issue-messages", KEY], []);
+  client.setQueryData(issueTreeQuery(KEY).queryKey, {
+    converted: false,
+    cursor: null,
+    nodes: [],
+    tree: null,
+    tuples: [],
+    view_of: null,
+  });
   // The comments' read, held out until the case answers it.
   const held = Promise.withResolvers<never[]>();
   const comments = spyOn(api, "listComments").mockReturnValue(held.promise as never);
