@@ -2110,7 +2110,7 @@ package api
 // main's own number and every open head again at the next forward merge rather than from this
 // line.)
 //
-// 156: dispatch://INFRA-2709 R22 -- the project's controller gets the four claim operations the
+// 156: #4065 -- the project's controller gets the four claim operations the
 // operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
 // each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
 // (claimDoor: a controller grant, or an architect grant for a claim of its own tree, or `403
@@ -2133,7 +2133,7 @@ package api
 // refused a claim the operator's own suspension holds with `409 SUSPENDED_BY_OPERATOR`, nothing of
 // the claim changed; its retry and resume of a claim stored working are refused `409
 // CLAIM_IN_A_TURN`. An architect gets the same six operations — these four, `fresh-session` and
-// `compact` — for the claims of its own tree alone (dispatch://INFRA-2709 t41): an issue the
+// `compact` — for the claims of its own tree alone (#4065): an issue the
 // daemon does not record is `404 ISSUE_NOT_FOUND`, one of another tree `403 ISSUE_OUTSIDE_TREE`,
 // and the architect's own claim `403 OWN_CLAIM`. Its suspension is recorded as `architect`, a
 // further supervise.SuspendSource that `claims.suspended_by` admits from migration
@@ -2152,7 +2152,7 @@ package api
 // number above the base's that no open head declared. At the forward merge that brought main in
 // at b2e42742, which declares 144, the number moved to 150, the lowest number above 144 that no
 // open pull request declared, as .github/scripts/check-daemon-api-contract.sh named it. At the
-// forward merge that brought main in at 467e5371, which declares 146 (INFRA-2614, the entry right
+// forward merge that brought main in at 467e5371, which declares 146 (the entry right
 // above this one), it moved to 156, which that check named at 2026-11-17T07:04:26Z as the lowest
 // number above 146 that no open pull request declared: 147 (#4017), 148 (#3519), 149 (#2230), 150
 // (#4049 and this change's own #4065), 151 (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155

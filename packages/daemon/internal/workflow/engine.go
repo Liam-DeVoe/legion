@@ -907,7 +907,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 // not done the controller hears it from a row of its own, because every other notice of the tree
 // reaches that architect and nobody inside the tree is left to act on its own. A root that is
 // done is parked, lingers or is closed, and the controller does nothing for it, so that copy is
-// not written (dispatch://INFRA-2709, R21). That is why the architect's branch comes before the
+// not written (#4065). That is why the architect's branch comes before the
 // lingering tree's guard. The row sent to the architect's own role finishes undelivered once its
 // claim has failed (the daemon's notice executor).
 //
@@ -1017,7 +1017,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 // moves — the worker is running — and nothing is held: the report is the whole point, since a
 // worker that lost its memory is otherwise indistinguishable from one that is merely slow. The
 // controller gets no copy: the architect is the one who acts on it, and a person reads the issue
-// (dispatch://INFRA-2709, R21). An issue the record does not hold tells nobody.
+// (#4065). An issue the record does not hold tells nobody.
 //
 // The detail is the runtime's own account of the failed resume, which carries a session file name
 // and a transport error from outside the daemon, and this sentence is read into an agent's

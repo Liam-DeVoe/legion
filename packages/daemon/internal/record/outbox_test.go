@@ -268,7 +268,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tick notice for an architect", payload: Notice{Kind: TickNotice}, reason: "unknown notice kind"},
 		{name: "a parked-decision notice for an architect", payload: Notice{Kind: ParkedDecisionNotice}, reason: "unknown notice kind"},
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
-		// The two wakes the controller's skill said to do nothing on (dispatch://INFRA-2709, R21):
+		// The two wakes the controller's skill said to do nothing on (#4065):
 		// the daemon writes neither kind any more, to anyone.
 		{name: "an unslotted notice to the controller", payload: ControllerNotice{Kind: "unslotted", Reason: "LEGION-208 was in_progress"}, reason: "unknown controller notice kind"},
 		{name: "an awaiting-person notice to the controller", payload: ControllerNotice{Kind: "awaiting-person", Reason: "LEGION-208 waits on a person"}, reason: "unknown controller notice kind"},

@@ -178,7 +178,7 @@ func TestPlannerKeepsFindingsAndHumanToDoAsksOutsideDesignQuestions(t *testing.T
 		t.Error("core/planner.md still makes every finding outside the tree an ask, which contradicts the headless fragment's clear-defect path")
 	}
 	if strings.Contains(planner, "Any other clear defect goes to whoever coordinates the project's work") {
-		t.Error("core/planner.md still sends a clear defect to the project's coordinator to pass on, which R20 of dispatch://INFRA-2709 removes")
+		t.Error("core/planner.md still sends a clear defect to the project's coordinator to pass on, which #4065 removes")
 	}
 }
 

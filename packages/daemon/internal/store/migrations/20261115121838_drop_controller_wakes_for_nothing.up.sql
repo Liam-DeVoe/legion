@@ -2,7 +2,7 @@
 -- kinds the daemon no longer writes go.
 --
 -- The daemon tells the controller no notice its skill says to do nothing on
--- (dispatch://INFRA-2709, R21). Two kinds were only that: `awaiting-person`, a root that waits on
+-- (#4065). Two kinds were only that: `awaiting-person`, a root that waits on
 -- a person (workflow's enterAwaiting), on which the skill said "Nothing", and `unslotted`, a root
 -- admission took out of the workflow (admit's releaseUnslotted), which the controller reads from
 -- the state instead. This release writes neither, and the two kinds left record's

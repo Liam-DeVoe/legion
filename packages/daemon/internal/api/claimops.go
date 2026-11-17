@@ -21,7 +21,7 @@ import (
 // (suspendedByOperator). These four routes are the one session-facing surface that names a
 // suspender. The state does not, and must not: a session parses the state with the schema of its
 // own plugin's contract, and a key added there refuses the whole state in every pod whose plugin
-// predates INFRA-1048 (StrandedClaim). Only a plugin at the contract that added these routes calls
+// predates the stranded-claim reading (StrandedClaim). Only a plugin at the contract that added these routes calls
 // them, so no reader of this body predates its keys.
 type ClaimOperationResponse struct {
 	// State is the claim's state after the request: retired after a stop; suspended after a

@@ -17,7 +17,7 @@ import (
 )
 
 // One event of the project's merge holds document tells each role that a hold can stop, and no
-// other role (plan D20 of dispatch://INFRA-2709). With one issue in accepting and one in merging,
+// other role (#4065). With one issue in accepting and one in merging,
 // it writes two deliveries: a merge-holds-changed notice on the accepting issue, which reaches its
 // tree's architect, and a merge-holds row on the merging issue, which reaches its merger. Each
 // carries the one text that names the document and says to read it again. It writes nothing for

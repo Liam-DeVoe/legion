@@ -11,7 +11,7 @@ const dropControllerWakesVersion = 20261115121838
 
 // A queued `awaiting-person` or `unslotted` controller notice is a row this release cannot run:
 // the daemon tells the controller no notice its skill says to do nothing on
-// (dispatch://INFRA-2709, R21), so both kinds left record's controllerOnlyNoticeKind, and
+// (#4065), so both kinds left record's controllerOnlyNoticeKind, and
 // record.DecodeOutboxPayload refuses a controller notice of a kind it does not know on every
 // attempt. A row the release before this one wrote would fail for ever on its backoff.
 //

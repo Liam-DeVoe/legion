@@ -24,7 +24,7 @@ import (
 // lingers, and Legion starts nothing for it, so a slot that frees later goes elsewhere and never
 // starts a second copy of someone else's work. The controller is told nothing: its skill
 // re-admits nothing for such a root, and it reads the root from the state, at phase done beside a
-// status only a running tree has (dispatch://INFRA-2709, R21). Set back to todo with the label,
+// status only a running tree has (#4065). Set back to todo with the label,
 // it is queued again and takes the next slot. A root a hand-over carried into a phase past
 // admitted waits in the line the same way, and leaves it the same way.
 func TestAWaitingRootMovedToARunningTreesStatusLeavesTheWorkflow(t *testing.T) {

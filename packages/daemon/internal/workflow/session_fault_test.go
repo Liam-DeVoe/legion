@@ -25,7 +25,7 @@ func seedTestingIssue(t *testing.T, pool *pgxpool.Pool, key string) {
 // A lost session is posted on the issue and told to its architect, and the controller is told
 // nothing: the worker is running, so nothing is held, and the architect is the one who acts on the
 // report. A copy to the controller would only tell it what the architect already hears
-// (dispatch://INFRA-2709, R21).
+// (#4065).
 func TestALostSessionIsToldOnTheIssueAndToItsArchitectAlone(t *testing.T) {
 	pool := migratedPool(t)
 	seedTestingIssue(t, pool, "LEGION-209")

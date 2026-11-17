@@ -50,16 +50,17 @@ import (
 // last of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800
 // has deleted main's merge-lane rows, and it names every other kind main's daemon writes
 // (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
-// never writes. This change's two rewrites of claims_suspended_by_check (20261115060739,
-// 20261115083448) stand above main's newest too, and no row of this test reaches that check. So
-// does this change's delete of the queued controller notices of the two kinds the daemon
-// no longer writes (20261115121838), which takes no row of this test either, since each controller
-// notice here carries no kind. And so is dispatch://INFRA-3146's `phases.entry_moved_back`
-// (20261113090512), which stands between INFRA-2981's two and adds one column beside the phase
-// entry's, true on every row it finds and false by default after, and so needs no row of its own
-// here (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded
-// migration a database has not recorded, so a database that took INFRA-2981's two before this one
-// takes it in its next upgrade all the same.
+// never writes. And so is dispatch://INFRA-3146's `phases.entry_moved_back` (20261113090512),
+// which stands between INFRA-2981's two and adds one column beside the phase entry's, true on
+// every row it finds and false by default after, and so needs no row of its own here
+// (migration_20261113090512_test.go reads both). Store.Migrate applies every embedded migration a
+// database has not recorded, so a database that took INFRA-2981's two before this one takes it
+// in its next upgrade all the same.
+// This change's two rewrites of claims_suspended_by_check (20261115060739, 20261115083448) stand
+// above main's newest too, and no row of this test reaches that check. So does this change's
+// delete of the queued controller notices of the two kinds the daemon no longer writes
+// (20261115121838), which takes no row of this test either, since each controller notice here
+// carries no kind.
 // dispatch://INFRA-2614's architect stall marks (20261113181500), its architect entry upgrade
 // (20261113182000), its claim handshake (20261114020537) and its phase entry's mark that a task is
 // sent again as written (20261114061900) are named here too: an upgrade of a database main

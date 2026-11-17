@@ -189,8 +189,7 @@ func TestTheHeldNoticeNamesTheFailure(t *testing.T) {
 		died := record.Notice{Kind: "worker-died", Role: claim.RolePlanner, Phase: phase.Planning, Failure: named}
 		got := noticeRows(t, pool)
 		// No controller copy of the hold: the architect retries or escalates it, and the
-		// controller's skill does nothing for a hold that is not escalated (dispatch://INFRA-2709,
-		// R21). The escalation is what reaches the controller (TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater).
+		// controller's skill does nothing for a hold that is not escalated (#4065). The escalation is what reaches the controller (TestAnEscalationIsRecordedOnTheHoldForAControllerThatStartsLater).
 		if want := []record.OutboxPayload{held, died}; !sameNotices(got, want) {
 			t.Fatalf("notice rows = %+v, want %+v: the hold and the worker-died to the architect, each naming the failure, and no copy to the controller", got, want)
 		}
@@ -382,7 +381,7 @@ func TestAnEscalatedChildOfAClosedTreeKeepsItsHoldButShowsNoEscalation(t *testin
 // controller. The tree architect's own failed claim holds no phase either, and is still told to the
 // issue's topic, lingering or not. It is not told to the controller: a lingering root is done, and
 // the controller's skill does nothing for a failed architect whose root is done, since the tree is
-// parked or closed already (dispatch://INFRA-2709, R21).
+// parked or closed already (#4065).
 func TestALingeringTreesFailedClaimHoldsNothingAndItsArchitectsIsStillTold(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()

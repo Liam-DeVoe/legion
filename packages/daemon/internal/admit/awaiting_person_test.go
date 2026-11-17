@@ -131,7 +131,7 @@ func superviseRequests(t *testing.T, pool *pgxpool.Pool, issue string) []record.
 
 // awaiting_person: its architect stays live while the root waits, the root keeps the row it took
 // at its admission, so the root waiting behind it waits on, and the controller is told nothing:
-// its skill does nothing for the wait, and the state names it (dispatch://INFRA-2709, R21).
+// its skill does nothing for the wait, and the state names it (#4065).
 func TestARootWaitingOnAPersonKeepsItsRow(t *testing.T) {
 	pool := migratedPool(t)
 	admission := awaitingRig(t, pool, 1)

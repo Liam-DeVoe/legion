@@ -477,7 +477,7 @@ func TestTheStallBackstopTellsTheOwnerAgainWhenTheRowIsRefused(t *testing.T) {
 // the stall's replacement failed the architect's claim: every other notice of the tree reaches
 // that architect, so nobody else would act on a failed one. Every other end leaves the task owed
 // to the architect and fails nothing, and the controller's skill does nothing for it, so that
-// stall is the architect's alone (dispatch://INFRA-2709, R21). A worker's stall is its architect's
+// stall is the architect's alone (#4065). A worker's stall is its architect's
 // alone whatever its end.
 func TestTheStallBackstopTellsTheControllerOfATreeArchitectsStallOnlyWhenItFailedTheClaim(t *testing.T) {
 	rig := newBackstopRig(t)

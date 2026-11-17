@@ -658,8 +658,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // carries its Version, a changes request its Reason. The controller decides whether the tree runs
 // again (skill://legion-controller/references/parked-decisions.md).
 //
-// The daemon tells the controller no notice its skill says to do nothing on (dispatch://INFRA-2709,
-// R21). So a root that waits on a person (workflow's enterAwaiting) and a root admission took out
+// The daemon tells the controller no notice its skill says to do nothing on (#4065).
+// So a root that waits on a person (workflow's enterAwaiting) and a root admission took out
 // of the workflow (admit's releaseUnslotted) are told to nobody: the controller does nothing for
 // the first, and reads the second from the state, a root at `phase: done` whose status is one
 // only a running tree has. Their two kinds, `awaiting-person` and `unslotted`, went with their

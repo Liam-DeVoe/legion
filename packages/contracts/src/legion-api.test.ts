@@ -2011,7 +2011,7 @@ test("no session-facing response carries suspendedBy", () => {
   }
 });
 
-// An architect's suspension is a source of its own (contract 156, dispatch://INFRA-2709 t41): the
+// An architect's suspension is a source of its own (contract 156, #4065): the
 // claim operations' answer names it, landed or held, while the state, which the walk above holds
 // to no suspender at all, still names none.
 test("the claim operations name an architect's suspension", () => {

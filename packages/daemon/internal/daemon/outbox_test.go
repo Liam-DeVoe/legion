@@ -2342,7 +2342,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 		t.Fatalf("iterate failure notices: %v", err)
 	}
 	if fmt.Sprint(notices) != "[held worker-died]" {
-		t.Fatalf("failure notices = %v, want held and worker-died to the issue, each once, and no copy to the controller (dispatch://INFRA-2709, R21)", notices)
+		t.Fatalf("failure notices = %v, want held and worker-died to the issue, each once, and no copy to the controller (#4065)", notices)
 	}
 }
 

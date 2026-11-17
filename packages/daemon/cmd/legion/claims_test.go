@@ -1094,7 +1094,7 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
 // operator reading `legion claims list` does not read it as a suspension someone must lift. A
-// claim the project's controller suspended says so too (dispatch://INFRA-2709), so the operator
+// claim the project's controller suspended says so too (#4065), so the operator
 // tells it from its own suspension: the controller's resume lifts it, where the operator's own is
 // the operator's alone to lift. So does a claim an architect suspended, which an architect's
 // resume lifts as well as the controller's and the operator's. Every other claim prints the state

@@ -96,7 +96,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
 number is the one `DaemonAPIVersion` declares, last bumped by contract 156's controller claim
-operations (dispatch://INFRA-2709: the controller's `legion` tool gains `stop`, `retry`, `suspend`
+operations (#4065: the controller's `legion` tool gains `stop`, `retry`, `suspend`
 and `resume` (issue, role), which post `POST /legion/v1/claims/stop`, `/retry`, `/suspend` and
 `/resume` with the claim recoveries' body and read `ClaimOperationResponse`, the claim's state and
 who holds a suspension over it; the controller's suspension is recorded as `controller`, its own
@@ -105,7 +105,7 @@ of a claim the operator's own suspension holds with `SUSPENDED_BY_OPERATOR`; an 
 gains the same six claim operations for its own tree's claims, its suspension recorded as
 `architect` under the controller's, refused `SUSPENDED_BY_CONTROLLER` under the controller's
 suspension; no shape the plugin already parses moves, and the state still names no suspender),
-after contract 146 (dispatch://INFRA-2614: a root at `admitted` carries its architect's
+after contract 146 (a root at `admitted` carries its architect's
 `phaseEntry` and `givenEntry`, every issue carries `entryQueuedAt` and `entryConfirmedAt`, the two
 times of a claim's own record of its handshake of its last entry, which outlast that entry's task
 and which a tree's own root carries from its architect's claim in every phase, and each tree root

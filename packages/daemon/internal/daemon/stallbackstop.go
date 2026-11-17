@@ -181,7 +181,7 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // is left to act on it (workflow's claimFailed, which tells a failed tree architect's death the
 // same way). Every other end of that architect's stall is told to the architect alone: the task
 // is still owed to it and nothing failed, so the controller's skill does nothing for it, and a
-// copy would be a wake for nothing (dispatch://INFRA-2709, R21).
+// copy would be a wake for nothing (#4065).
 func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, end supervise.ProcessEnd, found string) error {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}

@@ -16,7 +16,7 @@ import (
 )
 
 // One event of the project's merge holds document, applied as the Dispatch consumer applies it,
-// reaches each role that a hold can stop (plan D20 of dispatch://INFRA-2709). With one issue in
+// reaches each role that a hold can stop (#4065). With one issue in
 // accepting and one in merging, it writes two deliveries, and the outbox publishes one notice to
 // that tree's architect, on the architect's role topic, and one message to that issue's merger, on
 // the merger's role topic. The merger's pod was released, as the idle release leaves a held merger

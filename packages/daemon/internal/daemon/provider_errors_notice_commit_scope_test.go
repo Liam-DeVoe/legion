@@ -96,7 +96,7 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 // controller topic, each as `provider-errors on <issue>` and each under its own row's key. The
 // architect is who narrows the work the provider keeps refusing, and the controller is who
 // compacts or refreshes the claim's session, so the controller relays nothing
-// (dispatch://INFRA-2709, P11). A run of the tree's architect's own claim reaches the controller
+// (#4065). A run of the tree's architect's own claim reaches the controller
 // alone: the architect copy would wake the very session the provider keeps refusing, for one more
 // failing turn, and the controller holds that work.
 func TestAProviderErrorsNoticeReachesTheIssuesArchitectAndTheController(t *testing.T) {

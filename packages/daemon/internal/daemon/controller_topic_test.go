@@ -31,7 +31,7 @@ import (
 // architect's role topic takes the held and worker-died notices once each, the held one carrying
 // the failure that held the issue, and the controller's topic takes nothing, because the
 // controller's skill does nothing for a hold its architect has not escalated
-// (dispatch://INFRA-2709, R21).
+// (#4065).
 //
 // A tree architect whose own launches run out is the case the controller still hears, from an
 // outbox row of its own (workflow's noticeWithController). Here the listener refuses the

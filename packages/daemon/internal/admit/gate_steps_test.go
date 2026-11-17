@@ -32,7 +32,7 @@ const (
 // the root keeps its slot, it does not enter awaiting_person, and no phase starts, because the
 // record knows no document of that step to hand to a person. The same root with that step
 // registered and still closed enters awaiting_person, which is what tells the two apart. Neither
-// tells the controller anything (dispatch://INFRA-2709, R21). It keeps its row through either, since a started
+// tells the controller anything (#4065). It keeps its row through either, since a started
 // issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
 // this root stands in admitted with a gate that has never opened, or in awaiting_person,
 // throughout: those are two of the three roots that keep their row even while they wait on

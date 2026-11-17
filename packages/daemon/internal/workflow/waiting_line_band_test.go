@@ -37,7 +37,7 @@ import (
 // of packages/daemon this test reads, which are its own job's inputs either way; over the texts
 // outside it, a ban is a whole-file negative that no excerpt can prove, and internal/textcheck
 // is where it runs. The controller's wakes reference left both lists with its `awaiting-person`
-// section: the daemon sends that wake no more (dispatch://INFRA-2709, R21), and nothing else in it
+// section: the daemon sends that wake no more (#4065), and nothing else in it
 // states the placement.
 //
 // Presence alone let a position claim through: AGENTS.md carried record.WaitingLineBand word for

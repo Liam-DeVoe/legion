@@ -365,7 +365,7 @@ func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string 
 
 // assertNoAwaitingEffects fails when key's architect was suspended or the controller was told
 // anything of key. A root that enters the wait on a person tells the controller nothing either
-// (dispatch://INFRA-2709, R21), so a caller reads the wait itself from the record.
+// (#4065), so a caller reads the wait itself from the record.
 func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
 	for _, effect := range effects(t, pool) {
@@ -386,7 +386,7 @@ func assertNoAwaitingEffects(t *testing.T, pool *pgxpool.Pool, key string) {
 // A registration of a closed gate whose approval request waits on the person is the architect
 // handing the spec to the person: the root keeps the row it took at its admission, so the root
 // waiting behind it waits on, its architect stays live after its turn, and the controller is
-// told nothing, since its skill does nothing for the wait (dispatch://INFRA-2709, R21).
+// told nothing, since its skill does nothing for the wait (#4065).
 func TestAClosedRegisteredGateKeepsItsRootsRowWhileTheNextRootWaits(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)

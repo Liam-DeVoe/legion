@@ -7335,7 +7335,7 @@ the Go tmux daemon takes over the Kubernetes daemon's claims once every pod of t
 **`--resume` keeps the same-agent invariant, and the table is what keeps it.**
 The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too.
 A session found nowhere is a session no store holds, whether or not `take_over` is set:
-the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect and to the new agent in its own prompt (dispatch://INFRA-714 R8), so a lost session is loud rather than silent.
+the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect and to the new agent in its own prompt, so a lost session is loud rather than silent.
 Oh My Pi itself does not refuse: verified against the pinned build (`omp --resume=<missing path> --mode rpc`), it exits 0, answers `ready`, and runs as a fresh agent, with no error frame and no mention of the file.
 Under Kubernetes there is no file to look for and no init container that looks for one:
 every session is a row in the session database, and the pod's disk, which dies with the pod, never holds a transcript.
