@@ -730,7 +730,6 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 			for _, step := range stored.Steps[task.Task] {
 				block.Steps = append(block.Steps, plan.Step{Role: step.Role, Key: step.AgentKey})
 			}
-			block.HasSteps = len(block.Steps) > 0
 		}
 		held.Tasks = append(held.Tasks, block)
 	}
@@ -752,7 +751,7 @@ func givenRows(fact intake.PlanGiven, stored *record.StoredPlan, changed []strin
 	for _, given := range fact.Plan.Tasks {
 		tasks = append(tasks, record.PlanTask{Issue: fact.Issue, Generation: fact.Generation, Task: given.ID, PlanVersion: fact.Plan.Version,
 			BlockText: given.Text, Needs: given.Needs, PartOf: given.PartOf, OwnerRole: given.Owner, Merges: given.Merges,
-			StepsByDefault: !given.HasSteps && given.Owner == "", State: record.TaskWaiting})
+			StepsByDefault: !given.NamesSteps() && given.Owner == "", State: record.TaskWaiting})
 		if stored != nil && !slices.Contains(changed, given.ID) {
 			steps = append(steps, stored.Steps[given.ID]...)
 			continue

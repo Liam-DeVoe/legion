@@ -94,7 +94,7 @@ func taskReasons(t Task) []string {
 	if t.Merges {
 		reasons = append(reasons, fmt.Sprintf("task %s names merges.", t.ID))
 	}
-	if t.HasSteps {
+	if t.NamesSteps() {
 		reasons = append(reasons, stepReasons(t)...)
 	}
 	return reasons

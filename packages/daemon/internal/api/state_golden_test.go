@@ -1506,9 +1506,8 @@ func TestOwnerPlanRouteGoldens(t *testing.T) {
 		ArtifactID: "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11",
 		Version:    4,
 		Tasks: []plan.Task{{
-			ID:       "a",
-			HasSteps: true,
-			Steps:    []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+			ID:    "a",
+			Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
 		}},
 	})})
 	golden(t, "task-stop.json", EmptyResponse{})

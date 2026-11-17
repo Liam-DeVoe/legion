@@ -33,7 +33,7 @@ func givenTask(t *testing.T, text string, words ...string) plan.Task {
 	}
 	task := plan.Task{ID: "a", Text: text}
 	if len(steps) > 0 {
-		task.HasSteps, task.Steps = true, steps
+		task.Steps = steps
 	}
 	return task
 }
