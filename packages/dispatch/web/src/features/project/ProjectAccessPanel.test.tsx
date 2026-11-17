@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { settle } from "../../__tests__/fake-clock";
+import { runFocusFixup } from "../../__tests__/focus-fixup";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pagedGroups } from "../../__tests__/paged-groups";
 import { ApiError, api } from "../../api/client";
@@ -578,31 +579,6 @@ for (const [code, reason] of [
       patch.mockRestore();
     }
   });
-}
-
-/** The HTML focus fixup rule, which a browser runs and happy-dom does not: a focused control that
- *  becomes disabled loses the focus to the document's body
- *  (https://html.spec.whatwg.org/multipage/interaction.html#focus-fixup-rule). The body is
- *  focused rather than the control blurred, because happy-dom's `blur()` refuses a disabled
- *  element. Returns what stops it. */
-function runFocusFixup(): () => void {
-  const observer = new MutationObserver((records) => {
-    for (const { target } of records) {
-      if (
-        target === document.activeElement &&
-        target instanceof HTMLElement &&
-        target.matches(":disabled")
-      ) {
-        document.body.focus();
-      }
-    }
-  });
-  observer.observe(document.body, {
-    attributeFilter: ["disabled"],
-    attributes: true,
-    subtree: true,
-  });
-  return () => observer.disconnect();
 }
 
 // A keyboard reader who presses the switch keeps their place through its write and the refusal
