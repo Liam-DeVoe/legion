@@ -69,11 +69,12 @@ func legionFooter(session, head string) string {
 }
 
 // legionEntryFooter is legionFooter naming entry too: the entry of the round the review is of, the
-// number the reviewer's task in reviewing ends with (workflow.ReviewEntryLabel). Only the
-// reviewer's own review that names the entry its phases row stands at moves the commit the reviewer
-// read (workflow's review); a footer with no entry still decides the round.
+// number the reviewer's task in reviewing ends with (workflow.ReviewEntryLabel), written as the
+// reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). Only the reviewer's
+// own review that names the entry its phases row stands at moves the commit the reviewer read
+// (workflow's review); a footer with no entry still decides the round.
 func legionEntryFooter(session, head string, entry int64) string {
-	return fmt.Sprintf("\n\n<!-- legion: {\"session\":%q,\"phase\":\"review\",\"head\":%q,\"entry\":%d} -->", session, head, entry)
+	return fmt.Sprintf("\n\n<!-- legion: {\"session\":%q,\"phase\":\"review\",\"head\":%q,\"entry\":\"%d\"} -->", session, head, entry)
 }
 
 // legionReview is listedReview as the review App's own session submits it: its body carries the
