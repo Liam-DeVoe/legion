@@ -39,28 +39,28 @@ func stepWork(p phase.Phase) (role, typ string, ok bool) {
 }
 
 // stepIn is the step phase p runs as a step of the task default whose steps are steps: the place
-// its count of starts is kept under, its place in the task (from 1 for a step, 0 for a retro or a
-// merge, which no plan names, so the kind tells those two apart), its role and its type ("" for a
-// retro or a merge). A working phase's step is the first step of steps whose role works it, at one
-// plus its index. A phase no step of steps works, and a phase that runs no step — admitted,
-// awaiting a person, held, done — answers ok false.
-func stepIn(steps []string, p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
+// its count of starts is kept under, whose Place is its place in the task (from 1 for a step, 0 for
+// a retro or a merge, which no plan names, so the kind tells those two apart), its role and its
+// type ("" for a retro or a merge). A working phase's step is the first step of steps whose role
+// works it, at one plus its index. A phase no step of steps works, and a phase that runs no step —
+// admitted, awaiting a person, held, done — answers ok false.
+func stepIn(steps []string, p phase.Phase) (place record.StepPlace, role, typ string, ok bool) {
 	switch p {
 	case phase.Retro:
-		return record.StepPlace{Task: defaultTask, Kind: "retro"}, 0, "implementer", "", true
+		return record.StepPlace{Task: defaultTask, Kind: "retro"}, "implementer", "", true
 	case phase.Merging:
-		return record.StepPlace{Task: defaultTask, Kind: "merge"}, 0, "merger", "", true
+		return record.StepPlace{Task: defaultTask, Kind: "merge"}, "merger", "", true
 	}
 	role, typ, ok = stepWork(p)
 	if !ok {
-		return record.StepPlace{}, 0, "", "", false
+		return record.StepPlace{}, "", "", false
 	}
 	for i, named := range steps {
 		if stepRole, _, _ := strings.Cut(named, ":"); stepRole == role {
-			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, i + 1, role, typ, true
+			return record.StepPlace{Task: defaultTask, Kind: "step", Place: i + 1}, role, typ, true
 		}
 	}
-	return record.StepPlace{}, 0, "", "", false
+	return record.StepPlace{}, "", "", false
 }
 
 // planRecordNamespace is the namespace of every plan record's id.

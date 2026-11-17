@@ -43,17 +43,17 @@ func TestStepOfReadsTheDefaultSteps(t *testing.T) {
 	}
 
 	withoutTester := slices.DeleteFunc(DefaultSteps(), func(step string) bool { return step == "tester" })
-	if place, n, role, typ, ok := stepIn(withoutTester, phase.Reviewing); !ok || n != 3 || place.Place != 3 || role != "reviewer" || typ != "review" {
-		t.Errorf("the reviewing step of %q = %+v, step %d, role %q, type %q, ok %v; want place 3 under the reviewer, of type review",
-			withoutTester, place, n, role, typ, ok)
+	if place, role, typ, ok := stepIn(withoutTester, phase.Reviewing); !ok || place.Place != 3 || role != "reviewer" || typ != "review" {
+		t.Errorf("the reviewing step of %q = %+v, role %q, type %q, ok %v; want place 3 under the reviewer, of type review",
+			withoutTester, place, role, typ, ok)
 	}
-	if place, n, role, _, ok := stepIn(withoutTester, phase.Testing); ok {
-		t.Errorf("the testing step of %q = %+v, step %d, role %q; want none, since no step of that list is the tester's", withoutTester, place, n, role)
+	if place, role, _, ok := stepIn(withoutTester, phase.Testing); ok {
+		t.Errorf("the testing step of %q = %+v, role %q; want none, since no step of that list is the tester's", withoutTester, place, role)
 	}
 	// A retro and a merge are no step of any list: the kind tells them apart, at place 0.
 	for at, kind := range map[phase.Phase]string{phase.Retro: "retro", phase.Merging: "merge"} {
-		if place, n, _, _, ok := stepIn(nil, at); !ok || place != (record.StepPlace{Task: "default", Kind: kind}) || n != 0 {
-			t.Errorf("the %s step of no list = %+v, step %d, ok %v; want kind %s at place 0", at, place, n, ok, kind)
+		if place, _, _, ok := stepIn(nil, at); !ok || place != (record.StepPlace{Task: "default", Kind: kind}) {
+			t.Errorf("the %s step of no list = %+v, ok %v; want kind %s at place 0", at, place, ok, kind)
 		}
 	}
 

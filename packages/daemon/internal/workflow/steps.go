@@ -26,10 +26,12 @@ type StepAgent struct {
 }
 
 // stepOf is the step a phase runs as a step of the task default, whose steps are DefaultSteps
-// (stepIn). A held issue's step is the step of the phase its hold is from (record.StandsAt), which
-// the caller reads.
+// (stepIn), with its place in the task read from the place it answers, so the two cannot disagree.
+// A held issue's step is the step of the phase its hold is from (record.StandsAt), which the caller
+// reads.
 func stepOf(p phase.Phase) (place record.StepPlace, step int, role, typ string, ok bool) {
-	return stepIn(DefaultSteps(), p)
+	place, role, typ, ok = stepIn(DefaultSteps(), p)
+	return place, place.Place, role, typ, ok
 }
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role
