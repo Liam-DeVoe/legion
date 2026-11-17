@@ -57,6 +57,11 @@ beforeAll(async () => {
   silent.listen(0, "127.0.0.1", listening.resolve);
   await listening.promise;
   natsUrl = `nats://127.0.0.1:${(silent.address() as AddressInfo).port}`;
+  // Bun ends a hook at 5 s unless the hook names its own bound (Bun 1.4.4: a 7 s hook with no bound
+  // fails "hook timed out" at 5.0 s, and passes with this second argument). The build above is the
+  // slow part: from empty module and build caches, as the test job's cold setup-go starts, it took
+  // 36.3 s with GOMAXPROCS=4 and 25.0 s with 16 on a dev box at load average 1,300-1,700, fetching
+  // 22 modules; warm, 0.9 s. Ten minutes leaves that cold build more than ten times its measure.
 }, 600_000);
 
 afterEach(async () => {
