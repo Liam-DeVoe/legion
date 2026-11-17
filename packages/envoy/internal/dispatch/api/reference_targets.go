@@ -47,9 +47,10 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // is; this read names no edges at all.
 //
 // A reference the grammar cannot read is refused by name (parseRequestRef, as the per-reference
-// route refuses its own), and so is a set past referenceTargetsMax, which is refused before
-// anything is parsed. A reference that reads but names nothing is answered, gone: a chip whose
-// target was deleted still has to draw.
+// route refuses its own), and so is a reference to a person, which no page shows and the graph
+// holds no node for, and a set past referenceTargetsMax, which is refused before anything is
+// parsed. A reference that reads but names nothing is answered, gone: a chip whose target was
+// deleted still has to draw.
 //
 // A reference whose item id or block id is written short is read as GET /api/v1/references reads
 // its ?to= (wholeReferences): as the one item that carries the prefix among the items of the
@@ -111,6 +112,13 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		if err != nil {
 			return nil, err
 		}
+		// The grammar reads a person's reference since the picker writes one, but this read has
+		// no target to answer of it (refs.TargetOf), so it refuses it by name as it refuses a
+		// reference the grammar cannot read (decision 142 of
+		// dispatch://INFRA-1196/artifact/part-decisions-md).
+		if ref.Kind == "person" {
+			return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a person, which this read answers nothing of", strings.TrimSpace(value))
+		}
 		parsed[index] = ref
 	}
 	ambiguous, err := s.wholeReferences(r.Context(), parsed)
@@ -125,8 +133,9 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 			answers[index].Ambiguous = true
 			continue
 		}
-		// Every kind parseRequestRef admits has a target; only an external URL has none, and
-		// that is no reference.
+		// A reference parseRequestRef admits has a target, but for an agent's session or a role,
+		// which the graph holds no node for (refs.TargetOf): that one is looked up as nothing and
+		// answered gone.
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}

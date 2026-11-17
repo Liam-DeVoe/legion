@@ -59,6 +59,9 @@ export function citedReferences(text: string): string[] {
   const { needs, references } = readTextReferences(text);
   const cited = new Set<string>();
   for (const found of references) {
+    // A person is left out: the read refuses a person's reference, which has no target to name,
+    // and a row draws a person's words as written (`rowReferences`).
+    if (found.route?.kind === "person") continue;
     if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
