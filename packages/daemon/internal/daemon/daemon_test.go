@@ -1246,7 +1246,7 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 			errorLines = append(errorLines, line)
 		}
 	}
-	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "every mapped repository's GitHub App installation read failed") || !strings.Contains(errorLines[0], failure.Error()) {
+	if len(errorLines) != 1 || !strings.Contains(errorLines[0], servingNoneLine) || !strings.Contains(errorLines[0], noRepositoryServed(cfg.Project)) || !strings.Contains(errorLines[0], failure.Error()) {
 		t.Fatalf("ERROR lines = %q, want one naming the failed read", errorLines)
 	}
 }

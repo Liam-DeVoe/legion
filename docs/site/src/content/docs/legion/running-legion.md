@@ -85,7 +85,10 @@ App installed after its repository was mapped, which changes nothing in Dispatch
 repository served with no restart; the reads stop once any repository is served. One whose every
 repository's installation read fails boots serving none, logs one ERROR line with the first
 failure, and heals once GitHub answers. The boot's own reads of the Apps (their logins and tokens)
-still refuse the boot when they fail. A
+still refuse the boot when they fail. Each way into serving none, at boot or on a later read that
+unmaps the last served repository or leaves it out, logs the same one ERROR line, `workflow: the
+daemon serves no repository, so it admits nothing and reads the mapping again`, whose `cause` names
+why, once each time and not at every read. A
 Dispatch that does not answer the boot's read of the mapping delays the boot rather than ending it:
 the daemon reads it again, one second doubling to one minute between reads, for as long as Dispatch
 stays unreachable, logs each wait, and serves nothing until the read passes.

@@ -68,12 +68,15 @@ legion start --config legion.yaml --check-config
 cluster and the image:
 
 - **No repository mapped.** This does not stop the boot: the daemon comes up serving none and
-  admits nothing, saying why on each issue handed to it. Its log carries one ERROR line,
-  `workflow: the project has no repository mapped in Dispatch (Settings →
-  Repositories → Projects), so the daemon boots serving none, admits nothing, and reads the mapping
-  again`, with `project=<PROJECT>`; plain `legion state` prints `repositories: project <PROJECT>
-  has no repository mapped in Dispatch (Settings → Repositories → Projects), so the daemon serves
-  none and admits nothing`, and `legion state --json` maps and refuses no repository. Map the
+  admits nothing, saying on each issue handed to it that the project has no repository mapped.
+  Its log carries one ERROR line, `workflow: the daemon serves no repository, so it admits nothing
+  and reads the mapping again`, with `project=<PROJECT>` and `cause=project <PROJECT> has no
+  repository mapped in Dispatch (Settings → Repositories → Projects)`. The daemon logs that same
+  line, with its cause, each time it comes to serve no repository, at boot or when the last one is
+  unmapped while it runs, once each time and not at every read of the mapping. Plain `legion
+  state` prints `repositories: project <PROJECT> has no repository mapped in Dispatch (Settings →
+  Repositories → Projects), so the daemon serves none and admits nothing`, and `legion state
+  --json` maps and refuses no repository. Map the
   project's repositories in Dispatch, one of them its default: the daemon serves them with no
   restart, on the mapping's change event or, should it hear none, at its next read of the mapping
   of its own (30 s doubling to 10 min). Then move each issue it said that on to `todo` again.
@@ -82,9 +85,11 @@ cluster and the image:
   `stage=repositories` lists it under `refused`, `legion state --json | jq .repositories.refused`
   names it with the App it lacks, and its issues are not admitted, each saying so, until the App
   is installed there and the issue moves to `todo` again.
-  When it is every repository the project maps, so the daemon serves none, the daemon reads the
-  mapping again on its own, 30 s doubling to 10 min, until one is served: install the App and the
-  repository is served at the next read, with no restart and no change to the mapping.
+  When it is every repository the project maps, so the daemon serves none, the log carries the
+  same ERROR line with `cause=project <PROJECT> serves no repository: every repository it maps is
+  left out (legion state names why)`, and the daemon reads the mapping again on its own, 30 s
+  doubling to 10 min, until one is served: install the App and the repository is served at the
+  next read, with no restart and no change to the mapping.
   A refusal that reads `the <role> App's installation on <owner>/<repo> could not be read: …;
   Legion reads it again` is GitHub not answering, not a missing App: the daemon reads the mapping
   again on its own, 30 s doubling to 10 min, and serves the repository once GitHub answers; an

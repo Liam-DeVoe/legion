@@ -51,6 +51,10 @@ type repositories struct {
 	refused           map[string]refusedRepository
 	unverified        []string
 	withoutWebhookApp []webhookAppGap
+	// saidNone is the serving-none cause the daemon last logged (sayServingNone), cleared while
+	// it serves a repository, so each episode of serving none, and each new cause within one, is
+	// logged once.
+	saidNone string
 }
 
 // mappedRepository is a repository Legion serves, as GitHub names it, and whether it is the
@@ -329,11 +333,8 @@ func (r *repositories) awaitingRead() []string {
 	waiting := refusalReasons(readFailures(r.Refused()))
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	switch {
-	case len(r.accepted) == 0 && len(r.refused) == 0:
-		waiting = append(waiting, api.NoRepositoryMapped(r.project))
-	case len(r.accepted) == 0 && len(waiting) == 0:
-		waiting = append(waiting, noRepositoryServed(r.project))
+	if cause := r.servingNoneLocked(); cause != "" && len(waiting) == 0 {
+		waiting = append(waiting, cause)
 	}
 	for _, name := range r.unverified {
 		waiting = append(waiting, name+": served on its last answer, its installation read having failed")
@@ -341,11 +342,65 @@ func (r *repositories) awaitingRead() []string {
 	return waiting
 }
 
-// noRepositoryServed is the reason the refresher reads the mapping again, as it logs it, while
-// project maps a repository and leaves out every one it maps, none for a read GitHub did not
-// answer (an App it lacks, a name that is no repository): legion state names each and why.
+// noRepositoryServed is the cause the daemon names while project maps a repository and leaves out
+// every one it maps (legion state names each and why): the cause of its serving-none line
+// (sayServingNone), and the reason the refresher reads the mapping again while none of them is
+// left out for a read GitHub did not answer, which gives reasons of its own.
 func noRepositoryServed(project string) string {
 	return "project " + project + " serves no repository: every repository it maps is left out (legion state names why)"
+}
+
+// servingNoneLocked is why the mapping as last read serves no repository, "" while it serves
+// one: the project maps none (api.NoRepositoryMapped), or every one it maps is left out
+// (noRepositoryServed). The caller holds mu.
+func (r *repositories) servingNoneLocked() string {
+	switch {
+	case len(r.accepted) > 0:
+		return ""
+	case len(r.refused) == 0:
+		return api.NoRepositoryMapped(r.project)
+	default:
+		return noRepositoryServed(r.project)
+	}
+}
+
+// servingNoneToSay is the cause the mapping as last read serves no repository for when it is not
+// the one last said, recorded as said now, and "" otherwise; a mapping that serves a repository
+// clears what was said.
+func (r *repositories) servingNoneToSay() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cause := r.servingNoneLocked()
+	if cause == r.saidNone {
+		return ""
+	}
+	r.saidNone = cause
+	return cause
+}
+
+// servingNoneLine is the one message the daemon logs, at ERROR, each time it comes to serve no
+// repository (sayServingNone): a filter names one line, and its cause attribute says why.
+const servingNoneLine = "workflow: the daemon serves no repository, so it admits nothing and reads the mapping again"
+
+// sayServingNone is the one place the daemon says it serves no repository: after each
+// publication of the mapping (the boot's load and naming, and every read again), one ERROR line
+// naming the project and the cause (repositories.servingNoneLocked), when the mapping just
+// published serves none and the cause is not the one already said. So every path into serving
+// none logs it the same way (no repository mapped at boot or unmapped while it runs, every
+// repository left out for an App it lacks or a read GitHub did not answer), once per episode,
+// and the reads of its own the refresher then makes on its backoff say nothing more. refused is
+// the publication's refusals in the order they were read: the first one a read GitHub did not
+// answer made is the line's error.
+func (w *workflowRuntime) sayServingNone(refused []refusedRepository) {
+	cause := w.repositories.servingNoneToSay()
+	if cause == "" {
+		return
+	}
+	attrs := []any{"project", w.dispatchProject, "cause", cause, "retryIn", mappingRecheckRetry.Initial.String()}
+	if failed := readFailures(refused); len(failed) > 0 {
+		attrs = append(attrs, "error", failed[0].readErr)
+	}
+	w.log.Error(servingNoneLine, attrs...)
 }
 
 // unmapped is the workflow's Config.ProjectUnmapped: why the project serves no repository while
@@ -837,19 +892,12 @@ func (w *workflowRuntime) loadMapping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	switch failed := readFailures(refused); {
-	case len(accepted) == 0 && len(refused) == 0:
-		w.log.Error("workflow: the project has no repository mapped in Dispatch (Settings → Repositories → Projects), so the daemon boots serving none, admits nothing, and reads the mapping again",
-			"project", w.dispatchProject, "retryIn", mappingRecheckRetry.Initial.String())
-	case len(failed) == 0:
-	case len(accepted) == 0 && len(failed) == len(refused):
-		w.log.Error("workflow: every mapped repository's GitHub App installation read failed, so the daemon boots serving none and reads them again",
-			"repositories", len(failed), "retryIn", mappingRecheckRetry.Initial.String(), "error", failed[0].readErr)
-	default:
+	if failed := readFailures(refused); len(failed) > 0 && len(accepted) > 0 {
 		w.log.Warn("workflow: a mapped repository's GitHub App installation read failed, so the daemon boots leaving it out and reads it again",
 			"refused", refusalReasons(failed), "retryIn", mappingRecheckRetry.Initial.String())
 	}
 	w.repositories.set(accepted, refused)
+	w.sayServingNone(refused)
 	w.repositories.setWithoutWebhookApp(w.repositories.servedGaps(gaps, refused))
 	w.logUnservedRenames(accepted)
 	w.logUnservedCommitIssueTrailerRepos(accepted)
@@ -925,6 +973,7 @@ func (w *workflowRuntime) nameMapping(ctx context.Context) error {
 	w.repositories.set(named, append(w.repositories.Refused(), unread...))
 	w.log.Info("legion workflow boot stage", "stage", "repositories", "accepted", repositoryNames(w.repositories.Accepted()), "refused", refusalReasons(w.repositories.Refused()),
 		"withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()))
+	w.sayServingNone(w.repositories.Refused())
 	return nil
 }
 
@@ -1097,6 +1146,7 @@ func (w *workflowRuntime) refreshMapping(ctx context.Context) error {
 	w.log.Info("legion workflow repositories changed", "added", added, "removed", removed,
 		"refused", refusalReasons(w.repositories.Refused()), "withoutWebhookApp", webhookGapReasons(w.repositories.WithoutWebhookApp()),
 		"heard", repositoryNames(heard))
+	w.sayServingNone(refused)
 	return nil
 }
 

@@ -453,7 +453,8 @@ func TestABootServesTheRepositoriesWhoseInstallationReadsAnswer(t *testing.T) {
 }
 
 // A boot whose every repository's installation read fails still comes up, serving none, and logs
-// one ERROR line naming the first failure: its API and recovery stay up, and the read again heals it.
+// one ERROR line, the serving-none line every path into serving none writes (sayServingNone), with
+// the first failure: its API and recovery stay up, and the read again heals it.
 func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testing.T) {
 	installs := &installations{}
 	installs.setFailing(errors.New("GitHub answered 403: Resource not accessible by integration"), "implement acme/widgets", "review acme/widgets", "implement acme/gadgets", "review acme/gadgets")
@@ -475,7 +476,7 @@ func TestABootWhoseEveryInstallationReadFailsServesNoneAndLogsOneError(t *testin
 			errorLines = append(errorLines, line)
 		}
 	}
-	if len(errorLines) != 1 || !strings.Contains(errorLines[0], "every mapped repository's GitHub App installation read failed") ||
+	if len(errorLines) != 1 || !strings.Contains(errorLines[0], servingNoneLine) || !strings.Contains(errorLines[0], noRepositoryServed("LEGION")) ||
 		!strings.Contains(errorLines[0], "check the implement App's installation on acme/widgets: GitHub answered 403: Resource not accessible by integration") {
 		t.Fatalf("ERROR lines = %q, want one naming the first failure (acme/widgets' implement read)", errorLines)
 	}
