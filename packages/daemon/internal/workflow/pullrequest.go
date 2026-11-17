@@ -345,11 +345,13 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // merged records the pull request merged, with its merge commit, whatever the issue's phase, and
-// closes an issue that reached merging (closeMerged): the merger merges, and the merge is what
-// ends that phase. It closes one held from merging because its owner stopped the task at its
-// merge too (stoppedAtMerge). A merge before merging is the architect's to act on, as the shipped
-// daemon routes it: it is told, and the merge closes the issue once it reaches merging
-// (transition). A redelivered merge changes nothing.
+// closes an issue that awaits its merge (awaitsMerge; closeMerged): one in merging, where the
+// merger merges and the merge is what ends that phase, and one held from merging, by a failed
+// merger's claim, an escalation, its owner's stop of its task at its merge or the upgrade's data
+// move, since the merge is the one fact GitHub never sends again and it puts the work on main. A
+// merge before merging is the architect's to act on, as the shipped daemon routes it: it is told,
+// and the merge closes the issue once it reaches merging (transition). A redelivered merge
+// changes nothing.
 //
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
 // head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
@@ -386,7 +388,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if issue.Phase == phase.Merging || stoppedAtMerge(*issue) {
+	if awaitsMerge(*issue) {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)
 	}
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect,
@@ -394,17 +396,6 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMerge)
-}
-
-// stoppedAtMerge says whether issue is held from merging because its task was stopped at its
-// merge (record.HoldTaskStopped; its owner's stop_task, taskStopped). A merge GitHub still lands
-// is the one fact it never sends again, and it puts the task's work on main, so it closes the
-// issue (closeMerged takes a hold from merging): a later version of the plan has nothing of that
-// task left to start again. Another hold from merging, a failed merger's or the upgrade's data
-// move's, is left to what ends that hold, as today for an issue with no plan rows (R20); the
-// boot's sweep closes it on the merge recorded (sweepMerged).
-func stoppedAtMerge(issue record.Issue) bool {
-	return issue.Phase == phase.Held && issue.Hold != nil && *issue.Hold == (record.Hold{From: phase.Merging, Reason: record.HoldTaskStopped})
 }
 
 // waitingForTree is what a root's architect is told when the merge of its pull request finds the
@@ -416,7 +407,7 @@ func waitingForTree(issue string, number int, waiting []string) string {
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close
 // waited for the rest of the tree instead, tells the root's architect once. It is the two places
-// a wait is newly entered — the merge arriving at an issue in merging (merged), and an
+// a wait is newly entered — the merge arriving at an issue that awaits it (merged), and an
 // issue reaching merging on a pull request already merged (transition) — and nowhere else:
 // notices never de-duplicate (notice writes a row per call) and closeMerged is re-entered on the
 // departure of every issue beneath it (closeAwaitingMerge) and on every boot (sweepMerged), so
@@ -431,7 +422,8 @@ func (e *Engine) closeMergedTelling(ctx context.Context, tx pgx.Tx, issue record
 }
 
 // closeMerged closes issue, which awaits its merge in merging (or is held from merging, a hold the
-// upgrade's data move left, which the close clears), on its merged pull request pr, and reports
+// close clears: a failed merger's claim, an escalation, a stopped task's or the upgrade's data
+// move's), on its merged pull request pr, and reports
 // the issues it waited for instead, empty when it closed. In a running tree the close is the
 // table's row to done (transition), which leaves: a child's close retires five of its claims and
 // opens its production check in the live session of the role the project's `production_check`

@@ -35,8 +35,8 @@ const stopsBy = "task a of LEGION-208 was stopped by its owner"
 // is answered by its own call, and the architect the issue's notices reach is told in a
 // task-stopped notice that names who stopped the task (the daemon's notice executor publishes it
 // only to an architect that is not the one that stopped it). A merge GitHub still lands on a task
-// stopped at its merge closes the issue, which a hold from merging of an issue with no plan rows
-// does not. A stopped task whose issue then leaves the workflow is left, and keeps why it was
+// stopped at its merge closes the issue, as it closes an issue with no plan rows held from
+// merging. A stopped task whose issue then leaves the workflow is left, and keeps why it was
 // stopped. An issue with no plan rows has no task to stop (R20), and a stop in a lingering tree
 // changes nothing.
 func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
@@ -141,7 +141,7 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 	})
 
-	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue, which a hold of no plan rows does not", func(t *testing.T) {
+	t.Run("at merging the merger stops, and a merge GitHub still lands closes the issue, as it closes a hold of no plan rows", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := returnEngine()
 		root := stepRoot(t, pool, phase.Admitted)
@@ -180,7 +180,8 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		}
 
 		// The R20 twin: an issue with no plan rows held from merging, by a failed merger's claim,
-		// is not closed by its merge, as today: what ends that hold closes it on the merge recorded.
+		// is closed by its merge too: a hold from merging awaits that merge (awaitsMerge), as the
+		// close and the boot's sweep read it, so the architect is told no "not merging".
 		unplanned := migratedPool(t)
 		held := stepRoot(t, unplanned, phase.Held)
 		applyInTx(t, unplanned, func(ctx context.Context, tx pgx.Tx) error {
@@ -190,12 +191,11 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		if result := applyFacts(t, unplanned, engine)("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42"}); result.Refusal != nil {
 			t.Fatalf("the merge of the issue with no plan rows was refused: %+v", result.Refusal)
 		}
-		if issue := issueOf(t, unplanned, engine, held.Key); issue.Phase != phase.Held || issue.Hold == nil || *issue.Hold != (record.Hold{From: phase.Merging}) {
-			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge, want still held from merging", held.Key, issue.Phase, issue.Hold)
+		if issue := issueOf(t, unplanned, engine, held.Key); issue.Phase != phase.Done || issue.Hold != nil {
+			t.Fatalf("%s with no plan rows stands in %s (hold %+v) after its merge, want done", held.Key, issue.Phase, issue.Hold)
 		}
-		want := record.Notice{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged while LEGION-208 was in held, not merging"}
-		if notices := noticesOf(t, unplanned, held.Key, "pr-merged"); len(notices) != 1 || !reflect.DeepEqual(notices[0], want) {
-			t.Fatalf("the pr-merged notices = %+v, want the one %+v", notices, want)
+		if notices := noticesOf(t, unplanned, held.Key, "pr-merged"); len(notices) != 0 {
+			t.Fatalf("the pr-merged notices = %+v, want none: the merge closed the issue it held from merging", notices)
 		}
 	})
 

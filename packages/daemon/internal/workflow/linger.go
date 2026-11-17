@@ -279,14 +279,16 @@ func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged recor
 	return nil
 }
 
-// awaitsMerge says whether issue awaits its merge: in merging with its pull request merged, or
-// held from merging, the hold the upgrade's data move left an issue that was held in
-// production_check. The merge is what ends merging, so a merged pull request there is a close
-// still waiting on the rest of the tree rather than a merger still at work. It asks the one predicate written over a hold
+// awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed
+// merger's claim, an escalation, a stopped task's, or the hold the upgrade's data move left an
+// issue that was held in production_check). The merge is what ends merging, so a merged pull
+// request there is a close still waiting on the rest of the tree rather than a merger still at
+// work. It asks the one predicate written over a hold
 // (record.StandsIn) of the one phase, and stays a question of its own rather than folding into
 // record.Accepted: a root in retro has been accepted and does not await its merge, and this is
-// what the merge itself closes (closeMerged), what closes an issue on a merge already recorded
-// (closeAwaitingMerge) and what keeps that merge against a later pull request (pullRequestOpened).
+// what closes an issue at its merge (merged, closeMerged), what closes an issue on a merge already
+// recorded (closeAwaitingMerge) and what keeps that merge against a later pull request
+// (pullRequestOpened).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
 }
