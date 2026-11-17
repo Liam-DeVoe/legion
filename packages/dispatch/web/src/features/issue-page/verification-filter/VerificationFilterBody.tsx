@@ -34,7 +34,7 @@ import { buildReferencePath, parseNodeReference } from "../../refs/routes";
 import { appKeymap } from "../../shell/keymap";
 import { agentRoleWord } from "../agent-role";
 import { CutWords } from "../CutWords";
-import { type NodeChip, nodeWords, type TreeNode } from "../issue-tree";
+import { lineWords, type NodeChip, type TreeNode } from "../issue-tree";
 import { NodeFacts } from "../NodeFacts";
 import { NodeGlyph } from "../NodeGlyph";
 import { chipWords } from "../node-row-chip";
@@ -201,7 +201,7 @@ export function VerificationFilterBody({
     () =>
       new Map(
         issue.statements.flatMap(({ node }): [string, string][] =>
-          node.reference === undefined ? [] : [[node.reference, chipWords(nodeWords(node))]]
+          node.reference === undefined ? [] : [[node.reference, chipWords(lineWords(node))]]
         )
       ),
     [issue]
@@ -1305,13 +1305,14 @@ function Author({ actor }: { actor: Actor | undefined }): ReactNode {
 /** The other statements a check is drawn under, each named by its first words as every chip of
  *  the page names its target (R4, `node-row-chip.ts`): a check serves several statements and
  *  this body draws it under each. A target is named from the statement the view already holds
- *  for it (`names`, by its address): the words of the server's reading of its text
- *  (`nodeWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor any
- *  markdown pass over them (the architect's decisions 46, 66 and 83). So no mark the author
- *  typed is drawn, a statement whose words open on "1." keeps it, and the line waits on no
- *  names read (part V's departure 7, R22). A target the view holds no statement for and one
- *  that reads as no words draw nothing, a comma stands only between targets that are drawn, and
- *  the line is drawn only where one is. */
+ *  for it (`names`, by its address): the words of the first block of the server's reading of
+ *  its text (`lineWords`), cut by `chipWords`, and never its stored excerpt (`chip.name`) nor
+ *  any markdown pass over them (the architect's decisions 46, 66 and 83). So no mark the author
+ *  typed is drawn, a statement whose words open on "1." keeps it, a bare `dispatch://` address
+ *  reads as its target's short form (decision 95), and the line waits on no names read (part
+ *  V's departure 7, R22). A target the view holds no statement for and one that reads as no
+ *  words draw nothing, a comma stands only between targets that are drawn, and the line is
+ *  drawn only where one is. */
 function AlsoUnder({
   chips,
   names,

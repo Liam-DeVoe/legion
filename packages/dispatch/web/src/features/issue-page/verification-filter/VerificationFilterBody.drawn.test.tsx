@@ -1561,7 +1561,9 @@ test("a check under two statements names the other by its words with no mark of 
     tree: displayTree(statement.text),
   });
   const plain = read(statementNode("r1", "The page draws it."));
-  const marked = read(statementNode("r2", "**Do** `x` now, then the rest of it, in order."));
+  const marked = read(
+    statementNode("r2", "**Do** `x` dispatch://CORE-2 now, then the rest of it, in order.")
+  );
   const picture = read(statementNode("r3", "![](https://example.com/shot.png)"));
   const numbered = read(statementNode("r4", "1\\. Stand the page up first."));
   // A statement of no card of this view, which a check may still name.
@@ -1614,11 +1616,13 @@ test("a check under two statements names the other by its words with no mark of 
     expect(named, `"Also under" names r2 by no words: "${named}"`).not.toBe("");
     expect(named, `"Also under" draws a backtick: "${named}"`).not.toContain("`");
     expect(named, `"Also under" draws an asterisk: "${named}"`).not.toContain("*");
+    // A bare address reads as its target's short form (decision 95), never as `dispatch://`.
+    expect(named, `"Also under" draws an address: "${named}"`).not.toContain("dispatch://");
     expect(
       named.length,
       `"Also under" names r2 by more than 32 characters: "${named}"`
     ).toBeLessThanOrEqual(32);
-    expect(named).toBe("Do x now, then the rest of it…");
+    expect(named).toBe("Do x CORE-2 now, then the rest…");
     expect(trailOf(plain, twice)).toEqual([
       { names: [named], text: `${CONTROL_LABELS.also_under} ${named}` },
     ]);
@@ -1656,9 +1660,7 @@ test("a check under two statements names the other by its words with no mark of 
     ]);
     const drawn = view.container.querySelector("[data-verification-body]")?.textContent ?? "";
     expect(drawn).not.toContain(excerpt);
-    // A statement's bare `dispatch://` address is drawn as its short form by F's words functions
-    // (decision 95); once that F is under this part, a statement citing an address comes back
-    // here with an assertion that its name reads no `dispatch://`.
+    expect(drawn).not.toContain("dispatch://");
   } finally {
     view.unmount();
   }
