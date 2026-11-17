@@ -6,7 +6,12 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// inPlanningB is an issue's row of the experiment planning, drawn into its arm b, whose issues run
+// the project's default steps: the group the refusals below name.
+var inPlanningB = record.Assignment{Experiment: "planning", Unit: "issue", Variant: "b", Mode: "random", Plan: "default"}
 
 // The refusals of register_plan and stop_task that the workflow answers, each with its exact
 // words: the route and the workflow name them through these constructors, so an owner reads the
@@ -51,10 +56,10 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Reasons: []plan.Refusal{{Reason: "LEGION-208 started its work before Legion took plans, so it runs the steps it started with to their end. This plan changed nothing."}}}},
 		{"a plan given at a generation the issue has left", PlanStaleGeneration("LEGION-208", 1, 2), Refusal{Status: http.StatusConflict, Code: "PLAN_STALE_GENERATION",
 			Message: "the plan was given for generation 1 of LEGION-208, and LEGION-208 is on generation 2 now. Give the plan again. This plan changed nothing."}},
-		{"a plan of an issue whose group runs the default steps", PlanNotTaken("LEGION-208", "planning", "b"), Refusal{Status: http.StatusConflict,
+		{"a plan of an issue whose group runs the default steps", PlanNotTaken("LEGION-208", inPlanningB), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
 				"Legion takes no plan from its owner for this issue. This plan changed nothing."}},
-		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", "planning", "b"), Refusal{Status: http.StatusConflict,
+		{"a stop of a task of an issue whose group runs the default steps", TaskNotStopped("LEGION-208", inPlanningB), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_NOT_TAKEN", Message: "LEGION-208 is in the variant b of the experiment planning, whose issues run the project's default steps. " +
 				"Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}},
 	} {

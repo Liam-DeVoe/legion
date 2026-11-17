@@ -308,7 +308,7 @@ func (e *Engine) tellNotTaken(ctx context.Context, tx pgx.Tx, issue record.Issue
 	}
 	return e.notice(ctx, tx, issue.Key, record.Notice{Kind: "plan-not-taken", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
 		"The first step of %s took no plan: %s. %s", issue.Key, strings.Join(described, "; "),
-		intake.GroupClause(issue.Key, group.Experiment, group.Variant))})
+		intake.GroupClause(issue.Key, group))})
 }
 
 // describeVersion names an owner's version of a plan as a log line and a notice name it: its
@@ -533,7 +533,7 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 		return intake.Result{}, err
 	}
 	if takesNoPlan(group) {
-		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group.Experiment, group.Variant)}, nil
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
@@ -704,7 +704,7 @@ func (e *Engine) planGiven(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven
 			return intake.Result{}, err
 		}
 		if takesNoPlan(group) {
-			return refuse(intake.PlanNotTaken(issue.Key, group.Experiment, group.Variant))
+			return refuse(intake.PlanNotTaken(issue.Key, group))
 		}
 	}
 	stored, err := e.store.Plan(ctx, tx, fact.Issue, fact.Generation)

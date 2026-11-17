@@ -166,7 +166,7 @@ func (l *experimentLive) defaultNotTaken() {
 	created := l.r.create(asSession, "Search ranks fresher pages", map[string]any{"labels": []string{"legion"}})
 	issue := experimentIssue{scratchIssue: created, grant: l.r.admit(created.Key)}
 	document := l.writePlan(issue.Key)
-	refusal := intake.PlanNotTaken(issue.Key, "planning", "b")
+	refusal := intake.PlanNotTaken(issue.Key, record.Assignment{Experiment: "planning", Variant: "b", Plan: string(config.PlanGroupDefault)})
 	want := planAnswer{status: refusal.Status, failure: api.Failure{Code: refusal.Code, Error: refusal.Message}}
 	for send := 1; send <= 2; send++ {
 		if answer := l.r.givePlan(issue.Key, document, issue.grant); answer != want {

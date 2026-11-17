@@ -1457,31 +1457,32 @@ func PlanDocumentChanged(issue, artifact string) *Refusal {
 }
 
 // GroupClause is the one text of a group: the sentence that names the variant of the experiment
-// issue was drawn into, whose issues run the project's default steps, the one group of this
-// release that takes no plan from an issue's owner (workflow's takesNoPlan). The refusals of
-// register_plan and stop_task (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the
-// issue's first step each call it, and no other text states a group.
-func GroupClause(issue, experiment, variant string) string {
-	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, variant, experiment)
+// issue was drawn into (group, the issue's row of the experiment that sets how it is done),
+// whose issues run the project's default steps, the one group of this release that takes no plan
+// from an issue's owner (workflow's takesNoPlan). The refusals of register_plan and stop_task
+// (PlanNotTaken, TaskNotStopped) and the plan-not-taken notice of the issue's first step each
+// call it, and no other text states a group.
+func GroupClause(issue string, group record.Assignment) string {
+	return fmt.Sprintf("%s is in the variant %s of the experiment %s, whose issues run the project's default steps.", issue, group.Variant, group.Experiment)
 }
 
-// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, which was drawn into
-// variant of experiment, whose arm's `plan` is `default`: the experiment decides how the issue is
-// done, so Legion takes no plan from its owner, and a plan it stored and did not carry out would
-// be dropped in silence. It is no refusal of a plan's content, so it carries no reasons and its
-// code is not PLAN_REFUSED. The workflow leaves the fact unspent, as each refusal of a plan, so
-// the same registration sent again gets this same answer.
-func PlanNotTaken(issue, experiment, variant string) *Refusal {
-	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant) +
+// PlanNotTaken is the 409 PLAN_NOT_TAKEN answer to a plan given for issue, whose group (its row
+// of the experiment that sets how it is done) names the arm's `plan` `default`: the experiment
+// decides how the issue is done, so Legion takes no plan from its owner, and a plan it stored and
+// did not carry out would be dropped in silence. It is no refusal of a plan's content, so it
+// carries no reasons and its code is not PLAN_REFUSED. The workflow leaves the fact unspent, as
+// each refusal of a plan, so the same registration sent again gets this same answer.
+func PlanNotTaken(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no plan from its owner for this issue. This plan changed nothing."}
 }
 
-// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, which was
-// drawn into variant of experiment, whose arm's `plan` is `default`: the experiment decides how
-// the issue is done, so Legion takes no stop of one of its tasks from its owner either, and the
-// code is the one register_plan answers for the same issue.
-func TaskNotStopped(issue, experiment, variant string) *Refusal {
-	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, experiment, variant) +
+// TaskNotStopped is the 409 PLAN_NOT_TAKEN refusal of stop_task for a task of issue, whose group
+// names the arm's `plan` `default`: the experiment decides how the issue is done, so Legion takes
+// no stop of one of its tasks from its owner either, and the code is the one register_plan
+// answers for the same issue.
+func TaskNotStopped(issue string, group record.Assignment) *Refusal {
+	return &Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: GroupClause(issue, group) +
 		" Legion takes no plan from its owner for this issue, so its owner stops none of its tasks. This stop changed nothing."}
 }
 

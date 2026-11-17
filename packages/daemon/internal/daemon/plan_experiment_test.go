@@ -343,7 +343,7 @@ func ranAsTheirGroups(t *testing.T, issues []drawnIssue) {
 		}
 		want := planAnswer{status: http.StatusOK}
 		if runsByDefault {
-			refusal := intake.PlanNotTaken(issue.key, "planning", issue.variant)
+			refusal := intake.PlanNotTaken(issue.key, record.Assignment{Experiment: "planning", Variant: issue.variant, Plan: issue.plan})
 			want = planAnswer{status: refusal.Status, failure: api.Failure{Code: refusal.Code, Error: refusal.Message}}
 		}
 		if !slices.Equal(issue.answers, []planAnswer{want, want}) {
