@@ -18,7 +18,19 @@ func TestVisibleMarkdownTakesOutWhatNoReaderSees(t *testing.T) {
 		{"text after a comment's end, with a comment of its own", "<!--\nh\n--> seen <!-- h -->\n", "\n\n seen \n"},
 		{"a comment that never closes runs to the end", "a\n<!-- hidden\nhidden\n", "a\n\n\n"},
 		{"a comment inside a fenced code block stays", "```html\n<!-- shown -->\n```\n", "```html\n<!-- shown -->\n```\n"},
-		{"a fence of tildes", "~~~\n<!-- shown\n~~~\nafter <!-- gone -->\n", "~~~\n<!-- shown\n~~~\nafter \n"},
+		// A fence of tildes keeps a comment as a fence of backticks does, and its end is a fence's end.
+		{"a fence of tildes keeps its comment",
+			"~~~html\n<!-- shown -->\n~~~\nafter <!-- gone -->\n", "~~~html\n<!-- shown -->\n~~~\nafter \n"},
+		// A fence a nested list item holds is indented past three spaces, and a blank line inside it
+		// splits what a paragraph reader would take for a code span.
+		{"a fence indented inside a list item keeps its comment",
+			"- outer\n  - inner\n\n    ```html\n    first\n\n    <!-- shown -->\n    ```\n\nafter <!-- gone -->\n",
+			"- outer\n  - inner\n\n    ```html\n    first\n\n    <!-- shown -->\n    ```\n\nafter \n"},
+		// The shape of docs/site/src/content/docs/legion/troubleshooting.md:1369: a whole comment,
+		// opener and closer, inside a code span on a list item's continuation line.
+		{"a code span holding a whole comment stays",
+			"  (`<!-- legion: {\"session\":\"…\",\"phase\":\"review\",\"head\":\"…\"} -->`) and requires the session it\n",
+			"  (`<!-- legion: {\"session\":\"…\",\"phase\":\"review\",\"head\":\"…\"} -->`) and requires the session it\n"},
 		{"a code span holding an opener stays", "the `<!-- legion:` footer\n", "the `<!-- legion:` footer\n"},
 		{"a code span across lines", "a ``x\n<!-- y`` b <!-- gone -->\n", "a ``x\n<!-- y`` b \n"},
 		{"a closer with no comment open stays", "an end marker (`-->`) and --> alone\n", "an end marker (`-->`) and --> alone\n"},

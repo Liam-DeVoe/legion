@@ -18,14 +18,17 @@ import "strings"
 //
 // A comment's newlines stay, so a line number a caller reports from the result is the line in the
 // file. A `<!--` inside a fenced code block or inside a code span is text a reader sees, and stays
-// (packages/envoy/AGENTS.md shows the `<!-- legion:` footer in one), and a `-->` with no comment
-// open is text too. A comment that opens before a fence or a list and closes after it hides the
-// whole of it, as a page does. A comment that never closes runs to the end of the document, as
-// CommonMark's HTML block does. It reads no other HTML, and three shapes are not modelled: a
-// comment that a list item or a block quote around it would end early, and a `<!--` in an
-// indented code block (four spaces or a tab), which a reader sees as code and this takes out.
-// Modelling the last would misread a list item's own indented text as code as often as it read a
-// code block right.
+// (packages/envoy/AGENTS.md shows the `<!-- legion:` footer in one, and
+// docs/site/src/content/docs/legion/troubleshooting.md a whole comment in one), and a `-->` with
+// no comment open is text too. A fence of backticks or of tildes is a fence at any indentation,
+// since a list item's own fence is indented by the item, four spaces or more in a nested one. A
+// comment that opens before a fence or a list and closes after it hides the whole of it, as a page
+// does. A comment that never closes runs to the end of the document, as CommonMark's HTML block
+// does. It reads no other HTML, and three shapes are not modelled: a comment that a list item or a
+// block quote around it would end early, and an indented code block (four spaces or a tab): a
+// `<!--` in one, which a reader sees as code, is taken out, and a line of backticks in one reads
+// as a fence. Modelling the last would misread a list item's own indented text as code as often
+// as it read a code block right.
 func VisibleMarkdown(doc string) string {
 	var out strings.Builder
 	out.Grow(len(doc))
@@ -57,14 +60,15 @@ func VisibleMarkdown(doc string) string {
 }
 
 // fenceMarker is the run of backticks or tildes, three or more, that opens or closes a fenced
-// code block on line, indented by at most three spaces; "" when line is no fence.
+// code block on line, at any indentation; "" when line is no fence. A run of backticks followed by
+// text holding another backtick is a code span, not a fence, as CommonMark reads it.
 func fenceMarker(line string) string {
-	trimmed := strings.TrimLeft(line, " ")
-	if len(line)-len(trimmed) > 3 || len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
+	trimmed := strings.TrimLeft(line, " \t")
+	if len(trimmed) < 3 || (trimmed[0] != '`' && trimmed[0] != '~') {
 		return ""
 	}
 	run := len(trimmed) - len(strings.TrimLeft(trimmed, trimmed[:1]))
-	if run < 3 {
+	if run < 3 || (trimmed[0] == '`' && strings.Contains(trimmed[run:], "`")) {
 		return ""
 	}
 	return trimmed[:run]
