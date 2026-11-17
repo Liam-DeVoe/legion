@@ -748,9 +748,16 @@ test("an upper-case HTTPS --gateway with a user part is named without it", async
     writeFileSync(command, "#!/bin/sh\necho made-up-model-key\n");
     chmodSync(command, 0o700);
     const out = path.join(dir("upper-case-gateway"), "labels");
-    const run = io((url, init) =>
-      fetch(url.startsWith(gateway) ? `${servers.origin}${url.slice(gateway.length)}` : url, init)
-    );
+    // The model call to the gateway goes to the first server: the URL is parsed, and its scheme,
+    // host and path are compared whole.
+    const run = io((url, init) => {
+      const asked = new URL(url);
+      const toGateway =
+        asked.protocol === "https:" &&
+        asked.host === "gateway.example" &&
+        asked.pathname === "/anthropic/v1/messages";
+      return fetch(toGateway ? `${servers.origin}/v1/messages` : url, init);
+    });
     const exit = await main(
       [
         ...["--since", SINCE, "--until", UNTIL, "--out", out],

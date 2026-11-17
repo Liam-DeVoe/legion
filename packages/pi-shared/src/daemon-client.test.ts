@@ -760,7 +760,7 @@ function credentialedCalls(origin: string, fetchFn: typeof fetch = fetch) {
 function daemonRedirects(): RedirectServers {
   return redirectServers({
     atElsewhere: (request) =>
-      new URL(request.url).pathname.endsWith("/register")
+      new URL(request.url).pathname === "/legion/v1/claims/register"
         ? Response.json(daemonFixture("register.json"))
         : new Response(null, { status: 204 }),
   });
