@@ -14,6 +14,7 @@ import {
   railHoverBg,
   railText,
 } from "../../theme/classes";
+import { useDetailsFocusKeeper } from "../issue-page/details-focus-keeper";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, useMarginDrawer } from "../issue-page/margin-slot";
 import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { routeHasMargin } from "../refs/routes";
@@ -256,6 +257,7 @@ function DetailsDrawer({
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
   const { open, page, setOpen } = drawer;
+  useDetailsFocusKeeper(box, open);
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
   // the effects below read the latest through this ref and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.

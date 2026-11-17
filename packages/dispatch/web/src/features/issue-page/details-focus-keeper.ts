@@ -1,0 +1,418 @@
+import { type RefObject, useEffect } from "react";
+
+/** What can hold the focus inside Details: the controls a reader reaches, and any element given a
+ *  `tabindex`. */
+const CONTROLS = "a[href], button, input, select, textarea, [tabindex]";
+
+/** The `overflow` values that cut what an element draws down to its own box. */
+const CLIPPING: Readonly<Record<string, true>> = {
+  auto: true,
+  clip: true,
+  hidden: true,
+  scroll: true,
+};
+
+/** What the keeper hears: the two attributes that take a control from the reader, and every
+ *  element added or removed. */
+const WATCHED: MutationObserverInit = {
+  attributeFilter: ["disabled", "hidden"],
+  attributes: true,
+  childList: true,
+  subtree: true,
+};
+
+/** What tells a control apart across a redraw, where React draws it anew as another element: the
+ *  history entry it stands in, its own `id`, its tag, its role and its name, in one key. */
+type ControlIdentity = string;
+
+/** A stretch of the window from `top` down to `bottom`, in CSS pixels. */
+interface Span {
+  readonly bottom: number;
+  readonly top: number;
+}
+
+/** A rectangle of the window, in CSS pixels. */
+interface Bounds extends Span {
+  readonly left: number;
+  readonly right: number;
+}
+
+/** How the control that held the focus lost it. */
+type Loss = "disabled" | "hidden" | "removed";
+
+/**
+ * Keeps a keyboard reader's focus inside Details while `active` holds: when the control that has
+ * the focus is removed, turns disabled or is no longer drawn, and the focus has fallen to the
+ * page, the keeper gives it to another place in `box`. Chromium drops the focus of a button that
+ * turns disabled, or is removed, to the body, and enabling the button again does not bring it
+ * back. Without the keeper, a reader whose Retry turns busy while it reads, or whose Load older
+ * goes away with the log's last page, starts again from the top of the page.
+ *
+ * The focus goes, in this order: to the control that replaced the lost one, a control drawn in the
+ * same change with the same identity (`ControlIdentity`), as when React draws an entry anew under
+ * a new key; else to the control nearest to where the lost one stood, among those that stay
+ * enabled, drawn and in sight; else to the box's heading, its first `h2`. A control the keeper
+ * moved the focus off because it turned disabled gets the focus back when it is enabled again, if
+ * the focus is still where the keeper put it: a Retry that is busy while it reads, then fails.
+ *
+ * It is a backstop under each site's own hand-on, not a replacement for it. It hears a change
+ * through one MutationObserver on the box, and through a `focusout` that names no next element,
+ * which it reads a microtask later. React runs a site's own hand-on in a layout effect of the
+ * commit that changed the DOM, before the observer's callback runs, so the site's choice already
+ * holds the focus when the keeper looks: the keeper acts only on a focus left on the page, or
+ * left on the disabled or hidden control itself, which Chromium moves to the page a moment later.
+ * A focus the reader puts anywhere else, inside the box or outside it, stays where they put it.
+ *
+ * It does nothing while `active` is false or the box is not drawn, and nothing while the focus is
+ * outside the box: its observer runs only while a control inside the box holds the focus.
+ */
+export function useDetailsFocusKeeper(box: RefObject<HTMLElement | null>, active: boolean): void {
+  useEffect(() => {
+    const root = box.current;
+    if (!active || root === null) return;
+    return keepFocusIn(root);
+  }, [active, box]);
+}
+
+/** Keeps the focus inside `root` (`useDetailsFocusKeeper`) until the returned function is called. */
+function keepFocusIn(root: HTMLElement): () => void {
+  // The control inside the box that holds the focus, with its identity as it was when it took it.
+  let held: { readonly control: HTMLElement; readonly identity: ControlIdentity } | null = null;
+  // A control the keeper moved the focus off as it turned disabled, and where it put the focus.
+  let restore: { readonly at: HTMLElement; readonly control: HTMLElement } | null = null;
+  // Whether the focus moving now is the keeper's own move.
+  let placing = false;
+  const observer = new MutationObserver((records) => keep(records, false));
+  const listening = new AbortController();
+
+  function note(target: EventTarget | null): void {
+    // The box itself holding the focus - the phone's sheet - leaves no control to keep.
+    if (!(target instanceof HTMLElement) || target === root) {
+      forget();
+      return;
+    }
+    held = { control: target, identity: identityOf(target) };
+    observer.observe(root, WATCHED);
+  }
+
+  function forget(): void {
+    held = null;
+    restore = null;
+    observer.disconnect();
+  }
+
+  function place(target: HTMLElement): boolean {
+    placing = true;
+    target.focus({ preventScroll: true });
+    placing = false;
+    return document.activeElement === target;
+  }
+
+  // `measure` reads whether the held control is still drawn, a layout read the observer makes only
+  // when a `hidden` changed around it.
+  function keep(records: readonly MutationRecord[], measure: boolean): void {
+    const focus = document.activeElement;
+    const onPage = focus === null || focus === document.body;
+    if (!onPage && !root.contains(focus)) {
+      forget();
+      return;
+    }
+    if (restore !== null) {
+      const { at, control } = restore;
+      if (!control.isConnected) {
+        restore = null;
+      } else if (
+        focus === at &&
+        records.some(
+          (record) => record.attributeName === "disabled" && record.target.contains(control)
+        ) &&
+        lossOf(control, root, [], true) === null &&
+        drawn(root)
+      ) {
+        restore = null;
+        place(control);
+        return;
+      }
+    }
+    if (held === null) return;
+    const { control, identity } = held;
+    const loss = lossOf(
+      control,
+      root,
+      records,
+      measure ||
+        records.some(
+          (record) => record.attributeName === "hidden" && record.target.contains(control)
+        )
+    );
+    if (loss === null) {
+      // The control stands and the focus is on the page: the reader put it there.
+      if (onPage) forget();
+      return;
+    }
+    // Off the page, the focus is the keeper's to move only while it is still on the disabled or
+    // hidden control itself; a focus a site or the reader put anywhere else stays.
+    if (!onPage && (focus !== control || loss === "removed")) return;
+    if (!drawn(root)) return;
+    const stood = placeOf(control, root, records);
+    const target =
+      replacementOf(identity, root, records, stood) ?? nearestTo(stood, root) ?? headingOf(root);
+    if (target === null) return;
+    const back = loss === "disabled" ? control : restore?.control;
+    if (!place(target)) return;
+    restore = back === undefined || back === target ? null : { at: target, control: back };
+  }
+
+  root.addEventListener(
+    "focusin",
+    (event) => {
+      if (!placing) restore = null;
+      note(event.target);
+    },
+    { signal: listening.signal }
+  );
+  root.addEventListener(
+    "focusout",
+    (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && root.contains(next)) return;
+      if (next !== null) {
+        forget();
+        return;
+      }
+      // Read once the change that blurred it is done; the observer's records not yet delivered
+      // are read with it, so a removed control's place is known here too.
+      queueMicrotask(() => {
+        if (held !== null) keep(observer.takeRecords(), true);
+      });
+    },
+    { signal: listening.signal }
+  );
+  // A focus that came into the box before the keeper listened: the drawer's own Close, which the
+  // commit that opens Details focuses.
+  if (root.contains(document.activeElement)) note(document.activeElement);
+  return () => {
+    listening.abort();
+    forget();
+  };
+}
+
+function lossOf(
+  control: HTMLElement,
+  root: HTMLElement,
+  records: readonly MutationRecord[],
+  measure: boolean
+): Loss | null {
+  if (!root.contains(control)) return "removed";
+  if (control.matches(":disabled")) return "disabled";
+  if (measure && !drawn(control)) return "hidden";
+  // Taken out and put back, as a keyed list drawn in a new order moves its elements: Chromium
+  // drops the focus of a moved element as it does a removed one's.
+  return removalOf(control, records) === undefined ? null : "removed";
+}
+
+function drawn(element: Element): boolean {
+  return element.getClientRects().length > 0;
+}
+
+/** The last record that took `control`, or an element around it, out of the DOM. */
+function removalOf(control: Node, records: readonly MutationRecord[]): MutationRecord | undefined {
+  let removal: MutationRecord | undefined;
+  for (const record of records) {
+    for (const removed of record.removedNodes) {
+      if (removed.contains(control)) {
+        removal = record;
+        break;
+      }
+    }
+  }
+  return removal;
+}
+
+function identityOf(control: HTMLElement): ControlIdentity {
+  return JSON.stringify([
+    control.closest("[data-history-entry]")?.getAttribute("data-history-entry") ?? null,
+    control.id,
+    control.tagName,
+    control.getAttribute("role"),
+    control.getAttribute("aria-label") ?? (control.textContent ?? "").trim(),
+  ]);
+}
+
+/** Where the lost control stood. A removed one's place is the gap its removal left between the
+ *  drawn elements beside it; a disabled one is still drawn where it was; a hidden one stands where
+ *  the outermost hidden element around it does among its siblings. */
+function placeOf(
+  control: HTMLElement,
+  root: HTMLElement,
+  records: readonly MutationRecord[]
+): Span | null {
+  const removal = removalOf(control, records);
+  if (removal !== undefined) {
+    return between(removal.previousSibling, removal.nextSibling, removal.target, root);
+  }
+  if (!root.contains(control)) return null;
+  if (drawn(control)) return control.getBoundingClientRect();
+  let outer: Element = control;
+  while (
+    outer.parentElement !== null &&
+    outer.parentElement !== root &&
+    !drawn(outer.parentElement)
+  ) {
+    outer = outer.parentElement;
+  }
+  return between(outer.previousSibling, outer.nextSibling, outer.parentNode ?? root, root);
+}
+
+function between(
+  before: Node | null,
+  after: Node | null,
+  parent: Node,
+  root: HTMLElement
+): Span | null {
+  const above = drawnSibling(before, "previousSibling")?.getBoundingClientRect().bottom;
+  const below = drawnSibling(after, "nextSibling")?.getBoundingClientRect().top;
+  if (above !== undefined && below !== undefined) {
+    return { bottom: Math.max(above, below), top: Math.min(above, below) };
+  }
+  const edge = above ?? below ?? drawnAround(parent, root)?.getBoundingClientRect().top;
+  return edge === undefined ? null : { bottom: edge, top: edge };
+}
+
+function drawnSibling(start: Node | null, step: "nextSibling" | "previousSibling"): Element | null {
+  for (let node = start; node !== null; node = node[step]) {
+    if (node instanceof Element && node.isConnected && drawn(node)) return node;
+  }
+  return null;
+}
+
+/** The nearest drawn element at or around `start`, no further out than `root`. */
+function drawnAround(start: Node, root: HTMLElement): Element | null {
+  for (
+    let node: Node | null = start;
+    node !== null;
+    node = node === root ? null : node.parentNode
+  ) {
+    if (node instanceof Element && node.isConnected && drawn(node)) return node;
+  }
+  return null;
+}
+
+/** How far `rect` stands above or below `stood`: none where the two overlap. */
+function distance(rect: Span, stood: Span): number {
+  return Math.max(0, stood.top - rect.bottom, rect.top - stood.bottom);
+}
+
+/** The control drawn in this change with the lost one's identity, nearest to where it stood. */
+function replacementOf(
+  identity: ControlIdentity,
+  root: HTMLElement,
+  records: readonly MutationRecord[],
+  stood: Span | null
+): HTMLElement | null {
+  let replacement: HTMLElement | null = null;
+  let nearest = Number.POSITIVE_INFINITY;
+  for (const record of records) {
+    for (const added of record.addedNodes) {
+      if (!(added instanceof Element) || !root.contains(added)) continue;
+      for (const control of [added, ...added.querySelectorAll(CONTROLS)]) {
+        if (
+          !(control instanceof HTMLElement) ||
+          !control.matches(CONTROLS) ||
+          control.matches(":disabled") ||
+          !drawn(control) ||
+          identityOf(control) !== identity
+        ) {
+          continue;
+        }
+        const away = stood === null ? 0 : distance(control.getBoundingClientRect(), stood);
+        if (away < nearest) {
+          nearest = away;
+          replacement = control;
+        }
+      }
+    }
+  }
+  return replacement;
+}
+
+/** The control in the reader's tab order, enabled and in sight, nearest to where the lost one
+ *  stood; the first in the box's order of those as near. */
+function nearestTo(stood: Span | null, root: HTMLElement): HTMLElement | null {
+  if (stood === null) return null;
+  const sight = sightOf(root);
+  const clips = new Map<Element, Bounds | null>();
+  let nearest: HTMLElement | null = null;
+  let best = Number.POSITIVE_INFINITY;
+  for (const control of root.querySelectorAll(CONTROLS)) {
+    if (
+      !(control instanceof HTMLElement) ||
+      control.tabIndex < 0 ||
+      control.matches(":disabled") ||
+      !drawn(control)
+    ) {
+      continue;
+    }
+    const rect = control.getBoundingClientRect();
+    const away = distance(rect, stood);
+    if (away < best && inSight(control, rect, root, sight, clips)) {
+      best = away;
+      nearest = control;
+    }
+  }
+  return nearest;
+}
+
+/** The part of the window the box covers. */
+function sightOf(root: HTMLElement): Bounds {
+  const rect = root.getBoundingClientRect();
+  return {
+    bottom: Math.min(rect.bottom, window.innerHeight),
+    left: Math.max(rect.left, 0),
+    right: Math.min(rect.right, window.innerWidth),
+    top: Math.max(rect.top, 0),
+  };
+}
+
+/** Whether some of `rect` shows: inside the box's part of the window, and inside every element
+ *  between the control and the box that cuts what it draws - the box's scrolling body, for one,
+ *  whose controls scrolled out of it still stand inside the box's own rect. */
+function inSight(
+  control: HTMLElement,
+  rect: Bounds,
+  root: HTMLElement,
+  sight: Bounds,
+  clips: Map<Element, Bounds | null>
+): boolean {
+  let { bottom, left, right, top } = sight;
+  for (
+    let ancestor = control.parentElement;
+    ancestor !== null && ancestor !== root;
+    ancestor = ancestor.parentElement
+  ) {
+    let clip = clips.get(ancestor);
+    if (clip === undefined) {
+      const style = getComputedStyle(ancestor);
+      clip =
+        CLIPPING[style.overflowX] === true || CLIPPING[style.overflowY] === true
+          ? ancestor.getBoundingClientRect()
+          : null;
+      clips.set(ancestor, clip);
+    }
+    if (clip !== null) {
+      bottom = Math.min(bottom, clip.bottom);
+      left = Math.max(left, clip.left);
+      right = Math.min(right, clip.right);
+      top = Math.max(top, clip.top);
+    }
+  }
+  return rect.bottom > top && rect.top < bottom && rect.right > left && rect.left < right;
+}
+
+/** The box's heading, able to take the focus: given `tabindex="-1"` where it takes none. */
+function headingOf(root: HTMLElement): HTMLElement | null {
+  const heading = root.querySelector("h2");
+  if (heading === null) return null;
+  if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+  return heading;
+}
