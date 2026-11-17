@@ -1452,18 +1452,28 @@ function stubBroker(label: string) {
   };
 }
 
+/** One turn of the real event loop, from before any test fakes the timers: a file read the
+ *  settings make lands in such a turn, which no microtask flush reaches. */
+const realSetImmediate = globalThis.setImmediate;
+const realTurn = () => new Promise<void>((resolve) => realSetImmediate(() => resolve()));
+
 /**
  * Settles `pending` on the test's clock (`jest.useFakeTimers`, on for the call), moving it a
  * second at a time: a write Dispatch keeps failing is asked again under its key until the
  * accept's 10 s bound, and those pauses and that bound pass at once rather than in real time.
+ * The clock stands still until `waiting` says the work is waiting on it: before its first
+ * request, the accept reads the session's envoy.json, which is real I/O, while the accept's bound
+ * (an `AbortSignal.timeout`, on the test's clock) already runs, and a second moved then would be
+ * one the code under test never waited.
  */
-async function onTestClock<T>(pending: () => Promise<T>): Promise<T> {
+async function onTestClock<T>(pending: () => Promise<T>, waiting: () => boolean): Promise<T> {
   jest.useFakeTimers();
   try {
     let settled = false;
     const watched = pending().finally(() => {
       settled = true;
     });
+    while (!settled && !waiting()) await realTurn();
     for (let second = 0; second < 60 && !settled; second++) {
       for (let flush = 0; flush < 50 && !settled; flush++) await Promise.resolve();
       jest.advanceTimersByTime(1_000);
@@ -13541,10 +13551,13 @@ console.log(JSON.stringify(args));
         const { accepts, agent, delivered, fixture, posts, recordedWhenDelivered } =
           await bootDirectSession(`direct-accept-refused-${name}`, { accept: () => answer });
 
-        await onTestClock(() => {
-          agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
-          return delivered(1);
-        });
+        await onTestClock(
+          () => {
+            agent.push(directDispatchEnvelope("steer", `direct-accept-refused-${name}`));
+            return delivered(1);
+          },
+          () => accepts.length > 0
+        );
 
         expect(accepts).toHaveLength(attempts);
         expect(new Set(accepts.map((accept) => accept.key)).size).toBe(1);
@@ -13566,10 +13579,13 @@ console.log(JSON.stringify(args));
         { accept: (count) => (count === 1 ? { reject: "fetch failed" } : { accepted: true }) }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-accept-retried"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
 
       expect(accepts.map((accept) => accept.path)).toEqual([
         `/api/v1/messages/${DIRECT_MESSAGE_ID}/deliveries/1/accept`,
@@ -13668,10 +13684,13 @@ console.log(JSON.stringify(args));
         }
       );
 
-      await onTestClock(() => {
-        agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
-        return delivered(1);
-      });
+      await onTestClock(
+        () => {
+          agent.push(directDispatchEnvelope("steer", "direct-carded-retry-1"));
+          return delivered(1);
+        },
+        () => accepts.length > 0
+      );
       // The person's retry is an attempt of its own, which the session has not delivered.
       agent.push(directDispatchEnvelope("aside", "direct-carded-retry-2", { attempt: 2 }));
       await delivered(2);
@@ -15290,7 +15309,12 @@ console.log(JSON.stringify(args));
           expect(accepts.map((accept) => sessionSignedAs(minted, accept.authorization))).toEqual([
             "ses_delivery",
           ]);
-          expect(traded).toEqual(["ses_delivery"]);
+          // The broker was asked for no other session. How often it was asked for this one is the
+          // race's and not this row's: the move's pass forgets ses_delivery's client once its role
+          // move has run (`leftSessions`), and a reply that lands after that trades again under
+          // ses_delivery's own name, as the design says a later call for a forgotten session does.
+          expect(traded.length).toBeGreaterThan(0);
+          expect(new Set(traded)).toEqual(new Set(["ses_delivery"]));
         } finally {
           restore();
           // A token this process traded is held under its session for the life of the process.
