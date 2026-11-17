@@ -199,11 +199,11 @@ describe("plan-ratings-read.sh", () => {
     expect(code).toBe(0);
   });
 
-  test("an issue with no plan, no rating and no time fails, exit 1, one line per fault", () => {
+  test("an issue with no plan and no rating fails, exit 1, one line per fault, and its unknown time is none of them", () => {
     const { code, stdout } = read(whole.join("\n") + "\n", [project, "INFRA-7"]);
     expect(stdout).toContain("FAIL: INFRA-7 lists no plan: INFRA-7 closed");
     expect(stdout).toContain("FAIL: INFRA-7 lists no rating: INFRA-7 closed");
-    expect(stdout).toContain("FAIL: INFRA-7 lists no time: INFRA-7 closed");
+    expect(stdout).not.toContain("lists no time");
     expect(stdout).not.toContain("PASS");
     expect(code).toBe(1);
   });
@@ -226,12 +226,19 @@ describe("plan-ratings-read.sh", () => {
     expect(code).toBe(1);
   });
 
-  test("a rating with no time fails, exit 1, naming it", () => {
+  // `dispatch plans` prints `time -` for an issue whose time Dispatch does not know: no record has
+  // a start, none has an end, or the latest end is before the earliest start (a run whose start
+  // never reached Dispatch, and a later one whose end has not yet). That says nothing of the plan
+  // or its ratings, so the issue is judged by those, and the verdict says its time is unknown.
+  test("a plan and a rating whose time Dispatch does not know pass, exit 0, saying the time is unknown", () => {
     const { code, stdout } = read(
       changed(/^INFRA-42 /, (line) => line.replace("time 2h20m", "time -"))
     );
-    expect(stdout).toContain(`FAIL: ${key} lists no time: ${key} closed`);
-    expect(code).toBe(1);
+    expect(stdout).toContain(
+      `PASS: ${key}: ${plan}, ratings 4/5 "The plan fit the work; the review sent it back once.", time unknown, failed steps 1`
+    );
+    expect(stdout).not.toContain("FAIL");
+    expect(code).toBe(0);
   });
 
   test("a read that lists finished issues and not the issue fails, exit 1, naming it", () => {

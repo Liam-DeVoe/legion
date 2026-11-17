@@ -6,15 +6,18 @@
 #   scripts/e2e/plan-ratings-read.sh INFRA INFRA-123
 #
 # It exits 0 and prints `PASS: …`, with the issue's plan, ratings, time and count of failed steps,
-# only when the read lists <ISSUE> with a plan, at least one rating, each rating with a reason, a
-# time and a count of failed steps. The other issues of the project are not judged: a finished
-# issue Legion never ran, or ran before the release that rates each plan, lists `plan none` and
-# `ratings none`, which is true of what Dispatch holds of it. It exits 1 and prints one `FAIL: …`
-# line per fault when the read lists finished issues and <ISSUE>'s line does not hold, or lists no
-# line of <ISSUE>. It exits 2 and prints `UNKNOWN: <reason>` when it could read nothing to judge:
-# the read lists no finished issue at all, the command failed, or its answer is no read of the
-# project; so an empty or failed read is never a pass. A usage error is exit 2 too, with the usage
-# on stderr.
+# only when the read lists <ISSUE> with a plan, at least one rating, each rating with a reason,
+# and a count of failed steps. A time the command prints as `-` is Dispatch knowing no span of the
+# issue's step records (no record has a start, none has an end, or the latest end is before the
+# earliest start), which says nothing of the plan or its ratings: the verdict names that time
+# `unknown` and judges the line by the rest. The other issues of the project are not judged: a
+# finished issue Legion never ran, or ran before the release that rates each plan, lists `plan
+# none` and `ratings none`, which is true of what Dispatch holds of it. It exits 1 and prints one
+# `FAIL: …` line per fault when the read lists finished issues and <ISSUE>'s line does not hold,
+# or lists no line of <ISSUE>. It exits 2 and prints `UNKNOWN: <reason>` when it could read
+# nothing to judge: the read lists no finished issue at all, the command failed, or its answer is
+# no read of the project; so an empty or failed read is never a pass. A usage error is exit 2 too,
+# with the usage on stderr.
 #
 # It runs where the operator runs `dispatch` by hand, with the operator's own credential: the
 # `dispatch` command on PATH (packages/envoy-client's bin), the session the operator's shell names
@@ -106,7 +109,7 @@ awk -v project="$project" -v issue="$issue" '
     if (plan == "none") faults[++count] = issue " lists no plan: " line
     if (rated == 0) faults[++count] = issue " lists no rating: " line
     if (reasonless) faults[++count] = issue " lists a rating with no reason: " line
-    if (spent == "-") faults[++count] = issue " lists no time: " line
+    if (spent == "-") spent = "unknown"
     said = "plan " plan ", ratings " ratings ", time " spent ", failed steps " failed
   }
   END {
